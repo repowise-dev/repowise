@@ -23,8 +23,11 @@ def _run_workspace_checks(
       - State drift between ``WorkspaceConfig.last_commit_at_index`` and
         each repo's ``.repowise/state.json``.
       - MCP server registration (best-effort detection in claude config).
-      - ``--repair``: rebuild missing ``state.json``, drop dead workspace
-        entries (with a notice). Skipped when ``fmt != "table"``; callers
+      - ``--repair``: sync the workspace config from disk and drop dead
+        workspace entries (with a notice), reporting any change to the
+        primary (default) repo. A member whose ``state.json`` is missing is
+        flagged with the ``repowise update`` command that rebuilds it,
+        rather than rebuilt here. Skipped when ``fmt != "table"``; callers
         must not pass ``repair=True`` with a non-table format.
     """
     from repowise.core.workspace.update import (
@@ -36,6 +39,7 @@ def _run_workspace_checks(
     issues: list[str] = []
 
     dead_entries: list[str] = []
+    missing_state: list[tuple[str, str]] = []
     for entry in ws_config.repos:
         abs_path = (ws_root / entry.path).resolve()
 
@@ -79,6 +83,7 @@ def _run_workspace_checks(
                 )
             )
             issues.append(f"{entry.alias}: missing state.json")
+            missing_state.append((entry.alias, entry.path))
         else:
             rows.append((entry.alias, "[green]OK[/green]", entry.path))
 
@@ -102,6 +107,7 @@ def _run_workspace_checks(
                 f"[green]Repaired workspace config from disk for:[/green] {', '.join(changed)}"
             )
         if dead_entries:
+            prev_default = ws_config.default_repo
             console.print(
                 f"[yellow]Removing dead workspace entries:[/yellow] {', '.join(dead_entries)}"
             )
@@ -109,7 +115,18 @@ def _run_workspace_checks(
                 ws_config.remove_repo(alias)
             ws_config.save(ws_root)
             console.print("[green]Workspace config updated.[/green]")
-        if not changed and not dead_entries:
+            if ws_config.default_repo != prev_default:
+                console.print(
+                    f"[yellow]Primary repo changed:[/yellow] "
+                    f"{prev_default or '(none)'} -> {ws_config.default_repo or '(none)'} "
+                    "(the previous primary was a dead entry)."
+                )
+        for alias, path in missing_state:
+            console.print(
+                f"[yellow]{alias}: state.json missing — run "
+                f"[bold]repowise update[/bold] in {path} to rebuild it.[/yellow]"
+            )
+        if not changed and not dead_entries and not missing_state:
             console.print("[green]No workspace-level repairs needed.[/green]")
 
     return issues

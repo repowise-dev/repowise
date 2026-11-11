@@ -31,7 +31,7 @@ from typing import Any
 # ``_state`` is the one submodule that stays eager: every other module in this
 # package reads its globals, and it defers its own sqlalchemy import so the
 # whole package now costs about what a bare interpreter does.
-from repowise.server.mcp_server import _state
+from repowise.server.mcp_server import _checkout, _state
 
 # ---------------------------------------------------------------------------
 # Lazy attribute surface (PEP 562).
@@ -132,6 +132,7 @@ def tool_middleware(fn: Any) -> Any:
     )
     from repowise.server.mcp_server._failure_shield import shield
     from repowise.server.mcp_server._meta import (
+        drop_false_status_flags,
         finalize_trust_envelope,
         full_meta,
         lean_response,
@@ -176,6 +177,16 @@ def tool_middleware(fn: Any) -> Any:
 
         return wrapped
 
+    def lean_form(result: Any) -> Any:
+        if not full_meta(fn.__name__):
+            return lean_response(result)
+        # A full-meta tool keeps its diagnostics; debug mode keeps everything.
+        return result if full_meta() else drop_false_status_flags(result)
+
+    def delivered_form(result: Any) -> Any:
+        """What the passes after the budget leave of *result*: envelope, then lean."""
+        return lean_form(finalize_trust_envelope(result, evidence_kind=evidence_kind))
+
     def budget(inner: Any) -> Any:
         @wraps(inner)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
@@ -188,7 +199,9 @@ def tool_middleware(fn: Any) -> Any:
                 # rather than merely ignored: the measurement serializes the
                 # whole payload, and the outer layer's result is discarded.
                 if live.pre_budget_input_tokens is None:
-                    live.observe_pre_budget(savings_event.raw_response_tokens(raw))
+                    live.observe_pre_budget(
+                        savings_event.raw_response_tokens(raw, shape=delivered_form)
+                    )
                 live.repo_root = live.repo_root or (str(repo_root) if repo_root else None)
             result = enforce_response_budget(
                 fn.__name__,
@@ -213,8 +226,7 @@ def tool_middleware(fn: Any) -> Any:
     def lean(inner: Any) -> Any:
         @wraps(inner)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
-            result = await inner(*args, **kwargs)
-            return result if full_meta(fn.__name__) else lean_response(result)
+            return lean_form(await inner(*args, **kwargs))
 
         return wrapped
 
@@ -223,10 +235,14 @@ def tool_middleware(fn: Any) -> Any:
 
         @wraps(inner)
         async def wrapped(*args: Any, **kwargs: Any) -> Any:
-            with savings_interaction.begin(fn.__name__) as live:
-                result = await inner(*args, **kwargs)
-                savings_event.record(live, result)
-                return result
+            token = _checkout.open_call()
+            try:
+                with savings_interaction.begin(fn.__name__) as live:
+                    result = await inner(*args, **kwargs)
+                    savings_event.record(live, result)
+                    return result
+            finally:
+                _checkout.close_call(token)
 
         return wrapped
 
@@ -278,6 +294,22 @@ def registered_tool(fn: Any) -> Any:
     return wrapped
 
 
+def _slim_input_schemas(server: Any) -> None:
+    """Drop pydantic's ``title`` keys and ``default: null`` from advertised schemas.
+
+    They restate each parameter's name and optionality, and hosts re-send the
+    tool list on every turn. Arguments are still validated against the
+    function signature, not this dict.
+    """
+    for tool in server._tool_manager._tools.values():
+        params = tool.parameters
+        params.pop("title", None)
+        for prop in params.get("properties", {}).values():
+            prop.pop("title", None)
+            if "default" in prop and prop["default"] is None:
+                del prop["default"]
+
+
 def ensure_full_surface() -> Any:
     """Import every tool module and attach the registry to the FastMCP server.
 
@@ -298,9 +330,11 @@ def ensure_full_surface() -> Any:
     if _surface_applied:
         return _mcp
 
-    for module in dict.fromkeys(_TOOL_MODULES.values()):
+    for name, module in _TOOL_MODULES.items():
         try:
-            importlib.import_module(f"{__name__}.{module}")
+            # Read the name, not just the module: a tool package re-exports its
+            # tool lazily, and that read is what imports and registers it.
+            getattr(importlib.import_module(f"{__name__}.{module}"), name)
         except ImportError as exc:
             # One tool's optional dependency must not take the whole surface
             # down: a host respawns a server that dies at import, forever.
@@ -326,6 +360,7 @@ def ensure_full_surface() -> Any:
         middleware=registered_tool,
         annotations_for=lambda safety: ToolAnnotations(**SAFETY_TO_ANNOTATION_HINTS[safety]),
     )
+    _slim_input_schemas(_mcp)
 
     # Snapshot the full registered surface so per-server tool selection
     # (single-repo vs workspace, config/CLI overrides) can rebuild from it.

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
 import networkx as nx
 from sqlalchemy import select
 
+from repowise.core.cache_seal import dump_sealed_pickle
 from repowise.core.ingestion.parse_cache import parser_fingerprint
 from repowise.core.persistence import (
     batch_upsert_graph_edges,
@@ -255,6 +257,100 @@ async def test_seed_from_prior_opt_in_is_ignored_after_feature_is_disabled(
         await engine.dispose()
 
 
+async def _moved_copy(root: Path, tmp_path: Path, monkeypatch) -> Path:
+    """Copy *root* with its index to a new path and adopt its row, as an update does."""
+    from repowise.core.persistence.crud import adopt_moved_repository_best_effort
+
+    moved = tmp_path / "elsewhere" / "repo"
+    shutil.copytree(root, moved)
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    assert await adopt_moved_repository_best_effort(moved) is True
+    return moved
+
+
+async def test_snapshot_survives_moving_the_repo(tmp_path: Path, monkeypatch) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await save_seed_edge_cache(root, _gb())
+    finally:
+        await engine.dispose()
+    moved = await _moved_copy(root, tmp_path, monkeypatch)
+
+    snapshot = await load_seed_edges(moved)
+
+    assert snapshot is not None
+    assert _seed_identity(snapshot) == _seed_identity(
+        {"edges": list(_gb().graph().edges(data=True))}
+    )
+
+
+async def test_moved_snapshot_misses_when_the_stored_edges_changed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, _sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await save_seed_edge_cache(root, _gb())
+    finally:
+        await engine.dispose()
+    moved = await _moved_copy(root, tmp_path, monkeypatch)
+    engine = create_engine(resolve_db_url(moved))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo_id = (await session.execute(select(Repository.id))).scalar_one()
+            await batch_upsert_graph_edges(
+                session,
+                repo_id,
+                [{"source_node_id": "d.py", "target_node_id": "e.py", "edge_type": "imports"}],
+            )
+    finally:
+        await engine.dispose()
+
+    assert await load_seed_edges(moved) is None
+
+
+async def _write_snapshot(root: Path, sf, **overrides) -> None:
+    async with get_session(sf) as session:
+        repo_id = (await session.execute(select(Repository.id))).scalar_one()
+    graph = _gb().graph()
+    payload = {
+        "version": 2,
+        "repo_id": repo_id,
+        "edge_count": 4,
+        "parser_fingerprint": parser_fingerprint(),
+        "nodes": [(node, dict(attrs)) for node, attrs in graph.nodes(data=True)],
+        "edges": [(s, t, dict(attrs)) for s, t, attrs in graph.edges(data=True)],
+        **overrides,
+    }
+    dump_sealed_pickle(
+        root / ".repowise" / "graph_seed_edges.pkl", payload, domain="graph_seed_edges.pkl"
+    )
+
+
+async def test_snapshot_whose_edges_disagree_with_its_count_misses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        edges = [(s, t, dict(a)) for s, t, a in _gb().graph().edges(data=True)][:3]
+        await _write_snapshot(root, sf, edges=edges)
+
+        assert await load_seed_edges(root) is None
+    finally:
+        await engine.dispose()
+
+
+async def test_snapshot_written_with_a_checkout_path_still_loads(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root, engine, sf = await _repo_db(tmp_path, monkeypatch)
+    try:
+        await _write_snapshot(root, sf, repo_path=str(tmp_path / "old-checkout"))
+
+        assert await load_seed_edges(root) is not None
+    finally:
+        await engine.dispose()
+
+
 def test_invalidation_removes_snapshot_before_update_write(tmp_path: Path) -> None:
     cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
     cache.parent.mkdir()
@@ -263,6 +359,18 @@ def test_invalidation_removes_snapshot_before_update_write(tmp_path: Path) -> No
     invalidate_seed_edge_cache(tmp_path)
 
     assert not cache.exists()
+
+
+async def test_unreadable_database_means_no_seed_not_a_failed_update(tmp_path: Path) -> None:
+    # An index directory whose database has no tables yet.
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "wiki.db").write_bytes(b"")
+    (tmp_path / ".repowise" / "state.json").write_text(
+        json.dumps({"graph_update": {"enabled": True}}), encoding="utf-8"
+    )
+
+    assert await load_seed_edges(tmp_path) is None
+    assert await load_seed_edges_for_reconciliation(tmp_path) is None
 
 
 def test_full_build_restores_rows_for_unparsed_files_from_prior_snapshot() -> None:

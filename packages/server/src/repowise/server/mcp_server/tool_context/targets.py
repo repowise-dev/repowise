@@ -45,14 +45,18 @@ from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
 from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 from repowise.server.mcp_server.tool_context.enrichment import _MIN_CALL_CONFIDENCE
+from repowise.server.mcp_server.tool_context.files import files_section
 from repowise.server.mcp_server.tool_context.preview import (  # noqa: F401  (re-exported)
     _NO_SYMBOL_SUMMARY_SUFFIX,
-    _file_preview,
+    _file_preview_async,
     _markdown_headings,
     _outline_lines,
     _preview_summary,
     _rst_headings,
     _rst_table_lines,
+)
+from repowise.server.mcp_server.tool_context.preview import (
+    _file_preview as _file_preview,
 )
 from repowise.server.mcp_server.tool_context.resolution import (  # noqa: F401  (re-exported)
     ResolvedTarget,
@@ -270,7 +274,7 @@ async def _file_docs(card: CardState, docs: dict[str, Any]) -> None:
     # A symbol-less file still has content: one read serves counts and a
     # verbatim excerpt instead of a card that restates the filename.
     if not symbols:
-        _attach_file_preview(card, docs)
+        await _attach_file_preview(card, docs)
 
 
 async def _compact_file_symbols(card: CardState, docs: dict[str, Any], symbols: Any) -> None:
@@ -346,8 +350,8 @@ async def _file_importers_and_community(card: CardState, docs: dict[str, Any]) -
         }
 
 
-def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
-    preview = _file_preview(card.query.repo_root, card.target)
+async def _attach_file_preview(card: CardState, docs: dict[str, Any]) -> None:
+    preview = await _file_preview_async(card.query.repo_root, card.target)
     if preview is not None:
         docs["file_preview"] = preview
         # Replace the stub summary with the preview's own counts.
@@ -375,6 +379,10 @@ def _cap_file_rows(card: CardState, docs: dict[str, Any], rows: list[dict[str, A
         card.query.collector,
         label=f"{card.target} :: docs.files beyond cap={_SYMBOL_CAP}",
     )
+    # Agents asking "which files here lack tests" miss the opt-in from the
+    # tool description alone, so a cut list names it.
+    if len(rows) > _SYMBOL_CAP and not card.wants("files"):
+        docs["files_all"] = 'include=["files"]'
 
 
 async def _module_docs(card: CardState, docs: dict[str, Any]) -> None:
@@ -679,6 +687,7 @@ _DOCS_BY_TYPE = {"file": _file_docs, "module": _module_docs, "symbol": _symbol_d
 _CARD_SECTIONS: tuple[CardSection, ...] = (
     _parent_page_section,
     _docs_section,
+    files_section,
     _triage_section,
     _ownership_section,
     _last_change_section,

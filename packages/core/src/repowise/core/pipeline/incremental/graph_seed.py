@@ -38,6 +38,21 @@ def invalidate_seed_edge_cache(repo_path: Any) -> None:
 
 
 async def _database_stamp(repo_path: Path) -> tuple[str, int, str] | None:
+    """The repository's id, edge count and parser fingerprint, or ``None``.
+
+    The snapshot is only a hint, so a database that cannot answer means a full
+    build, never a failed update.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        return await _query_database_stamp(repo_path)
+    except (SQLAlchemyError, OSError) as exc:
+        log.warning("graph_seed_stamp_unavailable", error=str(exc))
+        return None
+
+
+async def _query_database_stamp(repo_path: Path) -> tuple[str, int, str] | None:
     from sqlalchemy import func, select
 
     from repowise.core.persistence import create_engine, create_session_factory, get_session
@@ -72,7 +87,7 @@ async def _database_stamp(repo_path: Path) -> tuple[str, int, str] | None:
 
 
 def _incremental_cache_is_enabled(root: Path) -> bool:
-    """Whether the last persisted index run opted in to incremental graph state."""
+    """Whether the last persisted index run had incremental graph state enabled."""
     try:
         state = json.loads((root / ".repowise" / "state.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
@@ -84,17 +99,20 @@ def _incremental_cache_is_enabled(root: Path) -> bool:
 def _seed_identity_matches(
     cache: Any,
     *,
-    root: Path,
     repo_id: str,
     edge_count: int,
     fingerprint: str,
 ) -> bool:
-    """Validate the cache schema and the DB identity/stamp fields."""
+    """Validate the cache schema and the DB identity/stamp fields.
+
+    Not keyed on the checkout's absolute path: node ids are repo-relative, so
+    a repo moved or copied with its ``.repowise`` keeps a valid snapshot. The
+    repository row id still ties the snapshot to its own store.
+    """
     if not isinstance(cache, dict):
         return False
     expected = (
         ("version", _CACHE_VERSION),
-        ("repo_path", str(root)),
         ("repo_id", repo_id),
         ("edge_count", edge_count),
         ("parser_fingerprint", fingerprint),
@@ -107,6 +125,9 @@ def _seed_identity_matches(
         if not isinstance(cache.get(key), list):
             log.info("graph_seed_cache_skipped", reason=f"snapshot {key} payload is invalid")
             return False
+    if len(cache["edges"]) != edge_count:
+        log.info("graph_seed_cache_skipped", reason="snapshot edges do not match the stored count")
+        return False
     return True
 
 
@@ -143,7 +164,6 @@ async def load_seed_edges(repo_path: Any) -> dict[str, list] | None:
         return None
     if not _seed_identity_matches(
         cache,
-        root=root,
         repo_id=repo_id,
         edge_count=edge_count,
         fingerprint=fingerprint,
@@ -157,7 +177,7 @@ async def load_seed_edges_for_reconciliation(repo_path: Any) -> dict[str, list] 
     """Load a DB-current snapshot for preserving rows omitted by a full build.
 
     Unlike :func:`load_seed_edges`, this does not require the current parser
-    fingerprint or a prior opt-in. The snapshot is never used to build the
+    fingerprint or that the last run had the feature enabled. The snapshot is never used to build the
     graph; it is only a source of attributes for rows the DB deliberately kept
     when a file could not be read or parsed.
     """
@@ -175,7 +195,6 @@ async def load_seed_edges_for_reconciliation(repo_path: Any) -> dict[str, list] 
         return None
     if not _seed_identity_matches(
         cache,
-        root=root,
         repo_id=stamp[0],
         edge_count=stamp[1],
         fingerprint=stamp[2],
@@ -402,7 +421,6 @@ async def save_seed_edge_cache(repo_path: Any, graph_builder: Any) -> None:
         graph = graph_builder.graph()
         payload = {
             "version": _CACHE_VERSION,
-            "repo_path": str(root),
             "repo_id": repo_id,
             "edge_count": edge_count,
             "parser_fingerprint": stored_fingerprint or parser_fingerprint(),

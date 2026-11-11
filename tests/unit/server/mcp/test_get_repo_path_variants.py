@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.persistence.models import Repository
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _get_repo
 
 
@@ -43,6 +44,33 @@ async def test_finds_by_lowercase_path(session, repository):
 async def test_finds_by_id_and_name(session, repository):
     assert (await _get_repo(session, repository.id)).id == repository.id
     assert (await _get_repo(session, repository.name)).id == repository.id
+
+
+async def _second_row(session, tmp_path) -> Repository:
+    other = Repository(name="copy", local_path=str(tmp_path / "copy"), url="", default_branch="main")
+    session.add(other)
+    await session.flush()
+    return other
+
+
+async def test_no_argument_serves_the_served_directory_row(
+    session, repository, tmp_path, monkeypatch
+):
+    other = await _second_row(session, tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", other.local_path)
+    assert (await _get_repo(session)).id == other.id
+    monkeypatch.setattr(_state, "_repo_path", repository.local_path)
+    assert (await _get_repo(session)).id == repository.id
+
+
+async def test_no_argument_warns_when_no_row_matches_the_served_directory(
+    session, repository, tmp_path, monkeypatch, caplog
+):
+    await _second_row(session, tmp_path)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path / "elsewhere"))
+    with caplog.at_level("WARNING"):
+        await _get_repo(session)
+    assert "several repositories" in caplog.text
 
 
 async def test_unknown_absolute_path_still_raises(session, repository, tmp_path):

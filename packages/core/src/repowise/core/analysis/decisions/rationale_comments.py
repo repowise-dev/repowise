@@ -274,7 +274,6 @@ _WORD_RE = re.compile(r"[A-Za-z']{2,}")
 _MIN_COMMENT_CHARS = 25
 _MIN_COMMENT_WORDS = 5
 _MAX_COMMENT_CHARS = 600
-_MAX_BLOCK_LINES = 12
 
 
 @dataclass(frozen=True)
@@ -296,6 +295,7 @@ class HarvestedComment:
     end_line: int
     text: str
     strength: int  # number of distinct rationale markers present
+    causal: bool = False  # carries a strong CAUSAL_MARKERS reason
 
 
 # ---------------------------------------------------------------------------
@@ -615,15 +615,15 @@ def harvest_file_rationale(
         if looks_like_commented_out_code(b.body_lines):
             continue
 
-        end = b.end_line
-        if end - b.start_line + 1 > _MAX_BLOCK_LINES:
-            end = b.start_line + _MAX_BLOCK_LINES - 1
+        # The range spans the whole block, so it holds every line the
+        # (char-capped) text quotes.
         kept.append(
             HarvestedComment(
                 start_line=b.start_line,
-                end_line=end,
+                end_line=b.end_line,
                 text=_truncate(body),
                 strength=marker_strength(body),
+                causal=has_causal_marker(body),
             )
         )
 

@@ -87,6 +87,7 @@ from .name_occurrences import (
     drop_internals_used_in_own_file,
     drop_reference_assembly_api,
 )
+from .pascal_name_uses import drop_pascal_name_uses
 from .passes.unreachable_files import UnreachableFilePass
 from .passes.unused_exports import UnusedExportPass
 from .passes.unused_internals import UnusedInternalPass
@@ -373,6 +374,8 @@ class DeadCodeAnalyzer:
         )
         # Same for Go, scoped to the package and to importers naming it.
         findings = drop_go_package_uses(findings, self._source_map, self.graph)
+        # And Pascal, scoped to the unit and the units that ``uses`` it.
+        findings = drop_pascal_name_uses(findings, self._source_map, self.graph)
         # Before the confidence filter, not after: a finding an unread importer
         # could explain must be able to fall *below* min_confidence and drop
         # out entirely, rather than being reported at a number it no longer

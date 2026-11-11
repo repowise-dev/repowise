@@ -131,6 +131,7 @@
     }
   },
   "nav": {
+    "review": "Review",
     "dashboard": "Dashboard",
     "settings": "Settings",
     "overview": "Overview",
@@ -159,6 +160,7 @@
     "security": "Security"
   },
   "breadcrumb": {
+    "review": "Review",
     "overview": "Overview",
     "docs": "Docs",
     "chat": "Chat",
@@ -265,6 +267,10 @@
     "allCurrent": "Every index is current with its checkout. {parts}"
   },
   "views": {
+    "review": {
+      "title": "Review",
+      "description": "Pick a change, uncommitted work, a branch or a commit, to see what it reaches, which files to look at first, which tests to run and who to ask."
+    },
     "files": {
       "title": "Files",
       "description": "Drill the map to see how the tree is shaped and where health is thin, then filter the table to find a specific file."
@@ -274,6 +280,28 @@
       "description": "The things about this codebase you can't see anywhere else: how big it got, when it started, when the work happens, and the records it holds."
     },
     "commits": {
+      "periodLede": {
+        "better": "Health moved the right way: {resolved, plural, one {# finding} other {# findings}} resolved or improved, {worse, number} added or worsened.",
+        "worse": "Health slipped: {worse, plural, one {# finding} other {# findings}} added or worsened, {resolved, number} resolved or improved.",
+        "flatNone": "No analysed commit changed a health finding.",
+        "flat": "Health held even: {resolved, plural, one {# finding} other {# findings}} resolved or improved and as many added or worsened.",
+        "mix": "{topShare}% were {top}.",
+        "mixTwo": "{topShare}% were {top}, then {second} at {secondShare}%.",
+        "notable": "Biggest single cleanup: {subject}, {resolved, plural, one {# finding} other {# findings}} resolved.",
+        "coverage": "Health counts cover the {analysed, number} of {total, number} commits the current analyzer has read; the rest fill in as updates run.",
+        "unit": "{n, plural, one {commit} other {commits}}",
+        "empty": "No commits in this window.",
+        "categories": {
+          "feature": "features",
+          "fix": "fixes",
+          "refactor": "refactors",
+          "docs": "docs changes",
+          "test": "test changes",
+          "deps": "dependency updates",
+          "chore": "chores",
+          "other": "other work"
+        }
+      },
       "emptyTitle": "No scored commits yet",
       "emptyAction": "Go to overview",
       "title": "Commits",
@@ -284,12 +312,9 @@
       "changeRisk": "Change risk",
       "evolutionTitle": "How the work changed shape",
       "evolutionDescription": "Commit categories over time, read off the subject line. Fixes carry the accent because that is the series this chart exists to show.",
-      "viewLabel": "History view",
+      "groupLabel": "Group history by",
       "viewByChange": "By change",
       "viewByCommit": "By commit",
-      "viewEvents": "Events",
-      "viewReview": "Review a change",
-      "reviewDescription": "Pick the files a change touches to see what depends on them, what tends to change with them, and who should review.",
       "listTitle": "Commit history",
       "listDescription": "Newest first, each led by what it did to code health. The filters narrow the whole repository, not the page.",
       "hotspotMark": "Hotspot",
@@ -311,6 +336,9 @@
         "catchingUp": "Most commits in this window have not been analysed by the current analyzer yet. Recent commits come first, as updates run; the rows below show each older commit's direction from the earlier analysis."
       },
       "wins": {
+        "summaryResolved": "{n} resolved",
+        "summaryHealthier": "{n} healthier",
+        "summaryRefactored": "{n} refactored",
         "title": "Recent wins",
         "wholeRepo": "whole repository",
         "findingsLabel": "Findings resolved",
@@ -536,7 +564,7 @@
       "coChangeNoticeTitle": "Health scores changed in this release.",
       "coChangeNoticeMore": "What changed",
       "coChangeNoticeLess": "Hide",
-      "coChangeNoticeBody": "Some files now count as a different kind of code. A tools/ folder below the repo root is product code, so it is scored; only a root-level or engineering tools/ folder stays tooling. Python _vendor/ folders and Salesforce static-resource libraries count as vendored code, and prefixed migration folders under db/ count as migrations, so they leave the score. A tests/ folder inside a JavaScript or TypeScript src tree is product code, so its files are scored. Apex and COBOL files are scored, Scala gets dataflow findings, and comments inside a switch block do not count against its function. Repos with these files can move either way; other repos keep their scores.",
+      "coChangeNoticeBody": "Some findings and scores moved. Abstract, interface and extern methods are no longer counted as functions, a switch opens one nesting level and its case arms none, ternary dispatch chains in Java, C, C++, C#, Dart, Objective-C and PHP no longer add nesting, and flat boolean chains and TSX style objects are not counted as complexity or code. C++ operators, destructors and macro-declared functions and Dart constructors get names of their own. Several performance and maintainability findings now fire only on the pattern they describe, repeated nesting is advisory, C and C++ #if blocks count their largest arm, and COBOL GO TO DEPENDING ON is counted correctly. Repo averages leave out tooling, vendored and generated files on every surface, health bars read on the same five bands everywhere, and refactoring gains are priced by rescoring the file. Repos with these patterns can move either way; other repos keep their scores.",
       "tabs": {
         "performance": "Performance",
         "findings": "Findings",
@@ -622,7 +650,10 @@
       "title": "Knowledge Graph",
       "description": "Explore your codebase like a map: scroll to zoom, drag to pan, and double-click any card to dive into its layers, folders and files, ranked by how the code actually runs.",
       "loading": "Building the knowledge graph…",
-      "error": "Could not load the knowledge graph for this repository."
+      "error": "Could not load the knowledge graph for this repository.",
+      "errorHint": "The server did not return a map. Check that the repository is indexed and the API is running, then try again.",
+      "loadingHint": "Laying out every layer, folder and file. Large repositories take a few seconds.",
+      "showTestLinks": "Show test links"
     },
     "refactoring": {
       "title": "Refactoring",
@@ -921,10 +952,9 @@
         "andMore": "{list} and {count} more"
       },
       "ribbon": {
-        "files": "Files",
-        "filesSub": "across {count, plural, one {# repository} other {# repositories}}",
-        "symbols": "Symbols",
-        "symbolsSub": "functions, classes and methods",
+        "lowestHealth": "Lowest health",
+        "lowestHealthSub": "{name} · {healthy} of {scored} scored {scored, plural, one {repository} other {repositories}} Good or better",
+        "lowestHealthNone": "no health snapshot yet",
         "docFreshness": "Doc freshness",
         "docFreshnessNoPages": "no documentation generated yet",
         "docFreshnessSub": "{fresh} of {pages} pages fresh",
@@ -954,36 +984,6 @@
       "breadcrumb": "Code Health",
       "notFoundTitle": "Module not found",
       "notFoundDescription": "The requested module path doesn't exist in this repository's index."
-    },
-    "events": {
-      "title": "Events",
-      "description": "What moved between two index runs in a row: owners, bus factor, hotspots, contracts, decisions, dead code and test reach, per component.",
-      "repository": "Whole repository",
-      "count": "{count, plural, one {# event} other {# events}}, newest first.",
-      "emptyTitle": "No events yet",
-      "baselineOnly": "{runs, plural, =0 {No component snapshot is stored yet.} one {One component snapshot is stored, the baseline.} other {# component snapshots are stored.}} Events are what moved between two index runs in a row, so they start after the next `repowise update` on a new commit.",
-      "nothingMoved": "Nothing crossed a threshold across {runs} stored component snapshots.",
-      "noMatch": "No event matches these filters across {runs} stored component snapshots.",
-      "loadErrorTitle": "Could not load events",
-      "loadErrorBody": "The event list could not be read from the server. Reload the page to try again.",
-      "kinds": {
-        "ownership_shift": "Declared owner changed",
-        "owner_inactive": "Main owners stopped changing it",
-        "bus_factor_drop": "Bus factor fell",
-        "new_hotspot": "Files became hotspots",
-        "contract_added": "Provided contract appeared",
-        "contract_broken": "Contract with consumers disappeared",
-        "decision_stale": "Governing decision went stale",
-        "dead_code_growth": "Dead-code findings grew",
-        "test_reach_drop": "Test reach fell"
-      },
-      "severities": {
-        "critical": "critical",
-        "high": "high",
-        "medium": "medium",
-        "low": "low",
-        "info": "info"
-      }
     },
     "security": {
       "title": "Security",
@@ -1319,11 +1319,16 @@
       "noMatches": "No matching pages",
       "showMore": "Show {next} more ({remaining} left)",
       "stubTitle": "Built from the index. A model has not written this page yet.",
-      "startHere": "Start here",
       "onboarding": "Onboarding",
-      "modulesWithNoLayer": "Modules with no layer ({count})",
-      "codeReference": "Code reference",
-      "codeReferenceMeta": "{files, plural, one {# file} other {# files}} · {symbols, plural, one {# symbol} other {# symbols}}{other, plural, =0 {} other { · # other}}"
+      "walkthroughs": "Walkthroughs ({count})",
+      "supportingPackages": "Supporting packages ({count})",
+      "codeReference": "Reference",
+      "codeReferenceMeta": "{files, plural, one {# file} other {# files}} · {symbols, plural, one {# symbol} other {# symbols}}{other, plural, =0 {} other { · # other}}",
+      "referenceApi": "API",
+      "referenceFiles": "Files",
+      "referenceInfrastructure": "Infrastructure",
+      "referenceCycles": "Dependency cycles",
+      "projectActivity": "Project activity"
     },
     "reader": {
       "selectPageTitle": "Select a page",
@@ -1377,16 +1382,49 @@
     "breadcrumb": {
       "label": "Zoom location"
     },
+    "sheet": {
+      "label": "Selected item details"
+    },
     "hint": {
       "scroll": "Scroll to zoom",
       "drag": "Drag to pan",
       "doubleClick": "Double-click a card to dive in",
       "dismiss": "Dismiss hint"
     },
+    "controls": {
+      "label": "Map controls",
+      "zoomIn": "Zoom in (+)",
+      "zoomOut": "Zoom out (-)",
+      "fit": "Fit the whole system (0)",
+      "up": "Up one level (Esc)"
+    },
     "search": {
-      "placeholder": "Search files…",
+      "placeholder": "Search layers, folders, files…",
       "aria": "Search the system map",
-      "clear": "Clear search"
+      "clear": "Clear search",
+      "shortcut": "Press / to search",
+      "results": "Search results",
+      "usedMostBy": "Used most by {name}",
+      "repositoryRoot": "Repository root",
+      "kind": {
+        "system": "System",
+        "layer": "Layer",
+        "group": "Group",
+        "folder": "Folder",
+        "file": "File",
+        "container": "Container",
+        "external": "External"
+      }
+    },
+    "canvas": {
+      "aria": "Zoomable system map. Drag to pan, scroll to zoom, double-click a card to dive into it. Keys: plus and minus zoom, 0 fits the whole system, Enter selects the centre card or dives into the selected one, arrow keys pan or move between sibling cards, Escape closes the selection or goes up a level. Press slash to search, external systems included.",
+      "minimap": "Overview map. Click or drag to move the view.",
+      "relationCount": "{count, plural, one {# relation} other {# relations}}",
+      "capOnMap": "Showing the {shown} strongest on the map",
+      "externalUsage": "{imports, plural, one {# import} other {# imports}} from here · {files, plural, one {# file} other {# files}} in the repo",
+      "containerSpan": "Spans {count} containers",
+      "externalMostFrom": "Imported most by",
+      "externalDive": "Double-click to go to {name}"
     },
     "export": {
       "downloaded": "Downloaded {filename}",
@@ -1399,14 +1437,26 @@
       "building": "Building…"
     },
     "mapKey": {
+      "button": "Map key and relation filter",
+      "buttonFiltered": "Map key and relation filter, filter on",
       "showingFiltered": "Showing <verbs>{list}</verbs> only. Arrow weight is how many file pairs the relation covers.",
       "hoverHint": "Hover a card to see what it depends on. Arrow weight is how many file pairs the dependency covers.",
       "unclaimed": "{shown} of {total} files are not on the map; they belong to no layer.",
       "clear": "Clear",
-      "topRightDot": "Top-right dot",
-      "entryDotHelp": "Entry point, hotspot, dead code or on an execution flow. Hover for which.",
-      "footerDot": "Footer dot",
-      "healthBand": "Code health: {good} from {goodMin}, {fair} from {fairMin}, {needsWork} from {needsWorkMin}, {atRisk} below that."
+      "roleIcons": "Role icons",
+      "hotspot": "Hotspot",
+      "entryPoint": "Entry point",
+      "deadCode": "Dead code",
+      "roleIconsHelp": "A card's footer counts the files with each role; a file shows the icon beside its name. Hover a card to see if it is on an execution flow.",
+      "cornerScore": "Top-right number",
+      "healthBand": "The top-right number is code health: {good} from {goodMin}, {fair} from {fairMin}, {needsWork} from {needsWorkMin}, {atRisk} below that.",
+      "containers": "Containers.",
+      "containersHint": "Pick one to dim every card outside it.",
+      "dashedCard": "Dashed card",
+      "externalsHelp": "External system the code reaches. Hover one to see which parts use it.",
+      "linksShown": "Links shown:",
+      "linksShownSome": "strongest {shown, number} of {total, number} · hover a card for all of its links.",
+      "linksShownAll": "all {total, number} · hover a card to lift its links."
     },
     "detail": {
       "close": "Close details",
@@ -1421,8 +1471,32 @@
       "capSuffix": "{cap} on the map.",
       "language": "Language",
       "zoomIn": "Zoom in",
-      "readModule": "Read the module page",
-      "openFile": "Open file page"
+      "openDocs": "Read docs",
+      "openFile": "Open file",
+      "ask": "Ask about this",
+      "askQuestion": "Explain what {name} does in this system and how it connects to the rest, naming the files it rests on.",
+      "copyLink": "Copy link",
+      "linkCopied": "Link copied"
+    },
+    "c4": {
+      "technologies": "Technologies",
+      "container": "Container",
+      "containers": "Spans {count} containers",
+      "externals": "External systems",
+      "imports": "{count, plural, one {# import} other {# imports}}",
+      "kind": {
+        "extension": "Extension",
+        "web_app": "Web app",
+        "api": "API",
+        "cli": "CLI",
+        "worker": "Worker",
+        "library": "Library"
+      },
+      "external": {
+        "db": "Database",
+        "network": "Network",
+        "service": "Service"
+      }
     }
   },
   "architecture": {
@@ -1748,6 +1822,28 @@
   },
   "commits": {
     "detail": {
+      "events": {
+        "title": "Flagged when this commit was indexed",
+        "description": "What the index run at this commit found had moved since the run before it.",
+        "repository": "Whole repository",
+        "kinds": {
+          "ownership_shift": "Declared owner changed",
+          "owner_inactive": "Main owners stopped changing it",
+          "bus_factor_drop": "Bus factor fell",
+          "new_hotspot": "Files became hotspots",
+          "contract_added": "Provided contract appeared",
+          "contract_broken": "Contract with consumers disappeared",
+          "decision_stale": "Governing decision went stale",
+          "dead_code_growth": "Dead-code findings grew",
+          "test_reach_drop": "Test reach fell"
+        },
+        "severities": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low"
+        }
+      },
       "title": "Review this commit",
       "fixPromptLabel": "Copy prompt to fix what this commit made worse",
       "fixPromptTitle": "Fix what this commit made worse",
@@ -1824,6 +1920,9 @@
       "dismissed": "Dismissed. Reindexing will not propose it again.",
       "acceptFailed": "Couldn't accept: {message}",
       "dismissFailed": "Couldn't dismiss: {message}",
+      "reaffirmed": "Reaffirmed. It is current again for the files it names.",
+      "reaffirmFailed": "Couldn't reaffirm: {message}",
+      "bulkDismissed": "Dismissed {count, plural, one {# candidate} other {# candidates}}.",
       "actionFailed": "The review action failed.",
       "previous": "Previous",
       "next": "Next"
@@ -2286,9 +2385,11 @@
       "gated": "Held back"
     },
     "band": {
-      "healthy": "Healthy",
-      "warning": "Warning",
-      "alert": "Alert"
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "needs_work": "Needs work",
+      "at_risk": "At risk"
     },
     "danglingReason": {
       "no_provider": "no provider in the workspace",
@@ -2452,6 +2553,7 @@
         "unique_path": "Matched by path only",
         "ambiguous_path": "Path served by several services",
         "prefix_stripped": "Matched after stripping a prefix",
+        "param_segment": "Matched a route parameter",
         "manual": "Declared by hand",
         "manifest": "Declared in a manifest"
       },

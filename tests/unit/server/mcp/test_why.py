@@ -6,6 +6,8 @@ test data, mirroring the conftest pattern from the REST API tests.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 
@@ -46,7 +48,7 @@ async def test_get_why_file_path(setup_mcp):
     # a candidate and the file scores as ungoverned.
     alignment = result["alignment"]
     assert alignment["score"] == "none"
-    assert alignment["governing_count"] >= 1
+    assert alignment["governing_count"] == 0
     assert alignment["active_count"] == 0
     assert alignment["candidate_count"] >= 1
     assert "explanation" in alignment
@@ -59,16 +61,90 @@ async def test_get_why_file_path_commit_decision_linkage(setup_mcp):
     result = await get_why("src/auth/service.py")
     origin = result["origin_story"]
 
-    # "Add JWT support" commit should link to "Use JWT for authentication" decision
-    # because "JWT" appears in both the commit message and decision title
+    # "Add JWT support" says one of the title's three words, which does not
+    # state the decision, so the record gets no evidence row. A row without
+    # evidence would only repeat the decision lane.
     linked = origin["linked_decisions"]
-    assert len(linked) >= 1
-    jwt_decision = next((d for d in linked if d["title"] == "Use JWT for authentication"), None)
-    assert jwt_decision is not None
-    assert len(jwt_decision["evidence_commits"]) >= 1
-    ec = jwt_decision["evidence_commits"][0]
-    assert "JWT" in ec["message"] or "jwt" in ec["message"].lower()
-    assert "matching_keywords" in ec
+    assert all(d["title"] != "Use JWT for authentication" for d in linked)
+    assert all(d["evidence_commits"] for d in linked)
+
+
+def test_a_commit_is_evidence_only_when_it_states_the_decision():
+    """One shared word, or words every commit on the file shares, links nothing."""
+    from repowise.server.mcp_server._helpers import _commits_matching_decision
+
+    commits = [
+        {"sha": "a1", "message": "fix(graph): bind a Java call on an unnamed object only by uniqueness"},
+        {"sha": "a2", "message": "fix(graph): keep each call on a shared line as its own call site"},
+        {"sha": "a3", "message": "feat(graph): type C++ calls on member fields from the class"},
+        {"sha": "a4", "message": "feat(graph): resolve a call by a unique global match as the fallback tier"},
+    ]
+    decision = {"title": "Use unique global matches only as the fallback call-resolution tier"}
+
+    matched = _commits_matching_decision(decision, commits)
+
+    assert [c["sha"] for c in matched] == ["a4"]
+    assert {"global", "fallback"} <= set(matched[0]["matching_keywords"])
+
+
+
+def test_origin_story_serves_the_commit_that_states_a_governing_decision():
+    """The linked row and the summary clause both name the stating commit."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server._helpers import _build_origin_story
+
+    commits = [
+        {"sha": "b1", "message": "Refactor auth flow", "author": "Alice", "date": "2026-03-15"},
+        {"sha": "b2", "message": "Use JWT tokens for authentication", "author": "Bob", "date": "2026-02-10"},
+    ]
+    meta = SimpleNamespace(
+        top_authors_json="[]",
+        significant_commits_json=json.dumps(commits),
+        primary_owner_name="Alice",
+        primary_owner_commit_pct=0.6,
+        commit_count_total=2,
+        first_commit_at=datetime(2026, 2, 10),
+        last_commit_at=datetime(2026, 3, 15),
+        age_days=33,
+    )
+    governing = [
+        {"title": "Use JWT for authentication"},
+        {"title": "Keep sessions server side"},
+    ]
+
+    origin = _build_origin_story("src/auth/service.py", meta, governing)
+
+    assert [d["title"] for d in origin["linked_decisions"]] == ["Use JWT for authentication"]
+    assert [c["sha"] for c in origin["linked_decisions"][0]["evidence_commits"]] == ["b2"]
+    assert "Governed by: Use JWT for authentication, Keep sessions server side." in origin["summary"]
+    assert 'Commit "Use JWT tokens for authentication" by Bob is evidence for' in origin["summary"]
+
+
+def test_origin_story_does_not_call_a_truncated_history_start_the_creation():
+    """A shallow clone's cut (or the commit cap) is where history starts (#5160)."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server._helpers import _build_origin_story
+
+    meta = SimpleNamespace(
+        top_authors_json="[]",
+        significant_commits_json="[]",
+        primary_owner_name=None,
+        primary_owner_commit_pct=None,
+        commit_count_total=1,
+        commit_count_capped=True,
+        first_commit_at=datetime(2026, 10, 25),
+        last_commit_at=None,
+        age_days=6,
+    )
+
+    summary = _build_origin_story("a.py", meta, [])["summary"]
+
+    assert "Created" not in summary
+    assert summary.startswith("History starts ~2026-10-25 (older commits not indexed)")
 
 
 @pytest.mark.asyncio
@@ -123,7 +199,7 @@ async def test_get_why_file_no_git_metadata(setup_mcp):
     # candidate lane because nobody has accepted it.
     assert len(result["candidates"]) >= 1
     alignment = result["alignment"]
-    assert alignment["governing_count"] >= 1
+    assert alignment["governing_count"] == 0
     assert alignment["candidate_count"] >= 1
 
 
@@ -646,10 +722,12 @@ async def test_get_why_path_caps_records_and_keeps_the_active_one_first(
     # And the count that was capped is still reported honestly.
     assert result["decisions_total"] == 30
     assert result["decisions_emitted"] == _MAX_PATH_DECISIONS
-    assert result["decisions_reduced_reason"] == "construction_cap_and_response_budget"
+    # The construction cap alone keeps it in budget: no origin row repeats a
+    # decision that no commit states.
+    assert result["decisions_reduced_reason"] == "construction_cap"
     assert result["_meta"]["omitted"]["refs"]
-    # The fixture's unaccepted JWT record is counted, and it is not a decision.
-    assert result["alignment"]["governing_count"] == 31
+    # The fixture's unaccepted JWT record is a candidate, so it governs nothing.
+    assert result["alignment"]["governing_count"] == 30
     assert result["alignment"]["candidate_count"] == 1
 
 
@@ -834,6 +912,33 @@ def test_cross_references_match_whole_tokens_not_substrings():
 
     assert [r["message"] for r in refs] == ["Invalidate auth cache on logout"]
     assert refs[0]["matched_terms"] == ["auth", "cache"]
+
+
+def test_file_git_log_drops_a_shallow_clone_cut_commit(tmp_path):
+    """At depth 1 git shows the cut commit adding every file; it did not touch util.py."""
+    import subprocess
+
+    from repowise.server.mcp_server.tool_why.archaeology import _sync_git_log
+
+    def git(*args, cwd):
+        subprocess.run(["git", "-c", "user.name=A", "-c", "user.email=a@x", *args],
+                       cwd=cwd, check=True, capture_output=True)
+
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    git("init", "-q", "-b", "main", cwd=origin)
+    (origin / "util.py").write_text("x = 1\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-q", "-m", "feat: add util", cwd=origin)
+    (origin / "app.py").write_text("y = 2\n")
+    git("add", ".", cwd=origin)
+    git("commit", "-q", "-m", "feat: add app", cwd=origin)
+    shallow = tmp_path / "shallow"
+    git("clone", "-q", "--depth", "1", f"file://{origin.as_posix()}", str(shallow), cwd=tmp_path)
+
+    assert _sync_git_log(str(origin), "util.py", "util")[0]["source"] == "git_log_follow"
+    rows = _sync_git_log(str(shallow), "util.py", "util")
+    assert [r for r in rows if r["source"] == "git_log_follow"] == []
 
 
 @pytest.mark.asyncio

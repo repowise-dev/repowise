@@ -90,7 +90,7 @@ async def test_prune_spares_every_file_node_the_rebuilt_graph_still_holds(repo, 
 
     seen: dict = {}
 
-    async def spy(session, repo_id, repo_path, *, live_hint=None, pruned=None):
+    async def spy(session, repo_id, repo_path, *, live_hint=None, pruned=None, left_index=None):
         seen["hint"] = live_hint
         return 0, []
 

@@ -229,18 +229,18 @@ def _stood_out(result: Any, repo_path: Path, hotspot: tuple[str, int] | None) ->
 
 
 def _health_finding(result: Any) -> dict[str, Any]:
-    """Repo score, its mark (withheld when too little was analysed), and the lowest file."""
+    """Repo score, its band (withheld when too little was analysed), and the lowest file."""
     report = getattr(result, "health_report", None)
     kpis = getattr(report, "kpis", None) or {}
     score = kpis.get("average_health")
     if not isinstance(score, (int, float)):
         return {}
-    from repowise.core.analysis.health.grading import headline_band, mark_for
+    from repowise.core.analysis.health.grading import headline_band
 
-    graded = headline_band(float(score), kpis.get("analysed_share")) is not None
+    band = headline_band(float(score), kpis.get("analysed_share"))
     return {
         "health_score": float(score),
-        "health_mark": mark_for(float(score)) if graded else None,
+        "health_band": band,
         "lowest_file": kpis.get("worst_performer_path"),
         "lowest_score": kpis.get("worst_performer_score"),
     }

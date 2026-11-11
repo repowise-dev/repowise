@@ -23,17 +23,30 @@ function requestHeaders(extra) {
   return headers;
 }
 var ApiClientError = class extends Error {
-  constructor(status, detail) {
+  constructor(status, detail, blockers = []) {
     super(`API error ${status}: ${detail}`);
     this.status = status;
     this.detail = detail;
+    this.blockers = blockers;
     this.name = "ApiClientError";
   }
   status;
   detail;
+  blockers;
 };
+function blockersOf(detail) {
+  const list2 = detail?.blockers;
+  return Array.isArray(list2) ? list2.filter((b) => typeof b === "string") : [];
+}
 function stringifyDetail(detail) {
   if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = detail.message;
+    const blockers = blockersOf(detail);
+    if (typeof message === "string" && message) {
+      return blockers.length ? `${message} ${blockers.join("; ")}` : message;
+    }
+  }
   if (Array.isArray(detail)) {
     const msgs = detail.map(
       (d) => d && typeof d === "object" && "msg" in d ? String(d.msg) : null
@@ -45,12 +58,14 @@ function stringifyDetail(detail) {
 async function handleResponse(res) {
   if (!res.ok) {
     let detail = res.statusText;
+    let blockers = [];
     try {
       const json = await res.json();
       detail = stringifyDetail(json.detail) ?? detail;
+      blockers = blockersOf(json.detail);
     } catch {
     }
-    throw new ApiClientError(res.status, detail);
+    throw new ApiClientError(res.status, detail, blockers);
   }
   if (res.status === 204) return void 0;
   return res.json();
@@ -373,6 +388,7 @@ async function fetchFileContext(host, path) {
 // ../ui/src/lib/format.ts
 function parseDate(date) {
   if (date instanceof Date) return date;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return new Date(date.trim());
   if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
     return /* @__PURE__ */ new Date(`${date.trim()}Z`);
   }
@@ -401,9 +417,19 @@ function relativeTimeParts(date) {
   if (months < 12) return { unit: "mo", value: months };
   return { unit: "y", value: Math.floor(months / 12) };
 }
-function formatRelativeTime(date) {
+var RELATIVE_TIME_WORDS = {
+  now: "just now",
+  s: "{value}s ago",
+  m: "{value}m ago",
+  h: "{value}h ago",
+  d: "{value}d ago",
+  w: "{value}w ago",
+  mo: "{value}mo ago",
+  y: "{value}y ago"
+};
+function formatRelativeTime(date, words = RELATIVE_TIME_WORDS) {
   const { unit, value } = relativeTimeParts(date);
-  return unit === "now" ? "just now" : `${value}${unit} ago`;
+  return (words[unit] ?? RELATIVE_TIME_WORDS[unit]).replace("{value}", String(value));
 }
 function formatRelativeTimeOrNull(iso, fallback = "—") {
   if (!iso) return fallback;

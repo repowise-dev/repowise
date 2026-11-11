@@ -27,7 +27,12 @@ Tree-sitter AST walker. Single AST pass per file computes:
 
 - **CCN** — McCabe cyclomatic complexity. Counts branching constructs
   (`if`, `for`, `while`, `case`, `catch`) plus boolean operators
-  (`&&`, `||`).
+  (`&&`, `||`). In C / C++ the arms of a `#if` / `#ifdef` block with
+  `#elif` / `#else` alternatives are alternative builds, so CCN and
+  cognitive take the **largest arm** (not the sum); an `#if` with no
+  alternative is unchanged. Nested blocks and `#elif` chains follow the
+  same rule. NLOC still counts every arm, because those lines exist in the
+  file, and complex conditions are still reported from every arm.
 - **max nesting depth** — deepest nested control-flow block per function.
   `else if` arms and, in TS/JS, ternary chain arms and ternaries choosing
   JSX (`flat_ternary_kinds`), plus Python conditional-expression chains
@@ -140,8 +145,12 @@ Consumed by `low_cohesion` and `god_class`.
 One `FunctionComplexity` per function/method symbol detected. Caller maps
 back to ingestion `Symbol` objects by overlapping line ranges. A function or
 method defined inside another function has its own entry, listed before the
-entries of the file's own level; a lambda has none and counts toward the
-function that holds it.
+entries of the file's own level. So does a JS/TS arrow function with a block
+body bound to a name (a variable, an assignment, an object property;
+`ast_utils.is_named_block_lambda`); any other lambda has none and counts
+toward the function that holds it. A function's `nloc` leaves out the rows
+only its nested entries cover (`CodeLineIndex.unit_rows`); a row it shares
+with one of them stays its own.
 
 ## Extension points
 

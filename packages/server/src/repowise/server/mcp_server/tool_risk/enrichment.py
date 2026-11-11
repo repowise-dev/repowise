@@ -90,7 +90,8 @@ def _cross_repo_co_change(alias: str, target: str, partner: dict) -> dict:
 
 
 def _package_consumer(link: dict, target: str) -> dict:
-    """Normalize a repository-level package consumer without inventing a file edge."""
+    """A package consumer row; file-level when the link recorded which files it reaches."""
+    file_level = link.get("reached_files") is not None
     return {
         "source_repository": link["source_repo"],
         "source_file": link.get("source_manifest") or None,
@@ -101,9 +102,9 @@ def _package_consumer(link: dict, target: str) -> dict:
         "dependency_kind": link.get("kind") or "unknown",
         "direction": "consumer_to_dependency",
         "evidence_kind": "structural",
-        "claim": "repository_structural_reach",
+        "claim": "file_import_reach" if file_level else "repository_structural_reach",
         "runtime_breakage_claim": False,
-        "granularity": "repository",
+        "granularity": "file" if file_level else "repository",
         "provenance": "package_manifest",
     }
 
@@ -199,22 +200,6 @@ def _cross_repo_links(
     return links
 
 
-def _affected_repos(alias: str, links: list[dict]) -> list[str]:
-    return sorted(
-        {
-            repo
-            for row in links
-            for repo in (
-                row.get("source_repository"),
-                row.get("target_repository"),
-                row.get("provider_repository"),
-                row.get("consumer_repository"),
-            )
-            if repo and repo != alias
-        }
-    )
-
-
 def _legacy_contract_row(link: dict, side: str, relationship_type: str) -> dict:
     """A ``cross_repo_impact`` contract row naming the *side* (consumer or provider)."""
     return {
@@ -236,7 +221,7 @@ def _attach_impact(
     links: dict[str, list[dict]],
     collector: OmissionCollector | None,
 ) -> None:
-    """The legacy ``cross_repo_impact`` block, for a target with cross-repo rows.
+    """The legacy ``cross_repo_impact`` block, for a target another repo is linked to.
 
     ``cross_repo_consumers`` keeps its old name; each row and the sibling
     marker say it is historical co-change. The deprecated list is left out
@@ -268,7 +253,7 @@ def _attach_impact(
                 "cross_repo_consumers_deprecated": True,
             },
         )
-    affected = _affected_repos(alias, links["all"])
+    affected = links["affected"]
     # The verdict only: the artifact's provenance and counts are diagnostics.
     impact["cross_repo_consumers_analysis"] = {
         key: cross_state[key] for key in ("status", "reason") if key in cross_state
@@ -301,7 +286,7 @@ def _enrich_target(
     cross_partners = enricher.get_cross_repo_partners(alias, target)
     provider_links = enricher.get_contract_links_as_provider(alias, target)
     consumer_links = enricher.get_contract_links_as_consumer(alias, target)
-    package_consumers = enricher.get_package_consumers(alias)
+    package_consumers = enricher.get_package_consumers_of(alias, target)
     graph_collector = collector if include_graph else None
 
     consumers = [
@@ -321,13 +306,15 @@ def _enrich_target(
     r["relationship_analysis"]["cross_repo"] = _combined_analysis(
         cross_state, contract_state, links
     )
-    if links:
+    # Only a concrete link (contract, or a package import reaching this file)
+    # makes another repo affected; co-change alone stays in cross_repo_links.
+    if affected := enricher.get_affected_repos(alias, target):
         _attach_impact(
             r,
             alias,
             cross_state,
             cross_partners,
-            {"all": links, "provider": provider_links, "consumer": consumer_links},
+            {"affected": affected, "provider": provider_links, "consumer": consumer_links},
             collector,
         )
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -320,23 +321,97 @@ def decision_add(
             f"[dim]repowise decision confirm {stored.id[:8]} --scope <path>[/dim]"
         )
 
-    _report_added(repo_path, stored, fmt)
+    warnings = _collect_add_warnings(repo_path, fields, stored.kind)
+    _report_added(repo_path, stored, fmt, warnings=warnings)
 
 
-def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
+def _is_path_under_repo(repo_root: Path, raw_path: str) -> bool:
+    """Return True if raw_path resolves to an existing file or directory under repo_root."""
+    clean = raw_path.strip()
+    if not clean:
+        return True
+    try:
+        target = (repo_root / clean).resolve()
+        return target.is_relative_to(repo_root) and target.exists()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _collect_path_warnings(repo_path: Path, paths: list[str]) -> list[str]:
+    """Return advisory warnings for any affected paths not found under repo_path."""
+    resolved_root = repo_path.resolve()
+    seen: set[str] = set()
+    warnings: list[str] = []
+    for p in paths:
+        if not p.strip() or _is_path_under_repo(resolved_root, p) or p in seen:
+            continue
+        seen.add(p)
+        warnings.append(f"affects path not found: {p}")
+    return warnings
+
+
+def _collect_add_warnings(
+    repo_path: Path, fields: _DecisionFields, kind: str
+) -> list[str]:
+    """Collect non-blocking advisory warnings for missing rationale or affects paths.
+
+    An unresolvable ``--affects`` path still persists because the file may be
+    created later in the branch, but surfaces a warning so the author knows the
+    record currently governs nothing. Agreements govern conduct rather than files
+    and are exempt from path checks.
+    """
+    warnings: list[str] = []
+    if kind != AGREEMENT_KIND:
+        warnings.extend(_collect_path_warnings(repo_path, fields.affected_files))
+    if not (fields.rationale and fields.rationale.strip()):
+        warnings.append("no rationale given")
+    return warnings
+
+
+def _build_decision_next_command(stored: _Persisted) -> str:
+    agent_flag = f" --agent {stored.agent}" if stored.agent else ""
+    blockers = set(stored.blockers)
+    needed: list[str] = []
+    if NO_DECISION_BLOCKER in blockers:
+        needed.append("--decision <text>")
+    if NO_RATIONALE_BLOCKER in blockers:
+        needed.append("--reason <rationale>")
+    if NO_SCOPE_BLOCKER in blockers:
+        needed.append("--scope <path>")
+    if NO_EVIDENCE_BLOCKER in blockers or not needed:
+        needed.append("--evidence <commit|file>")
+    return f"confirm {stored.id}{agent_flag} {' '.join(needed)}"
+
+
+def _build_decision_added_payload(
+    stored: _Persisted, warnings: list[str] | None = None
+) -> dict[str, object]:
+    # The full id: a caller passes it back to `confirm` or `show`.
+    payload: dict[str, object] = {
+        "id": stored.id,
+        "title": stored.title,
+        "status": stored.status,
+        "kind": stored.kind,
+        "existed": stored.existed,
+    }
+    if stored.existed:
+        payload["kept"] = stored.kept
+    if warnings:
+        payload["warnings"] = list(warnings)
+    if stored.blockers:
+        payload["blockers"] = stored.blockers
+        payload["next"] = _build_decision_next_command(stored)
+    return payload
+
+
+def _report_added(
+    repo_path: Path, stored: _Persisted, fmt: str, warnings: list[str] | None = None
+) -> None:
     """Print what ``add`` stored, naming the fields a re-add kept."""
     if fmt == "json":
-        # The full id: a caller passes it back to `confirm` or `show`.
-        payload = {
-            "id": stored.id,
-            "title": stored.title,
-            "status": stored.status,
-            "kind": stored.kind,
-            "existed": stored.existed,
-        }
-        if stored.existed:
-            payload["kept"] = stored.kept
-        emit_json({"repo": str(repo_path), "decision": payload})
+        emit_json(
+            {"repo": str(repo_path), "decision": _build_decision_added_payload(stored, warnings)}
+        )
         return
     verb = "Updated existing decision" if stored.existed else "Decision recorded"
     kept = f"; kept stored {', '.join(stored.kept)}" if stored.kept else ""
@@ -344,6 +419,8 @@ def _report_added(repo_path: Path, stored: _Persisted, fmt: str) -> None:
         f"\n[green]{verb}[/green] [dim]({stored.status}{kept})[/dim] — "
         f"ID: [bold]{stored.id[:8]}[/bold]"
     )
+    for warning in warnings or []:
+        console.print(f"[yellow]{escape(warning)}[/yellow]")
 
 
 def _refuse_partial_flags(fmt: str, *given) -> None:
@@ -352,12 +429,36 @@ def _refuse_partial_flags(fmt: str, *given) -> None:
     Falling through to the prompts would hang a caller that has no stdin.
     """
     if any(given) or fmt == "json":
+        is_non_interactive = fmt == "json" or not sys.stdin.isatty()
+
+        if is_non_interactive:
+            # given[0] corresponds to title, given[2] corresponds to decision_text
+            title = given[0] if len(given) > 0 else None
+            decision_text = given[2] if len(given) > 2 else None
+
+            missing = []
+            if not title:
+                missing.append("--title")
+            if not decision_text:
+                missing.append("--decision")
+
+            missing_str = " and ".join(missing) if missing else "required flags"
+            guidance = (
+                f"Pass {missing_str}, e.g. "
+                '`repowise decision add --title "<what>" --decision "<chosen>" '
+                "[--rationale ...] [--affects <path>]`."
+            )
+        else:
+            guidance = (
+                "Run `repowise decision add` with no flags to be "
+                "prompted for each field instead."
+            )
+
         _ta.emit_error(
             {
                 "error": "--title and --decision are both required to add a "
                 "decision without prompting.",
-                "guidance": "Run `repowise decision add` with no flags to be "
-                "prompted for each field instead.",
+                "guidance": guidance,
             },
             fmt,
         )
@@ -434,6 +535,8 @@ class _Persisted(NamedTuple):
     kind: str
     existed: bool
     kept: list[str]
+    blockers: tuple[str, ...] = ()
+    agent: str = ""
 
 
 #: Restatable fields, and the column each list field is stored in.
@@ -527,8 +630,13 @@ async def _persist_decision(
             embed = (rec.id, rec.title, rec.decision or "", rec.evidence_file)
             # A different title means the derived id folded this onto a record
             # stating the same decision, which is an update too.
+            from repowise.core.persistence.crud.authority import record_blockers
+
             existed = existing is not None or rec.title != fields.title
-            stored = _Persisted(rec.id, rec.title, rec.status, rec.kind, existed, kept)
+            blockers = tuple(record_blockers(rec))
+            stored = _Persisted(
+                rec.id, rec.title, rec.status, rec.kind, existed, kept, blockers, signer.agent
+            )
 
         # After the session commits, so a network embed never holds the write
         # transaction or vectors an uncommitted record.
@@ -789,12 +897,12 @@ def decision_show(decision_id: str, path: str | None, fmt: str) -> None:
     repo_path = _resolve_decision_repo(path, fmt)
     rec, signed, accepted_at = run_async(_load_decision(repo_path, decision_id))
     if rec is None:
-        notice_console(fmt).print(f"[red]Decision not found: {decision_id}[/red]")
-        if fmt == "json":
-            emit_json({"query": decision_id, "decision": None})
-        # Non-zero for the same reason the lifecycle commands are: a caller
-        # scripting `show` cannot tell a missing id from an empty record.
-        raise click.exceptions.Exit(1)
+        emit_refusal(
+            "decision_not_found",
+            f"Decision not found: {decision_id}",
+            fmt,
+            query=decision_id,
+        )
 
     # Asked of git at read time: affordable for one record on demand, never on
     # the hook or update path. None means git could not decide.
@@ -1159,9 +1267,9 @@ def decision_deprecate(
 ) -> None:
     """Retire a decision, optionally naming the one that replaces it.
 
-    With ``--superseded-by`` this writes an explicit lineage edge and keeps the
-    retired id resolving to its successor. Similarity never does either: an edge
-    exists because somebody named the successor.
+    With ``--superseded-by`` this writes an explicit lineage edge; the retired
+    id keeps naming its own record. Similarity never writes an edge: one exists
+    because somebody named the successor.
     """
     from repowise.cli.commands.decision_batch import _RefusedError
 

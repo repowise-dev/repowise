@@ -24,7 +24,7 @@ from repowise.core.persistence.models import (
     Page,
     Repository,
 )
-from repowise.server.auth import get_authorizer
+from repowise.server.auth import Action, authorize_repo, checks_repo_access, read_route
 from repowise.server.deps import get_db_session, get_fts, request_principal, verify_api_key
 from repowise.server.job_executor import execute_job
 from repowise.server.routers._repo_generate import (
@@ -259,9 +259,8 @@ async def list_repos(
         responses.extend(unregistered_workspace_rows(ws_config, ws_root_path, matched))
 
     principal = request_principal(request)
-    if principal is not None and principal.repo_scope is not None:
-        authorizer = get_authorizer()
-        responses = [r for r in responses if authorizer.can_access_repo(principal, (r.id, r.name))]
+    if principal is not None and checks_repo_access(principal):
+        responses = [r for r in responses if authorize_repo(principal, (r.id, r.name), Action.READ)]
     return responses
 
 
@@ -581,6 +580,7 @@ async def generate_pages(
 
 
 @router.post("/{repo_id}/generate/estimate")
+@read_route
 async def generate_estimate(
     repo_id: str,
     request: Request,
@@ -719,6 +719,7 @@ async def index_repo(
 
 
 @router.post("/{repo_id}/preflight")
+@read_route
 async def preflight_index(
     repo_id: str,
     request: Request,

@@ -474,7 +474,7 @@ def compute_kg_fingerprint(graph_builder: Any) -> str:
         str(g.number_of_nodes()),
         str(g.number_of_edges()),
         str(len(set(cd.values()))),
-        ",".join(sorted(list(cd.keys())[:100])),
+        ",".join(sorted(cd)[:100]),
     ]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 

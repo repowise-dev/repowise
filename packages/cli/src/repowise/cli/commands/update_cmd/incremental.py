@@ -7,6 +7,7 @@ routing core log output through the CLI ``console``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -139,7 +140,7 @@ def _rebuild_graph_and_git(
             git_summary_sink=git_summary_sink,
             log=console.print,
             timings=timings,
-            # Experimental: re-resolve only the changed files when that is
+            # Re-resolve only the changed files when that is
             # provably equivalent to a rebuild (see pipeline.incremental.surface).
             patch_graph=incremental_graph_enabled(),
         )
@@ -154,6 +155,7 @@ def _refresh_knowledge_graph(
     git_meta_map: dict,
     dead_code_report: Any,
     prior_fingerprint: str | None,
+    changed_paths: list[str],
 ) -> Any | None:
     """Rebuild the KG skeleton + curation when the graph shape changed.
 
@@ -172,6 +174,7 @@ def _refresh_knowledge_graph(
             git_meta_map,
             dead_code_report,
             prior_fingerprint=prior_fingerprint,
+            changed_paths=changed_paths,
             log=console.print,
         )
     )
@@ -264,7 +267,7 @@ def _run_doc_drift_partial(
     repo_path: Any | None = None,
     timings: PhaseTimings | None = None,
     base_ref: str | None = None,
-    file_diffs: list[Any] = (),
+    file_diffs: Sequence[Any] = (),
 ) -> Any | None:
     """Re-check the repo's markdown against the tree. Delegates to core."""
     from repowise.core.pipeline.incremental import DocDriftUpdate, run_doc_drift_partial

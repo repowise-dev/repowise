@@ -169,3 +169,30 @@ def test_the_cache_never_shows_up_as_a_working_tree_change(repo):
     )
     assert second.scope.changed == first.scope.changed
     assert not any(Path(p).parts[:2] == (".repowise", "change_health") for p in second.skipped)
+
+
+def test_a_moving_head_reanalyses_only_the_head_side(repo, monkeypatch):
+    """Re-reviewing uncommitted work: the base side is the same files at the same commit."""
+    calls: list[set[str]] = []
+    real = analyzer_mod.RevisionHealthAnalyzer.analyze
+
+    def counted(self, sources, **kwargs):
+        calls.append(set(sources))
+        return real(self, sources, **kwargs)
+
+    monkeypatch.setattr(analyzer_mod.RevisionHealthAnalyzer, "analyze", counted)
+
+    def review(service, branches):
+        repo.write("svc/new.py", python_complex("fresh", branches))
+        return service.compare(DeltaRequest(str(repo.path), None))
+
+    service = ChangeHealthDeltaService(repo_path=str(repo.path), cache_dir=False)
+    review(service, 16)
+    assert len(calls) == 2
+    second = review(service, 18)
+    assert len(calls) == 3  # the head side alone
+    fresh = review(ChangeHealthDeltaService(repo_path=str(repo.path), cache_dir=False), 18)
+    assert [f.change_finding_id for f in second.findings] == [
+        f.change_finding_id for f in fresh.findings
+    ]
+    assert repr(second.files) == repr(fresh.files)

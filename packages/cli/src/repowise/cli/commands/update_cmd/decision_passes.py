@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, run_async
+from repowise.core.analysis.decisions import mining_state
 from repowise.core.pipeline import timed
 
 from .incremental import _build_update_vector_store
@@ -85,6 +86,7 @@ def _rerun_git_archaeology(run: UpdateRun, docs: DocsPass, policy: Any) -> None:
                 f"{source}: {error}" for source, error in sorted(history_report.failures.items())
             )
             raise RuntimeError(details)
+        mining_state.record_success(getattr(run, "state", None), "git_archaeology", run.head)
         docs.new_decision_markers.extend(history_report.decisions)
     except Exception as exc:
         raise RuntimeError(
@@ -105,7 +107,14 @@ def _history_sources(run: UpdateRun, docs: DocsPass, policy: Any) -> set[str]:
 
 
 def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any) -> None:
-    """Mine the PR bodies and commit messages in ``base_ref..head``.
+    """Mine the PR bodies and commit messages each source still owes.
+
+    A source starts at its own last successful commit (see
+    :mod:`repowise.core.analysis.decisions.mining_state`), not necessarily at the
+    run's ``base_ref``: the run pointer advances even when one source failed, so
+    starting there would silently drop that source's history. Sources that
+    share a base share one extraction call; a source that failed keeps its
+    pointer, and a source that succeeded advances to ``head``.
 
     Bounded by the range and by each miner's own cap, and gated like init:
     a source the policy keeps off the model, or a run with no provider, mines
@@ -115,32 +124,143 @@ def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, polic
     if not sources:
         return
     try:
-        from repowise.core.analysis.decisions.commit_mining import restrict_to_commits
         from repowise.core.analysis.decisions.evolution import commits_in_range
         from repowise.core.analysis.decisions.extractor import DecisionExtractor
 
-        new_commits = commits_in_range(run.repo_path, run.base_ref, run.head)
-        git_meta = restrict_to_commits(run.git_meta_map, new_commits)
-        if not git_meta:
-            return
-        extractor = DecisionExtractor(
-            repo_path=run.repo_path,
-            provider=docs.provider,
-            graph=run.graph_builder.graph(),
-            git_meta_map=git_meta,
-            policy=policy,
-        )
-        with docs.cost_tracker.record_as("decision_extraction"):
-            report = run_async(extractor.extract_all(enabled_sources=sources))
-        for source, error in sorted(report.failures.items()):
-            run.degraded.append(f"Decision mining ({source}): {error}")
-        docs.new_decision_markers.extend(report.decisions)
-        if report.decisions and opts.verbose:
-            console.print(
-                f"Decisions mined from new commits: [green]{len(report.decisions)}[/green]"
+        mined = 0
+        state = getattr(run, "state", None)
+        for base, group in _source_groups(run, sources):
+            new_commits = commits_in_range(run.repo_path, base, run.head)
+            if not new_commits:
+                # An empty range is either already mined (base == head) or git
+                # could not answer. Advancing on the second would make a
+                # transient failure permanent, so leave the pointer alone.
+                continue
+            git_meta = _git_meta_for_range(run, base, new_commits)
+            if git_meta is None:
+                # A retried range needs rows the store no longer has. Say so and
+                # keep the pointer, so the next run retries instead of silently
+                # looping forever with no trace in the status report.
+                _degrade_missing_history(run, state, group, base)
+                continue
+            if not git_meta:
+                # The range was readable but holds no commit either miner reads.
+                _record_successes(state, group, run.head)
+                continue
+            extractor = DecisionExtractor(
+                repo_path=run.repo_path,
+                provider=docs.provider,
+                graph=run.graph_builder.graph(),
+                git_meta_map=git_meta,
+                policy=policy,
             )
+            with docs.cost_tracker.record_as("decision_extraction"):
+                report = run_async(extractor.extract_all(enabled_sources=group))
+            for source, error in sorted(report.failures.items()):
+                run.degraded.append(f"Decision mining ({source}): {error}")
+                mining_state.record_failure(state, source, run.head, error)
+            _record_successes(state, group - set(report.failures), run.head)
+            docs.new_decision_markers.extend(report.decisions)
+            mined += len(report.decisions)
+        if mined and opts.verbose:
+            console.print(f"Decisions mined from new commits: [green]{mined}[/green]")
     except Exception as exc:
         _skipped(opts, run, "Commit decision mining", "Commit decision mining skipped", exc)
+
+
+def _source_groups(run: UpdateRun, sources: set[str]) -> list[tuple[str, set[str]]]:
+    """Sources grouped by the base commit each one still needs to mine."""
+    state = getattr(run, "state", None)
+    groups: dict[str, set[str]] = {}
+    for source in sorted(sources):
+        base = mining_state.source_base(state, source, run.base_ref)
+        if base and base != run.base_ref and _unreachable(run, base):
+            # History was rewritten under the stored pointer (force-push,
+            # rebase, shallow clone). ``base..head`` can no longer name the
+            # commits this source owes, and an empty range never advances it,
+            # so the source would be stuck for good. Restart at the run's base.
+            run.degraded.append(
+                f"Decision mining ({source}): stored commit {base[:8]} is no longer "
+                f"in history; mining from {run.base_ref[:8]}"
+            )
+            base = run.base_ref
+        if base:
+            groups.setdefault(base, set()).add(source)
+    return sorted(groups.items())
+
+
+def _unreachable(run: UpdateRun, base: str) -> bool:
+    """Whether *base* is provably not an ancestor of the run's head.
+
+    ``False`` when git cannot answer at all, so a transient failure keeps the
+    stored pointer (and its retry) instead of skipping the owed range.
+    """
+    from repowise.core import git_refs
+
+    repo = str(run.repo_path)
+    head = run.head or "HEAD"
+    reachable = git_refs.is_ancestor(repo, base, head)
+    if reachable is not None:
+        return not reachable
+    # No answer: an unknown sha (garbage-collected, or cut by a shallow clone)
+    # looks the same as a broken git. Only the first, with a readable head,
+    # is a rewritten history.
+    return not git_refs.resolve(repo, base) and bool(git_refs.resolve(repo, head))
+
+
+def _record_successes(state: dict | None, sources: set[str], commit: str | None) -> None:
+    for source in sorted(sources):
+        mining_state.record_success(state, source, commit)
+
+
+def _degrade_missing_history(
+    run: UpdateRun, state: dict | None, sources: set[str], base: str
+) -> None:
+    """Report a retry whose stored git rows could not be read, and keep retrying."""
+    head = run.head or "HEAD"
+    for source in sorted(sources):
+        error = f"no indexed git metadata for {base[:8]}..{head[:8]}"
+        run.degraded.append(f"Decision mining ({source}): {error}")
+        mining_state.record_failure(state, source, run.head, error)
+
+
+def _git_meta_for_range(run: UpdateRun, base: str, commits: set[str]) -> dict | None:
+    """The range's commits restricted to the indexed files, or ``None`` without rows.
+
+    An update re-indexes git metadata for changed files only. A per-source
+    retry reaches commits from an earlier update, whose files are usually
+    unchanged now, so their rows come from the store. ``None`` means those rows
+    could not be assembled; ``{}`` means they were read and hold no commit in
+    the range. The normal range uses this run's map directly.
+    """
+    from repowise.core.analysis.decisions.commit_mining import restrict_to_commits
+
+    if base == run.base_ref:
+        return restrict_to_commits(run.git_meta_map, commits)
+
+    from repowise.core.git_refs import commit_file_sets
+
+    touched = sorted(
+        {
+            path
+            for files in commit_file_sets(str(run.repo_path), f"{base}..{run.head or 'HEAD'}")
+            for path in files
+        }
+    )
+    if not touched:
+        # ``commit_file_sets`` drops commits that name no path (empty or merge
+        # commits) and answers ``[]`` when git fails, so ask again. Commits
+        # that git still lists touch no file: nothing to mine, like base_ref's
+        # ``{}``. No answer is a git failure: retry later.
+        from repowise.core.analysis.decisions.evolution import commits_in_range
+
+        return {} if commits_in_range(run.repo_path, base, run.head) else None
+    from .deterministic import with_stored_git_meta
+
+    with_stored = with_stored_git_meta(run.repo_path, run.git_meta_map, touched)
+    if with_stored is None:
+        return None
+    return restrict_to_commits(with_stored, commits)
 
 
 def _rescan_inline_markers(

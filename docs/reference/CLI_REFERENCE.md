@@ -138,7 +138,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--no-claude-md` | Skip `CLAUDE.md`; saves `editor_files.claude_md: false`. | generated |
 | `--agents` / `--no-agents` | Managed Codex `AGENTS.md`. Persists. | config, else on |
 | `--codex` / `--no-codex` | Project-local Codex MCP and hooks. Required for non-interactive runs. | prompt if Codex CLI is logged in |
-| `--distill-hook` / `--no-distill-hook` | Distill hooks (Claude Code PreToolUse) compacting what the agent sees; notes, [DISTILL.md](../agent/DISTILL.md). | off; interactive prompt (default No) |
+| `--distill-hook` / `--no-distill-hook` | Distill hooks (Claude Code PreToolUse) compacting what the agent sees; notes, [DISTILL.md](../agent/DISTILL.md). | on; interactive prompt (default Yes) |
 | `--hook` / `--no-hook` | Post-commit `repowise update` hook; see notes. | on |
 | `--editor-setup` / `--no-editor-setup` | Editor wiring; see notes. | on |
 | `--save-key` / `--no-save-key` | Save the run's key to `.repowise/.env` (git-ignored, owner-only); see notes. | on |
@@ -156,19 +156,21 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   - Model set: subsystem (concept) tree, repo overview, architecture diagram, onboarding. `--prose` writes it (key needed); `--no-prose` leaves stubs.
   - `--no-prose` makes no model calls even with a key, so decision extraction from PRs, commits and comments waits; [`repowise generate`](#repowise-generate-path) fills both later.
   - Full-text search always; semantic search needs an embedder.
-- **`--onboarding`.** Slots: Project Overview, Architecture Guide, Getting Started, Codebase Map, Key Concepts, How It Works, Development Guide, Active Landscape; thin ones skipped.
+- **`--onboarding`.** Slots: Project Overview, Getting Started, How It Works, Active Landscape; thin ones skipped.
 - **`--resume`.** No-op when fully indexed. Skips done phases (indexing, analysis), keeps the git tier, writes only
   missing pages, never paying twice: for interrupted runs or failed pages (outage, rate limits). Per-page matching
   survives provider switches.
 - **`--force`.** Re-indexes from scratch in the invoked mode, skipping worktree seeding. Never calls a model (`--force --no-prose` re-renders free); `repowise update --full` does.
 - **`--distill-hook`.** One consent, four behaviours: noisy commands (tests, builds, git, searches) run through
   `repowise distill`; whole-file Reads return a skeleton (`hooks.read_skeleton`); many-file greps a per-file digest
-  (`hooks.search_digest`); re-reads of unchanged, unedited files a pointer (`hooks.read_reread`). `--no-distill-hook`
-  also gates the repo off in config, keeping a global hook inert.
+  (`hooks.search_digest`); re-reads of unchanged, unedited files a pointer (`hooks.read_reread`). Asked
+  interactively; `--yes` and non-interactive runs install it, printing the undo. A repo that already opted out (or
+  switched one surface off) keeps that. `--no-distill-hook` also gates the repo off in config, keeping a global hook
+  inert.
 - **`--hook`.** Asked interactively; `--yes` and non-interactive runs install it, printing the undo (`repowise hook uninstall`).
 - **Workspace.** `--distill-hook` and `--hook` apply to every selected repo.
-- **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude/settings.json`) and Claude Desktop MCP entry, Claude Code
-  PostToolUse/SessionStart hooks. Repo: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`.
+- **`--editor-setup`.** Machine-wide: Claude Code (`~/.claude.json`) and Claude Desktop MCP entry, Claude Code
+  PostToolUse/SessionStart hooks (`~/.claude/settings.json`). Repo: `.mcp.json`, `.claude/CLAUDE.md`, `.vscode/mcp.json`, `.vscode/extensions.json`.
 - **`--no-editor-setup`.** Writes only `.repowise/` (scratch checkouts, throwaway venvs, worktrees, CI); skips the post-commit hook (git hooks dir) and `--distill-hook` offer (user-level hook).
   - One `repowise` MCP key per config, so a second `init` repoints it; `repowise mcp .` prints config for manual setup.
   - `--no-distill-hook`, `--no-claude-md`, `--no-agents` still save to repo config: they mean "never".
@@ -179,14 +181,14 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
   - Adds a `.gitignore` line, so use `--no-save-key` for `--no-editor-setup`'s nothing-in-the-repo guarantee.
 - **`--yes`.** Model docs only with a configured provider (key in env or `.repowise/.env`), else from code; logged-in
   Claude Code, Codex or OpenCode needs `--provider`; `--no-prose` guarantees no model calls.
-  - Accepts the cost prompt; advanced defaults (standard mode at any size, comprehensive style); connects detected agents; repoints the global MCP entry here, printing old and new.
+  - Accepts the cost prompt; advanced defaults (standard mode at any size, comprehensive style); connects detected agents; adds the global MCP entry when absent or when its repo is gone, never moving one that serves another repo.
   - Installs the post-commit hook, not distill. With `--no-prose`, replaces model-written docs unasked.
 - **`--repos`.** Alias, directory name, or relative path (for duplicates). First listed is a new workspace's primary; existing ones keep theirs. Unknown names stop the run, listing options.
 
 **Plan screen.** TTY runs without `--provider`, `--no-prose`, `--mode fast`, `--resume` or `--yes` show scan, ETA, plan,
 and an opt-in model line (adds, costs). EOF (agent-piped stdin): notice, then defaults. Keys:
 
-- Enter: free run (docs from code). `m`: pick a model. `s`: leave the global MCP entry. `q`: quit.
+- Enter: free run (docs from code). `m`: pick a model. `s`: skip the global MCP entry. `q`: quit.
 - `e`: edit plan (advanced options, agent checklist, post-commit hook, `.git/info/exclude` for machine-specific files, off).
 - `r`: folder of repos (listed): pick repos and primary.
 
@@ -231,6 +233,8 @@ repowise update                        # diff since last sync
 repowise update --since v1.0.0 --working-tree
 repowise update --workspace --docs     # every stale repo, docs forced
 repowise update --repo backend         # one workspace repo
+repowise update --no-workspace --index-only --defer-docs   # facts now, docs later
+repowise update --no-workspace --index-only --defer-docs --refresh-git   # recover Git rows
 repowise update --full --provider anthropic   # fast index to full
 ```
 
@@ -244,7 +248,9 @@ repowise update --full --provider anthropic   # fast index to full
 | `--yes` / `-y` | Skip the `--full` cost prompt. | off |
 | `--dry-run` | Preview only. | off |
 | `--docs` / `--no-docs` | This run: `--docs` LLM-regenerates changed pages (even if indexed without docs); `--no-docs` = `--index-only`. | `docs_mode` in `.repowise/state.json` (from `init`) |
-| `--index-only` | No doc regeneration; in a workspace, for every stale repo. | off |
+| `--index-only` | Skip model regeneration; template wikis still render. In a workspace, applies to every stale repo. | off |
+| `--defer-docs` | With `--index-only` or `--no-docs`, persist facts and mark affected docs stale without rendering or embedding. Single repo only. | off |
+| `--refresh-git` | Re-read Git history at the current tier and commit cap, even at an unchanged HEAD. Requires `--index-only --defer-docs`; single repo only; not with `--full`. | off |
 | `--working-tree` | Also index staged, unstaged, untracked work; see notes. | off |
 | `--full` | Fast (`--mode fast`) index to full (below). Errors in workspace mode. | off |
 | `--workspace` / `-w` | All stale workspace repos plus cross-repo analysis; see notes. | auto-detect |
@@ -263,6 +269,8 @@ repowise update --full --provider anthropic   # fast index to full
 **Flag notes**
 
 - **`--working-tree`.** Uncommitted renames reach the graph. Off so hooks and plain runs stay commit-anchored. Workspace: uncommitted changes make a repo stale. `repowise watch` always does this.
+- **`--refresh-git`.** Requires `--index-only --defer-docs` to recover missing Git rows without rendering or embedding existing pages. It keeps the configured history scope and history-version stamp. The next ordinary update remains incremental. `--dry-run` previews the refresh without store writes. Use `--full` separately when the Git tier needs upgrading.
+- **`--defer-docs`.** Pass a repo path and `--no-workspace`. Existing page bodies and surviving vectors stay in place; deleted sources still follow the normal tombstone cleanup. Renderer changes mark every template page stale and retain the old renderer fingerprint. Generation config changes retain their old fingerprints until a rendering run completes. `status` reports `stale_pages`; the JSON `done` event also includes `docs_deferred: true` and `stale_pages` (null if the count is unreadable). Run `update --index-only` without this flag to render the pending template pages. Model-written stale pages still use `generate --stale`. This flag cannot be combined with `--docs` or `--full`, and does not force a Git history walk when its existing stamps say current.
 - **`--workspace`.** Each repo's `docs_mode` (`docs_enabled` beside it) plus `--docs` / `--no-docs` / `--index-only`
   picks docs or index-only. `--docs` needs each repo's provider and key (or `--provider`).
   - Docs repos run the full single-repo docs path (pages, diagrams, decisions); others the fast parallel index-only path.
@@ -504,7 +512,7 @@ Plus the [shared options](#shared-options-ask-context-symbol-why).
 
 **`--include` values:** `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`,
 `community`, `decisions`, `health`, `skeleton`, `skeleton+`, `doc_drift`, `symbols`, `changes`, `provenance`,
-`suspects`.
+`suspects`, `files` (on a directory: every file and its tests).
 
 - Card: title, summary, layer, signatures with lines, hotspot and bug-fix history, doc freshness, skeleton shape.
   `--include skeleton` adds the file body-elided and line-verified; `--full` only then carries one.
@@ -910,7 +918,7 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 |------|--------------|---------|
 | `--file <path>` | One file in depth (relative path). | |
 | `--module <prefix>` | Files under this path prefix. | all |
-| `--scope` | `all` or `production`: files every figure covers (`production` scores lower with no defect: tests score higher). | `all` |
+| `--scope` | `all` or `production`: files every figure covers (`production` leaves out tests, tooling, build, vendored, generated and docs example files, which tend to score higher, so it scores lower with no defect). | `all` |
 | `--counts` | `everything` or `code_shape` (drops the git-derived half, which rises as a file is worked on: is the code itself improving?). | `everything` |
 | `--refactoring-targets` | Stored queue: per file, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps, Break Cycle advisory; MCP and web UI order. Needs `repowise init`; [REFACTORING.md](../layers/REFACTORING.md). | off |
 | `--recompute` | Analyze the working tree in-process (slow on large repos; needed without an index); see notes. | off |
@@ -929,8 +937,8 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 - **Default**: reads, never writes, what `init` / `update` stored (MCP and web UI rows, with `repowise coverage add`
   coverage). `repowise status`: `Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: <path>)`.
 - **Preview languages**: a dim line per layer and language, e.g. `Refactoring on Java: preview, measured 22% precision
-  on 55 judged plans from 2 Java repos, 2026-10-15` (`repowise dead-code` too). Previews: health on C++; refactoring,
-  performance, dead code on Java, C#, C, C++ (dead code also Kotlin, Swift); none held back.
+  on 55 judged plans from 2 Java repos, 2026-10-15` (`repowise dead-code` too). Previews: refactoring, performance,
+  dead code on Java, C#, C, C++ (dead code also Kotlin, Swift); none held back.
 
 #### `repowise health check [REVSPEC]`
 
@@ -1065,12 +1073,14 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--force` | `export`: overwrite a committed manifest from a store that accepted nothing. | off |
 | `--dry-run` | `import`: write nothing. | off |
 
+- `migrate` and `import` first delete the inert supersede pointers an older version left, and list each one as `stale`. `migrate` also lists each pointer it leaves `unplaced`, which resolves to nothing. With `--format json`, both return the repairs as `repaired`; only `migrate` also returns `unplaced`.
+
 **`list`**
 
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--status` | `active`, `proposed`, `deprecated`, `superseded`, `dismissed`, `all`. | `all` |
-| `--source` | `adr`, `agent`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `session`, `all`. | `all` |
+| `--source` | `adr`, `agent`, `cli`, `comment`, `commit`, `conventions`, `git_archaeology`, `inline_marker`, `llm_inferred`, `pr`, `pr_review`, `session`, `all`. | `all` |
 | `--proposed` | `--status proposed`. | off |
 | `--stale-only` | Only accepted decisions at `needs_review`, the set `decision health` counts as stale. | off |
 | `--limit` | Max rows listed. | `100` |
@@ -1982,7 +1992,7 @@ repowise hook read-reread status -w
 | `read-reread` | `hooks.read_reread` | Re-reading an unchanged, unedited file returns a notice naming the earlier read; changed content comes in full, flagged; reading again returns content. |
 
 - No hook to install: `init`'s PostToolUse hook carries all three; these set the verdict in `.repowise/config.yaml` (`init` sets it from `--distill-hook`).
-- `uninstall` returns whole results (the digest rides alongside again). `status` says on/off and, when off, points to `repowise saved`. With no `.repowise/` it asks for `repowise init`.
+- `uninstall` returns whole results, with nothing added. `status` says on/off and, when off, points to `repowise saved`. With no `.repowise/` it asks for `repowise init`.
 
 ### `repowise hook health-gate install|uninstall|status`
 
@@ -2304,4 +2314,4 @@ repowise augment --client codex          # payload on stdin
 
 ### `repowise-augment` / `repowise-rewrite`
 
-Console scripts installed with the CLI, not subcommands, not run by hand: `repowise-augment` is the import-isolated augment hook entry; `repowise-rewrite` backs `repowise hook rewrite install`.
+Console scripts installed with the CLI, not subcommands, not run by hand: `repowise-augment` is the import-isolated augment hook entry; `repowise-rewrite` backs `repowise hook rewrite install`. Per-user hook config names them by the installing environment's absolute path, with PATH as the fallback.

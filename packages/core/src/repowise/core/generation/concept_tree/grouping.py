@@ -467,6 +467,57 @@ def _absorb_thin(groups: list[ConceptGroup], part: _Partitioner) -> list[Concept
     return working
 
 
+# At or below this many files a group is a table row, not a page.
+TINY_GROUP_FILES = 3
+
+
+def _fold_tiny_leaves(groups: list[ConceptGroup], part: _Partitioner) -> list[ConceptGroup]:
+    """Fold a group of a few files into the group holding its parent directory.
+
+    :func:`_absorb_thin` only merges path-order neighbours under the ceiling,
+    so a three-file directory between two full siblings keeps a page of its
+    own: a model call and a sidebar row for what its parent's page can say in
+    a sentence. Here it joins the group owning its nearest ancestor directory,
+    which may take that group a few files over the ceiling (the ceiling is a
+    size target; this is at most :data:`TINY_GROUP_FILES` files). A group with
+    no ancestor group, or one across a package root, stays: there is no parent
+    page for it to be part of.
+    """
+    working = list(groups)
+    tiny = [g for g in working if not g.packages and g.file_count <= TINY_GROUP_FILES]
+    # Shallowest first, so a tiny directory whose tiny parent has already
+    # joined a group follows it there.
+    for group in sorted(tiny, key=lambda g: (_target_path(g.members, []).count("/"), g.structural_key)):
+        if not any(g is group for g in working):
+            continue  # already absorbed: a later fold replaced the object
+        home = _parent_group(group, working, part)
+        if home is None:
+            continue
+        working[working.index(home)] = part.make(home.members + group.members)
+        working.remove(group)
+    return working
+
+
+def _parent_group(
+    tiny: ConceptGroup, working: list[ConceptGroup], part: _Partitioner
+) -> ConceptGroup | None:
+    """The group owning the nearest directory above *tiny*'s, largest on a tie."""
+    home = _target_path(tiny.members, [])
+    best: ConceptGroup | None = None
+    best_rank = (-1, 0)
+    for other in working:
+        if other is tiny or other.packages:
+            continue
+        depth = max(
+            (d.count("/") + 1 for d in other.dirs if d and home.startswith(d + "/")),
+            default=-1,
+        )
+        rank = (depth, other.file_count)
+        if depth >= 0 and rank > best_rank and part.may_merge(other.members, tiny.members):
+            best, best_rank = other, rank
+    return best
+
+
 def _assign_targets(groups: list[ConceptGroup]) -> None:
     """Give every group a distinct ``target_path`` that is still a real directory.
 
@@ -509,7 +560,17 @@ def _assign_targets(groups: list[ConceptGroup]) -> None:
         if not owned and "" not in candidates and len({m.split("/")[0] for m in group.members}) > 1:
             candidates.append("")
         if not group.packages:
-            candidates.extend(d for d in group.dirs if d and d not in candidates)
+            # Most files first. The title is taken from the directory holding
+            # most of the group, so a target taken in path order put a page
+            # titled "Dead Code" (33 of its 50 files) at ``change_risk`` (8),
+            # which happened to sort first.
+            held = Counter(m.rpartition("/")[0] for m in group.members)
+            candidates.extend(
+                sorted(
+                    (d for d in group.dirs if d and d not in candidates),
+                    key=lambda d: (-held[d], d),
+                )
+            )
         if owned and owned not in candidates:
             candidates.append(owned)
         # The root is substituted before the uniqueness check, never after.
@@ -572,7 +633,7 @@ def group_files(
         # The whole repository fits under the ceiling: one group, which is the
         # honest answer for a tiny repository.
         part.groups.append(part.make(leftover))
-    final = _absorb_thin(part.groups, part)
+    final = _fold_tiny_leaves(_absorb_thin(part.groups, part), part)
     _assign_targets(final)
     final.sort(key=lambda g: (g.target_path, g.structural_key))
     return final

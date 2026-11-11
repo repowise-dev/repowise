@@ -39,14 +39,15 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.analysis.decisions.rationale_comments import (
-    CODE_EXTENSIONS,
     RATIONALE_MARKERS,
     extract_comment_blocks,
-    harvest_file_rationale,
 )
-from repowise.core.code_origin import code_origin
+from repowise.core.analysis.decisions.rationale_harvest import (
+    harvest_repo_rationale,
+)
 from repowise.core.exclusion import build_exclude_spec, is_excluded
 from repowise.server.mcp_server._why_relevance import (
+    RELEVANCE_FLOOR,
     clears_floor,
     floor_ranked,
     question_terms,
@@ -127,7 +128,6 @@ _STOPWORDS: frozenset[str] = frozenset(
 # return a wall of text.
 _MAX_FILES = 6
 _MAX_FILE_LINES = 8000
-_MAX_BLOCK_LINES = 12
 _MAX_BLOCK_CHARS = 800
 _MAX_RESULTS = 6
 # Keep a block only if it scores at least this fraction of the best block's
@@ -187,33 +187,53 @@ def _number_term(num: str) -> str:
 
 
 def _score_block(
-    words: frozenset[str], own: frozenset[str], low: str, idf: dict[str, float]
+    words: frozenset[str],
+    own: frozenset[str],
+    low: str,
+    idf: dict[str, float],
+    *,
+    plain: bool = False,
 ) -> tuple[float, list[str], bool] | None:
     """Score a comment block, or ``None`` when it is not served.
 
-    Returns (score, matched_terms, has_marker). The score is the question's
+    Returns (score, matched_terms, plain_only); *plain_only* is set when only
+    the *plain* rule below admits the block. The score is the question's
     weighted coverage (rarer terms weigh more, over every block scanned) plus
     the bonuses above. Uses the broad ``RATIONALE_MARKERS`` set shared with the
     index-time harvest, in recall mode, so intent-only markers ("never",
     "always") count.
 
-    The gate: with question terms, a marked block needs one of their words in
-    its own text (*own*; *words* adds what an anchoring declaration lends) and
-    an unmarked block also needs the floor's share of their weight; a number
-    alone never qualifies, so "Strategy 3" does not answer "tier 3". Without
-    terms (path mode, "why is this file shaped this way") a marker is enough.
+    The gate: with question terms, a block needs one of their words in its own
+    text (*own*), or with *plain* documents a declaration the question names
+    (*words* then carries more than *own*). An unmarked block also needs the floor's
+    share of their weight, or with *plain* half of it and two of their words
+    in its own text: a comment is a line or two, so the plain statement of a
+    reason carries less of a question than a decision record does. A number alone never qualifies,
+    so "Strategy 3" does not answer "tier 3". Without terms (path mode, "why is
+    this file shaped this way") a marker is enough.
     """
     has_marker = any(m in low for m in RATIONALE_MARKERS)
     if not idf:
-        return (_MARKER_BONUS, [], True) if has_marker else None
+        return (_MARKER_BONUS, [], False) if has_marker else None
     matched = [t for t in idf if t in words]
     coverage = relevance(words, idf)
-    if not any(not t.startswith("#") and t in own for t in matched):
+    own_matched = {t for t in matched if not t.startswith("#") and t in own}
+    if not own_matched and not (plain and len(words) > len(own)):
         return None
-    if not (has_marker or clears_floor(coverage)):
+    strict = has_marker or clears_floor(coverage)
+    if not (strict or (plain and _plain_reason(coverage, own_matched))):
         return None
     score = coverage + (_MARKER_BONUS if has_marker else 0.0)
-    return score, sorted(t.lstrip("#") for t in matched), has_marker
+    return score, sorted(t.lstrip("#") for t in matched), not strict
+
+
+def _plain_reason(coverage: float, own_matched: set[str]) -> bool:
+    """Whether an unmarked block carries enough of the question to be served.
+
+    Measured on 25 targeted questions: the comments that stated the answer
+    carried 0.36 to 0.71 of the question's weight, the unmarked noise 0.07 to 0.2.
+    """
+    return coverage >= RELEVANCE_FLOOR / 2 and len(own_matched) >= _LEAD_MIN_MATCHES
 
 
 _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -231,12 +251,16 @@ def _query_identifiers(query: str | None) -> set[str]:
 
 # A line that declares a name: a keyword declaration, or ``NAME =`` /
 # ``NAME:`` at its start. A call site naming the identifier is not one.
-_DECL_KEYWORD_RE = re.compile(
+_DECL_MODIFIERS = (
     r"\s*(?:(?:export|public|private|protected|internal|static|async|final|pub|"
-    r"readonly|abstract|default|override|open|inline)\s+)*"
-    r"(?:def|class|fn|func|function|const|let|var|val|type|interface|struct|enum)\b"
+    r"readonly|abstract|default|override|open|inline|declare)\s+)*"
 )
-_DECL_ASSIGN_RE = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?::|=(?!=))")
+_DECL_KEYWORD_RE = re.compile(
+    _DECL_MODIFIERS
+    + r"(?:def|class|fn|func|function|const|let|var|val|type|interface|struct|enum)\b"
+)
+# The modifiers admit a class field (``private _basePath: string``).
+_DECL_ASSIGN_RE = re.compile(_DECL_MODIFIERS + r"([A-Za-z_][A-Za-z0-9_]*)(?:[?!]?\s*:|\s*=(?!=))")
 
 
 def _declares(line: str, idents: set[str]) -> bool:
@@ -284,14 +308,13 @@ def _read_text(repo_root: Path, file_path: str) -> str | None:
     try:
         abs_path = (repo_root / file_path).resolve()
         abs_path.relative_to(repo_root.resolve())
-    except (ValueError, OSError):
-        return None
-    try:
         if abs_path.stat().st_size > _MAX_FILE_LINES * 400:
             return None
-        return abs_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    except (ValueError, OSError):
         return None
+    from repowise.server.mcp_server._helpers import read_repo_file_text
+
+    return read_repo_file_text(repo_root, file_path, allow_extracted=False)
 
 
 def _truncate_block(comment: str) -> str:
@@ -334,8 +357,8 @@ def mine_rationale(
     near_lines: dict[str, int] | None = None,
     max_files: int = _MAX_FILES,
     max_results: int = _MAX_RESULTS,
-    truncate_blocks: bool = True,
     rarity_corpus: Sequence[Container[str]] = (),
+    for_why: bool = False,
 ) -> list[dict]:
     """Mine in-code rationale comments from ``file_paths``.
 
@@ -350,6 +373,11 @@ def mine_rationale(
             when larger than the scanned blocks. One file is a small sample:
             the file's own name, or a word one comment happens to use, weighs
             as the rarest term there.
+        for_why: get_why's reading. Blocks come back whole, and a comment
+            with no rationale marker that states enough of the question, or
+            one documenting a declaration the question names, is served too
+            (see :func:`_score_block`): a get_why question asks for a reason.
+            get_answer's anchoring keeps the strict gate and the char cap.
 
     Returns a ranked list of ``{path, lines: [start, end], comment,
     matched_terms}`` — at most ``max_results``. Best-effort: never raises.
@@ -382,26 +410,27 @@ def mine_rationale(
         pool = list(rarity_corpus)
     idf = term_idf(terms, pool) if terms else {}
 
-    scored: list[tuple[float, dict]] = []
+    scored: list[tuple[float, bool, dict]] = []
     for path, start, end, comment, words, own in blocks:
-        result = _score_block(words, own, comment.lower(), idf)
+        result = _score_block(words, own, comment.lower(), idf, plain=for_why)
         if result is None:
             continue
-        score, matched, _ = result
+        score, matched, plain = result
         near = near_lines.get(path)
         if near is not None and abs(start - near) <= _NEAR_LINE_WINDOW:
             score += _NEAR_LINE_BONUS
-        # Coalesced runs longer than the cap are split at the head: the
-        # lead lines carry the rationale; tail is usually elaboration.
-        if end - start + 1 > _MAX_BLOCK_LINES:
-            end = start + _MAX_BLOCK_LINES - 1
+        # ``lines`` is the whole block the comment was read from, so the range
+        # holds every line the (char-capped) excerpt quotes.
         scored.append(
             (
                 score,
+                plain,
                 {
                     "path": path,
                     "lines": [start, end],
-                    "comment": _truncate_block(comment) if truncate_blocks else comment,
+                    # A plain admit is bounded whatever the caller asked: it is
+                    # served on a share of the question, not as a stated reason.
+                    "comment": comment if for_why and not plain else _truncate_block(comment),
                     "matched_terms": matched,
                 },
             )
@@ -415,7 +444,11 @@ def mine_rationale(
     if scored:
         floor = scored[0][0] * _RELEVANCE_FLOOR_FRACTION
         scored = [t for t in scored if t[0] >= floor]
-    return [entry for _, entry in scored[:max_results]]
+    # A plain statement admitted under the floor is the best one or none: past
+    # the first, it is the vocabulary of a long docstring, not a second reason.
+    first_plain = next((i for i, t in enumerate(scored) if t[1]), None)
+    scored = [t for i, t in enumerate(scored) if not t[1] or i == first_plain]
+    return [entry for _, _, entry in scored[:max_results]]
 
 
 # Cap / limit vocabulary: a question may say "capped" while the source comment
@@ -534,12 +567,10 @@ def grep_comment_candidates(
     return ranked[:max_files]
 
 
-# One repository's harvest, keyed on (root, HEAD, plain): harvesting reads every
-# tracked code file (about 2s cold on a 3,000-file repository), so a session
-# asking several questions pays it once. Ceiling: edits since HEAD are not seen
-# until the next commit; the path-scoped miner above stays live for those.
+# One repository's harvest, keyed on (root, HEAD, plain), so a session asking
+# several questions assembles it once. The index keeps each file's rows under
+# its blob id, so only files changed since the last index write are read.
 _HARVEST_CACHE: dict[tuple[str, str, bool], list[dict]] = {}
-_MAX_HARVEST_FILES = 20_000
 
 
 def _head(root: Path) -> str | None:
@@ -557,53 +588,6 @@ def _head(root: Path) -> str | None:
     return proc.stdout.strip() if proc.returncode == 0 else None
 
 
-def _harvest_repo(root: Path, plain: bool = False) -> list[dict]:
-    """Every tracked file's strong-marker comments, strongest first per file.
-
-    ``harvest_file_rationale`` with its defaults: a causal marker is required
-    and docstrings are skipped. That is the precision bar a comment must clear
-    to be served for a question naming no file, where nothing else vouches for
-    it. These are never decisions (#751); they are served as comments.
-
-    *plain* keeps every production comment, marked or not, for a store with no
-    ruling. Ceiling: the whole set is cached per HEAD; a size cap is the upgrade.
-    """
-    try:
-        proc = subprocess.run(
-            ["git", "--no-pager", "ls-files", "-z"],
-            cwd=str(root),
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            timeout=_GREP_TIMEOUT_S,
-        )
-    except Exception:
-        return []
-    if proc.returncode != 0:
-        return []
-    spec = build_exclude_spec(root)
-    rows: list[dict] = []
-    paths = [p for p in proc.stdout.decode("utf-8", "replace").split("\0") if p]
-    for path in paths[:_MAX_HARVEST_FILES]:
-        ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
-        if ext not in CODE_EXTENSIONS or is_excluded(path, spec):
-            continue
-        text = _read_text(root, path)
-        if text is None:
-            continue
-        if plain:
-            # Without a marker, only shipped code's comments describe its reasons.
-            if code_origin(path, text) != "production":
-                continue
-            harvested = harvest_file_rationale(
-                text, ext, max_per_file=_MAX_FILE_LINES, require_marker=False
-            )
-        else:
-            harvested = harvest_file_rationale(text, ext)
-        for h in harvested:
-            rows.append({"path": path, "lines": [h.start_line, h.end_line], "comment": h.text})
-    return rows
-
-
 def repo_rationale(
     repo_root: Any, query: str, *, max_results: int = 3, plain: bool = False
 ) -> list[dict]:
@@ -613,7 +597,7 @@ def repo_rationale(
     the decision store's own relevance floor, with rarity taken over the whole
     harvest, so a comment is served only when it carries most of the
     question's weighted vocabulary. Rows have the ``mine_rationale`` shape.
-    *plain* admits comments with no marker (see :func:`_harvest_repo`).
+    *plain* admits comments with no marker (see :func:`harvest_repo_rationale`).
     Best-effort: ``[]`` on any failure.
     """
     if not repo_root or not query:
@@ -626,7 +610,7 @@ def repo_rationale(
         key = (str(root.resolve()), head, plain)
         if key not in _HARVEST_CACHE:
             _HARVEST_CACHE.clear()
-            _HARVEST_CACHE[key] = _harvest_repo(root, plain)
+            _HARVEST_CACHE[key] = harvest_repo_rationale(root, plain)
         return floor_ranked(query, _HARVEST_CACHE[key], lambda r: r["comment"], max_results)
     except Exception as exc:  # never let the harvest break a tool
         _log.debug("repo rationale harvest failed: %s", exc)

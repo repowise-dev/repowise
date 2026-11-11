@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from repowise.core.git_head import read_head_commit
+from repowise.core.git_head import read_head_commit, same_path
 from repowise.core.index_scope import (
     CANONICAL_INDEX_SCOPE_PROJECTION,
     INDEX_SCOPE_ENV,
@@ -35,6 +35,7 @@ from repowise.core.index_scope import (
     index_scope_fingerprint,
     load_index_scope,
 )
+from repowise.server.mcp_server import _checkout, _code_drift
 from repowise.server.mcp_server._rounding import round_float
 
 # 2: index_scope carries the compact projection on routine responses. The key
@@ -88,6 +89,11 @@ def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | No
     """
     from repowise.server.mcp_server import _state
 
+    caller = _checkout.current()
+    local = getattr(repository, "local_path", None)
+    if caller is not None and caller.own_index and local and same_path(local, caller.served):
+        # A worktree index seeded from this one keeps its repository id.
+        return str(caller.served)
     served = _state._repo_path
     if (
         served
@@ -143,29 +149,12 @@ def _canonical_scope_requested() -> bool:
     )
 
 
-def _full_scope_hint() -> str:
-    """The call that returns the whole scope, as this server is running.
-
-    The overview carries the whole scope only when asked for it. In workspace
-    mode ``get_overview(repo="all")`` returns the repo listing and carries no
-    scope at all, so a digest pointing there would send an agent somewhere
-    the rest of the answer is not. The argument is named rather than filled in
-    because the alias belongs to the caller's own request, not to the
-    repository row this envelope was built from.
-    """
-    from repowise.server.mcp_server import _state
-
-    if getattr(_state, "_registry", None) is not None:
-        return 'get_overview(repo=..., include=["scope"])'
-    return 'get_overview(include=["scope"])'
-
-
 def index_scope_for_response(local_path: str | None) -> dict[str, Any] | None:
     """The scope an ordinary response carries: the digest, unless asked."""
     scope = read_index_scope(local_path)
     if scope is None or _canonical_scope_requested():
         return scope
-    return compact_index_scope(scope, full_hint=_full_scope_hint())
+    return compact_index_scope(scope)
 
 
 def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> str | None:
@@ -464,8 +453,8 @@ def freshness_from_repo(
 
       1. **Git HEAD comparison** (preferred). If the repo is a checkout on
          disk, compare ``repository.head_commit`` to the live HEAD. They
-         match → silence. They differ → ``stale_warning`` plus the live SHA
-         so the agent can decide whether to call ``repowise update``.
+         match → silence. They differ → ``stale_warning``, a fact naming both
+         SHAs (never a command), so the agent decides what to re-read.
       2. **Age fallback** (only when git is unreachable). Warn only past 90
          days; under that, just emit ``index_age_days`` for the agent to
          consult on its own terms.
@@ -527,6 +516,11 @@ def freshness_from_repo(
     if indexed_full:
         out["indexed_commit"] = indexed_full[:12] if isinstance(indexed_full, str) else indexed_full
 
+    borrowed = _checkout.borrowed_checkout(local_path)
+    if borrowed is not None:
+        out.update(_borrowed_freshness(borrowed, indexed_full, targets, local_path))
+        return out
+
     live_full = read_live_head(local_path)
     if live_full:
         out["live_head"] = live_full[:12]
@@ -553,23 +547,22 @@ def freshness_from_repo(
                 pass
             elif targets is not None and changed is not None:
                 if targets_hit_by_changes(targets, changed):
-                    out["stale_warning"] = (
-                        "A file this response serves changed after indexing — "
-                        "verify against source or run `repowise update`."
+                    out["stale_warning"] = _checkout.stale_fact(
+                        indexed_full[:12],
+                        f"a file this response serves differs at HEAD {live_full[:12]}",
                     )
             else:
-                # The two SHAs are already in ``indexed_commit`` / ``live_head`` —
-                # don't repeat them in prose. Just the directive.
-                out["stale_warning"] = "Index is behind live HEAD — run `repowise update`."
+                # The SHA repeats ``indexed_commit`` on purpose: lean replies
+                # drop that key and keep only this line.
+                out["stale_warning"] = _checkout.stale_fact(indexed_full[:12], "HEAD has moved")
         else:
             # Match. No prose, since silence is the signal, but the comparison
             # did run and its answer is "not behind", so say so explicitly.
             out["index_behind"] = False
     elif live_full is None and age_days is not None and age_days > _STALE_AGE_FLOOR_DAYS:
         # No git signal available and the index is genuinely old.
-        out["stale_warning"] = (
-            f"Index is {age_days} days old and live HEAD is unreachable — "
-            "results may be stale. Run `repowise update`."
+        out["stale_warning"] = _checkout.stale_fact(
+            f"an index {age_days} days old", "HEAD is unreadable"
         )
 
     # Freshness above is commit-anchored, so an uncommitted edit to a served
@@ -581,16 +574,60 @@ def freshness_from_repo(
             out["working_tree_dirty"] = len(modified)
             out.setdefault(
                 "stale_warning",
-                "A file this response serves has uncommitted edits: source reads are live, "
-                "but graph and index facts for it predate the edit. "
-                "Run `repowise update --working-tree`.",
+                _checkout.stale_fact(
+                    out.get("indexed_commit", "the last index"),
+                    "a file this response serves differs in the working tree "
+                    "(source reads are live)",
+                ),
             )
         elif live_full and live_full == indexed_full and reverted_targets(local_path, targets):
-            out["stale_warning"] = (
-                "A file this response serves was indexed from uncommitted edits that are "
-                "no longer in the working tree. Run `repowise update --working-tree`."
+            out["stale_warning"] = _checkout.stale_fact(
+                "uncommitted edits to a file this response serves",
+                "the working tree no longer has them",
             )
 
+    return out
+
+
+def _borrowed_hit(
+    local_path: str | None, indexed_full: str, head: str, targets: list[str] | None
+) -> str | None:
+    """``"file"`` when a served file differs between the two commits, ``"repo"``
+    for a repo-level response or an unknown diff, else ``None``."""
+    if head == indexed_full:
+        return None
+    changed = _changed_files_between(local_path, indexed_full, head) if local_path else None
+    if changed is None or (changed and targets is None):
+        return "repo"
+    if changed and targets and targets_hit_by_changes(targets, changed):
+        return "file"
+    return None
+
+
+def _borrowed_freshness(
+    caller: Any, indexed_full: str | None, targets: list[str] | None, local_path: str | None
+) -> dict[str, Any]:
+    """Freshness of this index for another checkout of the repo, as a fact.
+
+    The caller's HEAD stands in for live HEAD, and its working tree for the
+    uncommitted edits. The warning names both checkouts and commits instead
+    of an update command: updating this index does not describe the caller's.
+    """
+    out: dict[str, Any] = {}
+    head = read_live_head(str(caller.caller))
+    if head:
+        out["live_head"] = head[:12]
+    dirty = uncommitted_targets(str(caller.caller), targets)
+    if dirty:
+        out["working_tree_dirty"] = len(dirty)
+    hit = None
+    if head and indexed_full:
+        out["index_behind"] = head != indexed_full
+        hit = _borrowed_hit(local_path, indexed_full, head, targets)
+    if hit or dirty:
+        out["stale_warning"] = _checkout.checkout_fact(
+            caller, indexed_full, head, served_file=bool(dirty) or hit == "file"
+        )
     return out
 
 
@@ -713,6 +750,11 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
         meta.setdefault("runtime_breakage_proven", False)
     elif evidence_kind == "generated":
         meta.setdefault("existing_verified_code", False)
+    # Here, not in build_meta, so every tool and every shielded error carries it.
+    meta.update(_checkout.checkout_meta())
+    server_stale = _code_drift.stale_line()
+    if server_stale:
+        meta["server_stale"] = server_stale
 
     state: dict[str, Any] = {}
     combined = {**result, **meta}
@@ -755,6 +797,10 @@ _DEBUG_FRESHNESS_KEYS = (
 )
 #: Accounting a reader gets from ``_meta.omitted`` and ``<x>_total`` instead.
 _DEBUG_ACCOUNTING_KEYS = ("completeness", "response_budget", "floor", "reductions", "state")
+#: Stamped by middleware layers for debug output; ``timed`` and the savings
+#: layer drop them on a lean call too, and listing them here keeps the lean
+#: shape the one place that says what a lean reply leaves out.
+_DEBUG_LAYER_KEYS = ("timing_ms", "replaced_tokens", "tokens_saved")
 #: A ``false`` under these names says nothing happened, so it is not sent.
 _STATUS_FLAGS = ("degraded", "truncated", "capped", "partial")
 #: Siblings of a capped ``<x>`` that ``<x>_total`` already says.
@@ -780,15 +826,39 @@ def lean_response(result: Any) -> Any:
         if result.get("degraded") and meta.get("degraded") == result["degraded"]:
             del meta["degraded"]  # Already said at the top level.
         _lean_meta(meta)
-        if meta.get("omitted"):
-            # Restates ``_meta.omitted``.
-            result.pop("omission_marker", None)
+    collapse_omission(result)
     _prune(result, top=True)
     return result
 
 
+def collapse_omission(result: Any) -> Any:
+    """One omission entry per response: ``_meta.omitted``, never a marker beside it.
+
+    The response budget runs it on every MCP response, including the tools that
+    keep their full ``_meta``. The marker restates the refs ``_meta.omitted``
+    lists and names only the CLI route.
+    """
+    if isinstance(result, dict) and (result.get("_meta") or {}).get("omitted"):
+        result.pop("omission_marker", None)
+    return result
+
+
+def drop_false_status_flags(result: Any) -> Any:
+    """Remove ``false`` status flags from *result*'s ``_meta``, keeping the rest.
+
+    For a full-meta tool: its diagnostics stay, but ``embedder_degraded: false``
+    says nothing happened, as on every lean response. Telemetry reads the flag
+    before this runs, so it still sees both values.
+    """
+    meta = result.get("_meta") if isinstance(result, dict) else None
+    if isinstance(meta, dict):
+        for key in [k for k, v in meta.items() if v is False and _is_status_flag(k)]:
+            del meta[key]
+    return result
+
+
 def _lean_meta(meta: dict[str, Any]) -> None:
-    for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, "embedder"):
+    for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, *_DEBUG_LAYER_KEYS, "embedder"):
         meta.pop(key, None)
     existing = meta.pop("degraded", None)
     reasons = [existing] if isinstance(existing, str) else list(existing or [])
@@ -1007,10 +1077,9 @@ EXHAUSTIVE_SWEEP_HINT = (
 )
 
 # Appended to a get_answer hint when the answer graded low and the index is
-# behind live HEAD; the one place holding both signals says what to do.
+# behind live HEAD while no file it cites changed (else stale_warning says so).
 INDEX_BEHIND_LOW_CONFIDENCE_HINT = (
-    "The index is behind HEAD, so run `repowise update` and ask again before "
-    "trusting a low-confidence answer."
+    "The index is behind HEAD; no file this answer cites changed since."
 )
 
 

@@ -1448,6 +1448,26 @@ def test_a_statement_about_the_code_is_not_an_admitted_gap() -> None:
     assert _admitted_gap("The builder isn't shown, but the renderer is.") is not None
 
 
+def test_an_excerpt_that_stops_short_is_an_admitted_gap() -> None:
+    """The answer says the code it describes was cut from what it was shown."""
+    from repowise.server.mcp_server.tool_answer.confidence import _admitted_gap
+
+    for text in (
+        "The body of `SilenceErrors` is not fully visible in the provided excerpts.",
+        "The checks inside `ExecuteC` are truncated in the retrieved excerpts.",
+        "The exact body of `_weakness` is truncated in the excerpt.",
+    ):
+        assert _admitted_gap(text) == text
+    assert _admitted_gap("The checks are truncated in the excerpts for command.go.") is not None
+    # Code that truncates is behaviour, not a gap in the evidence.
+    for text in (
+        "Long summaries are truncated in the payload builder.",
+        "Long lines are truncated in the excerpt builder.",
+        "Values are truncated in the provided_options map.",
+    ):
+        assert _admitted_gap(text) is None
+
+
 async def test_the_payload_quotes_the_admitted_gap() -> None:
     from repowise.server.mcp_server.tool_answer.confidence import _Grade
     from repowise.server.mcp_server.tool_answer.payload import _graded_payload

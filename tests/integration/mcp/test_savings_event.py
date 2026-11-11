@@ -60,7 +60,7 @@ async def test_one_invocation_produces_exactly_one_event(repo: Path) -> None:
     assert event["operation"] == "get_context"
     assert event["result_state"] == "success"
     assert event["is_usable"] == 1
-    assert event["estimator"] == "chars_per_token_floor_v1"
+    assert event["estimator"] == "chars_per_token_floor_v2"
     assert event["token_unit"] == "estimated_tokens"
     assert event["schema_version"] == 1
 
@@ -215,10 +215,25 @@ async def test_attribution_is_unknown_without_an_announced_client(repo: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_a_repository_without_a_sidecar_records_nothing(
+async def test_an_indexed_repository_without_a_sidecar_records_its_calls(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An absent sidecar is an opt-out, and a tool call must still succeed."""
+    """A repo indexed before the sidecar existed creates it on its first call."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
+
+    async def get_overview() -> dict:
+        return {"summary": "x", "_meta": {}}
+
+    await tool_middleware(get_overview)()
+    assert len(_events(tmp_path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_directory_without_repowise_records_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``.repowise/`` is an opt-out, and a tool call must still succeed."""
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path), raising=False)
 
     async def get_overview() -> dict:
@@ -294,6 +309,50 @@ async def test_the_raw_size_is_observed_before_anything_is_shed(repo: Path) -> N
     event = _events(repo)[0]
     assert event["pre_budget_input_tokens"] == kept
     assert event["dropped_input_tokens"] == kept - event["delivered_input_tokens"]
+
+
+@pytest.mark.asyncio
+async def test_metadata_the_lean_pass_trims_is_not_a_drop(repo: Path) -> None:
+    """A reply the budget never cut drops nothing.
+
+    The raw size used to be taken before the trust envelope and the lean pass,
+    so the debug ``_meta`` and empty fields they remove counted as a measured
+    saving on every call, an empty reply included.
+    """
+
+    async def search_codebase(query: str) -> dict:
+        return {
+            "results": [],
+            "note": None,
+            "card": {"context": "", "lineage": []},
+            "_meta": {"timing_ms": 12.5, "index_age_days": 3, "completeness": {"shown": 0}},
+        }
+
+    await tool_middleware(search_codebase)("nothing")
+
+    event = _events(repo)[0]
+    assert event["pre_budget_input_tokens"] == event["delivered_input_tokens"]
+    assert event["dropped_input_tokens"] == 0
+    assert event["saved_input_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_budget_cut_is_still_measured_in_the_delivered_shape(repo: Path) -> None:
+    async def get_context(targets: list[str]) -> dict:
+        return {
+            "targets": {targets[0]: {"skeleton": {"tokens": 200, "full_tokens": 4000}}},
+            "filler": ["y" * 400 for _ in range(60)],
+            "_meta": {"timing_ms": 12.5, "index_age_days": 3},
+        }
+
+    await tool_middleware(get_context)(["a.py"])
+
+    event = _events(repo)[0]
+    # 60 x 400 chars of filler is about 6,000 tokens; most of it was shed.
+    assert event["dropped_input_tokens"] > 4_000
+    assert event["dropped_input_tokens"] == (
+        event["pre_budget_input_tokens"] - event["delivered_input_tokens"]
+    )
 
 
 @pytest.mark.asyncio
@@ -389,3 +448,33 @@ async def test_the_minted_event_id_reaches_the_row(repo: Path) -> None:
         savings_event._record = original  # type: ignore[assignment]
 
     assert _events(repo)[0]["event_id"] == seen[0]
+
+
+def test_the_raw_size_is_shaped_on_a_copy() -> None:
+    from repowise.server.mcp_server._meta import lean_response
+    from repowise.server.mcp_server._savings import event as savings_event
+
+    raw = {"results": ["a"], "_meta": {"timing_ms": 12.5}}
+    shaped = savings_event.raw_response_tokens(raw, shape=lean_response)
+
+    assert raw == {"results": ["a"], "_meta": {"timing_ms": 12.5}}
+    assert shaped < savings_event.raw_response_tokens(raw)
+
+
+@pytest.mark.asyncio
+async def test_an_unpriced_call_starts_a_background_price_warm(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The call records unpriced at once; the warm prices the calls after it."""
+    from repowise.core.savings import pricing
+
+    pricing.clear_pricing_cache()
+    warmed: list[str] = []
+    monkeypatch.setattr(pricing, "warm_pricing_snapshot", lambda root: warmed.append(str(root)))
+
+    async def get_overview() -> dict:
+        return {"summary": "x", "_meta": {}}
+
+    await tool_middleware(get_overview)()
+    assert warmed == [str(repo)]
+    assert _events(repo)[0]["model"] is None

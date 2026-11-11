@@ -34,6 +34,7 @@ import { buildPairAiPrompt } from "./system-map-pair-prompt";
 import { RouteRow } from "./system-map-route-row";
 import { plural } from "./system-map-model";
 import { useRoutesBetween, type KindRows, type RoutesBetweenState } from "./use-routes-between";
+import { formatNumber } from "../../lib/format";
 
 export interface SystemMapRoutesPanelProps {
   graph: Pick<SystemGraph, "nodes">;
@@ -183,7 +184,7 @@ function KindSection({ section, rows, a, b, onMore, contractHref, LinkComponent 
     <section className="flex flex-col gap-1" aria-label={`${style.label} routes`}>
       <h3 className={`${MICRO_LABEL} inline-flex items-center gap-1.5`}>
         <Icon size={12} aria-hidden />
-        {style.label} · {section.total.toLocaleString()}
+        {style.label} · {formatNumber(section.total)}
       </h3>
       {loaded.length === 0 && rows?.loading !== false ? (
         <RowSkeletons />
@@ -191,7 +192,7 @@ function KindSection({ section, rows, a, b, onMore, contractHref, LinkComponent 
         rowsByDirection(loaded).map((g) => (
           <div key={g.direction} className="flex flex-col">
             <h4 className="text-xs text-[var(--color-text-secondary)]">
-              {directionLabel(g.direction, a, b)} · {(section.byDirection[g.direction] ?? g.rows.length).toLocaleString()}
+              {directionLabel(g.direction, a, b)} · {formatNumber(section.byDirection[g.direction] ?? g.rows.length)}
             </h4>
             <ul className="m-0 flex list-none flex-col divide-y divide-[var(--color-border-default)] p-0">
               {g.rows.map((r, i) => (
@@ -221,7 +222,7 @@ function PageFooter({ shown, total, rows, onMore }: { shown: number; total: numb
   if (shown === 0 || shown >= total) return null;
   return (
     <div className="flex items-center justify-between gap-3">
-      <p className={QUIET}>{`Showing ${shown.toLocaleString()} of ${plural(total, "route", "routes")}`}</p>
+      <p className={QUIET}>{`Showing ${formatNumber(shown)} of ${plural(total, "route", "routes")}`}</p>
       <button type="button" className={BUTTON} onClick={onMore} disabled={rows?.loading}>
         {rows?.loading ? "Loading…" : "Load more"}
       </button>

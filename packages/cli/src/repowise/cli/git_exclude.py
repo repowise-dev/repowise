@@ -56,6 +56,12 @@ def _listed(repo_path: Path, args: tuple[str, ...], paths: list[str]) -> set[str
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
+def is_tracked(repo_path: Path, rel_path: str) -> bool:
+    """Whether git tracks *rel_path*. False outside git; True when git cannot be run."""
+    result = _git(repo_path, "ls-files", "--error-unmatch", "--", rel_path)
+    return result is None or result.returncode == 0
+
+
 def keep_out_candidates(repo_path: Path, planned: Iterable[str] = ()) -> tuple[str, ...]:
     """Machine-specific files git would still see: present or *planned*, untracked, not ignored."""
     if _layout(repo_path) is None:

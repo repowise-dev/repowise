@@ -217,7 +217,8 @@ def _plan_incremental_page_regen(
     The caller runs this whole synchronous unit (git, ``ChangeDetector``, graph
     ranking) in a worker thread.
     """
-    base_ref = _load_state(repo_path).get("last_sync_commit") or job_config.get("before")
+    state = _load_state(repo_path)
+    base_ref = state.get("last_sync_commit") or job_config.get("before")
     if not base_ref:
         logger.info("incremental_page_regen_skipped", reason="no_base_ref")
         return None
@@ -231,8 +232,14 @@ def _plan_incremental_page_regen(
 
     from repowise.core.ingestion import ChangeDetector
     from repowise.core.ingestion.change_detector import compute_adaptive_budget
+    from repowise.core.repo_config import load_repo_config
 
-    detector = ChangeDetector(repo_path)
+    detector = ChangeDetector(
+        repo_path,
+        exclude_patterns=load_repo_config(repo_path).get("exclude_patterns"),
+        include_submodules=bool(state.get("include_submodules", False)),
+        include_nested_repos=bool(state.get("include_nested_repos", False)),
+    )
     file_diffs = detector.get_changed_files(base_ref, head)
     if not file_diffs:
         return None

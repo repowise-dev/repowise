@@ -1324,6 +1324,22 @@ def resolve_test_reports(
             if tkey is not None:
                 test_key = tkey
                 out.test_files_resolved += 1
+        elif report.source_format == "coverage.py":
+            raw_id = rec.test_id.split("|", 1)[0].strip()
+            parts = [p for p in raw_id.split(".") if p]
+            if len(parts) >= 2 and all(p.isidentifier() for p in parts):
+                for k in range(len(parts), 1, -1):
+                    candidate = "/".join(parts[:k]) + ".py"
+                    tnorm = normalize_report_path(
+                        candidate, strip_prefix=strip_prefix, path_prefix=path_prefix
+                    )
+                    tkey, ambiguous = _match_key(tnorm, repo_keys, suffix_index)
+                    if ambiguous:
+                        break
+                    if tkey is not None:
+                        test_key = tkey
+                        out.test_files_resolved += 1
+                        break
 
         out.records.append(
             TestCoverage(

@@ -38,13 +38,16 @@ PARSE_INPUTS: tuple[str, ...] = (
 
 
 @lru_cache(maxsize=8)
-def source_fingerprint(patterns: tuple[str, ...], extra: str = "") -> str:
+def source_fingerprint(
+    patterns: tuple[str, ...], extra: str = "", *, parser_dependencies: bool = True
+) -> str:
     """sha256 of the files *patterns* match under ``repowise/core``, plus *extra*
-    and the parser dependencies' versions.
+    and, unless *parser_dependencies* is off, the parser dependencies' versions.
 
     Line endings are normalised so a CRLF checkout and an LF wheel agree.
     """
-    h = hashlib.sha256(extra.encode() + dependency_versions().encode())
+    versions = dependency_versions() if parser_dependencies else ""
+    h = hashlib.sha256(extra.encode() + versions.encode())
     files = sorted({path for pattern in patterns for path in _CORE.glob(pattern)})
     if not files:
         # Sources not shipped: a release change is the only change we can see.

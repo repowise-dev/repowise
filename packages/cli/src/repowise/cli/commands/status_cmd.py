@@ -500,6 +500,23 @@ def _query_health_line(repo_path: Path) -> str | None:
     )
 
 
+def _latency_table(repo_path: Path) -> Table | None:
+    """p50 and p90 per MCP tool from the local call log, or ``None`` without one."""
+    from repowise.core.mcp_latency import latency_summary
+
+    summary = latency_summary(repo_path)
+    if not summary:
+        return None
+    table = Table(title="MCP Tool Latency")
+    table.add_column("Tool", style="cyan")
+    table.add_column("Calls", justify="right")
+    table.add_column("p50", justify="right")
+    table.add_column("p90", justify="right")
+    for tool, row in summary.items():
+        table.add_row(tool, str(row["calls"]), f"{row['p50']} ms", f"{row['p90']} ms")
+    return table
+
+
 def _rescore_pending(state: dict) -> list[str]:
     """Which stored results the next ``repowise update`` redoes for a newer analyzer."""
     from repowise.cli.commands.update_cmd.persistence import (
@@ -909,6 +926,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     pending_lanes = pending_decision_lanes(state, repo_path)
     # An unfinished init has no stamps yet; the resume line covers it.
     rescore = _rescore_pending(state) if incomplete is None else []
+    from repowise.cli.commands._page_freshness import stale_page_count
+
+    stale_pages = run_async(stale_page_count(repo_path)) if has_db else 0
 
     if fmt == "json":
         counts, total_db_tokens = (
@@ -939,6 +959,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "pages_by_type": counts,
                 "page_total": sum(counts.values()),
                 "page_tokens": total_db_tokens,
+                "stale_pages": stale_pages,
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
                 "index_scope": scope,
@@ -983,6 +1004,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     state_table.add_column("Value")
     state_table.add_row("Last sync commit", state.get("last_sync_commit", "—") or "—")
     state_table.add_row("Total pages", str(total_pages))
+    state_table.add_row("Stale pages", str(stale_pages) if stale_pages is not None else "Unknown")
     state_table.add_row("Provider", state.get("provider", "—") or "—")
     state_table.add_row("Model", state.get("model", "—") or "—")
     state_table.add_row("Total tokens", f"{total_tokens:,}")
@@ -1057,6 +1079,10 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         pages_table.add_row("[bold]Total[/bold]", f"[bold]{sum(counts.values())}[/bold]")
         pages_table.add_row("Total tokens", f"{total_db_tokens:,}")
         console.print(pages_table)
+
+    latency_table = _latency_table(repo_path)
+    if latency_table is not None:
+        console.print(latency_table)
 
     health_line = _query_health_line(repo_path)
     if health_line:

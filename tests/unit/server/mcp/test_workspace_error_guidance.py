@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -74,6 +75,42 @@ class TestWorkspaceErrors:
         )
         assert "Use '--'" not in result["error"]
         assert "git <command>" not in result["error"]
+
+    async def test_change_risk_error_leaves_no_task_to_race_the_workspace_close(
+        self, workspace_mcp
+    ):
+        """The health comparison started before the score failed has unwound when the call returns.
+
+        Left unwinding, its connection close raced the engine dispose below and
+        both waited forever.
+        """
+        before = asyncio.all_tasks()
+
+        await get_change_risk(revspec="not-a-ref", repo="backend")
+
+        assert [t for t in asyncio.all_tasks() - before if not t.done()] == []
+        await asyncio.wait_for(workspace_mcp.close(), timeout=10)
+
+    async def test_change_risk_error_waits_for_the_comparison_to_unwind(self, monkeypatch):
+        """Deterministic form of the test above: the comparison is mid-flight when the score fails."""
+        from repowise.server.mcp_server.tool_change_risk import tool
+
+        unwound: list[bool] = []
+
+        async def _in_flight(*_args):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.shield(asyncio.sleep(0.05))  # a connection close takes a moment
+                unwound.append(True)
+                raise
+
+        monkeypatch.setattr(tool, "_delta_with_index", _in_flight)
+
+        result = await get_change_risk(revspec="not-a-ref", repo="backend")
+
+        assert "error" in result
+        assert unwound == [True]
 
     @pytest.mark.parametrize(
         ("finding_id", "label"),

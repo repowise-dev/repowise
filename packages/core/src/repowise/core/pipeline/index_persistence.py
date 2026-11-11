@@ -8,10 +8,14 @@ the caller and the commit stays, so a plugin retries from what ``apply`` recorde
 Writers that only refresh derived rows (health, git tier, module labels) do not
 run this seam. Deleting a repository does not run it either; plugin tables should
 reference ``repositories.id`` with ``ON DELETE CASCADE``.
+
+``publish_index_persistence`` also refreshes core's rationale comment sidecar
+before the plugins publish, since every committed write passes through it.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -70,6 +74,10 @@ async def apply_index_persistence(
 
 
 async def publish_index_persistence(repository_id: str, repo_path: Path) -> None:
+    # Core's own sidecar first: every committed index write passes here.
+    from repowise.core.analysis.decisions.rationale_harvest import refresh_rationale_store
+
+    await asyncio.to_thread(refresh_rationale_store, repo_path)
     for _, implementation in index_persistence.all():
         await implementation.publish(repository_id, repo_path)
 

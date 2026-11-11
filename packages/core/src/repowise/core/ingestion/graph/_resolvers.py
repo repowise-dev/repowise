@@ -12,6 +12,7 @@ from typing import Any
 
 import structlog
 
+from ...cancellation import check_cancelled
 from ..decorator_names import decorator_base
 from ..languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
 from ..models import REGISTRATION_HINT, CallSite, ParsedFile
@@ -84,6 +85,7 @@ class ResolveMixin:
                         existing = self._graph[rh.child_id][rh.parent_id]
                         if rh.confidence > existing.get("confidence", 0):
                             existing["confidence"] = rh.confidence
+            check_cancelled()
             if progress:
                 progress.on_item_done("graph.heritage")
 
@@ -640,8 +642,13 @@ class ResolveMixin:
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
         scope: frozenset[str] | None = None,
+        registrations: bool = True,
     ) -> None:
-        """Run three-tier call resolution and add CALLS edges to the graph."""
+        """Run three-tier call resolution and add CALLS edges to the graph.
+
+        *registrations* also links registering decorators to what they
+        decorate, over every file.
+        """
         from ..call_resolver import CallResolver
 
         resolver = CallResolver(
@@ -725,6 +732,7 @@ class ResolveMixin:
                     existing["supplied_props"] = None
                 else:
                     existing["supplied_props"] = frozenset(ex_props | rc.supplied_props)
+            check_cancelled()
             if progress:
                 progress.on_item_done("graph.calls")
 
@@ -739,9 +747,9 @@ class ResolveMixin:
         )
 
         self._add_reference_edges(resolver, scope)
-        if scope is None:
-            # Surface-equivalent patching cannot change registrar identities or
-            # decorators; preserve the snapshot's registration edges.
+        if registrations:
+            # A body-only patch cannot change registrar identities or
+            # decorators, so it keeps the snapshot's registration edges.
             self._add_registration_edges(resolver)
 
     def _add_reference_edges(self, resolver: Any, scope: frozenset[str] | None = None) -> None:

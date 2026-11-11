@@ -66,15 +66,17 @@ from ._shared import (  # noqa: F401
     _store_capped,
 )
 from .callbacks import CallbackParameterTypes, _TypedCallback
-from .cpp import CppFieldOwners
+from .cpp import CppFieldOwners, _CppFacts
 from .framework import FrameworkReceiverTypes
 from .go import GoReturnTypes
 from .java import _JAVA_TYPE_PARAMETERS, JavaTypeVisibility, _header_type_parameters  # noqa: F401
 from .python import PythonReturnTypes
 from .ranges import RangeVariableTypes, _is_its_own_container  # noqa: F401
+from .rust import RustReturnTypes
 
 # Languages whose extensions the extension index holds, keyed on the type extended.
-_EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin"})
+# Pascal's are ``class``/``record helper for T`` methods.
+_EXTENSION_LANGUAGES = frozenset({"csharp", "kotlin", "pascal"})
 # Bitwise members of Kotlin's ``Int`` and ``Long`` and the parameter type each
 # takes (None: the receiver's own). A member beats a same-named extension
 # wherever it accepts the argument, so ``i and 0x3f`` is ``Int.and(Int)``.
@@ -119,8 +121,13 @@ _JAVA_ANY_TYPE = r"[\w$]+(?:\.[\w$]+)*(?:<[^;{}()]*>)?(?:\[\])*(?:\.\.\.)?"
 _JAVA_ANY_DECLARATION = re.compile(
     rf"(?<![\w.@$])(?P<type>{_JAVA_ANY_TYPE})\s+(?P<name>[\w$]+)\s*(?=[=;,):])"
 )
-# ``in``: ``foreach (var x in Items)`` declares no ``Items``.
-_NOT_A_TYPE = frozenset({"return", "throw", "new", "else", "case", "yield", "assert", "in"})
+# ``in``: ``foreach (var x in Items)`` declares no ``Items``. ``is``, ``as``
+# and ``instanceof``: ``o is Engine`` and ``o as Motor`` test or cast a type,
+# they declare no ``Engine`` or ``Motor`` (``o is Engine e`` still declares
+# ``e``, whose name follows the type).
+_NOT_A_TYPE = frozenset(
+    {"return", "throw", "new", "else", "case", "yield", "assert", "in", "is", "as", "instanceof"}
+)
 
 
 # Languages whose grammar mints ``a.b.c.m()`` with the dotted path as its
@@ -213,6 +220,29 @@ def _enclosing_id(symbol_id: str) -> str:
     return symbol_id.rpartition("::")[0]
 
 
+def _fields_by_class(
+    declarations: tuple[Declaration, ...], symbols: Sequence[Symbol], language: str
+) -> dict[str, dict[str, str | None]]:
+    return types_by_class(
+        declarations,
+        {s.id: (s.start_line, s.end_line) for s in _type_symbols(symbols)},
+        [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
+        language,
+    )
+
+
+def class_field_types(parsed: ParsedFile, text: str) -> dict[str, dict[str, str | None]]:
+    """``{class_id: {field: written type}}`` as a chained call reads another file's fields.
+
+    The same reading the resolver makes of a class's source when it types
+    ``obj.field.method()``, so a caller can tell whether an edit changed it.
+    """
+    language = parsed.file_info.language
+    if not _type_symbols(parsed.symbols):
+        return {}
+    return _fields_by_class(scan_declarations(text, language), parsed.symbols, language)
+
+
 def _type_symbols(symbols: Sequence[Symbol]) -> list[Symbol]:
     """The types *symbols* declare, less an ``impl`` of a type declared beside it.
 
@@ -251,6 +281,7 @@ class ReceiverTypingMixin(
     JavaTypeVisibility,
     PythonReturnTypes,
     GoReturnTypes,
+    RustReturnTypes,
     RangeVariableTypes,
     CallbackParameterTypes,
     FrameworkReceiverTypes,
@@ -290,6 +321,7 @@ class ReceiverTypingMixin(
         self._method_name_set: frozenset[str] | None = None
         # C++: {(file, class name): (header, class id) or None}, {declaration id: pure virtual}.
         self._cpp_declaring_classes: dict[tuple[str, str], tuple[str, str] | None] = {}
+        self._cpp_type_aliases: dict[str, _CppFacts] = {}
         self._pure_virtuals: dict[str, bool] = {}
         self._pure_virtual_name_set: frozenset[str] | None = None
         self._framework_name_set: frozenset[str] | None = None
@@ -305,7 +337,9 @@ class ReceiverTypingMixin(
             file_path, self._file_extension_methods, self._merged_import_extensions
         )
 
-    def _extension_target(self, file_path: str, key: tuple[str, str]) -> tuple[str, str] | None:
+    def _extension_target(
+        self, file_path: str, key: tuple[str, str], argument_count: int | None = None
+    ) -> tuple[str, str] | None:
         """The extension method a ``(type, method)`` pair names, and its scope.
 
         Same three scopes as ``_receiver_pair_match``, over the extension index.
@@ -317,7 +351,7 @@ class ReceiverTypingMixin(
         type_name, method_name = key
         if not self._writes_one_type(file_path, site[0], type_name):
             return None
-        if self._reaches_a_member(type_name, method_name):
+        if self._reaches_a_member(type_name, method_name, argument_count):
             return None
         own = self._file_extension_methods.get(file_path, {})
         if key in own:
@@ -393,11 +427,12 @@ class ReceiverTypingMixin(
         if language not in RECEIVER_TYPE_LANGUAGES:
             return None
         # A capitalised receiver already names a type and every tier above has
-        # tried it, so only a C# one is read further: C# spells its properties
-        # and many fields that way. An underscore one cannot be anything but a name.
+        # tried it, so only a C# or Pascal one is read further: both spell
+        # properties and fields that way (``FToast``, ``AItem``). An underscore
+        # one cannot be anything but a name.
         head = receiver_name[:1]
         literal = receiver_name == STRING_LITERAL_RECEIVER
-        if not (head.islower() or head == "_" or literal or language == "csharp"):
+        if not (head.islower() or head == "_" or literal or language in ("csharp", "pascal")):
             return None
 
         # Refuse before reading the file: nothing resolves unless some class
@@ -408,6 +443,25 @@ class ReceiverTypingMixin(
         return language
 
     def _typed_receiver_target(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+        type_name: str,
+    ) -> tuple[str, str] | None:
+        """Read a C++ alias before asking which class declares the member."""
+        if self._language_of(file_path) == "cpp":
+            position = self._cpp_receiver_position(
+                file_path, caller_id, call.receiver_name or "", type_name
+            )
+            if position is None:
+                return None
+            type_name = self._cpp_aliased_type(file_path, type_name, position)
+            if type_name is None:
+                return None
+        return self._typed_receiver_class_target(file_path, call, caller_id, type_name)
+
+    def _typed_receiver_class_target(
         self,
         file_path: str,
         call: CallSite,
@@ -1226,7 +1280,7 @@ class ReceiverTypingMixin(
             return None
         # Extensions are indexed by the type they name, written without arity.
         key = (id_segment_name(type_name), call.target_name)
-        extension = self._extension_target(file_path, key)
+        extension = self._extension_target(file_path, key, call.argument_count)
         if extension is None or self._symbols_by_id[extension[0]].language != language:
             return None
         return self._extension_typed_call(caller_id, *extension, call.line)
@@ -1282,7 +1336,32 @@ class ReceiverTypingMixin(
             return ResolvedCall(caller_id, sym_id, 0.88, line, "receiver_field_import")
         return ResolvedCall(caller_id, sym_id, 0.75, line, "receiver_field_global")
 
-    def _reaches_a_member(self, type_name: str, method_name: str) -> bool:
+    def _member_admits(self, declared_id: str, argument_count: int | None) -> bool:
+        """True if *declared_id* or any of its overloads admits *argument_count*."""
+        rep = getattr(self, "_overload_rep", {}).get(declared_id, declared_id)
+        overloads = getattr(self, "_overload_members", {}).get(rep)
+        if overloads:
+            return any(
+                _admits(sym, argument_count)
+                for mid, _ in overloads
+                if (sym := self._symbols_by_id.get(mid)) is not None
+            )
+        sym = self._symbols_by_id.get(declared_id)
+        return sym is not None and _admits(sym, argument_count)
+
+    def _type_hierarchy_admits(
+        self, sym_id: str, method_name: str, argument_count: int | None
+    ) -> bool:
+        """True if *sym_id* or any ancestor declares *method_name* admitting *argument_count*."""
+        for a in (sym_id, *self._ancestors_of(sym_id)):
+            declared_id = self._declares(a, method_name)
+            if declared_id is not None and self._member_admits(declared_id, argument_count):
+                return True
+        return False
+
+    def _reaches_a_member(
+        self, type_name: str, method_name: str, argument_count: int | None = None
+    ) -> bool:
         """Could a class of this name reach a member *method_name*, its own or inherited?
 
         C# and Kotlin dispatch to a member in preference to an extension, and
@@ -1300,7 +1379,7 @@ class ReceiverTypingMixin(
             symbol = self._symbols_by_id.get(sym_id)
             if symbol is None or symbol.kind not in _TYPE_KINDS:
                 continue
-            if any(self._declares(a, method_name) for a in (sym_id, *self._ancestors_of(sym_id))):
+            if self._type_hierarchy_admits(sym_id, method_name, argument_count):
                 return True
         return False
 
@@ -1439,9 +1518,9 @@ class ReceiverTypingMixin(
         that makes the name unanswerable, as for any declaration. A name a
         declaration already types keeps that reading untouched.
 
-        A Python name may be rebound to anything, so one the body also binds
-        other than by a call assignment is skipped, and one whose call
-        assignments do not all yield a type is unanswerable.
+        A Python or Rust name may be rebound (a Rust `let` shadows), so one the
+        body also binds other than by a call assignment is skipped, and one
+        whose call assignments do not all yield a type is unanswerable.
         """
         assignments = self._call_assignments_for(file_path, language)
         sites = self._call_sites_for(file_path)
@@ -1460,7 +1539,7 @@ class ReceiverTypingMixin(
             )
             if type_id is not None:
                 record_type(types, assignment.name, type_id)
-            elif language == "python":
+            elif language in ("python", "rust"):
                 types[assignment.name] = None
 
     def _rebound_names(
@@ -1502,8 +1581,9 @@ class ReceiverTypingMixin(
         A Python return annotation must be one bare class name, quoted or not,
         read in the callee's file as a chain hop reads a field's type. A
         property is read, not called, and an ``async def`` returns a coroutine
-        unless the call is *awaited*. Any other language's declared return
-        type is read by ``_written_returned_class``. Overloads that disagree
+        unless the call is *awaited*. A Rust call is *awaited* when a ``?`` or
+        ``.unwrap()`` unwraps it. Any other language's declared return type is
+        read by ``_written_returned_class``. Overloads that disagree
         on what they return type nothing.
         """
         symbol = self._symbols_by_id.get(callee_id)
@@ -1518,6 +1598,8 @@ class ReceiverTypingMixin(
             return self._go_returned_type_id(symbol, path)
         if symbol.language == "python":
             return self._python_call_returns(symbol, path, awaited)
+        if symbol.language == "rust":
+            return self._rust_returned_type_id(symbol, path, awaited)
         return self._written_returned_class(symbol, path, awaited)
 
     def _overloads_disagree(self, symbol: Symbol, path: str, argument_count: int | None) -> bool:
@@ -1678,13 +1760,7 @@ class ReceiverTypingMixin(
     ) -> dict[str, dict[str, str | None]]:
         """*declarations* grouped by the class in *file_path* each is a field of."""
         parsed = self._parsed_files.get(file_path)
-        symbols = parsed.symbols if parsed else ()
-        return types_by_class(
-            declarations,
-            {s.id: (s.start_line, s.end_line) for s in _type_symbols(symbols)},
-            [(s.start_line, s.end_line) for s in symbols if s.kind in _FUNCTION_KINDS],
-            language,
-        )
+        return _fields_by_class(declarations, parsed.symbols if parsed else (), language)
 
     def _bound_names_in(self, file_path: str, caller_id: str, language: str) -> frozenset[str]:
         """Every name the calling body binds, however it was bound."""

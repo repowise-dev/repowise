@@ -38,13 +38,13 @@ from typing import Any
 import structlog
 
 from ..entry_points import rank_entry_point_paths
+from ..nav_titles import recase
 from ..onboarding.grounding import check_grounding
 from .grouping import ConceptGroup
 
 logger = structlog.get_logger(__name__)
 
 MAX_TITLE_WORDS = 7
-MIN_TITLE_WORDS = 2
 
 _FENCE = re.compile(r"^```[a-zA-Z]*\n|\n```$")
 
@@ -112,6 +112,32 @@ def _tail_title(directory: str) -> str:
     return " ".join(_humanise(s) for s in meaningful[-2:]).strip()
 
 
+# Directory names that say what kind of code is inside rather than what it is
+# for. On their own they name nothing ("Utils"), so they keep the segment above.
+_GENERIC_TAILS = frozenset(
+    {
+        "api", "base", "common", "components", "config", "helpers", "impl", "misc",
+        "models", "shared", "types", "util", "utils", "views",
+    }
+)
+
+
+def _subject_title(directory: str) -> str:
+    """The directory's own name, with its parent's when its own is generic.
+
+    The last segment is what a reader calls the directory ("Dead Code", not
+    "Analysis Dead Code"); the parent only joins when the last segment names a
+    kind of file rather than a subject. A collision between two same-named
+    directories is the disambiguator's job, which qualifies by parent.
+    """
+    segments = [s for s in directory.split("/") if s]
+    meaningful = [s for s in segments if s.lower() not in _STOP_SEGMENTS] or segments
+    if not meaningful:
+        return ""
+    take = 2 if meaningful[-1].lower() in _GENERIC_TAILS and len(meaningful) > 1 else 1
+    return " ".join(_humanise(s) for s in meaningful[-take:]).strip()
+
+
 def sibling_runs(group: ConceptGroup) -> list[tuple[str, int]]:
     """``(directory, files)`` for a group gathered from sibling directories.
 
@@ -140,28 +166,24 @@ def sibling_runs(group: ConceptGroup) -> list[tuple[str, int]]:
 def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     """A readable name from structure alone, for a run with no provider.
 
-    Uses the last one or two meaningful path segments, prefixed by the layer
-    when that is what makes the name unambiguous. Not as good as a named
-    capability and not meant to be: per D5 the map is free and the prose needs
-    a key, so a keyless wiki gets a real tree with plainer labels rather than a
-    worse tree.
+    The last one or two meaningful segments of the directory the group is
+    mostly about, cased through :func:`~..nav_titles.recase`. Not as good as a
+    named capability and not meant to be: per D5 the map is free and the prose
+    needs a key, so a keyless wiki gets a real tree with plainer labels rather
+    than a worse tree.
+
+    A group gathered from sibling directories is named after the one holding
+    the most files, never after two of them glued with "and": "Json and Sansio"
+    reads as two subjects where the page has one main one, and the members are
+    listed in the page itself. *layer_label* is kept so callers need not
+    change, and no longer prefixes the name: "Application Flask" said nothing the layer
+    badge does not, and a one-word name is a fine name.
     """
+    del layer_label
     if group.packages:
-        return _package_rollup_title(group.packages)
+        return recase(_package_rollup_title(group.packages))
     runs = sibling_runs(group)
-    if runs and runs[0][1] * 3 < sum(n for _d, n in runs) * 2:
-        # No one directory dominates, so naming the page after any of them
-        # (its target, say) tells the reader it is about that one directory.
-        title = " and ".join(_humanise(d.rsplit("/", 1)[-1] or "root") for d, _n in runs[:2])
-    else:
-        title = _tail_title(runs[0][0] if runs else group.target_path)
-    if layer_label and len(title.split()) < MIN_TITLE_WORDS:
-        # Drop what the label already says. A ``docs`` directory in a "Docs &
-        # Tooling" layer was titled "Docs Tooling Docs", which reads as a
-        # generation bug rather than a name.
-        label_words = {w.lower() for w in layer_label.split()}
-        kept = [w for w in title.split() if w.lower() not in label_words]
-        title = f"{layer_label} {' '.join(kept)}".strip()
+    title = _subject_title(runs[0][0] if runs else group.target_path)
     if not title:
         # The repository root has no path segments to name it by. It is a real
         # place and a common one — top-level entry points live there — so it
@@ -170,9 +192,7 @@ def deterministic_title(group: ConceptGroup, layer_label: str = "") -> str:
     words = title.split()
     if len(words) > MAX_TITLE_WORDS:
         title = " ".join(words[:MAX_TITLE_WORDS])
-    if len(title.split()) < MIN_TITLE_WORDS:
-        title = f"{title} Components".strip()
-    return title
+    return recase(title)
 
 
 # A chapter's subject is the directory it heads. ``core`` is the one stop
@@ -235,8 +255,13 @@ def _spelling_index(titles: Sequence[str]) -> dict[str, str]:
 
 
 def _respell(phrase: str, spelling: dict[str, str]) -> str:
-    """*phrase* with every word spelled the way *spelling* says the project does."""
-    return " ".join(spelling.get(word.lower(), word) for word in phrase.split(" "))
+    """*phrase* with every word spelled the way *spelling* says the project does.
+
+    The casing table has the last word (see :func:`~..nav_titles.recase`): a
+    leaf title written "Ui Zoom" is not evidence that the project spells it
+    "Ui".
+    """
+    return recase(" ".join(spelling.get(word.lower(), word) for word in phrase.split(" ")))
 
 
 def chapter_title(target_path: str, titles: Sequence[str] = ()) -> str:
@@ -252,19 +277,20 @@ def chapter_title(target_path: str, titles: Sequence[str] = ()) -> str:
     of nine and neither of those two.
 
     What a chapter reliably *is* is the place: the directory, and the reader's
-    own word for it. So it gets that word and the word "Overview", and the only
-    thing the leaf titles are asked for is how this project spells it. Costs no
-    call and cannot drift between runs.
+    own word for it. So it gets that word, and the only thing the leaf titles
+    are asked for is how this project spells it. No trailing "Overview": every
+    chapter carried it, so a column of sibling rows repeated a word that told a
+    reader nothing. Costs no call and cannot drift between runs.
     """
     segment = _chapter_subject(target_path)
     if not segment:
         # A chapter at the repository root. It has no segment to name it by and
         # the overview page already covers the repository, so say where it is
         # rather than inventing a subject.
-        return "Repository Overview"
+        return "Repository Root"
     # A path of containers only (a root ``src``) is named for what it holds.
     subject = _CONTAINER_NOUNS.get(segment.lower()) or _humanise(segment)
-    return f"{_respell(subject, _spelling_index(titles))} Overview"
+    return _respell(recase(subject), _spelling_index(titles))
 
 
 def chapter_titles(leaves: dict[str, str], chapters: Sequence[str]) -> dict[str, str]:
@@ -275,7 +301,7 @@ def chapter_titles(leaves: dict[str, str], chapters: Sequence[str]) -> dict[str,
     made unique against each other and against the leaves, which do not move: a
     leaf may carry a model-written name and a chapter yielding to it is the
     cheaper of the two collisions to resolve. The qualifier a collision adds is
-    respelled too, so "Ui Health Overview" reads "UI Health Overview".
+    respelled too, so "Ui Health" reads "UI Health".
     """
     keys = set(chapters)
     titles = list(leaves.values())
@@ -285,7 +311,7 @@ def chapter_titles(leaves: dict[str, str], chapters: Sequence[str]) -> dict[str,
         [(chapter_title(c, titles), c) for c in ordered],
         reserved={t for path, t in leaves.items() if path not in keys},
     )
-    return dict(zip(ordered, (_respell(t, spelling) for t in named), strict=True))
+    return dict(zip(ordered, (recase(_respell(t, spelling)) for t in named), strict=True))
 
 
 def scc_where(members: list[str], *, max_parts: int = 2) -> str:
@@ -335,8 +361,9 @@ def disambiguate_titles(
     that keys on a title (interlinking, an overview listing) has to guess.
 
     A colliding title takes on the next path segment above the ones it
-    already used, and falls back to its full target path if even that
-    repeats. Input order does not matter: the pairs are resolved in path
+    already used, then two of them, and only if even that repeats a number.
+    Never the path in parentheses: a disambiguator is part of a navigation
+    label, and a path there reads as the tree leaking its plumbing. Input order does not matter: the pairs are resolved in path
     order, so the same set always produces the same names.
 
     *reserved* names are already taken by pages not in *titled*, so a caller
@@ -361,7 +388,9 @@ def disambiguate_titles(
             continue
         candidate = next(
             (q for q in _qualified_titles(title, target) if q.lower() not in used),
-            f"{title} ({target})",
+            None,
+        ) or next(
+            f"{title} {n}" for n in range(2, len(titled) + 3) if f"{title} {n}".lower() not in used
         )
         used.add(candidate.lower())
         out[i] = (candidate, target)
@@ -388,21 +417,25 @@ def _qualified_titles(title: str, target: str) -> list[str]:
     """Readable variants of *title* that say which *target* it is, nearest first.
 
     Nearest is the directory itself when it is a container: that is what
-    separates a package's chapter from the chapter for its ``src`` ("UI Source
-    Overview"). Then the closest directory above that names something: never a
-    container ("Src Core Overview" reads as a path leaking into the title),
-    never a route parameter, never a word the title already has ("Web Web
-    Overview").
+    separates a package's chapter from the chapter for its ``src`` ("UI
+    Source"). Then the closest directory above that names something: never a
+    container ("Src Core" reads as a path leaking into the title), never a
+    route parameter, never a word the title already has ("Web Web"). Then the
+    two closest together, for two packages that share both a name and a parent
+    name.
     """
     segments = [s for s in target.split("/") if s]
     taken = {w.lower() for w in title.split()}
     out = _container_qualified(title, segments[-1] if segments else "", taken)
+    words: list[str] = []
     for segment in reversed(segments[:-1]):
         if segment.lower() in _CHAPTER_CONTAINERS or _DYNAMIC_SEGMENT.match(segment):
             continue
-        word = _humanise(segment)
+        word = recase(_humanise(segment))
         if taken.isdisjoint(w.lower() for w in word.split()):
             out.append(f"{word} {title}")
+            words.append(word)
+    out.extend(f"{outer} {inner} {title}" for inner, outer in pairwise(words))
     return out
 
 
@@ -411,8 +444,7 @@ def _container_qualified(title: str, segment: str, taken: set[str]) -> list[str]
     noun = _CONTAINER_NOUNS.get(segment.lower())
     if not noun or noun.lower() in taken:
         return []
-    stem, sep, rest = title.rpartition(" Overview")
-    return [f"{stem} {noun} Overview" if sep and not rest else f"{noun} {title}"]
+    return [f"{title} {noun}"]
 
 
 def _package_rollup_title(packages: Sequence[str]) -> str:
@@ -670,7 +702,7 @@ def _clean_title(raw: Any) -> str:
     # it as taste. An unbounded title is a rendering problem, not a taste one.
     if len(title) > _MAX_TITLE_CHARS:
         title = title[:_MAX_TITLE_CHARS].rsplit(" ", 1)[0]
-    return title
+    return recase(title)
 
 
 def decode_response(

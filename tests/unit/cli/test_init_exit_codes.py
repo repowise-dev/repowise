@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import signal
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +14,11 @@ from repowise.cli.commands.init_cmd import _generate, _ingest, command
 from repowise.cli.commands.init_cmd._exit import exit_on_gaps, run_gaps
 from repowise.cli.exit_codes import EXIT_DEGRADED, EXIT_INTERRUPTED
 from repowise.cli.main import cli
-from repowise.core.cancellation import PipelineCancelled
+from repowise.core.cancellation import (
+    CancellationToken,
+    PipelineCancelled,
+    set_active_token,
+)
 
 _KEYS = (
     "ANTHROPIC_API_KEY",
@@ -135,6 +141,45 @@ def test_no_gaps_returns_and_any_gap_exits_degraded():
     with pytest.raises(SystemExit) as exc:
         exit_on_gaps(gaps)
     assert exc.value.code == EXIT_DEGRADED
+
+
+def test_a_first_interrupt_stops_at_the_next_step_start_but_lets_a_checkpoint_run():
+    started = []
+    progress = _ingest._StopAtStepStart(
+        SimpleNamespace(on_phase_start=lambda phase, total: started.append(phase))
+    )
+    token = CancellationToken()
+    set_active_token(token)
+    try:
+        progress.on_phase_start("parse", 3)
+        token.cancel()
+        progress.on_phase_start("checkpoint.index", None)
+        with pytest.raises(PipelineCancelled):
+            progress.on_phase_start("graph.metrics", 4)
+    finally:
+        set_active_token(None)
+
+    assert started == ["parse", "checkpoint.index"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="raises SIGINT in this process")
+def test_a_first_ctrl_c_is_acknowledged_once_and_exits_130(repo, monkeypatch):
+    from repowise.core.pipeline.phases import ingestion
+
+    real = ingestion._build_graph
+
+    async def _ctrl_c_then_build(*args, **kwargs):
+        signal.raise_signal(signal.SIGINT)
+        await real(*args, **kwargs)
+
+    monkeypatch.setattr(ingestion, "_build_graph", _ctrl_c_then_build)
+
+    result = _init(repo, "--no-prose", "--yes")
+
+    assert result.exit_code == EXIT_INTERRUPTED, result.output
+    out = " ".join(result.output.split())
+    assert out.count(_ingest.STOPPING_NOTICE) == 1
+    assert "repowise init --resume" in out
 
 
 def test_failed_pages_gap_names_the_command_that_writes_them():

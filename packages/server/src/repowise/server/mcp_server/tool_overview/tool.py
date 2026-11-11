@@ -17,6 +17,7 @@ from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._call_tasks import cancel_and_wait
 from repowise.server.mcp_server._changes import overview_changes
 from repowise.server.mcp_server._components import component_list
 from repowise.server.mcp_server._helpers import (
@@ -89,32 +90,14 @@ _INCLUDE_BLOCKS = frozenset(
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Orientation for an unfamiliar repo: packages, entry points, riskiest files, top actions.
 
-    Once per session; then use ``get_context`` or ``get_answer``.
-    Compact by default: ``content_md`` is the essay's summary section and
-    ``next_actions`` the week's top three; other blocks ship on request,
-    named in ``more``.
-
-    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
-    carry counts and recovery status in ``_meta``.
-    Include-gated blocks are projections, not omissions.
-
-    In a workspace, omit ``repo`` for the default repo, ``repo='<alias>'`` for
-    another, ``repo='all'`` for cross-repo links.
+    Once per session; then use ``get_context`` or ``get_answer``. Compact by
+    default; other blocks ship on request, named in ``more``.
 
     Args:
-        repo: Repository alias, path, or ID, or ``"all"``.
-        include: Opt-in extras, any combination of:
-            ``"content"`` — the full overview essay instead of its summary.
-            ``"outline"`` — the stored wiki page tree, two rungs deep.
-            ``"tour"`` — ``guided_tour`` + ``reading_order`` onboarding walks.
-            ``"decisions"`` — ``key_decisions``; ``get_why`` is richer.
-            ``"graph"`` — ``community_summary``, code-community clusters.
-            ``"ownership"`` — ``knowledge_map``: top 3 owners by files owned.
-            ``"components"`` — component list with file counts.
-            ``"changes"`` — changes by category, week and source, with coverage.
-            ``"tools"`` — ``tool_surface``: enabled tools, opt-ins, recipes.
-            ``"actions"`` — ``next_actions`` for the quarter too, with ``done_when``.
-            ``"scope"`` — the whole ``_meta.index_scope`` (provider, coverage).
+        repo: alias, path or ID; ``"all"`` for cross-repo links.
+        include: ``content`` (full essay), ``outline``, ``tour``,
+            ``decisions``, ``graph``, ``ownership``, ``components``,
+            ``changes``, ``tools``, ``actions``, ``scope``.
     """
     ignored: list[dict[str, Any]] = []
     want = {
@@ -246,6 +229,10 @@ async def _repo_overview(
         "reading_order_hint": _READING_ORDER_HINT if requested["reading_order"] else None,
     }
     result.update((key, block) for key, block in optional.items() if block)
+    # A block with nothing in it is not sent; its absence says the same.
+    for key in ("code_health", "key_modules", "entry_points", "git_health"):
+        if not result[key]:
+            del result[key]
 
     # The guided tour is persisted on the overview page's metadata at generation.
     if overview_page:
@@ -292,8 +279,7 @@ async def _in_turn(session: Any, repository: Any, actions: Any) -> tuple[Any, An
 async def _abandon(slow: Any) -> None:
     """Stop the slow reads when the rest failed, so no task outlives the call."""
     if isinstance(slow, asyncio.Future):
-        slow.cancel()
-        await asyncio.gather(slow, return_exceptions=True)
+        await cancel_and_wait([slow])
     else:
         slow.close()  # an in-turn read that never started
 

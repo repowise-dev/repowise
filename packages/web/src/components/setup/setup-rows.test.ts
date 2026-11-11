@@ -141,6 +141,27 @@ describe("deriveSetup", () => {
     expect(row.prompt.command).toBeUndefined();
   });
 
+  it("shows a hook whose script is missing with its command, and PATH advice in the prompt", () => {
+    const detail =
+      "not found, so those hooks do nothing: repowise-augment (~/.claude/settings.json, the repowise Claude Code plugin). Add C:/env/Scripts to PATH.";
+    const view = deriveSetup(
+      setupFixture({
+        checks: [
+          { id: "agent-hook-scripts", name: "Agent hook scripts", level: "warn", detail, fix: "repowise agents refresh" },
+        ],
+      }),
+      OPTS,
+    );
+    expect(view.attention[0]).toMatchObject({
+      id: "check-agent-hook-scripts",
+      status: { key: "check.statusWarn" },
+      title: { text: "Agent hook scripts" },
+      detail: { text: detail },
+      command: "repowise agents refresh",
+      prompt: { command: "repowise agents refresh", state: detail, fromDoctor: true, fix: true },
+    });
+  });
+
   it("offers a discovered coverage report and the model sheet", () => {
     const [model, coverage, rewrite] = deriveSetup(setupFixture(), OPTS).optional;
     expect(model!.action).toEqual({ kind: "model", hasModel: false });

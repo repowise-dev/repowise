@@ -11,11 +11,11 @@ from repowise.cli.commands.init_cmd import _finish
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_init_graph_caches_are_opt_in(monkeypatch, tmp_path: Path, enabled: bool) -> None:
+def test_init_graph_caches_follow_the_switch(monkeypatch, tmp_path: Path, enabled: bool) -> None:
     if enabled:
         monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "1")
     else:
-        monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+        monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "0")
 
     cache_calls: list[str] = []
     import repowise.core.pipeline.incremental.graph_seed as graph_seed

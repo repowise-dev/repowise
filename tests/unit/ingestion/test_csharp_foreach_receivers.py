@@ -11,10 +11,11 @@ from tests.unit.ingestion.test_chained_receiver_calls import _edges
 
 LIB = (
     "csharp",
-    "namespace A;\npublic class Item { public void Use() {} }\n"
+    "namespace A;\npublic class Item { public void Use() {} public object Clone() { return null; } }\n"
     "public class Comp<T, V> { public void Apply() {} }\n",
 )
 USE = "Lib.cs::Item::Use"
+CLONE = "Lib.cs::Item::Clone"
 
 
 def _uses(tmp_path: Path, members: str, body: str) -> set[str]:
@@ -89,4 +90,28 @@ def test_scan_and_shapes() -> None:
     ]
     assert range_element_types("List<Comp<T, V>>", "csharp") == (None, "Comp`2")
     assert range_element_types("Item[]", "csharp") == (None, "Item")
+    assert range_element_types("Item[,]", "csharp") == (None, "Item")
+    assert range_element_types("Item[][]", "csharp") is None
     assert range_element_types("Dictionary<string, Item>", "csharp") is None
+
+
+@pytest.mark.parametrize(
+    ("decl", "use"),
+    [
+        ("Item[] a = Make();", "a.Clone();"),
+        ("Item[][] b = Make();", "b.Clone();"),
+        ("Item[,] c = Make();", "c.Clone();"),
+    ],
+)
+def test_an_array_is_never_typed_as_its_element(tmp_path: Path, decl: str, use: str) -> None:
+    assert CLONE not in _uses(tmp_path, "", f"        {decl}\n        {use}\n")
+
+
+def test_foreach_over_a_multidimensional_array_types_the_element(tmp_path: Path) -> None:
+    body = "        Item[,] grid = Make();\n        foreach (var x in grid) { x.Use(); }\n"
+    assert USE in _uses(tmp_path, "", body)
+
+
+def test_foreach_over_a_jagged_array_stays_untyped(tmp_path: Path) -> None:
+    body = "        Item[][] jag = Make();\n        foreach (var x in jag) { x.Use(); }\n"
+    assert USE not in _uses(tmp_path, "", body)

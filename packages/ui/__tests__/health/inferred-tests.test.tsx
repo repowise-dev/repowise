@@ -208,6 +208,25 @@ describe("InferredTestsView", () => {
     expect(screen.getByText(/The graph finds no test for the other\s+1/)).toBeInTheDocument();
   });
 
+  it("lists code that owes no test as not applicable, never as unreached", () => {
+    const files = [
+      row({ file_path: "src/a.py", reached: true, health_score: 8 }),
+      row({ file_path: "src/b.py", reached: false, health_score: 3 }),
+      row({ file_path: "src/api_pb2.py", reached: false, health_score: 2, not_applicable: true }),
+    ];
+    render(
+      <InferredTestsView
+        data={response({ files, files_not_reached: 1, files_not_applicable: 1 })}
+        untestedFindings={[]}
+        onOpenFile={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByText("src/b.py").length).toBeGreaterThan(0);
+    expect(screen.queryAllByText("src/api_pb2.py")).toHaveLength(0);
+    expect(screen.getByText(/1 is generated, vendored/)).toBeInTheDocument();
+  });
+
   it("says the ranking was trimmed rather than letting it read as the repo", () => {
     const data = response({ files_total: 900 });
     render(

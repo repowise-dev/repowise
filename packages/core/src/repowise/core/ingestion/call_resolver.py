@@ -96,6 +96,7 @@ from .language_data import (
 )
 from .languages.receiver_types import external_type_name, holds_function
 from .models import (
+    TS_JS_LANGUAGES,
     CallReceiver,
     CallSite,
     Import,
@@ -115,6 +116,7 @@ from .return_types import (
 from .symbol_identity import id_segment_name, outer_scope, same_parameters
 from .type_names import (
     bare_type_name,
+    builtin_type_spelling,
     csharp_extension_receiver,
     is_resolvable_type_name,
     strip_type_arguments,
@@ -125,14 +127,12 @@ log = structlog.get_logger(__name__)
 # Languages with an implicit method receiver, where a bare ``foo()`` binds to
 # the caller's instance. Go, Python, PHP and JS/TS spell the receiver out, so a
 # bare call there is a free function and this tier would resolve it wrongly.
-_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex"})
+_IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "apex", "pascal"})
 
 # JS/TS (and the single-file components parsed as TypeScript): a member is only
 # reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
 # class method never means a member of that class, whatever the file declares.
-_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = frozenset(
-    {"javascript", "typescript", "svelte", "vue", "astro"}
-)
+_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = TS_JS_LANGUAGES
 
 # Python, Go and Rust share the shape: a bare ``foo()`` inside a method never
 # means a member either (Python needs ``self.``, Go needs a receiver, Rust
@@ -153,7 +153,14 @@ _BARE_CALL_TOP_LEVEL_FIRST_LANGUAGES = frozenset({"python", "go", "rust"})
 # C# is present: the tier answers with a name's overload set, and
 # ``resolve_file`` narrows it to the member the argument count names.
 _INHERITED_LANGUAGES = frozenset(
-    {"java", "kotlin", "python", "typescript", "swift", "csharp", "apex"}
+    {"java", "kotlin", "python", "typescript", "swift", "csharp", "apex", "pascal"}
+)
+
+# ``TFooHelper = class helper(TBaseHelper) for TFoo``: the helper and the type it extends.
+_PASCAL_HELPER = re.compile(
+    r"\b([A-Za-z_]\w*)\s*=\s*(?:class|record)\s+helper\b(?:\s*\([^)]*\))?\s+for\s+"
+    r"([A-Za-z_][\w.]*)",
+    re.IGNORECASE,
 )
 
 # VB.NET's own-instance receivers, lowercased: the language is case-insensitive.
@@ -176,9 +183,7 @@ _NAMED_IMPORT_SCOPE_LANGUAGES = _LEXICAL_BARE_NAME_LANGUAGES | {"rust"}
 # may alias a type, whose members it does reach. C, C++ and Ruby are absent
 # because their "alias" is an included file's stem, which a call can only match
 # by coinciding with a variable's name.
-_MODULE_ONLY_ALIAS_LANGUAGES = frozenset(
-    {"python", "typescript", "javascript", "svelte", "vue", "dart", "go", "rust", "swift"}
-)
+_MODULE_ONLY_ALIAS_LANGUAGES = TS_JS_LANGUAGES | {"python", "dart", "go", "rust", "swift"}
 
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]
@@ -392,6 +397,8 @@ class CallResolver(
         # that read ``_global_methods``, and would let an extension answer a
         # site the instance method the language dispatches to should own.
         self._extension_methods: dict[tuple[str, str], tuple[str, str]] = {}
+        # {path: {folded helper name: extended type}} for Pascal helpers.
+        self._pascal_helpers: dict[str, dict[str, str]] = {}
         self._file_extension_methods: dict[str, dict[tuple[str, str], str]] = {}
         self._merged_import_extensions: dict[str, dict[tuple[str, str], str]] = {}
 
@@ -606,11 +613,12 @@ class CallResolver(
                 file_methods[key] = index_id
                 self._global_methods[key].append((path, index_id))
 
-            extended = (
-                self._csharp_extended_type(sym)
-                if sym.parent_name
-                else self._kotlin_extended_type(sym)
-            )
+            if sym.language == "pascal":
+                extended = self._pascal_extended_type(path, sym)
+            elif sym.parent_name:
+                extended = self._csharp_extended_type(sym)
+            else:
+                extended = self._kotlin_extended_type(sym)
             if extended is not None:
                 extensions[(extended, sym.name)].add((path, index_id))
 
@@ -645,6 +653,24 @@ class CallResolver(
         if extended is None or not is_resolvable_type_name(extended, "csharp"):
             return None
         return extended if extended in self._csharp_type_names else None
+
+    def _pascal_extended_type(self, path: str, sym: Symbol) -> str | None:
+        """The type a Pascal ``class``/``record helper for T`` method extends.
+
+        A helper's methods answer for calls on any ``T`` value, a builtin
+        ``string`` included, which is spelled as the builtin table spells it.
+        """
+        if not sym.parent_name or sym.kind not in _FUNCTION_KINDS:
+            return None
+        helpers = self._pascal_helpers.get(path)
+        if helpers is None:
+            helpers = {
+                match.group(1).lower(): builtin_type_spelling(match.group(2), "pascal")
+                or match.group(2)
+                for match in _PASCAL_HELPER.finditer(self._text_of(path))
+            }
+            self._pascal_helpers[path] = helpers
+        return helpers.get(sym.parent_name.lower())
 
     def _kotlin_extended_type(self, sym: Symbol) -> str | None:
         """The type a top-level Kotlin extension function extends, a library one included.
@@ -1673,6 +1699,15 @@ class CallResolver(
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
+        # A static import names one repo type's member, declared or inherited. When
+        # that type has none, the name tiers below would find a nested type's.
+        if (
+            binding is not None
+            and binding.member_of
+            and binding.source_file
+            and not binding.source_file.startswith(_EXTERNAL_PREFIX)
+        ):
+            return None
         # A Python name imported from outside the repository is that module's,
         # not a same-named repo symbol a later tier would find. Python only:
         # Python resolves a repo's own absolute imports by dotted path, while
@@ -1841,13 +1876,19 @@ class CallResolver(
         binding: NamedBinding | None,
     ) -> ResolvedCall | None:
         """2a: the specific imported name, binding-aware."""
-        published = self._imported_symbol(binding, call.target_name)
+        published = self._imported_symbol(binding, call.target_name, caller_id)
         if published is None:
             return None
         return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
 
-    def _imported_symbol(self, binding: NamedBinding | None, name: str) -> str | None:
-        """The repo symbol an imported *name* binds, one barrel hop followed."""
+    def _imported_symbol(
+        self, binding: NamedBinding | None, name: str, caller_id: str = ""
+    ) -> str | None:
+        """The repo symbol an imported *name* binds, one barrel hop followed.
+
+        *caller_id* keeps a static import from binding the caller to itself; the
+        alias pass has no caller and its bindings never name a member's type.
+        """
         if not (binding and binding.source_file):
             return None
         source_file = binding.source_file
@@ -1856,9 +1897,27 @@ class CallResolver(
         if lookup_name in barrel:
             source_file = barrel[lookup_name]
         if binding.member_of:
-            # A static import names the member's type; a nested type's same-named member is another.
-            return self._published_by(source_file, binding.member_of, lookup_name)
+            return self._static_import_member(
+                source_file, binding.member_of, lookup_name, caller_id
+            )
         return self._published(source_file, lookup_name)
+
+    def _static_import_member(
+        self, source_file: str, owner: str, name: str, caller_id: str
+    ) -> str | None:
+        """The method ``import static owner.name`` binds, or None.
+
+        The named type's own declaration answers first, then the one it
+        inherits. A nested type's same-named member is neither, so a miss here
+        stays a miss instead of falling back to the file's flat symbol table.
+        """
+        owned = self._file_methods.get(source_file, {}).get((owner, name))
+        if owned is not None:
+            return owned
+        for path, (type_id, *_), _ in self._declared_types_named(owner):
+            if path == source_file:
+                return self._ancestor_method(type_id, name, caller_id, class_chain_first=True)
+        return None
 
     def _link_imported_aliases(self) -> None:
         """Redirect a module-level alias of an imported name onto its definition.
@@ -2508,20 +2567,31 @@ def _written_bare(lines: list[str], caller: Symbol, call: CallSite) -> bool:
     """Does *call*'s line call its name with no receiver or qualifier before it?
 
     The caller's own declaration names it too and is not a call: the first
-    line from the caller's start that names it holds the declaration.
+    line from the caller's start that names it before ``(``, ``:`` or ``=``
+    holds the declaration, so ``const f: T = (`` is one as well as ``f(``.
     """
     if not 0 < call.line <= len(lines):
         return False
     pattern = _name_pattern(call.target_name, call=True)
+    declared = _declaration_pattern(call.target_name)
     text = lines[call.line - 1]
     found = list(pattern.finditer(text))
-    declaration_line = next(
-        (i + 1 for i in range(caller.start_line - 1, call.line) if pattern.search(lines[i])),
+    declaration = next(
+        (
+            (i + 1, hit.start())
+            for i in range(caller.start_line - 1, call.line)
+            if (hit := declared.search(lines[i]))
+        ),
         None,
     )
-    if declaration_line == call.line:
-        found = found[1:]
+    if declaration is not None and declaration[0] == call.line:
+        found = [m for m in found if m.start() != declaration[1]]
     return any(_unqualified(text[: m.start()]) for m in found)
+
+
+def _declaration_pattern(name: str) -> re.Pattern[str]:
+    """*name* as a word before its parameters, a type annotation or an assignment."""
+    return re.compile(rf"\b{re.escape(name)}\b\s*(?:<[^<>()]*>\s*)?[(:=]")
 
 
 # An all-caps macro around a call (``FMT_POSIX_CALL(dup(fd))``) may rewrite it,

@@ -181,7 +181,11 @@ class RevisionHealthAnalyzer:
             package_roots=_package_roots(self.repo_root, usable),
             **(_index_kwargs(index) if index is not None else {}),
         )
-        report = analyzer.analyze(config=self.config, changed_files=set(usable))
+        # Only findings and metrics are read, so skip building suggestions.
+        report = analyzer.analyze(
+            config={**(self.config or {}), "refactoring_enabled": False},
+            changed_files=set(usable),
+        )
         result.findings = list(report.findings)
         result.analyzed = set(usable)
         result.dependents = analyzer.file_dependents()

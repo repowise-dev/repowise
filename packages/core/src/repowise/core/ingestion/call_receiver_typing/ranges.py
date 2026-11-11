@@ -6,6 +6,7 @@ from ..languages.receiver_types import (
     RangeClause,
     RangeScan,
     clauses_in_span,
+    external_type_name,
     range_element_types,
     scan_ranges,
     types_in_span,
@@ -25,6 +26,11 @@ def _is_its_own_container(type_name: str | None, spelling: str | None, language:
     """
     if language == "go" or type_name is None or spelling is None:
         return False
+    # A marked builtin (``external:Item[]``) is still the spelling it marks:
+    # compare its spelling, brackets stripped like the container side.
+    marked = external_type_name(type_name)
+    if marked is not None:
+        type_name = strip_type_arguments(marked).strip()
     # A C# generic value type carries its arity: ``List`1``.
     return strip_type_arguments(spelling).strip() == type_name.partition("`")[0]
 

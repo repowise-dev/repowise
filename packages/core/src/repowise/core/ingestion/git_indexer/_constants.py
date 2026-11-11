@@ -329,7 +329,8 @@ HOTSPOT_HALFLIFE_DAYS: float = 180.0
 #: v3: commits carry their category, and changes are rebuilt from history; the
 #: default history window grew from 500 to 5,000 commits.
 #: v4: a per-file walk widens a file's names only through its own renames, not
-#: those of other files in the same commit.
+#: those of other files in the same commit. A shallow clone's cut commit
+#: credits no author and counts as neither churn nor a file's origin.
 GIT_HISTORY_VERSION: int = 4
 GIT_HISTORY_VERSION_KEY = "git_history_version"
 #: Stored under :data:`GIT_HISTORY_VERSION_KEY` by ``repowise attribution

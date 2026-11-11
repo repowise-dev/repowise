@@ -67,6 +67,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `embedding_model` | provider default | Embedding model id. |
 | `reasoning` | `auto` | `auto`, `off`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; see [below](#reasoning). |
 | `max_tokens` | `16384` | Most output tokens per model-written documentation page. |
+| `context_window` | from the provider | Tokens (prompt plus answer) the model runs with; page material shrinks to fit. Unset: none for hosted models, 16384 for a local one. |
 | `commit_limit` | `5000` | Newest commits walked for git analysis and stored as commit rows, clamped 1-10000. |
 | `follow_renames` | `false` | Track file renames through git history. |
 | `exclude_patterns` | `[]` | Gitignore-style patterns on top of `.gitignore`; see [Exclude patterns](#exclude-patterns). |
@@ -101,7 +102,7 @@ run and are not stored here; `--include-submodules` is recorded in `state.json`
 
 Applies to documentation-generation calls on reasoning-capable chat models.
 
-- `auto` keeps provider defaults.
+- `auto` keeps provider defaults, except on Ollama, where it turns thinking off.
 - `off` / `none` disable Qwen3-style thinking on OpenAI-compatible vLLM/SGLang
   (sends `extra_body.chat_template_kwargs.enable_thinking=false`) and map to
   OpenRouter's `reasoning.effort=none` for effort-capable families.
@@ -174,13 +175,12 @@ generation_context:
 | `files` | none | Page key to an ordered list of repo-relative paths. |
 
 - Page keys: `repo_overview`, or `onboarding/` plus `getting_started`,
-  `key_concepts`, `how_it_works` or `active_landscape`.
+  `how_it_works` or `active_landscape`.
 - `onboarding/project_overview` is invalid (that slot is `repo_overview`).
-  `onboarding/glossary` is accepted but has no effect: that page is rendered
-  from mined vocabulary with no model.
-- `onboarding/guided_tour`, `onboarding/codebase_map` and
-  `onboarding/development_guide` name pages Repowise does not generate: they
-  are ignored with a warning naming the key, so upgrades never break a config.
+- `onboarding/guided_tour`, `onboarding/codebase_map`,
+  `onboarding/development_guide`, `onboarding/key_concepts` and
+  `onboarding/glossary` name pages Repowise does not generate: they are
+  ignored with a warning naming the key, so upgrades never break a config.
 - Other unknown page keys and malformed values fail generation. Keys other than
   `token_budget` and `files` directly under the block are ignored.
 - Eligible files are in the indexed source map with non-empty UTF-8 text.
@@ -256,7 +256,7 @@ distill:
   disables rewrites here.
 - Filter names: `test_output`, `build_output`, `lint_output`, `install_output`,
   `infra_plan`, `git_status`, `git_log`, `git_diff`, `git_diff_stat`,
-  `search_results`, `file_listing`, `logs`. `repowise doctor` checks them
+  `search_results`, `file_listing`, `file_read`, `logs`. `repowise doctor` checks them
   against the live registry.
 - Declining the `repowise init` opt-in writes `commands.enabled: false`, so a
   rewrite hook installed globally from another repo stays inert here.
@@ -283,6 +283,12 @@ overrides a key for one session.
   any span and a second Read returns the whole file.
 - `plus` mode keeps imports, constants, class fields, decorators and comments,
   eliding only function and method bodies.
+- A file whose skeleton is over the 10,000-character hook output cap is served
+  as an outline: one line per symbol, long signatures cut, the same range
+  markers. When the outline is still over the cap, it lists as many symbols as
+  fit (top-level types first, then the longest functions) and says how many.
+- A file edited since the last index is passed through whole, so the line
+  numbers are never off.
 - Savings show in `repowise saved` under `read_skeleton`. Needs Claude Code
   2.1.218+; older clients get the one-line pointer at
   `get_context(include=["skeleton"])`.
@@ -342,9 +348,10 @@ editor_files:
 
 - Default sections: `architecture`, `key_modules`, `entry_points`,
   `hotspots`, `health` (score and worst file), `decisions` (top three titles),
-  `how_to_work` (three bullets), `tools`.
+  `how_to_work` (which task goes to Grep and which to a Repowise call).
 - Opt-in: `code_health` (all health signals, replaces `health`), `fix_first`,
-  `commands` (build, test and lint from manifests), `how_to_work_full`.
+  `commands` (build, test and lint from manifests), `how_to_work_full`,
+  `tools` (the MCP tool table).
 
 ## The `decisions:` block
 
@@ -870,8 +877,15 @@ export OLLAMA_BASE_URL="http://localhost:11434"
 repowise init --provider ollama --model llama3.2
 ```
 
-- `num_ctx` is sized to each prompt, so pages are not cut to Ollama's small
-  default; `REPOWISE_OLLAMA_NUM_CTX` pins it (e.g. to fit memory).
+- The window is the model's own `num_ctx` if its Modelfile sets one, else
+  16384, never above its trained context length. Page material (code
+  excerpts, source evidence) shrinks to fit it, least important first, so a
+  4B model on a laptop writes a page in seconds instead of minutes.
+- `REPOWISE_OLLAMA_NUM_CTX` pins `num_ctx` and sizes material to it, which
+  gives a bigger model more to read; `context_window` in `config.yaml` sizes
+  material only, and `num_ctx` grows to hold the prompt.
+- `reasoning: auto` turns thinking off for page generation; `low`, `medium` or
+  `high` turn it on, and the window grows to hold the longer answer.
 - Requests go one at a time; with server `OLLAMA_NUM_PARALLEL` above 1, set the
   same value where Repowise runs.
 
@@ -925,6 +939,10 @@ model and base URL the same way; first match wins:
   CLI uses it too.
 - A local OpenAI-compatible server such as LM Studio: `provider: openai` with
   `openai: {base_url: http://localhost:1234/v1}`. Loopback URLs need no key.
+  Page material is sized for a 16384-token window, since the server does not
+  report its own; start the server with at least that context, or set
+  `context_window` to the context length it runs with. A
+  local backend behind LiteLLM is sized the same way.
 - Since `config.yaml` may be committed, a non-local base URL there gets a key
   not in `.repowise/.env` only after you confirm in Settings or `repowise init`.
 - The repo's Settings page sets all this: the model field lists live models
@@ -963,6 +981,29 @@ then `mock`. `reindex` skips a `mock` pin when a real embedder is found.
   `REPOWISE_EMBEDDING_TIMEOUT` apply to the active embedder; [provider-prefixed
   variants](#embeddings) take precedence for theirs.
 
+### Gemini Embedding 2
+
+The `gemini` embedder supports `gemini-embedding-2`; its default remains
+`gemini-embedding-001`. To switch an existing index:
+
+```bash
+export GEMINI_API_KEY="..."
+export REPOWISE_EMBEDDER=gemini
+export REPOWISE_EMBEDDING_MODEL=gemini-embedding-2
+export REPOWISE_EMBEDDING_DIMS=768
+repowise reindex --embedder gemini
+```
+
+Keep the same model and dimension settings in the environment of `update`,
+`serve` and the MCP server. Embedding 2 and Embedding 001 use incompatible
+vector spaces, even at the same dimension, so switching requires a full
+reindex. Restart a running server after switching.
+
+Repowise applies Google's code-retrieval instruction to queries and document
+formatting to stored text, and requests a separate vector for each input.
+Embedding 2 does not accept `task_type`. See Google's
+[embedding instructions](https://ai.google.dev/gemini-api/docs/embeddings#task-types-with-embeddings-2).
+
 ## BYOK (Bring Your Own Key)
 
 Keys resolve in order:
@@ -994,7 +1035,7 @@ Keys resolve in order:
 | `ANTHROPIC_BASE_URL`, `GEMINI_BASE_URL`, `DEEPSEEK_BASE_URL`, `KIMI_BASE_URL`, `LITELLM_BASE_URL` | Override that provider's API base URL |
 | `OPENAI_BASE_URL` | Override the OpenAI base URL (vLLM/SGLang, 9router, other compatible endpoints) |
 | `OLLAMA_BASE_URL` | Ollama server (default `http://localhost:11434`) |
-| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; unset sizes it per prompt |
+| `REPOWISE_OLLAMA_NUM_CTX` | Fixed Ollama context window; page material is sized to it. Unset: the Modelfile's `num_ctx`, else 16384 |
 | `OLLAMA_NUM_PARALLEL` | Ollama requests sent at once (default 1) |
 
 ### Provider and model overrides

@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from repowise.core.analysis.changed_lines import shallow_roots
+
 from ._constants import _CODE_EXTENSIONS
 
 __all__ = [
@@ -596,8 +598,10 @@ def capture_repo_totals(repo: Any, prior: RepoTotals | None = None) -> RepoTotal
         totals.total_merge_commit_count = int(repo.git.rev_list("--count", "--merges", rev).strip())
 
     try:
+        # A shallow clone lists its cut commits as roots; they found nothing.
+        cut = shallow_roots(str(repo.working_dir))
         roots = repo.git.rev_list("--max-parents=0", rev).split()
-        root_commits = [repo.commit(sha) for sha in roots if sha]
+        root_commits = [repo.commit(sha) for sha in roots if sha and sha not in cut]
         if root_commits:
             oldest = min(root_commits, key=lambda c: c.committed_datetime)
             # Normalise to UTC before storing. GitPython hands back the author's

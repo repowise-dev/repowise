@@ -2,7 +2,7 @@
 
 import * as React from "react";
 
-import { formatTokens } from "../lib/format";
+import { formatNumber, formatTokens } from "../lib/format";
 import type { SavingsView } from "./types";
 
 export interface OpportunityItem {
@@ -116,7 +116,7 @@ export function buildOpportunities(
   if (data.missed_events > 0) {
     items.push({
       id: "missed_distill",
-      title: `${data.missed_events.toLocaleString()} command${
+      title: `${formatNumber(data.missed_events)} command${
         data.missed_events === 1 ? "" : "s"
       } bypassed distillation`,
       potential: `Observed opportunity: ~${formatTokens(data.missed_tokens_est)} tokens`,
@@ -138,7 +138,7 @@ export function buildOpportunities(
   if (data.reread_events > 0) {
     items.push({
       id: "reread",
-      title: `${data.reread_events.toLocaleString()} unchanged-file re-read${
+      title: `${formatNumber(data.reread_events)} unchanged-file re-read${
         data.reread_events === 1 ? "" : "s"
       }`,
       // "Potentially avoid" promised a future saving from an observation of
@@ -169,7 +169,7 @@ export function buildOpportunities(
       )} tokens`,
       detail: (
         <>
-          Observed {row.observations.toLocaleString()} time
+          Observed {formatNumber(row.observations)} time
           {row.observations === 1 ? "" : "s"}, and recorded by a capture surface as an
           opportunity rather than a saving.
         </>

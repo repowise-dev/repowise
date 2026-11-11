@@ -10,11 +10,13 @@ zero external dependencies.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import math
 import os
 import sys
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
@@ -104,6 +106,16 @@ def resolve_embed_prefix(kind: str) -> str:
 
 # Vars already reported this process, so the notice prints once, not per batch.
 _PREFIX_WARNED: set[str] = set()
+
+
+def client_for_kind(client: Any, kind: str) -> Any:
+    """*client* for one embed call: a query gets no SDK retries.
+
+    A query waits on the answer, and the SDK's retry backoff on a rate-limited
+    or dead endpoint costs seconds per call; the query path falls back to text
+    search instead. Bulk document embeds keep the SDK's retries.
+    """
+    return client.with_options(max_retries=0) if kind == "query" else client
 
 
 def _report_prefix_needs_reindex(var: str) -> None:
@@ -268,3 +280,27 @@ def store_has_semantic_vectors(store: object) -> bool:
     if store is None:
         return False
     return is_semantic_embedder(getattr(store, "_embedder", None))
+
+
+#: Ceiling on the start-up embed; past it the first search pays the rest.
+WARMUP_TIMEOUT_S = 5.0
+
+
+async def warm_query_embedder(embedder: Embedder | None) -> None:
+    """Embed one short text so the first real search finds the client warm.
+
+    The first query embed in a process pays for client setup and the TLS
+    handshake: about 2s against a hosted provider, where a warm one takes
+    about 0.25s. Bounded by :data:`WARMUP_TIMEOUT_S`; never raises.
+
+    Embedded as a document: a failed warm-up must not arm the query
+    cool-down in :class:`~repowise.core.providers.embedding.caching.CachingEmbedder`,
+    so one start-up blip does not switch off the first minute of searches.
+    """
+    if embedder is None or not is_semantic_embedder(embedder):
+        return
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(
+            embedder.embed(["code search"], kind="document"),
+            timeout=WARMUP_TIMEOUT_S,
+        )

@@ -23,6 +23,7 @@ async def prune_deleted_files(
     degraded: list[str] | None,
     timings: PhaseTimings | None,
     pruned: set[str] | None = None,
+    left_index: set[str] | None = None,
 ) -> None:
     """Drop file-scoped rows for deleted files, then rebuild the queues built from them.
 
@@ -34,8 +35,10 @@ async def prune_deleted_files(
 
     The graph's file nodes join *live_paths* because resolver passes mint
     file-shaped nodes that name no file (`external:`, `framework:`, Spring SPI
-    sources); they fail every liveness test, and only changed files' edges are
-    rebuilt afterwards. A graph that cannot be read skips the prune.
+    sources); they fail every liveness test, and edges deleted with them are
+    not rebuilt afterwards. A graph that cannot be read skips the prune.
+
+    *left_index* is passed through: see prune_deleted_file_rows.
     """
     pruned_count = 0
     try:
@@ -48,7 +51,12 @@ async def prune_deleted_files(
         }
         with timed(timings, "persist.prune"):
             pruned_count, refusals = await prune_deleted_file_rows(
-                session, repo_id, repo_path, live_hint=live_hint, pruned=pruned
+                session,
+                repo_id,
+                repo_path,
+                live_hint=live_hint,
+                pruned=pruned,
+                left_index=left_index,
             )
         if pruned_count:
             log(f"Pruned rows for [cyan]{pruned_count}[/cyan] deleted file(s)")
@@ -58,6 +66,16 @@ async def prune_deleted_files(
                 degraded.append(refusal)
     except Exception as exc:
         skip("Deleted-file prune", exc)
+
+    # The liveness prune above never judges `external:` / `framework:` nodes;
+    # the rebuilt graph does.
+    try:
+        from repowise.core.pipeline.persist import prune_absent_synthetic_nodes
+
+        with timed(timings, "persist.prune"):
+            await prune_absent_synthetic_nodes(session, repo_id, graph_builder)
+    except Exception as exc:
+        skip("Synthetic graph node prune", exc)
 
     # The performance and refactoring queues are materialized from the health
     # findings the prune just deleted; without this they keep serving a cause

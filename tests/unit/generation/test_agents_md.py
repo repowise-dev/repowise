@@ -18,15 +18,17 @@ def _data() -> EditorFileData:
     )
 
 
-def test_agents_md_renders_repowise_workflows() -> None:
+def test_agents_md_routes_tasks_to_tools() -> None:
     rendered = AgentsMdGenerator().render(_data())
 
-    assert "get_overview()" in rendered
-    assert "search_codebase" in rendered
-    assert "get_context" in rendered
-    assert "get_risk" in rendered
-    assert "get_why" in rendered
-    assert "get_dead_code" in rendered
+    assert "Grep, Glob and Read are faster" in rendered
+    assert 'get_answer(question="how does ...")' in rendered
+    assert 'get_context(targets=["<symbol>"], include=["references"])' in rendered
+    assert 'get_risk(targets=["<file>"])' in rendered
+    assert "get_why(query=" in rendered
+    # Codex and other AGENTS.md readers name tools their own way.
+    assert "mcp__" not in rendered
+    assert "| Tool | When and why |" not in rendered
 
 
 def test_agents_md_renders_the_full_shared_tool_table() -> None:
@@ -36,7 +38,10 @@ def test_agents_md_renders_the_full_shared_tool_table() -> None:
     # TOOL_TABLE_ROWS, which test_tool_table_drift pins to the registry) fails CI
     # here if AGENTS.md ever stops rendering it. This is the AGENTS.md twin of
     # the CLAUDE.md guard so the two can never drift apart again.
-    rendered = AgentsMdGenerator().render(_data())
+    import dataclasses
+
+    data = dataclasses.replace(_data(), sections=_data().sections | {"tools"})
+    rendered = AgentsMdGenerator().render(data)
 
     assert render_tool_table() in rendered
     for signature, _row in TOOL_TABLE_ROWS.values():

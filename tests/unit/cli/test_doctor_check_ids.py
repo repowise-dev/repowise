@@ -24,9 +24,12 @@ from repowise.cli.commands.doctor_cmd._types import _check
 # "*" stands for a per-target or per-language suffix.
 PINNED_IDS = {
     "agent-*",
+    "agent-hook-scripts",
+    "agent-hooks-firing",
     "agent-integrations",
     "attribution-notes",
     "claude-code-mcp-entry",
+    "claude-desktop-mcp-entry",
     "coordinator-drift",
     "database",
     "distill-config",
@@ -199,10 +202,10 @@ def test_unregistered_entry_warns_only_when_settings_cannot_be_parsed(
 ) -> None:
     from repowise.cli.editor_integrations import claude_config
 
-    settings_path = tmp_path / "settings.json"
+    settings_path = tmp_path / ".claude.json"
     if settings is not None:
         settings_path.write_text(settings, encoding="utf-8")
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings_path)
+    monkeypatch.setattr(claude_config, "_claude_code_user_config_path", lambda: settings_path)
     monkeypatch.setattr(integrations, "_registered_mcp_entry", lambda: None)
     row, wedged = integrations._claude_registration_check(tmp_path)
     assert (row.id, row.level, row.ok, wedged) == ("claude-code-mcp-entry", level, True, False)

@@ -100,7 +100,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # rspec: `spec/` is RSpec for ruby and a specification folder otherwise
     ("spec/models/user_spec.rb", None, "test"),  # #1103: one of nine said test
     ("spec/models/user.rb", "ruby", "test"),
-    ("spec/models/user.rb", None, ""),
+    # ...and a path-only caller reads the language off the extension
+    ("spec/models/user.rb", None, "test"),
+    ("spec/models/user.py", None, ""),
     ("spec/openapi/users.yaml", None, ""),
     ("spec/support/helper.rb", None, "support"),
     # perl-style t/: `t/` is a test tree for python whatever the filename
@@ -112,9 +114,14 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("t/integration/tasks.py", "python", "test"),
     ("t/smoke/tasks.py", "python", "test"),
     ("t/unit/contrib/proj/foo/tasks.py", "python", "test"),
-    # ...so without the language, only a corroborating filename counts
+    # ...without a language the extension names it (path-only callers such
+    # as ``path_origin`` agree with ingestion: celery's smoke-test workers)
     ("t/unit/app/test_app.py", None, "test"),
-    ("t/unit/tasks/task_config.py", None, ""),
+    ("t/unit/tasks/task_config.py", None, "test"),
+    ("t/smoke/workers/dev.py", None, "test"),
+    # ...and for another language only a corroborating filename counts
+    ("t/basic.pl", None, ""),
+    ("t/unit/helper.go", None, ""),
     # ...a non-source file under t/ stays as it is without corroboration
     ("t/data/expected.json", None, ""),
     ("t/assets/image.png", None, ""),
@@ -159,6 +166,15 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("testdata/golden.json", None, "support"),
     ("pkg/parser/testdata/valid/input.go", None, "support"),
     ("src/__fixtures__/x.ts", None, "support"),
+    # jscodeshift stores codemod input/expected output beside the source tree.
+    ("packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx", None, "support"),
+    ("__testfixtures__/default-import.output.tsx", None, "support"),
+    ("src/transforms/__testfixtures__/nested/input.js", None, "support"),
+    ("src\\transforms\\__testfixtures__\\input.js", None, "support"),
+    ("src/transforms/__testfixtures__/transform.test.ts", None, "test"),
+    ("src/testfixtures/transform.ts", None, ""),
+    ("src/__testfixtures__extra/transform.ts", None, ""),
+    ("src/transforms/__testfixtures__.ts", None, ""),
     # a test-shaped filename still wins over the directory
     ("testdata/build_test.go", None, "test"),
     # and the same finding's third path stays production code on purpose: bare
