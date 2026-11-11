@@ -54,6 +54,7 @@ from repowise.core.ingestion.git_indexer import (
 )
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.repo_config import resolve_language
 
 from .config_changes import classify_config_changes
 from .decision_passes import _run_decision_evolution as _run_decision_evolution
@@ -556,7 +557,11 @@ def _renderer_inputs(repo_path):
 
     cfg = load_config(repo_path)
     style = resolve_style(cfg.get("wiki_style", "comprehensive"), repo_path=repo_path)
-    return cfg.get("language", "en"), style.fingerprint, style.template_dir
+    return (
+        resolve_language(repo_path, config=cfg),
+        style.fingerprint,
+        style.template_dir,
+    )
 
 
 def _head_commit_ts(repo_path) -> float | None:
@@ -2131,7 +2136,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
     cfg = run.cfg
     generation_changed = run.config.generation_changed
     full_generation = run.full_generation
-    language = cfg.get("language", "en")
+    language = resolve_language(run.repo_path, config=cfg)
     enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
     config = GenerationConfig.from_repo_config(
         cfg,
