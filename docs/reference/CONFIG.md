@@ -86,6 +86,7 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `forges.hosts` | `{}` |  | Which forge a self-hosted git host is: host to github, gitlab, azure, bitbucket or generic. |  |
 | `editor_setup` | `true` |  | Let update keep agent and editor files current. init --no-editor-setup writes false, which leaves them alone. |  |
 | `changes.outcome_fix_days` | `30` | 1-365 | Days after a change in which fix commits to its files are counted. |  |
+| `managed_checkout` | `false` |  | This checkout is a clone the server owns: before each server sync it fetches the tracked branch and fast-forwards to it. Leave off for a working tree you edit. |  |
 <!-- END GENERATED settings:config-yaml -->
 
 More on [`commit_limit`](#commit_limit), [`reasoning`](#reasoning),
@@ -95,7 +96,9 @@ More on [`commit_limit`](#commit_limit), [`reasoning`](#reasoning),
 [Exclude patterns](#exclude-patterns), `embedder` in
 [Embeddings](#embeddings-for-semantic-search), `forges.hosts` in
 [GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts), and
-`changes.outcome_fix_days` under [`repowise changes`](CLI_REFERENCE.md#repowise-changes).
+`changes.outcome_fix_days` under [`repowise changes`](CLI_REFERENCE.md#repowise-changes),
+and `managed_checkout` in
+[AUTO_SYNC.md](../scale/AUTO_SYNC.md#7-server-owned-clones).
 
 Blocks, each with its own section: [`generation_context`](#grounded-generation-context),
 [`distill`](#the-distill-block), [`hooks`](#the-hooks-block), [`mcp`](#the-mcp-block),
