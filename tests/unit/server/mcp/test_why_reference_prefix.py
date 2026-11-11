@@ -127,3 +127,52 @@ async def test_why_reference_ignores_superseded_alias_prefix(session, setup_mcp)
     result = await get_why(id="11223344")
     assert result["resolved"] is False
     assert result["decisions"] == []
+
+
+@pytest.mark.asyncio
+async def test_why_reference_rejects_short_id_fragment(session, setup_mcp) -> None:
+    full_id = "3e0f68f833e1c4a87f9ebe94b08dd813"
+    session.add(
+        DecisionRecord(
+            id=full_id,
+            repository_id=setup_mcp,
+            title="Use Redis for rate limiting",
+            status="proposed",
+            context="ctx",
+            decision="dec",
+            rationale="why",
+            affected_files_json="[]",
+        )
+    )
+    await session.commit()
+
+    # Prefixes shorter than 8 chars do not resolve even if only 1 record matches
+    result_short = await get_why(id="3e")
+    assert result_short["resolved"] is False
+    assert result_short["decisions"] == []
+
+    result_single = await get_why(id="3")
+    assert result_single["resolved"] is False
+    assert result_single["decisions"] == []
+
+    from repowise.server.mcp_server.tool_why.reference import _resolve_reference_id
+
+    records = [
+        DecisionRecord(
+            id=full_id,
+            repository_id=setup_mcp,
+            title="Use Redis for rate limiting",
+            status="proposed",
+            context="ctx",
+            decision="dec",
+            rationale="why",
+            affected_files_json="[]",
+        )
+    ]
+    resolved_empty, cands_empty = await _resolve_reference_id(session, "", records)
+    assert resolved_empty == ""
+    assert cands_empty == []
+
+    resolved_short, cands_short = await _resolve_reference_id(session, "3e", records)
+    assert resolved_short == "3e"
+    assert cands_short == []

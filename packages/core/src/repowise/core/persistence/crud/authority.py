@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -473,9 +473,6 @@ async def current_currency(session: AsyncSession, record: DecisionRecord) -> str
     return _record_currency(acceptance.currency, record)
 
 
-SUPERSEDED_REASON: Final[str] = "superseded"
-
-
 class AmbiguousDecisionIdError(ValueError):
     """A decision id prefix matches multiple live records or aliases."""
 
@@ -494,6 +491,8 @@ async def _match_prefix(
     extra_filter: Any = None,
 ) -> str | None:
     """*selected* from the one row whose *matched* column starts with *prefix*."""
+    if not prefix:
+        return None
     stmt = select(selected, matched).where(
         matched.like(f"{escape_like(prefix)}%", escape=LIKE_ESCAPE)
     )
@@ -530,13 +529,20 @@ async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | 
     return alias.decision_id if alias is not None else None
 
 
-async def resolve_decision_id_prefix(session: AsyncSession, decision_id: str) -> str | None:
+async def resolve_decision_id_prefix(
+    session: AsyncSession,
+    decision_id: str,
+    *,
+    min_length: int = 1,
+) -> str | None:
     """Expand a (possibly truncated) decision id to the full stored id.
 
     ``decision list`` prints 8-char prefixes, so every id-taking entry point
     accepts a unique prefix. Returns None when nothing matches; raises
     AmbiguousDecisionIdError on an ambiguous prefix.
     """
+    if not decision_id or len(decision_id) < min_length:
+        return None
     full_id = await _match_prefix(session, DecisionRecord.id, DecisionRecord.id, decision_id)
     if full_id is not None:
         return full_id

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from repowise.core.persistence.crud.authority import (
     AmbiguousDecisionIdError,
@@ -91,6 +91,9 @@ async def _why_reference(
     }
 
 
+_MIN_PREFIX_LENGTH: Final[int] = 8
+
+
 async def _resolve_reference_id(
     session: Any, reference_id: str, records: list
 ) -> tuple[str, list[str]]:
@@ -107,6 +110,10 @@ async def _resolve_reference_id(
     if direct and direct != reference_id:
         return direct, []
 
+    # Reject reference ids shorter than 8 characters before prefix branches run
+    if len(reference_id) < _MIN_PREFIX_LENGTH:
+        return reference_id, []
+
     # 3. Prefix match on live records
     matching_records = sorted({r.id for r in records if r.id.startswith(reference_id)})
     if len(matching_records) == 1:
@@ -116,7 +123,9 @@ async def _resolve_reference_id(
 
     # 4. Prefix match via shared persistence helper (handles DecisionRecord & non-superseded DecisionAlias)
     try:
-        full_id = await resolve_decision_id_prefix(session, reference_id)
+        full_id = await resolve_decision_id_prefix(
+            session, reference_id, min_length=_MIN_PREFIX_LENGTH
+        )
         if full_id is not None:
             return full_id, []
     except AmbiguousDecisionIdError as exc:

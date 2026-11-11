@@ -640,3 +640,9 @@ async def test_resolve_decision_id_prefix_resolution_and_disambiguation(async_se
 
     # 5. Non-matching prefix returns None
     assert await resolve_decision_id_prefix(async_session, "ffffffff") is None
+
+    # 6. Empty prefix returns None
+    assert await resolve_decision_id_prefix(async_session, "") is None
+
+    # 7. Prefix shorter than min_length returns None
+    assert await resolve_decision_id_prefix(async_session, "bbbb", min_length=8) is None
