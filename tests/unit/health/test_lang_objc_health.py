@@ -130,9 +130,10 @@ def test_c_function_parameters() -> None:
     assert fn.param_count == 2
 
 
-@pytest.mark.skip(reason="method selector parameters are not counted: param_count is 0 for every method")
 def test_method_parameters() -> None:
     params = {f.name: f.param_count for f in _walk(_AFNETWORKING).functions}
+    # A three-part selector has three ``method_parameter`` children, a
+    # single-part selector one, and a bare selector none.
     assert params["validateResponse"] == 3
     assert params["encodeWithCoder"] == 1
     assert params["supportsSecureCoding"] == 0

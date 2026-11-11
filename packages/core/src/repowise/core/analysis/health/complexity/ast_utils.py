@@ -748,6 +748,12 @@ def _count_parameters(fn_node: Node) -> int:
     """
     params = _parameter_list(fn_node)
     if params is None:
+        if fn_node.type == "method_definition":
+            # Objective-C: a method has no parameter list node. Each selector
+            # argument is a ``method_parameter`` child; the selector keywords
+            # between them are bare identifiers, not parameters. (A C function
+            # in a ``.m`` file is a ``function_definition`` and never lands here.)
+            return sum(1 for child in fn_node.children if child.type == "method_parameter")
         # Swift has no list node: each ``parameter`` is a child of the function,
         # and a subscript's are on the ``subscript_declaration`` around its body.
         holder = fn_node
