@@ -43,6 +43,40 @@ def test_the_table_is_registered_markers_not_already_advisory():
         assert languages and all(lang == lang.lower() for lang in languages)
 
 
+def test_markers_with_defect_signal_stay_scored_everywhere():
+    assert not {"complex_method", "nested_complexity", "large_method"} & set(
+        scoring._ADVISORY_BY_LANGUAGE
+    )
+
+
+def test_the_table_keys_on_language_tags_the_scorer_receives():
+    from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
+
+    for languages in scoring._ADVISORY_BY_LANGUAGE.values():
+        assert languages <= set(LANGUAGE_MAPS)
+
+
+@pytest.mark.parametrize(
+    ("marker", "listed", "unlisted"),
+    [
+        ("primitive_obsession", "python", "go"),
+        ("complex_conditional", "typescript", "scala"),
+        ("god_class", "kotlin", "java"),
+    ],
+)
+def test_a_table_entry_is_advisory_in_its_language_only(marker, listed, unlisted):
+    results = [_result(marker)]
+    scores, deductions = score_file(results, listed)
+    assert set(scores.values()) == {10.0} and deductions == [0.0]
+    (finding,) = attach_impacts(results, deductions, listed)
+    assert finding_is_advisory(finding)
+
+    scores, deductions = score_file(results, unlisted)
+    assert min(scores.values()) < 10.0
+    (finding,) = attach_impacts(results, deductions, unlisted)
+    assert not finding_is_advisory(finding)
+
+
 @pytest.mark.usefixtures("complex_method_advisory_in_python")
 def test_listed_language_scores_nothing_and_stores_advisory():
     results = [_result()]

@@ -73,9 +73,9 @@ def test_a_marker_that_stopped_firing_stops_deducting() -> None:
 
 def test_structural_findings_survive_untouched() -> None:
     """Nothing here reads the source, so nothing here may discard what a parse found."""
-    structural = _finding("god_class", Severity.CRITICAL)
+    structural = _finding("large_method", Severity.CRITICAL)
     (refreshed,) = _run(git_meta={"prior_defect_count": 0}, findings=[structural])
-    kept = [f for f in refreshed.findings if f.biomarker_type == "god_class"]
+    kept = [f for f in refreshed.findings if f.biomarker_type == "large_method"]
     assert len(kept) == 1
     assert refreshed.structure_deduction > 0
 
