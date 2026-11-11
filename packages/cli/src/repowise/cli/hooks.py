@@ -90,7 +90,20 @@ _HOOK_SCRIPT = """\
     printf '\\n--- post-commit hook fired at %s for HEAD %s ---\\n' \\
       "$(date 2>/dev/null)" "$HEAD"
   } >> "$LOG" 2>/dev/null || true
+  # Coalesce a burst of commits into one update (#5353). The directory is the
+  # guard, and it is taken inside the backgrounded subshell so the trap that
+  # releases it fires when the update exits — a trap on the outer block never
+  # does, because that block exits as soon as it has backgrounded the work.
+  #
+  # The age escape is the part that matters: a run killed mid-flight leaves the
+  # directory, and without it every later commit is silently skipped. A hook
+  # that does nothing looks exactly like one that is working.
+  find "$ROOT/.repowise/.update.lock.d" -maxdepth 0 -mmin +120 -exec rmdir {} \\; 2>/dev/null
   (
+    if ! mkdir "$ROOT/.repowise/.update.lock.d" 2>/dev/null; then
+      exit 0
+    fi
+    trap 'rmdir "$ROOT/.repowise/.update.lock.d" 2>/dev/null' EXIT
     cd "$ROOT" || exit 1
     if command -v repowise >/dev/null 2>&1; then
       repowise update >> "$LOG" 2>&1
