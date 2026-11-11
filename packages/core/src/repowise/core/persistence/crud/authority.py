@@ -66,11 +66,14 @@ from ..models import (
     DecisionRecord,
     _now_utc,
 )
+from ..sql import LIKE_ESCAPE, escape_like
 
 __all__ = [
     "ACCEPTED_SQL_PREDICATE",
+    "SUPERSEDED_REASON",
     "AcceptanceRefusedError",
     "AcceptanceSignature",
+    "AmbiguousDecisionIdError",
     "accept_decision",
     "accepted_decision_ids",
     "accepted_predicate",
@@ -95,6 +98,7 @@ __all__ = [
     "record_blockers",
     "request_split",
     "resolve_decision_id",
+    "resolve_decision_id_prefix",
     "return_to_review",
     "supersede_decision",
     "upsert_candidate_meta",
@@ -471,6 +475,40 @@ async def current_currency(session: AsyncSession, record: DecisionRecord) -> str
     return _record_currency(acceptance.currency, record)
 
 
+class AmbiguousDecisionIdError(ValueError):
+    """A decision id prefix matches multiple live records or aliases."""
+
+    def __init__(self, prefix: str, candidates: list[str]) -> None:
+        self.prefix = prefix
+        self.candidates = candidates
+        super().__init__(f"Decision id prefix {prefix!r} is ambiguous; use more characters.")
+
+
+async def _match_prefix(
+    session: AsyncSession,
+    selected: Any,
+    matched: Any,
+    prefix: str,
+    *,
+    extra_filter: Any = None,
+) -> str | None:
+    """*selected* from the one row whose *matched* column starts with *prefix*."""
+    if not prefix:
+        return None
+    stmt = select(selected, matched).where(
+        matched.like(f"{escape_like(prefix)}%", escape=LIKE_ESCAPE)
+    )
+    if extra_filter is not None:
+        stmt = stmt.where(extra_filter)
+    result = await session.execute(stmt.limit(10))
+    rows = result.all()
+    # Two aliases of one decision can share a prefix; that is one answer.
+    if len({row[0] for row in rows}) > 1:
+        candidates = sorted({row[1] for row in rows})
+        raise AmbiguousDecisionIdError(prefix, candidates)
+    return rows[0][0] if rows else None
+
+
 async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | None:
     """Resolve an id that may be a retired alias to the live record's id.
 
@@ -492,6 +530,40 @@ async def resolve_decision_id(session: AsyncSession, decision_id: str) -> str | 
     if await session.get(DecisionRecord, decision_id) is not None:
         return decision_id
     return alias.decision_id if alias is not None else None
+
+
+async def resolve_decision_id_prefix(
+    session: AsyncSession,
+    decision_id: str,
+    *,
+    min_length: int = 1,
+) -> str | None:
+    """Expand a (possibly truncated) decision id to the full stored id.
+
+    ``decision list`` prints 8-char prefixes, so every id-taking entry point
+    accepts a unique prefix. Returns None when nothing matches; raises
+    AmbiguousDecisionIdError on an ambiguous prefix.
+    """
+    if not decision_id or len(decision_id) < min_length:
+        return None
+    full_id = await _match_prefix(session, DecisionRecord.id, DecisionRecord.id, decision_id)
+    if full_id is not None:
+        return full_id
+    # Merging and superseding retire ids that are already written down
+    # somewhere. Resolving through the alias keeps those working instead of
+    # reporting the decision as gone. Superseded aliases are excluded: they
+    # point to the successor, but queries for the retired id want the historical
+    # record, not its replacement.
+    alias_target = await _match_prefix(
+        session,
+        DecisionAlias.decision_id,
+        DecisionAlias.alias_id,
+        decision_id,
+        extra_filter=DecisionAlias.reason != SUPERSEDED_REASON,
+    )
+    if alias_target is not None:
+        return await resolve_decision_id(session, alias_target) or alias_target
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -284,6 +284,34 @@ async def _attach_branch_blocks(
     return await _independent_changes_block(ctx, changed, collector, revspec)
 
 
+async def _store_payload(
+    scored_entry: Any,
+    include: list[str] | None,
+    payload: dict,
+    changed: dict[str, set[int]],
+    branches: str | None,
+    scan: asyncio.Task | None,
+) -> None:
+    if scored_entry is None:
+        return
+    overlap = await _scan_answer(scan)
+    # A failed or timed-out scan may succeed next time, so the payload is not kept.
+    if overlap is None and scan is not None:
+        return
+    scored_entry.payloads[_cache.payload_key(include)] = _cache.Stored(
+        copy.deepcopy(payload),
+        sorted(changed) or None,
+        branches,
+        overlap,
+    )
+
+
+def _needs_branch_rescan(stored: _cache.Stored, branches: str | None) -> bool:
+    if branches is None or branches != stored.branches:
+        return True
+    return stored.overlap is None and bool(stored.targets)
+
+
 #: ``_meta`` keys a cached payload keeps; the rest is rebuilt on every serve.
 _CARRIED_META = frozenset({"omitted", "recovery_unavailable", "replaced_tokens"})
 
@@ -453,15 +481,7 @@ async def get_change_risk(
     declare_replaced(payload, change_risk_replaced_tokens(result.features.nf))
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
-    if scored_entry is not None:
-        # Stored before the pointer: an acceptance moves no git state, so a
-        # cached pointer would outlive it. ``_served`` reads it afresh.
-        scored_entry.payloads[_cache.payload_key(include)] = _cache.Stored(
-            copy.deepcopy(payload),
-            sorted(changed) or None,
-            branches,
-            await _scan_answer(scan),
-        )
+    await _store_payload(scored_entry, include, payload, changed, branches, scan)
     await attach_why_pointer(payload, ctx, sorted(changed))
     return payload
 
@@ -505,7 +525,7 @@ async def _revalidated(
     before it, to the full rebuild.
     """
     branches = await asyncio.to_thread(_cache.branch_inputs, str(ctx.path))
-    if branches is None or branches != stored.branches:
+    if _needs_branch_rescan(stored, branches):
         scan = _start_overlap_scan(
             ctx, dict.fromkeys(stored.targets or ()), revspec_head(revspec)
         )
