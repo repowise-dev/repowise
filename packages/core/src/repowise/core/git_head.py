@@ -164,6 +164,32 @@ def find_checkout(path: str | Path) -> Checkout | None:
     return None
 
 
+def linked_worktree_base(root: str | Path) -> Path | None:
+    """The main checkout of the linked worktree at *root*, or ``None``.
+
+    *root* must be the worktree's top level (where its ``.git`` file is). The
+    main checkout is the parent of the shared ``.git`` directory. A submodule
+    (common dir under ``.git/modules``), a bare repository, a normal checkout
+    and a pointer the repository never registered all return ``None``.
+    """
+    root = Path(root)
+    if not (root / ".git").is_file():
+        return None
+    git_dir = resolve_git_dir(root)
+    if git_dir is None or not git_dir.is_dir():
+        return None
+    common = _common_dir(git_dir)
+    if not _registered_worktree(git_dir, common, root):
+        return None
+    try:
+        common = common.resolve()
+    except OSError:
+        return None
+    if common.name != ".git" or same_path(common.parent, root):
+        return None
+    return common.parent
+
+
 def _registered_worktree(git_dir: Path, common: Path, root: Path) -> bool:
     """Whether *root* is a worktree its repository registered.
 
