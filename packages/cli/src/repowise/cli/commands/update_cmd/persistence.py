@@ -114,6 +114,59 @@ def _repair_module_attribution(repo_path: Path) -> int:
     return changed
 
 
+def accept_landed_decisions(repo_path: Path) -> int:
+    """Put in force an agent's decisions whose commits reached the default branch.
+
+    Every update, before the "already up to date" and "no changed files"
+    returns: a squash merge pulled after the branch was indexed changes no
+    file, and a fetch moves the default branch without moving HEAD, so either
+    would otherwise skip the persist step that runs this pass. One store read
+    when nothing waits; git runs only for records that do. No model.
+
+    Failure-isolated like the attribution repair: the next update retries.
+    """
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.decisions.merge_accept import (
+        accept_landed_decisions as _accept,
+    )
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(Path(repo_path)):
+        return 0
+
+    async def _run() -> int:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return (await _accept(session, repo.id, repo_path))["accepted"]
+        finally:
+            await engine.dispose()
+
+    try:
+        accepted = run_async(_run())
+    except Exception as exc:
+        log.debug("decision_landing_check_failed", error=str(exc))
+        return 0
+    if accepted:
+        console.print(
+            f"[dim]Decisions: [bold]{accepted}[/bold] now govern; "
+            "their commits landed on the default branch.[/dim]"
+        )
+    return accepted
+
+
 async def _persist_partial_health(
     session: Any, repo_id: str, report: Any, repo_path: Any = None
 ) -> None:

@@ -84,6 +84,7 @@ __all__ = [
     "deprecate_decision",
     "dismiss_candidate",
     "governing_decisions_by_file",
+    "hold_decision",
     "is_accepted",
     "latest_acceptance",
     "list_candidates",
@@ -724,19 +725,7 @@ async def accept_decision(
     the acceptance rather than rewritten onto the record: it is what the
     accepter went on, not something extraction found.
     """
-    meta = await session.get(DecisionCandidateMeta, record.id)
-    if meta is not None and meta.review_state == "merged":
-        raise AcceptanceRefusedError(
-            [f"already merged into {meta.merged_into or 'another decision'}"]
-        )
-    if reason:
-        record.rationale = reason
-    if decision.strip():
-        record.decision = decision
-    if scope is not None:
-        # The accepter chose these files, so the record binds to them rather
-        # than keeping the basis it was mined with.
-        await set_record_scope(session, record, scope, basis=SCOPE_BASIS_STATED)
+    await _apply_accept_edits(session, record, reason=reason, scope=scope, decision=decision)
     acceptance = await record_acceptance(
         session,
         record,
@@ -754,6 +743,68 @@ async def accept_decision(
     )
     await _set_review_state(session, record, "accepted")
     return acceptance
+
+
+async def _apply_accept_edits(
+    session: AsyncSession,
+    record: DecisionRecord,
+    *,
+    reason: str,
+    scope: list[str] | None,
+    decision: str,
+) -> None:
+    """Write what an accepter corrected onto *record*; a folded candidate is refused."""
+    meta = await session.get(DecisionCandidateMeta, record.id)
+    if meta is not None and meta.review_state == "merged":
+        raise AcceptanceRefusedError(
+            [f"already merged into {meta.merged_into or 'another decision'}"]
+        )
+    if reason:
+        record.rationale = reason
+    if decision.strip():
+        record.decision = decision
+    if scope is not None:
+        # The accepter chose these files, so the record binds to them rather
+        # than keeping the basis it was mined with.
+        await set_record_scope(session, record, scope, basis=SCOPE_BASIS_STATED)
+
+
+async def hold_decision(
+    session: AsyncSession,
+    record: DecisionRecord,
+    *,
+    agent: str,
+    agent_session: str = "",
+    reason: str = "",
+    scope: list[str] | None = None,
+    commits: list[str] | None = None,
+    decision: str = "",
+) -> None:
+    """Take an agent's acceptance of *record* without granting it yet.
+
+    For a record whose commits have not reached the default branch: the edits
+    are applied and checked against the contract now, so the agent learns of a
+    gap while it can still fix it, and *commits* join the record's evidence.
+    No acceptance row is written; the record stays a candidate, noted as the
+    agent's, until the landing pass accepts it.
+    """
+    await _apply_accept_edits(session, record, reason=reason, scope=scope, decision=decision)
+    if commits:
+        stored = json.loads(record.evidence_commits_json or "[]")
+        record.evidence_commits_json = json.dumps(list(dict.fromkeys([*stored, *commits])))
+    blockers = acceptance_blockers(
+        requirement(decision_fields(record), reason=reason, accepter=agent, grant=True)
+    )
+    if blockers:
+        raise AcceptanceRefusedError(blockers)
+    meta = await session.get(DecisionCandidateMeta, record.id)
+    grounding = json.loads(meta.grounding_json or "{}") if meta is not None else {}
+    grounding = grounding if isinstance(grounding, dict) else {}
+    await upsert_candidate_meta(
+        session, record, grounding={**grounding, "agent": agent, "session": agent_session}
+    )
+    record.updated_at = _now_utc()
+    await session.flush()
 
 
 async def reaffirm_decision(

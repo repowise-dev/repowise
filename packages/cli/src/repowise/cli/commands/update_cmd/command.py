@@ -76,6 +76,7 @@ from .persistence import (
     _persist_index_only_update,
     _repair_module_attribution,
     _run_full_health_rescore,
+    accept_landed_decisions,
     heal_commit_offsets,
     health_analyzer_changed,
     parser_changed,
@@ -997,6 +998,7 @@ def _repair_before_detection(opts: UpdateOptions, run: UpdateRun) -> None:
     if opts.dry_run:
         return
     _repair_module_attribution(run.repo_path)
+    accept_landed_decisions(run.repo_path)
     # Opt-in edit capture binds pending agent edits before the git walk.
     with contextlib.suppress(Exception):
         from repowise.core.edit_capture.binder import bind_repo
