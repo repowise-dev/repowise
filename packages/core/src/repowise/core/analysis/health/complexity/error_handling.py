@@ -75,6 +75,15 @@ _FALLBACK_DOC_RE = re.compile(
     r"|\b(?:if|when)\s+(?:\w+\s+){0,4}?(?:fails?|failed|cannot|can't|could\s+not|couldn't)\b)",
     re.IGNORECASE | re.MULTILINE,
 )
+# Go calls whose dropped error is a deliberate choice (``_eh_go_deliberate_discard``).
+_GO_STRCONV_PARSERS = frozenset(
+    {"Atoi", "ParseInt", "ParseUint", "ParseFloat", "ParseBool", "ParseComplex"}
+)
+_GO_WRITER_METHODS = frozenset({"Write", "WriteString", "WriteByte", "WriteRune", "WriteTo"})
+_GO_WRITE_FUNCS = {
+    "fmt": frozenset({"Fprint", "Fprintf", "Fprintln"}),
+    "io": frozenset({"WriteString"}),
+}
 # A logger's name: ``logger``, ``log``, ``logging``, ``app_log``, ``_LOGGER``
 # (not ``catalog`` or ``dialog``), and its methods at a level someone reads;
 # ``debug`` is off in production, so it reports nothing.
@@ -388,25 +397,55 @@ def _eh_go_hit(node: Node) -> bool:
             and len(_eh_named(cons)) == 0
         )
     if node.type in ("short_var_declaration", "assignment_statement"):
-        left = node.child_by_field_name("left")
-        right = node.child_by_field_name("right")
-        if left is None or right is None:
-            return False
-        left_kids = _eh_named(left)
-        # Only the LAST LHS target is Go's conventional error slot. A leading or
-        # middle ``_`` discards a value, not the error (``_, err := f()`` keeps
-        # the error), so it is not an error-swallow.
-        last_is_blank = bool(left_kids) and (
-            left_kids[-1].type == "blank_identifier" or _eh_text(left_kids[-1]) == "_"
-        )
-        right_is_call = any(c.type == "call_expression" for c in _eh_named(right)) or (
-            right.type == "expression_list"
-            and any(c.type == "call_expression" for c in _eh_named(right))
-        )
-        # Multi-return discard: ≥2 LHS targets, a call on the RHS, blank in the
-        # trailing (error) slot.
-        return last_is_blank and len(left_kids) >= 2 and right_is_call
+        return _eh_go_discard_hit(node)
     return False
+
+
+def _eh_go_is_blank(node: Node) -> bool:
+    return node.type == "blank_identifier" or _eh_text(node) == "_"
+
+
+def _eh_go_discard_hit(node: Node) -> bool:
+    """Multi-return discard: two or more LHS targets, a call on the RHS, blank
+    in the trailing (error) slot, and not one of the deliberate discards."""
+    left = node.child_by_field_name("left")
+    right = node.child_by_field_name("right")
+    if left is None or right is None:
+        return False
+    left_kids = _eh_named(left)
+    # Only the LAST LHS target is Go's conventional error slot. A leading or
+    # middle ``_`` discards a value, not the error (``_, err := f()`` keeps
+    # the error), so it is not an error-swallow.
+    if len(left_kids) < 2 or not _eh_go_is_blank(left_kids[-1]):
+        return False
+    call = next((c for c in _eh_named(right) if c.type == "call_expression"), None)
+    if call is None:
+        return False
+    return not _eh_go_deliberate_discard(call, all(_eh_go_is_blank(k) for k in left_kids))
+
+
+def _eh_go_deliberate_discard(call: Node, all_blank: bool) -> bool:
+    """A discarded error the call's contract makes safe to drop.
+
+    ``strconv`` parsers return the zero value on failure, and code that drops
+    their error takes that zero as its default (``n, _ := strconv.Atoi(s)``).
+    ``_, _ = w.Write(b)`` blanks every result of a write on purpose: a
+    ``strings.Builder`` or ``bytes.Buffer`` never fails, and a buffered or
+    response writer reports its error at ``Flush``/``Close``. A write whose
+    byte count is kept (``n, _ := conn.Write(b)``) stays a finding.
+    """
+    fn = call.child_by_field_name("function")
+    if fn is None or fn.type != "selector_expression":
+        return False
+    receiver = _eh_text(fn.child_by_field_name("operand"))
+    method = _eh_text(fn.child_by_field_name("field"))
+    if receiver == "strconv":
+        return method in _GO_STRCONV_PARSERS
+    if not all_blank:
+        return False
+    if receiver in _GO_WRITE_FUNCS:
+        return method in _GO_WRITE_FUNCS[receiver]
+    return method in _GO_WRITER_METHODS
 
 
 def _eh_java_try_ends_in_fail(catch_clause: Node, language: str) -> bool:
