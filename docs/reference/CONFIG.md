@@ -389,6 +389,7 @@ decisions:
 | `harnesses` | `[claude_code]` | Whose transcripts the session lane reads; add `codex`. |
 | `agent_acceptance` | `true` | Whether an agent may grant a decision authority, signed as itself. |
 | `capture_prompt` | `true` | Ask the agent to record what it just committed. |
+| `sync` | `false` | Send and receive decisions with this repo on repowise.dev during `update`. |
 | `update_mining` | `false` | Let `repowise update` call the model for decisions. See [below](#update_mining). |
 | `session_start` | `false` | Open each agent session with the decisions relevant to its working set. See [below](#session_start). |
 | `upkeep_prompt` | `false` | After a commit that changes governed code, ask the agent to settle each decision. See [below](#upkeep_prompt). |
@@ -451,6 +452,15 @@ Neither is about capture, and no preset changes them.
 - `repowise decision config capture-prompt --off` switches the prompt off for
   one repository and leaves the per-install entry, which stays silent there.
   `--on` reinstalls the entry if it is missing.
+
+### `sync`
+
+Off by default, and no preset changes it. On, and with this machine signed in
+(`repowise login`) and a GitHub `origin`, every `update` runs
+`decision push` then `decision pull` against the repo on repowise.dev. No
+model runs, and a failure prints one line without failing the update. A value
+that is not a boolean reads as off. `repowise decision config sync --on|--off`
+writes it.
 
 ### `update_mining`
 

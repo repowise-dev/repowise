@@ -19,6 +19,7 @@ with no network.
 
 ```bash
 repowise init                        # capture runs as part of indexing
+repowise decision discover           # hand your agent the records worth keeping
 repowise decision candidates         # what is awaiting review
 repowise decision confirm a1b2c3d4 --agent claude_code --evidence <commit|file>
                                      # a coding agent accepts one; this makes it govern
@@ -234,6 +235,25 @@ and by whom it was accepted. On `import` the file wins, and candidates and
 episodes stay out of it. Format, merge and ordering rules:
 [architecture/decisions.md](../architecture/decisions.md#tracked-manifest).
 
+Once the file exists, `repowise update` keeps it current: a decision that
+comes into force, changes or is withdrawn is written to it, in the format
+`export` writes. `update` never creates the file. It leaves the file as it is
+when the file holds something the index has not read, such as a colleague's
+committed edit or an entry removed and not yet committed, and says so in one
+line; `decision import` reconciles it.
+
+### Sync with repowise.dev
+
+For a repository also on repowise.dev, `repowise decision config sync --on`
+keeps the two in step on every `update`. `decision push` sends the decisions
+an agent recorded here; `decision pull` brings down the ones in force there
+that this store lacks, such as one learned from a reviewer's reply on a pull
+request. Pull takes only decisions recorded there, not the ones its index
+found, which the local index finds too. A pulled decision keeps its id there,
+updates when it changes there, and is withdrawn here when it is withdrawn
+there. Sync is off by default and does nothing unless this machine is signed
+in (`repowise login`) with a GitHub `origin`.
+
 ### Capture policy
 
 Every source can be switched, and so can the model: `decision config preset`
@@ -282,7 +302,7 @@ Through MCP, `get_why` picks its mode from the call shape:
 | Call | Returns |
 |------|---------|
 | `get_why()` | Governance health: counts, stale decisions, candidates awaiting review, ungoverned hotspots |
-| `get_why(query="src/auth/jwt.py")` | Three lanes that never mix: `decisions` (accepted, governing; with lineage when there is one), `candidates` (nobody accepted them), `history` (superseded or withdrawn). Plus an origin story from git and an alignment read on the first lane |
+| `get_why(query="src/auth/jwt.py")` | The constraints: `decisions` (accepted, governing; with lineage when there is one), then at most two `candidates` (nobody accepted them), labelled as background. `include=["history"]` adds `history` (superseded or withdrawn), an origin story from git, an alignment read on the first lane, archaeology and episodes |
 | `get_why(query="why is caching split?", targets=[...])` | Ranked decision search, optionally anchored to paths |
 | `get_why(query=..., repo="all")` | The same search across every workspace repo |
 
@@ -325,6 +345,7 @@ unknown id.
 | `decision list` | Table of records. `--status`, `--source`, `--proposed`, `--stale-only` |
 | `decision show ID` | Full record with evidence and signature |
 | `decision candidates` | What awaits review, and why each was raised |
+| `decision discover` | Prints a prompt for your agent: the background records on the busiest production files (at most 20) to check against the code, put in force with evidence, or dismiss. With none, it has the agent record the decisions behind those files. `--agreements` prints the prompt that moves working agreements into `CLAUDE.md`. The dashboard copies the same text |
 | `decision confirm ID...` | Accept. `--reason`, `--scope`, `--evidence` fill gaps; `--preview` writes nothing |
 | `decision dismiss ID...` | Tombstone. On an accepted decision this also withdraws its authority |
 | `decision deprecate ID --superseded-by ID2` | Retire with an explicit successor |
@@ -332,10 +353,11 @@ unknown id.
 | `decision dedupe` | Fold duplicate candidates in one sweep. Dry run until `--apply` |
 | `decision split ID` | Flag a candidate as bundling two choices. Never splits it for you |
 | `decision export` / `import` | Round-trip `.repowise/decisions.yaml` |
+| `decision push` / `pull` | Send to, and bring down from, this repo on repowise.dev. Needs `config sync --on`; `push --dry-run` needs nothing |
 | `decision migrate` | Classify records from older stores. Dry run unless `--apply` |
 | `decision health` | Counts, stale records, ungoverned hotspots |
 | `decision status` | What capture did, per source |
-| `decision config show` / `preset` / `discovery` / `agent-acceptance` / `capture-prompt` / `update-mining` | Capture policy |
+| `decision config show` / `preset` / `discovery` / `agent-acceptance` / `capture-prompt` / `sync` / `update-mining` | Capture policy |
 | `decision source list` / `set SRC --on/--off [--llm/--no-llm]` | Per-source switches |
 | `decision llm --on/--off` | Master switch for model calls |
 

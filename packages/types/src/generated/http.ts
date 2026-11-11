@@ -1539,6 +1539,20 @@ export interface DeadCodeSummaryResponse {
   gated?: Record<string, unknown>;
 }
 
+/**
+ * A decision prompt for the reader's agent, as ``repowise decision discover`` prints it.
+ *
+ * ``kind`` is the prompt served: ``discover`` asked with no background
+ * records to check comes back as ``add``. ``text`` is empty only for
+ * ``agreements`` with none stored, and then a surface offers nothing.
+ */
+export interface DecisionAgentPromptResponse {
+  kind: "discover" | "add" | "agreements";
+  text: string;
+  ids: string[];
+  count: number;
+}
+
 /** A link from a decision to a governed file or module. */
 export interface DecisionCodeEdge {
   decision_id: string;

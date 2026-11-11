@@ -60,6 +60,15 @@ def _provider_available(repo_path: Path) -> bool:
     return provider_available_for_repo(repo_path)
 
 
+def _emit_sync(policy: DecisionPolicy) -> None:
+    """One line when sync is on; nothing at all when it is off."""
+    if policy.sync:
+        console.print(
+            "  [dim]Sync: on. `update` sends decisions recorded here to this repo on "
+            "repowise.dev and brings down the ones in force there.[/dim]"
+        )
+
+
 def _emit_update_mining(policy: DecisionPolicy) -> None:
     if policy.update_mining:
         console.print(
@@ -159,6 +168,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             "  [yellow]Approval: required. A new decision waits for a person, even "
             "after its commit lands.[/yellow]"
         )
+    _emit_sync(policy)
     _emit_update_mining(policy)
     _emit_session_start(policy)
     _emit_upkeep_prompt(policy)
@@ -273,6 +283,7 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
             "agent_acceptance",
             "require_approval",
             "capture_prompt",
+            "sync",
             "update_mining",
             "session_start",
             "upkeep_prompt",
@@ -324,8 +335,8 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     # A preset names source membership. The harness list, the two agent
-    # switches, approval and update mining are not membership, so applying one
-    # leaves them as the caller set them.
+    # switches, approval, sync and update mining are not membership, so applying
+    # one leaves them as the caller set them.
     current = _load(repo_path).policy
     _apply(
         repo_path,
@@ -335,6 +346,7 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
             agent_acceptance=current.agent_acceptance,
             capture_prompt=current.capture_prompt,
             require_approval=current.require_approval,
+            sync=current.sync,
             update_mining=current.update_mining,
             session_start=current.session_start,
             upkeep_prompt=current.upkeep_prompt,
@@ -435,6 +447,26 @@ def config_approval(path: str | None, enabled: bool | None, dry_run: bool, fmt: 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_require_approval(bool(enabled)), fmt, dry_run)
+
+
+@config_group.command("sync")
+@click.argument("path", required=False, default=None)
+@click.option("--on/--off", "enabled", default=None, required=True, help="Sync during update.")
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_sync(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """Keep this repo's decisions in step with its copy on repowise.dev.
+
+    Off by default, and only for a repository you have published there. On,
+    every `update` sends the decisions recorded on this machine and brings
+    down the ones in force there; `decision push` and `decision pull` do the
+    same on request. No model runs, and a network failure never fails an update.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    current = _load(repo_path).policy
+    _apply(repo_path, current.with_sync(bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("update-mining")

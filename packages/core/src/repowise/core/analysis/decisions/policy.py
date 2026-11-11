@@ -353,6 +353,7 @@ _SPARSE_SWITCHES: tuple[tuple[str, bool], ...] = (
     ("agent_acceptance", True),
     ("capture_prompt", True),
     ("require_approval", False),
+    ("sync", False),
     ("session_start", False),
     ("upkeep_prompt", False),
 )
@@ -380,6 +381,10 @@ class DecisionPolicy:
     #: landing grants nothing and an agent's own acceptance is refused, so only
     #: a person puts a new decision in force.
     require_approval: bool = False
+    #: Whether this repo's decisions travel to and from its copy on
+    #: repowise.dev during ``update``. Off by default, and inert unless the
+    #: repository is also signed in and has a GitHub origin.
+    sync: bool = False
     #: Whether ``update`` may call a model for decisions: mining the PR bodies
     #: and commit messages of new history, structuring inline markers, and
     #: judging whether a change supersedes a decision it touches. Off by
@@ -571,6 +576,7 @@ class DecisionPolicy:
             "agent_acceptance": self.agent_acceptance,
             "capture_prompt": self.capture_prompt,
             "require_approval": self.require_approval,
+            "sync": self.sync,
             "update_mining": self.update_mining,
             "session_start": self.session_start,
             "upkeep_prompt": self.upkeep_prompt,
@@ -616,6 +622,9 @@ class DecisionPolicy:
 
     def with_require_approval(self, value: bool) -> DecisionPolicy:
         return replace(self, require_approval=value)
+
+    def with_sync(self, value: bool) -> DecisionPolicy:
+        return replace(self, sync=value)
 
     def with_update_mining(self, value: bool) -> DecisionPolicy:
         return replace(self, update_mining=value)
@@ -712,6 +721,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "agent_acceptance",
         "capture_prompt",
         "require_approval",
+        "sync",
         "update_mining",
         "session_start",
         "upkeep_prompt",
@@ -756,7 +766,8 @@ def _default_off_switch(
     """A switch that ships off: absent reads as off, a boolean as itself.
 
     Present but not a boolean reads as *unreadable*: on for a gate, the reading
-    that holds more back; off for a switch that spends an agent's tokens.
+    that holds more back; off for a switch that spends an agent's tokens or
+    sends data somewhere.
     """
     value = _as_bool(raw.get(key))
     if value is not None:
@@ -917,6 +928,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
     capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
     require_approval = _default_off_switch(raw, "require_approval", warnings)
+    sync = _default_off_switch(raw, "sync", warnings, unreadable=False)
     update_mining = _resolve_update_mining(raw, warnings)
     session_start = _default_off_switch(raw, "session_start", warnings, unreadable=False)
     upkeep_prompt = _default_off_switch(raw, "upkeep_prompt", warnings, unreadable=False)
@@ -934,6 +946,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             agent_acceptance=agent_acceptance,
             capture_prompt=capture_prompt,
             require_approval=require_approval,
+            sync=sync,
             update_mining=update_mining,
             session_start=session_start,
             upkeep_prompt=upkeep_prompt,

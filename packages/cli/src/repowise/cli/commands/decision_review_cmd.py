@@ -29,6 +29,7 @@ from repowise.core.analysis.decisions.lifecycle import AGENT_ACCEPTANCE_REMEDY
 __all__ = [
     "candidates_command",
     "dedupe_command",
+    "discover_command",
     "export_command",
     "import_command",
     "merge_command",
@@ -216,6 +217,57 @@ def candidates_command(
         "[dim]Background, not in force. "
         "`repowise decision confirm ID` puts one in force.[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# decision discover
+# ---------------------------------------------------------------------------
+
+
+@click.command("discover")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--agreements",
+    is_flag=True,
+    default=False,
+    help="Instead, the prompt that moves stored working agreements into CLAUDE.md.",
+)
+@format_option()
+def discover_command(path: str | None, agreements: bool, fmt: str) -> None:
+    """Print a prompt for your agent: check the background records on the busiest files.
+
+    The agent puts the real ones in force, signed as itself with evidence, and
+    dismisses the rest. With no background records it records the decisions
+    behind the busiest files instead. The dashboard's copy button copies the
+    same text.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt)
+
+    async def _run():
+        from repowise.core.persistence import get_session
+        from repowise.core.persistence.crud.decision_discovery import decision_prompt_for
+
+        engine, sf = await _open(repo_path)
+        try:
+            async with get_session(sf) as session:
+                repo_id = await _repository_id(session, repo_path)
+                return await decision_prompt_for(
+                    session, repo_id, "agreements" if agreements else "discover"
+                )
+        finally:
+            await engine.dispose()
+
+    prompt = run_async(_run())
+    if fmt == "json":
+        emit_json(prompt.as_dict())
+        return
+    if not prompt.text:
+        console.print("[dim]No working agreements are stored.[/dim]")
+        return
+    # Plain, not through rich: the text is pasted as is, so no wrapping or markup.
+    click.echo(prompt.text)
 
 
 def _review_signature(meta) -> dict | None:
