@@ -58,7 +58,9 @@ AREAS: tuple[str, ...] = (
 _by_key: dict[str, Setting] | None = None
 _by_env: dict[str, Setting] = {}
 _modules: dict[str, ModuleType] = {}
-_lock = threading.Lock()
+#: Re-entrant, so an area that queries the registry while loading fails
+#: loudly on the missing table instead of deadlocking.
+_lock = threading.RLock()
 
 
 def _load() -> dict[str, Setting]:

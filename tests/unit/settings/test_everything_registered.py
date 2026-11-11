@@ -50,17 +50,20 @@ def _source_files(suffixes: tuple[str, ...]) -> list[tuple[Path, str]]:
     before any parse keeps the scan to a few seconds.
     """
     found = []
+    for path in _walk_src(suffixes):
+        text = path.read_text(encoding="utf-8")
+        if "REPOWISE_" in text:
+            found.append((path, text))
+    return found
+
+
+def _walk_src(suffixes: tuple[str, ...]) -> list[Path]:
+    paths = []
     for src in PACKAGES.glob("*/src"):
         for top, dirs, files in os.walk(src):
             dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
-            for name in files:
-                if not name.endswith(suffixes):
-                    continue
-                path = Path(top, name)
-                text = path.read_text(encoding="utf-8")
-                if "REPOWISE_" in text:
-                    found.append((path, text))
-    return found
+            paths += [Path(top, name) for name in files if name.endswith(suffixes)]
+    return paths
 
 
 @functools.cache

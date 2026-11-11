@@ -433,7 +433,7 @@ def test_cli_concurrency(monkeypatch, raw):
     assert resolve_concurrency(name, "claude_cli") == _registry(name, None, {name: raw})
 
 
-_CAPPED = ["", "5", "0", "-1", "x", "nan", "inf", "9999"]
+_CAPPED = ["", "5", "0", "-1", "x", "nan", "inf", "9999", "0.5", "2.7"]
 
 
 def _capped_readers():
@@ -450,7 +450,7 @@ def _capped_readers():
         ("REPOWISE_WORKSPACE_REPO_TIMEOUT_S", _federation.fanout_timeout_s),
         (
             "REPOWISE_WORKSPACE_CONCURRENCY",
-            lambda: int(_federation._env_number("REPOWISE_WORKSPACE_CONCURRENCY", 4, 64)),
+            lambda: int(_federation._env_number("REPOWISE_WORKSPACE_CONCURRENCY", 4, 64)) or 1,
         ),
         # Unset falls to the provider's own budget, which the registry notes as None.
         ("REPOWISE_ANSWER_TIMEOUT_S", lambda: _synthesis_timeout(_NoBudget())),
@@ -465,6 +465,17 @@ def test_capped_env_numbers_clamp_like_their_readers(monkeypatch, raw):
         if ours is None:  # unset or unusable: the reader's own fallback applies
             ours = 30.0
         assert reader() == ours, (name, raw)
+
+
+def test_full_rescore_interval_reads_non_finite_values_the_registry_rejects(monkeypatch):
+    """``max(0.0, float(raw))``: inf never rescores and nan reads as 0."""
+    from repowise.cli.commands.update_cmd.persistence import _full_rescore_interval_days
+
+    name = "REPOWISE_FULL_RESCORE_INTERVAL_DAYS"
+    for raw, real in (("inf", float("inf")), ("nan", 0.0)):
+        monkeypatch.setenv(name, raw)
+        assert _full_rescore_interval_days() == real
+        assert _registry(name, None, {name: raw}) == 7.0
 
 
 @pytest.mark.parametrize("raw", ["3", "-2", "0", "x"])
@@ -616,3 +627,12 @@ def test_env_switches_read_like_their_readers(monkeypatch, raw):
 def test_resolved_sources_are_reported():
     r = resolve("REPOWISE_NO_HINTS", environ={"REPOWISE_NO_HINTS": "1"})
     assert r.source is Source.ENV
+
+
+@pytest.mark.parametrize("raw", [[], "", "  ", ",", "lean", ["+get_why"]])
+def test_mcp_tools_empty_means_the_default_like_the_reader(raw):
+    from repowise.core.registry.tool_selection import normalize_override
+
+    r = resolve("mcp.tools", {"mcp": {"tools": raw}}, environ={})
+    assert r.value == normalize_override(raw)
+    assert r.problem is None

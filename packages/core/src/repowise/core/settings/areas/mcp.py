@@ -74,13 +74,13 @@ SETTINGS: tuple[Setting, ...] = (
     ),
     _e(
         "REPOWISE_WORKSPACE_CONCURRENCY",
-        # Read as a number and cut to a whole one, as its reader does.
-        "float",
-        4.0,
-        "How many repos one workspace query asks at once.",
-        minimum=0,
-        exclusive_minimum=True,
+        "int",
+        4,
+        "How many repos one workspace query asks at once, never more than the "
+        "server keeps open.",
+        minimum=1,
         maximum=64,
+        parser="repowise.core.settings.parsers:whole_count",
         out_of_range="clamp",
     ),
     _e(

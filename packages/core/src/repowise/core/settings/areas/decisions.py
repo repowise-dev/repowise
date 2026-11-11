@@ -96,6 +96,23 @@ def _settings() -> tuple[Setting, ...]:
             reload=_UPDATE_REASON,
         ),
     ]
+    out += _switch_settings()
+    out += _source_settings()
+    out.append(
+        _top(
+            "session_mining",
+            "bool",
+            None,
+            "Older spelling of sources.session.enabled; still read.",
+            internal=True,
+            reload=_UPDATE_REASON,
+        )
+    )
+    return tuple(out)
+
+
+def _switch_settings() -> list[Setting]:
+    out: list[Setting] = []
     for name, default in MODE_DEFAULTS["full"].items():
         unreadable_on = name in UNREADABLE_AS_ON
         by_mode = {mode: MODE_DEFAULTS[mode][name] for mode in MODES}
@@ -145,6 +162,11 @@ def _settings() -> tuple[Setting, ...]:
             reload=_UPDATE_REASON,
         )
     )
+    return out
+
+
+def _source_settings() -> list[Setting]:
+    out: list[Setting] = []
     for spec in SOURCE_SPECS:
         if not spec.togglable:
             continue
@@ -168,19 +190,7 @@ def _settings() -> tuple[Setting, ...]:
                     reload=_UPDATE_REASON,
                 )
             )
-    out.append(
-        _top(
-            "session_mining",
-            "bool",
-            None,
-            "Older spelling of sources.session.enabled; still read.",
-            internal=True,
-            reload=_UPDATE_REASON,
-        )
-    )
-    return tuple(out)
-
-
+    return out
 
 
 def _mode_note(by_mode: dict[str, bool]) -> str:
@@ -212,7 +222,10 @@ def _named_in(warning: str, setting: Setting) -> bool:
     """Whether a policy warning is about *setting*, its source or its block."""
     parts = setting.key.split(".")
     paths = {".".join(parts[:i]) for i in range(1, len(parts) + 1)}
-    return any(f"`{p}`" in warning or f"`{p}:`" in warning for p in paths)
+    if setting.key == "decisions.preset" and warning.startswith("Unknown preset"):
+        return True
+    # A warning about a block (`decisions.sources:`) belongs to every key in it.
+    return any(f"`{p}`" in warning or f"`{p}:" in warning for p in paths)
 
 
 def resolve_setting(setting: Setting, config: dict[str, Any]) -> Resolved:

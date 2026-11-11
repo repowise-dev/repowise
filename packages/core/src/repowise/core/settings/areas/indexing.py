@@ -94,8 +94,8 @@ SETTINGS: tuple[Setting, ...] = (
         "REPOWISE_GIT_WINDOW_ANCHOR",
         "str",
         None,
-        "Measure recent-activity windows from today (now) instead of the latest commit.",
-        internal=True,
+        "Set to now to measure git windows (recent churn, prior defects, blame age) "
+        "from today instead of from the indexed commit's date.",
     ),
     _e(
         "REPOWISE_GRAMMAR_DIR",
@@ -122,9 +122,9 @@ SETTINGS: tuple[Setting, ...] = (
         "REPOWISE_INDEX_INFORMATION_FLOOR",
         "int",
         0,
-        "Least amount of real text a page needs before it is embedded.",
+        "Least characters of real prose a wiki page needs to be found by semantic "
+        "search. Shorter pages stay readable, just not in that search. 0 is off.",
         minimum=0,
-        internal=True,
     ),
     _e(
         "REPOWISE_KG_CURATION",

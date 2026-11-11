@@ -64,7 +64,11 @@ def resolve(
         # file is the only layer the area has to weigh.
         return area_resolve(s, config or {})
 
-    layers = _layers(s, config, os.environ if environ is None else environ)
+    return _first_usable(s, _layers(s, config, os.environ if environ is None else environ))
+
+
+def _first_usable(s: Setting, layers: list[tuple[Source, Any]]) -> Resolved:
+    """The first layer holding a usable value, else the default, with what was wrong."""
     problems: list[str] = []
     for source, raw in layers:
         try:
@@ -76,6 +80,8 @@ def resolve(
             if s.on_invalid == "fallback":
                 return Resolved(s.fallback, source, problem)
             problems.append(problem)
+            continue
+        if value is None:
             continue
         return Resolved(value, source, "; ".join(problems) or None)
     return Resolved(s.default, Source.DEFAULT, "; ".join(problems) or None)
@@ -118,6 +124,9 @@ def validate(s: Setting, raw: Any, *, from_env: bool = False) -> Any:
             raw = parse(raw)
         except Exception as exc:  # a reader's own parser may raise anything
             raise ValueError(str(exc) or type(exc).__name__) from None
+        if raw is None:
+            # The reader's own "nothing here" (an empty tool list, a blank name).
+            return None
     elif from_env:
         raw = _from_text(s, raw)
     return _CHECKS[s.type](s, raw)
@@ -175,33 +184,44 @@ def _from_text(s: Setting, text: str) -> Any:
 
 
 def _number(s: Setting, raw: Any) -> int | float:
+    number = _as_number(s, raw)
+    low = s.minimum
+    if low is not None and s.exclusive_minimum and number <= low:
+        raise ValueError(f"must be more than {_fmt(low)}")
+    if s.out_of_range == "clamp":
+        number = _clamp(s, number)
+    if number in (float("inf"), float("-inf")):
+        raise ValueError("must be a finite number")
+    _check_bounds(s, number)
+    return number
+
+
+def _as_number(s: Setting, raw: Any) -> int | float:
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         raise ValueError("must be a number")
     if s.type == "int" and not isinstance(raw, int):
         raise ValueError("must be a whole number")
     if raw != raw:
         raise ValueError("must be a finite number")
-    low, high = s.minimum, s.maximum
-    if low is not None and s.exclusive_minimum and raw <= low:
-        raise ValueError(f"must be more than {_fmt(low)}")
-    if s.out_of_range == "clamp":
-        raw = _clamp(raw, low, high)
-    if raw in (float("inf"), float("-inf")):
-        raise ValueError("must be a finite number")
-    if low is not None and raw < low:
-        raise ValueError(f"must be at least {_fmt(low)}")
-    if high is not None and raw > high:
-        raise ValueError(f"must be at most {_fmt(high)}")
     return raw
 
 
-def _clamp(raw: int | float, low: float | None, high: float | None) -> int | float:
-    """*raw* moved to the nearest bound it is past, keeping its type."""
-    if low is not None and raw < low:
-        return type(raw)(low)
-    if high is not None and raw > high:
-        return type(raw)(high)
-    return raw
+def _check_bounds(s: Setting, number: int | float) -> None:
+    if s.minimum is not None and number < s.minimum:
+        raise ValueError(f"must be at least {_fmt(s.minimum)}")
+    if s.maximum is not None and number > s.maximum:
+        raise ValueError(f"must be at most {_fmt(s.maximum)}")
+
+
+def _clamp(s: Setting, number: int | float) -> int | float:
+    """*number* moved to the nearest bound it is past, as the setting's type."""
+    if s.minimum is not None and number < s.minimum:
+        bound = s.minimum
+    elif s.maximum is not None and number > s.maximum:
+        bound = s.maximum
+    else:
+        return number
+    return float(bound) if s.type == "float" else int(bound)
 
 
 def _fmt(bound: float) -> str:
