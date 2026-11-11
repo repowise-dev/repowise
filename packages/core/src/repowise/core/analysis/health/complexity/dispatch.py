@@ -591,7 +591,7 @@ def _call_values(call: Node) -> list[Node]:
     return [receiver] if not args and receiver is not None else []
 
 
-def _negated(node: Node) -> Node | None:
+def _fsharp_not_operand(node: Node) -> Node | None:
     """The operand of F# ``not (isNull x)``, else ``None``.
 
     A negated test in other languages (``if (!ok(x)) fail(x)``) handles an
@@ -646,7 +646,7 @@ def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
         return _tested_values(condition.named_children[0], lmap) if condition.named_children else []
     if condition is None:
         return []
-    negated = _negated(condition)
+    negated = _fsharp_not_operand(condition)
     if negated is not None:
         return _tested_values(negated, lmap)
     if condition.type in lmap.call_kinds:
