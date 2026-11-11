@@ -31,9 +31,10 @@ Handle `$ARGUMENTS`:
 - "refactoring" / "targets" → `repowise health --refactoring-targets` (ranked by impact/effort)
 - "trend" / "trends" → `repowise health --trend` (last snapshots + declining / predicted-decline alerts)
 - "module <name>" → `repowise health --module <name>`
-- "production" / "app code" → `repowise health --scope production` (tests score
-  higher than production code, so narrowing lowers every figure without a defect
-  having been found; the default stays `all`)
+- "production" / "app code" → `repowise health --scope production` (leaves out
+  tests, tooling, build, vendored, generated and docs example files, which tend
+  to score higher, so narrowing lowers every figure without a defect having been
+  found; the default stays `all`)
 - "code shape" / "ignore churn" → `repowise health --counts code_shape` (leaves
   out the git-derived half: churn, co-change, ownership, prior fixes)
 - a coverage file (e.g. `cov.lcov`, `coverage.xml`) → `repowise coverage add <file>` to ingest it (folds into health markers, and builds the per-test map when the report has contexts), then `repowise health --recompute`; a `.coverage` builds the per-test map only

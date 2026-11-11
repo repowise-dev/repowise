@@ -186,7 +186,8 @@ def test_cpp_extern_c_linkage_fixes_the_signature():
     assert fns["api"].signature_fixed and fns["single"].signature_fixed
     assert not fns["own"].signature_fixed and not fns["reentered"].signature_fixed
     assert not fns["member"].signature_fixed
-    assert fns["own"].primitive_param_count == 5
+    # ``uint64_t* e`` is an out-parameter, not a scalar.
+    assert fns["own"].primitive_param_count == 4
 
 
 def test_untyped_parameters_are_in_neither_count():
@@ -339,7 +340,7 @@ def test_python_cli_marker_in_a_string_argument_fixes_nothing():
     ("signature", "keyword_only"),
     [
         (f"a, *, {FIVE}", 5),
-        (f"a, *args: int, {FIVE}, **kw", 6),
+        (f"a, *args: int, {FIVE}, **kw", 5),  # ``**kw`` is no parameter
         (f"a, *args, {FIVE}", 5),
         (f"{FIVE}, **kw", 0),
         (f"a, /, {FIVE}", 0),
