@@ -167,6 +167,76 @@ def accept_landed_decisions(repo_path: Path) -> int:
     return accepted
 
 
+def keep_decisions_current(repo_path: Path) -> None:
+    """Bring the repo's shared decision copies in step after an update.
+
+    Two copies, each only where the user asked for it: the repo's copy on
+    repowise.dev when ``decisions.sync`` is on (see ``decision_sync_cmd``), and
+    a committed ``.repowise/decisions.yaml`` when one exists. Sync runs first
+    so a decision it brings down reaches the file in the same update. Neither
+    calls a model, and neither can fail the update.
+    """
+    from repowise.cli.commands.decision_sync_cmd import sync_on_update
+
+    sync_on_update(Path(repo_path))
+    refresh_decisions_manifest(Path(repo_path))
+
+
+def refresh_decisions_manifest(repo_path: Path) -> str:
+    """Rewrite an existing ``decisions.yaml`` from the store; never create one.
+
+    The file is opt-in (``decision export`` writes the first one), so an
+    absent file stays absent. One that holds something the store has not read
+    is left alone with one line saying how to reconcile it. Returns the
+    outcome of :func:`~repowise.core.persistence.decision_manifest.refresh_manifest`,
+    or ``"absent"`` / ``"failed"``.
+    """
+    from repowise.core.analysis.decisions.manifest import manifest_path
+
+    if not manifest_path(repo_path).is_file():
+        return "absent"
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.decisions.policy_store import load_policy
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import has_db_store
+    from repowise.core.persistence.decision_manifest import refresh_manifest
+
+    async def _run() -> tuple[str, int]:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return await refresh_manifest(session, repo.id, repo_path)
+        finally:
+            await engine.dispose()
+
+    try:
+        if not has_db_store(Path(repo_path)) or not load_policy(repo_path).policy.enabled:
+            return "absent"
+        outcome, count = run_async(_run())
+    except Exception as exc:
+        log.debug("decisions_manifest_refresh_failed", error=str(exc))
+        return "failed"
+    if outcome == "written":
+        console.print(f"[dim]Decisions: updated .repowise/decisions.yaml ({count}).[/dim]")
+    elif outcome == "held":
+        console.print(
+            "[dim]Decisions: .repowise/decisions.yaml has changes this index has not "
+            "read; left as is. [bold]repowise decision import[/bold] reconciles it.[/dim]"
+        )
+    return outcome
+
+
 async def _persist_partial_health(
     session: Any, repo_id: str, report: Any, repo_path: Any = None
 ) -> None:

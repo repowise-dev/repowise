@@ -369,6 +369,10 @@ class DecisionPolicy:
     #: landing grants nothing and an agent's own acceptance is refused, so only
     #: a person puts a new decision in force.
     require_approval: bool = False
+    #: Whether this repo's decisions travel to and from its copy on
+    #: repowise.dev during ``update``. Off by default, and inert unless the
+    #: repository is also signed in and has a GitHub origin.
+    sync: bool = False
 
     # -- queries ---------------------------------------------------------
 
@@ -521,6 +525,8 @@ class DecisionPolicy:
             block["capture_prompt"] = False
         if self.require_approval:
             block["require_approval"] = True
+        if self.sync:
+            block["sync"] = True
         return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
@@ -534,6 +540,7 @@ class DecisionPolicy:
             "agent_acceptance": self.agent_acceptance,
             "capture_prompt": self.capture_prompt,
             "require_approval": self.require_approval,
+            "sync": self.sync,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -576,6 +583,9 @@ class DecisionPolicy:
 
     def with_require_approval(self, value: bool) -> DecisionPolicy:
         return replace(self, require_approval=value)
+
+    def with_sync(self, value: bool) -> DecisionPolicy:
+        return replace(self, sync=value)
 
     @property
     def agent_grants(self) -> bool:
@@ -663,6 +673,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "agent_acceptance",
         "capture_prompt",
         "require_approval",
+        "sync",
     }
 )
 
@@ -845,6 +856,11 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
     capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
     require_approval = _default_off_switch(raw, "require_approval", warnings)
+    # Not ``_default_off_switch``: a value that is not a boolean must not send
+    # a repository's decisions anywhere, so it reads as off.
+    sync = _as_bool(raw.get("sync"))
+    if sync is None and "sync" in raw:
+        warnings.append("`decisions.sync` is not a boolean; treating it as false.")
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
@@ -859,6 +875,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             agent_acceptance=agent_acceptance,
             capture_prompt=capture_prompt,
             require_approval=require_approval,
+            sync=bool(sync),
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

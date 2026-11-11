@@ -79,6 +79,7 @@ from .persistence import (
     accept_landed_decisions,
     heal_commit_offsets,
     health_analyzer_changed,
+    keep_decisions_current,
     parser_changed,
     rescan_security_if_changed,
     security_scanner_changed,
@@ -186,9 +187,12 @@ def _finish_outcome(
     write: bool = True,
     timings: PhaseTimings | None = None,
 ) -> None:
-    """Every update outcome ends here: the stored read views, then the editor
-    files that quote them. ``write=False`` (a dry run) skips the views."""
+    """Every update outcome ends here: the shared decision copies, the stored
+    read views, then the editor files that quote them. ``write=False`` (a dry
+    run) skips the first two."""
     if write:
+        with timed(timings, "decisions_shared"):
+            keep_decisions_current(repo_path)
         with timed(timings, "read_snapshots"):
             refresh_read_snapshots(repo_path)
     with timed(timings, "editor_files"):
