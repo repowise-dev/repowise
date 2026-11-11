@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from repowise.core.repo_config import CONFIG_DEPENDENCY_KEYS
-from repowise.core.settings.model import Env, Reload, Scope, Setting
+from repowise.core.settings.model import Env, Reload, Scope, Setting, SettingType
 
 
 def file_reload(key: str) -> Reload:
@@ -29,7 +29,9 @@ def factory(area: str, scope: Scope = "repo") -> Callable[..., Setting]:
     reload hint comes from :func:`file_reload`.
     """
 
-    def make(key: str, type_: str, default: Any, description: str, **fields: Any) -> Setting:
+    def make(
+        key: str, type_: SettingType, default: Any, description: str, **fields: Any
+    ) -> Setting:
         env_true = fields.pop("env_true", None)
         env_false = fields.pop("env_false", None)
         if scope == "env":
@@ -41,7 +43,7 @@ def factory(area: str, scope: Scope = "repo") -> Callable[..., Setting]:
             fields.setdefault("reload", file_reload(key))
         return Setting(
             key=key,
-            type=type_,  # type: ignore[arg-type]
+            type=type_,
             default=default,
             description=description,
             area=area,

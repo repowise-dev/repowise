@@ -89,6 +89,23 @@ def _settings() -> tuple[Setting, ...]:
             reload=_UPDATE_REASON,
         ),
     ]
+    out += _switch_settings()
+    out += _source_settings()
+    out.append(
+        _top(
+            "session_mining",
+            "bool",
+            None,
+            "Older spelling of sources.session.enabled; still read.",
+            internal=True,
+            reload=_UPDATE_REASON,
+        )
+    )
+    return tuple(out)
+
+
+def _switch_settings() -> list[Setting]:
+    out: list[Setting] = []
     for name, default in MODE_DEFAULTS["full"].items():
         unreadable_on = name in UNREADABLE_AS_ON
         by_mode = {mode: MODE_DEFAULTS[mode][name] for mode in MODES}
@@ -138,6 +155,11 @@ def _settings() -> tuple[Setting, ...]:
             reload=_UPDATE_REASON,
         )
     )
+    return out
+
+
+def _source_settings() -> list[Setting]:
+    out: list[Setting] = []
     for spec in SOURCE_SPECS:
         if not spec.togglable:
             continue
@@ -161,19 +183,7 @@ def _settings() -> tuple[Setting, ...]:
                     reload=_UPDATE_REASON,
                 )
             )
-    out.append(
-        _top(
-            "session_mining",
-            "bool",
-            None,
-            "Older spelling of sources.session.enabled; still read.",
-            internal=True,
-            reload=_UPDATE_REASON,
-        )
-    )
-    return tuple(out)
-
-
+    return out
 
 
 def _mode_note(by_mode: dict[str, bool]) -> str:
