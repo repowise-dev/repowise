@@ -580,6 +580,18 @@ _ADVISORY_HOME: frozenset[str] = frozenset(
     }
 )
 
+# Marker -> languages where it is listed but never scored: a cell whose measured
+# precision falls short in those languages only. Data only; an entry needs its
+# numbers (findings judged, worth acting on) in docs/architecture/code-health.md
+# §5.4. Within a listed language the marker behaves exactly like one in
+# ``_ADVISORY_HOME``; findings stored that way carry the ``advisory`` dimension,
+# which is what row-reading surfaces check (:func:`finding_is_advisory`).
+_ADVISORY_BY_LANGUAGE: dict[str, frozenset[str]] = {}
+
+
+def _advisory_in(name: str, language: str | None) -> bool:
+    return language is not None and language in _ADVISORY_BY_LANGUAGE.get(name, ())
+
 
 def severity_deduction(sev: Severity) -> float:
     return _SEVERITY_DEDUCTION.get(sev, 0.5)
@@ -600,20 +612,22 @@ def history_biomarkers() -> frozenset[str]:
     return frozenset(n for n, c in _BIOMARKER_CATEGORY.items() if c == HISTORY_CATEGORY)
 
 
-def dimensions_for(name: str) -> set[str]:
+def dimensions_for(name: str, language: str | None = None) -> set[str]:
     """Dimensions a biomarker's deduction contributes to.
 
     Unlisted biomarkers default to ``{"defect"}`` (the historical single score).
     Performance-only detectors map to ``{"performance"}`` and are deliberately
     excluded from ``defect`` - that exclusion is what keeps the defect golden
-    guarantee intact.
+    guarantee intact. *language* applies ``_ADVISORY_BY_LANGUAGE``.
     """
+    if _advisory_in(name, language):
+        return {ADVISORY_DIMENSION}
     return _BIOMARKER_DIMENSIONS.get(name, {"defect"})
 
 
-def biomarker_dimension(name: str) -> str:
+def biomarker_dimension(name: str, language: str | None = None) -> str:
     """The finding's single 'home' dimension for display / per-pillar filtering."""
-    if name in _ADVISORY_HOME:
+    if name in _ADVISORY_HOME or _advisory_in(name, language):
         return ADVISORY_DIMENSION
     if name in _PERFORMANCE_HOME:
         return "performance"
@@ -655,6 +669,15 @@ def ranked_severity(name: str, severity: str | None) -> str | None:
 def is_advisory(name: str) -> bool:
     """True when *name* is a non-scoring marker (see ``ADVISORY_DIMENSION``)."""
     return name in _ADVISORY_HOME
+
+
+def finding_is_advisory(finding: Any) -> bool:
+    """True for a stored finding that scores nothing: an advisory marker, or one
+    stored as advisory for its file's language (``_ADVISORY_BY_LANGUAGE``)."""
+    return (
+        is_advisory(field(finding, "biomarker_type", "") or "")
+        or field(finding, "dimension", None) == ADVISORY_DIMENSION
+    )
 
 
 def maintainability_weight(name: str) -> float:
@@ -812,7 +835,9 @@ def remap_severities(
     return out
 
 
-def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | None], list[float]]:
+def score_file(
+    results: Iterable[BiomarkerResult], language: str | None = None
+) -> tuple[dict[str, float | None], list[float]]:
     """Aggregate biomarker hits into per-dimension scores in ``[1.0, 10.0]``.
 
     Returns ``(scores, defect_deductions)`` where:
@@ -824,14 +849,20 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     - ``defect_deductions`` is each finding's contribution to the DEFECT score
       after grouping and category bounds, parallel to *results*. It populates
       ``HealthFindingData.health_impact``, a defect-pillar quantity.
+
+    *language* is the file's, for ``_ADVISORY_BY_LANGUAGE``.
     """
     results_list = list(results)
+
+    def dims(r: BiomarkerResult) -> set[str]:
+        return dimensions_for(r.biomarker_type, language)
+
 
     # Only biomarkers whose dimensions include ``defect`` deduct here.
     # ``defect_deductions`` stays parallel to the full ``results_list`` (others
     # get 0.0) so ``attach_impacts`` can zip 1:1.
     defect_idx = [
-        i for i, r in enumerate(results_list) if "defect" in dimensions_for(r.biomarker_type)
+        i for i, r in enumerate(results_list) if "defect" in dims(r)
     ]
     defect_results = [results_list[i] for i in defect_idx]
     defect_score, defect_sub = _score_dimension(
@@ -846,9 +877,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     for sub_i, orig_i in enumerate(defect_idx):
         defect_deductions[orig_i] = defect_sub[sub_i]
 
-    maint_results = [
-        r for r in results_list if "maintainability" in dimensions_for(r.biomarker_type)
-    ]
+    maint_results = [r for r in results_list if "maintainability" in dims(r)]
     maint_score, _ = _score_dimension(
         maint_results,
         lambda r: maintainability_weight(r.biomarker_type),
@@ -858,7 +887,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
 
     # PERFORMANCE: now that the detectors are registered, every file is measured
     # - a clean file scores 10.0 (no perf findings), not ``None``.
-    perf_results = [r for r in results_list if "performance" in dimensions_for(r.biomarker_type)]
+    perf_results = [r for r in results_list if "performance" in dims(r)]
     perf_score, _ = _score_dimension(
         perf_results,
         lambda r: performance_weight(r.biomarker_type, (r.details or {}).get("orm")),
@@ -930,9 +959,10 @@ def unclamped_score(structure: float | None, history: float | None) -> float | N
 
 
 def attach_impacts(
-    results: list[BiomarkerResult], deductions: list[float]
+    results: list[BiomarkerResult], deductions: list[float], language: str | None = None
 ) -> list[HealthFindingData]:
-    """Lift ``BiomarkerResult`` -> ``HealthFindingData`` with impact attached."""
+    """Lift ``BiomarkerResult`` -> ``HealthFindingData`` with impact attached;
+    *language* is the file's, as passed to :func:`score_file`."""
     out: list[HealthFindingData] = []
     for r, d in zip(results, deductions, strict=True):
         out.append(
@@ -946,7 +976,7 @@ def attach_impacts(
                 details=r.details,
                 health_impact=round(d, 3),
                 reason=r.reason,
-                dimension=biomarker_dimension(r.biomarker_type),
+                dimension=biomarker_dimension(r.biomarker_type, language),
             )
         )
     return out
