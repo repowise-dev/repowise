@@ -113,7 +113,8 @@ run and are not stored here; `--include-submodules` is recorded in `state.json`
 
 ### `commit_limit`
 
-- Sets how far back churn, co-change, the commit list and change records see.
+- Sets how far back churn, co-change, the commit list and change records
+  (newest 10,000 at most) see.
 - The first `repowise update` after upgrading re-reads history once, with no
   model calls.
 - A value written here is kept; below the default, `update` says so once.

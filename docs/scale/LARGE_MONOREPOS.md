@@ -101,7 +101,7 @@ REPOWISE_PARSE_WORKERS=4 repowise init --yes --no-prose --no-editor-setup \
 | Flag | Why |
 |---|---|
 | `--no-prose` | Builds every page from code, with no model and no key. Add the model-written concept pages later with `repowise generate`. |
-| `--commit-limit 25000` | Reads the newest 25,000 commits for file history, ownership, co-change and change records. Set it above `git rev-list --count HEAD` to read the full history. Saved to config. |
+| `--commit-limit 25000` | Reads the newest 25,000 commits for file history, ownership, co-change and the commit list. Set it above `git rev-list --count HEAD` to read the full history. Saved to config. |
 | `REPOWISE_PARSE_WORKERS=4` | Parse processes. Each holds its own parser, so this is the main memory lever; the default is the CPU count, at most 8. |
 | `--no-editor-setup` | On a server, writes nothing outside `.repowise/`. Drop it on a developer machine to wire up editors and agents. |
 | `--yes` | Takes every default without asking. |
@@ -119,8 +119,8 @@ An interrupted first index continues where it stopped with
 
 ### Full history
 
-`commit_limit` sets how far back churn, ownership, co-change, the commit list
-and change records see. The default is the newest 5,000 commits; there is no
+`commit_limit` sets how far back churn, ownership, co-change and the commit
+list see; change records cover the newest 10,000. The default is the newest 5,000 commits; there is no
 upper bound, and depth is cheap. On git/git (82,925 commits, 61,453 of them
 non-merge), the full history costs a few seconds and a few hundred MB:
 
