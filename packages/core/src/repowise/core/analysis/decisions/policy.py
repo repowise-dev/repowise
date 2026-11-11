@@ -347,6 +347,17 @@ class SourceRuntime:
         }
 
 
+#: Switches written to the config only when they differ from their default,
+#: so an untouched config stays as short as the user left it.
+_SPARSE_SWITCHES: tuple[tuple[str, bool], ...] = (
+    ("agent_acceptance", True),
+    ("capture_prompt", True),
+    ("require_approval", False),
+    ("sync", False),
+    ("session_start", False),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionPolicy:
     """The resolved capture policy for one repository."""
@@ -380,6 +391,11 @@ class DecisionPolicy:
     #: store current without a model. See :func:`_resolve_update_mining` for
     #: the rule that keeps an existing configuration's behaviour on upgrade.
     update_mining: bool = False
+    #: Whether a new agent session opens with the decisions relevant to what it
+    #: is about to touch. Off by default: every session paid for it whether or
+    #: not it touched governed code, and an edit to governed code names its
+    #: decision at that moment anyway.
+    session_start: bool = False
 
     # -- queries ---------------------------------------------------------
 
@@ -532,15 +548,11 @@ class DecisionPolicy:
             block["discovery"] = self.discovery.to_dict()
         if self.harnesses != DEFAULT_HARNESSES:
             block["harnesses"] = list(self.harnesses)
-        # Each switch is written only when it differs from its default.
-        for key, default in (
-            ("agent_acceptance", True),
-            ("capture_prompt", True),
-            ("require_approval", False),
-            ("sync", False),
-        ):
-            if getattr(self, key) != default:
-                block[key] = getattr(self, key)
+        block.update(
+            (key, getattr(self, key))
+            for key, default in _SPARSE_SWITCHES
+            if getattr(self, key) != default
+        )
         # Always written: this block always carries ``sources``, and a block
         # with ``sources`` and no key reads back as on (the upgrade rule), so
         # leaving it out would turn update mining on for a policy that has it off.
@@ -560,6 +572,7 @@ class DecisionPolicy:
             "require_approval": self.require_approval,
             "sync": self.sync,
             "update_mining": self.update_mining,
+            "session_start": self.session_start,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -608,6 +621,9 @@ class DecisionPolicy:
 
     def with_update_mining(self, value: bool) -> DecisionPolicy:
         return replace(self, update_mining=value)
+
+    def with_session_start(self, value: bool) -> DecisionPolicy:
+        return replace(self, session_start=value)
 
     @property
     def agent_grants(self) -> bool:
@@ -697,6 +713,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "require_approval",
         "sync",
         "update_mining",
+        "session_start",
     }
 )
 
@@ -732,31 +749,22 @@ def _default_on_switch(raw: dict, key: str, warnings: list[str]) -> bool:
     return False
 
 
-def _default_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
+def _default_off_switch(
+    raw: dict, key: str, warnings: list[str], *, unreadable: bool = True
+) -> bool:
     """A switch that ships off: absent reads as off, a boolean as itself.
 
-    Present but not a boolean was written by someone asking for it, so it reads
-    as on: for a gate, the reading that holds more back.
+    Present but not a boolean reads as *unreadable*: on for a gate, the reading
+    that holds more back; off for a switch that spends an agent's tokens or
+    sends data somewhere.
     """
     value = _as_bool(raw.get(key))
     if value is not None:
         return value
     if key not in raw:
         return False
-    warnings.append(f"`decisions.{key}` is not a boolean; treating it as true.")
-    return True
-
-
-def _strict_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
-    """A switch that ships off and reads as off unless it is ``true``.
-
-    Unlike :func:`_default_off_switch`, a value that is not a boolean reads as
-    off: for a switch that sends data somewhere, off is what holds more back.
-    """
-    value = _as_bool(raw.get(key))
-    if value is None and key in raw:
-        warnings.append(f"`decisions.{key}` is not a boolean; treating it as false.")
-    return bool(value)
+    warnings.append(f"`decisions.{key}` is not a boolean; treating it as {str(unreadable).lower()}.")
+    return unreadable
 
 
 def _resolve_update_mining(raw: dict, warnings: list[str]) -> bool:
@@ -909,8 +917,9 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
     capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
     require_approval = _default_off_switch(raw, "require_approval", warnings)
-    sync = _strict_off_switch(raw, "sync", warnings)
+    sync = _default_off_switch(raw, "sync", warnings, unreadable=False)
     update_mining = _resolve_update_mining(raw, warnings)
+    session_start = _default_off_switch(raw, "session_start", warnings, unreadable=False)
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
@@ -927,6 +936,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             require_approval=require_approval,
             sync=sync,
             update_mining=update_mining,
+            session_start=session_start,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

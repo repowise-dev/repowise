@@ -43,8 +43,8 @@ Repowise keeps three things apart:
 | **Candidate** | A durable choice inferred from that evidence. Stored with status `proposed` | Yes | No |
 | **Decision** | A constraint someone accepted. Stored with status `active` | No, except a committed ADR | Yes |
 
-Only decisions reach your agent as rules, count toward path alignment, or land
-in the generated `CLAUDE.md`. Recurrence, confidence and a model's verdict make
+Only decisions reach your agent as rules or count toward path alignment.
+Recurrence, confidence and a model's verdict make
 a candidate worth reading. None of them accepts it.
 
 A record carries a title, the decision, context, rationale, rejected
@@ -206,8 +206,8 @@ What gets stored depends on how you add it:
   person's manual entry, accepting it needs an evidence reference
   (`--evidence-commit` on add, or `--evidence` on confirm).
 - `--kind agreement` records a rule about how the work is done ("never push
-  without review"). It governs the whole repository, needs no files, and
-  reaches an agent at session start.
+  without review"). It needs no files and is stored, not delivered: rules for
+  how the work is done belong in `CLAUDE.md` or `AGENTS.md`.
 
 ## Governance
 
@@ -220,8 +220,8 @@ and accepts by signing as itself, for example
 `decision confirm ID --agent claude_code --session "$SESSION_ID"`; `merge`,
 `dismiss` and `deprecate` take `--agent` too. The acceptance contract is the
 same for every signer, and an agent's own record also needs evidence. The
-dashboard badges any authority record a person did not sign, the generated
-`CLAUDE.md` marks it `[accepted by SLUG, not a person]`, and
+dashboard badges any authority record a person did not sign, a generated
+`CLAUDE.md` line marks it `[accepted by SLUG, not a person]`, and
 `decision show --format json` returns the signature.
 `repowise decision config agent-acceptance --off` keeps granting to people:
 agents still propose and withdraw.
@@ -311,8 +311,11 @@ Only the `decisions` lane is a rule. When no decision covers a path, `get_why`
 falls back to git history for that file, then to a rationale comment in the
 source. Full parameters: [MCP_TOOLS.md](../agent/MCP_TOOLS.md#get_why).
 
-Accepted decisions also appear in the generated `CLAUDE.md`, `get_overview`,
-`get_context`, and as the `governance_risk` flag in `get_risk`. A candidate
+Accepted decisions also reach an agent when it edits a file they govern (up
+to three per file, one line each), and appear in `get_overview`, `get_context`,
+and as the `governance_risk` flag in `get_risk`. The generated `CLAUDE.md`
+carries one line pointing at `get_why` when any decision is in force, not a
+list. A session start lists none unless `decisions.session_start` is on. A candidate
 never raises `governance_risk`, and reaches `get_answer` labelled `candidate`.
 Code health reports `ungoverned_hotspot`, `stale_governance` and
 `contradictory_decision` findings ([CODE_HEALTH.md](CODE_HEALTH.md)).

@@ -53,10 +53,11 @@ Fix first:
 {% endfor %}
 {% endif %}
 {% endif %}
-{% if 'decisions' in s and data.decisions %}
+{% if 'decisions' in s and (data.decisions_in_force or data.decisions) %}
 
-### Standing decisions (ask `get_why` before diverging)
-{% for d in data.decisions[:3] %}
+### Decisions
+Recorded decisions govern some files: `get_why(targets=["<file>"])` before changing how one works.
+{% for d in data.decisions %}
 - {{ d.title }}{{ d.signed_by }}
 {% endfor %}
 {% endif %}

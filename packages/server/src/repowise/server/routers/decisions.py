@@ -605,6 +605,7 @@ def _apply_settings_update(policy, body: DecisionSettingsUpdate):
                 require_approval=policy.require_approval,
                 sync=policy.sync,
                 update_mining=policy.update_mining,
+                session_start=policy.session_start,
             )
     if body.enabled is not None:
         policy = policy.with_enabled(body.enabled)

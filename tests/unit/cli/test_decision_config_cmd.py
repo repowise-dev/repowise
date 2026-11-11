@@ -377,3 +377,21 @@ def test_update_mining_writes_and_a_later_preset_keeps_it(repo: Path):
     assert _config(repo)["decisions"]["update_mining"] is False
     shown = _run("decision", "config", "show", str(repo), "--format", "json")
     assert json.loads(shown.output)["policy"]["update_mining"] is False
+
+
+def test_session_start_writes_and_a_later_preset_keeps_it(repo: Path):
+    shown = _run("decision", "config", "show", str(repo), "--format", "json")
+    assert json.loads(shown.output)["policy"]["session_start"] is False
+
+    result = _run("decision", "config", "session-start", "--on", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["session_start"] is True
+    assert "Session start: on" in result.output
+
+    result = _run("decision", "config", "preset", "full", str(repo))
+    assert result.exit_code == 0, result.output
+    assert _config(repo)["decisions"]["session_start"] is True
+
+    result = _run("decision", "config", "session-start", "--off", str(repo))
+    assert result.exit_code == 0, result.output
+    assert "session_start" not in _config(repo)["decisions"]

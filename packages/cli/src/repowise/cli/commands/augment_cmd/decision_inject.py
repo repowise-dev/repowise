@@ -3,7 +3,8 @@
 Two delivery moments, both pure indexed-SQLite lookups (no LLM, no network,
 target well under 100ms):
 
-  * SessionStart — score the repo's decisions against the session's likely
+  * SessionStart (off unless ``decisions.session_start`` is on) — score the
+    repo's decisions against the session's likely
     working set (dirty/staged files, branch-vs-main changed files, the previous
     session's edited files, branch-name tokens) expanded one hop via import
     edges and co-change partners, and inject the top few under a hard token
@@ -11,10 +12,10 @@ target well under 100ms):
     Never top-confidence-globally. Two labelled sections under two separate
     caps: decisions in force, then background records nobody put in force. The
     second cannot shrink the first. A dismissed record is in neither.
-  * Edit-time (PostToolUse Edit/Write) — when the edited file has a decision
-    in force over it (via decision_node_links), say so once per session per
-    decision, under a strict per-session cap. Background records never reach
-    this moment.
+  * Edit-time (PostToolUse Edit/Write) — when the edited file has decisions
+    in force over it (via decision_node_links), name up to three of them, one
+    line each, once per session per decision, under a per-session cap.
+    Background records never reach this moment.
 
 Working agreements (records whose ``kind`` says they govern how the work is
 conducted rather than the code) are not delivered by either moment: rules for
@@ -109,8 +110,13 @@ _GENERIC_BRANCH_TOKENS = frozenset(
 
 # --- Edit-time tunables ------------------------------------------------------
 
-#: Strict per-session cap on edit-time decision notices.
-_MAX_EDIT_NOTICES = 3
+#: At most this many decisions named for one edited file, one line each.
+_MAX_EDIT_DECISIONS_PER_FILE = 3
+#: Per-session cap on edit-time decisions named, across files: two fully
+#: governed files' worth, then silence.
+_MAX_EDIT_NOTICES = 6
+#: Per-session cap on bug-history notices, one per file.
+_MAX_FIX_NOTICES = 3
 
 _CLIP_DECISION = 220
 _CLIP_RATIONALE = 160
@@ -621,7 +627,27 @@ def _select_lines(
     return lines, shown
 
 
+def _session_start_enabled(repo_path: Path) -> bool:
+    """Whether this repository asked for decisions at session start. Off by default."""
+    from repowise.core.analysis.decisions.policy_store import load_policy
+
+    return load_policy(repo_path).policy.session_start
+
+
 def _session_decision_block(
+    repo_path: Path, session_id: str, checkout: Path | None = None
+) -> str | None:
+    """The SessionStart decision block, or None while ``decisions.session_start`` is off.
+
+    Checked before any git call or store read, so the default costs one config
+    read and nothing else.
+    """
+    if not _session_start_enabled(repo_path):
+        return None
+    return _ranked_session_block(repo_path, session_id, checkout)
+
+
+def _ranked_session_block(
     repo_path: Path, session_id: str, checkout: Path | None = None
 ) -> str | None:
     """The relevance-ranked SessionStart decision block, or None (silence).
@@ -686,41 +712,40 @@ def _session_decision_block(
 
 
 def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
-    """Decisions in force over *rel* via file links or module-prefix links.
+    """Decisions in force over *rel*, the most specific first.
 
     In force means accepted: by a person, by an agent, or by the merge of the
     commit an agent's record cites. A record nobody put in force is background
-    and is never delivered here, however it was mined.
+    and is never delivered here, however it was mined. A record held until its
+    commit lands has no acceptance yet, so it never reaches this moment either.
+
+    A decision governs the paths its scope names: the file itself, or a
+    directory the file sits under when the scope names a directory, which is
+    what makes a file created there governed too. Module links are not read. A
+    record's module list is the folders its files sit in, so reading it would
+    let a decision about two files govern their whole directory tree; ``get_why``
+    path mode and the core governing-by-file query follow the same rule.
 
     Link node ids are matched in POSIX regardless of how they were stored
-    (Windows extraction persists backslashes). Top-level module links are
-    ignored (see :func:`_module_deep_enough`).
+    (Windows extraction persists backslashes).
     """
     out: list[dict] = []
     seen: set[str] = set()
-    native = rel.replace("/", "\\")
     in_force = f"d.status = 'active' AND {_accepted_clause(conn, 'd')}"
+    # char(92) is a backslash; a directory scope may be stored with a trailing slash.
+    node = "RTRIM(REPLACE(l.node_id, char(92), '/'), '/')"
     with contextlib.suppress(sqlite3.Error):
         for row in conn.execute(
             "SELECT d.id, d.title, d.decision, d.rationale "
             "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.node_id IN (?, ?) AND l.link_type = 'file' AND (" + in_force + ")",
-            (rel, native),
+            f"WHERE l.link_type = 'file' AND ({node} = ?1 "
+            f"OR substr(?1, 1, length({node}) + 1) = {node} || '/') "
+            f"AND ({in_force}) "
+            f"ORDER BY {node} = ?1 DESC, length({node}) DESC, "
+            "COALESCE(d.staleness_score, 0) ASC, COALESCE(d.confidence, 0) DESC, d.id",
+            (rel,),
         ):
             if row[0] not in seen:
-                seen.add(row[0])
-                out.append(_governing_row(row))
-        # Module links are few; prefix-match them in Python.
-        for row in conn.execute(
-            "SELECT d.id, d.title, d.decision, d.rationale, l.node_id "
-            "FROM decision_node_links l JOIN decision_records d ON d.id = l.decision_id "
-            "WHERE l.link_type = 'module' AND (" + in_force + ")"
-        ):
-            if (
-                row[0] not in seen
-                and _module_deep_enough(row[4])
-                and rel.startswith(_norm_path(row[4]).rstrip("/") + "/")
-            ):
                 seen.add(row[0])
                 out.append(_governing_row(row))
     return out
@@ -744,16 +769,35 @@ def _session_evidence_count(conn: sqlite3.Connection, decision_id: str) -> int:
     return row[0] if row and isinstance(row[0], int) else 0
 
 
-def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dict) -> str | None:
-    """One-line governing-decision notice for an edited file, deduplicated.
+def _governing_reason(decision: dict, sessions_n: int) -> str:
+    """``<title> because <why>`` for one governing decision, with its closing mark."""
+    why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
+    if _echoes_title(decision["title"], why):
+        why = ""  # legacy rows echo the title into decision/rationale
+    text = _clip(decision["title"], 100)
+    # The line supplies its own closing period, so a rationale that already
+    # ends a sentence must not add a second terminal mark.
+    why = why.rstrip(".!? ")
+    if why:
+        text += f" because {why}"
+    if sessions_n >= 2:
+        text += f" (seen in {sessions_n} sessions)"
+    # A clipped rationale already ends in an ellipsis; do not follow it with ".".
+    return text if text.endswith("…") else text + "."
 
-    Once per session per decision, and at most :data:`_MAX_EDIT_NOTICES`
-    notices per session total — an agent editing many governed files gets the
-    first few, not a drumbeat. The authoritative dedup is the atomic
-    ``INSERT OR IGNORE`` into the injections sidecar: the JSON session state
-    is written read-modify-write by concurrently racing hook processes and
-    loses updates (dogfood: the same decision re-fired minutes apart), so it
-    is kept only as a cheap fast-path. The caller owns loading/saving *state*.
+
+def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dict) -> str | None:
+    """The decisions governing an edited file, one line each, deduplicated.
+
+    At most :data:`_MAX_EDIT_DECISIONS_PER_FILE` per file, each once per
+    session, and at most :data:`_MAX_EDIT_NOTICES` per session in all: an
+    agent editing many governed files gets the first few, not a drumbeat. One
+    governing decision is one line; several are a header and a line each. The
+    authoritative dedup is the atomic ``INSERT OR IGNORE`` into the injections
+    sidecar: the JSON session state is written read-modify-write by
+    concurrently racing hook processes and loses updates (dogfood: the same
+    decision re-fired minutes apart), so it is kept only as a cheap fast-path.
+    The caller owns loading/saving *state*.
     """
     shown: list = state.setdefault("decisions_shown", [])
     if len(shown) >= _MAX_EDIT_NOTICES:
@@ -763,43 +807,50 @@ def _edit_decision_notice(repo_path: Path, rel: str, session_id: str, state: dic
         return None
     try:
         governing = [d for d in _governing_decisions(conn, rel) if d["id"] not in shown]
-        if not governing:
-            return None
-        decision = governing[0]
-        sessions_n = _session_evidence_count(conn, decision["id"])
+        picked = _claim_lines(conn, repo_path, rel, session_id, governing, shown)
     finally:
         conn.close()
+    if not picked:
+        return None
+    if len(picked) == 1:
+        return f"[repowise] {rel} is governed by a standing decision: {picked[0]}"
+    header = f"[repowise] {rel} is governed by standing decisions:"
+    return "\n".join([header, *(f"- {r}" for r in picked)])
 
-    shown.append(decision["id"])
 
-    # Built before the claim, not after: the claim records what this emission
-    # costs, and the cost model sums that column. A row claimed at zero chars
-    # is an injection the net reports as free. Building first is a handful of
-    # string operations on a path that has already done a database query.
-    why = _clip(decision["rationale"] or decision["decision"], _CLIP_RATIONALE)
-    if _echoes_title(decision["title"], why):
-        why = ""  # legacy rows echo the title into decision/rationale
-    line = f"[repowise] {rel} is governed by a standing decision: {_clip(decision['title'], 100)}"
-    # The notice supplies its own closing period, so a rationale that already
-    # ends a sentence must not add a second terminal mark.
-    why = why.rstrip(".!? ")
-    if why:
-        line += f" because {why}"
-    if sessions_n >= 2:
-        line += f" (seen in {sessions_n} sessions)"
-    # A clipped rationale already ends in an ellipsis; do not follow it with ".".
-    if not line.endswith("…"):
-        line += "."
+def _claim_lines(
+    conn: sqlite3.Connection,
+    repo_path: Path,
+    rel: str,
+    session_id: str,
+    governing: list[dict],
+    shown: list,
+) -> list[str]:
+    """Render and claim up to :data:`_MAX_EDIT_DECISIONS_PER_FILE` of *governing*.
 
-    if session_id:
-        from repowise.cli.hook_ledger import _claim_injection
+    A decision another hook process already showed this session is skipped,
+    so the next one in rank takes its slot; the per-session cap stops it all.
+    """
+    picked: list[str] = []
+    for decision in governing:
+        if len(picked) >= _MAX_EDIT_DECISIONS_PER_FILE:
+            break
+        reason = _governing_reason(decision, _session_evidence_count(conn, decision["id"]))
+        shown.append(decision["id"])
+        if session_id:
+            from repowise.cli.hook_ledger import _claim_injection
 
-        claimed, session_total = _claim_injection(
-            repo_path, session_id, decision["id"], rel, chars=len(line)
-        )
-        if not claimed or session_total > _MAX_EDIT_NOTICES:
-            return None
-    return line
+            # Claimed with what this line costs: the cost model sums that
+            # column, and a row claimed at zero chars reads as free.
+            claimed, session_total = _claim_injection(
+                repo_path, session_id, decision["id"], rel, chars=len(reason)
+            )
+            if session_total > _MAX_EDIT_NOTICES:
+                break
+            if not claimed:
+                continue
+        picked.append(reason)
+    return picked
 
 
 # ---------------------------------------------------------------------------
@@ -892,7 +943,7 @@ def _edit_fix_history_notice(repo_path: Path, rel: str, session_id: str) -> str 
             category="edit_notice",
             chars=len(line),
         )
-        if not claimed or shown > _MAX_EDIT_NOTICES:
+        if not claimed or shown > _MAX_FIX_NOTICES:
             return None
     return line
 

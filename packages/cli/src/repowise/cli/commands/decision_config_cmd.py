@@ -82,6 +82,19 @@ def _emit_update_mining(policy: DecisionPolicy) -> None:
         )
 
 
+def _emit_session_start(policy: DecisionPolicy) -> None:
+    if policy.session_start:
+        console.print(
+            "  [dim]Session start: on. A new session opens with the decisions that "
+            "govern what it is about to touch.[/dim]"
+        )
+    else:
+        console.print(
+            "  [dim]Session start: off. Decisions reach an agent when it edits the code "
+            "they govern. On: repowise decision config session-start --on[/dim]"
+        )
+
+
 def _emit(repo_path: Path, resolution, fmt: str) -> None:
     """Render a resolved policy, plus any warnings, in the requested format."""
     policy = resolution.policy
@@ -149,6 +162,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
         )
     _emit_sync(policy)
     _emit_update_mining(policy)
+    _emit_session_start(policy)
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             _claude_code_settings_path,
@@ -256,7 +270,14 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
     changes += _switch_changes(
         before,
         after,
-        ("agent_acceptance", "require_approval", "capture_prompt", "sync", "update_mining"),
+        (
+            "agent_acceptance",
+            "require_approval",
+            "capture_prompt",
+            "sync",
+            "update_mining",
+            "session_start",
+        ),
     )
     if before.harnesses != after.harnesses:
         changes.append(
@@ -317,6 +338,7 @@ def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
             require_approval=current.require_approval,
             sync=current.sync,
             update_mining=current.update_mining,
+            session_start=current.session_start,
         ),
         fmt,
         dry_run,
@@ -456,6 +478,28 @@ def config_update_mining(path: str | None, enabled: bool | None, dry_run: bool, 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
     current = _load(repo_path).policy
     _apply(repo_path, current.with_update_mining(bool(enabled)), fmt, dry_run)
+
+
+@config_group.command("session-start")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Show decisions at session start."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_session_start(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """Open each agent session with the decisions relevant to its working set.
+
+    Off by default. An agent still sees a decision when it edits a file the
+    decision governs, and `get_why` answers for any path. On, the session
+    start hook also lists the decisions that govern the files a session is
+    likely to touch (changed, staged, or edited last session).
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    current = _load(repo_path).policy
+    _apply(repo_path, current.with_session_start(bool(enabled)), fmt, dry_run)
 
 
 @config_group.command("capture-prompt")

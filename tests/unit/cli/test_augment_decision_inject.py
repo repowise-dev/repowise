@@ -9,10 +9,12 @@ so the hook's raw SQL is exercised against the true column names.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from repowise.cli.commands.augment_cmd import decision_inject
@@ -33,6 +35,18 @@ from repowise.core.persistence.models import (
 )
 
 _REPO_ID = "repo1"
+
+#: The real gate, kept before the fixture below replaces it.
+_SESSION_START_ENABLED = decision_inject._session_start_enabled
+
+
+@pytest.fixture(autouse=True)
+def _session_start_on(monkeypatch):
+    """Session-start delivery is off by default; these tests exercise it on.
+
+    The tests of the default put :data:`_SESSION_START_ENABLED` back.
+    """
+    monkeypatch.setattr(decision_inject, "_session_start_enabled", lambda repo_path: True)
 
 
 async def _build_wiki_db(repo_root: Path, decisions: list[dict], extras=None) -> None:
@@ -489,24 +503,98 @@ async def test_edit_notice_fires_once_per_decision(tmp_path):
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", state) is None
 
 
-async def test_edit_notice_module_link_prefix_match(tmp_path):
+async def test_edit_notice_a_named_directory_governs_files_under_it(tmp_path):
+    """A scope naming a directory governs what is in it, a new file included."""
     await _build_wiki_db(
         tmp_path,
         [
             {
-                "id": "d-mod",
+                "id": "d-dir",
                 "title": "Core stays sync",
                 "decision": "no asyncio inside src/core",
-                "links": [("src/core", "module")],
+                "links": [("src/core", "file")],
             }
         ],
     )
-    state: dict = {}
-    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/deep/file.py", "s1", state)
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/deep/new.py", "s1", {})
     assert notice is not None
     assert "Core stays sync" in notice
-    # Not a prefix match: src/core_extra must not count as src/core.
-    assert decision_inject._edit_decision_notice(tmp_path, "src/core_extra/f.py", "s1", {}) is None
+    # Not a string prefix: src/core_extra is not under src/core.
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core_extra/f.py", "s2", {}) is None
+
+
+async def test_edit_notice_a_directory_stored_with_a_trailing_slash_still_governs(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [{"id": "d-slash", "title": "Core stays sync", "decision": "x", "links": [("src\\core\\", "file")]}],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/a.py", "s1", {}) is not None
+
+
+async def test_edit_notice_ignores_derived_module_links(tmp_path):
+    """A module link is the folder of a record's files, not a claim on the folder.
+
+    Read as one, a decision about two files governed every file under their
+    directory tree; on this repository that put six or more decisions on a
+    third of all files. ``get_why`` path mode follows the same rule.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-two-files",
+                "title": "Price local models at zero",
+                "decision": "local models cost nothing",
+                "links": [("src/gen/cost.py", "file"), ("src/gen", "module")],
+            }
+        ],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/gen/other.py", "s1", {}) is None
+    assert decision_inject._edit_decision_notice(tmp_path, "src/gen/cost.py", "s1", {}) is not None
+
+
+def _governing(n: int, path: str = "src/gen/models.py", prefix: str = "d") -> list[dict]:
+    return [
+        {
+            "id": f"{prefix}-{i}",
+            "title": f"Rule {i}",
+            "decision": f"rule {i} holds",
+            "rationale": f"reason {i}",
+            "links": [(path, "file")],
+        }
+        for i in range(n)
+    ]
+
+
+async def test_edit_notice_one_decision_is_exactly_one_line(tmp_path):
+    await _build_wiki_db(tmp_path, _governing(1))
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/gen/models.py", "s1", {})
+    assert notice == (
+        "[repowise] src/gen/models.py is governed by a standing decision: "
+        "Rule 0 because reason 0."
+    )
+
+
+async def test_edit_notice_names_up_to_three_decisions_one_line_each(tmp_path):
+    await _build_wiki_db(tmp_path, _governing(5))
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/gen/models.py", "s1", {})
+    lines = notice.splitlines()
+    assert lines[0] == "[repowise] src/gen/models.py is governed by standing decisions:"
+    assert len(lines) == 4
+    assert all(ln.startswith("- Rule ") and ln.endswith(".") for ln in lines[1:])
+    # The two left over are named on the next edit, not lost.
+    again = decision_inject._edit_decision_notice(tmp_path, "src/gen/models.py", "s1", {})
+    assert len(again.splitlines()) == 3
+
+
+async def test_edit_notice_names_the_file_rule_before_the_directory_rule(tmp_path):
+    specs = _governing(1, "src/gen")
+    specs.append(
+        {"id": "d-file", "title": "Exact", "decision": "x", "links": [("src/gen/a.py", "file")]}
+    )
+    await _build_wiki_db(tmp_path, specs)
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/gen/a.py", "s1", {})
+    assert notice.splitlines()[1].startswith("- Exact")
 
 
 async def test_edit_notice_dedup_survives_state_loss(tmp_path):
@@ -632,8 +720,21 @@ async def test_edit_notice_no_period_after_clipped_rationale(tmp_path):
 
 async def test_edit_notice_respects_session_cap(tmp_path):
     await _build_wiki_db(tmp_path, [_AUTH_DECISION])
-    state = {"decisions_shown": ["x", "y", "z"]}
+    state = {"decisions_shown": [f"x{i}" for i in range(decision_inject._MAX_EDIT_NOTICES)]}
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", state) is None
+
+
+async def test_edit_notice_session_cap_holds_across_files(tmp_path):
+    specs = (
+        _governing(3, "src/a.py", "a")
+        + _governing(3, "src/b.py", "b")
+        + _governing(1, "src/c.py", "c")
+    )
+    await _build_wiki_db(tmp_path, specs)
+    assert decision_inject._edit_decision_notice(tmp_path, "src/a.py", "s1", {}) is not None
+    assert decision_inject._edit_decision_notice(tmp_path, "src/b.py", "s1", {}) is not None
+    # Six named this session: the cap is spent, whatever the next file holds.
+    assert decision_inject._edit_decision_notice(tmp_path, "src/c.py", "s1", {}) is None
 
 
 async def test_edit_notice_silent_for_an_agreement(tmp_path):
@@ -1147,22 +1248,107 @@ async def test_a_store_without_scope_basis_delivers_nothing_on_evidence(tmp_path
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
 
 
-async def test_an_accepted_module_link_still_governs_its_subtree(tmp_path, monkeypatch):
+async def test_a_directory_scope_governs_its_subtree(tmp_path, monkeypatch):
     """The control for the test above: restricting the tier to file links must
-    not disturb the module path a reviewed decision already had."""
+    not disturb a reviewed decision whose scope names a directory."""
     await _build_wiki_db(
         tmp_path,
         [
             {
-                "id": "d-module-accepted",
+                "id": "d-dir-accepted",
                 "title": "Centralize package attribution",
                 "decision": "one helper decides what a package is",
                 "source": "comment",
                 "accepted": True,
-                "links": [("src/core/health", "module")],
+                "links": [("src/core/health", "file")],
             }
         ],
     )
     notice = decision_inject._edit_decision_notice(tmp_path, "src/core/health/engine.py", "s1", {})
     assert notice is not None
     assert "governed by a standing decision" in notice
+
+
+# ---------------------------------------------------------------------------
+# Session start is off by default
+# ---------------------------------------------------------------------------
+
+
+async def test_session_start_is_silent_by_default(tmp_path, monkeypatch):
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+    monkeypatch.setattr(decision_inject, "_session_start_enabled", _SESSION_START_ENABLED)
+
+    assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
+    assert not (tmp_path / ".repowise" / "sessions" / "sessions.db").exists()
+
+
+async def test_session_start_speaks_once_switched_on(tmp_path, monkeypatch):
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+    monkeypatch.setattr(decision_inject, "_session_start_enabled", _SESSION_START_ENABLED)
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  session_start: true\n", encoding="utf-8"
+    )
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None and "Use JWT auth" in block
+
+
+
+# ---------------------------------------------------------------------------
+# End to end: recorded through the CLI, delivered through the hook
+# ---------------------------------------------------------------------------
+
+
+def test_an_edit_to_a_governed_file_gets_exactly_one_short_notice(tmp_path):
+    """The whole path a user takes: record, put in force, edit, read the notice.
+
+    Recorded through ``decision add`` so the node links are the ones the real
+    write path makes, and delivered through the hook entry with a payload
+    built by ``json.dumps``, the way Claude Code sends it.
+    """
+    from click.testing import CliRunner
+
+    from repowise.cli.main import cli
+
+    asyncio.run(_build_wiki_db(tmp_path, []))
+    (tmp_path / "src" / "core").mkdir(parents=True)
+    (tmp_path / "src" / "core" / "auth.py").write_text("x = 1\n", encoding="utf-8")
+    runner = CliRunner()
+    added = runner.invoke(
+        cli,
+        [
+            "decision", "add",
+            "--title", "Use JWT auth",
+            "--decision", "Service auth uses short-lived JWT tokens",
+            "--rationale", "session cookies broke the mobile clients",
+            "--affects", "src/core/auth.py",
+            "--format", "json",
+            str(tmp_path),
+        ],
+        input="",
+    )
+    assert added.exit_code == 0, added.output
+    decision_id = json.loads(added.output)["decision"]["id"]
+    confirmed = runner.invoke(
+        cli, ["decision", "confirm", decision_id, "--as", "tester", str(tmp_path)], input=""
+    )
+    assert confirmed.exit_code == 0, confirmed.output
+
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(tmp_path / "src" / "core" / "auth.py")},
+        "tool_response": {"filePath": str(tmp_path / "src" / "core" / "auth.py")},
+        "cwd": str(tmp_path),
+        "session_id": "0b6f2c1e-9d4a-4c55-8a51-6f1f3f1d2e10",
+    }
+    out = runner.invoke(cli, ["augment"], input=json.dumps(payload))
+    assert out.exit_code == 0, out.output
+    context = json.loads(out.output)["hookSpecificOutput"]["additionalContext"]
+    notices = [ln for ln in context.splitlines() if "governed by" in ln]
+    assert notices == [
+        "[repowise] src/core/auth.py is governed by a standing decision: Use JWT auth "
+        "because session cookies broke the mobile clients."
+    ]
