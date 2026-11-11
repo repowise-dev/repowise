@@ -100,16 +100,16 @@ async def test_no_test_run_generates_every_file(
     assert len(_stub_generator.parsed_files) == 15
 
 
-def test_test_run_rank_ignores_co_changes() -> None:
-    """Only a code edge lifts a file into the cap; co-change history does not (#5472)."""
+def test_test_run_rank_ignores_doc_links_and_co_changes() -> None:
+    """Only a code edge lifts a file into the cap; doc links and co-change history do not (#5472)."""
     from repowise.core.pipeline.phases._common import limit_to_top_pagerank
 
     paths = [f"pkg/mod_{i}.py" for i in range(5)]
-    builder = _graph_builder_for(paths)
+    builder = _graph_builder_for([*paths, "README.md"])
     g = builder.graph()
     g.add_edge("pkg/mod_1.py", "pkg/mod_4.py", edge_type="imports")
-    for src in ("pkg/mod_0.py", "pkg/mod_2.py"):
-        g.add_edge(src, "pkg/mod_3.py", edge_type="co_changes")
+    for src in ("README.md", "pkg/mod_0.py", "pkg/mod_2.py"):
+        g.add_edge(src, "pkg/mod_3.py", edge_type="documents" if src == "README.md" else "co_changes")
 
     top = limit_to_top_pagerank(_parsed_files(5), builder, n=1)
 

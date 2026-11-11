@@ -514,7 +514,7 @@ class ChangeDetector:
 
         from .graph._metrics import without_non_code_edges
 
-        # A co-change partner is not an importer: no cascade, no rank.
+        # A doc link or co-change partner is not an importer: no cascade, no rank.
         code_graph = without_non_code_edges(graph)
 
         # 1-hop cascade: files that import changed files

@@ -127,8 +127,8 @@ async def test_single_marker_file_needs_no_hint(tmp_path):
     assert "pin the driver" in decisions[0].source_text
 
 
-async def test_affected_files_skip_co_change_partners(tmp_path):
-    """A co-change partner on either sort side is not an affected file (#5472)."""
+async def test_affected_files_skip_doc_links_and_co_change_partners(tmp_path):
+    """A doc linking the file and a co-change partner on either sort side are not affected (#5472)."""
     import networkx as nx
 
     (tmp_path / "app.py").write_text(
@@ -137,6 +137,7 @@ async def test_affected_files_skip_co_change_partners(tmp_path):
     )
     g: nx.DiGraph[str] = nx.DiGraph()
     g.add_edge("main.py", "app.py", edge_type="imports")
+    g.add_edge("README.md", "app.py", edge_type="documents")
     # Stored once in path order, so one partner is a predecessor and one a successor.
     g.add_edge("aaa.py", "app.py", edge_type="co_changes")
     g.add_edge("app.py", "zzz.py", edge_type="co_changes")

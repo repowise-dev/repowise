@@ -47,15 +47,16 @@ from repowise.core.ids import SYMBOL_SEP, file_path_of, is_external
 
 from ...ingestion.barrels import BARREL_FILENAMES
 from ...ingestion.cohesion import records_no_use
+from ...ingestion.models import NON_CODE_EDGE_TYPES
 from .constants import never_flag_path
 from .cpp_reachability import build_cpp_package_files, is_cpp_file_reachable, is_cpp_path
 from .go_reachability import build_go_package_files, is_go_file_reachable
 from .jvm_reachability import build_jvm_package_files, is_jvm_file_reachable
 
 #: Edge types that record association rather than dependency. A co-change edge
-#: says two files were committed together, which is not a path any code can
-#: take, so it must not answer "does anything import this".
-_NON_DEPENDENCY_EDGES: frozenset[str] = frozenset({"co_changes"})
+#: says two files were committed together and a doc link says prose names a
+#: file; neither is a path any code can take, so neither answers "does anything import this".
+_NON_DEPENDENCY_EDGES: frozenset[str] = NON_CODE_EDGE_TYPES
 
 _JVM_SUFFIXES: tuple[str, ...] = (".java", ".kt")
 
