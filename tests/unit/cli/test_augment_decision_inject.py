@@ -523,6 +523,14 @@ async def test_edit_notice_a_named_directory_governs_files_under_it(tmp_path):
     assert decision_inject._edit_decision_notice(tmp_path, "src/core_extra/f.py", "s2", {}) is None
 
 
+async def test_edit_notice_a_directory_stored_with_a_trailing_slash_still_governs(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [{"id": "d-slash", "title": "Core stays sync", "decision": "x", "links": [("src\\core\\", "file")]}],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/a.py", "s1", {}) is not None
+
+
 async def test_edit_notice_ignores_derived_module_links(tmp_path):
     """A module link is the folder of a record's files, not a claim on the folder.
 

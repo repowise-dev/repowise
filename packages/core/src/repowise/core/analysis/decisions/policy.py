@@ -739,19 +739,21 @@ def _default_on_switch(raw: dict, key: str, warnings: list[str]) -> bool:
     return False
 
 
-def _default_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
+def _default_off_switch(
+    raw: dict, key: str, warnings: list[str], *, unreadable: bool = True
+) -> bool:
     """A switch that ships off: absent reads as off, a boolean as itself.
 
-    Present but not a boolean was written by someone asking for it, so it reads
-    as on: for a gate, the reading that holds more back.
+    Present but not a boolean reads as *unreadable*: on for a gate, the reading
+    that holds more back; off for a switch that spends an agent's tokens.
     """
     value = _as_bool(raw.get(key))
     if value is not None:
         return value
     if key not in raw:
         return False
-    warnings.append(f"`decisions.{key}` is not a boolean; treating it as true.")
-    return True
+    warnings.append(f"`decisions.{key}` is not a boolean; treating it as {str(unreadable).lower()}.")
+    return unreadable
 
 
 def _resolve_update_mining(raw: dict, warnings: list[str]) -> bool:
@@ -905,7 +907,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
     require_approval = _default_off_switch(raw, "require_approval", warnings)
     update_mining = _resolve_update_mining(raw, warnings)
-    session_start = _default_off_switch(raw, "session_start", warnings)
+    session_start = _default_off_switch(raw, "session_start", warnings, unreadable=False)
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")

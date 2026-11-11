@@ -371,6 +371,11 @@ class EditorFileDataFetcher:
                 accepted_predicate(),
             )
             .order_by(DecisionRecord.staleness_score.asc())
+            # Over-fetch: records anchored entirely in excluded paths (vendored
+            # venvs mined before exclude rules changed) are dropped below.
+            # Ceiling: a pin outside this window is missed; read pins by their
+            # own query once pinning exists.
+            .limit(_MAX_PINNED_DECISIONS * 3)
         )
         exclude_spec = build_exclude_spec(self._repo_path)
         records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)]

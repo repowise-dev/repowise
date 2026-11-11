@@ -721,7 +721,8 @@ def _governing_decisions(conn: sqlite3.Connection, rel: str) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
     in_force = f"d.status = 'active' AND {_accepted_clause(conn, 'd')}"
-    node = "REPLACE(l.node_id, char(92), '/')"  # char(92) is a backslash
+    # char(92) is a backslash; a directory scope may be stored with a trailing slash.
+    node = "RTRIM(REPLACE(l.node_id, char(92), '/'), '/')"
     with contextlib.suppress(sqlite3.Error):
         for row in conn.execute(
             "SELECT d.id, d.title, d.decision, d.rationale "

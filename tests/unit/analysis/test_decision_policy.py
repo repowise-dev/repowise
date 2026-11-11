@@ -812,3 +812,10 @@ def test_session_start_round_trips_and_keeps_the_preset(tmp_path):
     write_policy(tmp_path, resolved.with_session_start(False))
     assert load_policy(tmp_path).policy.session_start is False
     assert "session_start" not in load_repo_config(tmp_path)["decisions"]
+
+
+def test_an_unreadable_session_start_reads_as_off():
+    resolution = resolve_policy({"decisions": {"session_start": "yes"}})
+
+    assert resolution.policy.session_start is False
+    assert any("session_start" in w for w in resolution.warnings)
