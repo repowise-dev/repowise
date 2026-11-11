@@ -16,8 +16,9 @@ SETTINGS: tuple[Setting, ...] = (
         "attribution.enabled",
         "bool",
         True,
-        "Read AI-authorship markers in commits. The same key in "
-        "~/.repowise/config.yaml can turn it off for every repo.",
+        "Read public AI-authorship markers: bot authors, commit trailers and footers, "
+        "git-ai notes, Agent Trace files. The same key in ~/.repowise/config.yaml "
+        "can turn it off for every repo.",
         on_invalid="fallback",
         fallback=False,
     ),
@@ -25,34 +26,36 @@ SETTINGS: tuple[Setting, ...] = (
         "attribution.capture",
         "str",
         "off",
-        "Record agent edits: off, local (this machine) or notes (git notes). The "
-        "lower of this and the same key in ~/.repowise/config.yaml applies, so "
-        "both must turn it on; DO_NOT_TRACK turns it off.",
+        "Record listed agents' edits as they write them: local keeps line hashes in "
+        ".repowise/attribution/, notes also writes git-ai notes on refs/notes/ai. The "
+        "lower of this and the same key in ~/.repowise/config.yaml applies, so both "
+        "must turn it on; DO_NOT_TRACK turns it off.",
         choices=CAPTURE_LEVELS,
     ),
     _s(
         "attribution.agents",
         "list",
         [],
-        "Which agents' edits to record. Only agents named both here and in "
-        "~/.repowise/config.yaml are recorded.",
+        "Agent target ids whose edits are recorded, such as claude-code or codex. "
+        "Only agents named both here and in ~/.repowise/config.yaml are recorded.",
     ),
     _s(
         "agent_provenance.service_emails",
         "mapping",
         {},
-        "Commit emails of service accounts to count as an agent, with that agent's name.",
+        "Your bots' commit emails, each mapped to {agent, tier}, so their commits count "
+        "as that agent's.",
     ),
     _s(
         "agent_provenance.footer_patterns",
         "list",
         [],
-        "Extra commit-footer patterns that mark an agent's commit.",
+        "Commit-message footer regexes that mark an agent's commit, as {pattern, agent}.",
     ),
     _s(
         "agent_provenance.coauthor_patterns",
         "list",
         [],
-        "Extra co-author patterns that mark an agent's commit.",
+        "Co-author trailer regexes that mark an agent's commit, as {pattern, agent}.",
     ),
 )
