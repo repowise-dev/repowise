@@ -1281,7 +1281,7 @@ class TestTypeScriptRefusals:
     def test_inline_object_type_in_variable_is_not_declaration(self) -> None:
         source = (
             "function run() {\n"
-            "    const config: { client: HttpClient } = { client: make() };\n"
+            "    const config: { client: HttpClient; timeout: number } = { client: make(), timeout: 1 };\n"
             "    const realService: RealService = make();\n"
             "}\n"
         )
