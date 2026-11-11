@@ -359,3 +359,24 @@ def test_edge_response_tolerates_bad_json():
         imported_names_json="{not json",
     )
     assert edge_response(e).imported_names == []
+
+
+@pytest.mark.asyncio
+async def test_co_changes_are_not_view_edges(async_session, tmp_path):
+    """Architecture counts and neighbour counts read code edges only (#5472)."""
+    repo_id = await _seed_two_communities(async_session, tmp_path)
+    await batch_upsert_graph_edges(
+        async_session,
+        repo_id,
+        [
+            {"source_node_id": "src/a.py", "target_node_id": "src/c.py", "edge_type": edge_type}
+            for edge_type in ("co_changes",)
+        ],
+    )
+    await async_session.flush()
+
+    view = await build_architecture_graph(async_session, repo_id, min_members=1)
+    counts = await neighbour_edge_counts(async_session, repo_id, 0, ["src/a.py", "src/b.py"])
+
+    assert [(e.source, e.target, e.edge_count) for e in view.edges] == [(0, 1, 1)]
+    assert counts == [(1, 1)]
