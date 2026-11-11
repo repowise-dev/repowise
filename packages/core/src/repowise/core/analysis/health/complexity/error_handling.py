@@ -75,6 +75,13 @@ _FALLBACK_DOC_RE = re.compile(
     r"|\b(?:if|when)\s+(?:\w+\s+){0,4}?(?:fails?|failed|cannot|can't|could\s+not|couldn't)\b)",
     re.IGNORECASE | re.MULTILINE,
 )
+# A logger's name: ``logger``, ``log``, ``logging``, ``app_log``, ``_LOGGER``
+# (not ``catalog`` or ``dialog``), and its methods at a level someone reads;
+# ``debug`` is off in production, so it reports nothing.
+_PY_LOGGER_RE = re.compile(r"(?:^|_)log(?:ger|ging)?$", re.IGNORECASE)
+_PY_LOG_METHODS = frozenset(
+    {"info", "warning", "warn", "error", "exception", "critical", "fatal", "log"}
+)
 
 
 def _eh_text(node: Node) -> str:
@@ -248,6 +255,38 @@ def _eh_documented_fallback(clause: Node, block: Node | None) -> bool:
     if not real or real[-1].type != "return_statement":
         return False
     return any(_FALLBACK_DOC_RE.search(t) for t in _eh_fallback_doc_texts(clause, block))
+
+
+def _eh_called_function(stmt: Node) -> Node | None:
+    """The callee of a statement that is a bare call, else ``None``."""
+    call = _eh_named(stmt)[0] if stmt.type == "expression_statement" and _eh_named(stmt) else None
+    return call.child_by_field_name("function") if call is not None and call.type == "call" else None
+
+
+def _eh_is_log_call(stmt: Node) -> bool:
+    """``logger.exception(...)`` / ``self.log.warning(...)`` / ``warnings.warn(...)``."""
+    fn = _eh_called_function(stmt)
+    if fn is None or fn.type not in ("identifier", "attribute"):
+        return False
+    if fn.type == "identifier":
+        return _eh_text(fn) == "warn"
+    receiver = _eh_text(fn.child_by_field_name("object")).rsplit(".", 1)[-1]
+    method = _eh_text(fn.child_by_field_name("attribute"))
+    if receiver == "warnings":
+        return method == "warn"
+    return method in _PY_LOG_METHODS and bool(_PY_LOGGER_RE.search(receiver))
+
+
+def _eh_logs(block: Node | None) -> bool:
+    """The handler logs the failure at a visible level, so it is reported, not
+    hidden; what it does next (continue, return a fallback) is its choice."""
+    real = _eh_real_stmts(block, "python") if block is not None else []
+    return any(_eh_is_log_call(s) for s in real)
+
+
+def _eh_broad_is_handled(clause: Node, block: Node | None) -> bool:
+    """``except Exception`` that logs the failure or returns a documented fallback."""
+    return _eh_logs(block) or _eh_documented_fallback(clause, block)
 
 
 def _eh_rust_attr_is_test(attr_text: str) -> bool:
@@ -442,7 +481,7 @@ def _eh_broad_except_hit(
 ) -> ErrorHandlingHit | None:
     """The bare/broad except hit for a Python clause that does not re-raise,
     unless its noqa codes suppress that kind or, for ``except Exception``, the
-    fallback it returns is documented."""
+    fallback it returns is documented or the handler logs the failure."""
     # ``except:`` / ``except BaseException:`` also swallow
     # KeyboardInterrupt & SystemExit; ``except Exception:`` cannot.
     is_base = _eh_catches_base(node)
@@ -452,7 +491,7 @@ def _eh_broad_except_hit(
         or (kind == "broad_except" and "BLE001" in noqa_codes)
         or (kind == "bare_except" and bool(noqa_codes & {"BLE001", "E722"}))
     )
-    if suppress or (kind == "broad_except" and _eh_documented_fallback(node, block)):
+    if suppress or (kind == "broad_except" and _eh_broad_is_handled(node, block)):
         return None
     return ErrorHandlingHit(kind, node.start_point[0] + 1)
 
