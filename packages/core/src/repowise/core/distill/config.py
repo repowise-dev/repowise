@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.distill.store import DEFAULT_MAX_MB, DEFAULT_TTL_DAYS
+#: Omission-store rows older than this are pruned. Defined here rather than in
+#: ``store`` so reading the config's defaults never imports the store.
+DEFAULT_TTL_DAYS = 7
+#: Omission-store compressed-content size cap; oldest rows pruned first.
+DEFAULT_MAX_MB = 50
 
 #: Valid values for ``distill.commands.permission``.
 VALID_PERMISSIONS = ("ask", "allow", "off")

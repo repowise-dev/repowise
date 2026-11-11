@@ -1,0 +1,116 @@
+"""The one resolver: precedence, typed validation, and each invalid policy."""
+
+from __future__ import annotations
+
+import pytest
+
+from repowise.core.settings import Setting, SettingError, Source, get, resolve
+from repowise.core.settings.model import FALSY, Env
+from repowise.core.settings.resolve import MISSING, lookup, validate
+
+
+def test_lookup_walks_dotted_keys_and_treats_null_as_absent():
+    cfg = {"a": {"b": {"c": 1}, "n": None}}
+    assert lookup(cfg, "a.b.c") == 1
+    assert lookup(cfg, "a.n") is MISSING
+    assert lookup(cfg, "a.x") is MISSING
+    assert lookup({"a": 3}, "a.b") is MISSING
+    assert lookup(None, "a") is MISSING
+
+
+def test_default_when_nothing_is_set():
+    r = resolve("commit_limit", {}, environ={})
+    assert (r.value, r.source, r.problem) == (5000, Source.DEFAULT, None)
+
+
+def test_file_value_and_its_source():
+    r = resolve("commit_limit", {"commit_limit": 200}, environ={})
+    assert (r.value, r.source) == (200, Source.REPO_FILE)
+
+
+def test_file_beats_env_unless_env_wins():
+    env = {"REPOWISE_PROVIDER": "openai", "REPOWISE_EMBEDDER": "gemini"}
+    cfg = {"provider": "anthropic", "embedder": "openai"}
+    assert resolve("provider", cfg, environ=env).value == "anthropic"
+    assert resolve("provider", {}, environ=env).source is Source.ENV
+    embedder = resolve("embedder", cfg, environ=env)
+    assert (embedder.value, embedder.source) == ("gemini", Source.ENV)
+
+
+def test_blank_env_is_unset_except_for_a_switch():
+    assert resolve("provider", {}, environ={"REPOWISE_PROVIDER": "  "}).source is Source.DEFAULT
+    flag = resolve("hooks.read_skeleton", {"hooks": {"read_skeleton": True}}, environ={"REPOWISE_HOOK_READ_SKELETON": ""})
+    assert (flag.value, flag.source) == (False, Source.ENV)
+
+
+def test_env_bool_rules():
+    on_unless_off = get("REPOWISE_WORKTREE_FALLBACK")
+    assert resolve(on_unless_off, environ={"REPOWISE_WORKTREE_FALLBACK": "maybe"}).value is True
+    assert resolve(on_unless_off, environ={"REPOWISE_WORKTREE_FALLBACK": " Off "}).value is False
+    off_unless_on = get("REPOWISE_NO_HINTS")
+    assert resolve(off_unless_on, environ={"REPOWISE_NO_HINTS": "maybe"}).value is False
+    assert resolve(off_unless_on, environ={"REPOWISE_NO_HINTS": "YES"}).value is True
+    assert Env("X", false_values=FALSY).parse_bool("") is True
+
+
+def test_env_numbers_and_lists_are_parsed():
+    assert resolve("REPOWISE_PORT", environ={"REPOWISE_PORT": " 8080 "}).value == 8080
+    r = resolve("REPOWISE_PORT", environ={"REPOWISE_PORT": "eighty"})
+    assert (r.value, r.source) == (7337, Source.DEFAULT)
+    assert "whole number" in r.problem
+    cors = resolve("REPOWISE_CORS_ORIGINS", environ={"REPOWISE_CORS_ORIGINS": "a, b,,c"})
+    assert cors.value == ["a", "b", "c"]
+
+
+def test_invalid_file_value_falls_to_the_next_layer_with_a_problem():
+    r = resolve("commit_limit", {"commit_limit": 0}, environ={})
+    assert (r.value, r.source) == (5000, Source.DEFAULT)
+    assert r.problem == "commit_limit: must be at least 1"
+    r = resolve("events.retention_days", {"events": {"retention_days": 0}}, environ={})
+    assert r.problem == "events.retention_days: must be more than 0"
+    r = resolve("commit_limit", {"commit_limit": True}, environ={})
+    assert "number" in r.problem
+
+
+def test_invalid_value_can_raise_or_read_as_a_fallback():
+    with pytest.raises(SettingError, match="max_tokens"):
+        resolve("max_tokens", {"max_tokens": -1}, environ={})
+    r = resolve("attribution.enabled", {"attribution": {"enabled": "yes"}}, environ={})
+    assert (r.value, r.source) == (False, Source.REPO_FILE)
+    assert r.problem
+
+
+def test_choices_lists_and_mappings():
+    assert resolve("language", {"language": "xx"}, environ={}).value == "en"
+    assert resolve("coverage.artifacts", {"coverage": {"artifacts": "cov.xml"}}, environ={}).value == [
+        "cov.xml"
+    ]
+    assert resolve("forges.hosts", {"forges": {"hosts": ["x"]}}, environ={}).value == {}
+
+
+def test_parser_names_the_areas_own_grammar():
+    r = resolve("reasoning", {"reasoning": "HIGH"}, environ={})
+    assert r.value == "high"
+    assert resolve("mcp.tools", {"mcp": {"tools": "lean, +get_why"}}, environ={}).value == [
+        "lean",
+        "+get_why",
+    ]
+
+
+def test_validate_is_usable_on_its_own():
+    s = Setting("x.n", "float", 1.0, "N.", "health", minimum=0, maximum=10)
+    assert validate(s, 3) == 3
+    for bad in (11, -1, float("nan"), "3"):
+        with pytest.raises(ValueError):
+            validate(s, bad)
+
+
+def test_decisions_resolve_through_the_policy():
+    cfg = {"decisions": {"mode": "read_only"}}
+    r = resolve("decisions.agent_acceptance", cfg, environ={})
+    # The mode sets this switch's default; the registry default is full's.
+    assert get("decisions.agent_acceptance").default is True
+    assert (r.value, r.source) == (False, Source.DEFAULT)
+    r = resolve("decisions.sources.pr.enabled", {"decisions": {"preset": "local_only"}}, environ={})
+    assert r.value is False
+    assert resolve("decisions.mode", {"decisions": {"mode": False}}, environ={}).value == "off"
