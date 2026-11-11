@@ -720,3 +720,71 @@ def test_approval_round_trips_and_keeps_the_preset(tmp_path):
     write_policy(tmp_path, resolved.with_require_approval(False))
     assert load_policy(tmp_path).policy.require_approval is False
     assert "require_approval" not in load_repo_config(tmp_path)["decisions"]
+
+
+# ---------------------------------------------------------------------------
+# Update mining
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "block",
+    [None, {}, {"agent_acceptance": False}, {"session_mining": True}, {"harnesses": ["claude_code"]}],
+)
+def test_update_mining_is_off_where_capture_was_never_chosen(block):
+    cfg = {} if block is None else {"decisions": block}
+
+    policy = resolve_policy(cfg).policy
+
+    assert policy.update_mining is False
+    assert policy.update_llm is False
+    # Init still mines history as before.
+    assert policy.llm_allowed("pr") and policy.llm_allowed("git_archaeology")
+
+
+@pytest.mark.parametrize(
+    "block",
+    [{"preset": "default"}, {"preset": "off"}, {"sources": {"pr": True}}, {"sources": {}}],
+)
+def test_a_block_that_chose_capture_keeps_update_mining_on_upgrade(block):
+    assert resolve_policy({"decisions": block}).policy.update_mining is True
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_a_stated_update_mining_wins(value):
+    block = {"preset": "full", "sources": {"pr": True}, "update_mining": value}
+
+    assert resolve_policy({"decisions": block}).policy.update_mining is value
+
+
+def test_a_non_boolean_update_mining_warns_and_falls_back():
+    resolution = resolve_policy({"decisions": {"update_mining": "yes"}})
+
+    assert resolution.policy.update_mining is False
+    assert any("update_mining" in w for w in resolution.warnings)
+
+
+def test_update_llm_needs_capture_and_the_model():
+    on = resolve_policy({"decisions": {"update_mining": True}}).policy
+
+    assert on.update_llm is True
+    assert on.with_llm(False).update_llm is False
+    assert on.with_enabled(False).update_llm is False
+
+
+def test_update_mining_off_round_trips_through_a_written_block(tmp_path):
+    """A write enumerates sources, which alone would read back as on."""
+    write_policy(tmp_path, resolve_policy({}).policy.with_capture_prompt(False))
+
+    block = load_repo_config(tmp_path)["decisions"]
+    assert block["update_mining"] is False
+    assert load_policy(tmp_path).policy.update_mining is False
+
+
+def test_update_mining_survives_a_preset_and_does_not_rename_it(tmp_path):
+    write_policy(tmp_path, preset_policy("balanced").with_update_mining(True))
+
+    resolved = load_policy(tmp_path).policy
+    assert resolved.update_mining is True
+    assert resolved.preset_name() == "balanced"
+    assert resolve_policy({}).policy.to_dict()["update_mining"] is False

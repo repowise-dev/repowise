@@ -283,7 +283,7 @@ class DecisionGraphResponse(BaseModel):
 
 
 class DecisionHealthResponse(BaseModel):
-    """Governance rollup: what is stale, awaiting review, and ungoverned."""
+    """Governance rollup: what is stale, what is background, and what is ungoverned."""
 
     #: Record counts by status, plus ``stale``, ``unscoped`` and ``conflicts``.
     summary: dict[str, int] = {}

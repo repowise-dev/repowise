@@ -377,10 +377,9 @@ async def purge_retired_decisions(ctx: IncrementalPersist) -> None:
     )
 
     await purge_proposed_decisions_by_source(ctx.session, ctx.repo_id, "code_comment")
-    # A history-window change re-mines these; a walk that only refreshes rows
-    # under new rules does not, so it keeps them.
-    if ctx.full_git_summary is not None and ctx.history_window_changed:
-        await purge_proposed_decisions_by_source(ctx.session, ctx.repo_id, "git_archaeology")
+    # Mined git archaeology records are kept here even on a history-window
+    # change: this path never re-mines them, so purging would only lose them.
+    # The docs update replaces them when it re-mines (see ``upsert_decisions``).
 
 
 def _left_index(ctx: IncrementalPersist) -> set[str]:

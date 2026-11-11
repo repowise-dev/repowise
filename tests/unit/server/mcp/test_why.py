@@ -33,7 +33,7 @@ async def test_get_why_file_path(setup_mcp):
     # than a rule, and it is in the lane that says so.
     assert result["decisions"] == []
     assert any(d["title"] == "Use JWT for authentication" for d in result["candidates"])
-    assert "not a rule" in result["candidates_note"]
+    assert "not rules" in result["candidates_note"]
 
     # Origin story
     origin = result["origin_story"]
@@ -247,7 +247,7 @@ async def test_get_why_says_when_the_index_has_no_accepted_decisions(setup_mcp, 
     result = await get_why("src/other/utils.py")
 
     explanation = result["alignment"]["explanation"]
-    assert "holds no accepted decisions" in explanation
+    assert "holds no decision in force" in explanation
     assert "ungoverned" not in explanation
 
 

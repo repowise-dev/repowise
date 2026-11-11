@@ -180,7 +180,7 @@ def _complete(monkeypatch, tmp_path, *, index_only: bool, first_index: bool = Fa
 def test_keyless_completion_shows_findings_model_block_and_tour(monkeypatch, tmp_path, no_probe):
     completion, out, _ = _complete(monkeypatch, tmp_path, index_only=True)
     assert "What stood out" in out
-    assert "7.4/10 Good" in out and "14 candidates to review" in out
+    assert "7.4/10 Good" in out and "14 background records from history" in out
     assert "Add a model when you want more" in out
     assert completion.model_upgrade == ModelUpgrade("repowise generate")
     assert completion.steps[0][0] == "repowise serve"
@@ -285,7 +285,7 @@ def test_a_failed_candidate_count_drops_the_row_and_is_null(
     completion, out, _ = _complete(monkeypatch, tmp_path, index_only=True)
 
     assert completion.stood_out.decision_candidates is None
-    assert "candidates to review" not in out and "Decisions" not in out
+    assert "background record" not in out and "Decisions" not in out
     assert completion.stood_out.as_summary()["decision_candidates"] is None
     # Only an error a store cannot explain is logged as a bug.
     assert logged == (["decision_candidate_count_failed"] if logged_as_bug else [])

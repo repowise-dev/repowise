@@ -120,7 +120,7 @@ def _require_ids(ids: list[str], verb: str, fmt: str) -> None:
             "no_decision_ids",
             f"Name the decision ids to {verb}.",
             fmt,
-            remedy="List candidates and their ids with `repowise decision candidates`.",
+            remedy="List records not in force and their ids with `repowise decision candidates`.",
         )
 
 

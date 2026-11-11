@@ -362,13 +362,20 @@ class DecisionPolicy:
     agent_acceptance: bool = True
     #: Whether the commit hook asks the agent to record a decision. On by
     #: default: it fires at most once a session, only on a commit that states
-    #: a choice, and what it records lands as a candidate, never a rule.
+    #: a choice, and what it records comes into force when that commit merges.
     capture_prompt: bool = True
     #: Whether a new decision waits for a person. Off by default: an agent's
     #: decision governs once its commit lands on the default branch. On, the
     #: landing grants nothing and an agent's own acceptance is refused, so only
     #: a person puts a new decision in force.
     require_approval: bool = False
+    #: Whether ``update`` may call a model for decisions: mining the PR bodies
+    #: and commit messages of new history, structuring inline markers, and
+    #: judging whether a change supersedes a decision it touches. Off by
+    #: default: init mines history once as background, and an update keeps the
+    #: store current without a model. See :func:`_resolve_update_mining` for
+    #: the rule that keeps an existing configuration's behaviour on upgrade.
+    update_mining: bool = False
 
     # -- queries ---------------------------------------------------------
 
@@ -416,6 +423,11 @@ class DecisionPolicy:
     def any_llm_allowed(self) -> bool:
         return any(self.llm_allowed(key) for key in CAPTURE_SOURCE_KEYS)
 
+    @property
+    def update_llm(self) -> bool:
+        """Whether ``update`` may make any decision model call at all."""
+        return self.update_mining and self.enabled and self.llm
+
     # -- projections -----------------------------------------------------
 
     def preset_name(self) -> str:
@@ -423,7 +435,8 @@ class DecisionPolicy:
 
         ``agent_acceptance`` is not read: it is authority, not membership, and
         counting it would drop the stored ``preset:`` key and with it the
-        pinning that keeps a later release's new source switched off.
+        pinning that keeps a later release's new source switched off. Nor is
+        ``update_mining``: it says when capture runs, not which sources do.
         """
         for name, spec in PRESETS.items():
             if (
@@ -521,6 +534,10 @@ class DecisionPolicy:
             block["capture_prompt"] = False
         if self.require_approval:
             block["require_approval"] = True
+        # Always written: this block always carries ``sources``, and a block
+        # with ``sources`` and no key reads back as on (the upgrade rule), so
+        # leaving it out would turn update mining on for a policy that has it off.
+        block["update_mining"] = self.update_mining
         return block
 
     def to_dict(self, *, provider_available: bool = True) -> dict[str, Any]:
@@ -534,6 +551,7 @@ class DecisionPolicy:
             "agent_acceptance": self.agent_acceptance,
             "capture_prompt": self.capture_prompt,
             "require_approval": self.require_approval,
+            "update_mining": self.update_mining,
             "sources": [rt.to_dict() for rt in self.runtime(provider_available=provider_available)],
         }
 
@@ -576,6 +594,9 @@ class DecisionPolicy:
 
     def with_require_approval(self, value: bool) -> DecisionPolicy:
         return replace(self, require_approval=value)
+
+    def with_update_mining(self, value: bool) -> DecisionPolicy:
+        return replace(self, update_mining=value)
 
     @property
     def agent_grants(self) -> bool:
@@ -663,6 +684,7 @@ POLICY_CONFIG_KEYS: frozenset[str] = frozenset(
         "agent_acceptance",
         "capture_prompt",
         "require_approval",
+        "update_mining",
     }
 )
 
@@ -711,6 +733,24 @@ def _default_off_switch(raw: dict, key: str, warnings: list[str]) -> bool:
         return False
     warnings.append(f"`decisions.{key}` is not a boolean; treating it as true.")
     return True
+
+
+def _resolve_update_mining(raw: dict, warnings: list[str]) -> bool:
+    """Whether ``update`` mines with a model; the stated value when there is one.
+
+    With no ``update_mining`` key, a block that names a ``preset`` or lists
+    ``sources`` was written by someone who chose their capture while update
+    still mined, so it keeps mining: every write through this layer lists
+    every source, which makes a deliberate choice and an unrelated one look
+    the same, and neither may be switched off silently. A repository that
+    never configured capture gets the new default, off.
+    """
+    value = _as_bool(raw.get("update_mining"))
+    if value is not None:
+        return value
+    if "update_mining" in raw:
+        warnings.append("`decisions.update_mining` is not a boolean; ignoring it.")
+    return "preset" in raw or "sources" in raw
 
 
 def _states_enabled(raw_source: Any) -> bool:
@@ -845,6 +885,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
     agent_acceptance = _default_on_switch(raw, "agent_acceptance", warnings)
     capture_prompt = _default_on_switch(raw, "capture_prompt", warnings)
     require_approval = _default_off_switch(raw, "require_approval", warnings)
+    update_mining = _resolve_update_mining(raw, warnings)
 
     for field in set(raw) - POLICY_CONFIG_KEYS:
         warnings.append(f"Unknown key `decisions.{field}`; ignoring it.")
@@ -859,6 +900,7 @@ def resolve_policy(repo_config: dict[str, Any] | None) -> PolicyResolution:
             agent_acceptance=agent_acceptance,
             capture_prompt=capture_prompt,
             require_approval=require_approval,
+            update_mining=update_mining,
         ),
         warnings=tuple(warnings),
         legacy_keys=tuple(legacy),

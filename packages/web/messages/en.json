@@ -479,7 +479,7 @@
         "contracts": "{touched, plural, =0 {No workspace contract touched} one {# workspace contract touched} other {# workspace contracts touched}}; {breaking, plural, =0 {no breaking signature change} one {# breaking signature change} other {# breaking signature changes}}",
         "contracts_unchecked": "{touched, plural, =0 {No workspace contract touched} one {# workspace contract touched} other {# workspace contracts touched}}; signatures not compared",
         "cross_repo_consumers": "{links, plural, =0 {No consumer in another repo} one {# consumer in {names}{more, plural, =0 {} other { and # more}}} other {# consumers in {names}{more, plural, =0 {} other { and # more}}}}",
-        "decisions_crossed": "{accepted, plural, one {# accepted decision} other {# accepted decisions}}, {candidate, plural, one {# candidate} other {# candidates}}",
+        "decisions_crossed": "{accepted, plural, one {# decision in force} other {# decisions in force}}, {candidate, number} background",
         "decisions_none": "No decision crossed",
         "health_delta": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved",
         "health_delta_partial": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved (partial comparison)",
@@ -675,17 +675,17 @@
     "decisions": {
       "title": "Decisions",
       "description": "What this codebase has settled on and what is true of the checkout you are standing in: the constraints, the tradeoffs, and the facts that catch people out.",
-      "ledeAccepted": "Accepted",
+      "ledeAccepted": "In force",
       "ledeConfirmed": "Confirmed",
       "ledeEmpty": "Decisions land here as the indexer mines them from pull requests, commit messages, code comments and your own sessions, and as you record them yourself — below, or with <code>repowise decision add</code>. Each one keeps the quote it was drawn from and the files it governs.",
-      "ledeNoGovernance": "Nothing here governs yet. A record governs only once somebody accepts it, naming the files it covers and why — mining it, seeing it recur, and scoring it confident all stop short of that.",
-      "ledeCandidates": "{count, plural, one {# candidate is} other {# candidates are}} waiting below, and {count, plural, one {it is} other {they are}} all still here: nothing was deleted and every id still resolves. If this page used to show confirmed decisions, those are the records now in Candidates. Accepting one takes a click and changes no code.",
-      "ledeAcceptedRecords": "{count, plural, one {# record is} other {# records are}} accepted: somebody read {count, plural, one {it} other {them}} and marked {count, plural, one {it} other {them}} as something the team stands behind, which is what makes {count, plural, one {it} other {them}} worth quoting back to an agent later.",
-      "ledeAcceptedMore": "{count, plural, one {# more is a candidate} other {# more are candidates}} the indexer mined and nobody has accepted. Until one is accepted it is a guess about your codebase rather than a rule for it, and no agent is ever given one. Open the Candidates lane below to work through them; accepting or dismissing one takes a click and changes no code.",
+      "ledeNoGovernance": "Nothing is in force yet. A decision an agent records comes into force when the commit it cites merges to the default branch.",
+      "ledeCandidates": "{count, plural, one {# background record is} other {# background records are}} below, mined from pull requests, commits, comments and sessions. {count, plural, one {It is} other {They are}} not in force; agents ask about {count, plural, one {it} other {them}} through get_why for the why behind the code.",
+      "ledeAcceptedRecords": "{count, plural, one {# decision is} other {# decisions are}} in force. A decision an agent records comes into force when the commit it cites merges to the default branch.",
+      "ledeAcceptedMore": "{count, plural, one {# more is a background record} other {# more are background records}} mined from history. Not in force; agents ask about them through get_why for the why.",
       "checkoutTitle": "About this checkout",
       "checkoutDescription": "Facts about the working tree rather than claims anybody made about it, derived at index time with no model call and no history. These are the ones that trip up a newcomer, human or agent.",
-      "reviewTitle": "Review",
-      "reviewDescription": "Split by what each record's acceptance amounts to, not by a status word. Every record is in exactly one lane and the counts add up: what governs, what nobody has reviewed, what has drifted from the code it names, what names nothing at all, and what has been retired."
+      "reviewTitle": "Records",
+      "reviewDescription": "Every record sits in exactly one tab and the counts add up: what is in force, background mined from history, what has drifted from the code it names, what names nothing at all, and what has been retired."
     },
     "contributors": {
       "title": "Ownership",
@@ -893,7 +893,7 @@
       "syncDescription": "Pull recent commits into the existing index, or rebuild it from scratch.",
       "providerDescription": "A model key lets this repository's documentation be written with AI. Keys are stored with the repository and used by generation from the UI or the CLI.",
       "captureTitle": "Decision capture",
-      "captureDescription": "What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only ever produces candidates: nothing here can accept a decision on your behalf.",
+      "captureDescription": "What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only adds background records; nothing it mines is put in force.",
       "refactoringTitle": "Refactoring code generation",
       "refactoringDescription": "Opt in to turning refactoring plans into reviewable diffs with your configured model.",
       "healthTitle": "Index health",
@@ -1714,9 +1714,9 @@
       },
       "decisions": {
         "label": "Decisions",
-        "unit": "to review",
-        "caption": "Candidates mined from PRs, commits and comments.",
-        "open": "Review"
+        "unit": "background records",
+        "caption": "Mined from pull requests, commits and comments; agents ask about them for the why.",
+        "open": "Open"
       },
       "docs": {
         "label": "Documentation",
@@ -1916,13 +1916,13 @@
       "saveFailed": "Couldn't save capture settings."
     },
     "review": {
-      "accepted": "Accepted. It governs the files it names.",
-      "dismissed": "Dismissed. Reindexing will not propose it again.",
+      "accepted": "In force. It governs the files it names.",
+      "dismissed": "Dismissed. Reindexing will not mine it again.",
       "acceptFailed": "Couldn't accept: {message}",
       "dismissFailed": "Couldn't dismiss: {message}",
       "reaffirmed": "Reaffirmed. It is current again for the files it names.",
       "reaffirmFailed": "Couldn't reaffirm: {message}",
-      "bulkDismissed": "Dismissed {count, plural, one {# candidate} other {# candidates}}.",
+      "bulkDismissed": "Dismissed {count, plural, one {# record} other {# records}}.",
       "actionFailed": "The review action failed.",
       "previous": "Previous",
       "next": "Next"
@@ -2050,7 +2050,7 @@
       "ownershipSole": "sole-owned {files, plural, one {file} other {files}}: one author, no second reader",
       "architectureModules": "{modules, plural, one {module} other {modules}}, {entryPoints, number} entry points",
       "decisionsEmpty": "No decisions recorded yet",
-      "decisionsRecorded": "recorded, of which {accepted, number} accepted and {candidates, number} awaiting review",
+      "decisionsRecorded": "recorded, of which {accepted, number} in force and {candidates, number} background",
       "refactoringEmpty": "No refactoring analysis yet",
       "refactoringOpen": "open {count, plural, one {opportunity} other {opportunities}}, one per file",
       "testsCoverage": "line coverage from the latest report",
@@ -2112,8 +2112,7 @@
       "securityUnit": "in shipped source",
       "securityElsewhere": "{count, number} more in tests and docs",
       "refactoringUnit": "open opportunities",
-      "decisionsUnit": "to review",
-      "decisionsDetail": "{awaiting, number} awaiting review, {drifting, number} drifting from the code",
+      "decisionsUnit": "drifting from the code",
       "ownershipUnit": "sole-owned files",
       "ownershipDetail": "One author, no second reader"
     },

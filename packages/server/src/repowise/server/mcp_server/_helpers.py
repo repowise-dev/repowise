@@ -633,7 +633,7 @@ def _alignment_score(
         return _active_alignment(accepted, dir_path, sibling_coverage)
     if deprecated:
         trailer = (
-            f" {len(candidates)} proposed candidate(s) await review."
+            f" {len(candidates)} background record(s) mention it, none in force."
             if candidates
             else ""
         )
@@ -644,8 +644,8 @@ def _alignment_score(
         )
     if candidates:
         return "none", (
-            f"No accepted decision governs this file. {len(candidates)} proposed "
-            f"candidate(s) mention it, awaiting review."
+            f"No accepted decision governs this file. {len(candidates)} background "
+            f"record(s) mention it, none in force."
         )
     return "none", "No accepted decision governs this file."
 
@@ -673,10 +673,8 @@ def _compute_alignment(
         reason = (
             "This file is ungoverned — it may be an outlier or simply undocumented."
             if currencies
-            else "This index holds no accepted decisions, so no file is governed "
-            "yet; review `repowise decision candidates` and accept one with "
-            "`repowise decision confirm <id> --agent <your slug>`, adding "
-            "`--evidence <commit|file>` or `--reason` if it lacks them."
+            else "This index holds no decision in force yet, so no file is governed; "
+            "records mined from history are background, served when asked."
         )
         return {
             "score": "none",

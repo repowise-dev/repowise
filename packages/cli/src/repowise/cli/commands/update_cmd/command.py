@@ -2247,7 +2247,9 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
             reconcile_full_scope=config.traversal_changed,
             reconcile_full_generation=run.full_generation,
             require_config_rebuild_success=config.rebuild_required,
-            require_decision_persist_success=config.git_changed,
+            # Only a full re-mine replaces the mined history records; without
+            # one (update mining off) they are kept as they are.
+            require_decision_persist_success=docs.git_history_remined,
             history_window_changed=config.git_changed,
             failed_steps=docs.failed_steps,
             timings=run.timings,

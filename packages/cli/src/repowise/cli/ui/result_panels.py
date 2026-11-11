@@ -140,7 +140,6 @@ def build_contextual_next_steps(
     dead_unreachable: int = 0,
     dead_unused: int = 0,
     hotspot_count: int = 0,
-    decision_count: int = 0,
     top_hotspot: str = "",
     setup: Any = None,
 ) -> list[tuple[str, str]]:
@@ -177,11 +176,6 @@ def build_contextual_next_steps(
     elif hotspot_count > 0 and top_hotspot:
         candidates.append(
             (f"repowise risk {escape(top_hotspot)}", "assess risk for the top hotspot")
-        )
-    elif decision_count > 0:
-        noun = "candidate" if decision_count == 1 else "candidates"
-        candidates.append(
-            ("repowise decision candidates", f"review {decision_count} decision {noun}")
         )
     elif not fast_mode:
         candidates.append(('repowise search "<query>"', "search the documentation"))

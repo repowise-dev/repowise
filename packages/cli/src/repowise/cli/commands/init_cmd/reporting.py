@@ -178,7 +178,6 @@ def show_completion(
         dead_unreachable=dead_unreachable,
         dead_unused=dead_unused,
         hotspot_count=_hotspots(result),
-        decision_count=stood_out.decision_candidates or 0,
         top_hotspot=top_hotspot,
         setup=setup,
     )

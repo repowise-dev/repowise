@@ -245,6 +245,12 @@ source's parse and skip its model stage) switches one source, and
 | `balanced` | `default` minus comments, plus sessions and session discovery |
 | `full` | Every source, model on |
 
+Presets say what `init` mines. Records mined from history are background: not
+in force, served by `get_why` when asked, and never injected by a hook or
+listed as a to-do. `update` makes no model call for decisions unless
+`decision config update-mining --on`; a block that already names a preset or
+lists sources keeps mining on update.
+
 Switching a source off stops new capture; it deletes nothing, and accepted
 decisions keep governing. With the model off or no provider configured, model
 stages report `skipped`, never `failed`. Full block reference:
@@ -321,7 +327,7 @@ unknown id.
 | `decision migrate` | Classify records from older stores. Dry run unless `--apply` |
 | `decision health` | Counts, stale records, ungoverned hotspots |
 | `decision status` | What capture did, per source |
-| `decision config show` / `preset` / `discovery` / `agent-acceptance` / `capture-prompt` | Capture policy |
+| `decision config show` / `preset` / `discovery` / `agent-acceptance` / `capture-prompt` / `update-mining` | Capture policy |
 | `decision source list` / `set SRC --on/--off [--llm/--no-llm]` | Per-source switches |
 | `decision llm --on/--off` | Master switch for model calls |
 
