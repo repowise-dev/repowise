@@ -130,8 +130,28 @@ def serve_step(target: str = "dashboard", gloss: str | None = None) -> tuple[str
 TOUR_GLOSS = "a guided tour of all this in your browser"
 
 
+#: Prints the agent's pass over the decisions on the busiest files.
+DISCOVER_COMMAND = "repowise decision discover"
+
 #: Rows after ``repowise serve``.
 _MAX_FOLLOW_UPS = 2
+
+
+def _discover_step(records: int | None, hotspot_count: int) -> list[tuple[str, str]]:
+    """The agent's pass over the decisions on the busiest files, as zero or one row."""
+    if records:
+        noun = "record" if records == 1 else "records"
+        return [
+            (
+                DISCOVER_COMMAND,
+                f"a prompt for your agent: check {records} background {noun} on the busiest files",
+            )
+        ]
+    if records == 0 and hotspot_count > 0:
+        return [
+            (DISCOVER_COMMAND, "a prompt for your agent: record the decisions behind the busiest files")
+        ]
+    return []
 
 
 def build_contextual_next_steps(
@@ -141,6 +161,7 @@ def build_contextual_next_steps(
     dead_unused: int = 0,
     hotspot_count: int = 0,
     top_hotspot: str = "",
+    discovery_records: int | None = None,
     setup: Any = None,
 ) -> list[tuple[str, str]]:
     """The dashboard, then the two moves that most need making.
@@ -156,7 +177,11 @@ def build_contextual_next_steps(
     1. nothing wired an MCP client, so no agent can reach any of this yet
        (``--no-editor-setup``, the CI shape, has no Connected line to say so);
     2. the index is deliberately partial (fast);
-    3. the largest concrete finding, or a search row when there is none.
+    3. the agent's pass over the decisions on the busiest files: the
+       background records to check, or with none (a keyless index mines
+       none), the decisions nobody recorded. Left out when the store could not
+       be read (``discovery_records`` is None) or nothing is busy;
+    4. the largest concrete finding, or a search row when there is none.
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
@@ -169,6 +194,7 @@ def build_contextual_next_steps(
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
         )
+    candidates.extend(_discover_step(discovery_records, hotspot_count))
     dead = dead_unreachable + dead_unused
     if dead > 0:
         noun = "finding" if dead == 1 else "findings"

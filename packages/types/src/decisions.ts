@@ -490,6 +490,12 @@ export const DECISION_LANE_FILTERS = [
 
 export type DecisionLaneFilter = (typeof DECISION_LANE_FILTERS)[number];
 
+/** Which decision prompt for the reader's agent: the text `repowise decision discover` prints. */
+export type DecisionAgentPromptKind = "discover" | "add" | "agreements";
+
+/** `GET .../decisions/agent-prompt?kind=`: the prompt served, its text and the records it names. */
+export type { DecisionAgentPromptResponse } from "./generated/http.js";
+
 /**
  * Records per review lane.
  *

@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -42,7 +43,7 @@ from repowise.server.schemas import (
     DecisionSourceState,
     DecisionStatusUpdate,
 )
-from repowise.server.schemas.decisions import EvidencePreview
+from repowise.server.schemas.decisions import DecisionAgentPromptResponse, EvidencePreview
 
 router = APIRouter(
     tags=["decisions"],
@@ -338,6 +339,28 @@ async def decision_lane_counts(
     return DecisionLaneCountsResponse(
         **await crud.count_decisions_by_lane(session, repo_id)
     )
+
+
+@router.get(
+    "/api/repos/{repo_id}/decisions/agent-prompt",
+    response_model=DecisionAgentPromptResponse,
+)
+async def decision_agent_prompt(
+    repo_id: str,
+    kind: Literal["discover", "add", "agreements"] = Query("discover"),
+    session: AsyncSession = Depends(get_db_session),
+) -> DecisionAgentPromptResponse:
+    """A prompt for the reader's agent, the text ``repowise decision discover`` prints.
+
+    ``discover`` names the background records on the busiest files for the
+    agent to check, put in force or dismiss; ``add`` has it record what nobody
+    wrote down; ``agreements`` moves working agreements into CLAUDE.md.
+    Declared above ``/{decision_id}`` for the same reason ``/counts`` is.
+    """
+    from repowise.core.persistence.crud.decision_discovery import decision_prompt_for
+
+    prompt = await decision_prompt_for(session, repo_id, kind)
+    return DecisionAgentPromptResponse(**prompt.as_dict())
 
 
 @router.get(

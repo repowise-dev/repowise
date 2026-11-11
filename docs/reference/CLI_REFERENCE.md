@@ -990,6 +990,8 @@ repowise decision add                   # interactive
 repowise decision add --title T --decision D  # no prompts, lands proposed
 repowise decision add --agent SLUG --title T --decision D --rationale R --affects PATH  # an agent's own record
 repowise decision candidates            # awaiting review; these govern nothing
+repowise decision discover              # a prompt for your agent: check the background records on the busiest files
+repowise decision discover --agreements # a prompt that moves working agreements into CLAUDE.md
 repowise decision confirm ID...         # accept: this makes them govern
 repowise decision reaffirm ID...        # renew an accepted decision after re-reading it
 repowise decision dismiss ID...         # tombstone (sticky; never re-proposed)
