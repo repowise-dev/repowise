@@ -286,7 +286,7 @@
           }
         },
         "health_impact": 1.247,
-        "reason": "parseAccount has cyclomatic complexity 17",
+        "reason": "parseAccount has 17 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_f79a5d5e8f306abe7ab7"
       },
@@ -348,7 +348,7 @@
           }
         },
         "health_impact": 1.247,
-        "reason": "parseWorkspace has cyclomatic complexity 17",
+        "reason": "parseWorkspace has 17 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_d79d97d650bcedab3ec2"
       },
@@ -481,7 +481,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "read_account has cyclomatic complexity 12",
+        "reason": "read_account has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_c58a781745af6691c556"
       },
@@ -504,7 +504,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "close_account has cyclomatic complexity 10",
+        "reason": "close_account has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_8b967d56d3c522a17535"
       },
@@ -527,7 +527,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "read_workspace has cyclomatic complexity 12",
+        "reason": "read_workspace has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_0b6ecfa0a2ac9cd7addc"
       },
@@ -550,7 +550,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "close_workspace has cyclomatic complexity 10",
+        "reason": "close_workspace has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_4934d3ca94e412af4fb3"
       },
@@ -573,7 +573,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "read_project has cyclomatic complexity 12",
+        "reason": "read_project has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_39991e29869edf38f6d2"
       },
@@ -596,7 +596,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "close_project has cyclomatic complexity 10",
+        "reason": "close_project has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_ebd7768c22e919caee2c"
       },
@@ -2944,7 +2944,7 @@
           }
         },
         "health_impact": 0.774,
-        "reason": "manyBranches has cyclomatic complexity 9",
+        "reason": "manyBranches has 9 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_75e1face476206b793af"
       },
@@ -3704,7 +3704,7 @@
           }
         },
         "health_impact": 0.774,
-        "reason": "ManyBranches has cyclomatic complexity 13",
+        "reason": "ManyBranches has 13 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_cdb1bfd5e7f5961c0f48"
       },
@@ -3852,7 +3852,7 @@
           }
         },
         "health_impact": 1.247,
-        "reason": "many_branches has cyclomatic complexity 15",
+        "reason": "many_branches has 15 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_0218dfee9ddbbc3acb0c"
       },
@@ -4810,7 +4810,7 @@
           }
         },
         "health_impact": 0.774,
-        "reason": "manyBranches has cyclomatic complexity 9",
+        "reason": "manyBranches has 9 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_35278d63e4c3bf59be37"
       },
@@ -5037,7 +5037,7 @@
           }
         },
         "health_impact": 0.774,
-        "reason": "process has cyclomatic complexity 10",
+        "reason": "process has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_d2fe951005c971f897c1"
       },
