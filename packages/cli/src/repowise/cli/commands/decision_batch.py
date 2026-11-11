@@ -178,12 +178,7 @@ async def _review_batch(repo_path, tokens, *, action: str, verb: str, preview: b
             rec, outcome = await _resolve_one(session, token)
             if outcome is None:
                 outcome = await _apply_in_savepoint(
-                    session,
-                    rec,
-                    token,
-                    action=action,
-                    verb=verb,
-                    preview=preview,
+                    session, rec, token, action=action, verb=verb, preview=preview,
                     apply_one=apply_one,
                 )
             results.append(outcome)

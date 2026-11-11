@@ -153,10 +153,16 @@ def _matching_evidence_refs(
         if ref["id"] == reference_id
     }
     if not matches and reference_id.startswith("ev_"):
-        live_ref = _resolve_unattached_evidence_reference(reference_id, ctx.alias, ctx.path)
+        live_ref = _resolve_unattached_evidence_reference(
+            reference_id, ctx.alias, ctx.path
+        )
         if live_ref is not None:
             matching_refs[live_ref["id"]] = live_ref
-    if reference is not None and matching_refs and _evidence_reference_matches_id(reference):
+    if (
+        reference is not None
+        and matching_refs
+        and _evidence_reference_matches_id(reference)
+    ):
         matching_refs[reference_id] = dict(reference)
     return matching_refs
 

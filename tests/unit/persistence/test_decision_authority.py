@@ -309,7 +309,9 @@ async def test_dismissing_an_accepted_decision_withdraws_its_authority(async_ses
     await dismiss_candidate(async_session, rec, reason="no longer true", accepter="tester")
 
     assert (await latest_acceptance(async_session, rec.id)).currency == "dismissed"
-    assert await accepted_decision_ids(async_session, repo.id, governing_only=True) == set()
+    assert await accepted_decision_ids(
+        async_session, repo.id, governing_only=True
+    ) == set()
 
 
 async def test_superseding_writes_an_explicit_edge_and_keeps_the_id_resolving(
@@ -533,11 +535,7 @@ async def test_dismissing_a_candidate_signs_its_review_row_not_the_log(async_ses
     (rec,) = await _seed(async_session, repo.id, "Wrong idea")
 
     meta = await dismiss_candidate(
-        async_session,
-        rec,
-        reason="not ours",
-        accepter="claude_code",
-        kind="agent",
+        async_session, rec, reason="not ours", accepter="claude_code", kind="agent",
         accepter_session="s-1",
     )
 
@@ -646,3 +644,19 @@ async def test_resolve_decision_id_prefix_resolution_and_disambiguation(async_se
 
     # 7. Prefix shorter than min_length returns None
     assert await resolve_decision_id_prefix(async_session, "bbbb", min_length=8) is None
+
+
+async def test_two_aliases_of_one_decision_sharing_a_prefix_are_not_ambiguous(async_session):
+    from repowise.core.persistence.models import DecisionAlias
+
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Merged twice")
+    for alias_id in ("eeeeeeee111111111111111111111111", "eeeeeeee222222222222222222222222"):
+        async_session.add(
+            DecisionAlias(
+                alias_id=alias_id, repository_id=repo.id, decision_id=rec.id, reason="merged"
+            )
+        )
+    await async_session.commit()
+
+    assert await resolve_decision_id_prefix(async_session, "eeeeeeee") == rec.id

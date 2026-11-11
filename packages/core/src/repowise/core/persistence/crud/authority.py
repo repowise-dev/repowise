@@ -134,11 +134,9 @@ def accepted_predicate() -> Any:
     ``status == "active"`` — is how the same question came to have four
     different answers across the CLI, the MCP tools and two web surfaces.
     """
-    return (
-        select(DecisionAcceptance.id)
-        .where(DecisionAcceptance.decision_id == DecisionRecord.id)
-        .exists()
-    )
+    return select(DecisionAcceptance.id).where(
+        DecisionAcceptance.decision_id == DecisionRecord.id
+    ).exists()
 
 
 def candidate_predicate() -> Any:
@@ -161,11 +159,14 @@ def _not_retired() -> Any:
 #: sqlite3 and cannot import the ORM. Correlated on ``decision_records.id``, so
 #: it drops into an existing ``WHERE`` unchanged.
 ACCEPTED_SQL_PREDICATE = (
-    "EXISTS (SELECT 1 FROM decision_acceptances a WHERE a.decision_id = decision_records.id)"
+    "EXISTS (SELECT 1 FROM decision_acceptances a "
+    "WHERE a.decision_id = decision_records.id)"
 )
 
 
-async def latest_acceptance(session: AsyncSession, decision_id: str) -> DecisionAcceptance | None:
+async def latest_acceptance(
+    session: AsyncSession, decision_id: str
+) -> DecisionAcceptance | None:
     """The acceptance row that currently governs *decision_id*, if any.
 
     ``None`` means the record is a candidate. This is the one predicate that
@@ -324,11 +325,7 @@ def _named_files(raw: Any) -> list[str]:
         value = json.loads(raw or "[]")
     except (TypeError, ValueError):
         return []
-    return (
-        [item for item in value if isinstance(item, str) and item]
-        if isinstance(value, list)
-        else []
-    )
+    return [item for item in value if isinstance(item, str) and item] if isinstance(value, list) else []
 
 
 def _record_currency(stored: str, record: DecisionRecord) -> str:
@@ -394,7 +391,9 @@ async def decision_signatures(
     return {r.id: rows[r.id] for r in records if r.id in rows}
 
 
-async def count_decisions_by_lane(session: AsyncSession, repository_id: str) -> dict[str, int]:
+async def count_decisions_by_lane(
+    session: AsyncSession, repository_id: str
+) -> dict[str, int]:
     """Records per review lane, as counts a surface can put on a tab.
 
     ``candidates`` plus the four currencies (``active``, ``needs_review``,
@@ -435,7 +434,9 @@ async def count_decisions_by_lane(session: AsyncSession, repository_id: str) -> 
     stored = dict(
         (
             await session.execute(
-                select(DecisionAcceptance.decision_id, DecisionAcceptance.currency).join(
+                select(
+                    DecisionAcceptance.decision_id, DecisionAcceptance.currency
+                ).join(
                     latest_seq,
                     (DecisionAcceptance.decision_id == latest_seq.c.did)
                     & (DecisionAcceptance.seq == latest_seq.c.seq),
@@ -500,7 +501,8 @@ async def _match_prefix(
         stmt = stmt.where(extra_filter)
     result = await session.execute(stmt.limit(10))
     rows = result.all()
-    if len(rows) > 1:
+    # Two aliases of one decision can share a prefix; that is one answer.
+    if len({row[0] for row in rows}) > 1:
         candidates = sorted({row[1] for row in rows})
         raise AmbiguousDecisionIdError(prefix, candidates)
     return rows[0][0] if rows else None
@@ -1182,17 +1184,13 @@ async def list_candidates(
             q = q.where(DecisionCandidateMeta.review_state == review_state)
     if lane is not None:
         q = q.where(DecisionCandidateMeta.lane == lane)
-    q = (
-        q.order_by(
-            # A candidate with no review row yet is unjudged, not lowest: it ranks
-            # with the ones the contract refused and confidence orders within.
-            func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
-            DecisionRecord.confidence.desc(),
-            DecisionRecord.created_at.desc(),
-        )
-        .limit(limit)
-        .offset(offset)
-    )
+    q = q.order_by(
+        # A candidate with no review row yet is unjudged, not lowest: it ranks
+        # with the ones the contract refused and confidence orders within.
+        func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
+        DecisionRecord.confidence.desc(),
+        DecisionRecord.created_at.desc(),
+    ).limit(limit).offset(offset)
     return [(rec, meta) for rec, meta in (await session.execute(q)).all()]
 
 
@@ -1244,7 +1242,11 @@ async def _add_alias(session: AsyncSession, alias_id: str, decision_id: str) -> 
     # into first — for the update branch as much as the insert one, or A -> B
     # followed by B -> C strands A at an id that no longer resolves.
     stale = (
-        (await session.execute(select(DecisionAlias).where(DecisionAlias.decision_id == alias_id)))
+        (
+            await session.execute(
+                select(DecisionAlias).where(DecisionAlias.decision_id == alias_id)
+            )
+        )
         .scalars()
         .all()
     )
