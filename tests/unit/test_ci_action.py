@@ -126,14 +126,24 @@ def _run_gitlab_job(tmp_path: Path, bin_dir: Path, job_name: str, **env: str) ->
     python_dir = str(Path(sys.executable).parent)
     full = {
         **os.environ,
+        **_job_variables(job_name),
         "PATH": os.pathsep.join([str(bin_dir), python_dir, os.environ["PATH"]]),
         "FAKE_LOG": str(tmp_path / "log"),
         "CI_MERGE_REQUEST_TARGET_BRANCH_NAME": "main",
         **env,
     }
+    # As before_script does.
+    (tmp_path / "repowise-summary").mkdir(exist_ok=True)
     script = "\n".join(["set -eo pipefail", *lines]) + "\n"
     proc = subprocess.run([bash, "-c", script], cwd=tmp_path, env=full, capture_output=True)
     return proc.returncode
+
+
+def _job_variables(job_name: str) -> dict[str, str]:
+    jobs = _gitlab_jobs()
+    job = jobs[job_name]
+    base = jobs[job["extends"]].get("variables", {}) if "extends" in job else {}
+    return {**base, **job.get("variables", {})}
 
 
 @pytest.mark.parametrize(
@@ -167,6 +177,103 @@ def test_the_gitlab_job_writes_a_valid_report_and_exits_with_the_gate(
     assert first.removesuffix("markdown") == second.removesuffix("gitlab")
     artifact = tmp_path / f"gl-code-quality-{gate}.json"
     assert json.loads(artifact.read_text(encoding="utf-8")) == report
+    # The note job reads the gate's own exit code, not the Code Quality run's.
+    recorded = tmp_path / "repowise-summary" / f"{gate}.exit"
+    assert recorded.read_text(encoding="utf-8").strip() == markdown_code
+
+
+@pytest.mark.parametrize(("job", "code"), [("repowise-coverage", "1"), ("repowise-risk", "2")])
+def test_a_single_run_gitlab_job_records_its_exit_code(tmp_path, fake_repowise, job, code) -> None:
+    env = {"REPOWISE_COVERAGE_REPORT": "a.info", "REPOWISE_RISK_FAIL_ABOVE_PERCENTILE": "90"}
+    ran = _run_gitlab_job(tmp_path, fake_repowise, job, FAKE_COVERAGE=code, FAKE_RISK=code, **env)
+    assert ran == int(code)
+    gate = job.removeprefix("repowise-")
+    recorded = tmp_path / "repowise-summary" / f"{gate}.exit"
+    assert recorded.read_text(encoding="utf-8").strip() == code
+
+
+GATE_JOBS = ("coverage", "doc-drift", "security", "health", "risk")
+
+
+@pytest.mark.parametrize("gate", GATE_JOBS)
+def test_each_gitlab_gate_job_hands_its_row_to_the_note_job(gate) -> None:
+    jobs = _gitlab_jobs()
+    job = jobs[f"repowise-{gate}"]
+    assert _job_variables(f"repowise-{gate}") == {
+        "GIT_DEPTH": "0",
+        "REPOWISE_GATE_SUMMARY_DIR": "repowise-summary",
+        "REPOWISE_GATE": gate,
+    }
+    assert "repowise-summary/" in job["artifacts"]["paths"]
+    assert job["artifacts"]["when"] == "always"
+    assert job["after_script"][-1] == jobs[".repowise-exit-code"]
+    assert {"job": f"repowise-{gate}", "optional": True} in jobs["repowise-note"]["needs"]
+
+
+@pytest.mark.parametrize(
+    ("recorded", "status", "expected"),
+    [
+        ("1", "failed", "1"),  # the gate ran and recorded its code
+        (None, "failed", "2"),  # stopped before the gate (a failed install)
+        (None, "success", "0"),
+    ],
+)
+def test_a_gitlab_job_that_stopped_early_reads_as_could_not_evaluate(
+    tmp_path, recorded, status, expected
+) -> None:
+    bash = _bash()
+    if bash is None:
+        pytest.skip("bash is not available")
+    rows = tmp_path / "repowise-summary"
+    if recorded is not None:
+        rows.mkdir()
+        (rows / "health.exit").write_text(f"{recorded}\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "REPOWISE_GATE_SUMMARY_DIR": "repowise-summary",
+        "REPOWISE_GATE": "health",
+        "CI_JOB_STATUS": status,
+    }
+    line = _gitlab_jobs()[".repowise-exit-code"]
+    subprocess.run([bash, "-c", line], cwd=tmp_path, env=env, check=True)
+    assert (rows / "health.exit").read_text(encoding="utf-8").strip() == expected
+
+
+def test_the_gitlab_note_job_runs_after_the_gates_and_never_fails_the_pipeline() -> None:
+    job = _gitlab_jobs()["repowise-note"]
+    assert job["stage"] == ".post" and job["allow_failure"] is True
+    assert job["rules"] == [
+        {
+            "if": '$CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_GITLAB_TOKEN',
+            "when": "always",
+        }
+    ]
+    assert [n["job"] for n in job["needs"]] == [f"repowise-{g}" for g in GATE_JOBS]
+
+
+@pytest.mark.parametrize(
+    ("codes", "expected"),
+    [
+        (
+            {"security": "1", "doc-drift": "0"},
+            "ci-summary repowise-summary --gate doc-drift=0 --gate security=1 --gitlab-note",
+        ),
+        ({}, None),
+    ],
+)
+def test_the_gitlab_note_job_passes_each_gate_that_ran(
+    tmp_path, fake_repowise, codes, expected
+) -> None:
+    rows = tmp_path / "repowise-summary"
+    rows.mkdir()
+    for gate, code in codes.items():
+        (rows / f"{gate}.exit").write_text(f"{code}\n", encoding="utf-8")
+    assert _run_gitlab_job(tmp_path, fake_repowise, "repowise-note") == 0
+    log = tmp_path / "log"
+    if expected is None:
+        assert not log.exists()
+    else:
+        assert log.read_text(encoding="utf-8").strip() == expected
 
 
 def test_the_default_branch_job_writes_the_doc_drift_report(tmp_path, fake_repowise) -> None:

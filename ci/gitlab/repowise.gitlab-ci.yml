@@ -5,6 +5,9 @@
 #   include:
 #     - remote: https://raw.githubusercontent.com/repowise-dev/repowise/main/ci/gitlab/repowise.gitlab-ci.yml
 #
+# or commit a copy and include it with `local:`. The jobs need only PyPI (or
+# your package mirror) at run time.
+#
 # Each gate is its own job, so one failing does not hide the others. The
 # markdown report is printed to the job log and kept as an artifact. Doc drift
 # and security also write a Code Quality report, so their findings show in the
@@ -46,25 +49,43 @@
 #                                   tests the change needs from a cached index.
 #   REPOWISE_IMPACTED_TESTS_RUNNER  Runner its arguments are for: auto (default), pytest,
 #                                   go, jest or files.
+#   REPOWISE_GITLAB_TOKEN           A project or group access token with the api scope and
+#                                   the Reporter role (a masked variable, not protected).
+#                                   When set, repowise-note posts one merge-request note
+#                                   summarizing every gate and edits it on later pipelines.
 
 .repowise:
   image: python:3.12
   variables:
     GIT_DEPTH: "0"
+    # Each gate leaves its result row here for repowise-note.
+    REPOWISE_GATE_SUMMARY_DIR: repowise-summary
   before_script:
+    - mkdir -p "$REPOWISE_GATE_SUMMARY_DIR"
     - python -m pip install --quiet "repowise${REPOWISE_VERSION:+==$REPOWISE_VERSION}"
     # The gates diff against the target branch, which a merge request clone lacks.
     - git fetch --quiet --no-tags origin "+refs/heads/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME:refs/remotes/origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
+# A gate job records its exit code for repowise-note; a job that stopped before
+# the gate ran (a failed install) is recorded as could not evaluate.
+.repowise-exit-code: &repowise-exit-code >-
+  [ -s "$REPOWISE_GATE_SUMMARY_DIR/$REPOWISE_GATE.exit" ] ||
+  { mkdir -p "$REPOWISE_GATE_SUMMARY_DIR";
+  if [ "$CI_JOB_STATUS" = success ]; then echo 0; else echo 2; fi
+  > "$REPOWISE_GATE_SUMMARY_DIR/$REPOWISE_GATE.exit"; }
+
 repowise-coverage:
   extends: .repowise
+  variables:
+    REPOWISE_GATE: coverage
   script:
     # No shell globbing: the report list is split on spaces, and Repowise
     # expands the globs itself (so a glob matching nothing exits 2).
     - set -f
     - >
+      status=0;
       repowise coverage check "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
       $(printf -- '--report %s ' $REPOWISE_COVERAGE_REPORT)
       ${REPOWISE_COVERAGE_FAIL_UNDER:+--fail-under "$REPOWISE_COVERAGE_FAIL_UNDER"}
@@ -73,17 +94,22 @@ repowise-coverage:
       ${REPOWISE_COVERAGE_FAIL_UNDER_BRANCHES:+--fail-under-branches "$REPOWISE_COVERAGE_FAIL_UNDER_BRANCHES"}
       ${REPOWISE_COVERAGE_BASE_REPORT:+$(printf -- '--base-report %s ' $REPOWISE_COVERAGE_BASE_REPORT)}
       ${REPOWISE_COVERAGE_MAX_DROP:+--max-drop "$REPOWISE_COVERAGE_MAX_DROP"}
-      --format markdown > repowise-coverage.md
+      --format markdown > repowise-coverage.md || status=$?;
+      echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/coverage.exit";
+      exit "$status"
   after_script:
     - cat repowise-coverage.md
+    - *repowise-exit-code
   artifacts:
     when: always
-    paths: [repowise-coverage.md]
+    paths: [repowise-coverage.md, repowise-summary/]
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_COVERAGE_REPORT
 
 repowise-doc-drift:
   extends: .repowise
+  variables:
+    REPOWISE_GATE: doc-drift
   script:
     # The gate runs once per format (one run writing both would halve the cost).
     # The Code Quality run goes even when the gate fails, and the job exits with
@@ -99,17 +125,21 @@ repowise-doc-drift:
         --format gitlab > gl.tmp || true
       python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-doc-drift.json \
         || echo '[]' > gl-code-quality-doc-drift.json
+      echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/doc-drift.exit"
       exit "$status"
   after_script:
     - cat repowise-doc-drift.md
+    - *repowise-exit-code
   artifacts:
     when: always
-    paths: [repowise-doc-drift.md]
+    paths: [repowise-doc-drift.md, repowise-summary/]
     reports:
       codequality: gl-code-quality-doc-drift.json
 
 repowise-security:
   extends: .repowise
+  variables:
+    REPOWISE_GATE: security
   script:
     # Two runs and a guarded report, as in repowise-doc-drift.
     - |
@@ -124,17 +154,21 @@ repowise-security:
         --format gitlab > gl.tmp || true
       python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-security.json \
         || echo '[]' > gl-code-quality-security.json
+      echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/security.exit"
       exit "$status"
   after_script:
     - cat repowise-security.md
+    - *repowise-exit-code
   artifacts:
     when: always
-    paths: [repowise-security.md]
+    paths: [repowise-security.md, repowise-summary/]
     reports:
       codequality: gl-code-quality-security.json
 
 repowise-health:
   extends: .repowise
+  variables:
+    REPOWISE_GATE: health
   script:
     # Two runs and a guarded report, as in repowise-doc-drift.
     - |
@@ -149,12 +183,14 @@ repowise-health:
         --format gitlab > gl.tmp || true
       python -m json.tool gl.tmp > /dev/null && mv gl.tmp gl-code-quality-health.json \
         || echo '[]' > gl-code-quality-health.json
+      echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/health.exit"
       exit "$status"
   after_script:
     - cat repowise-health.md
+    - *repowise-exit-code
   artifacts:
     when: always
-    paths: [repowise-health.md]
+    paths: [repowise-health.md, repowise-summary/]
     reports:
       codequality: gl-code-quality-health.json
   rules:
@@ -185,16 +221,22 @@ repowise-code-quality:
 
 repowise-risk:
   extends: .repowise
+  variables:
+    REPOWISE_GATE: risk
   script:
     - >
+      status=0;
       repowise risk "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME...HEAD"
       --fail-above-percentile "$REPOWISE_RISK_FAIL_ABOVE_PERCENTILE"
-      --format markdown > repowise-risk.md
+      --format markdown > repowise-risk.md || status=$?;
+      echo "$status" > "$REPOWISE_GATE_SUMMARY_DIR/risk.exit";
+      exit "$status"
   after_script:
     - cat repowise-risk.md
+    - *repowise-exit-code
   artifacts:
     when: always
-    paths: [repowise-risk.md]
+    paths: [repowise-risk.md, repowise-summary/]
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_RISK_FAIL_ABOVE_PERCENTILE
 
@@ -232,3 +274,37 @@ repowise-impacted-tests:
       dotenv: repowise-impacted-tests.env
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_IMPACTED_TESTS == "true"
+
+# One merge-request note over every gate that ran, opt-in with
+# REPOWISE_GITLAB_TOKEN. It runs after the gates whatever they decided, edits
+# the note an earlier pipeline posted, and never fails the pipeline. The CI job
+# token cannot write notes, so it needs an access token of its own.
+repowise-note:
+  image: python:3.12
+  stage: .post
+  allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+  needs:
+    - {job: repowise-coverage, optional: true}
+    - {job: repowise-doc-drift, optional: true}
+    - {job: repowise-security, optional: true}
+    - {job: repowise-health, optional: true}
+    - {job: repowise-risk, optional: true}
+  script:
+    - |
+      python -m pip install --quiet "repowise${REPOWISE_VERSION:+==$REPOWISE_VERSION}"
+      set --
+      for gate in coverage doc-drift security health risk; do
+        if [ -s "repowise-summary/$gate.exit" ]; then
+          set -- "$@" --gate "$gate=$(cat "repowise-summary/$gate.exit")"
+        fi
+      done
+      if [ "$#" -eq 0 ]; then
+        echo "No gate left a result, so no merge-request note is posted."
+        exit 0
+      fi
+      repowise ci-summary repowise-summary "$@" --gitlab-note
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event" && $REPOWISE_GITLAB_TOKEN
+      when: always
