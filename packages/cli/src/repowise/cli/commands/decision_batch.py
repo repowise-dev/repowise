@@ -289,6 +289,8 @@ def _print_batch(
         table.add_column(column)
     for result in results:
         outcome = "[green]ok[/green]" if result["ok"] else f"[red]{result['message']}[/red]"
+        if result.get("waits_for"):
+            outcome = f"[yellow]governs once it lands on {result['waits_for']}[/yellow]"
         table.add_row(result.get("id", result["given"])[:8], result.get("title", "")[:50], outcome)
     console.print(table)
     if preview:
