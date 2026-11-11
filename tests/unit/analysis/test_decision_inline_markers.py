@@ -125,3 +125,26 @@ async def test_single_marker_file_needs_no_hint(tmp_path):
     assert len(decisions) == 1
     assert decisions[0].evidence_line == 1
     assert "pin the driver" in decisions[0].source_text
+
+
+async def test_affected_files_skip_co_change_partners(tmp_path):
+    """A co-change partner on either sort side is not an affected file (#5472)."""
+    import networkx as nx
+
+    (tmp_path / "app.py").write_text(
+        "# DECISION: pin the driver to 2.x because 3.x drops the sync API\n",
+        encoding="utf-8",
+    )
+    g: nx.DiGraph[str] = nx.DiGraph()
+    g.add_edge("main.py", "app.py", edge_type="imports")
+    # Stored once in path order, so one partner is a predecessor and one a successor.
+    g.add_edge("aaa.py", "app.py", edge_type="co_changes")
+    g.add_edge("app.py", "zzz.py", edge_type="co_changes")
+    provider = _StubProvider([{"title": "Pin the driver", "decision": "pin the driver to 2.x"}])
+
+    decisions = await DecisionExtractor(
+        repo_path=tmp_path, provider=provider, graph=g
+    ).scan_inline_markers()
+
+    assert len(decisions) == 1
+    assert set(decisions[0].affected_files) == {"app.py", "main.py"}
