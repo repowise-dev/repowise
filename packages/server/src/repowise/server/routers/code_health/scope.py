@@ -12,7 +12,7 @@ ScopeQuery = Query(
     DEFAULT_SCOPE,
     description=(
         "Which files to report on: 'all' or 'production' (no tests, tooling, "
-        "vendored or generated files). "
+        "build, vendored, generated or docs example files). "
         "Those score higher than production code, so narrowing lowers every figure "
         "without a defect having been found."
     ),

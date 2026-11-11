@@ -280,10 +280,10 @@ def test_clean_file_is_ten_in_every_active_dimension():
 
 
 def test_perf_biomarker_does_not_touch_defect_or_maintainability():
-    """io_in_loop scores ONLY performance - the surfaced (defect) score and the
+    """A perf marker scores ONLY performance - the surfaced (defect) score and the
     golden guarantee must be untouched by perf findings."""
-    findings = [_r("io_in_loop", Severity.MEDIUM)]
-    assert dimensions_for("io_in_loop") == {"performance"}
+    findings = [_r("blocking_sync_in_async", Severity.MEDIUM)]
+    assert dimensions_for("blocking_sync_in_async") == {"performance"}
     scores, deductions = score_file(findings)
     assert scores["defect"] == 10.0
     assert scores["maintainability"] == 10.0
@@ -292,39 +292,38 @@ def test_perf_biomarker_does_not_touch_defect_or_maintainability():
     assert deductions == [0.0]
 
 
-def test_perf_io_in_loop_deduction():
-    """io_in_loop MEDIUM (0.7) x weight 1.0 -> 9.3 performance."""
-    scores, _ = score_file([_r("io_in_loop", Severity.MEDIUM)])
-    assert scores["performance"] == 9.3
+def test_perf_deduction():
+    """blocking_sync_in_async MEDIUM (0.7) x weight 0.7 -> 9.51 performance."""
+    scores, _ = score_file([_r("blocking_sync_in_async", Severity.MEDIUM)])
+    assert scores["performance"] == 9.51
 
 
 def test_perf_two_medium_findings_deduct_uncapped():
-    """Two MEDIUM io_in_loop hits deduct in full (2 x 0.7 = 1.4, under the cap)."""
-    scores, _ = score_file([_r("io_in_loop", Severity.MEDIUM) for _ in range(2)])
-    assert scores["performance"] == 8.6
+    """Two MEDIUM hits deduct in full (2 x 0.49 = 0.98, under the cap)."""
+    scores, _ = score_file([_r("blocking_sync_in_async", Severity.MEDIUM) for _ in range(2)])
+    assert scores["performance"] == 9.02
 
 
 def test_perf_category_cap_bounds_dimension():
     """The single 2.0 performance cap bounds the whole pillar."""
-    findings = [_r("io_in_loop", Severity.MEDIUM) for _ in range(10)]
+    findings = [_r("blocking_sync_in_async", Severity.MEDIUM) for _ in range(10)]
     scores, _ = score_file(findings)
-    # 10 * 0.7 = 7.0 raw -> capped at 2.0 -> 8.0, never lower.
+    # 10 * 0.49 = 4.9 raw -> capped at 2.0 -> 8.0, never lower.
     assert scores["performance"] == 8.0
 
 
 def test_perf_cap_bounds_high_severity_pileup():
-    """Six HIGH hits (6 x 1.2 = 7.2 raw) still bottom out at the 2.0 cap."""
-    findings = [_r("io_in_loop", Severity.HIGH) for _ in range(6)]
+    """Six HIGH hits (6 x 0.84 = 5.04 raw) still bottom out at the 2.0 cap."""
+    findings = [_r("blocking_sync_in_async", Severity.HIGH) for _ in range(6)]
     scores, _ = score_file(findings)
     assert scores["performance"] == 8.0
 
 
 def test_perf_bonus_markers_advisory_weight():
-    """string_concat (0.7, Phase-7d promoted) and blocking_sync (0.7) ride at
-    reduced weight."""
-    assert dimensions_for("string_concat_in_loop") == {"performance"}
+    """resource_construction (0.7) and blocking_sync (0.7) ride at reduced weight."""
+    assert dimensions_for("resource_construction_in_loop") == {"performance"}
     assert dimensions_for("blocking_sync_in_async") == {"performance"}
-    s1, _ = score_file([_r("string_concat_in_loop", Severity.LOW)])  # 0.3 * 0.7
+    s1, _ = score_file([_r("resource_construction_in_loop", Severity.LOW)])  # 0.3 * 0.7
     assert s1["performance"] == round(10.0 - 0.21, 2)
     s2, _ = score_file([_r("blocking_sync_in_async", Severity.MEDIUM)])  # 0.7 * 0.7
     assert s2["performance"] == round(10.0 - 0.49, 2)
