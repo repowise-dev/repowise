@@ -253,11 +253,18 @@ def _branch_tokens(branch: str) -> list[str]:
     ]
 
 
-def _collect_seeds(repo_path: Path) -> tuple[list[str], str]:
-    """The session's likely working set (repo-relative POSIX) + branch name."""
-    dirty, branch = _dirty_files_and_branch(repo_path)
+def _collect_seeds(repo_path: Path, checkout: Path | None = None) -> tuple[list[str], str]:
+    """The session's likely working set (repo-relative POSIX) + branch name.
+
+    Git runs in *checkout* (a worktree reading *repo_path*'s index), else in
+    *repo_path*. The previous session's edits are the main checkout's, so a
+    worktree does not take them.
+    """
+    tree = checkout or repo_path
+    dirty, branch = _dirty_files_and_branch(tree)
+    previous = _previous_session_edits(repo_path) if tree == repo_path else []
     seen: dict[str, None] = {}
-    for f in dirty + _branch_changed_files(repo_path, branch) + _previous_session_edits(repo_path):
+    for f in dirty + _branch_changed_files(tree, branch) + previous:
         norm = f.replace("\\", "/").removeprefix("./")
         if norm:
             seen.setdefault(norm, None)
@@ -614,7 +621,9 @@ def _select_lines(
     return lines, shown
 
 
-def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
+def _session_decision_block(
+    repo_path: Path, session_id: str, checkout: Path | None = None
+) -> str | None:
     """The relevance-ranked SessionStart decision block, or None (silence).
 
     Two sections under two budgets: accepted decisions under ``_TOKEN_CAP``,
@@ -632,7 +641,7 @@ def _session_decision_block(repo_path: Path, session_id: str) -> str | None:
         candidates = _load_candidate_decisions(conn)
         if not decisions and not candidates:
             return None
-        seeds, branch = _collect_seeds(repo_path)
+        seeds, branch = _collect_seeds(repo_path, checkout)
         seed_set = set(seeds)
         hop = _expand_one_hop(conn, seeds)
         tokens = _branch_tokens(branch)

@@ -284,7 +284,7 @@ Through MCP, `get_why` picks its mode from the call shape:
 | Call | Returns |
 |------|---------|
 | `get_why()` | Governance health: counts, stale decisions, candidates awaiting review, ungoverned hotspots |
-| `get_why(query="src/auth/jwt.py")` | Three lanes that never mix: `decisions` (accepted, governing; with lineage when there is one), `candidates` (nobody accepted them), `history` (superseded or withdrawn). Plus an origin story from git and an alignment read on the first lane |
+| `get_why(query="src/auth/jwt.py")` | The constraints: `decisions` (accepted, governing; with lineage when there is one), then at most two `candidates` (nobody accepted them), labelled as background. `include=["history"]` adds `history` (superseded or withdrawn), an origin story from git, an alignment read on the first lane, archaeology and episodes |
 | `get_why(query="why is caching split?", targets=[...])` | Ranked decision search, optionally anchored to paths |
 | `get_why(query=..., repo="all")` | The same search across every workspace repo |
 

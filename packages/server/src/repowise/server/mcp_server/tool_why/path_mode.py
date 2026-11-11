@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from sqlalchemy import select
 
 from repowise.core.analysis.decisions.lifecycle import is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.analysis.next_call import render_call
 from repowise.core.persistence.crud.authority import decision_currencies, pinned_decision_ids
 from repowise.core.persistence.crud.decision_staleness import latest_grant_times
 from repowise.core.persistence.database import get_session
@@ -34,9 +36,14 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import served_root
-from repowise.server.mcp_server._why_evidence import annotate_response_evidence_async
+from repowise.server.mcp_server._why_evidence import (
+    _resolved_commits,
+    annotate_response_evidence_async,
+)
 from repowise.server.mcp_server.tool_why.archaeology import _git_archaeology_fallback
 from repowise.server.mcp_server.tool_why.caps import (
+    _MAX_BACKGROUND,
+    _MAX_PATH_DECISIONS,
     _cap_episodes,
     _cap_path_decision_lanes,
     _cap_supporting_lanes,
@@ -56,11 +63,23 @@ from repowise.server.mcp_server.tool_why.projection import (
     _authority_of,
     _governing_decision_entry,
     _path_decision_sort_key,
+    bounded,
+    trim_background,
 )
+from repowise.server.mcp_server.tool_why.ranking import _collapse_restatements
+from repowise.server.repo_paths import missing_path_hint
 
 
-async def _why_path(query: str, repo: str | None) -> dict:
-    """Mode 2: query is a path — governing decisions, origin story, alignment."""
+async def _why_path(
+    query: str, repo: str | None, *, history: bool = False, follow_moves: bool = True
+) -> dict:
+    """Mode 2: query is a path: what governs it, then (on request) its history.
+
+    By default the answer is the constraints only: the rules in force, then at
+    most ``_MAX_BACKGROUND`` mined records, labelled. *history* adds the origin
+    story, alignment, withdrawn records, archaeology, rationale comments and
+    episodes.
+    """
     ctx = await _resolve_repo_context(repo)
     collector = OmissionCollector("get_why", repo_root=ctx.path)
     exclude_spec = _get_exclude_spec(ctx.path)
@@ -84,15 +103,7 @@ async def _why_path(query: str, repo: str | None) -> dict:
         if not known and not await _indexed_under(
             session, repository.id, query, exclude_spec
         ):
-            return {
-                "mode": "path",
-                "path": query,
-                "error": f"Path not found: '{query}' is neither in the checkout "
-                "nor in the indexed git history.",
-            }
-
-        # Every file's rows: a directory's history, and the fallback's cross-file search.
-        all_git_meta = await _all_git_metadata(session, repository.id)
+            return await _path_not_found(query, repo, ctx.path, history, follow_moves)
 
         # A record with no acceptance row is a candidate whatever its status.
         # Over every record, since alignment reads records this path did not match.
@@ -101,63 +112,222 @@ async def _why_path(query: str, repo: str | None) -> dict:
         # Rank before capping, so the survivors are the ones that govern.
         matched.sort(key=_path_decision_sort_key)
         lineage_by_id = await _lineage_for_records(session, matched, all_decisions)
-        governing, candidates, retired = _split_by_authority(
-            matched, lineage_by_id, currencies, collector
+        resolved = await asyncio.to_thread(_resolved_commits, None, matched, ctx.path)
+        governing, candidates, retired = _split_collapsed(
+            matched, lineage_by_id, currencies, resolved, collector
         )
         if governing:
             governing = _pinned_first(governing, await pinned_decision_ids(session, repository.id))
         await _stamp_still_true(governing, matched, ctx.path, session, repository.id)
 
-        # Every lane: the origin story is evidence, not instruction.
-        origin_story = _origin_for(
-            query,
-            git_meta,
-            _rows_under(query, all_git_meta, exclude_spec),
-            governing + candidates + retired,
-        )
-
         result_data: dict[str, Any] = {
             "mode": "path",
             "path": query,
             "decisions": governing,
-            "origin_story": origin_story,
-            # A coverage number, so scored over every match, not the capped head.
-            "alignment": _compute_alignment(
-                query,
-                [{"id": d.id, "title": d.title} for d in matched],
-                all_decisions,
-                currencies,
-            ),
         }
-        _add_review_lanes(result_data, candidates, retired)
-
-        # --- Fallback: git archaeology when no accepted decision governs ---
-        if not governing:
-            await _add_ungoverned_evidence(
-                result_data, query, git_meta, all_git_meta, repository, ctx.path
+        episodes: list[dict] = []
+        if history:
+            lanes = _PathLanes(matched, all_decisions, currencies, governing, candidates, retired)
+            episodes, collector = await _serve_history(
+                result_data, session, ctx, repository, git_meta, exclude_spec, lanes, collector
             )
-
-        # Episodes are additive, not a fallback: a governed file still has history.
-        episode_population: list[dict] = []
-        episodes, pending = await asyncio.to_thread(
-            episode_evidence,
-            ctx.path,
-            paths=[query],
-            full_population=episode_population,
-        )
-        collector = _serve_episodes(
-            result_data, episodes, episode_population, pending, collector, ctx.path
-        )
+        else:
+            _add_background(result_data, candidates)
 
         result_data["_meta"] = _build_meta(repository=repository)
         await _attach_response_decision_evidence(session, result_data, all_decisions)
         await annotate_response_evidence_async(
             result_data, ctx.alias, all_decisions, repo_root=ctx.path
         )
-        _cap_supporting_lanes(result_data, collector, label=query)
-        _cap_episodes(result_data, episodes, collector)
+        return _finish_path(result_data, ctx.path, episodes, collector, history=history)
+
+
+@dataclass(frozen=True)
+class _PathLanes:
+    """What a path matched, and its records split by authority."""
+
+    matched: list
+    all_decisions: list
+    currencies: dict[str, Any]
+    governing: list[dict]
+    candidates: list[dict]
+    retired: list[dict]
+
+
+async def _serve_history(
+    result_data: dict[str, Any],
+    session: Any,
+    ctx: Any,
+    repository: Any,
+    git_meta: Any | None,
+    exclude_spec: Any,
+    lanes: _PathLanes,
+    collector: OmissionCollector,
+) -> tuple[list[dict], OmissionCollector]:
+    """Origin story, alignment, review lanes, ungoverned evidence and episodes."""
+    query = result_data["path"]
+    all_git_meta = await _all_git_metadata(session, repository.id)
+    # Every lane: the origin story is evidence, not instruction.
+    result_data["origin_story"] = _origin_for(
+        query,
+        git_meta,
+        _rows_under(query, all_git_meta, exclude_spec),
+        lanes.governing + lanes.candidates + lanes.retired,
+    )
+    # A coverage number, so scored over every match, not the capped head.
+    result_data["alignment"] = _compute_alignment(
+        query,
+        [{"id": d.id, "title": d.title} for d in lanes.matched],
+        lanes.all_decisions,
+        lanes.currencies,
+    )
+    _add_review_lanes(result_data, lanes.candidates, lanes.retired)
+
+    # --- Fallback: git archaeology when no accepted decision governs ---
+    if not lanes.governing:
+        await _add_ungoverned_evidence(
+            result_data, query, git_meta, all_git_meta, repository, ctx.path
+        )
+
+    # Episodes are additive, not a fallback: a governed file still has history.
+    episode_population: list[dict] = []
+    episodes, pending = await asyncio.to_thread(
+        episode_evidence,
+        ctx.path,
+        paths=[query],
+        full_population=episode_population,
+    )
+    collector = _serve_episodes(
+        result_data, episodes, episode_population, pending, collector, ctx.path
+    )
+    return episodes, collector
+
+
+def _finish_path(
+    result_data: dict[str, Any],
+    repo_root: Any,
+    episodes: list[dict],
+    collector: OmissionCollector,
+    *,
+    history: bool,
+) -> dict:
+    """Cap the lanes, trim a default answer to its constraints, then fit the budget."""
+    _cap_supporting_lanes(result_data, collector, label=result_data["path"])
+    _cap_episodes(result_data, episodes, collector)
+    if history:
         _cap_path_decision_lanes(result_data, collector)
-        return _fit_path_response(result_data, ctx.path, collector=collector)
+    else:
+        _cap_path_decision_lanes(result_data, collector, side_cap=_MAX_BACKGROUND)
+        _drop_history_fields(result_data)
+        result_data["more"] = _history_pointer([result_data["path"]])
+    return _fit_path_response(result_data, repo_root, collector=collector)
+
+
+async def _path_not_found(
+    path: str, repo: str | None, repo_root: Any, history: bool, follow_moves: bool
+) -> dict:
+    """Answer for where *path* went when git says it moved, else say it is gone.
+
+    A rename is followed to its new name; a module split into a same-named
+    package is answered for that package. Either way the answer names the old
+    path, so the caller can tell it was redirected.
+    """
+    hint = await asyncio.to_thread(missing_path_hint, str(repo_root or ""), path)
+    moved = hint.get("moved_to") or []
+    new_path = moved[0] if len(moved) == 1 else str(PurePosixPath(path).with_suffix(""))
+    # A split is answered for its package only when every new file lives there.
+    split_ok = len(moved) < 2 or all(m.startswith(f"{new_path}/") for m in moved)
+    if follow_moves and moved and split_ok and new_path != path:
+        result = await _why_path(new_path, repo, history=history, follow_moves=False)
+        if "error" not in result:
+            result["moved_from"] = path
+            result["removed_by_commit"] = hint["removed_by_commit"][:12]
+            return result
+    out: dict[str, Any] = {
+        "mode": "path",
+        "path": path,
+        "error": f"Path not found: '{path}' is neither in the checkout "
+        "nor in the indexed git history.",
+    }
+    if hint.get("removed_by_commit"):
+        out["error"] = f"'{path}' was removed in {hint['removed_by_commit'][:12]}."
+        out["removed_by_commit"] = hint["removed_by_commit"][:12]
+    return out
+
+
+def _split_collapsed(
+    matched: list,
+    lineage_by_id: dict[str, list[dict]],
+    currencies: dict[str, Any],
+    resolved: dict[str, str],
+    collector: OmissionCollector,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """``_split_by_authority`` over *matched* with restatements folded into their rows."""
+    served, restates = _collapse_path_records(matched, currencies, resolved)
+    governing, candidates, retired = _split_by_authority(
+        served, lineage_by_id, currencies, collector
+    )
+    for entry in (*governing, *candidates):
+        if restates.get(entry["id"]):
+            entry["restates"] = restates[entry["id"]]
+    return governing, candidates, retired
+
+
+def _collapse_path_records(
+    matched: list, currencies: dict[str, Any], resolved: dict[str, str]
+) -> tuple[list, dict[str, list[str]]]:
+    """*matched* with restatements folded, and ``{kept id: folded ids}``.
+
+    Rules collapse first, so a mined record restating a rule folds into the
+    rule rather than the reverse. Withdrawn records keep their own lane.
+    """
+
+    def in_force(d: Any) -> bool:
+        currency = currencies.get(d.id)
+        return currency is not None and is_governing(currency)
+
+    rules = [d for d in matched if in_force(d)]
+    background = [d for d in matched if currencies.get(d.id) is None]
+    withdrawn = [d for d in matched if not in_force(d) and currencies.get(d.id) is not None]
+    collapsed = _collapse_restatements(rules + background, resolved)
+    return [d for d, _ in collapsed] + withdrawn, {d.id: f for d, f in collapsed if f}
+
+
+#: Detail a rule row carries only with ``include=["history"]``.
+_RULE_DETAIL_FIELDS = ("context", "alternatives", "staleness_score")
+
+
+def _drop_history_fields(result_data: dict[str, Any]) -> None:
+    """Trim path-mode rows to what constrains an edit, in place.
+
+    A background row keeps only its claim, bounded, and where it came from:
+    beside the rules of one file, its rationale and scope are history.
+    """
+    for row in result_data.get("decisions") or []:
+        for key in _RULE_DETAIL_FIELDS:
+            row.pop(key, None)
+    background = result_data.get("candidates") or []
+    trim_background(background)
+    for row in background:
+        for key in [k for k in row if k == "rationale" or k.startswith("affected_files")]:
+            row.pop(key)
+        if isinstance(row.get("decision"), str):
+            row["decision"] = bounded(row["decision"])
+
+
+def _history_pointer(paths: list[str]) -> str:
+    call = render_call("get_why", {"targets": paths, "include": ["history"]})
+    return f"Origin story, commits, episodes and contributors: {call}"
+
+
+def _add_background(result_data: dict[str, Any], candidates: list[dict]) -> None:
+    """Serve the mined records beside the rules, labelled as not binding."""
+    if candidates:
+        result_data["candidates"] = candidates
+        result_data["candidates_note"] = (
+            f"{len(candidates)} background record(s) mention this path. None is "
+            "in force: read them as context, not rules."
+        )
 
 
 def _maybe_on_disk(repo_path: str | Path | None, path: str) -> bool:
@@ -325,8 +495,12 @@ async def _build_target_context(
     target_git: dict[str, Any],
     targets: list[str],
     accepted: set[str] | None = None,
+    *,
+    history: bool = True,
 ) -> dict[str, Any]:
     """Per-target governing decisions + origin story, with archaeology fallback.
+
+    Without *history* a card is its rules and background records only.
 
     ``governing_decisions`` holds only accepted records; the rest go to
     ``candidate_decisions``. The archaeology fallback keys on the accepted lane:
@@ -349,6 +523,7 @@ async def _build_target_context(
                 root,
                 accepted or set(),
                 _rows_under(t, all_git_meta_list, exclude_spec),
+                history=history,
             )
         return target_context
 
@@ -373,6 +548,8 @@ async def _target_card(
     repo_root: str | None,
     accepted_ids: set[str],
     rows_under: list,
+    *,
+    history: bool = True,
 ) -> dict[str, Any]:
     """One target's card: its rules, its candidates, its origin, and archaeology."""
     rows = [
@@ -387,25 +564,37 @@ async def _target_card(
     ]
     t_governing = [r for r in rows if r["authority"] == "accepted"]
     t_candidates = [r for r in rows if r["authority"] != "accepted"]
-    origin = _origin_for(t, git_m, rows_under, t_governing)
-    ctx_entry: dict[str, Any] = {
-        "governing_decisions": t_governing,
-        "origin": origin,
-    }
+    ctx_entry: dict[str, Any] = {"governing_decisions": t_governing}
     if t_candidates:
         ctx_entry["candidate_decisions"] = t_candidates
-    # Git archaeology fallback when no *accepted* decision governs
+    if history:
+        ctx_entry.update(
+            await _card_history(t, git_m, rows_under, t_governing, all_git_meta_list, repo_root)
+        )
+    return ctx_entry
+
+
+async def _card_history(
+    t: str,
+    git_m: Any | None,
+    rows_under: list,
+    t_governing: list[dict],
+    all_git_meta_list: list,
+    repo_root: str | None,
+) -> dict[str, Any]:
+    """A card's origin, plus git archaeology when no *accepted* decision governs."""
+    out: dict[str, Any] = {"origin": _origin_for(t, git_m, rows_under, t_governing)}
     if not t_governing:
-        ctx_entry["git_archaeology"] = await _git_archaeology_fallback(
+        out["git_archaeology"] = await _git_archaeology_fallback(
             t,
             git_m,
             all_git_meta_list,
             repo_root,
         )
-    return ctx_entry
+    return out
 
 
-async def _why_targets(targets: list[str], repo: str | None) -> dict:
+async def _why_targets(targets: list[str], repo: str | None, *, history: bool = False) -> dict:
     """Mode 2b: targets and no query — the paths themselves are the question.
 
     One target is path mode outright, the fullest answer about a file. Several
@@ -413,7 +602,7 @@ async def _why_targets(targets: list[str], repo: str | None) -> dict:
     scan and a git subprocess each.
     """
     if len(targets) == 1:
-        return await _why_path(targets[0], repo)
+        return await _why_path(targets[0], repo, history=history)
 
     ctx, repository, all_decisions, target_git, accepted = await _load_corpus(
         repo, targets
@@ -423,15 +612,20 @@ async def _why_targets(targets: list[str], repo: str | None) -> dict:
         "mode": "path",
         "paths": targets,
         "target_context": await _build_target_context(
-            ctx, repository, all_decisions, target_git, targets, accepted
+            ctx, repository, all_decisions, target_git, targets, accepted, history=history
         ),
         "_meta": _build_meta(repository=repository, targets=targets),
+        **({} if history else {"more": _history_pointer(targets)}),
     }
     await _hydrate_response_decision_evidence(ctx, result_data, all_decisions)
     result_data = await annotate_response_evidence_async(
         result_data, ctx.alias, all_decisions, repo_root=ctx.path
     )
     _cap_supporting_lanes(result_data, collector, label="targets")
-    _cap_target_context(result_data["target_context"], collector)
+    _cap_target_context(
+        result_data["target_context"],
+        collector,
+        candidate_cap=_MAX_PATH_DECISIONS if history else _MAX_BACKGROUND,
+    )
     collector.attach(result_data)
     return result_data

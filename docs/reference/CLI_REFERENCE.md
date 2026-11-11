@@ -547,7 +547,7 @@ Why the code is shaped this way (decisions, rationale, git archaeology); run bef
 
 ```bash
 repowise why "why the retry cap?" --target src/api/client.py
-repowise why src/api/auth.py                     # governing decisions + origin story
+repowise why src/api/auth.py                     # governing decisions (--full adds the origin story)
 repowise why                                     # decision health dashboard
 ```
 
