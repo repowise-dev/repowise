@@ -714,9 +714,14 @@ class DecisionPolicy:
         return replace(self, mode=mode, **_MODE_DEFAULTS[mode])
 
     @property
+    def agent_may_accept(self) -> bool:
+        """``agent_acceptance``, and nothing at all under mode ``off``."""
+        return self.agent_acceptance and self.delivers
+
+    @property
     def agent_grants(self) -> bool:
         """Whether an agent's acceptance may put a decision in force."""
-        return self.agent_acceptance and not self.require_approval
+        return self.agent_may_accept and not self.require_approval
 
 
 @dataclass(frozen=True, slots=True)

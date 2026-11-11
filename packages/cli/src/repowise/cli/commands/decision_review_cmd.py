@@ -316,7 +316,7 @@ def merge_command(
 
     signer = _signer(agent, agent_session)
     repo_path = _resolve_decision_repo(path, fmt)
-    granted = _load_policy(repo_path).agent_acceptance if agent else False
+    granted = _load_policy(repo_path).agent_may_accept if agent else False
 
     async def _merge(session, rec) -> dict:
         from repowise.core.persistence.crud.authority import merge_candidate
@@ -385,7 +385,7 @@ def reaffirm_command(
     _require_ids(ids, "reaffirm", fmt)
     repo_path = _resolve_decision_repo(path, fmt)
     signer = _signer(agent, agent_session)
-    granted = _load_policy(repo_path).agent_acceptance if agent else False
+    granted = _load_policy(repo_path).agent_may_accept if agent else False
 
     async def _reaffirm(session, rec) -> None:
         from repowise.core.persistence.crud.authority import reaffirm_decision

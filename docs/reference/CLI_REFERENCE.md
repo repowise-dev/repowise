@@ -1056,7 +1056,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--state` | `open`, `accepted`, `merged`, `needs_split`, `dismissed`, `all`. | `open` |
-| `--lane` | Extraction lane: `pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`. Not the Decisions page review lanes. | all lanes |
+| `--lane` | Extraction source: `pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`. Not the Decisions page sections. | all lanes |
 | `--limit` | Max listed. | `30` |
 
 **`confirm`, `reaffirm`, `pin`, `unpin`, `dismiss`, `deprecate`, `merge`, `split`**
@@ -1141,7 +1141,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
   scope: name the files or modules it governs"`).
 
 **`status`.** Mode, policy, preset; per source: state, why no call, what it captured and when; the In force count
-and the other lanes, the pinned count, backlog acceptable today versus blocked, its age; staging queues; decision-extraction model spend; and
+and the other sections, the pinned count, backlog acceptable today versus blocked, its age; staging queues; decision-extraction model spend; and
 **recent**: the decisions put in force in the last 7 days, newest first, each with who put it in force (an agent, or a
 person) and the commit it landed in (the table shows 10, `--format json` lists them all under `recent.decisions`). No
 run ledger: spend is all-time with the last call named; a queue the store predates reads absent, not zero.

@@ -631,7 +631,10 @@ def _session_start_enabled(repo_path: Path) -> bool:
     """Whether this repository asked for decisions at session start. Off by default."""
     from repowise.core.analysis.decisions.policy_store import load_policy
 
-    return load_policy(repo_path).policy.session_start_on
+    try:
+        return load_policy(repo_path).policy.session_start_on
+    except Exception:  # an unreadable config never fails a session start
+        return False
 
 
 def _delivers(repo_path: Path) -> bool:

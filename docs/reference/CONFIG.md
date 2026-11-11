@@ -407,7 +407,7 @@ except under `off`.
 | Mode | Shows decisions | Records decisions | Defaults it sets |
 |------|-----------------|-------------------|------------------|
 | `full` | Yes | Yes | The defaults in the table above |
-| `read_only` | Yes: the edit notice, `get_why`, `get_answer`, the agent-file pointer and pins, pulls from repowise.dev | No: no mining, no capture prompt, no agent putting a decision in force, nothing sent to repowise.dev, no landing granting force | `capture_prompt`, `agent_acceptance` off |
+| `read_only` | Yes: the edit notice, `get_why`, `get_answer`, the agent-file pointer and pins, and pulls from repowise.dev when `sync` is on | No: no mining, no capture prompt, no agent putting a decision in force, nothing sent to repowise.dev, no landing granting force | `capture_prompt`, `agent_acceptance` off |
 | `off` | No: every hook, MCP surface and the agent-file block stay silent; `get_why` answers that decisions are off | No | Everything off; explicit switches are ignored |
 
 `repowise decision config mode off|read-only|full` sets it and resets the

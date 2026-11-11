@@ -3,7 +3,7 @@
 Repowise keeps the choices behind your code next to the code they govern. A
 coding agent records a decision when it makes one, the decision comes into
 force when that work merges, and from then on an agent editing those files is
-told about it in one line. People audit instead of working a queue: they pin
+told about it in one line. People audit and never review a backlog: they pin
 the decisions that are law, veto the ones that are wrong, and ask their agent
 to edit the rest.
 

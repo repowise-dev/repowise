@@ -85,7 +85,7 @@ def _gate(repo_path: Path, *, network: bool = True) -> _Gate:
         policy = load_policy(repo_path).policy
     except Exception:
         return _Gate(blocker="The decisions config could not be read.", code="config_unreadable")
-    if not policy.delivers:
+    if not (policy.delivers and policy.enabled):
         return _Gate(blocker="Decisions are off for this repo.", code="decisions_off")
     if not policy.sync:
         return _Gate(

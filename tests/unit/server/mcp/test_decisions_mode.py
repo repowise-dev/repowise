@@ -82,3 +82,30 @@ async def test_get_context_and_get_risk_name_no_decision_when_off(tmp_path):
     assert card.data == {}
     # No session is opened: the factory would fail if it were.
     assert await _governance_directive(SimpleNamespace(path=root, session_factory=None), ["a"]) == []
+
+
+@pytest.mark.asyncio
+async def test_get_overview_lists_no_key_decision_when_off(tmp_path):
+    from repowise.server.mcp_server.tool_overview.decisions import _build_key_decisions
+
+    repository = SimpleNamespace(id="r1", local_path=str(_repo(tmp_path, "off")))
+
+    # No session is used: the block is skipped before any read.
+    assert await _build_key_decisions(None, repository) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_search_skips_a_repository_that_is_off(tmp_path):
+    from repowise.server.mcp_server.tool_why.workspace import _score_repo
+
+    ctx = SimpleNamespace(path=_repo(tmp_path, "off"), session_factory=None, alias="a")
+
+    assert await _score_repo(ctx, "why x") == []
+
+
+def test_off_lets_no_agent_grant_whatever_agent_acceptance_says():
+    from repowise.core.analysis.decisions.policy import resolve_policy
+
+    policy = resolve_policy({"decisions": {"mode": "off", "agent_acceptance": True}}).policy
+
+    assert not policy.agent_may_accept and not policy.agent_grants

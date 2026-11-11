@@ -85,7 +85,10 @@ _OFF = {"decisions": "off", "note": "Decisions are off for this repository."}
 
 
 async def _layer_off(repo: str | None) -> bool:
-    """Whether ``decisions.mode`` is off for *repo*. ``repo="all"`` is per repository."""
+    """Whether ``decisions.mode`` is off for *repo*.
+
+    ``repo="all"`` is decided per repository by the workspace search.
+    """
     from repowise.core.analysis.decisions.policy_store import layer_mode
 
     if repo == "all":

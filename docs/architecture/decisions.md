@@ -202,7 +202,7 @@ decisions:
 ## Review state and lanes
 
 Background records carry a review row (`open`, `accepted`, `merged`, `needs_split`,
-`dismissed`) with the raising lane, extractor version, bundling flag, whether
+`dismissed`) with the source that raised it, extractor version, bundling flag, whether
 any scope is named, and a priority equal to the acceptance check's verdict at
 the last index. Re-extraction refreshes signals but never review state.
 The dashboard sections (In force, Recent, Background, History) are a join onto

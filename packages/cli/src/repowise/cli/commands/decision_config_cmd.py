@@ -63,7 +63,12 @@ def _provider_available(repo_path: Path) -> bool:
 
 def _emit_sync(policy: DecisionPolicy) -> None:
     """One line when sync is on; nothing at all when it is off."""
-    if policy.sync:
+    if policy.sync and policy.delivers and not policy.sends:
+        console.print(
+            "  [dim]Sync: pull only. `update` brings down the decisions in force on "
+            "repowise.dev and sends nothing.[/dim]"
+        )
+    elif policy.sends:
         console.print(
             "  [dim]Sync: on. `update` sends decisions recorded here to this repo on "
             "repowise.dev and brings down the ones in force there.[/dim]"
@@ -84,7 +89,7 @@ def _emit_update_mining(policy: DecisionPolicy) -> None:
 
 
 def _emit_session_start(policy: DecisionPolicy) -> None:
-    if policy.session_start:
+    if policy.session_start_on:
         console.print(
             "  [dim]Session start: on. A new session opens with the decisions that "
             "govern what it is about to touch.[/dim]"
@@ -97,7 +102,7 @@ def _emit_session_start(policy: DecisionPolicy) -> None:
 
 
 def _emit_upkeep_prompt(policy: DecisionPolicy) -> None:
-    if policy.upkeep_prompt:
+    if policy.commit_upkeep:
         console.print(
             "  [dim]Upkeep prompt: on. A commit that changes governed code names up to "
             "three of its decisions and asks the agent to settle each.[/dim]"
@@ -156,7 +161,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     # Named even at the default: this is the one setting that widens whose
     # transcripts are read, and a reader cannot check a line that is absent.
     console.print(f"  [dim]Harnesses read: {', '.join(policy.harnesses)}.[/dim]")
-    if policy.agent_acceptance:
+    if policy.agent_may_accept:
         console.print(
             "  [dim]Agent acceptance: on. An agent may accept a decision, signed as "
             "the agent's, never yours.[/dim]"
