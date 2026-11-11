@@ -77,7 +77,8 @@ MAX_SCAN_SECONDS = 0.5
 # Past this git grep is abandoned for the Python scan.
 _GIT_GREP_SECONDS = 5.0
 _SNIFF_BYTES = 8192
-# A binary past this is not streamed for the token; it is reported as skipped.
+# A file past the whole-read cap is streamed instead: a binary for the token, a
+# text file for its lines. Past this neither is read; it is reported as skipped.
 _MAX_STREAM_BYTES = 64_000_000
 OVER_LINES = f"over {MAX_LINES} lines"
 _KIND_ORDER = {"definition": 0, "import": 1, "call": 2, "reference": 3, "match": 4}
@@ -156,6 +157,14 @@ def _inside(rel: str) -> bool:
     return bool(rel) and not (p.is_absolute() or p.drive or p.root or ".." in p.parts)
 
 
+def _resolves_inside(root: Path, rel: str) -> bool:
+    """Whether *rel* resolves under *root*, symlinks followed."""
+    try:
+        return (root / rel).resolve().is_relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+
+
 def _looks_binary(head: bytes) -> bool:
     """A NUL or invalid UTF-8 in the first bytes: a document or archive, not text."""
     if b"\x00" in head:
@@ -177,6 +186,26 @@ def _stream_contains(fh: Any, raw: bytes, chunk: int = 1 << 20) -> bool:
         # Keep enough to catch a needle split across two chunks.
         tail = block[-(len(raw) - 1) :] if len(raw) > 1 else b""
     return False
+
+
+def _stream_matching_lines(
+    fh: Any, raw: bytes, pattern: re.Pattern[str], deadline: float
+) -> list[tuple[int, str]] | None:
+    """:func:`_matching_lines` for a text file too big to read whole, line by
+    line; ``None`` when the scan's deadline passes first."""
+    fh.seek(0)
+    out: list[tuple[int, str]] = []
+    for n, line in enumerate(fh, 1):
+        if n % 10_000 == 0 and time.monotonic() > deadline:
+            return None
+        if raw not in line:
+            continue
+        text = line.decode("utf-8", errors="replace").removesuffix("\n")
+        if pattern.search(text):
+            out.append((n, text))
+            if len(out) > max(SMALL_SET_LINES, MAX_LINES_PER_FILE):
+                break
+    return out
 
 
 def _is_utf8(data: bytes) -> bool:
@@ -261,14 +290,24 @@ def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, An
     return rows, reasons + scan_reasons
 
 
-def word_scan(root: Path, token: str) -> tuple[list[dict[str, Any]], bool]:
+def word_scan(root: Path, token: str) -> tuple[list[dict[str, Any]], bool, list[str]]:
     """The word-bounded lines holding *token* in every listed file, from the
-    same scan a literal search runs, and whether that scan read them all. For
-    get_answer, which reads live lines the wiki never rendered (function
-    bodies, string literals). A file cut at the per-file line cap still served
-    rows, so it hides no file and leaves the scan complete."""
+    same scan a literal search runs, whether that scan read them all, and the
+    reasons naming files it never opened. For get_answer, which reads live
+    lines the wiki never rendered (function bodies, string literals). A file
+    cut at the per-file line cap still served rows, so it hides no file and
+    leaves the scan complete."""
     rows, reasons = _scan_listed(root, token, True)
-    return rows, all(r.startswith(_per_file_cap_reason()) for r in reasons)
+    # Kept in step with the reasons scan_literal and _scan_listed write for unread files.
+    unread = (
+        "skipped as too large",
+        "unreadable",
+        "time budget",
+        f"over {MAX_SCAN_FILES} files",
+        f"over {MAX_SCAN_BYTES // 1_000_000} MB",
+    )
+    complete = all(r.startswith(_per_file_cap_reason()) for r in reasons)
+    return rows, complete, [r for r in reasons if r.startswith(unread)]
 
 
 def _per_file_cap_reason() -> str:
@@ -351,23 +390,35 @@ def scan_literal(
         if not _inside(rel):
             unreadable.append(rel)
             continue
+        streamed: list[tuple[int, str]] | None = None
         try:
             with open(root / rel, "rb") as fh:
                 size = os.fstat(fh.fileno()).st_size
                 if size > _MAX_FILE_BYTES:
-                    if size > _MAX_STREAM_BYTES or not _looks_binary(fh.read(_SNIFF_BYTES)):
+                    if size > _MAX_STREAM_BYTES:
                         oversized.append(rel)
-                    elif _stream_contains(fh, raw):
-                        binary_hits += 1
-                    continue
-                if scanned + size > MAX_SCAN_BYTES:
+                        continue
+                    head = fh.read(_SNIFF_BYTES)
+                    if _looks_binary(head):
+                        binary_hits += _stream_contains(fh, raw)
+                        continue
+                    # Text past the whole-read cap is often the file the index
+                    # dropped on size, so only this scan finds what it holds.
+                    if is_extracted_document(root / rel, head, claims=claims):
+                        continue
+                    streamed = _stream_matching_lines(fh, raw, pattern, deadline)
+                    if streamed is None:
+                        reasons.append(f"time budget: scanned {i} of {len(files)} files")
+                        break
+                elif scanned + size > MAX_SCAN_BYTES:
                     reasons.append(
                         f"over {MAX_SCAN_BYTES // 1_000_000} MB: scanned {i} of {len(files)}"
                         " files, source first"
                     )
                     break
-                scanned += size
-                data = fh.read()
+                else:
+                    scanned += size
+                    data = fh.read()
         except FileNotFoundError:
             continue  # deleted since indexing: nothing to match
         except OSError:
@@ -375,9 +426,11 @@ def scan_literal(
             if not (root / rel).is_dir():
                 unreadable.append(rel)
             continue
-        if is_extracted_document(root / rel, data, claims=claims):
+        if streamed is not None:
+            found = streamed
+        elif is_extracted_document(root / rel, data, claims=claims):
             continue
-        if b"\x00" in data:
+        elif b"\x00" in data:
             # Binary: no lines to serve, but one holding the token is a match
             # a grep would report. UTF-16 text is not binary.
             if data.startswith((b"\xff\xfe", b"\xfe\xff")):
@@ -385,14 +438,14 @@ def scan_literal(
             elif raw in data:
                 binary_hits += 1
             continue
-        if raw not in data:
+        elif raw not in data:
             # An ASCII needle shows as the same bytes in any ASCII-compatible
             # encoding; a non-ASCII one is missed unless the file is UTF-8.
             if not raw.isascii() and not _is_utf8(data):
                 undecodable += 1
             continue
-        text = data.decode("utf-8", errors="replace")
-        found = _matching_lines(text, pattern)
+        else:
+            found = _matching_lines(data.decode("utf-8", errors="replace"), pattern)
         tail = found[MAX_LINES_PER_FILE:]
         per_file_capped += bool(tail)
         del found[MAX_LINES_PER_FILE:]
@@ -405,8 +458,13 @@ def scan_literal(
         if not hits:
             continue
         # Only a file that serves lines pays for the guarded reader: its path
-        # resolution is most of a scan's cost when paid for every file.
-        if read_repo_file_text(root, rel) is None:
+        # resolution is most of a scan's cost when paid for every file. A
+        # streamed file gets the reader's containment check without the read.
+        if streamed is not None:
+            servable = _resolves_inside(root, rel)
+        else:
+            servable = read_repo_file_text(root, rel) is not None
+        if not servable:
             unreadable.append(rel)
             continue
         defs += sum(h[2] == "definition" for h in hits)

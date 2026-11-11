@@ -1070,3 +1070,237 @@ async def test_a_record_without_its_table_is_ignored(tmp_path: Path) -> None:
     shutil.rmtree(_lance_dir(tmp_path) / "wiki_pages.lance")
 
     assert providers.existing_vector_dim(_lance_dir(tmp_path)) is None
+
+
+def test_repo_env_embedder_resolves_without_prior_load_dotenv(tmp_path: Path, monkeypatch) -> None:
+    """Issue #5326: .repowise/.env must be visible to embedder choice resolution
+
+    even before load_dotenv has merged it into os.environ.
+    """
+    from repowise.cli.providers.embedders import resolve_embedder, resolve_embedder_choice
+
+    _clear_embedder_env(monkeypatch)
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("REPOWISE_EMBEDDER=openrouter\n", encoding="utf-8")
+
+    assert "REPOWISE_EMBEDDER" not in os.environ
+    assert resolve_embedder(None, repo_path=repo) == "openrouter"
+    assert resolve_embedder_choice(None, repo_path=repo) == (
+        "openrouter",
+        "REPOWISE_EMBEDDER is set",
+    )
+
+
+def test_repo_env_key_detection_resolves_without_prior_load_dotenv(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Autodetection from an API key stored in .repowise/.env works without load_dotenv."""
+    from repowise.cli.providers.embedders import resolve_embedder, resolve_embedder_choice
+
+    _clear_embedder_env(monkeypatch)
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("OPENAI_API_KEY=sk-test-key\n", encoding="utf-8")
+
+    assert "OPENAI_API_KEY" not in os.environ
+    assert resolve_embedder(None, repo_path=repo) == "openai"
+    assert resolve_embedder_choice(None, repo_path=repo) == (
+        "openai",
+        "OPENAI_API_KEY is set",
+    )
+
+
+def test_repo_env_embedding_dims_and_model_visible_in_kwargs(tmp_path: Path, monkeypatch) -> None:
+    """Constructor kwargs read repo-level REPOWISE_EMBEDDING_DIMS and model from .repowise/.env."""
+    from repowise.core.providers.embedding.resolve import embedder_kwargs
+
+    _clear_embedder_env(monkeypatch)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_MODEL", raising=False)
+
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text(
+        "GEMINI_API_KEY=gk-test\n"
+        "REPOWISE_EMBEDDING_DIMS=512\n"
+        "REPOWISE_EMBEDDING_MODEL=custom-gemini\n",
+        encoding="utf-8",
+    )
+
+    kwargs = embedder_kwargs("gemini", repo)
+    assert kwargs == {
+        "model": "custom-gemini",
+        "output_dimensionality": 512,
+        "api_key": "gk-test",
+    }
+
+
+def test_deterministic_embedder_name_reads_repo_env(tmp_path: Path, monkeypatch) -> None:
+    """deterministic_embedder_name honors REPOWISE_EMBEDDER in .repowise/.env without export."""
+    from repowise.cli.commands.update_cmd.deterministic import deterministic_embedder_name
+
+    _clear_embedder_env(monkeypatch)
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("REPOWISE_EMBEDDER=ollama\n", encoding="utf-8")
+
+    assert deterministic_embedder_name({}, repo_path=repo) == "ollama"
+
+
+def test_resolve_embedder_with_none_repo_path_does_not_read_cwd_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When repo_path is None, resolve_embedder must not read cwd's .repowise/.env."""
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    env_dir = tmp_path / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("REPOWISE_EMBEDDER=openrouter\n", encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    assert resolve_embedder(None, repo_path=None) == "mock"
+    assert resolve_embedder(None, repo_path=tmp_path) == "openrouter"
+
+
+def test_repo_env_only_embedder_resolves_across_unexported_cli_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Issue #5326: key only in .repowise/.env and nothing exported covers CLI paths."""
+    from repowise.cli.commands.init_cmd._options import InitOptions, InitRun
+    from repowise.cli.commands.init_cmd._plan import _embedders
+    from repowise.cli.commands.init_cmd._prepare import _resolve_settings
+    from repowise.cli.commands.update_cmd.deterministic import deterministic_embedder_name
+    from repowise.cli.providers.embedders import resolve_embedder, resolve_embedder_choice
+
+    _clear_embedder_env(monkeypatch)
+    repo = tmp_path / "repo"
+    env_dir = repo / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("REPOWISE_EMBEDDER=openrouter\n", encoding="utf-8")
+
+    assert "REPOWISE_EMBEDDER" not in os.environ
+
+    # 1. Direct resolvers
+    assert resolve_embedder(None, repo_path=repo) == "openrouter"
+    assert resolve_embedder_choice(None, repo_path=repo) == (
+        "openrouter",
+        "REPOWISE_EMBEDDER is set",
+    )
+
+    # 2. init_cmd._plan._embedders
+    fields = {name: None for name in InitOptions.__dataclass_fields__}
+    fields.update(
+        exclude=(),
+        coverage_report=(),
+        run_mode="standard",
+        concurrency=10,
+        onboarding=True,
+        editor_setup=True,
+        save_key=True,
+        yes=False,
+        index_only=False,
+        follow_renames=False,
+        skip_tests=False,
+        skip_infra=False,
+    )
+    run = InitRun(opts=InitOptions(**fields), repo_path=repo, start=0.0, is_interactive=False)
+    _free, model_embedder = _embedders(run)
+    assert model_embedder == "openrouter"
+
+    # 3. init_cmd._prepare._resolve_settings
+    _resolve_settings(run)
+    assert run.embedder_name_resolved == "openrouter"
+
+    # 4. update_cmd.deterministic.deterministic_embedder_name
+    assert deterministic_embedder_name({}, repo_path=repo) == "openrouter"
+
+
+def test_workspace_init_resolves_embedder_from_primary_repo_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Workspace init resolves embedder from primary repo's .repowise/.env without export."""
+    from repowise.cli.commands.init_cmd._workspace_plan import (
+        WorkspaceAnswers,
+        apply_workspace_advanced,
+    )
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    primary = tmp_path / "primary"
+    env_dir = primary / ".repowise"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / ".env").write_text("REPOWISE_EMBEDDER=openrouter\n", encoding="utf-8")
+
+    assert "REPOWISE_EMBEDDER" not in os.environ
+
+    w_fields = {name: None for name in WorkspaceAnswers.__dataclass_fields__}
+    w_fields.update(
+        index_only=False,
+        follow_renames=False,
+        skip_tests=False,
+        skip_infra=False,
+        concurrency=10,
+        exclude_patterns=[],
+        test_run=False,
+        onboarding=True,
+        wiki_style="standard",
+        embedder_name=None,
+        embedder_name_resolved="mock",
+    )
+    answers = WorkspaceAnswers(**w_fields)
+    apply_workspace_advanced(answers, {}, repo_path=primary)
+    assert answers.embedder_name_resolved == "openrouter"
+    assert resolve_embedder(answers.embedder_name, repo_path=primary) == "openrouter"
+
+
+def test_workspace_member_env_ignored_for_workspace_plan_and_honored_for_member_update(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A member repo's .repowise/.env is ignored during workspace plan and honored during member update."""
+    from repowise.cli.commands.init_cmd._workspace_plan import (
+        WorkspaceAnswers,
+        apply_workspace_advanced,
+    )
+    from repowise.cli.commands.update_cmd.deterministic import deterministic_embedder_name
+    from repowise.cli.providers.embedders import resolve_embedder
+
+    _clear_embedder_env(monkeypatch)
+    primary = tmp_path / "primary"
+    primary.mkdir(parents=True, exist_ok=True)
+
+    member = tmp_path / "member"
+    member_env_dir = member / ".repowise"
+    member_env_dir.mkdir(parents=True, exist_ok=True)
+    (member_env_dir / ".env").write_text("REPOWISE_EMBEDDER=openrouter\n", encoding="utf-8")
+
+    assert "REPOWISE_EMBEDDER" not in os.environ
+
+    # 1. Workspace plan uses primary repo, member's .env does not bleed into workspace plan
+    w_fields = {name: None for name in WorkspaceAnswers.__dataclass_fields__}
+    w_fields.update(
+        index_only=False,
+        follow_renames=False,
+        skip_tests=False,
+        skip_infra=False,
+        concurrency=10,
+        exclude_patterns=[],
+        test_run=False,
+        onboarding=True,
+        wiki_style="standard",
+        embedder_name=None,
+        embedder_name_resolved="mock",
+    )
+    answers = WorkspaceAnswers(**w_fields)
+    apply_workspace_advanced(answers, {}, repo_path=primary)
+    assert answers.embedder_name_resolved != "openrouter"
+    assert resolve_embedder(answers.embedder_name, repo_path=primary) != "openrouter"
+
+    # 2. Member repo update resolves directly from the member's own .env
+    assert deterministic_embedder_name({}, repo_path=member) == "openrouter"
+    assert resolve_embedder(None, repo_path=member) == "openrouter"

@@ -321,7 +321,7 @@ def test_markup_inside_an_identifier_is_not_stripped() -> None:
 
 def _scanned_guard(rows: list[str], *, complete: bool = True) -> _TopicGuard:
     guard = _TopicGuard(None, [], "", set())
-    guard._scans["FileTree"] = ([{"path": p, "line": 1, "text": "FileTree"} for p in rows], complete)
+    guard._scans["FileTree"] = ([{"path": p, "line": 1, "text": "FileTree"} for p in rows], complete, [])
     return guard
 
 
@@ -390,7 +390,7 @@ def test_a_file_cut_at_the_line_cap_leaves_the_word_scan_complete(tmp_path) -> N
     from repowise.server.mcp_server._line_hits import MAX_LINES_PER_FILE, word_scan
 
     (tmp_path / "many.py").write_text("RowTree = 1\n" * (MAX_LINES_PER_FILE + 3), encoding="utf-8")
-    rows, complete = word_scan(tmp_path, "RowTree")
+    rows, complete, _unread = word_scan(tmp_path, "RowTree")
     assert complete
     assert {r["path"] for r in rows} == {"many.py"}
 

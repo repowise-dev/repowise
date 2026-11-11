@@ -89,6 +89,8 @@ _SPECIFIC_TOKEN_MAX_FILES = 3
 # environment variable) are scanned for in live source, and the definitions
 # holding them anchored, up to the inline-body cap. Scans per question:
 _LITERAL_SCAN_MAX_TOKENS = 3
+# Lines served for such a word in files the index holds no symbol for.
+_UNINDEXED_LINES_MAX = 3
 # Definition kinds an exact question name may anchor.
 _ANCHOR_KINDS = ("function", "method", "class", "interface")
 
