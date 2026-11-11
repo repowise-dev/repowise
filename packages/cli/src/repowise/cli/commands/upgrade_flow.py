@@ -101,7 +101,7 @@ def _gate_cost(
             provider.model_name,
             repo_path=repo_path,
             embedder=embedder,
-            embedding_model=resolve_embedding_model(embedder),
+            embedding_model=resolve_embedding_model(embedder, repo_path=repo_path),
         )
     except Exception as exc:
         console.print(f"[yellow]Cost estimate unavailable ({exc}); continuing.[/yellow]")
@@ -586,7 +586,11 @@ def _stub_fallback_summary(generated_pages: list[Any]) -> tuple[int, list[str]]:
 
     stub_fallbacks = count_stub_fallbacks(generated_pages)
     stub_reasons = sorted(
-        {str(p.metadata.get(STUB_FALLBACK_ERROR, "")).strip() for p in generated_pages if is_stub_fallback(p)}
+        {
+            str(p.metadata.get(STUB_FALLBACK_ERROR, "")).strip()
+            for p in generated_pages
+            if is_stub_fallback(p)
+        }
         - {""}
     )
     return stub_fallbacks, stub_reasons

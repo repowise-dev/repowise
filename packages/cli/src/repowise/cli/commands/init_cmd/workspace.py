@@ -732,7 +732,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             provider.provider_name,
             provider.model_name,
             ctx.embedder_name_resolved,
-            embedding_model=resolve_embedding_model(ctx.embedder_name_resolved),
+            embedding_model=resolve_embedding_model(
+                ctx.embedder_name_resolved, repo_path=repo_path
+            ),
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,
@@ -756,7 +758,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit if ctx.resolved_commit_limit else None,
             embedder=det_embedder,
-            embedding_model=(resolve_embedding_model(det_embedder) if det_embedder else None),
+            embedding_model=(
+                resolve_embedding_model(det_embedder, repo_path=repo_path) if det_embedder else None
+            ),
         )
 
 

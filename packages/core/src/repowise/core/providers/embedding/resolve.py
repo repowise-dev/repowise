@@ -243,11 +243,41 @@ def _positive_int(var: str, lookup: EnvLookup | None = None) -> int | None:
 
 
 def embedding_model_for(name: str, repo_path: Path | str | None = None) -> str | None:
-    """The configured embedding model for *name*, or ``None`` for its default."""
-    lookup = repo_getenv(repo_path)
+    """The configured embedding model for *name*, or ``None`` for its default.
+
+    Checks process env first, then *repo_path*'s ``.repowise/.env``, and finally
+    the ``embedding_model`` pin in *repo_path*'s ``config.yaml`` if configured
+    for this embedder backend.
+    """
+    getenv = repo_getenv(repo_path)
     if name == "ollama":
-        return lookup("OLLAMA_EMBEDDING_MODEL") or lookup("REPOWISE_EMBEDDING_MODEL")
-    return lookup("REPOWISE_EMBEDDING_MODEL")
+        model = getenv("OLLAMA_EMBEDDING_MODEL") or getenv("REPOWISE_EMBEDDING_MODEL")
+    else:
+        model = getenv("REPOWISE_EMBEDDING_MODEL")
+    if model:
+        return model
+
+    if repo_path is not None:
+        cfg = read_repo_config(repo_path)
+        pinned_model = cfg.get("embedding_model")
+        if pinned_model and str(pinned_model).strip():
+            pinned_backend = str(cfg.get("embedder") or "").strip().lower()
+            if not pinned_backend:
+                logger.warning(
+                    "Repo pins embedding_model %r without a pinned embedder; ignoring unbound pin.",
+                    pinned_model,
+                )
+                return None
+            if pinned_backend != name.strip().lower():
+                logger.warning(
+                    "Repo pins embedding_model %r for embedder %r, but %r was resolved; ignoring pin.",
+                    pinned_model,
+                    pinned_backend,
+                    name,
+                )
+                return None
+            return str(pinned_model).strip()
+    return None
 
 
 def _ollama_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:

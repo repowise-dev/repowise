@@ -156,7 +156,9 @@ def _make_gate(dry_run: bool, embedder: str | None = None):
                 provider.model_name,
                 repo_path=repo_path,
                 embedder=embedder,
-                embedding_model=resolve_embedding_model(embedder) if embedder else None,
+                embedding_model=(
+                    resolve_embedding_model(embedder, repo_path=repo_path) if embedder else None
+                ),
             )
         except Exception as exc:
             console.print(f"[yellow]Cost estimate unavailable ({exc}).[/yellow]")
