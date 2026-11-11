@@ -26,7 +26,13 @@ import yaml
 
 from repowise.cli.providers.keys import resolve_embedder_api_key
 
-KEY_ENV_VARS = ("OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENROUTER_API_KEY")
+KEY_ENV_VARS = (
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "OPENROUTER_API_KEY",
+    "VOYAGE_API_KEY",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -112,6 +118,23 @@ def test_gemini_accepts_either_of_its_two_variables(tmp_path: Path) -> None:
     _write_env(tmp_path, GOOGLE_API_KEY="goog-key")
 
     assert resolve_embedder_api_key("gemini", tmp_path).key == "goog-key"
+
+
+def test_voyage_resolves_its_key_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """VOYAGE_API_KEY is the credential source for the voyage embedder."""
+    monkeypatch.setenv("VOYAGE_API_KEY", "pa-voyage-key")
+    assert resolve_embedder_api_key("voyage", tmp_path).key == "pa-voyage-key"
+
+
+def test_voyage_without_a_key_reports_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A voyage pin without a key resolves to nothing (the embedder then
+    raises its own 'API key required' message)."""
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    assert resolve_embedder_api_key("voyage", tmp_path).key is None
 
 
 def test_keyless_backends_resolve_to_nothing(tmp_path: Path) -> None:

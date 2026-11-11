@@ -92,8 +92,8 @@ Core flags:
 
 Embeddings:
   --embedder NAME        Embedder for semantic search: gemini, openai,
-                         openrouter, ollama, edenai, mock (default: detected
-                         from keys)
+                         openrouter, ollama, edenai, voyage, mock (default:
+                         detected from keys)
 
 Cost control:
   --concurrency N        Max parallel LLM calls (default: 10)

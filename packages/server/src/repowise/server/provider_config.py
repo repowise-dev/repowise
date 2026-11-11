@@ -101,13 +101,23 @@ def _embedder_catalog() -> list[dict[str, Any]]:
     """Every registered embedder, read at call time so custom ones appear.
 
     A built-in embedder reads the same credentials as the LLM provider of the
-    same name, so its env vars come from that spec; a custom one has none.
-    The default comes first so the picker opens on it; the rest stay sorted.
+    same name, so its env vars come from that spec; an embedding-only built-in
+    (voyage) has no spec and reads the shared embedder map; a custom one has
+    none. The default comes first so the picker opens on it; the rest stay
+    sorted.
     """
+    from repowise.core.providers.embedding.resolve import EMBEDDER_KEY_ENVS
+
+    def _env_vars(name: str) -> list[str]:
+        spec = PROVIDER_SPECS.get(name)
+        if spec is not None:
+            return list(spec.required_envs)
+        return list(EMBEDDER_KEY_ENVS.get(name, ()))
+
     return [
         {
             "id": name,
-            "env_vars": list(spec.required_envs) if (spec := PROVIDER_SPECS.get(name)) else [],
+            "env_vars": _env_vars(name),
             "semantic": name not in KEYLESS_EMBEDDERS,
         }
         for name in sorted(list_embedders(), key=lambda n: n != DEFAULT_EMBEDDER)

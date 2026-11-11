@@ -105,7 +105,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 |------|--------------|---------|
 | `--provider` | `anthropic`, `openai`, `openrouter`, `gemini`, `deepseek`, `kimi`, `ollama`, `litellm`, `codex_cli`, `copilot_cli`, `claude_cli`, `opencode`, `edenai`, `mock`. Terminals prompt for a missing key (`openai`: plus optional compatible base URL). | from environment |
 | `--model` | Model (e.g. `claude-sonnet-4-6`). | provider default |
-| `--embedder` | `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `mock`. | auto-detect |
+| `--embedder` | `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `voyage`, `mock`. | auto-detect |
 | `--prose` / `--no-prose` | The one LLM-spend knob; see notes. | prose when a key exists |
 | `--index-only` | Deprecated hidden alias of `--no-prose`. | |
 | `--docs` | Deprecated hidden alias: `llm` = `--prose`, `deterministic` = `--no-prose`. | |
@@ -2085,7 +2085,7 @@ repowise reindex --embedder gemini --batch-size 50
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--embedder` | `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `mock`, `auto`. | `auto` |
+| `--embedder` | `gemini`, `openai`, `openrouter`, `ollama`, `edenai`, `voyage`, `mock`, `auto`. | `auto` |
 | `--batch-size` | Batch size. | `32` |
 
 ### `repowise doctor [PATH]`

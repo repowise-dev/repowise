@@ -1629,7 +1629,7 @@ Full configuration with defaults (`.repowise/config.yaml`):
 ```yaml
 provider: anthropic          # anthropic | openai | openrouter | gemini | deepseek | kimi | ollama | litellm | codex_cli | opencode | edenai | mock
 model: claude-sonnet-4-5    # passed through to the provider
-embedder: gemini             # gemini | openai | openrouter | ollama | edenai | mock
+embedder: gemini             # gemini | openai | openrouter | ollama | edenai | voyage | mock
 embedding_model: gemini-embedding-001
 
 prompt_caching: true

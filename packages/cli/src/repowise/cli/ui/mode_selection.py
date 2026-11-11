@@ -343,7 +343,7 @@ def _prompt_generation(
 
     # Embedder selection
     detected_embedder = _resolve_embedder_from_env()
-    embedder_choices = ["gemini", "openai", "openrouter", "ollama", "edenai", "mock"]
+    embedder_choices = ["gemini", "openai", "openrouter", "ollama", "edenai", "voyage", "mock"]
     result["embedder"] = click.prompt(
         "  Embedder for RAG",
         default=detected_embedder,
@@ -542,7 +542,9 @@ def _prompt_index_only_search(console: Console, result: dict[str, Any]) -> None:
     result["embedder"] = click.prompt(
         "  Embedder for semantic search (mock = full-text only)",
         default="mock",
-        type=click.Choice(["mock", "ollama", "gemini", "openai", "openrouter", "edenai"]),
+        type=click.Choice(
+            ["mock", "ollama", "gemini", "openai", "openrouter", "edenai", "voyage"]
+        ),
     )
 
 
@@ -561,6 +563,8 @@ def _resolve_embedder_from_env() -> str:
     # already resolving to.
     if os.environ.get("EDENAI_API_KEY"):
         return "edenai"
+    if os.environ.get("VOYAGE_API_KEY"):
+        return "voyage"
     # Same last tier as the shared resolver, or the advanced prompt would
     # default to mock on a machine whose run header just said otherwise.
     from repowise.cli.providers.keys import global_config_embedder
