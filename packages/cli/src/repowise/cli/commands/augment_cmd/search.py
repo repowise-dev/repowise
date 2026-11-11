@@ -135,33 +135,9 @@ def _handle_search_post(
     if _looks_like_path_lookup(pattern):
         return HookResult()
 
-    # Decision tree. The skip case is the most common — that's by design.
-    if result_count == 0:
-        # Rescue relevance guards. A regex pattern loses its structure in the
-        # symbol-lookup sanitizer (`distill|savings` → `distillsavings`), so
-        # any "closest symbol" answer would be luck, not signal. And a grep
-        # scoped to one non-code file is a config-key check, not a symbol
-        # hunt — the wiki has nothing useful to add to either.
-        if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
-            return HookResult()
-        mode = "rescue"
-    elif result_count >= _TRIAGE_THRESHOLD:
-        mode = "triage"
-    elif _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
-        # Same two guards as the zero-result rescue, for the same reasons.
+    mode = _search_mode(pattern, result_count, tool_input)
+    if mode is None:
         return HookResult()
-    elif len(_pattern_terms(pattern)) < 2:
-        # A third guard the zero-result rescue does not need. Replayed over
-        # this machine's real greps, every false positive the widened rescue
-        # produced came from a single-token pattern (`coverage`, `score`,
-        # `provider`) where "a symbol by that name is defined elsewhere" is
-        # true of half the repo and interesting nowhere. Under zero results
-        # even a generic name is the only lead going; under real results it
-        # competes with evidence. Free to check, and it runs before the
-        # query, so it also keeps the cost off the common path.
-        return HookResult()
-    else:
-        mode = "rescue_wide"
     if mode != "triage" and checkout != repo_path:
         # Both rescues point at where the index says a symbol is defined. A
         # grep in a worktree misses most often because the branch moved or
@@ -188,6 +164,36 @@ def _handle_search_post(
     if enrichment:
         _log_search_firing(repo_path, session_id, mode, enrichment)
     return HookResult(context=enrichment or None)
+
+
+def _search_mode(pattern: str, result_count: int, tool_input: dict) -> str | None:
+    """``rescue``, ``triage`` or ``rescue_wide`` for this search, or None to skip."""
+    # Decision tree. The skip case is the most common — that's by design.
+    if result_count == 0:
+        # Rescue relevance guards. A regex pattern loses its structure in the
+        # symbol-lookup sanitizer (`distill|savings` → `distillsavings`), so
+        # any "closest symbol" answer would be luck, not signal. And a grep
+        # scoped to one non-code file is a config-key check, not a symbol
+        # hunt — the wiki has nothing useful to add to either.
+        if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
+            return None
+        return "rescue"
+    if result_count >= _TRIAGE_THRESHOLD:
+        return "triage"
+    if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
+        # Same two guards as the zero-result rescue, for the same reasons.
+        return None
+    if len(_pattern_terms(pattern)) < 2:
+        # A third guard the zero-result rescue does not need. Replayed over
+        # this machine's real greps, every false positive the widened rescue
+        # produced came from a single-token pattern (`coverage`, `score`,
+        # `provider`) where "a symbol by that name is defined elsewhere" is
+        # true of half the repo and interesting nowhere. Under zero results
+        # even a generic name is the only lead going; under real results it
+        # competes with evidence. Free to check, and it runs before the
+        # query, so it also keeps the cost off the common path.
+        return None
+    return "rescue_wide"
 
 
 def _digest_result(
