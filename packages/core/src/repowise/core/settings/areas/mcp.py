@@ -40,7 +40,6 @@ SETTINGS: tuple[Setting, ...] = (
         "Which MCP tools are offered: all, lean, +name or -name to adjust the "
         "default, or plain names as the exact list. Unset offers the default set.",
         parser="repowise.core.registry.tool_selection:normalize_override",
-        writer="repowise.server.mcp_server._tool_selection:set_tool_override",
     ),
     _e(
         "REPOWISE_ANSWER_TIMEOUT_S",

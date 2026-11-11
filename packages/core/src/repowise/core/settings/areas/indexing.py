@@ -15,15 +15,16 @@ SETTINGS: tuple[Setting, ...] = (
         "list",
         [],
         "Extra paths to skip, as gitignore patterns.",
-        writer="repowise.core.repo_config:save_file_settings",
+        writer="repowise.core.repo_config:write_file_setting",
     ),
     _s(
         "commit_limit",
         "int",
         5000,
-        "How many of the newest commits are analysed.",
+        "How many of the newest commits are analysed. Above 10000 reads as 10000.",
         minimum=1,
         maximum=10000,
+        parser="repowise.core.ingestion.git_indexer._constants:parse_commit_limit",
     ),
     _s("follow_renames", "bool", False, "Follow files across renames in git history."),
     _s(

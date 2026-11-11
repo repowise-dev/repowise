@@ -75,7 +75,7 @@ def test_invalid_file_value_falls_to_the_next_layer_with_a_problem():
 def test_invalid_value_can_raise_or_read_as_a_fallback():
     with pytest.raises(SettingError, match="max_tokens"):
         resolve("max_tokens", {"max_tokens": -1}, environ={})
-    r = resolve("attribution.enabled", {"attribution": {"enabled": "yes"}}, environ={})
+    r = resolve("attribution.enabled", {"attribution": {"enabled": "maybe"}}, environ={})
     assert (r.value, r.source) == (False, Source.REPO_FILE)
     assert r.problem
 
@@ -155,9 +155,12 @@ def test_reader_tolerances():
     assert validate(get("decisions.mode"), False) == "off"
 
 
-def test_bool_coercing_readers_stay_strict_here():
-    """``bool("false")`` is true; the registry does not copy that."""
-    r = resolve("enable_onboarding", {"enable_onboarding": "false"}, environ={})
+def test_switches_read_quoted_and_numeric_spellings():
+    """A quoted ``"false"`` or ``0`` is off, as every reader now takes it; anything else is a problem."""
+    for raw, value in (("false", False), (" On ", True), (0, False), (1, True)):
+        r = resolve("enable_onboarding", {"enable_onboarding": raw}, environ={})
+        assert (r.value, r.source, r.problem) == (value, Source.REPO_FILE, None), raw
+    r = resolve("enable_onboarding", {"enable_onboarding": "maybe"}, environ={})
     assert (r.value, r.source) == (True, Source.DEFAULT)
     assert r.problem
 

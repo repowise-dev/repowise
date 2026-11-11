@@ -33,7 +33,8 @@ SETTINGS: tuple[Setting, ...] = (
         on_invalid="error",
         # Where requests go, not what a page says, so update rebuilds nothing.
         reload="immediate",
-        writer="repowise.core.providers.llm.resolve:save_repo_llm_selection",
+        # Written as one key; trusting the endpoint stays a separate, deliberate step.
+        parser="repowise.core.providers.llm.resolve:validate_base_url",
     ),
     *(
         _e(

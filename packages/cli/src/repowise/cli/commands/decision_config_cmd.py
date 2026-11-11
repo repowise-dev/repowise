@@ -2,12 +2,15 @@
 
 Every command here reads and writes the one resolved policy in
 ``repowise.core.analysis.decisions.policy``, so the CLI cannot disagree with
-what the index pipeline and the server report.
+what the index pipeline and the server report. Each change goes through
+:meth:`DecisionPolicy.with_setting`, the same step ``repowise config set
+decisions.<key>`` takes, so the two spellings cannot drift apart.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.table import Table
@@ -21,7 +24,7 @@ from repowise.core.analysis.decisions.policy import (
     SOURCE_SPECS,
     DecisionPolicy,
 )
-from repowise.core.analysis.decisions.policy_store import load_policy, write_policy
+from repowise.core.analysis.decisions.policy_store import load_policy
 
 
 def _load(repo_path: Path):
@@ -215,41 +218,56 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     if resolution.legacy_keys:
         notices.print(
             "[dim]Legacy keys still honoured: "
-            f"{', '.join(resolution.legacy_keys)}. Any write here replaces them.[/dim]"
+            f"{', '.join(resolution.legacy_keys)}. Applying a preset replaces them.[/dim]"
         )
 
 
-def _apply(repo_path: Path, policy: DecisionPolicy, fmt: str, dry_run: bool) -> None:
-    """Persist *policy*, or show the diff it would make under ``--dry-run``."""
-    from repowise.core.analysis.decisions.policy_store import PolicyConflictError
+def _apply(repo_path: Path, changes: list[tuple[str, Any]], fmt: str, dry_run: bool) -> None:
+    """Write each ``decisions.<name>`` change, or show the diff under ``--dry-run``.
+
+    Each change is written by the same call ``repowise config set`` makes,
+    so the file each spelling leaves is the same file.
+    """
+    from repowise.core.repo_config import RepoConfigError
+    from repowise.core.settings.writers import set_value
 
     before = _load(repo_path).policy
-    if dry_run:
-        changes = _diff(before, policy)
-        if fmt == "json":
-            emit_json(
-                {
-                    "repo": str(repo_path),
-                    "dry_run": True,
-                    "changes": changes,
-                    "policy": policy.to_dict(provider_available=_provider_available(repo_path)),
-                }
-            )
-            return
-        if not changes:
-            console.print("[dim]No change.[/dim]")
-            return
-        console.print("\n  Would change:")
-        for change in changes:
-            console.print(f"    {change['key']}: {change['from']} -> {change['to']}")
-        console.print("")
-        return
-
     try:
-        resolution = write_policy(repo_path, policy)
-    except PolicyConflictError as exc:
+        policy = before
+        for name, value in changes:
+            policy = policy.with_setting(name, value)
+    except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    _emit(repo_path, resolution, fmt)
+    if dry_run:
+        _show_dry_run(repo_path, before, policy, fmt)
+        return
+    try:
+        for name, value in changes:
+            set_value(repo_path, f"decisions.{name}", value)
+    except (RepoConfigError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _emit(repo_path, _load(repo_path), fmt)
+
+
+def _show_dry_run(repo_path: Path, before: DecisionPolicy, policy: DecisionPolicy, fmt: str) -> None:
+    changes = _diff(before, policy)
+    if fmt == "json":
+        emit_json(
+            {
+                "repo": str(repo_path),
+                "dry_run": True,
+                "changes": changes,
+                "policy": policy.to_dict(provider_available=_provider_available(repo_path)),
+            }
+        )
+        return
+    if not changes:
+        console.print("[dim]No change.[/dim]")
+        return
+    console.print("\n  Would change:")
+    for change in changes:
+        console.print(f"    {change['key']}: {change['from']} -> {change['to']}")
+    console.print("")
 
 
 def _switch_changes(
@@ -335,37 +353,18 @@ def config_show(path: str | None, fmt: str) -> None:
 @format_option()
 def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     """Apply a named preset: default, off, local_only, balanced, full."""
-    from dataclasses import replace
-
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
-    from repowise.core.analysis.decisions.policy import preset_policy
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    # A preset names source membership. The harness list, the two agent
-    # switches, approval, sync and update mining are not membership, so applying
-    # one leaves them as the caller set them.
-    current = _load(repo_path).policy
-    _apply(
-        repo_path,
-        replace(
-            preset_policy(name),
-            harnesses=current.harnesses,
-            agent_acceptance=current.agent_acceptance,
-            capture_prompt=current.capture_prompt,
-            require_approval=current.require_approval,
-            sync=current.sync,
-            update_mining=current.update_mining,
-            session_start=current.session_start,
-            upkeep_prompt=current.upkeep_prompt,
-            mode=current.mode,
-        ),
-        fmt,
-        dry_run,
-    )
+    _apply(repo_path, [("preset", name)], fmt, dry_run)
 
 
 @config_group.command("mode")
-@click.argument("name", type=click.Choice([m.replace("_", "-") for m in MODES]))
+@click.argument(
+    "name",
+    # Both spellings, as `repowise config set decisions.mode` takes them.
+    type=click.Choice(sorted({*MODES, *(m.replace("_", "-") for m in MODES)})),
+)
 @click.argument("path", required=False, default=None)
 @click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
 @format_option()
@@ -381,8 +380,7 @@ def config_mode(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_mode(name.replace("-", "_")), fmt, dry_run)
+    _apply(repo_path, [("mode", name.replace("-", "_"))], fmt, dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -428,11 +426,7 @@ def config_discovery(
     if not fields:
         _emit(repo_path, _load(repo_path), fmt)
         return
-    try:
-        policy = _load(repo_path).policy.with_discovery(**fields)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    _apply(repo_path, policy, fmt, dry_run)
+    _apply(repo_path, [(f"discovery.{k}", v) for k, v in fields.items()], fmt, dry_run)
 
 
 @config_group.command("agent-acceptance")
@@ -452,8 +446,7 @@ def config_agent_acceptance(
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_agent_acceptance(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("agent_acceptance", bool(enabled))], fmt, dry_run)
 
 
 @config_group.command("approval")
@@ -474,8 +467,7 @@ def config_approval(path: str | None, enabled: bool | None, dry_run: bool, fmt: 
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_require_approval(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("require_approval", bool(enabled))], fmt, dry_run)
 
 
 @config_group.command("sync")
@@ -494,8 +486,7 @@ def config_sync(path: str | None, enabled: bool | None, dry_run: bool, fmt: str)
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_sync(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("sync", bool(enabled))], fmt, dry_run)
 
 
 @config_group.command("update-mining")
@@ -516,8 +507,7 @@ def config_update_mining(path: str | None, enabled: bool | None, dry_run: bool, 
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_update_mining(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("update_mining", bool(enabled))], fmt, dry_run)
 
 
 @config_group.command("session-start")
@@ -538,8 +528,7 @@ def config_session_start(path: str | None, enabled: bool | None, dry_run: bool, 
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_session_start(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("session_start", bool(enabled))], fmt, dry_run)
 
 
 @config_group.command("upkeep-prompt")
@@ -562,8 +551,7 @@ def config_upkeep_prompt(path: str | None, enabled: bool | None, dry_run: bool, 
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_upkeep_prompt(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("upkeep_prompt", bool(enabled))], fmt, dry_run)
     if enabled and not dry_run:
         # Fired from the same per-install shell entry as the capture prompt.
         from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
@@ -595,8 +583,7 @@ def config_capture_prompt(
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_capture_prompt(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("capture_prompt", bool(enabled))], fmt, dry_run)
     if dry_run:
         return
     # The flag is per repository; the hook it fires from is a per-install
@@ -678,8 +665,12 @@ def source_set(
         raise click.ClickException("Pass --on/--off or --llm/--no-llm.")
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_source(source, enabled=enabled, llm=llm), fmt, dry_run)
+    changes = [
+        (f"sources.{source}.{field}", value)
+        for field, value in (("enabled", enabled), ("llm", llm))
+        if value is not None
+    ]
+    _apply(repo_path, changes, fmt, dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -702,5 +693,4 @@ def llm_command(path: str | None, enabled: bool | None, dry_run: bool, fmt: str)
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_llm(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("llm", bool(enabled))], fmt, dry_run)

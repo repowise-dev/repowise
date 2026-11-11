@@ -247,31 +247,46 @@ def test_distill_validator_and_registry_agree_on_what_is_invalid(key, value):
 
 
 #: Where doctor's validator and the registry's typed check part.
-DISTILL_VALIDATION_DISAGREEMENTS = {
-    ("commands.disabled_filters", "'logs'"): "doctor wants a list; the registry reads one bare "
-    "name as a list of one, as the coverage and section readers do",
-}
+#: None left: doctor reads one bare filter name as a list of one, as the registry does.
+DISTILL_VALIDATION_DISAGREEMENTS: dict[tuple[str, str], str] = {}
 
 
-def test_distill_readers_disagree_with_each_other_on_a_non_bool_enabled(tmp_path):
-    """``enabled: 0``: the hook reads on (``is False``), ``repowise distill`` reads off
-    (``bool(0)``), doctor and the registry call it invalid (default on)."""
+@pytest.mark.parametrize("value", [0, "false", " Off ", False, 1, "yes", "maybe"])
+def test_distill_readers_agree_with_each_other_on_enabled(tmp_path, value):
+    """``enabled: 0`` or ``"false"`` is off for the hook, ``repowise distill``,
+    doctor and the registry alike; a value that is neither is on (the default)."""
     from repowise.cli.commands.distill_cmd import _load_distill_config
     from repowise.cli.rewrite_hook import _load_commands_config
+    from repowise.core.distill.config import validate_distill_config
 
-    repo = _repo(tmp_path, {"distill": {"enabled": 0}})
-    assert _load_commands_config(str(repo))[0] is True
-    assert _load_distill_config(repo)[0] is False
-    assert _registry("distill.enabled", {"distill": {"enabled": 0}}) is True
+    config = {"distill": {"enabled": value}}
+    repo = _repo(tmp_path, config)
+    expected = _registry("distill.enabled", config)
+    assert _load_commands_config(str(repo))[0] is expected
+    assert _load_distill_config(repo)[0] is expected
+    assert bool(validate_distill_config(config["distill"])) is (value == "maybe")
 
 
-def test_distill_hook_accepts_off_spellings_the_registry_rejects(tmp_path):
-    from repowise.cli.rewrite_hook import _load_commands_config
+@pytest.mark.parametrize("raw", ["deny", "disabled", "none", False, "off", "ask", "maybe"])
+def test_distill_permission_off_spellings_read_alike(tmp_path, raw):
+    from repowise.cli.rewrite_hook import _OFF_VALUES, _load_commands_config
+    from repowise.core.distill.config import PERMISSION_OFF_ALIASES, validate_distill_config
 
-    repo = _repo(tmp_path, {"distill": {"commands": {"permission": "deny"}}})
-    assert _load_commands_config(str(repo))[0] is False
-    with pytest.raises(ValueError):
-        validate(get("distill.commands.permission"), "deny")
+    assert (*PERMISSION_OFF_ALIASES, False) == _OFF_VALUES
+    config = {"distill": {"commands": {"permission": raw}}}
+    hook_on = _load_commands_config(str(_repo(tmp_path, config)))[0]
+    ours = _registry("distill.commands.permission", config)
+    assert hook_on is (ours != "off")
+    assert bool(validate_distill_config(config["distill"])) is (raw == "maybe")
+
+
+def test_distill_disabled_filters_bare_name_is_one(tmp_path):
+    from repowise.cli.commands.distill_cmd import _load_distill_config
+
+    config = {"distill": {"commands": {"disabled_filters": "logs"}}}
+    assert list(_load_distill_config(_repo(tmp_path, config))[1]) == _registry(
+        "distill.commands.disabled_filters", config
+    )
 
 
 # ---------------------------------------------------------------- file settings and buckets
@@ -283,7 +298,7 @@ def test_file_settings_are_registered_with_their_defaults_and_writer():
     for key in FILE_SETTING_KEYS:
         s = get(key)
         assert s.default == _file_setting_default(key), key
-        assert s.writer == "repowise.core.repo_config:save_file_settings"
+        assert s.writer == "repowise.core.repo_config:write_file_setting"
 
 
 def test_every_dependency_key_is_registered():
@@ -364,14 +379,14 @@ def test_embedder_name_is_folded_like_the_resolver(tmp_path, raw):
     assert name == _registry("embedder", {"embedder": raw})
 
 
-def test_embedder_keyless_update_path_lets_the_file_beat_env(tmp_path, monkeypatch):
-    """The index-only update path reads the pin before REPOWISE_EMBEDDER; every
-    other path, and the registry, let the variable win."""
+def test_embedder_keyless_update_path_lets_env_beat_the_file(tmp_path, monkeypatch):
+    """The index-only update path, like every other path and the registry, lets
+    REPOWISE_EMBEDDER win over the pin."""
     from repowise.cli.commands.update_cmd.deterministic import deterministic_embedder_name
 
     monkeypatch.setenv("REPOWISE_EMBEDDER", "gemini")
     cfg = {"embedder": "openai"}
-    assert deterministic_embedder_name(cfg, _repo(tmp_path, cfg)) == "openai"
+    assert deterministic_embedder_name(cfg, _repo(tmp_path, cfg)) == "gemini"
     assert _registry("embedder", cfg, {"REPOWISE_EMBEDDER": "gemini"}) == "gemini"
 
 
@@ -395,16 +410,19 @@ def test_embedder_env_beats_the_pin_like_the_resolver(tmp_path):
 
 #: Top-level keys whose readers coerce or clamp where the registry checks.
 GENERATION_DISAGREEMENTS = {
-    "commit_limit": "init clamps 20000 to 10000; update and the registry do not clamp "
-    "(update uses 20000, the registry rejects it and uses 5000)",
     "wiki_style": "a custom style lives in .repowise/styles/, so the registry cannot list "
     "the choices; an unknown name reads as comprehensive only in resolve_style",
 }
 
 
-def test_commit_limit_clamp_differs():
-    assert _registry("commit_limit", {"commit_limit": 20000}) == 5000
-    assert "commit_limit" in GENERATION_DISAGREEMENTS
+@pytest.mark.parametrize("raw", [None, 20000, 10000, 300, 0, -5, "300", True])
+def test_commit_limit_reads_the_same_on_init_update_and_the_registry(raw):
+    from repowise.core.ingestion.git_indexer import GitIndexer
+
+    config = {} if raw is None else {"commit_limit": raw}
+    update = GitIndexer(".", commit_limit=config.get("commit_limit")).commit_limit
+    assert update == _registry("commit_limit", config)
+    assert _registry("commit_limit", {"commit_limit": 20000}) == 10000
 
 
 def test_language_falls_back_like_the_reader():
@@ -486,8 +504,7 @@ def test_capped_env_numbers_clamp_like_their_readers(monkeypatch, raw):
         assert reader() == ours, (name, raw)
 
 
-def test_full_rescore_interval_reads_non_finite_values_the_registry_rejects(monkeypatch):
-    """``max(0.0, float(raw))``: inf never rescores and nan reads as 0."""
+def test_full_rescore_interval_reads_non_finite_values_as_the_default(monkeypatch):
     from repowise.cli.commands.update_cmd import persistence
     from repowise.cli.commands.update_cmd.persistence import _full_rescore_interval_days
 
@@ -495,10 +512,9 @@ def test_full_rescore_interval_reads_non_finite_values_the_registry_rejects(monk
     monkeypatch.setattr(persistence, "_FULL_RESCORE_WARNING_SENT", False)
 
     name = "REPOWISE_FULL_RESCORE_INTERVAL_DAYS"
-    for raw, real in (("inf", float("inf")), ("nan", 0.0)):
+    for raw in ("inf", "nan", "-inf"):
         monkeypatch.setenv(name, raw)
-        assert _full_rescore_interval_days() == real
-        assert _registry(name, None, {name: raw}) == 7.0
+        assert _full_rescore_interval_days() == _registry(name, None, {name: raw})
 
 
 @pytest.mark.parametrize("raw", ["3", "-2", "0", "x"])
@@ -558,7 +574,7 @@ def test_attribution_defaults_match(tmp_path, monkeypatch):
     assert real.enabled == get("attribution.enabled").default
     assert real.capture == get("attribution.capture").default
     assert list(real.agents) == get("attribution.agents").default
-    bad = load_attribution_settings(_repo(tmp_path, {"attribution": {"enabled": "yes"}}))
+    bad = load_attribution_settings(_repo(tmp_path, {"attribution": {"enabled": "maybe"}}))
     assert bad.enabled == get("attribution.enabled").fallback
 
 
@@ -588,13 +604,12 @@ def test_refactoring_and_assertion_defaults_match():
     assert llm_enrichment_enabled({}) == get("refactoring.llm.enabled").default
 
 
-def test_refactoring_llm_reads_a_quoted_false_as_on():
-    """``bool("false")`` is true: the reader turns a quoted false on."""
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, "maybe"])
+def test_refactoring_llm_reads_quoted_switches_like_the_registry(value):
     from repowise.core.analysis.health.refactoring.llm.enrich import llm_enrichment_enabled
 
-    cfg = {"refactoring": {"llm": {"enabled": "false"}}}
-    assert llm_enrichment_enabled(cfg) is True
-    assert _registry("refactoring.llm.enabled", cfg) is False
+    cfg = {"refactoring": {"llm": {"enabled": value}}}
+    assert llm_enrichment_enabled(cfg) is _registry("refactoring.llm.enabled", cfg)
 
 
 def test_test_selection_and_outcome_defaults_match():

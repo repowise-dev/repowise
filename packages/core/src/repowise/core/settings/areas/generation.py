@@ -16,8 +16,7 @@ from repowise.core.settings.model import Env, Setting
 AREA = "generation"
 _s = factory(AREA)
 _e = factory(AREA, scope="env")
-_FILE_SETTINGS_WRITER = "repowise.core.repo_config:save_file_settings"
-_LLM_WRITER = "repowise.core.providers.llm.resolve:save_repo_llm_selection"
+_FILE_SETTINGS_WRITER = "repowise.core.repo_config:write_file_setting"
 
 SETTINGS: tuple[Setting, ...] = (
     _s(
@@ -29,7 +28,7 @@ SETTINGS: tuple[Setting, ...] = (
         default_note="Unset: the saved global choice (provider_config.json), then "
         "REPOWISE_PROVIDER, then the first provider whose API key is present.",
         env=Env("REPOWISE_PROVIDER"),
-        writer=_LLM_WRITER,
+        writer="repowise.core.providers.llm.resolve:write_provider_setting",
     ),
     _s(
         "model",
@@ -39,7 +38,6 @@ SETTINGS: tuple[Setting, ...] = (
         default_note="Unset: the saved global choice (provider_config.json), then "
         "REPOWISE_MODEL, then the provider's default model.",
         env=Env("REPOWISE_MODEL"),
-        writer=_LLM_WRITER,
     ),
     _s(
         "reasoning",

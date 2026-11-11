@@ -382,6 +382,11 @@ _MODE_DEFAULTS = MODE_DEFAULTS
 
 MODES: tuple[str, ...] = ("off", "read_only", "full")
 
+#: The plain switches :meth:`DecisionPolicy.with_setting` sets by name.
+_SETTABLE_SWITCHES: frozenset[str] = frozenset(
+    {"enabled", "llm", "update_mining", *_MODE_DEFAULTS["full"]}
+)
+
 #: Why a source does not run when capture is off, by mode.
 _CAPTURE_OFF_REASON: dict[str, str] = {
     "off": "Decisions are off for this repository.",
@@ -720,6 +725,70 @@ class DecisionPolicy:
         if mode not in MODES:
             raise ValueError(f"Unknown mode: {mode}. Choose one of {', '.join(MODES)}.")
         return replace(self, mode=mode, **_MODE_DEFAULTS[mode])
+
+    def with_preset(self, name: str) -> DecisionPolicy:
+        """The policy preset *name* resolves to, keeping what is not membership.
+
+        A preset names source membership. The mode, the harness list, the
+        switches and update mining are not membership, so they stay as set.
+        """
+        return replace(
+            preset_policy(name),
+            mode=self.mode,
+            harnesses=self.harnesses,
+            update_mining=self.update_mining,
+            **{key: getattr(self, key) for key in _MODE_DEFAULTS["full"]},
+        )
+
+    def with_setting(self, name: str, value: Any) -> DecisionPolicy:
+        """A copy with ``decisions.<name>`` set to *value*; ``None`` is its default here.
+
+        The one mapping from a setting name to the change it makes, shared by
+        ``repowise config set`` and every ``decision config`` command. A
+        switch's default depends on the mode, and a source's on the preset.
+        """
+        parts = name.split(".")
+        if value is None:
+            value = self._default_for(parts)
+        head = parts[0]
+        if head == "mode":
+            return self.with_mode(value)
+        if head == "preset":
+            return self.with_preset(value)
+        if head == "discovery" and len(parts) == 2 and parts[1] in DISCOVERY_BOUNDS:
+            return self.with_discovery(**{parts[1]: value})
+        if head == "harnesses" and len(parts) == 1:
+            warnings: list[str] = []
+            harnesses = _resolve_harnesses(list(value), warnings)
+            if warnings:
+                raise ValueError(warnings[0].replace("`", ""))
+            return replace(self, harnesses=harnesses)
+        if head == "sources" and len(parts) == 3 and parts[2] in ("enabled", "llm"):
+            return self.with_source(parts[1], **{parts[2]: bool(value)})
+        if head in _SETTABLE_SWITCHES and len(parts) == 1:
+            return replace(self, **{head: bool(value)})
+        raise ValueError(f"decisions.{name} cannot be set here")
+
+    def _default_for(self, parts: list[str]) -> Any:
+        """What ``decisions.<parts>`` reads as when the config does not say."""
+        preset = PRESETS.get(self.preset_name(), PRESETS["default"])
+        head = parts[0]
+        if head in _MODE_DEFAULTS[self.mode]:
+            return _MODE_DEFAULTS[self.mode][head]
+        if head in ("enabled", "llm"):
+            return bool(preset[head])
+        if head == "sources" and len(parts) == 3 and parts[1] in _SPECS_BY_KEY:
+            spec = _SPECS_BY_KEY[parts[1]]
+            stated = preset["sources"].get(spec.key, SourceSetting(spec.default_enabled, spec.llm))
+            return getattr(stated, parts[2], None)
+        if head == "discovery" and len(parts) == 2 and parts[1] in DISCOVERY_BOUNDS:
+            return DISCOVERY_BOUNDS[parts[1]][2]
+        return {
+            "mode": "full",
+            "preset": "default",
+            "update_mining": False,
+            "harnesses": list(DEFAULT_HARNESSES),
+        }.get(head)
 
     @property
     def agent_may_accept(self) -> bool:

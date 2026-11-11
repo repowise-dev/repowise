@@ -16,7 +16,7 @@ from importlib import import_module
 from typing import Any
 
 from repowise.core.settings import registry
-from repowise.core.settings.model import Resolved, Setting, SettingError, Source
+from repowise.core.settings.model import Resolved, Setting, SettingError, Source, parse_flag
 
 __all__ = ["MISSING", "lookup", "resolve", "validate"]
 
@@ -133,9 +133,7 @@ def validate(s: Setting, raw: Any, *, from_env: bool = False) -> Any:
 
 
 def _bool(s: Setting, raw: Any) -> bool:
-    if not isinstance(raw, bool):
-        raise ValueError("must be true or false")
-    return raw
+    return parse_flag(raw)
 
 
 def _str(s: Setting, raw: Any) -> str:

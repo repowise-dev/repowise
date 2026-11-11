@@ -11,7 +11,6 @@ from __future__ import annotations
 from repowise.core.settings.model import TRUTHY, Env, Setting
 
 AREA = "hooks"
-_WRITER = "repowise.cli._helpers.config:save_hook_surface_enabled"
 
 #: Every flag ``hook_flag_enabled`` is asked about. All are off when absent.
 _FLAGS: dict[str, str] = {
@@ -32,7 +31,6 @@ def _flag(name: str, description: str) -> Setting:
         description=description,
         area=AREA,
         env=Env(f"REPOWISE_HOOK_{name.upper()}", wins=True, true_values=TRUTHY),
-        writer=_WRITER,
     )
 
 

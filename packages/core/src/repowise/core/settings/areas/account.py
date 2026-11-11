@@ -19,7 +19,7 @@ SETTINGS: tuple[Setting, ...] = (
         "Send anonymous usage counts. DO_NOT_TRACK, REPOWISE_TELEMETRY_DISABLED "
         "and REPOWISE_OFFLINE turn it off whatever this says.",
         file=_PLATFORM_FILE,
-        writer="repowise.cli.platform.settings:set_enabled",
+        writer="repowise.cli.platform.store:write_setting",
     ),
     _u(
         "hints_enabled",
@@ -27,7 +27,7 @@ SETTINGS: tuple[Setting, ...] = (
         True,
         "Show occasional repowise.dev tips in the CLI and web UI.",
         file=_PLATFORM_FILE,
-        writer="repowise.cli.hints:set_enabled",
+        writer="repowise.cli.platform.store:write_setting",
     ),
     _e("REPOWISE_OFFLINE", "bool", False, "Block repowise's own network calls: telemetry, update checks, plan status, "
         "agent sign-in checks and decision sync."),

@@ -46,7 +46,6 @@ SETTINGS: tuple[Setting, ...] = (
             "bool",
             True,
             f"Write {label}.",
-            writer="repowise.cli.editor_files:set_editor_file_enabled",
         )
         for name, label in _FILES.items()
     ),

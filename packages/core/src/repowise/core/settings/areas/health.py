@@ -60,7 +60,6 @@ SETTINGS: tuple[Setting, ...] = (
         "bool",
         False,
         "Let a model write refactoring code when asked; indexing never calls it.",
-        writer="repowise.server.services.refactoring_settings:save_llm_enabled",
     ),
     _s(
         "assertions.extra_names",
