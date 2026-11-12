@@ -237,3 +237,42 @@ async def test_a_failing_review_keeps_the_blast_radius(client, tmp_path, monkeyp
     assert body["changed_files"] == ["core.py"]
     assert body["review"] is None
     assert "boom" in body["review_unavailable"]
+
+
+def test_the_review_names_the_command_that_runs_its_tests(tmp_path) -> None:
+    repo = (tmp_path / "repo").resolve()
+    shas = _history(repo)
+    engine, factory = asyncio.run(_index(repo, shas[-1]))
+    named = 0
+    try:
+        for sha in shas:
+            review = asyncio.run(_web(factory, sha))["review"]
+            tests = review["tests"]
+            if tests["run_all"] or not tests["tests_to_run"]:
+                # Nothing narrower than the suite, or nothing to run: no command.
+                assert review["test_commands"] == [], sha
+                continue
+            assert review["test_commands"] == ["pytest " + " ".join(sorted(tests["tests_to_run"]))], sha
+            named += 1
+    finally:
+        asyncio.run(engine.dispose())
+    assert named >= 2
+
+
+def test_a_failing_command_lookup_keeps_the_review(tmp_path, monkeypatch) -> None:
+    from repowise.server.routers import blast_radius
+
+    async def _raise(*_a, **_k):
+        raise OSError("manifest unreadable")
+
+    repo = (tmp_path / "repo").resolve()
+    shas = _history(repo)
+    engine, factory = asyncio.run(_index(repo, shas[-1]))
+    monkeypatch.setattr(blast_radius, "run_commands", _raise)
+    try:
+        body = asyncio.run(_web(factory, shas[0]))
+    finally:
+        asyncio.run(engine.dispose())
+    assert body["review"] is not None
+    assert body["review"]["tests"]["tests_to_run"]
+    assert body["review"]["test_commands"] == []

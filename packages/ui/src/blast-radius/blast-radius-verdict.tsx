@@ -7,6 +7,7 @@ import type {
   BlastRadiusResponse,
   ChangeCandidate,
   ChangeHealthCheckResponse,
+  ChangeReview,
 } from "@repowise-dev/types/blast-radius";
 import { isWeak, riskySpots, type FileMarks, type Reach } from "./blast-map-model";
 import { blastPromptInput, missingPartners, missingPartnersTotal, ownerName, testsLimited } from "./blast-prompt-input";
@@ -19,6 +20,8 @@ import { OwnerAvatar } from "../owners/owner-avatar";
 import { CopyPathButton, FilePath } from "../shared/file-path";
 import { InfoTip } from "../shared/info-tip";
 import { formatNumber } from "../lib/format";
+import { NotChecked, RiskLine } from "./change-review";
+import { notMeasured, testsFigure, testsPlan, type HealthLane, type TestsPlan } from "./change-review-model";
 
 type Href = ((path: string) => string) | undefined;
 type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
@@ -65,10 +68,16 @@ const GLOSSARY = (
   </dl>
 );
 
-function Block({ title, hint, children }: { title: string; hint?: ReactNode; children: ReactNode }) {
+function Block({ title, hint, step, children }: { title: string; hint?: ReactNode; step?: number; children: ReactNode }) {
   return (
     <section className="min-w-0 space-y-2">
       <h3 className="flex items-baseline gap-2 text-[15px] font-medium text-[var(--color-text-primary)]">
+        {/* The list already says the order to a screen reader; the figure is for the eye. */}
+        {step != null && (
+          <span className="font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]" aria-hidden>
+            {step}
+          </span>
+        )}
         {title}
         {hint && <span className="text-xs font-normal text-[var(--color-text-tertiary)]">{hint}</span>}
       </h3>
@@ -240,6 +249,62 @@ function TestsToRun({ result }: { result: Result }) {
   );
 }
 
+/** The tests the change review selected: a list with its command, the whole suite, or none. */
+function ReviewTests({ plan }: { plan: TestsPlan }) {
+  if (plan.kind === "none") return <p className={NONE}>No test needs to run for this change. {plan.summary}</p>;
+  if (plan.kind === "run_all")
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-[var(--color-text-primary)]">Run the whole test suite: nothing narrower is known to cover this change.</p>
+        {plan.reasons.length > 0 && (
+          <ul className="list-disc space-y-0.5 pl-4 text-xs text-[var(--color-text-tertiary)]">
+            {plan.reasons.slice(0, 3).map((r) => (
+              <li key={r}>{r}</li>
+            ))}
+          </ul>
+        )}
+        {plan.startWith.length > 0 && (
+          <>
+            <p className={NONE}>Start with these:</p>
+            <PathList paths={plan.startWith} total={plan.startWith.length} />
+          </>
+        )}
+      </div>
+    );
+  return (
+    <div className="space-y-2">
+      {plan.commands.length > 0 && <TestCommand text={plan.commands.join("\n")} />}
+      <p className={NONE}>{plan.measured ? "Chosen by coverage of the changed code." : "Inferred from imports and calls; no coverage data decided them."}</p>
+      {/* The counted-apart tests are not listed by name; the selection's own summary says why they still run. */}
+      {plan.apart > 0 && <p className={NONE}>{plan.summary}</p>}
+      <PathList paths={plan.tests} total={plan.total - plan.apart} />
+    </div>
+  );
+}
+
+/** Test paths, five at first; `total` counts past what the server listed. */
+function PathList({ paths, total }: { paths: string[]; total: number }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? paths : paths.slice(0, 5);
+  return (
+    <>
+      <ul className="space-y-1.5">
+        {shown.map((p) => (
+          <Row key={p}>
+            <PathRef path={p} href={undefined} />
+          </Row>
+        ))}
+      </ul>
+      {paths.length > 5 && (
+        <button type="button" className={MORE} onClick={() => setAll((v) => !v)}>
+          {all ? "Show fewer" : `Show all ${formatNumber(paths.length)}`}
+        </button>
+      )}
+      {total > paths.length && <p className={NONE}>{formatNumber(total - paths.length)} more not listed here; the command runs them.</p>}
+    </>
+  );
+}
+
 function Owners({ result, changed }: { result: Result; changed: number }) {
   const ofChanged = result.changed_owners;
   const people = ofChanged
@@ -286,18 +351,6 @@ function MissingPartners({ result, fileHref }: { result: Result; fileHref: Href 
   );
 }
 
-/** Said once, quietly: changed files the index does not have yet, so what the page knows about them is partial. */
-function NotIndexedNote({ reach }: { reach: Reach }) {
-  const fresh = reach.changed.filter((m) => m.notIndexed).length;
-  if (fresh === 0) return null;
-  return (
-    <p className={NONE}>
-      {count(fresh, "changed file")} {fresh === 1 ? "is" : "are"} new since the last index, so {fresh === 1 ? "its" : "their"}{" "}
-      health, owners and importers are not known yet. Reach uses the last index.
-    </p>
-  );
-}
-
 const TONE_DOT: Record<ReviewStatus["tone"], string> = {
   calm: "var(--color-success)",
   look: "var(--color-warning)",
@@ -323,7 +376,7 @@ function Stat({ figure, label }: { figure: string; label: string }) {
   );
 }
 
-function Stats({ reach, total, analyzed, testsTotal }: { reach: Reach; total: number; analyzed: number; testsTotal: number }) {
+function Stats({ reach, total, analyzed, tests }: { reach: Reach; total: number; analyzed: number; tests: ReturnType<typeof testsFigure> }) {
   const files = reach.filesTotal;
   return (
     // The glossary button sits beside the list, not in it: a <dl> holds only terms and definitions.
@@ -335,7 +388,7 @@ function Stats({ reach, total, analyzed, testsTotal }: { reach: Reach; total: nu
         ) : (
           <Stat figure={roughCount(files)} label={`source ${files === 1 ? "file depends" : "files depend"} on it, ${formatNumber(reach.direct)} directly`} />
         )}
-        <Stat figure={formatNumber(testsTotal)} label={testsTotal === 1 ? "test to run" : "tests to run"} />
+        <Stat figure={tests.figure} label={tests.runAll ? "tests to run, the whole suite" : tests.total === 1 ? "test to run" : "tests to run"} />
       </dl>
       <span className="self-center">
         <InfoTip content={GLOSSARY} label="What these words mean" />
@@ -344,11 +397,20 @@ function Stats({ reach, total, analyzed, testsTotal }: { reach: Reach; total: nu
   );
 }
 
+/** What the copy button copies: the review's selection when there is one, else the blast radius's tests. */
+function copyableTests(result: Result, plan: TestsPlan | null): { commands: string[]; paths: string[] } {
+  // A run-all verdict has nothing narrower to copy.
+  if (plan) return plan.kind === "list" ? { commands: plan.commands, paths: plan.tests } : { commands: [], paths: [] };
+  return {
+    commands: result.test_commands ?? [],
+    paths: (result.test_impact?.recommendations ?? []).map((t) => t.test_file ?? t.test_id),
+  };
+}
+
 /** Copies the test commands, or the test paths when the server gave no command. */
-function CopyTests({ result }: { result: Result }) {
+function CopyTests({ result, plan }: { result: Result; plan: TestsPlan | null }) {
   const [copied, setCopied] = useState(false);
-  const commands = result.test_commands ?? [];
-  const paths = (result.test_impact?.recommendations ?? []).map((t) => t.test_file ?? t.test_id);
+  const { commands, paths } = copyableTests(result, plan);
   if (commands.length === 0 && paths.length === 0) return null;
   const text = commands.length > 0 ? commands.join("\n") : [...new Set(paths)].join("\n");
   const label = commands.length > 0 ? "Copy test command" : `Copy ${count(new Set(paths).size, "test path")}`;
@@ -373,6 +435,16 @@ function CopyTests({ result }: { result: Result }) {
   );
 }
 
+type StepKey = "look" | "tests" | "partners" | "ask";
+
+/**
+ * What to check, in the order the status line names it: a change that asks
+ * for a look starts with the files to read; a calm one with its tests.
+ */
+export function stepOrder(status: ReviewStatus): StepKey[] {
+  return status.tone === "look" ? ["look", "tests", "partners", "ask"] : ["tests", "look", "partners", "ask"];
+}
+
 export interface BlastRadiusVerdictProps {
   result: Result;
   /** The result read once (see `readReach`), shared with the map and lists below. */
@@ -386,14 +458,23 @@ export interface BlastRadiusVerdictProps {
   healthCheck?: ChangeHealthCheckResponse | undefined;
   /** Quiet actions after the test command (the health check's run button). */
   extraActions?: ReactNode;
+  /**
+   * The change's score and tests, as `repowise risk` gives them: undefined for
+   * a hand-picked file set, null when the server could not build them.
+   */
+  review?: ChangeReview | null | undefined;
+  /** Why `review` is null, from the server. */
+  reviewUnavailable?: string | null | undefined;
+  /** Where the health check stands, for the list of what was not checked. */
+  health?: HealthLane | undefined;
   fileHref?: Href;
 }
 
 /**
- * The judgement first: a one-line status, the size of the change, and the
- * actions, with the agent's review prompt as the primary one. Then what to
- * look at, which tests to run, who to ask, and what is missing, each as
- * short rows. Blocks with nothing to say stay out.
+ * The judgement first: a one-line status, the change-risk line, the size of
+ * the change, and the actions, with the agent's review prompt as the primary
+ * one. Then what to check, in the order the status line names it, and what
+ * the review could not check. Blocks with nothing to say stay out.
  */
 export function BlastRadiusVerdict({
   result,
@@ -403,23 +484,55 @@ export function BlastRadiusVerdict({
   change,
   healthCheck,
   extraActions,
+  review,
+  reviewUnavailable,
+  health = "not_a_change",
   fileHref,
 }: BlastRadiusVerdictProps) {
   const [promptOpen, setPromptOpen] = useState(false);
   const total = changedTotal ?? changedFiles.length;
-  const testsTotal = result.test_impact?.recommendations_total ?? 0;
+  const plan = review ? testsPlan(review) : null;
+  const tests = testsFigure(review, result.test_impact?.recommendations_total ?? 0);
   const partners = missingPartnersTotal(result);
   const status = useMemo(
-    () => reviewStatus({ reach, total, testsTotal, missingPartners: partners, band: result.structural_impact_band }),
-    [reach, total, testsTotal, partners, result.structural_impact_band],
+    () =>
+      reviewStatus({
+        reach,
+        total,
+        testsTotal: tests.total,
+        runAll: tests.runAll,
+        missingPartners: partners,
+        band: result.structural_impact_band,
+      }),
+    [reach, total, tests.total, tests.runAll, partners, result.structural_impact_band],
   );
+  const lanes = notMeasured({
+    review,
+    reviewUnavailable,
+    health,
+    notIndexed: reach.changed.filter((m) => m.notIndexed).length,
+  });
+  const blocks: Record<StepKey, { title: string; hint?: string | undefined; body: ReactNode } | null> = {
+    look: riskySpots(reach).length > 0 ? { title: "Look at first", body: <LookFirst reach={reach} fileHref={fileHref} /> } : null,
+    tests: {
+      title: "Run these tests",
+      hint: tests.total > 0 ? formatNumber(tests.total) : undefined,
+      body: plan ? <ReviewTests plan={plan} /> : <TestsToRun result={result} />,
+    },
+    partners: partners > 0 ? { title: "Usually change with these", body: <MissingPartners result={result} fileHref={fileHref} /> } : null,
+    ask: { title: "Who to ask", body: <Owners result={result} changed={changedFiles.length} /> },
+  };
+  const steps = stepOrder(status).flatMap((key) => {
+    const block = blocks[key];
+    return block ? [{ key, ...block }] : [];
+  });
 
   return (
     <div className="space-y-5">
       <div className="space-y-3">
         <StatusLine status={status} />
-        <Stats reach={reach} total={total} analyzed={changedFiles.length} testsTotal={testsTotal} />
-        <NotIndexedNote reach={reach} />
+        {review && <RiskLine risk={review.risk} />}
+        <Stats reach={reach} total={total} analyzed={changedFiles.length} tests={tests} />
         <div className="flex flex-wrap items-center gap-2">
           {/* The page's one primary action: ink fill; everything else stays quiet. */}
           <AiPromptButton
@@ -428,35 +541,29 @@ export function BlastRadiusVerdict({
             className="max-sm:h-10 border-transparent bg-[var(--color-action-primary)] text-[var(--color-text-on-action)] hover:border-transparent hover:bg-[var(--color-action-primary-hover)]"
           />
           {extraActions}
-          <CopyTests result={result} />
+          <CopyTests result={result} plan={plan} />
         </div>
       </div>
 
-      <div className="grid gap-x-10 gap-y-6 border-t border-[var(--color-border-default)] pt-5 xl:grid-cols-2">
-        {riskySpots(reach).length > 0 && (
-          <Block title="Look at first">
-            <LookFirst reach={reach} fileHref={fileHref} />
-          </Block>
-        )}
-        <Block title="Run these tests" hint={testsTotal > 0 ? formatNumber(testsTotal) : undefined}>
-          <TestsToRun result={result} />
-        </Block>
-        <Block title="Who to ask">
-          <Owners result={result} changed={changedFiles.length} />
-        </Block>
-        {partners > 0 && (
-          <Block title="Usually change with these">
-            <MissingPartners result={result} fileHref={fileHref} />
-          </Block>
-        )}
-      </div>
+      <section aria-label="What to check" className="space-y-5 border-t border-[var(--color-border-default)] pt-5">
+        <ol className="grid gap-x-10 gap-y-6 xl:grid-cols-2">
+          {steps.map((step, i) => (
+            <li key={step.key} className="min-w-0">
+              <Block step={i + 1} title={step.title} hint={step.hint}>
+                {step.body}
+              </Block>
+            </li>
+          ))}
+        </ol>
+        <NotChecked lanes={lanes} />
+      </section>
 
       <AiPromptModal
         open={promptOpen}
         onOpenChange={setPromptOpen}
         getPrompt={(flavor) =>
           buildBlastRadiusPrompt({
-            input: blastPromptInput(result, reach, status, changedFiles, change, changedTotal, healthCheck),
+            input: blastPromptInput(result, reach, status, changedFiles, change, changedTotal, healthCheck, review),
             flavor,
           })
         }

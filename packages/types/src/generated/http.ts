@@ -782,6 +782,7 @@ export interface ChangeReview {
   revspec: string | null;
   risk: ChangeRiskBlock;
   tests: ChangeTestsBlock;
+  test_commands?: string[];
 }
 
 /**

@@ -3,10 +3,12 @@ import type {
   BlastRadiusResponse,
   ChangeCandidate,
   ChangeHealthCheckResponse,
+  ChangeReview,
 } from "@repowise-dev/types/blast-radius";
 import type { BlastPromptChange, BlastPromptInput } from "../health/ai-prompts/blast-radius-prompt";
 import { describeMarks, riskySpots, type Reach } from "./blast-map-model";
 import type { ReviewStatus } from "./review-status";
+import { riskLede, testsPlan } from "./change-review-model";
 
 type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[]; missing_partners_total?: number | null };
 
@@ -65,6 +67,39 @@ function checkFindings(check: ChangeHealthCheckResponse) {
     .sort((a, b) => Number(a.group === "fixed") - Number(b.group === "fixed"));
 }
 
+type PromptTests = Pick<BlastPromptInput, "tests" | "testsTotal" | "testsLimited" | "testCommands" | "runAll">;
+
+/** The tests the blast radius found, for a file set or a server without a review. */
+function blastTests(result: Result): PromptTests {
+  const impact = result.test_impact;
+  return {
+    tests: (impact?.recommendations ?? []).map((t) => ({ name: t.test_file ?? t.test_id, basis: t.basis })),
+    testsTotal: impact?.recommendations_total ?? 0,
+    testsLimited: testsLimited(impact),
+    testCommands: result.test_commands ?? [],
+  };
+}
+
+/** The tests the change review selected, the same list the page shows. */
+function reviewTests(review: ChangeReview): PromptTests {
+  const plan = testsPlan(review);
+  if (plan.kind === "run_all")
+    return {
+      tests: plan.startWith.map((name) => ({ name, basis: "inferred" })),
+      testsTotal: plan.startWith.length,
+      testsLimited: true,
+      runAll: plan.reasons,
+    };
+  if (plan.kind === "none") return { tests: [], testsTotal: 0, testsLimited: false };
+  const basis = plan.measured ? "measured" : "inferred";
+  return {
+    tests: plan.tests.map((name) => ({ name, basis })),
+    testsTotal: plan.total,
+    testsLimited: false,
+    testCommands: plan.commands,
+  };
+}
+
 /** Everything the review prompt says, read from one analysis. Pure. */
 export function blastPromptInput(
   result: Result,
@@ -74,13 +109,16 @@ export function blastPromptInput(
   change: ChangeCandidate | undefined,
   changedTotal?: number,
   healthCheck?: ChangeHealthCheckResponse,
+  review?: ChangeReview | null,
 ): BlastPromptInput {
   const impact = result.test_impact;
+  const lede = review ? riskLede(review.risk) : null;
   return {
     change: promptChange(change),
     changedFiles,
     changedTotal,
     status: `${status.word}: ${status.reason}`,
+    risk: lede ? [lede.sentence, lede.drivers].filter(Boolean).join(" ") : undefined,
     reach: {
       files: reach.filesTotal,
       modules: reach.modules,
@@ -89,10 +127,7 @@ export function blastPromptInput(
       band: result.structural_impact_band,
     },
     lookFirst: riskySpots(reach, 8).map((n) => ({ path: n.path, changed: n.changed, signals: describeMarks(n) })),
-    tests: (impact?.recommendations ?? []).map((t) => ({ name: t.test_file ?? t.test_id, basis: t.basis })),
-    testsTotal: impact?.recommendations_total ?? 0,
-    testsLimited: testsLimited(impact),
-    testCommands: result.test_commands ?? [],
+    ...(review ? reviewTests(review) : blastTests(result)),
     missingPartners: missingPartners(result),
     owners: promptOwners(result, changedFiles.length),
     healthCheck: healthCheck
