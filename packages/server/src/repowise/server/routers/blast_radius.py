@@ -183,8 +183,12 @@ async def _review(
     except Exception as exc:  # git could not read the change; the blast radius still stands
         log.debug("change score failed", exc_info=True)
         return None, f"The change could not be scored: {exc}"
-    tests = await scored_change_tests(checkout, factory, revspec, scored, repo=repo_id)
-    return ChangeReview(revspec=revspec, risk=change_risk_payload(scored), tests=tests), None
+    try:
+        tests = await scored_change_tests(checkout, factory, revspec, scored, repo=repo_id)
+        return ChangeReview(revspec=revspec, risk=change_risk_payload(scored), tests=tests), None
+    except Exception as exc:  # a review bug must not take the blast radius with it
+        log.warning("change review failed", exc_info=True)
+        return None, f"The change review failed unexpectedly: {exc!r}"
 
 
 @router.post("/{repo_id}/blast-radius/change", response_model=ChangeBlastRadiusResponse)

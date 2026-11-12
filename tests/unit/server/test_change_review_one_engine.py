@@ -214,3 +214,26 @@ async def test_the_review_is_absent_with_its_reason_when_git_cannot_read_the_cha
     body = resp.json()
     assert body["review"] is None
     assert body["review_unavailable"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_review_keeps_the_blast_radius(client, tmp_path, monkeypatch):
+    from repowise.server.mcp_server import _test_selection
+    from tests.unit.server.conftest import create_test_repo
+    from tests.unit.server.test_blast_radius_changes import _git_repo
+
+    async def _raise(*_a, **_k):
+        raise RuntimeError("boom")
+
+    _git_repo(tmp_path)
+    repo = await create_test_repo(client, tmp_path)
+    monkeypatch.setattr(_test_selection, "scored_change_tests", _raise)
+    resp = await client.post(
+        f"/api/repos/{repo['id']}/blast-radius/change", json={"change_id": "branch:feat/x"}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["changed_files"] == ["core.py"]
+    assert body["review"] is None
+    assert "boom" in body["review_unavailable"]
