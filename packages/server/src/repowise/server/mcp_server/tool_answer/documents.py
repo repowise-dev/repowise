@@ -18,6 +18,7 @@ is the upgrade path.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import re
 from pathlib import Path
@@ -28,7 +29,7 @@ from repowise.core.owned_paths import MANAGED_FILES, OWNED_PATTERNS
 from repowise.core.support_paths import DOC_EXTENSIONS, classification_token
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _get_exclude_spec, is_excluded, read_repo_file_text
-from repowise.server.mcp_server._line_hits import _files_holding, scan_literal
+from repowise.server.mcp_server._line_hits import _files_holding, _line_row, scan_literal
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
 from repowise.server.mcp_server._query_terms import _WORD_RE, QUESTION_FRAME_VERBS, content_terms
 from repowise.server.mcp_server.tool_answer.config import _SPECIFIC_TOKEN_MAX_FILES
@@ -113,9 +114,8 @@ def _few(files: set[tuple] | None) -> bool:
     return bool(files) and len(files) <= _SPECIFIC_TOKEN_MAX_FILES
 
 
-def _front_matter_end(root: Path, path: str) -> int:
+def _front_matter_end(lines: list[str]) -> int:
     """The last line of a leading ``---`` front-matter block, or 0 without one."""
-    lines = (read_repo_file_text(root, path) or "").splitlines()
     if not lines or lines[0].strip() != "---":
         return 0
     return next((n for n, line in enumerate(lines[1:], 2) if line.strip() == "---"), 0)
@@ -123,12 +123,26 @@ def _front_matter_end(root: Path, path: str) -> int:
 
 def _lines(root: Path, path: str, terms: list[str]) -> list[dict]:
     """The lines of *path* holding any of *terms*: the body's in file order,
-    then front matter's (``key:``, ``url:``), which says less."""
+    then front matter's (``key:``, ``url:``), which says less.
+
+    A ticket the question names by its key (``PROJ-12`` for ``PROJ-12.md``)
+    serves its opening body lines instead of the lines holding its key: those
+    are its key, link and heading, while the opening says what the ticket is.
+    The lines another question word holds come first; the opening fills the rest."""
+    text = (read_repo_file_text(root, path) or "").splitlines()
+    end = _front_matter_end(text)
+    own = set(_ISSUE_KEY_RE.findall(Path(path).stem))
+    opening = []
+    if own & set(terms):
+        body = ((n, line) for n, line in enumerate(text[end:], end + 1) if line.strip())
+        opening = list(itertools.islice(body, _DOC_LINES_MAX))
+    # A ticket with no body still serves the lines naming its key.
     rows: dict[int, dict] = {}
-    for term in terms:
+    for term in (t for t in terms if not (opening and t in own)):
         for row in scan_literal(root, [path], term, True)[0]:
             rows.setdefault(row["line"], row)
-    end = _front_matter_end(root, path) if rows else 0
+    for n, line in opening[: max(_DOC_LINES_MAX - len(rows), 0)]:
+        rows.setdefault(n, _line_row(path, n, line, "match"))
     return [rows[n] for n in sorted(rows, key=lambda n: (n <= end, n))][:_DOC_LINES_MAX]
 
 

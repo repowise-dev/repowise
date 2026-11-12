@@ -99,6 +99,7 @@ def _rebuild_graph_and_git(
     force_full_git: bool = False,
     git_summary_sink: list[Any] | None = None,
     timings: PhaseTimings | None = None,
+    fresh_communities: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -143,6 +144,7 @@ def _rebuild_graph_and_git(
             # Re-resolve only the changed files when that is
             # provably equivalent to a rebuild (see pipeline.incremental.surface).
             patch_graph=incremental_graph_enabled(),
+            fresh_communities=fresh_communities,
         )
     )
 

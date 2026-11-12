@@ -848,12 +848,14 @@ def _cap_references_per_file(sites: list[dict[str, Any]]) -> list[dict[str, Any]
     always stay, and a set of at most ``SMALL_SET_LINES`` rows stays whole."""
     if len(sites) <= SMALL_SET_LINES:
         return sites
-    seen: Counter[str] = Counter()
+    seen: Counter[tuple[str | None, str]] = Counter()
     kept: list[dict[str, Any]] = []
     for site in sites:
         if site["kind"] == "reference":
-            seen[site["path"]] += 1
-            if seen[site["path"]] > MAX_REFERENCES_PER_FILE:
+            # A workspace search's rows name their repo: one path in two repos is two files.
+            key = (site.get("repo"), site["path"])
+            seen[key] += 1
+            if seen[key] > MAX_REFERENCES_PER_FILE:
                 continue
         kept.append(site)
     return kept

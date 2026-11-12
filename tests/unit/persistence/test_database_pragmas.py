@@ -391,7 +391,16 @@ async def test_planner_stats_skip_other_backends() -> None:
 
 
 @pytest.mark.asyncio
-async def test_planner_stats_postgresql_bare_analyze() -> None:
+@pytest.mark.parametrize(
+    ("stale", "analyzed"),
+    [
+        ([], []),
+        ([("public", "graph_nodes"), ("public", "git_metadata")],
+         ['ANALYZE "public"."graph_nodes", "public"."git_metadata"']),
+    ],
+)
+async def test_planner_stats_postgresql_analyzes_only_stale_tables(stale, analyzed) -> None:
+    """No table list: ANALYZE what the staleness query names, never the whole store."""
     from typing import Any
 
     from repowise.core.persistence import refresh_planner_stats
@@ -401,6 +410,7 @@ async def test_planner_stats_postgresql_bare_analyze() -> None:
     class _Connection:
         async def execute(self, stmt):
             executed.append(str(stmt))
+            return stale
 
     class _BeginContext:
         async def __aenter__(self):
@@ -420,7 +430,8 @@ async def test_planner_stats_postgresql_bare_analyze() -> None:
 
     engine: Any = _Engine()
     await refresh_planner_stats(engine)
-    assert executed == ["ANALYZE"]
+    assert "pg_stat_user_tables" in executed[0]
+    assert executed[1:] == analyzed
 
 
 @pytest.mark.asyncio

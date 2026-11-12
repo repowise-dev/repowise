@@ -10,6 +10,9 @@ import type {
   RiskCompatibilityField,
   RiskScalarSemantics,
 } from "./risk-semantics.js";
+import type { ChangeReview } from "./generated/http.js";
+
+export type { ChangeReview, ChangeRiskBlock, ChangeTestsBlock } from "./generated/http.js";
 
 export interface DirectRiskEntry {
   path: string;
@@ -196,20 +199,7 @@ export interface ChangedOwner {
   files: number;
 }
 
-/** `pr` is listed by a host that knows pull requests; a local server never lists one. */
-export type ChangeCandidateKind = "working_tree" | "branch" | "commit" | "pull_request";
-
-/**
- * What the PR bot stored for a pull request: code health before and after,
- * and the findings it introduced. A host that runs the bot fills it; a local
- * server never does.
- */
-export interface PrReviewSummary {
-  health_before?: number | null;
-  health_after?: number | null;
-  introduced?: number | null;
-  url?: string | null;
-}
+export type ChangeCandidateKind = "working_tree" | "branch" | "commit";
 
 /** One change a reviewer can pick. `id` is what the analysis call takes back. */
 export interface ChangeCandidate {
@@ -229,12 +219,6 @@ export interface ChangeCandidate {
   is_current: boolean;
   /** For a branch: whether it exists on the remote; local-only is often scratch work. */
   pushed?: boolean | null;
-  /** For a pull request: its number. */
-  number?: number | null;
-  /** For a pull request: the base commit it is compared against. */
-  base_sha?: string | null;
-  /** For a pull request: the PR bot's stored health before and after, when a host has one. */
-  pr_review?: PrReviewSummary | null;
 }
 
 export interface ChangeCandidatesResponse {
@@ -261,6 +245,12 @@ export interface ChangeBlastRadiusResponse extends BlastRadiusResponse {
   changed_files: string[];
   /** Every path the change touches, before the cap. */
   changed_files_total: number;
+  /**
+   * The change's score and tests, as `repowise risk` and `get_change_risk`
+   * give them; null when git could not be read here (`review_unavailable` says why).
+   */
+  review?: ChangeReview | null;
+  review_unavailable?: string | null;
 }
 
 /** One row the health gate weighed: a health finding or a diff-risk rule. */

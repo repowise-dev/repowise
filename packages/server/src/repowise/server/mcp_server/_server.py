@@ -605,6 +605,36 @@ def _detect_workspace(repo_path: str | None):
         return None, None, None
 
 
+def workspace_registry(ws_root: Any, ws_config: Any, default_alias: str | None, db_url: str | None):
+    """The registry a workspace is served from, defaulting to *default_alias*.
+
+    With *db_url* (``REPOWISE_DB_URL``) every member is read from that one
+    store. Shared with the CLI's tool commands, so both answer the same way.
+    """
+    from repowise.core.workspace.registry import RepoRegistry
+
+    if default_alias and ws_config.get_repo(default_alias):
+        ws_config.default_repo = default_alias
+    return RepoRegistry(
+        workspace_root=ws_root,
+        ws_config=ws_config,
+        embedder_factory=_query_embedder,
+        on_vector_store_error=lambda alias, exc: _mark_vector_store_unreadable(exc, alias),
+        db_url=db_url,
+    )
+
+
+def publish_workspace_state(registry: Any, default_ctx: Any, ws_root: Any) -> None:
+    """Serve *registry*, with its default repo's resources as the ``_state`` globals."""
+    _state._registry = registry
+    _state._workspace_root = str(ws_root)
+    _state._session_factory = default_ctx.session_factory
+    _state._fts = default_ctx.fts
+    _state._vector_store = default_ctx.vector_store
+    _state._decision_store = default_ctx.decision_store
+    _state._vector_store_ready = default_ctx.vector_store_ready
+
+
 def _warm_savings_pricing(repo_path: str | None) -> None:
     """Price the first calls' savings: starts a daemon thread, never awaited."""
     from repowise.core.savings.pricing import warm_pricing_snapshot
@@ -639,22 +669,8 @@ async def _lifespan(server: FastMCP):
 
     if ws_root is not None and ws_config is not None:
         # Workspace mode — use RepoRegistry for multi-repo serving
-
-        from repowise.core.workspace.registry import RepoRegistry
-
-        # Override default repo to the one the path points at
-        if ws_repo_alias and ws_config.get_repo(ws_repo_alias):
-            ws_config.default_repo = ws_repo_alias
-
-        # With REPOWISE_DB_URL set, every member is read from that one store.
         shared_db_url = get_configured_db_url()
-        registry = RepoRegistry(
-            workspace_root=ws_root,
-            ws_config=ws_config,
-            embedder_factory=_query_embedder,
-            on_vector_store_error=lambda alias, exc: _mark_vector_store_unreadable(exc, alias),
-            db_url=shared_db_url,
-        )
+        registry = workspace_registry(ws_root, ws_config, ws_repo_alias, shared_db_url)
 
         # Eagerly load the default repo so tools work immediately. A store
         # that cannot open is served below as no index; any other failure
@@ -677,15 +693,7 @@ async def _lifespan(server: FastMCP):
             raise
 
     if ws_root is not None and ws_config is not None and store_error is None:
-        _state._registry = registry
-        _state._workspace_root = str(ws_root)
-
-        # Alias default repo's resources into _state for backward compat
-        _state._session_factory = default_ctx.session_factory
-        _state._fts = default_ctx.fts
-        _state._vector_store = default_ctx.vector_store
-        _state._decision_store = default_ctx.decision_store
-        _state._vector_store_ready = default_ctx.vector_store_ready
+        publish_workspace_state(registry, default_ctx, ws_root)
 
         # Load cross-repo enricher (Phase 3 + 4)
         try:

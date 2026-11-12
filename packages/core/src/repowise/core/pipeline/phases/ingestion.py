@@ -885,6 +885,8 @@ def _new_graph_builder(
         include_nested_repos=walk.include_nested_repos,
     )
     graph_builder.console_scripts = traverser.console_script_names
+    # A full index never reuses a partition its graph has drifted from.
+    graph_builder.fresh_communities = True
     for parsed in parsed_files:
         graph_builder.add_file(parsed)
     # Lend the just-read bytes so the language warmups that scan file text

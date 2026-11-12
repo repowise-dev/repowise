@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
+import axe from "axe-core";
 import type { ReactElement } from "react";
 import { ImpactView, changeIdFromLink, changeLinkParam } from "../../src/blast-radius/impact-view.js";
 import type { ImpactAdapter } from "../../src/blast-radius/impact-adapter.js";
@@ -8,6 +9,7 @@ import type {
   BlastRadiusResponse,
   ChangeBlastRadiusResponse,
   ChangeCandidatesResponse,
+  ChangeHealthCheckResponse,
 } from "@repowise-dev/types/blast-radius";
 
 const RESULT: BlastRadiusResponse = {
@@ -251,10 +253,10 @@ describe("the step map", () => {
   });
 });
 
-describe("pull request links", () => {
+describe("change links", () => {
   it("reads every picker id pasted as is, so ?change=commit:<sha> opens the commit", () => {
     const sha = "e".repeat(40);
-    for (const id of [`commit:${sha}`, "branch:feat/x", "pr:9", "working-tree"]) {
+    for (const id of [`commit:${sha}`, "branch:feat/x", "working-tree"]) {
       expect(changeIdFromLink(id)).toBe(id);
       expect(changeIdFromLink(changeLinkParam(id))).toBe(id);
     }
@@ -265,47 +267,23 @@ describe("pull request links", () => {
     expect(changeIdFromLink("commit:abc")).toBe("branch:commit:abc");
   });
 
-  it("passes pr:<n> through both ways, never as a branch", () => {
-    expect(changeIdFromLink("pr:123")).toBe("pr:123");
-    expect(changeLinkParam("pr:123")).toBe("pr:123");
-    // A branch literally named like a PR number keeps the branch reading.
-    expect(changeIdFromLink("pr-123")).toBe("branch:pr-123");
-  });
-
-  it("names an unlisted PR from its id and renders a listed one as #n title with the author", async () => {
+  it("knows no pull request kind: an unlisted pr:<n> id names nothing", async () => {
     const { changeFor } = await import("../../src/blast-radius/impact-view.js");
-    const { changeName, changeMeta } = await import("../../src/blast-radius/change-picker.js");
-    const unlisted = changeFor("pr:7", [])!;
-    expect([unlisted.kind, unlisted.label]).toEqual(["pull_request", "#7"]);
-    const listed = {
-      ...unlisted,
-      id: "pr:123",
-      label: "#123",
-      number: 123,
-      title: "Fix the cache",
-      author: "Dev",
-      base: "main",
-      head_sha: "b".repeat(40),
-      files_changed: 4,
-    };
-    expect(changeName(listed)).toBe("#123 Fix the cache");
-    expect(changeMeta(listed)).toContain("Dev");
-    expect(changeMeta(listed)).toContain("4 files");
+    expect(changeFor("pr:7", [])).toBeUndefined();
   });
 });
 
 describe("a host with no checkout", () => {
-  it("offers pull requests, hides the working tree and the health check, and opens a PR", async () => {
-    const pr = {
-      id: "pr:123",
-      kind: "pull_request" as const,
-      label: "#123",
-      number: 123,
+  it("offers commits only, hides the working tree and the health check, and opens a commit", async () => {
+    const commit = {
+      id: `commit:${"b".repeat(40)}`,
+      kind: "commit" as const,
+      label: "bbbbbbbb",
       title: "Fix the cache",
       author: "Dev",
       committed_at: null,
       head_sha: "b".repeat(40),
-      base: "main",
+      base: null,
       ahead: null,
       files_changed: 3,
       is_current: false,
@@ -313,14 +291,14 @@ describe("a host with no checkout", () => {
     const analyzeChange = vi.fn(async () => changeResult(["src/core.ts"]));
     const checkHealth = vi.fn();
     const adapter = makeAdapter({
-      listChanges: vi.fn(async () => ({ working_tree_supported: false, default_id: "pr:123", changes: [pr] })),
+      listChanges: vi.fn(async () => ({ working_tree_supported: false, default_id: commit.id, changes: [commit] })),
       analyzeChange,
       checkHealth,
     });
     renderView(<ImpactView adapter={adapter} />);
-    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "pr:123", maxDepth: 3 }));
-    await openPicker(/Change under review: #123 Fix the cache/);
-    expect(screen.getByRole("radio", { name: /Pull requests/ })).toBeInTheDocument();
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: commit.id, maxDepth: 3 }));
+    await openPicker(/Change under review: Fix the cache/);
+    expect(screen.getByRole("radio", { name: /Commits/ })).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: /Working tree/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Run health check/ })).not.toBeInTheDocument();
   });
@@ -345,51 +323,6 @@ describe("a change that fails to open", () => {
     expect(await screen.findByText("boom")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByText("1 file changed, no test found to run.")).toBeInTheDocument();
-  });
-});
-
-describe("the PR bot line", () => {
-  it("shows the bot's health before and after for a PR that carries it, and nothing otherwise", async () => {
-    const { PrReviewLine } = await import("../../src/blast-radius/blast-radius-verdict.js");
-    const { container, unmount } = render(
-      <PrReviewLine review={{ health_before: 7.8, health_after: 4.9, introduced: 2, url: "https://example.test/pr/9" }} />,
-    );
-    expect(container.textContent).toContain("PR bot:");
-    expect(container.textContent).toContain("health 7.8");
-    expect(container.textContent).toContain("4.9");
-    expect(container.textContent).toContain("2 new findings");
-    expect(screen.getByRole("link", { name: "View" })).toHaveAttribute("href", "https://example.test/pr/9");
-    unmount();
-    // A non-web link is dropped, and a review with nothing to say renders nothing.
-    const bad = render(<PrReviewLine review={{ introduced: 1, url: "javascript:alert(1)" }} />);
-    expect(bad.container.textContent).toContain("1 new finding");
-    expect(bad.container.querySelector("a")).toBeNull();
-    bad.unmount();
-    expect(render(<PrReviewLine review={{}} />).container).toBeEmptyDOMElement();
-
-    const pr = {
-      id: "pr:9",
-      kind: "pull_request" as const,
-      label: "#9",
-      number: 9,
-      title: "Tidy",
-      author: null,
-      committed_at: null,
-      head_sha: null,
-      base: "main",
-      ahead: null,
-      files_changed: 1,
-      is_current: false,
-    };
-    const listChanges = vi.fn(async () => ({
-      working_tree_supported: false,
-      default_id: "pr:9",
-      changes: [{ ...pr, pr_review: { health_before: 8, health_after: 8, introduced: 0 } }, { ...pr, id: "pr:10", label: "#10", number: 10 }],
-    }));
-    const analyzeChange = vi.fn(async () => changeResult(["src/core.ts"]));
-    renderView(<ImpactView adapter={makeAdapter({ listChanges, analyzeChange })} />);
-    expect(await screen.findByText(/no new findings/)).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "View" })).not.toBeInTheDocument();
   });
 });
 
@@ -498,5 +431,77 @@ describe("what the page counts", () => {
     // Whether a dependent is tested is not about this change: no count, section or chip says it.
     expect(screen.queryByText(/Dependent files with no test/)).not.toBeInTheDocument();
     expect(screen.getByText("1 changed file with no test found.")).toBeInTheDocument();
+  });
+});
+
+describe("accessibility", () => {
+  const CHECK: ChangeHealthCheckResponse = {
+    change_id: "working-tree",
+    revspec: "HEAD",
+    status: "complete",
+    explanation: null,
+    scope: {},
+    skipped: {},
+    gate: { passed: false, verdict: "fail", fail_on: "introduced", fail_at: "high", failing_count: 1, warning_count: 0, note_count: 0, notes: [] },
+    findings: [
+      { source: "health", rule: "deep_nesting", level: "error", file_path: "src/a.py", line_number: 3, symbol: null, message: "Deep nesting", fingerprint: "1", change_kind: "introduced", severity: "high" },
+    ],
+  };
+  const analyzeChange = () =>
+    vi.fn(async () => ({
+      ...changeResult(["packages/s/src/core/x.py"]),
+      transitive_affected: [
+        { path: "packages/s/src/a/1.py", depth: 1, via: "packages/s/src/core/x.py" },
+        { path: "packages/s/src/b/1.py", depth: 2, via: "packages/s/src/a/1.py" },
+      ],
+      affected_signals: [{ path: "packages/s/src/a/1.py", is_hotspot: true, health_score: 3, module: "packages/s" }],
+    }));
+
+  // jsdom computes no layout, so contrast is checked on the tokens instead (scripts/contrast-check.py);
+  // landmarks belong to the host page, not this view.
+  const violations = async () => {
+    const r = await axe.run(document.body, { rules: { "color-contrast": { enabled: false }, region: { enabled: false } } });
+    return r.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`);
+  };
+
+  it("passes axe on a reviewed change with its health check", async () => {
+    const adapter = makeAdapter({
+      listChanges: vi.fn(async () => ({ ...CHANGES, health_check_supported: true })),
+      analyzeChange: analyzeChange(),
+      checkHealth: vi.fn(async () => CHECK),
+    });
+    renderView(<ImpactView adapter={adapter} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Run health check/ }));
+    await screen.findByText("Deep nesting");
+    expect(await violations()).toEqual([]);
+    // The open picker renders in a portal; it is checked too.
+    await openPicker(/Change under review/);
+    expect(await violations()).toEqual([]);
+  });
+
+  it("passes axe on the files form and on a change that fails to open", async () => {
+    const first = renderView(<ImpactView adapter={makeAdapter()} />);
+    await screen.findByRole("button", { name: "Add hotspot src/hot.ts" });
+    expect(await violations()).toEqual([]);
+    first.unmount();
+    const analyzeChange = vi.fn().mockRejectedValue(new Error("API error 500: boom"));
+    renderView(<ImpactView adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })} />);
+    await screen.findByText("boom");
+    expect(await violations()).toEqual([]);
+  });
+
+  it("names each finding's severity in words and announces only the outcomes", async () => {
+    const adapter = makeAdapter({
+      listChanges: vi.fn(async () => ({ ...CHANGES, health_check_supported: true })),
+      analyzeChange: analyzeChange(),
+      checkHealth: vi.fn(async () => CHECK),
+    });
+    const { container } = renderView(<ImpactView adapter={adapter} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Run health check/ }));
+    await screen.findByText("Deep nesting");
+    expect(screen.getByText("High")).not.toHaveClass("sr-only");
+    expect(container.querySelector("[aria-live]")).toBeNull();
+    const said = screen.getAllByRole("status").map((s) => s.textContent);
+    expect(said).toEqual(expect.arrayContaining(["Review ready.", "Health check: Fail, 1 failing, 0 warnings."]));
   });
 });
