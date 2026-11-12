@@ -371,6 +371,7 @@ function ReviewBody({
   analysis,
   change,
   check,
+  markdownHref,
   health,
   fileHref,
   maxDepth,
@@ -379,6 +380,7 @@ function ReviewBody({
   analysis: Analysis;
   change: ChangeCandidate | undefined;
   check: ChangeCheck | undefined;
+  markdownHref: string | undefined;
   health: HealthLane;
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
@@ -401,6 +403,7 @@ function ReviewBody({
         change={change}
         healthCheck={check?.state?.status === "done" ? check.state.result : undefined}
         extraActions={check && <HealthCheckButton state={check.state} onRun={check.onRun} />}
+        markdownHref={markdownHref}
         review={review}
         reviewUnavailable={reviewUnavailable}
         health={health}
@@ -695,6 +698,7 @@ function ResultPane({
   empty,
   shownChange,
   check,
+  markdownHref,
   health,
   fileHref,
   maxDepth,
@@ -707,6 +711,7 @@ function ResultPane({
   empty: ReactNode;
   shownChange: ChangeCandidate | undefined;
   check: ChangeCheck | undefined;
+  markdownHref: string | undefined;
   health: HealthLane;
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
@@ -727,6 +732,7 @@ function ResultPane({
             analysis={analysis}
             change={shownChange}
             check={check}
+            markdownHref={markdownHref}
             health={health}
             fileHref={fileHref}
             maxDepth={maxDepth}
@@ -736,6 +742,17 @@ function ResultPane({
       )}
     </section>
   );
+}
+
+/** The shown change's review as Markdown, with the health check once the reader has run it here. */
+function markdownHrefFor(
+  adapter: ImpactAdapter,
+  change: ChangeCandidate | undefined,
+  maxDepth: number,
+  check: ChangeCheck | undefined,
+): string | undefined {
+  if (!change || !adapter.changeMarkdownHref) return undefined;
+  return adapter.changeMarkdownHref({ changeId: change.id, maxDepth, healthCheck: check?.state?.status === "done" });
 }
 
 /** Where the health check stands for the change on screen; a host without one says nothing. */
@@ -816,6 +833,7 @@ export function ImpactView({
       : undefined;
   const healthState = healthLane(shownChange, Boolean(adapter.checkHealth), canCheck, check?.state);
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
+  const markdownHref = markdownHrefFor(adapter, shownChange, maxDepth, check);
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
     setFilesOpen(false);
@@ -857,6 +875,7 @@ export function ImpactView({
         empty={empty}
         shownChange={shownChange}
         check={check}
+        markdownHref={markdownHref}
         health={healthState}
         fileHref={fileHref}
         maxDepth={maxDepth}

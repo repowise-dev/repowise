@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, FileText } from "lucide-react";
 import type {
   AffectedSignal,
   BlastRadiusResponse,
@@ -453,6 +453,8 @@ export interface BlastRadiusVerdictProps {
   healthCheck?: ChangeHealthCheckResponse | undefined;
   /** Quiet actions after the test command (the health check's run button). */
   extraActions?: ReactNode;
+  /** This review as Markdown for a coding agent; omit to hide the link. */
+  markdownHref?: string | undefined;
   /**
    * The change's score and tests, as `repowise risk` gives them: undefined for
    * a hand-picked file set, null when the server could not build them.
@@ -463,6 +465,22 @@ export interface BlastRadiusVerdictProps {
   /** Where the health check stands, for the list of what was not checked. */
   health?: HealthLane | undefined;
   fileHref?: Href;
+}
+
+/** The review as Markdown: a quiet action, styled like Copy test command. */
+function MarkdownLink({ href }: { href: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      title="This review as plain Markdown, for a coding agent to read"
+      className="inline-flex h-7 max-sm:h-10 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
+    >
+      <FileText className="h-3.5 w-3.5" aria-hidden />
+      Markdown for agents
+    </a>
+  );
 }
 
 /**
@@ -479,6 +497,7 @@ export function BlastRadiusVerdict({
   change,
   healthCheck,
   extraActions,
+  markdownHref,
   review,
   reviewUnavailable,
   health = "not_a_change",
@@ -537,6 +556,7 @@ export function BlastRadiusVerdict({
           />
           {extraActions}
           <CopyTests result={result} plan={plan} />
+          {markdownHref && <MarkdownLink href={markdownHref} />}
         </div>
       </div>
 

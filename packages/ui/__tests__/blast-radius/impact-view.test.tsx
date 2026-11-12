@@ -445,6 +445,55 @@ describe("what the page counts", () => {
   });
 });
 
+describe("Markdown for agents", () => {
+  it("links the shown change's review, with the health check once it has run", async () => {
+    const check = {
+      change_id: "working-tree",
+      revspec: "working tree",
+      status: "complete",
+      explanation: null,
+      scope: {},
+      skipped: {},
+      gate: { passed: true, verdict: "pass" as const, fail_on: "introduced", fail_at: "high", failing_count: 0, warning_count: 0, note_count: 0, notes: [] },
+      findings: [],
+    };
+    const changeMarkdownHref = vi.fn(
+      ({ changeId, maxDepth, healthCheck }: { changeId: string; maxDepth: number; healthCheck: boolean }) =>
+        `/md?change=${changeId}&depth=${maxDepth}${healthCheck ? "&health" : ""}`,
+    );
+    const adapter = makeAdapter({
+      listChanges: vi.fn(async () => CHANGES),
+      analyzeChange: vi.fn(async () => changeResult(["src/a.ts"])),
+      checkHealth: vi.fn(async () => check),
+      changeMarkdownHref,
+    });
+    renderView(<ImpactView adapter={adapter} />);
+
+    const link = await screen.findByRole("link", { name: /Markdown for agents/ });
+    expect(link).toHaveAttribute("href", "/md?change=working-tree&depth=3");
+    // The review prompt stays the primary action.
+    expect(screen.getByRole("button", { name: /Copy review prompt/ })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Run health check/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: /Markdown for agents/ })).toHaveAttribute(
+        "href",
+        "/md?change=working-tree&depth=3&health",
+      ),
+    );
+  });
+
+  it("is absent for a host without the route", async () => {
+    const adapter = makeAdapter({
+      listChanges: vi.fn(async () => CHANGES),
+      analyzeChange: vi.fn(async () => changeResult(["src/a.ts"])),
+    });
+    renderView(<ImpactView adapter={adapter} />);
+    expect(await screen.findByRole("button", { name: /Copy review prompt/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Markdown for agents/ })).toBeNull();
+  });
+});
+
 describe("the change review leads", () => {
   function reviewed(over: Partial<ChangeBlastRadiusResponse>) {
     return makeAdapter({
