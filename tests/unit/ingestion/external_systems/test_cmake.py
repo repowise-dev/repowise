@@ -103,6 +103,26 @@ def test_set_expansion(tmp_path):
     assert "a.cc" in t.sources and "b.cc" in t.sources
 
 
+def test_self_appending_set_grows_linearly(tmp_path):
+    # FLAGS is never defined before the first append, so its value keeps a
+    # literal ``${FLAGS}``. Rescanning that reference doubled the value on
+    # every pass and every later ``set``.
+    appends = "\n".join(f'set(FLAGS "${{FLAGS}} -f{i}")' for i in range(12))
+    _write(tmp_path, "CMakeLists.txt", appends)
+    cm = cmake.parse_cmake_lists(tmp_path / "CMakeLists.txt", repo_root=tmp_path)
+    assert cm.variables["FLAGS"] == "${FLAGS} " + " ".join(f"-f{i}" for i in range(12))
+
+
+def test_nested_variable_names_still_expand(tmp_path):
+    _write(tmp_path, "CMakeLists.txt", """
+        set(KIND fast)
+        set(SRC_fast fast.cc)
+        add_library(thing STATIC ${SRC_${KIND}})
+    """)
+    cm = cmake.parse_cmake_lists(tmp_path / "CMakeLists.txt", repo_root=tmp_path)
+    assert cm.targets[0].sources == ["fast.cc"]
+
+
 def test_target_compile_definitions(tmp_path):
     _write(tmp_path, "CMakeLists.txt", """
         add_library(thing STATIC a.cc)
