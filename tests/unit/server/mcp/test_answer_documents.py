@@ -185,3 +185,14 @@ def test_a_hit_already_on_the_document_gets_its_lines():
     placed = place_documents(hits, [doc])
 
     assert placed == [{**_page("guide.md", 9.0), "excerpt": "3: x"}]
+
+
+async def test_repowise_agent_notes_and_split_words_name_nothing(tmp_path):
+    notes = "<!-- REPOWISE:START -->\nthe zanzibarflux module, line by line\n"
+    root = _repo(
+        tmp_path / "r",
+        {".claude/CLAUDE.md": notes, "AGENTS.md": notes, "billing.py": "def sum_line_amounts(): ...\n"},
+    )
+
+    assert (await _find(root, "What is zanzibarflux?")).hits == []
+    assert (await _find(root, "what does sum_line_amounts in billing.py do")).hits == []

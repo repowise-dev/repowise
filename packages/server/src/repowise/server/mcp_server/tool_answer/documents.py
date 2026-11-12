@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from repowise.core.code_origin import path_origin
+from repowise.core.owned_paths import MANAGED_FILES, OWNED_PATTERNS
 from repowise.core.support_paths import DOC_EXTENSIONS, classification_token
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _get_exclude_spec, is_excluded
@@ -51,10 +52,23 @@ _NONE = Documents([], [])
 
 
 def _terms(question: str) -> list[str]:
-    """Content words of *question* as it writes them, framing verbs left out."""
+    """Content words of *question* as it writes them, framing verbs left out.
+
+    Whole words only: ``line`` split out of ``sum_line_amounts`` is not a word
+    the question asks about."""
     written = {w.lower(): w for w in _WORD_RE.findall(question)}
-    terms = [t for t in content_terms(question, max_terms=None) if t not in QUESTION_FRAME_VERBS]
-    return [written.get(t, t) for t in terms[:_DOC_TERMS_MAX]]
+    terms = [
+        written[t]
+        for t in content_terms(question, max_terms=None)
+        if t in written and t not in QUESTION_FRAME_VERBS
+    ]
+    return terms[:_DOC_TERMS_MAX]
+
+
+def _repowise_output(path: str) -> bool:
+    """A file repowise writes, whole or as a fenced block: its own agent notes, not the project's."""
+    owned = any(path.startswith(p) if p.endswith("/") else path == p for p in OWNED_PATTERNS)
+    return owned or path in MANAGED_FILES
 
 
 def _roots(ctx: Any, root: Path, exclude_spec: Any, scope: str | None) -> list[tuple]:
@@ -132,7 +146,9 @@ async def _held(roots: list[tuple], term: str, globs: tuple[str, ...]) -> set[tu
 
     async def one(alias: str | None, at: Path, spec: Any) -> set[tuple] | None:
         files = await asyncio.to_thread(_files_holding, at, term, word=True, globs=globs)
-        return None if files is None else {(alias, f) for f in files if not is_excluded(f, spec)}
+        return None if files is None else {
+            (alias, f) for f in files if not is_excluded(f, spec) and not _repowise_output(f)
+        }
 
     found = await asyncio.gather(*(one(a, r, s) for a, r, s in roots))
     return None if any(f is None for f in found) else set().union(*found)
