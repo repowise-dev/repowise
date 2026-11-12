@@ -760,9 +760,11 @@ class HealthAnalyzer:
             i = pending[j]
             pf = targets[i]
             if isinstance(result, BaseException):
+                # Like a failed walk in a thread: empty for this pass, never cached.
                 log.debug("health_walk_failed", path=pf.file_info.path, error=str(result))
-                result = FileComplexity(functions=[], classes=[])
-            results[i] = _cache_walk(self._walk_cache, requests[i][0], result)
+                results[i] = FileComplexity(functions=[], classes=[])
+            else:
+                results[i] = _cache_walk(self._walk_cache, requests[i][0], result)
             tick(pf)
 
         # The parse pool's sizing: REPOWISE_PARSE_WORKERS bounds both pools.

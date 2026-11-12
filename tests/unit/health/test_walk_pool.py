@@ -97,3 +97,29 @@ def test_a_walk_job_is_picklable(language: str) -> None:
 
     job = engine_mod._WalkJob("x", language, b"", frozenset(), None, True)
     assert pickle.loads(pickle.dumps(job)) == job
+
+
+def test_a_walk_that_fails_in_a_worker_is_empty_and_never_cached(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.pipeline.parse_pool import ParseWorkerCrashError
+
+    parsed = _repo(tmp_path)
+
+    def crashing_pool(_fn, items, _workers, results, *, on_done, **_kwargs):
+        for j in range(len(items)):
+            results[j] = ParseWorkerCrashError("parse worker crashed")
+            on_done(j, results[j])
+
+    monkeypatch.setattr(engine_mod, "run_with_deadline", crashing_pool)
+    monkeypatch.setattr(engine_mod, "_WALK_POOL_MIN_FILES", 1)
+    (tmp_path / ".repowise").mkdir()
+    analyzer = engine_mod.HealthAnalyzer(
+        nx.DiGraph(),
+        git_meta_map={},
+        parsed_files=parsed,
+        duplication_cache_dir=tmp_path / ".repowise",
+        repo_root=tmp_path,
+    )
+    report = asyncio.run(analyzer.analyze_async(None))
+    assert not any(f.biomarker_type.startswith("sql_") for f in report.findings)
+    assert analyzer._walk_cache.misses == len(parsed)
+    assert analyzer._walk_cache._fresh == {}
