@@ -35,6 +35,15 @@ def _commit(repo: Path, files: dict[str, str], message: str) -> str:
     return _git(repo, "rev-parse", "HEAD")
 
 
+def _outside_ci(monkeypatch) -> None:
+    """No CI markers: on an unmapped host the CI the tests run in would name the forge."""
+    from repowise.core.forges import all_forges
+
+    for forge in all_forges():
+        for var in forge.ci.markers if forge.ci else ():
+            monkeypatch.delenv(var, raising=False)
+
+
 def _repo_with_request(
     repo: Path, *, url: str, ref: str
 ) -> tuple[str, str]:
@@ -133,8 +142,9 @@ async def test_a_github_pull_request_uses_github_words(client, tmp_path):
     )
 
 
-async def test_a_self_managed_gitlab_is_known_by_its_ref_shape(client, tmp_path):
+async def test_a_self_managed_gitlab_is_known_by_its_ref_shape(client, tmp_path, monkeypatch):
     """A host no setting maps reads as plain git; the published ref still says GitLab."""
+    _outside_ci(monkeypatch)
     _repo_with_request(
         tmp_path / "test-repo",
         url="https://git.corp.example/group/project.git",
@@ -183,12 +193,13 @@ async def test_a_request_this_clone_lacks_is_not_fetched_into_a_developer_clone(
         assert (await client.post(url, json={"change_id": bad})).status_code == 404, bad
 
 
-async def test_a_managed_checkout_fetches_the_published_ref(client, tmp_path):
+async def test_a_managed_checkout_fetches_the_published_ref(client, tmp_path, monkeypatch):
     """A clone the server owns fetches the one ref, on each open; its branch stays put.
 
     The host is a self-managed GitLab no setting maps, so only the ``mr:``
     prefix says which ref shape to fetch.
     """
+    _outside_ci(monkeypatch)
     seed = tmp_path / "seed"
     url = "https://git.corp.example/group/project.git"
     base, head = _repo_with_request(seed, url=url, ref="refs/merge-requests/5/head")
