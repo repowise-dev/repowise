@@ -29,16 +29,22 @@ def _carries_reach(attrs: Mapping[str, Any]) -> bool:
     return is_import_target_edge({"edge_type": "imports", **attrs})
 
 
-# The edge types :func:`_carries_reach` can accept: a cheap first test over
-# the graph's every edge, most of which are calls.
-_REACH_EDGE_TYPES = frozenset({"imports", "type_use", None})
+def _reach_edge_types() -> frozenset[str | None]:
+    """The edge types :func:`_carries_reach` can accept; ``None`` reads as ``imports``.
+
+    A cheap first test over the graph's every edge, most of which are calls.
+    """
+    from repowise.core.ingestion.graph._scoped import IMPORT_TARGET_EDGE_TYPES
+
+    return IMPORT_TARGET_EDGE_TYPES | {None}
 
 
 def _adjacency(edges: Iterable[tuple[str, str, Mapping[str, Any]]]) -> dict[str, set[str]]:
     """``{node: the nodes it reaches in one step}``."""
     adjacency: dict[str, set[str]] = {}
+    reach_types = _reach_edge_types()
     for source, target, attrs in edges:
-        if attrs.get("edge_type") not in _REACH_EDGE_TYPES or source == target:
+        if attrs.get("edge_type") not in reach_types or source == target:
             continue
         if _carries_reach(attrs):
             adjacency.setdefault(source, set()).add(target)
