@@ -1438,6 +1438,11 @@ Each variable sets its [`hooks:`](#the-hooks-block) key for one session.
 | `REPOWISE_NO_OPEN` | off | `1`, `on`, `true`, `yes` | Do not open a browser when repowise serve starts. |
 | `REPOWISE_DB_URL` | unset |  | Database to use instead of the repo's SQLite file, for example Postgres. |
 | `REPOWISE_DATABASE_URL` | unset |  | Older name for REPOWISE_DB_URL, read when that is unset. |
+| `REPOWISE_POSTGRES_KEEPALIVE` | off | `1`, `on`, `true`, `yes` | Send server-side TCP keepalive settings and a command timeout on asyncpg connections. Leave off behind a pooler that rejects startup parameters. |
+| `REPOWISE_POSTGRES_KEEPALIVES_IDLE` | `60` | >= 1 | Seconds idle before the server's first keepalive probe, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_KEEPALIVES_INTERVAL` | `15` | >= 1 | Seconds between keepalive probes, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_KEEPALIVES_COUNT` | `4` | >= 1 | Unanswered keepalive probes before the server drops the connection, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_COMMAND_TIMEOUT` | `300` | >= 1 | Seconds one database command may run, when REPOWISE_POSTGRES_KEEPALIVE is on. |
 | `REPOWISE_CORS_ORIGINS` | unset |  | Comma-separated web origins allowed to call the API from a browser. Unset allows any origin without credentials. |
 | `REPOWISE_PUBLIC_URL` | unset |  | Public https address of the MCP server behind a proxy. |
 | `REPOWISE_TOKENS_FILE` | `~/.repowise/tokens.yaml` |  | File of scoped access tokens for the server. |
@@ -1558,6 +1563,50 @@ repowise init
 ```
 
 `REPOWISE_DATABASE_URL` is a still-honored alias. Alembic manages the schema.
+
+### Keepalive and command timeout (opt-in)
+
+For a direct PostgreSQL connection using asyncpg, enable session keepalive
+probes and a bounded wait for commands:
+
+```bash
+export REPOWISE_POSTGRES_KEEPALIVE=1
+# Optional overrides (seconds, except COUNT):
+export REPOWISE_POSTGRES_KEEPALIVES_IDLE=60
+export REPOWISE_POSTGRES_KEEPALIVES_INTERVAL=15
+export REPOWISE_POSTGRES_KEEPALIVES_COUNT=4
+export REPOWISE_POSTGRES_COMMAND_TIMEOUT=300
+```
+
+| Variable | Default when enabled | Meaning |
+|----------|----------------------|---------|
+| `REPOWISE_POSTGRES_KEEPALIVE` | Off unless set to `1`, `true`, `yes`, or `on` (case-insensitive) | Enables all four settings below |
+| `REPOWISE_POSTGRES_KEEPALIVES_IDLE` | `60` | Seconds of inactivity before the server's first TCP keepalive probe |
+| `REPOWISE_POSTGRES_KEEPALIVES_INTERVAL` | `15` | Seconds between subsequent probes |
+| `REPOWISE_POSTGRES_KEEPALIVES_COUNT` | `4` | Unanswered probes before the server considers the peer dead |
+| `REPOWISE_POSTGRES_COMMAND_TIMEOUT` | `300` | asyncpg's per-command timeout in seconds; raise it for legitimate long-running statements or bulk writes |
+
+Values must be positive integers; invalid values raise an error naming the
+variable when the engine is created. They are read for each new engine. With
+the switch off (including `0` or `false`), all four overrides are ignored and
+the existing behavior is preserved: server keepalive defaults and no added
+command timeout. SQLite and explicitly selected drivers other than asyncpg
+ignore these variables.
+
+The `tcp_keepalives_*` values are sent in asyncpg `server_settings` as startup
+parameters. **Leave this disabled for PgBouncer or hosted poolers unless the
+pooler supports these parameters** (for example, via PgBouncer's
+`ignore_startup_parameters`). A pooler may reject them, and ignoring them does
+not apply them to the backend; configure backend keepalive separately in that
+case. Repowise does not auto-detect poolers or retry without the parameters.
+
+The defaults let the server detect a dead TCP peer in roughly two minutes
+(`60 + 15 × 4` seconds, subject to OS support). They configure the **server's**
+probes, not the client's socket; a tunnel's peer may only be the tunnel
+endpoint, so SSH keepalive must be configured separately. The command timeout
+bounds an active command, not an idle session, and does not guarantee recovery
+of an interrupted transaction. `pool_pre_ping` still checks connections at
+checkout.
 
 ## Workspace config (`.repowise-workspace.yaml`)
 
