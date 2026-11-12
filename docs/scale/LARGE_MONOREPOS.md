@@ -14,7 +14,15 @@ workers:
 |---|---:|---:|---:|---:|---:|
 | elastic/elasticsearch | 34,315 | 4.0M | 52 min | 7.8 GiB | 4.2 GiB |
 | dotnet/runtime | 58,924 | 15.0M | 120 min | 11.7 GiB | 7.7 GiB |
-<!-- ClickHouse/ClickHouse (C++, C, Python, 4.29M lines) row: fill from the scale run -->
+| ClickHouse/ClickHouse | 93,604 | 4.29M | 98 min | 25.0 GiB | 2.6 GiB |
+
+ClickHouse ran on a full clone with all 321,097 commits: 62,167 files indexed
+(C++, C, Python, SQL, shell), 249,188 symbols, a 742,968-edge graph. About
+15 GiB of its peak is a one-time `git commit-graph write` over that history,
+running beside the graph build. With PostgreSQL as the store the first index
+takes 94 min, with a 1.9 GiB database. MCP answers on the finished index,
+p50: `get_context` 0.24 s, `get_symbol` 0.29 s, `search_codebase` 2.3 s,
+`get_answer` 6.3 s (PostgreSQL: 0.16, 0.09, 1.2 and 5.9 s).
 
 More rows and the method: [BENCHMARKS.md](../BENCHMARKS.md#scale).
 
