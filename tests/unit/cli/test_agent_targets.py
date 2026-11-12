@@ -961,6 +961,8 @@ def test_claude_code_plugin_plus_init_project_entry_is_a_duplicate(
     assert report.status is not DoctorStatus.OK
     issue = next(i for i in report.issues if "registered twice" in i)
     assert str(repo / ".mcp.json") in issue
+    # The project file is often the team's; the plugin is the copy to drop.
+    assert report.fix_command == target_mod.PLUGIN_UNINSTALL_COMMAND
 
 
 # ---------------------------------------------------------------------------
