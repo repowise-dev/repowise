@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import os
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -217,6 +218,7 @@ def _window_records(
     if records is None:
         # The sha, not ``HEAD``: a HEAD moved meanwhile must not be cached under it.
         records = _log_records(repo, head, *window)
+    logger.debug("commit_slice_read", skip=skip, depth=depth, from_cache=cached.records is not None)
     if cache_writable and not cached.at_head:
         key = {"head": head, "context": context, "skip": skip, "depth": depth}
         _write_window_cache(cache_path, key, bool(_shallow_commits(repo)), records)
@@ -739,6 +741,7 @@ def load_deep_commit_index(
     cache_dir: Path | None = None,
     cache_writable: bool = True,
     cache_name: str = _DEEP_CACHE_NAME,
+    records: list[str] | None = None,
 ) -> dict[str, list[_CommitRec]]:
     """Bucket commits OLDER than the recent window for *wanted_files* only.
 
@@ -770,23 +773,27 @@ def load_deep_commit_index(
     *cache_dir* keeps this region's records between runs in *cache_name*
     (see :func:`_window_records`), so an update diffs only the commits that
     entered the region since the last walk.
+
+    *records*, when given, are this region's raw records already read (see
+    :class:`_RegionReader`); no git runs then.
     """
     if not wanted_files:
         return {}
     _report(stats_sink, succeeded=False, commits=0)
 
-    try:
-        records = _window_records(
-            repo,
-            deep_limit,
-            cache_dir,
-            skip=skip,
-            cache_writable=cache_writable,
-            cache_name=cache_name,
-        )
-    except Exception as exc:
-        logger.warning("deep_commit_index_failed", error=str(exc))
-        return {}
+    if records is None:
+        try:
+            records = _window_records(
+                repo,
+                deep_limit,
+                cache_dir,
+                skip=skip,
+                cache_writable=cache_writable,
+                cache_name=cache_name,
+            )
+        except Exception as exc:
+            logger.warning("deep_commit_index_failed", error=str(exc))
+            return {}
 
     if not records:
         _report(stats_sink, succeeded=True, commits=0)
@@ -821,6 +828,42 @@ def _underfilled(sample: HistorySample, indexable_files: set[str], per_file_limi
     return {path for path in indexable_files if len(sample.commits.get(path, ())) < per_file_limit}
 
 
+#: Deep regions read at once. Git diffs each region on one core, the regions
+#: are independent, and only their parse must run in order (the rename trail),
+#: so reading a few ahead turns the deep walk's wall time from their sum into
+#: roughly the slowest few (four ClickHouse regions: 103 s together, 101 s alone).
+_DEEP_READ_AHEAD = 4
+
+
+class _RegionReader:
+    """Reads deep regions' raw records on worker threads, in region order.
+
+    *regions* maps a region number to its ``(skip, cache_name)``. Every region
+    is queued at once; at most :data:`_DEEP_READ_AHEAD` git processes run.
+    """
+
+    def __init__(
+        self, read: Callable[..., list[str]], regions: dict[int, tuple[int, str]]
+    ) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        workers = max(1, min(_DEEP_READ_AHEAD, (os.cpu_count() or 1) // 2, len(regions)))
+        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-deep")
+        self._futures = {
+            n: self._pool.submit(read, skip=skip, cache_name=name)
+            for n, (skip, name) in regions.items()
+        }
+
+    def take(self, region: int) -> list[str]:
+        """The region's records; raises what its read raised."""
+        return self._futures.pop(region).result()
+
+    def close(self) -> None:
+        # Ceiling: a region already being read when the walk stops finishes in
+        # the background; the walk stops early only when every file is full.
+        self._pool.shutdown(wait=False, cancel_futures=True)
+
+
 class _SharedWalks:
     """How far the recent and deep repo-wide walks have read into the history.
 
@@ -839,6 +882,7 @@ class _SharedWalks:
         step: int,
         cache_dir: Path | None = None,
         cache_writable: bool = True,
+        read_region: Callable[..., list[str]] | None = None,
     ) -> None:
         self._walk_deep = walk_deep
         self._total = total_commits
@@ -846,6 +890,8 @@ class _SharedWalks:
         self._start = start
         self._cache_dir = cache_dir
         self._cache_writable = cache_writable
+        self._read_region = read_region
+        self._reader: _RegionReader | None = None
         self.cursor = start
         self.deep_walked = False
         self.recent_complete = total_commits is not None and total_commits <= recent_commits
@@ -863,6 +909,11 @@ class _SharedWalks:
         # one or two regions most repositories reach; past that, one sha-keyed
         # pool shared by every region would write each record once.
         region = (self.cursor - self._start) // self._step + 1
+        try:
+            records = self._read_ahead(region)
+        except Exception as exc:
+            logger.warning("deep_commit_index_failed", error=str(exc))
+            return False
         deep = self._walk_deep(
             wanted,
             skip=self.cursor,
@@ -870,6 +921,7 @@ class _SharedWalks:
             cache_dir=self._cache_dir,
             cache_writable=self._cache_writable,
             cache_name=_deep_cache_name(region),
+            records=records,
         )
         for path, records in deep.items():
             remaining = per_file_limit - len(sample.commits.get(path, ()))
@@ -882,6 +934,25 @@ class _SharedWalks:
         sample.deep_commits += int(stats.get("commits", 0))
         self.cursor += self._step
         return True
+
+    def _read_ahead(self, region: int) -> list[str] | None:
+        """Region *region*'s raw records, reading the next regions meanwhile.
+
+        ``None`` without a history total: then the walk reads its one region itself.
+        """
+        if self._read_region is None or self._total is None:
+            return None
+        if self._reader is None:
+            regions = {
+                n: (skip, _deep_cache_name(n))
+                for n, skip in enumerate(range(self.cursor, self._total, self._step), start=region)
+            }
+            self._reader = _RegionReader(self._read_region, regions)
+        return self._reader.take(region)
+
+    def close(self) -> None:
+        if self._reader is not None:
+            self._reader.close()
 
     def reached_root(self) -> bool:
         if self.recent_complete:
@@ -922,6 +993,7 @@ def load_sampled_commit_index(
     trace_index: object | None = None,
     cache_dir: Path | None = None,
     cache_writable: bool = True,
+    on_commits: Callable[[int, int | None], None] | None = None,
 ) -> HistorySample:
     """Resolve the recent, deep, and fallback sampling lanes once.
 
@@ -929,9 +1001,16 @@ def load_sampled_commit_index(
     A recent-window hit never makes a file complete by itself: the deep walk
     tops it up, and a per-file walk remains required when the shared walks
     neither fill the cap nor reach the repository root.
+
+    *on_commits*, when given, hears ``(commits read, history total)`` before
+    the first walk and after each one; the total is ``None`` when git cannot
+    count the history.
     """
     from .git_indexer import RenameTrail
 
+    total_commits = _count_non_merge_commits(repo)
+    report = on_commits or (lambda _done, _total: None)
+    report(0, total_commits)
     # One trail across the recent and deep walks: they partition one
     # newest-first history, so a rename seen in the window applies below it.
     renames = RenameTrail()
@@ -953,6 +1032,7 @@ def load_sampled_commit_index(
         recent_files=set(recent),
         global_commits=int(recent_stats.get("commits", 0)),
     )
+    report(sample.global_commits, total_commits)
     if not recent_stats.get("succeeded"):
         sample.fallback_files = set(indexable_files)
         return sample
@@ -967,18 +1047,27 @@ def load_sampled_commit_index(
             trace_index=trace_index,
             renames=renames,
         ),
-        total_commits=_count_non_merge_commits(repo),
+        total_commits=total_commits,
         recent_commits=sample.global_commits,
         start=per_file_limit,
         step=deep_limit,
         cache_dir=cache_dir,
         cache_writable=cache_writable,
+        read_region=functools.partial(
+            _window_records, repo, deep_limit, cache_dir, cache_writable=cache_writable
+        ),
     )
     underfilled = _underfilled(sample, indexable_files, per_file_limit)
-    while not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more():
-        if not walks.walk_next(sample, per_file_limit, underfilled):
-            break
-        underfilled = _underfilled(sample, indexable_files, per_file_limit)
+    try:
+        while (
+            not walks.recent_complete and len(underfilled) >= deep_threshold and walks.has_more()
+        ):
+            if not walks.walk_next(sample, per_file_limit, underfilled):
+                break
+            report(sample.global_commits + sample.deep_commits, total_commits)
+            underfilled = _underfilled(sample, indexable_files, per_file_limit)
+    finally:
+        walks.close()
 
     sample.history_complete_through_depth = walks.complete_through(
         sample.global_commits + sample.deep_commits

@@ -186,3 +186,40 @@ async def test_index_repo_uses_deep_index_instead_of_per_file_logs(
                 assert got == pytest.approx(want, rel=1e-9), (fp, field)
             else:
                 assert got == want, (fp, field)
+
+
+def test_regions_read_ahead_match_one_at_a_time(tmp_path, monkeypatch) -> None:
+    """Deep regions are read several at once; the sample is what one region at
+    a time gives, and a region that fails to read sends its files to the
+    per-file walk as before."""
+    import git as gitpython
+
+    from repowise.core.ingestion import git_commit_index
+
+    _build_repo(tmp_path, old_files=4, recent_commits=2)
+    repo = gitpython.Repo(tmp_path)
+    files = {f"old_{i}.py" for i in range(4)} | {"recent.py"}
+
+    def sampled():
+        sample = git_commit_index.load_sampled_commit_index(
+            repo, 2, files, deep_limit=2, deep_threshold=1
+        )
+        commits = {p: [c.sha for c in recs] for p, recs in sample.commits.items()}
+        return commits, sample.fallback_files
+
+    ahead = sampled()
+    monkeypatch.setattr(git_commit_index, "_DEEP_READ_AHEAD", 1)
+    assert sampled() == ahead
+    assert not ahead[1]
+
+    real = git_commit_index._window_records
+
+    def fail_below_the_first_region(repo_, depth, cache_dir, *, skip=0, **kwargs):
+        if skip > 2:
+            raise RuntimeError("git failed")
+        return real(repo_, depth, cache_dir, skip=skip, **kwargs)
+
+    monkeypatch.setattr(git_commit_index, "_window_records", fail_below_the_first_region)
+    _commits, fallback = sampled()
+    assert fallback == {"old_0.py", "old_1.py", "old_2.py"}
+    repo.close()
