@@ -61,7 +61,13 @@ log = structlog.get_logger(__name__)
 _CACHE_VERSION = 4
 _CACHE_FILENAME = "centrality_cache.pkl"
 
-__all__ = ["BetweennessScoring", "CentralityCache", "CommunityEntry", "subgraph_signature"]
+__all__ = [
+    "BetweennessScoring",
+    "CentralityCache",
+    "CommunityEntry",
+    "fingerprints",
+    "subgraph_signature",
+]
 
 
 def subgraph_signature(graph) -> str:
@@ -81,6 +87,14 @@ def subgraph_signature(graph) -> str:
         h.update(v.encode("utf-8", "replace"))
         h.update(b"\x00")
     return h.hexdigest()
+
+
+def fingerprints(items) -> frozenset[int]:
+    """64-bit fingerprints of *items* (strings), so drift can be counted by set difference."""
+    return frozenset(
+        int.from_bytes(hashlib.blake2b(item.encode(errors="replace"), digest_size=8).digest(), "big")
+        for item in items
+    )
 
 
 def _edge_fingerprints(graph) -> frozenset[int]:
@@ -114,13 +128,15 @@ class CommunityEntry:
     """One kind's last full community detection, and the input it ran on.
 
     *code* is the partition code's fingerprint; an entry from other code is never
-    reused. *extra* is whatever else the detection returned (the file kind's
-    community info and algorithm name).
+    reused. *nodes* and *edges* fingerprint the input (:func:`fingerprints`).
+    *extra* is whatever else the detection returned (the file kind's community
+    info and algorithm name).
     """
 
     code: str
     signature: str
     assignment: dict[str, int]
+    nodes: frozenset[int]
     edges: frozenset[int]
     scored_commit: str | None
     extra: Any = None
@@ -286,13 +302,21 @@ class CentralityCache:
             self._save_locked()
 
     def lookup_communities(
-        self, kind: str, *, signature: str, code: str, graph=None, max_churn: int = 0
-    ) -> tuple[CommunityEntry, int] | None:
-        """*kind*'s last full detection and how far *graph* has drifted from its input.
+        self,
+        kind: str,
+        *,
+        signature: str,
+        code: str,
+        nodes: frozenset[int] | None = None,
+        edges: frozenset[int] | None = None,
+    ) -> tuple[CommunityEntry, int, int] | None:
+        """*kind*'s last full detection, with how far the input has drifted from it.
 
-        An exact *signature* match is churn 0. Otherwise, given the partition
-        input *graph*, the entry is still served while nodes-plus-edges churn
-        stays within *max_churn*, as betweenness is. ``None`` means recompute.
+        Returns ``(entry, node churn, edge churn)``: ``(entry, 0, 0)`` on an exact
+        *signature* match, the counted drift when the caller passes the input's
+        *nodes* and *edges* fingerprints (:func:`fingerprints`), else ``None``.
+        ``None`` too when there is no entry or it is from other partition code.
+        Judging the drift is the caller's: kinds tolerate different changes.
         """
         with self._lock:
             self._ensure_loaded()
@@ -300,16 +324,10 @@ class CentralityCache:
         if entry is None or entry.code != code:
             return None
         if entry.signature == signature:
-            return entry, 0
-        if graph is None or max_churn <= 0:
+            return entry, 0, 0
+        if nodes is None or edges is None:
             return None
-        nodes = set(graph.nodes())
-        scored = entry.assignment.keys()
-        churn = len(nodes - scored) + len(scored - nodes)
-        churn += len(_edge_fingerprints(graph) ^ entry.edges)
-        if churn > max_churn:
-            return None
-        return entry, churn
+        return entry, len(nodes ^ entry.nodes), len(edges ^ entry.edges)
 
     def put_communities(
         self,
@@ -318,15 +336,15 @@ class CentralityCache:
         signature: str,
         code: str,
         assignment: dict[str, int],
-        graph=None,
+        nodes: frozenset[int] = frozenset(),
+        edges: frozenset[int] = frozenset(),
         scored_commit: str | None,
         extra: Any = None,
     ) -> None:
         """Record a full detection for *kind* and persist atomically."""
-        edges = _edge_fingerprints(graph) if graph is not None else frozenset()
         with self._lock:
             self._ensure_loaded()
             self._communities[kind] = CommunityEntry(
-                code, signature, dict(assignment), edges, scored_commit, extra
+                code, signature, dict(assignment), nodes, edges, scored_commit, extra
             )
             self._save_locked()

@@ -481,13 +481,42 @@ def test_unchanged_graph_reuses_both_partitions(tmp_path, monkeypatch):
     assert gb2.symbol_communities() == symbols
 
 
-def test_file_partition_input_change_detects_again(tmp_path):
+def test_a_new_file_detects_file_communities_again(tmp_path):
     from repowise.core.analysis.communities import detect_file_communities
 
     _build(tmp_path, _FILES).community_detection()
     other = "def other():\n    return 1\n"
     gb = _build(tmp_path, [*_FILES, ("other.py", other)])
     assert gb.community_detection() == detect_file_communities(gb.graph(), repo_name="fake")[0]
+
+
+def _file_builder(cache_dir, edges, head="c0ffee"):
+    gb = GraphBuilder("C:/fake", centrality_cache_dir=cache_dir, head_commit=head)
+    for u, v in edges:
+        for n in (u, v):
+            gb._graph.add_node(n, node_type="file", language="python", is_test=False)
+        gb._graph.add_edge(u, v, edge_type="imports")
+    return gb
+
+
+def test_file_partition_is_kept_within_budget_and_detected_past_it(tmp_path, monkeypatch):
+    from repowise.core.analysis.communities import detect_file_communities
+    from repowise.core.ingestion.graph import _metrics
+
+    chain = [(f"f{i:04d}.py", f"f{i + 1:04d}.py") for i in range(1499)]
+    budget = int((1500 + 1499) * _metrics._CHURN_BUDGET_FRACTION)
+    first = _file_builder(tmp_path, chain)
+    scored, info = first.community_detection(), first.community_info()
+
+    with monkeypatch.context() as m:
+        _forbid_partition(m)
+        near = _file_builder(tmp_path, [*chain, ("f0000.py", "f0700.py")], head="deadbee")
+        assert near.community_detection() == scored
+        assert near.community_info() == info
+
+    rewired = [*chain, *((f"f{i:04d}.py", f"f{i + 700:04d}.py") for i in range(2 * budget))]
+    far = _file_builder(tmp_path, rewired, head="deadbee")
+    assert far.community_detection() == detect_file_communities(far._graph, repo_name="fake")[0]
 
 
 def test_symbol_partition_is_carried_within_budget_and_detected_past_it(tmp_path, monkeypatch):
@@ -527,5 +556,5 @@ def test_a_partition_from_other_code_is_not_reused(tmp_path, monkeypatch):
     gb1.community_detection()
     monkeypatch.setattr(communities, "community_code_fingerprint", lambda: "other")
     cache = CentralityCache(tmp_path)
-    signature = communities.file_community_signature(gb1.graph(), "fake")
+    signature = communities.file_community_input(gb1.graph(), "fake").signature
     assert cache.lookup_communities("file", signature=signature, code="other") is None

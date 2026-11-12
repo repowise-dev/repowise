@@ -332,8 +332,13 @@ class MetricsMixin:
     def community_detection(self) -> dict[str, int]:
         """Assign a community ID to each file node.
 
-        With the disk cache attached, a graph whose partition input is unchanged
-        since the last detection reuses its result, which is the same result.
+        With the disk cache attached, the last full detection is reused while
+        the file set (with each file's test flag and language) is unchanged and
+        its links have drifted no further than the churn budget betweenness
+        uses: an unchanged input gives the same result, a drifted one keeps the
+        earlier partition and its community info. The reference stays pinned to
+        that detection, so drift accumulates and the first update past the
+        budget, or one that adds, removes or reclassifies a file, detects afresh.
         """
         if self._community_cache is not None:
             return self._community_cache
@@ -341,26 +346,39 @@ class MetricsMixin:
         from repowise.core.analysis.communities import (
             community_code_fingerprint,
             detect_file_communities,
-            file_community_signature,
+            file_community_input,
         )
 
         try:
             repo_path = getattr(self, "_repo_path", None)
             repo_name = repo_path.name if repo_path else None
             cache = getattr(self, "_centrality_cache", None)
-            signature: str | None = None
+            inp = None
             if cache is not None:
                 try:
-                    signature = file_community_signature(self._graph, repo_name)
+                    inp = file_community_input(self._graph, repo_name)
                     hit = cache.lookup_communities(
-                        "file", signature=signature, code=community_code_fingerprint()
+                        "file",
+                        signature=inp.signature,
+                        code=community_code_fingerprint(),
+                        nodes=inp.nodes,
+                        edges=inp.edges,
                     )
                 except Exception as exc:
                     log.debug("community_cache_lookup_failed", kind="file", error=str(exc))
-                    signature, hit = None, None
-                if hit is not None:
-                    entry, _ = hit
-                    log.info("communities_reused_from_cache", kind="file", churn=0)
+                    inp, hit = None, None
+                if (
+                    hit is not None
+                    and hit[1] == 0
+                    and hit[2] <= self._churn_budget_for(len(inp.nodes), len(inp.edges))
+                ):
+                    entry, _, churn = hit
+                    log.info(
+                        "communities_reused_from_cache",
+                        kind="file",
+                        churn=churn,
+                        scored_commit=entry.scored_commit,
+                    )
                     self._community_cache = dict(entry.assignment)
                     self._community_info_cache, self._community_algo = entry.extra
                     return self._community_cache
@@ -368,13 +386,15 @@ class MetricsMixin:
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
-            if cache is not None and signature is not None:
+            if cache is not None and inp is not None:
                 try:
                     cache.put_communities(
                         "file",
-                        signature=signature,
+                        signature=inp.signature,
                         code=community_code_fingerprint(),
                         assignment=assignment,
+                        nodes=inp.nodes,
+                        edges=inp.edges,
                         scored_commit=self._head_commit,
                         extra=(info, algo),
                     )
@@ -414,21 +434,26 @@ class MetricsMixin:
             undirected = symbol_community_graph(self._graph)
             cache = getattr(self, "_centrality_cache", None)
             signature: str | None = None
+            nodes = edges = frozenset()
             if cache is not None:
                 try:
+                    from ._centrality_cache import fingerprints
+
                     signature = cache.signature("symbol_communities", undirected)
+                    nodes = fingerprints(undirected.nodes())
+                    edges = fingerprints(f"{u}\0{v}" for u, v in undirected.edges())
                     hit = cache.lookup_communities(
                         "symbol",
                         signature=signature,
                         code=community_code_fingerprint(),
-                        graph=undirected,
-                        max_churn=self._churn_budget(undirected),
+                        nodes=nodes,
+                        edges=edges,
                     )
                 except Exception as exc:
                     log.debug("community_cache_lookup_failed", kind="symbol", error=str(exc))
                     signature, hit = None, None
-                if hit is not None:
-                    entry, churn = hit
+                if hit is not None and hit[1] + hit[2] <= self._churn_budget(undirected):
+                    entry, churn = hit[0], hit[1] + hit[2]
                     log.info(
                         "communities_reused_from_cache",
                         kind="symbol",
@@ -449,7 +474,8 @@ class MetricsMixin:
                         signature=signature,
                         code=community_code_fingerprint(),
                         assignment=self._symbol_community_cache,
-                        graph=undirected,
+                        nodes=nodes,
+                        edges=edges,
                         scored_commit=self._head_commit,
                     )
                 except Exception as exc:
@@ -541,7 +567,11 @@ class MetricsMixin:
         because the same absolute delta perturbs a large ranking far less than
         a small one.
         """
-        n, e = g.number_of_nodes(), g.number_of_edges()
+        return self._churn_budget_for(g.number_of_nodes(), g.number_of_edges())
+
+    @staticmethod
+    def _churn_budget_for(n: int, e: int) -> int:
+        """:meth:`_churn_budget` of a graph with *n* nodes and *e* edges."""
         if n * e < _CHURN_BUDGET_MIN_COST:
             return 0
         return int((n + e) * _CHURN_BUDGET_FRACTION)

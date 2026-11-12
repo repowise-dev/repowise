@@ -563,31 +563,47 @@ def community_code_fingerprint() -> str:
     return digest.hexdigest()
 
 
-def file_community_signature(graph: nx.DiGraph, repo_name: str | None = None) -> str:
-    """Hash of everything :func:`detect_file_communities` reads from *graph*.
+@dataclass(frozen=True)
+class FileCommunityInput:
+    """What :func:`detect_file_communities` reads from a graph, hashed and fingerprinted.
 
-    Every file node with its test/example flag and language, and every
-    non-temporal edge between two file nodes with its type: equal hashes mean
-    an equal result, so a stored one can stand in for a run.
+    *signature* changes with any of it, so equal signatures mean an equal
+    result. *nodes* and *edges* fingerprint it item by item (each file node
+    with its test/example flag and language; each non-temporal edge between
+    two file nodes with its type), so a cache can count how far it drifted.
     """
+
+    signature: str
+    nodes: frozenset[int]
+    edges: frozenset[int]
+
+
+def file_community_input(graph: nx.DiGraph, repo_name: str | None = None) -> FileCommunityInput:
+    """:class:`FileCommunityInput` of *graph*."""
+    from repowise.core.ingestion.graph._centrality_cache import fingerprints
+
     file_nodes = sorted(
         n for n, d in graph.nodes(data=True)
         if d.get("node_type", "file") == "file" and not is_external(n)
     )
     file_set = frozenset(file_nodes)
-    digest = hashlib.sha256(f"{repo_name}\0{community_code_fingerprint()}".encode())
-    for n in file_nodes:
-        d = graph.nodes[n]
-        non_core = _is_test_node(n, d) or _is_example_node(n, d)
-        digest.update(f"\1{n}\0{non_core}\0{d.get('language')}".encode("utf-8", "replace"))
-    edges = sorted(
-        (u, v, str(d.get("edge_type", "\0absent")))
+    node_items = [
+        f"{n}\0{_is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])}"
+        f"\0{graph.nodes[n].get('language')}"
+        for n in file_nodes
+    ]
+    edge_items = sorted(
+        f"{u}\0{v}\0{d.get('edge_type', '<absent>')}"
         for u, v, d in graph.edges(data=True)
         if u in file_set and v in file_set and d.get("edge_type") not in TEMPORAL_EDGE_TYPES
     )
-    for u, v, kind in edges:
-        digest.update(f"\2{u}\0{v}\0{kind}".encode("utf-8", "replace"))
-    return digest.hexdigest()
+    digest = hashlib.sha256(f"{repo_name}\0{community_code_fingerprint()}".encode())
+    for item in (*node_items, "\1", *edge_items):
+        digest.update(item.encode("utf-8", "replace"))
+        digest.update(b"\n")
+    return FileCommunityInput(
+        digest.hexdigest(), fingerprints(node_items), fingerprints(edge_items)
+    )
 
 
 def detect_file_communities(
