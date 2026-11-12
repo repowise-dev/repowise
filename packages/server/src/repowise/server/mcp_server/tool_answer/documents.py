@@ -138,7 +138,8 @@ def _lines(root: Path, path: str, terms: list[str]) -> list[dict]:
         body = ((n, line) for n, line in enumerate(text[end:], end + 1) if line.strip())
         for n, line in itertools.islice(body, _DOC_LINES_MAX):
             rows[n] = _line_row(path, n, line, "match")
-        terms = [t for t in terms if t not in own]
+        if rows:  # a ticket with no body still serves the lines naming its key
+            terms = [t for t in terms if t not in own]
     for term in terms:
         for row in scan_literal(root, [path], term, True)[0]:
             rows.setdefault(row["line"], row)

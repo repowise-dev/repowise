@@ -252,6 +252,14 @@ async def test_a_ticket_asked_about_by_key_serves_its_opening_not_its_key_lines(
     assert by_path["confluence/guide.md"] == "5: Tracked in PROJ-12."
 
 
+async def test_a_ticket_with_no_body_still_serves_its_key_lines(tmp_path):
+    root = _repo(tmp_path / "r", {"jira/PROJ-12.md": '---\nkey: "PROJ-12"\n---\n\n'})
+
+    docs = await _find(root, "what is PROJ-12")
+
+    assert [h["excerpt"] for h in docs.hits] == ['2: key: "PROJ-12"']
+
+
 async def test_an_ordinary_word_in_code_still_names_no_document(tmp_path):
     root = _repo(tmp_path / "r", {"deploy.py": "# quokkaballast\n", "a.md": "quokkaballast\n"})
 
