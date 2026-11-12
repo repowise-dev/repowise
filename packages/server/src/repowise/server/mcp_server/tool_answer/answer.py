@@ -577,9 +577,15 @@ async def _user_prompt(ask: _Ask, hits: list[dict], graph_callers) -> str:
     """The synthesis prompt; decisions (why questions) and prelude drop out when empty."""
     top_paths = [h["target_path"] for h in hits if h.get("target_path")]
     decisions: list[dict] = []
-    if _is_why_question(ask.question) and top_paths:
+    if _is_why_question(ask.question):
         with contextlib.suppress(Exception):
-            decisions = await _fetch_relevant_decisions(ask.ctx, ask.repo_id, top_paths)
+            decisions = await _fetch_relevant_decisions(
+                ask.ctx,
+                ask.repo_id,
+                top_paths,
+                question=ask.question,
+                exclude_spec=ask.exclude_spec,
+            )
     prelude = ""
     with contextlib.suppress(Exception):
         prelude = await _build_structured_prelude(hits, decisions, ask.ctx, ask.repo_id)
@@ -655,6 +661,15 @@ async def _graded_payload(
         exclude_spec=ask.exclude_spec,
     )
     return payload, grade.confidence, citations
+
+
+def _with_scan_gaps(payload: dict, homonyms: dict) -> dict:
+    """Add the lines a live scan found in files the index left out, and the
+    files it never read; neither key appears when there is nothing to say."""
+    for key in ("unindexed_lines", "not_searched"):
+        if homonyms.get(key):
+            payload[key] = homonyms[key]
+    return payload
 
 
 async def _cache_and_stamp(
@@ -798,13 +813,17 @@ async def get_answer(
     # Above the early returns: they rate retrieval too.
     agreement_dominant = _agreement(hits)
 
-    # Every return from here on goes through ``_with_candidates`` (or the
+    def _finish(payload: dict) -> dict:
+        _with_scan_gaps(payload, retrieved.homonyms)
+        return _with_candidates(payload, resolved_pool)
+
+    # Every return from here on goes through ``_finish`` (or the
     # degraded path, which does) so the ranked pool is never dropped.
     early = await _pre_synthesis_reply(
         ask, retrieved, agreement_dominant, graph_callers, _neighbors
     )
     if early is not None:
-        return _with_candidates(early, resolved_pool)
+        return _finish(early)
 
     fallback_targets = _fallback_targets(hits)
     await _attach_excerpts(hits, ctx)
@@ -814,7 +833,7 @@ async def get_answer(
         ask, retrieved, dominance, fallback_targets, graph_callers, _neighbors
     )
     if gated is not None:
-        return _with_candidates(gated, resolved_pool)
+        return _finish(gated)
 
     # Both ways synthesis can go missing share one payload; they differ only in
     # the reason and the note.
@@ -838,7 +857,7 @@ async def get_answer(
         degraded_legs = _degraded_legs(_retrieval_legs())
         if degraded_legs:
             payload.setdefault("_meta", {})["retrieval_degraded"] = degraded_legs
-        return _with_candidates(payload, resolved_pool)
+        return _finish(payload)
 
     provider = _resolve_provider_for_answer(getattr(ctx, "path", None))
     if provider is None:
@@ -874,7 +893,7 @@ async def get_answer(
     if retrieved.flow_paths:
         payload["flow_path"] = [" -> ".join(p) for p in retrieved.flow_paths[:2]]
     # Navigation, not evidence: it survives the shrinking of ``retrieval``.
-    _with_candidates(payload, resolved_pool)
+    _finish(payload)
     await _cache_and_stamp(
         payload,
         ask,

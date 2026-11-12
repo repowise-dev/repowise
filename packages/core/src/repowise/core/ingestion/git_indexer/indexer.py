@@ -24,14 +24,15 @@ import structlog
 
 from repowise.core.analysis.changed_lines import shallow_roots
 from repowise.core.forges import detect_forge
+from repowise.core.settings.model import flag
 
 from ._constants import (
     _DEEP_WALK_COMMIT_LIMIT,
     _DEEP_WALK_MIN_FALLBACK,
     _DEFAULT_CO_CHANGE_COMMIT_LIMIT,
-    _DEFAULT_COMMIT_LIMIT,
     _FILE_INDEX_TIMEOUT_SECS,
     _MAX_PARTNERS_PER_FILE,
+    clamp_commit_limit,
 )
 from ._full_index import (
     CommitSample,
@@ -261,8 +262,11 @@ class GitIndexer:
         read_only: bool = False,
     ) -> None:
         self.repo_path = Path(repo_path)
-        self.commit_limit = commit_limit or _DEFAULT_COMMIT_LIMIT
-        self.follow_renames = follow_renames
+        # Normalised here, the one place every caller's config value meets
+        # git: a quoted "false" or a limit above the maximum reads the same on
+        # update as it did at init.
+        self.commit_limit = clamp_commit_limit(commit_limit)
+        self.follow_renames = flag(follow_renames, False)
         self.tier = tier
         # Off by default, and a constructor parameter rather than a call site.
         # `health` and `dead-code` build an indexer of their own to read
@@ -680,8 +684,9 @@ class GitIndexer:
         history_files, history_changed = scope.history_files, scope.history_changed
 
         refresh_idle = self._wants_idle_refresh(idle_decay_sink, all_files)
+        # A changed file the walk leaves out would index with no commits.
         target_files = (
-            set(all_files) | history_files
+            set(all_files) | set(changed_file_paths) | history_files
             if refresh_idle
             else set(changed_file_paths) | history_changed
         )
@@ -864,6 +869,8 @@ class GitIndexer:
         file. Non-code files get the history tier the full index gives them,
         drawn from the same tracked-file set (the parsed files miss .rst,
         LICENSE and the like), and the co-change walk reads that set too.
+        Code files come from that set as well: the caller's parsed files leave
+        out tracked code a full index covers (``fixtures/`` dirs, size limits).
         """
         # Callers hand over paths relative to the indexed directory; git and the
         # rows this indexer writes are keyed relative to the repository root.
@@ -881,8 +888,8 @@ class GitIndexer:
         history_changed = history_files.intersection(changed_file_paths)
         changed = [fp for fp in changed_file_paths if not _should_skip_index(fp)]
         co_change_files = set(tier_paths) if tier_paths else None
-        if all_files:
-            all_files = {fp for fp in all_files if not _should_skip_index(fp)}
+        if tier_paths:
+            all_files = {fp for fp in tier_paths if not _should_skip_index(fp)}
         return _ChangedScope(changed, all_files, history_files, history_changed, co_change_files)
 
     def _index_one_file(

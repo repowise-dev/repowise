@@ -577,3 +577,30 @@ def test_mcp_cli_streamable_http_prints_no_deprecation_notice(
 
     assert result.exit_code == 0
     assert "deprecated" not in result.output
+
+
+def test_workspace_summary_matches_server_detection_for_sibling_and_member(
+    tmp_path: Path,
+) -> None:
+    from repowise.cli.commands.mcp_cmd import _workspace_summary
+
+    member = tmp_path / "apps" / "b"
+    sibling = tmp_path / "tools" / "c"
+    (tmp_path / "apps" / "a").mkdir(parents=True)
+    member.mkdir()
+    (sibling / ".repowise").mkdir(parents=True)
+    (sibling / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    WorkspaceConfig(
+        repos=[
+            RepoEntry(path="apps/a", alias="a", is_primary=True),
+            RepoEntry(path="apps/b", alias="b"),
+        ],
+        default_repo="a",
+    ).save(tmp_path)
+
+    # The server serves an indexed non-member single-repo; the banner must not
+    # name the primary as its default repo.
+    assert _workspace_summary(sibling) is None
+    summary = _workspace_summary(member)
+    assert summary is not None
+    assert summary["default_repo"] == "b"

@@ -136,8 +136,10 @@ def _uses_lean_tool_surface(repo_path: Path) -> bool:
 
 
 def _claude_md_enabled(repo_path: Path) -> bool:
-    cfg = load_config(repo_path)
-    return bool(cfg.get("editor_files", {}).get("claude_md", True))
+    from repowise.core.settings.model import flag
+
+    editor_files = load_config(repo_path).get("editor_files")
+    return flag(editor_files.get("claude_md") if isinstance(editor_files, dict) else None, True)
 
 
 def maybe_generate_claude_md(
@@ -155,22 +157,18 @@ def maybe_generate_claude_md(
     is now in their tree.
     """
 
-    cfg = load_config(repo_path)
     if no_claude_md:
         # Persist opt-out so 'repowise update' respects it.
-        ef_cfg = dict(cfg.get("editor_files", {}))
-        ef_cfg["claude_md"] = False
-        cfg["editor_files"] = ef_cfg
-        try:
-            import yaml  # type: ignore[import-untyped]
+        import click
 
-            cfg_path = repo_path / ".repowise" / "config.yaml"
-            cfg_path.write_text(
-                yaml.dump(cfg, default_flow_style=False, sort_keys=False),
-                encoding="utf-8",
-            )
-        except ImportError:
-            pass
+        from repowise.cli.editor_files import set_editor_file_enabled
+
+        try:
+            set_editor_file_enabled(repo_path, "claude_md", False)
+        except click.ClickException as exc:
+            # Late in init: the index is built, so say the opt-out was not
+            # recorded rather than fail the run over it.
+            console_obj.print(f"[yellow]{exc.format_message()}[/yellow]")
         return None
     if not _claude_md_enabled(repo_path):
         return None

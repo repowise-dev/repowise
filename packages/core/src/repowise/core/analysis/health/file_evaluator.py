@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.settings.model import flag
+
 from ...ingestion.git_indexer.function_blame import BlameIndex
 from ...ingestion.package_roots import module_for as _module_for
 from ..execution_graph import file_of_symbol
@@ -188,7 +190,7 @@ class _RunConfig:
             severity_overrides=cfg.get("severity_overrides", {}) or {},
             per_file_severity_overrides=cfg.get("per_file_severity_overrides", {}) or {},
             disabled_refactorings=list(cfg.get("disabled_refactorings", ())),
-            refactoring_enabled=bool(cfg.get("refactoring_enabled", True)),
+            refactoring_enabled=flag(cfg.get("refactoring_enabled"), True),
             refactoring_min_confidence=cfg.get("refactoring_min_confidence"),
         )
 
@@ -360,8 +362,8 @@ class FileEvaluator:
         biomarker_results = remap_severities(
             biomarker_results, self.run.file_severity_overrides(file_path)
         )
-        scores, deductions = score_file(biomarker_results)
-        findings = attach_impacts(biomarker_results, deductions)
+        scores, deductions = score_file(biomarker_results, ctx.language)
+        findings = attach_impacts(biomarker_results, deductions, ctx.language)
         for f in findings:
             f.file_path = file_path
         _mark_function_facts(findings, fcx.functions)

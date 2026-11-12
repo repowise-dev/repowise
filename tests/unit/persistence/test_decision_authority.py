@@ -18,6 +18,7 @@ from repowise.core.analysis.decisions.lifecycle import NO_DECISION_BLOCKER
 from repowise.core.persistence.crud import bulk_upsert_decisions, update_decision_status
 from repowise.core.persistence.crud.authority import (
     AcceptanceRefusedError,
+    AmbiguousDecisionIdError,
     accept_decision,
     accepted_decision_ids,
     accepted_predicate,
@@ -32,6 +33,7 @@ from repowise.core.persistence.crud.authority import (
     record_blockers,
     request_split,
     resolve_decision_id,
+    resolve_decision_id_prefix,
     return_to_review,
     supersede_decision,
 )
@@ -578,3 +580,83 @@ async def test_a_superseded_candidate_is_not_open_for_review(async_session):
     assert open_ids == {live.id}
     assert (lanes["candidates"], lanes["total"]) == (1, 1)
     assert [r.id for r in page] == [live.id]
+
+
+async def test_resolve_decision_id_prefix_resolution_and_disambiguation(async_session):
+    from repowise.core.persistence.models import DecisionAlias
+
+    repo = await insert_repo(async_session)
+    dec1, dec2 = await _seed(async_session, repo.id, "First decision", "Second decision")
+    # dec1.id and dec2.id share prefix if forged, so let's set known deterministic IDs
+    dec1.id = "aaaaaaaa111111111111111111111111"
+    dec2.id = "aaaaaaaa222222222222222222222222"
+    dec3 = DecisionRecord(
+        id="bbbbbbbb333333333333333333333333",
+        repository_id=repo.id,
+        title="Third decision",
+        status="proposed",
+        context="ctx",
+        decision="dec",
+        rationale="why",
+        affected_files_json="[]",
+    )
+    async_session.add(dec3)
+
+    # Alias rows: one merged, one superseded
+    async_session.add(
+        DecisionAlias(
+            alias_id="cccccccc444444444444444444444444",
+            repository_id=repo.id,
+            decision_id=dec3.id,
+            reason="merged",
+        )
+    )
+    async_session.add(
+        DecisionAlias(
+            alias_id="dddddddd555555555555555555555555",
+            repository_id=repo.id,
+            decision_id=dec3.id,
+            reason="superseded",
+        )
+    )
+    await async_session.commit()
+
+    # 1. Unambiguous record prefix
+    assert await resolve_decision_id_prefix(async_session, "bbbbbbbb") == dec3.id
+
+    # 2. Ambiguous record prefix raises AmbiguousDecisionIdError with candidates
+    with pytest.raises(AmbiguousDecisionIdError) as exc_info:
+        await resolve_decision_id_prefix(async_session, "aaaaaaaa")
+    assert exc_info.value.candidates == [dec1.id, dec2.id]
+    assert "ambiguous; use more characters" in str(exc_info.value)
+
+    # 3. Merged alias prefix resolves to target decision
+    assert await resolve_decision_id_prefix(async_session, "cccccccc") == dec3.id
+
+    # 4. Superseded alias prefix is excluded and returns None
+    assert await resolve_decision_id_prefix(async_session, "dddddddd") is None
+
+    # 5. Non-matching prefix returns None
+    assert await resolve_decision_id_prefix(async_session, "ffffffff") is None
+
+    # 6. Empty prefix returns None
+    assert await resolve_decision_id_prefix(async_session, "") is None
+
+    # 7. Prefix shorter than min_length returns None
+    assert await resolve_decision_id_prefix(async_session, "bbbb", min_length=8) is None
+
+
+async def test_two_aliases_of_one_decision_sharing_a_prefix_are_not_ambiguous(async_session):
+    from repowise.core.persistence.models import DecisionAlias
+
+    repo = await insert_repo(async_session)
+    (rec,) = await _seed(async_session, repo.id, "Merged twice")
+    for alias_id in ("eeeeeeee111111111111111111111111", "eeeeeeee222222222222222222222222"):
+        async_session.add(
+            DecisionAlias(
+                alias_id=alias_id, repository_id=repo.id, decision_id=rec.id, reason="merged"
+            )
+        )
+    await async_session.commit()
+
+    assert await resolve_decision_id_prefix(async_session, "eeeeeeee") == rec.id

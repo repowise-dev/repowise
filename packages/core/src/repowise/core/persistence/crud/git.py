@@ -24,6 +24,7 @@ from ..models import (
     GitCommitFile,
     GitCommitHealthDelta,
     GitCommitHealthFinding,
+    GitCommitHealthScan,
     GitFunctionBlame,
     GitMetadata,
     Repository,
@@ -399,6 +400,10 @@ async def recompute_git_percentiles(
     if not rows:
         return 0
 
+    # Ties rank by path in code-point order, as the Python ranker sorts them;
+    # a Postgres locale collation would order the same paths differently.
+    bind = session.get_bind()
+    path_order = 'file_path COLLATE "C"' if bind.dialect.name == "postgresql" else "file_path"
     sql = """
 WITH ranked AS (
   SELECT id,
@@ -411,7 +416,7 @@ WITH ranked AS (
 ),
 entropy_ranked AS (
   SELECT id,
-    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0)) - 1) * 1.0
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(change_entropy, 0.0), {path_order}) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
          WHERE repository_id = :repo_id AND NOT history_only
            AND COALESCE(change_entropy, 0.0) > 0.0) AS erank
@@ -420,7 +425,7 @@ entropy_ranked AS (
 ),
 scatter_ranked AS (
   SELECT id,
-    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0)) - 1) * 1.0
+    (ROW_NUMBER() OVER (ORDER BY COALESCE(co_change_mass, 0.0), {path_order}) - 1) * 1.0
       / (SELECT COUNT(*) FROM git_metadata
          WHERE repository_id = :repo_id AND NOT history_only
            AND COALESCE(co_change_mass, 0.0) > 0.0) AS crank
@@ -451,7 +456,7 @@ SET churn_percentile = COALESCE(
 WHERE repository_id = :repo_id;
 """
     await session.execute(
-        text(sql),
+        text(sql.format(path_order=path_order)),
         {
             "repo_id": repository_id,
             "min_commits_90d": HOTSPOT_MIN_COMMITS_90D,
@@ -555,6 +560,7 @@ async def delete_git_commit_files_by_sha(
 
 _update_git_commit_health_delta = _row_updater("sha")
 _update_git_commit_health_finding = _row_updater("sha", "change_finding_id")
+_update_git_commit_health_scan = _row_updater("sha")
 
 
 async def upsert_commit_health_bulk(
@@ -562,16 +568,34 @@ async def upsert_commit_health_bulk(
     repository_id: str,
     delta_rows: list[dict],
     finding_rows: list[dict],
+    mark_rows: Sequence[dict] = (),
 ) -> None:
     """Store a scan's rows, replacing the findings of every commit it covers.
 
     The findings are deleted first rather than upserted in place: a rescan can
     return fewer findings than the row it replaces, and a plain upsert would
     leave the surplus behind as findings no commit ever produced.
+
+    *mark_rows* are the commits the scan reached that store no delta row
+    (:class:`GitCommitHealthScan`). A commit that does store one drops its
+    marker, so a deferred commit stops reading as deferred once scanned.
     """
     shas = [row["sha"] for row in delta_rows if row.get("sha")]
     if shas:
         await delete_commit_health_findings_by_sha(session, repository_id, shas)
+        await _delete_commit_health_marks(session, repository_id, shas)
+    if mark_rows:
+        await _batch_upsert_keyed(
+            session,
+            GitCommitHealthScan,
+            mark_rows,
+            prefilter=(GitCommitHealthScan.repository_id == repository_id,),
+            item_key_fn=lambda row: row.get("sha", ""),
+            row_key_fn=lambda row: row.sha,
+            update_fn=_update_git_commit_health_scan,
+            insert_fn=_row_inserter(GitCommitHealthScan, repository_id),
+            batch_size=_BATCH_SIZE,
+        )
     await _batch_upsert_keyed(
         session,
         GitCommitHealthDelta,
@@ -648,9 +672,41 @@ async def get_scanned_commit_shas(
     return {sha for (sha,) in rows}
 
 
+async def get_commit_health_marks(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    analyzer_version: int,
+    rules_fingerprint: str,
+    performance_model_version: int,
+) -> dict[str, str]:
+    """``{sha: outcome}`` for the commits *this* analyzer reached and stored nothing for."""
+    rows = await session.execute(
+        select(GitCommitHealthScan.sha, GitCommitHealthScan.outcome).where(
+            GitCommitHealthScan.repository_id == repository_id,
+            GitCommitHealthScan.analyzer_version == analyzer_version,
+            GitCommitHealthScan.rules_fingerprint == rules_fingerprint,
+            GitCommitHealthScan.performance_model_version == performance_model_version,
+        )
+    )
+    return {sha: outcome for sha, outcome in rows}
+
+
+async def _delete_commit_health_marks(
+    session: AsyncSession, repository_id: str, shas: Sequence[str]
+) -> int:
+    return await _batch_delete_in(
+        session,
+        GitCommitHealthScan,
+        GitCommitHealthScan.sha,
+        shas,
+        prefilter=(GitCommitHealthScan.repository_id == repository_id,),
+    )
+
+
 async def delete_commit_health(session: AsyncSession, repository_id: str) -> None:
-    """Remove every stored delta and finding (before a clean reindex)."""
-    for model in (GitCommitHealthFinding, GitCommitHealthDelta):
+    """Remove every stored delta, finding and marker (before a clean reindex)."""
+    for model in (GitCommitHealthFinding, GitCommitHealthDelta, GitCommitHealthScan):
         await session.execute(delete(model).where(model.repository_id == repository_id))
     await session.flush()
 
@@ -671,8 +727,9 @@ async def delete_commit_health_findings_by_sha(
 async def delete_commit_health_by_sha(
     session: AsyncSession, repository_id: str, shas: Sequence[str]
 ) -> int:
-    """Drop both rows for specific commits, so they leave with their commit."""
+    """Drop every row for specific commits, so they leave with their commit."""
     await delete_commit_health_findings_by_sha(session, repository_id, shas)
+    await _delete_commit_health_marks(session, repository_id, shas)
     return await _batch_delete_in(
         session,
         GitCommitHealthDelta,
@@ -929,6 +986,38 @@ async def upsert_git_function_blame_bulk(
         insert_fn=_row_inserter(GitFunctionBlame, repository_id),
         batch_size=_BATCH_SIZE,
     )
+
+
+async def replace_git_function_blame_for_files(
+    session: AsyncSession,
+    repository_id: str,
+    rows: list[dict],
+) -> None:
+    """Upsert *rows*, then drop the other stored rows of the files they cover.
+
+    Rows key on the function's symbol id, so a re-blamed file whose function
+    moved or vanished kept the old id's row beside the new one, and every
+    repo-wide rollup over the table (``function_mod_p80``) counted it.
+    """
+    keep = {row.get("symbol_id", "") for row in rows}
+    paths = sorted({row.get("file_path", "") for row in rows} - {""})
+    stale: list[str] = []
+    for start in range(0, len(paths), _BATCH_SIZE):
+        stored = await session.execute(
+            select(GitFunctionBlame.id, GitFunctionBlame.symbol_id).where(
+                GitFunctionBlame.repository_id == repository_id,
+                GitFunctionBlame.file_path.in_(paths[start : start + _BATCH_SIZE]),
+            )
+        )
+        stale.extend(row_id for row_id, symbol_id in stored if symbol_id not in keep)
+    await _batch_delete_in(
+        session,
+        GitFunctionBlame,
+        GitFunctionBlame.id,
+        stale,
+        prefilter=(GitFunctionBlame.repository_id == repository_id,),
+    )
+    await upsert_git_function_blame_bulk(session, repository_id, rows)
 
 
 async def delete_git_function_blame(session: AsyncSession, repository_id: str) -> None:

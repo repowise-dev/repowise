@@ -100,7 +100,9 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     # rspec: `spec/` is RSpec for ruby and a specification folder otherwise
     ("spec/models/user_spec.rb", None, "test"),  # #1103: one of nine said test
     ("spec/models/user.rb", "ruby", "test"),
-    ("spec/models/user.rb", None, ""),
+    # ...and a path-only caller reads the language off the extension
+    ("spec/models/user.rb", None, "test"),
+    ("spec/models/user.py", None, ""),
     ("spec/openapi/users.yaml", None, ""),
     ("spec/support/helper.rb", None, "support"),
     # perl-style t/: `t/` is a test tree for python whatever the filename
@@ -112,9 +114,14 @@ _CORPUS: tuple[tuple[str, str | None, str], ...] = (
     ("t/integration/tasks.py", "python", "test"),
     ("t/smoke/tasks.py", "python", "test"),
     ("t/unit/contrib/proj/foo/tasks.py", "python", "test"),
-    # ...so without the language, only a corroborating filename counts
+    # ...without a language the extension names it (path-only callers such
+    # as ``path_origin`` agree with ingestion: celery's smoke-test workers)
     ("t/unit/app/test_app.py", None, "test"),
-    ("t/unit/tasks/task_config.py", None, ""),
+    ("t/unit/tasks/task_config.py", None, "test"),
+    ("t/smoke/workers/dev.py", None, "test"),
+    # ...and for another language only a corroborating filename counts
+    ("t/basic.pl", None, ""),
+    ("t/unit/helper.go", None, ""),
     # ...a non-source file under t/ stays as it is without corroboration
     ("t/data/expected.json", None, ""),
     ("t/assets/image.png", None, ""),

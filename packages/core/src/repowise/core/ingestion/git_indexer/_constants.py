@@ -53,6 +53,34 @@ _MIN_MESSAGE_LEN = 12
 # stored as commit rows. Every default ``commit_limit`` reads this one value.
 _DEFAULT_COMMIT_LIMIT: int = 5000
 
+#: The deepest window ``commit_limit`` may ask for; a larger value reads as this.
+MAX_COMMIT_LIMIT: int = 10000
+
+
+def parse_commit_limit(raw: object) -> int:
+    """A configured ``commit_limit`` as the window it gives, or ``ValueError``.
+
+    Above :data:`MAX_COMMIT_LIMIT` reads as the maximum, as ``init`` has always
+    clamped it; anything but a positive whole number is not a limit.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("must be a whole number")
+    if raw < 1:
+        raise ValueError("must be at least 1")
+    return min(raw, MAX_COMMIT_LIMIT)
+
+
+def clamp_commit_limit(raw: object) -> int:
+    """:func:`parse_commit_limit`, with the default for unset or unusable values.
+
+    Every reader of ``commit_limit`` goes through this, so ``update`` walks the
+    same window ``init`` did for the same config.
+    """
+    try:
+        return parse_commit_limit(raw)
+    except ValueError:
+        return _DEFAULT_COMMIT_LIMIT
+
 # Depth of the second, deeper repo-wide log walk that serves files absent
 # from the recent-window commit index. On repos whose history is much
 # deeper than _DEFAULT_COMMIT_LIMIT, most tracked files miss the window

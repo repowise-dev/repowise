@@ -53,10 +53,11 @@ Fix first:
 {% endfor %}
 {% endif %}
 {% endif %}
-{% if 'decisions' in s and data.decisions %}
+{% if 'decisions' in s and (data.decisions_in_force or data.decisions) %}
 
-### Standing decisions (ask `get_why` before diverging)
-{% for d in data.decisions[:3] %}
+### Decisions
+Recorded decisions govern some files: `get_why(targets=["<file>"])` before changing how one works.
+{% for d in data.decisions %}
 - {{ d.title }}{{ d.signed_by }}
 {% endfor %}
 {% endif %}
@@ -72,7 +73,9 @@ Fix first:
 - **Pre-edit, not instead-of-edit.** These tools decide *which* files to read and edit. {{ read_note }}
 {{ checks }}
 - **Noisy commands** (tests, builds, `git log`/`diff`, searches, listings): prefer `repowise distill <cmd>`, the same command with its exit code preserved and errors-first output. A `[repowise#<ref>: N lines omitted]` marker is recoverable via `repowise expand <ref>` (add `-q <regex>` to filter); never re-run the command to see omitted output.
-- **Recording a decision** you had to reason out: `repowise decision add --agent <your slug> --title T --decision D --rationale '<why, what you rejected>' --affects <path> --evidence-commit <sha>` records it without prompting and prints the id (`--format json` to parse it back); the slug names you, e.g. `claude_code`. It lands as a candidate for review and never governs until accepted. You may review and accept candidates: `repowise decision candidates` lists what each still needs, `repowise decision confirm <id> --agent <your slug>` accepts one (add `--reason`, `--scope`, `--evidence` or `--decision` for a missing part), and `dismiss`, `merge` and `deprecate` take `--agent` too. Acceptances are signed as yours; a repository with agent acceptance off refuses them.
+{% if data.record_decisions %}
+- **Recording a decision** you had to reason out: `repowise decision add --agent <your slug> --decision D --rationale '<why, what you rejected>' --affects <path> --evidence-commit <sha>` records it without prompting and prints the id (`--format json` to parse it back); the slug names you, e.g. `claude_code`. It comes into force when that commit merges to the default branch. Records mined from history are background: `get_why` serves them when asked. To put one in force yourself, `repowise decision confirm <id> --agent <your slug>` (add `--reason`, `--scope`, `--evidence` or `--decision` for a missing part); `dismiss`, `merge` and `deprecate` take `--agent` too. These are signed as yours; a repository with agent acceptance off refuses them.
+{% endif %}
 {% elif 'how_to_work' in s %}
 
 ### How to work in this repo
@@ -83,7 +86,9 @@ Fix first:
 - No model on this index: `get_answer` is low confidence by design, so open its top `candidate_files`; search is full-text only. A model needs a provider key and `{{ data.model_command }}`; suggest it, do not run it.
 {% endif %}
 - Noisy commands (tests, builds, `git log`/`diff`): `repowise distill <cmd>`. A `[repowise#<ref>: N lines omitted]` marker is restored by `repowise expand <ref>`; never re-run the command.
-- Record a decision you reasoned out: `repowise decision add --agent <your slug> --title T --decision D --rationale '<why>' --affects <path> --evidence-commit <sha>`; accept a candidate with `repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`.
+{% if data.record_decisions %}
+- Record a decision you reasoned out: `repowise decision add --agent <your slug> --decision D --rationale '<why>' --affects <path> --evidence-commit <sha>`; it comes into force when that commit merges. Mined records are background `get_why` serves when asked.
+{% endif %}
 {% endif %}
 {% if 'tools' in s %}
 

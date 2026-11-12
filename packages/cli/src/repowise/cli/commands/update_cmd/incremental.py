@@ -38,7 +38,7 @@ def _build_update_vector_store(
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
-        embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
+        embedder = build_embedder(resolve_embedder(cfg.get("embedder"), repo_path=repo_path), repo_path)
         store = build_vector_store(repo_path, embedder)
         if required and store is None and (Path(repo_path) / ".repowise" / "lancedb").exists():
             raise RuntimeError(
@@ -155,6 +155,7 @@ def _refresh_knowledge_graph(
     git_meta_map: dict,
     dead_code_report: Any,
     prior_fingerprint: str | None,
+    changed_paths: list[str],
 ) -> Any | None:
     """Rebuild the KG skeleton + curation when the graph shape changed.
 
@@ -173,6 +174,7 @@ def _refresh_knowledge_graph(
             git_meta_map,
             dead_code_report,
             prior_fingerprint=prior_fingerprint,
+            changed_paths=changed_paths,
             log=console.print,
         )
     )

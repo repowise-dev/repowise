@@ -84,7 +84,14 @@ async def _why_workspace_search(query: str) -> dict:
 async def _score_repo(
     ctx: Any, query: str
 ) -> list[tuple[tuple[float, float, int], str, str, dict[str, Any]]]:
-    """One store's relevant records, collapsed, as ``(key, alias, id, entry)`` best first."""
+    """One store's relevant records, collapsed, as ``(key, alias, id, entry)`` best first.
+
+    None from a repository whose ``decisions.mode`` is off.
+    """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    if layer_mode(getattr(ctx, "path", None)) == "off":
+        return []
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         records = await _decision_corpus(session, repository.id, _get_exclude_spec(ctx.path))

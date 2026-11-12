@@ -92,10 +92,10 @@ class TestOnlyAcceptedDecisionsGovern:
         assert result["active_count"] == 0
         assert result["candidate_count"] == 1
 
-    def test_candidates_are_named_as_awaiting_review(self):
+    def test_candidates_are_named_as_background(self):
         result = _compute_alignment("src/a.py", [self._decision()], [], {})
 
-        assert "awaiting review" in result["explanation"]
+        assert "none in force" in result["explanation"]
         assert "No accepted decision" in result["explanation"]
 
     def test_accepted_decisions_govern(self):

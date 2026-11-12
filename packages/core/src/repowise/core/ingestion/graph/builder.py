@@ -703,7 +703,9 @@ class GraphBuilder(
         # Aggregate imported_names on parallel edges
         if self._graph.has_edge(path, target):
             existing = self._graph[path][target].get("imported_names", [])
-            merged = list(set(existing + imp.imported_names))
+            # First-seen order: a set's order changes with the hash seed, so
+            # the same import was stored differently on every run.
+            merged = list(dict.fromkeys(existing + imp.imported_names))
             self._graph[path][target]["imported_names"] = merged
             if not imp.is_module_declaration:
                 withdraw_declaration_hint(self._graph[path][target])

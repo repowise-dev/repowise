@@ -752,9 +752,15 @@ def schema_stamp(schema_cookie: int) -> int:
     Folds in SQLite's ``schema_version`` cookie, which SQLite itself bumps on
     every DDL statement, so any schema change made after the stamp (an older
     repowise, a ``VACUUM``, a hand edit) reads as unstamped and reconciles.
+    Also folds in the registered plugin storage revisions.
     A positive 31-bit int: 0 is what every unstamped store reads.
     """
+    from repowise.core.registry.storage_migrations import storage_migrations
+
     signature = f"{_model_signature()}\ncookie={schema_cookie}"
+    revisions = storage_migrations.signature()
+    if revisions:
+        signature += f"\nplugins={revisions}"
     digest = hashlib.sha256(signature.encode()).digest()
     return int.from_bytes(digest[:4], "big") % (2**31 - 1) + 1
 
@@ -774,20 +780,30 @@ async def init_db(engine: AsyncEngine) -> None:
     missing columns/indexes back-filled in place rather than hitting a
     cryptic ``no such column`` error from the ORM.
 
+    Then applies pending plugin storage revisions, after loading plugins so the
+    stamp covers every registered revision.
+
     On SQLite a complete pass records :func:`schema_stamp` in
     ``PRAGMA user_version``, and a store still carrying it skips the table
     walk: two header reads in place of reflecting every table, which cost
-    about 150ms per open of an unchanged store. Another repowise's models, or
-    any schema change since the stamp, reads as unstamped and reconciles as
-    before. Other backends reconcile on every call.
+    about 150ms per open of an unchanged store. Another repowise's models, a
+    new or changed plugin revision, or any schema change since the stamp,
+    reads as unstamped and reconciles as before; a pending revision leaves it
+    unstamped. Other backends reconcile on every call.
 
     Safe to call on an already-initialised database (idempotent).
     """
+    from repowise.core.registry.plugins import load_plugins
+    from repowise.core.registry.storage_migrations import storage_migrations
+
+    load_plugins()
     sqlite = engine.dialect.name == "sqlite"
     async with engine.begin() as conn:
         if sqlite:
             stamped, cookie = await _sqlite_stamp_state(conn)
             if stamped == schema_stamp(cookie):
+                # The stamp covers every registered revision, so none is pending here.
+                storage_migrations.settled(conn)
                 return
         await conn.run_sync(Base.metadata.create_all)
         # Raises when the walk is incomplete, so a partial reconcile is never stamped.
@@ -804,6 +820,11 @@ async def init_db(engine: AsyncEngine) -> None:
             from repowise.core.persistence.search import PAGE_FTS_DDL
 
             await conn.execute(text(PAGE_FTS_DDL))
+
+    # After the core schema, each revision in its own transaction.
+    complete = await storage_migrations.apply_pending(engine)
+    if sqlite and complete:
+        async with engine.begin() as conn:
             # Last, so the cookie read covers every statement above.
             _, cookie = await _sqlite_stamp_state(conn)
             await _write_stamp(conn, schema_stamp(cookie))
@@ -892,12 +913,19 @@ async def schema_behind(engine: AsyncEngine) -> bool:
     """Whether a table or column the models declare is missing from the store.
 
     One catalogue read, so a reader can skip the reconcile ``init_db`` runs and
-    pay for it only on a store an older repowise wrote. SQLite only; another
-    backend is migrated by Alembic and reads as current.
+    pay for it only on a store an older repowise wrote. The tables are checked
+    on SQLite only; another backend is migrated by Alembic. On every backend an
+    unapplied plugin storage revision counts, unless this process found it pending.
     """
-    if engine.dialect.name != "sqlite":
-        return False
+    from repowise.core.registry.plugins import load_plugins
+    from repowise.core.registry.storage_migrations import storage_migrations
+
+    load_plugins()
     async with engine.connect() as conn:
+        if await storage_migrations.behind(conn):
+            return True
+        if engine.dialect.name != "sqlite":
+            return False
         rows = await conn.execute(
             text(
                 "SELECT m.name, p.name FROM sqlite_master AS m "

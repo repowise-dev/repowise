@@ -143,6 +143,8 @@ Answers a how, where or why question in one call: hybrid retrieval over the wiki
 
 **Returns** `answer`, `confidence`, `citations`, `symbol_bodies`, `candidate_files`, `best_guesses` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_answer)). On `low`, read the named rows, then `candidate_files`, before searching again. Without an LLM provider it answers from retrieval, marked `degraded`.
 
+A why-question also reads the decisions in force that answer it (ranked as `get_why` ranks a question) and the ones over the top hits, so a recorded reason is cited whichever files retrieval surfaced. Background records reach the answer labelled as not binding. With `decisions.mode: off`, no decision is read.
+
 ```
 get_answer(question="How does the authentication flow work?")
 ```
@@ -286,7 +288,7 @@ Why code is shaped as it is: decision records, falling back to git archaeology a
 | `reference` | object | none | An evidence reference this tool emitted, unchanged |
 | `repo` | string | default repo | Or `"all"`, only with a `query` |
 
-Modes: a question searches decisions; a path (or `targets` alone) returns `decisions`, `candidates`, `history`, its origin story and `alignment`; `id` resolves one record; no arguments returns the dashboard (stale decisions, conflicts, ungoverned hotspots).
+Modes: a question searches decisions; a path (or `targets` alone) returns the rules in force (`decisions`), then at most two background records (`candidates`, labelled as not binding), and stops; `include=["history"]` adds the origin story, `alignment`, withdrawn records (`history`), git archaeology, rationale comments and episodes. A path that was renamed or split into a package is answered at its new location, with `moved_from` naming the old one. `id` resolves one record; no arguments returns the dashboard (stale decisions, conflicts, ungoverned hotspots). With `decisions.mode: off` every call returns `{"decisions": "off", "note": "Decisions are off for this repository."}` and reads nothing.
 
 A directory's origin story (`scope: "directory"`) is built from the files under it: how many have history, the first and last commit dates, and their stored key commits, each listed once. Git history is stored per file, so it carries no commit count or owner for the directory.
 

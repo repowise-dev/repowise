@@ -12,40 +12,41 @@ from repowise.cli.helpers import console, find_repowise_repo_root, resolve_repo_
 from repowise.cli.ui import load_dotenv
 
 
+def _borrowed_index(start: Path, found: Path) -> tuple[Path, Path] | None:
+    """``(worktree, main checkout)`` when *start* is in a linked worktree with
+    no index of its own whose main checkout is indexed, else ``None``.
+
+    *found* is the directory the server would otherwise serve. An index at or
+    under the worktree's top level is the worktree's own and wins.
+    """
+    from repowise.cli._helpers.paths import borrowed_index_base
+    from repowise.core.git_head import find_checkout
+
+    checkout = find_checkout(start)
+    if checkout is None:
+        return None
+    root = checkout.root
+    if (found / ".repowise").is_dir() and found.resolve().is_relative_to(root):
+        return None
+    base = borrowed_index_base(root)
+    return (root, base) if base is not None else None
+
+
 def _workspace_summary(path: Path, *, no_workspace: bool = False) -> dict[str, object] | None:
     if no_workspace:
         return None
-    # Deferred so ``--no-workspace`` and ``--help`` skip the config module and
-    # its yaml import entirely.
-    from repowise.core.workspace.config import WorkspaceConfig, find_workspace_root
+    # Deferred so ``repowise mcp --help`` skips the server module. Same detection
+    # the server runs, so the banner names the repo that is actually served.
+    from repowise.server.mcp_server._server import _detect_workspace
 
-    workspace_root = find_workspace_root(path)
-    if workspace_root is None:
+    workspace_root, ws_config, repo_alias = _detect_workspace(str(path))
+    if ws_config is None:
         return None
-
-    try:
-        ws_config = WorkspaceConfig.load(workspace_root)
-    except Exception:
-        return None
-
-    aliases = ws_config.repo_aliases()
-    default = ws_config.get_primary()
-    default_alias = default.alias if default else (aliases[0] if aliases else None)
-    resolved_path = path.resolve()
-
-    for entry in ws_config.repos:
-        entry_path = (workspace_root / entry.path).resolve()
-        try:
-            resolved_path.relative_to(entry_path)
-        except ValueError:
-            continue
-        default_alias = entry.alias
-        break
 
     return {
         "workspace_root": workspace_root,
-        "default_repo": default_alias,
-        "aliases": aliases,
+        "default_repo": repo_alias,
+        "aliases": ws_config.repo_aliases(),
     }
 
 
@@ -188,9 +189,19 @@ def mcp_command(
         repo_path = find_repowise_repo_root(Path.cwd()) or resolve_repo_path(None)
     else:
         repo_path = resolve_repo_path(path)
+    borrowed = _borrowed_index(Path.cwd() if path is None else repo_path, repo_path)
+    if borrowed is not None:
+        worktree, repo_path = borrowed
     load_dotenv(repo_path)
 
     workspace = _workspace_summary(repo_path, no_workspace=no_workspace)
+    if borrowed is not None and workspace is None:
+        from repowise.server.mcp_server import _checkout
+
+        # Ceiling: single-repo only; a workspace server answers a worktree
+        # path passed as `repo`, and a default caller there needs the
+        # registry to know which member the worktree belongs to.
+        _checkout.serve_worktree(worktree, repo_path)
     repowise_dir = repo_path / ".repowise"
     if workspace is None and not repowise_dir.exists():
         warn(

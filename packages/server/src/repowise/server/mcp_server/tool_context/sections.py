@@ -265,7 +265,17 @@ async def _directory_triage(card: CardState) -> None:
         await _governing_decision_titles(card, card.dir_path or card.target)
 
 
+def _decisions_off(card: CardState) -> bool:
+    """Whether ``decisions.mode`` is off for the repository this card reads."""
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    root = card.query.repo_root or getattr(card.query.repository, "local_path", None)
+    return layer_mode(root) == "off"
+
+
 async def _governing_decision_titles(card: CardState, triage_path: str) -> None:
+    if _decisions_off(card):
+        return
     target = card.target
     governing: list[DecisionRecord] = []
     seen_ids: set[str] = set()
@@ -459,7 +469,7 @@ async def _decisions_section(card: CardState) -> None:
     acceptance row tells them apart, so a bare status filter would lose the
     withdrawn ones from the history lane.
     """
-    if not card.default_on("decisions"):
+    if not card.default_on("decisions") or _decisions_off(card):
         return
     res = await card.session.execute(
         select(DecisionRecord)

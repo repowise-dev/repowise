@@ -284,7 +284,7 @@ async def _save_rescore(
     stage_timings: Any,
 ) -> None:
     """Write the report with the full-index writer, then what it derives from."""
-    from repowise.core.persistence.crud import upsert_git_function_blame_bulk
+    from repowise.core.persistence.crud import replace_git_function_blame_for_files
     from repowise.core.pipeline.persist import (
         persist_graph_nodes,
         save_full_health_report,
@@ -314,7 +314,9 @@ async def _save_rescore(
         )
     # Rows for the files blamed above, so the next re-score reads them.
     if report.function_blame_rows:
-        await upsert_git_function_blame_bulk(session, repo.id, report.function_blame_rows)
+        await replace_git_function_blame_for_files(
+            session, repo.id, report.function_blame_rows
+        )
     if coverage.authoritative:
         await _save_reingested_coverage(session, repo, repo_path, coverage)
 

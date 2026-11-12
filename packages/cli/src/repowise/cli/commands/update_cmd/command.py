@@ -54,6 +54,7 @@ from repowise.core.ingestion.git_indexer import (
 )
 from repowise.core.pipeline import PhaseTimings, timed
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.settings.model import flag
 
 from .config_changes import classify_config_changes
 from .decision_passes import _run_decision_evolution as _run_decision_evolution
@@ -76,9 +77,12 @@ from .persistence import (
     _persist_index_only_update,
     _repair_module_attribution,
     _run_full_health_rescore,
+    accept_landed_decisions,
     heal_commit_offsets,
     health_analyzer_changed,
+    keep_decisions_current,
     parser_changed,
+    renderer_changed,
     rescan_security_if_changed,
     security_scanner_changed,
     stamp_file_page_scope,
@@ -185,9 +189,12 @@ def _finish_outcome(
     write: bool = True,
     timings: PhaseTimings | None = None,
 ) -> None:
-    """Every update outcome ends here: the stored read views, then the editor
-    files that quote them. ``write=False`` (a dry run) skips the views."""
+    """Every update outcome ends here: the shared decision copies, the stored
+    read views, then the editor files that quote them. ``write=False`` (a dry
+    run) skips the first two."""
     if write:
+        with timed(timings, "decisions_shared"):
+            keep_decisions_current(repo_path)
         with timed(timings, "read_snapshots"):
             refresh_read_snapshots(repo_path)
     with timed(timings, "editor_files"):
@@ -334,6 +341,15 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     ),
 )
 @click.option(
+    "--refresh-git",
+    is_flag=True,
+    default=False,
+    help=(
+        "Re-read Git history within the current index scope, even at an unchanged HEAD. "
+        "Requires --index-only --defer-docs."
+    ),
+)
+@click.option(
     "--defer-docs",
     is_flag=True,
     default=False,
@@ -448,6 +464,7 @@ def update_command(
     progress: str = "rich",
     include_working_tree: bool = False,
     defer_docs: bool = False,
+    refresh_git: bool = False,
 ) -> None:
     """Incrementally update the index and pages for files changed since the last sync.
 
@@ -479,6 +496,7 @@ def update_command(
         progress=progress,
         include_working_tree=include_working_tree,
         defer_docs=defer_docs,
+        refresh_git=refresh_git,
     )
 
 
@@ -713,15 +731,44 @@ def _resolve_target(opts: UpdateOptions):
     return target
 
 
+def _validate_update_options(opts: UpdateOptions) -> None:
+    if opts.refresh_git and opts.full:
+        raise reasoned_error(
+            "--refresh-git keeps the current index scope; use --full separately to upgrade it.",
+            reason="refresh_git_conflicts_with_full",
+        )
+    if opts.refresh_git and not (opts.index_only and opts.defer_docs):
+        raise reasoned_error(
+            "--refresh-git requires --index-only --defer-docs.",
+            reason="refresh_git_needs_deferred_index",
+        )
+    if opts.defer_docs and (
+        not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
+    ):
+        raise reasoned_error(
+            "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
+            reason="defer_docs_needs_index_only",
+        )
+
+
 def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> UpdateOutcome:
+    if opts.refresh_git:
+        raise reasoned_error(
+            "--refresh-git supports one repo at a time. Pass its path and --no-workspace.",
+            reason="refresh_git_needs_one_repo",
+        )
+    if opts.defer_docs:
+        raise reasoned_error(
+            "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
+            reason="defer_docs_needs_one_repo",
+        )
     if opts.full and opts.repo_alias:
         entry = target.ws_config.get_repo(opts.repo_alias)
         run.repo_path = (target.ws_root / entry.path).resolve()
         return _full_upgrade(opts, run)
     if opts.full:
         raise reasoned_error(
-            "--full upgrades one repo at a time. Run it inside that repo, or pass "
-            "--repo <alias>.",
+            "--full upgrades one repo at a time. Run it inside that repo, or pass --repo <alias>.",
             reason="full_needs_one_repo",
         )
     with _errors_reported(run):
@@ -912,17 +959,14 @@ def _check_config_and_renderer(run: UpdateRun) -> None:
     run.config = classify_config_changes(repo_path, run.state, run.cfg)
 
     # A renderer upgrade retires the "up to date" shortcut for one run so stale
-    # structural pages re-render. A missing stamp counts as a change; an empty
-    # current fingerprint (it failed) disables the gate.
+    # structural pages re-render.
     run.prev_renderer_fp = run.state.get("renderer_fingerprint")
     run.curr_renderer_fp = _current_renderer_fingerprint(repo_path)
-    # A model wiki waits for a full update, the run that can re-render it.
-    docs_mode = resolve_docs_mode(run.state)
-    run.renderer_changed = (
-        bool(run.curr_renderer_fp)
-        and run.prev_renderer_fp != run.curr_renderer_fp
-        and docs_mode != "none"
-        and not (run.index_only and docs_mode == "llm")
+    run.renderer_changed = renderer_changed(
+        run.prev_renderer_fp,
+        run.curr_renderer_fp,
+        resolve_docs_mode(run.state),
+        index_only=run.index_only,
     )
 
 
@@ -957,6 +1001,7 @@ def _repair_before_detection(opts: UpdateOptions, run: UpdateRun) -> None:
     if opts.dry_run:
         return
     _repair_module_attribution(run.repo_path)
+    accept_landed_decisions(run.repo_path)
     # Opt-in edit capture binds pending agent edits before the git walk.
     with contextlib.suppress(Exception):
         from repowise.core.edit_capture.binder import bind_repo
@@ -970,6 +1015,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     run.analyzer_changed = health_analyzer_changed(state)
     # Git rows written under older history rules force one full walk.
     run.history_stale = git_history_stale(state)
+    run.refresh_git = opts.refresh_git
     run.git_is_current = bool(
         run.head
         and run.head == run.base_ref
@@ -979,6 +1025,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         and not run.working_tree_diffs
         and not run.analyzer_changed
         and not run.history_stale
+        and not run.refresh_git
     )
     # A store read, so only asked when the run would otherwise exit.
     run.extraction_changed = run.git_is_current and parser_changed(run.repo_path)
@@ -1050,6 +1097,8 @@ def _announce_rework(run: UpdateRun) -> None:
             else "[yellow]Git history rules changed since this index was built; "
             "re-reading the full history once.[/yellow]"
         )
+    if run.refresh_git:
+        console.print("[yellow]Re-reading Git history within the current index scope.[/yellow]")
 
 
 def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
@@ -1311,6 +1360,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
         or run.analyzer_changed
         or run.extraction_changed
         or run.history_stale
+        or run.refresh_git
         or run.stale_db_paths
         or run.stale_deterministic_ids
         or run.fill_file_pages
@@ -1356,7 +1406,11 @@ def _config_change_only(run: UpdateRun) -> bool:
     """A config edit with no commits to index; those fall through to the full path."""
     config = run.config
     return config.changed and not (
-        run.file_diffs or config.git_changed or run.full_generation or run.history_stale
+        run.file_diffs
+        or config.git_changed
+        or run.full_generation
+        or run.history_stale
+        or run.refresh_git
     )
 
 
@@ -1425,11 +1479,16 @@ def _rebuild_index(run: UpdateRun) -> None:
         idle_decay_sink=None if run.working_tree_only else run.git_decay_map,
         # A full re-render quotes every file's history, as init does.
         force_full_git=(
-            run.config.git_changed or run.history_stale or run.renderer_changed or run.wiki_rebuild
+            run.config.git_changed
+            or run.history_stale
+            or run.renderer_changed
+            or run.wiki_rebuild
+            or run.refresh_git
         ),
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
     )
+    run.degraded.extend(_unavailable_grammar_entries(run.parsed_files))
     decision = getattr(run.graph_builder, "incremental_graph_decision", None)
     if decision is not None:
         # Persist the selected path and its reason alongside this run's phase
@@ -1437,6 +1496,25 @@ def _rebuild_index(run: UpdateRun) -> None:
         from repowise.core.pipeline.incremental.feature import stamp_graph_update
 
         stamp_graph_update(run.state, decision)
+
+
+def _unavailable_grammar_entries(parsed_files: list) -> list[str]:
+    """One degraded entry per runtime grammar that failed, so the summary and state show it."""
+    from collections import Counter
+
+    from repowise.core.ingestion.parser.grammars import (
+        failed_runtime_grammars,
+        runtime_grammar_warning,
+    )
+
+    missing = Counter(
+        p.file_info.language for p in parsed_files if getattr(p, "grammar_missing", False)
+    )
+    return [
+        runtime_grammar_warning(tag, reason, missing[tag])
+        for tag, reason in failed_runtime_grammars()
+        if missing[tag]
+    ]
 
 
 def _working_tree_only(run: UpdateRun) -> bool:
@@ -1452,6 +1530,7 @@ def _working_tree_only(run: UpdateRun) -> bool:
             or run.analyzer_changed
             or run.extraction_changed
             or run.history_stale
+            or run.refresh_git
         )
     )
 
@@ -1685,6 +1764,7 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
         or run.renderer_changed
         or run.wiki_rebuild
         or run.history_stale
+        or run.refresh_git
         or config.changed
     ):
         return False
@@ -1698,9 +1778,26 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
     return all(map(_is_prose, rendered)) and not run.stale_deterministic_ids
 
 
+def _kg_shape_unchanged(run: UpdateRun, prior_fingerprint: str | None) -> bool:
+    """Whether the refresh will only patch the changed files' nodes (no rebuild)."""
+    from repowise.core.analysis.knowledge_graph import (
+        compute_kg_fingerprint,
+        should_skip_kg_rebuild,
+    )
+
+    try:
+        fingerprint = compute_kg_fingerprint(run.graph_builder)
+    except Exception:
+        return False
+    kg_path = run.repo_path / ".repowise" / "knowledge-graph.json"
+    return should_skip_kg_rebuild(prior_fingerprint, fingerprint, kg_path)
+
+
 def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
     """Rebuild the knowledge graph when its fingerprint moved (not before a commit)."""
     if not run.working_tree_only:
+        prior_fingerprint = (run.state.get("knowledge_graph") or {}).get("fingerprint")
+        run.knowledge_graph_shape_unchanged = _kg_shape_unchanged(run, prior_fingerprint)
         with timed(run.timings, "knowledge_graph"):
             run.knowledge_graph_result = _refresh_knowledge_graph(
                 run.repo_path,
@@ -1709,7 +1806,8 @@ def _refresh_knowledge_graph_stage(run: UpdateRun) -> None:
                 run.repo_structure,
                 run.git_meta_map,
                 run.dead_code_report,
-                (run.state.get("knowledge_graph") or {}).get("fingerprint"),
+                prior_fingerprint,
+                [fd.path for fd in run.file_diffs],
             )
     if run.knowledge_graph_result is None:
         return
@@ -1773,7 +1871,7 @@ def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
         _fail_on_embed_failure(
             repo_path,
-            deterministic_embedder_name(run.cfg),
+            deterministic_embedder_name(run.cfg, repo_path=repo_path),
             pages.render_stats["embed_failed_pages"],
             run.emitter,
         )
@@ -2039,7 +2137,7 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
     generation_changed = run.config.generation_changed
     full_generation = run.full_generation
     language = cfg.get("language", "en")
-    enable_onboarding_cfg = bool(cfg.get("enable_onboarding", True))
+    enable_onboarding_cfg = flag(cfg.get("enable_onboarding"), True)
     config = GenerationConfig.from_repo_config(
         cfg,
         max_concurrency=opts.concurrency,
@@ -2071,10 +2169,36 @@ def _start_docs_pass(opts: UpdateOptions, run: UpdateRun) -> DocsPass:
     return DocsPass(config=config, provider=provider, cost_tracker=cost_tracker)
 
 
+def _apply_page_summaries(run: UpdateRun, docs: DocsPass) -> None:
+    """Same graph shape: the layers stand, so only this run's pages reach the KG.
+
+    No model call. The stored artifact stands in when the refresh moved no node,
+    and it is published only if a page changed a summary.
+    """
+    from repowise.core.analysis.knowledge_graph import KnowledgeGraphResult
+    from repowise.core.generation.knowledge_graph import finalize_knowledge_graph
+
+    kg = run.knowledge_graph_result
+    if kg is None:
+        if not docs.generated_pages:
+            return
+        kg = KnowledgeGraphResult.from_file(run.repo_path / ".repowise" / "knowledge-graph.json")
+        if kg is None:
+            return
+        kg.fingerprint = (run.state.get("knowledge_graph") or {}).get("fingerprint") or ""
+    before = [n.get("summary") for n in kg.nodes]
+    kg = finalize_knowledge_graph(kg, kg.layers, kg.tour, docs.generated_pages)
+    if run.knowledge_graph_result is not None or before != [n.get("summary") for n in kg.nodes]:
+        run.knowledge_graph_result = kg
+
+
 def _enrich_knowledge_graph(run: UpdateRun, docs: DocsPass) -> None:
     """Model enrichment of a refreshed KG (layer names, summaries), as init does."""
     # Also runs on a builder-version bump with an unchanged graph: restored layer
     # names were written against the old layers.
+    if run.knowledge_graph_shape_unchanged:
+        _apply_page_summaries(run, docs)
+        return
     kg = run.knowledge_graph_result
     if kg is None:
         return
@@ -2128,7 +2252,9 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
             reconcile_full_scope=config.traversal_changed,
             reconcile_full_generation=run.full_generation,
             require_config_rebuild_success=config.rebuild_required,
-            require_decision_persist_success=config.git_changed,
+            # Only a full re-mine replaces the mined history records; without
+            # one (update mining off) they are kept as they are.
+            require_decision_persist_success=docs.git_history_remined,
             history_window_changed=config.git_changed,
             failed_steps=docs.failed_steps,
             timings=run.timings,
@@ -2293,7 +2419,7 @@ def _fail_if_embed_failed(run: UpdateRun, docs: DocsPass) -> None:
 
         _fail_on_embed_failure(
             run.repo_path,
-            resolve_embedder(run.cfg.get("embedder")),
+            resolve_embedder(run.cfg.get("embedder"), repo_path=run.repo_path),
             docs.full_stats["embed_failed_pages"],
             run.emitter,
         )
@@ -2322,6 +2448,7 @@ def run_update(
     skip_cross_repo_hooks: bool = False,
     include_working_tree: bool = False,
     defer_docs: bool = False,
+    refresh_git: bool = False,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -2363,22 +2490,12 @@ def run_update(
         skip_cross_repo_hooks=skip_cross_repo_hooks,
         include_working_tree=include_working_tree,
         defer_docs=defer_docs,
+        refresh_git=refresh_git,
     )
-    if opts.defer_docs and (
-        not (opts.index_only or opts.docs_flag is False) or opts.docs_flag is True or opts.full
-    ):
-        raise reasoned_error(
-            "--defer-docs requires --index-only or --no-docs, without --docs or --full.",
-            reason="defer_docs_needs_index_only",
-        )
+    _validate_update_options(opts)
     run = _start_run(opts)
     target = _resolve_target(opts)
     if target.is_workspace:
-        if opts.defer_docs:
-            raise reasoned_error(
-                "--defer-docs supports one repo at a time. Pass its path and --no-workspace.",
-                reason="defer_docs_needs_one_repo",
-            )
         return _update_workspace_target(opts, run, target)
 
     # --- Single-repo path from here on. ---
@@ -2401,6 +2518,9 @@ def run_update(
     _collect_working_tree(opts, run)
     _repair_before_detection(opts, run)
     _assess_staleness(opts, run)
+    if opts.refresh_git and opts.dry_run:
+        console.print("[yellow]Dry run: Git history would be re-read. No changes made.[/yellow]")
+        return _emit_done(run, UpdateOutcome.DRY_RUN)
     if run.git_is_current and not (
         run.stale_db_paths or run.stale_deterministic_ids or run.fill_file_pages
     ):

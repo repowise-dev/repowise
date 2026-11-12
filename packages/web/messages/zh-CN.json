@@ -479,7 +479,7 @@
         "contracts": "{touched, plural, =0 {未涉及工作区契约} other {涉及 # 个工作区契约}}；{breaking, plural, =0 {无破坏性签名变更} other {# 个破坏性签名变更}}",
         "contracts_unchecked": "{touched, plural, =0 {未涉及工作区契约} other {涉及 # 个工作区契约}}；未比较签名",
         "cross_repo_consumers": "{links, plural, =0 {其他仓库中没有使用方} other {# 个使用方，位于 {names}{more, plural, =0 {} other {等另外 # 个仓库}}}}",
-        "decisions_crossed": "{accepted} 个已接受的决策，{candidate} 个候选决策",
+        "decisions_crossed": "{accepted} 个生效中的决策，{candidate} 条背景记录",
         "decisions_none": "未涉及决策",
         "health_delta": "发现：新增 {introduced}，恶化 {worsened}，解决 {resolved}",
         "health_delta_partial": "发现：新增 {introduced}，恶化 {worsened}，解决 {resolved}（部分比较）",
@@ -675,17 +675,17 @@
     "decisions": {
       "title": "决策",
       "description": "这个代码库已经定下来的事，以及你脚下这份检出的真实状况：约束、权衡，以及那些容易让人踩坑的事实。",
-      "ledeAccepted": "已接受",
+      "ledeAccepted": "生效中",
       "ledeConfirmed": "已确认",
       "ledeEmpty": "索引器从拉取请求、提交信息、代码注释和你自己的会话里挖掘出决策，你亲手记录时它们也会落到这里——在下方记录，或者用 <code>repowise decision add</code>。每条决策都会保留它出处的那段引用，以及它所约束的文件。",
-      "ledeNoGovernance": "这里还没有任何有约束力的记录。一条记录只有在有人接受它、并指明它覆盖哪些文件以及为什么之后才有约束力——被挖掘出来、反复出现、被判定为可信，这些都还达不到这一步。",
-      "ledeCandidates": "下方有 {count} 条候选记录等待处理，而且它们都还在：没有任何东西被删除，每个 id 仍然可以解析。如果这个页面过去显示的是已确认的决策，那些记录现在就在「Candidates」分区里。接受一条只需点一下，不会改动任何代码。",
-      "ledeAcceptedRecords": "已有 {count} 条记录被接受：有人读过它，并把它标记为团队认可的东西，这正是它日后值得被引用给智能体的原因。",
-      "ledeAcceptedMore": "还有 {count} 条是索引器挖掘出来、无人接受的候选。在被接受之前，它只是关于你代码库的一个猜测，而不是一条规则，也永远不会被交给任何智能体。打开下方的「Candidates」分区逐条处理；接受或驳回一条只需点一下，不会改动任何代码。",
+      "ledeNoGovernance": "还没有任何决策生效。智能体记录的决策会在它引用的提交合并到默认分支时生效。",
+      "ledeCandidates": "下方有 {count} 条背景记录，挖掘自拉取请求、提交、注释和会话。它们不生效；智能体通过 get_why 询问它们，了解代码背后的原因。",
+      "ledeAcceptedRecords": "已有 {count} 条决策生效。智能体记录的决策会在它引用的提交合并到默认分支时生效。",
+      "ledeAcceptedMore": "另有 {count} 条是从历史中挖掘出的背景记录。它们不生效；智能体通过 get_why 询问它们，了解背后的原因。",
       "checkoutTitle": "关于这份检出",
       "checkoutDescription": "这些是关于工作区本身的事实，而不是谁对它的声明；它们在索引时推导得出，不调用模型、无需历史记录。正是这些事实最容易绊倒新来的人，无论他是人还是智能体。",
-      "reviewTitle": "评审",
-      "reviewDescription": "按每条记录的「被接受」实际意味着什么来划分，而不是按状态词划分。每条记录只落在一个分区里，计数可以相加：有约束力的、无人评审过的、与所指向代码已脱节的、什么都指不到的，以及已退役的。"
+      "reviewTitle": "记录",
+      "reviewDescription": "生效中的决策（置顶的排在最前）、你的智能体本周做出的决策、从历史挖掘出的背景记录，以及已退役的决策。任何一条都可以交给智能体去置顶、否决或修改。"
     },
     "contributors": {
       "title": "代码所有权",
@@ -893,7 +893,7 @@
       "syncDescription": "把最近的提交拉进现有索引，或者从零重建索引。",
       "providerDescription": "有了模型密钥，这个代码仓库的文档就可以用 AI 撰写。密钥随仓库一起保存，供界面或 CLI 触发的生成使用。",
       "captureTitle": "决策采集",
-      "captureDescription": "从哪些来源为这个代码仓库挖掘架构决策，以及其中是否有任何环节会把正文发送给你配置的模型。采集只会产生候选：这里没有任何操作能替你接受一条决策。",
+      "captureDescription": "从哪些来源为这个代码仓库挖掘架构决策，以及其中是否有任何环节会把正文发送给你配置的模型。采集只会添加背景记录：它挖掘出的任何内容都不会生效。",
       "refactoringTitle": "重构代码生成",
       "refactoringDescription": "选择是否用你配置的模型把重构计划变成可评审的差异。",
       "healthTitle": "索引健康",
@@ -1714,9 +1714,9 @@
       },
       "decisions": {
         "label": "决策",
-        "unit": "待审阅",
-        "caption": "从 PR、提交和注释中挖掘出的候选项。",
-        "open": "审阅"
+        "unit": "条背景记录",
+        "caption": "挖掘自拉取请求、提交和注释；智能体会询问它们以了解原因。",
+        "open": "打开"
       },
       "docs": {
         "label": "文档",
@@ -1906,6 +1906,15 @@
     "regenFailed": "无法启动重新生成"
   },
   "decisions": {
+    "agent": {
+      "discover": "让智能体核查背景记录",
+      "agreements": "把工作约定移到 CLAUDE.md",
+      "review": "交给智能体核查",
+      "edit": "交给智能体修改",
+      "veto": "交给智能体否决",
+      "pin": "交给智能体置顶",
+      "unpin": "交给智能体取消置顶"
+    },
     "add": {
       "trigger": "记录一条决策",
       "title": "记录一条决策",
@@ -1916,16 +1925,20 @@
       "saveFailed": "保存采集设置失败。"
     },
     "review": {
-      "accepted": "已接受。它将约束其指定的文件。",
-      "dismissed": "已忽略。重新索引不会再提出它。",
-      "acceptFailed": "接受失败：{message}",
+      "accepted": "已生效。它将约束其指定的文件。",
+      "dismissed": "已忽略。重新索引不会再挖掘它。",
+      "acceptFailed": "未能生效：{message}",
       "dismissFailed": "忽略失败：{message}",
       "reaffirmed": "已重新确认。它对所涉及的文件重新生效。",
       "reaffirmFailed": "重新确认失败：{message}",
-      "bulkDismissed": "已忽略 {count} 条候选。",
-      "actionFailed": "审阅操作失败。",
+      "bulkDismissed": "已忽略 {count} 条记录。",
+      "actionFailed": "操作失败。",
       "previous": "上一页",
-      "next": "下一页"
+      "next": "下一页",
+      "pinned": "已置顶。智能体在替换它之前会先询问人。",
+      "unpinned": "已取消置顶。它仍然生效。",
+      "pinFailed": "置顶失败：{message}",
+      "unpinFailed": "取消置顶失败：{message}"
     }
   },
   "files": {
@@ -2050,7 +2063,7 @@
       "ownershipSole": "个文件只有一位作者，没有第二个人熟悉",
       "architectureModules": "个模块，{entryPoints, number} 个入口点",
       "decisionsEmpty": "还没有记录任何决策",
-      "decisionsRecorded": "条已记录，其中 {accepted, number} 条已接受，{candidates, number} 条待审阅",
+      "decisionsRecorded": "条已记录，其中 {accepted, number} 条生效中，{candidates, number} 条为背景记录",
       "refactoringEmpty": "还没有重构分析",
       "refactoringOpen": "条待处理的重构机会，每个文件一条",
       "testsCoverage": "最新报告中的行覆盖率",
@@ -2112,8 +2125,7 @@
       "securityUnit": "处位于发布代码中",
       "securityElsewhere": "另有 {count, number} 处位于测试和文档中",
       "refactoringUnit": "条待处理的重构机会",
-      "decisionsUnit": "条待审阅",
-      "decisionsDetail": "{awaiting, number} 条待审阅，{drifting, number} 条与代码不一致",
+      "decisionsUnit": "条与代码不一致",
       "ownershipUnit": "个单一作者文件",
       "ownershipDetail": "只有一位作者，没有第二个人熟悉"
     },

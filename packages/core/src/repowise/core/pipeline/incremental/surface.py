@@ -24,7 +24,7 @@ the full rebuild.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -75,7 +75,14 @@ def is_inert(parsed: Any) -> bool:
     return (
         parsed.file_info.language in _INERT_LANGUAGES
         and not parsed.file_info.path.lower().endswith(".mdx")
-        and not parsed.module_name
+        and parse_is_empty(parsed)
+    )
+
+
+def parse_is_empty(parsed: Any) -> bool:
+    """Whether *parsed* declares, imports and references nothing."""
+    return (
+        not parsed.module_name
         and not any(
             (
                 parsed.symbols,
@@ -173,11 +180,16 @@ def _path_set_change_reason(
 ) -> str | None:
     """Why adding or removing these inert files could change another file's graph.
 
-    Resolvers reach a path two ways: from an import's text (an exact path, or
-    the stem map keyed by its last segment) and from the stem map's bucket
-    sizes, which some type-reference passes read with no import at all. So a
-    moved file is safe when no other file shares its stem and no import's text
-    contains its stem.
+    Resolvers reach a path from an import's text (an exact path) or through
+    the stem map. The stem map answers two ways: its best candidate for a
+    stem, which import resolvers look up by a key usually but not always
+    spelled in the import (Ruby maps ``-`` to ``_``; Go may key on a module
+    directory), and a one-file bucket, which some type-reference passes read
+    with no import at all. So a moved file is safe when no import's text
+    contains its stem and its stem's bucket gives both answers unchanged
+    (:func:`_stem_answers`). A ``README.md`` or ``index.md`` may patch
+    beside others of its name unless it displaces or reveals a source file
+    as the best candidate.
     """
     from repowise.core.ingestion.graph._stem import stem_key
 
@@ -185,18 +197,80 @@ def _path_set_change_reason(
     if not moved:
         return None
     parsed_files = list(parsed_files)
-    others = ({pf.file_info.path for pf in parsed_files} | set(previous_paths)) - moved
-    other_stems = {stem_key(path) for path in others}
+    languages = {pf.file_info.path: pf.file_info.language for pf in parsed_files}
+    stems = {stem_key(path) for path in moved}
+    before = _stem_buckets(previous_paths, stems)
+    after = _stem_buckets(languages, stems)
     # NUL never occurs in a stem, so a match cannot straddle two imports.
     import_text = "\0".join(
         imp.module_path.lower() for pf in parsed_files for imp in pf.imports
     )
     for path in sorted(moved):
         stem = stem_key(path)
-        if stem in other_stems:
-            return f"{path}: another file shares its import stem"
+        answers = _stem_answers(before.get(stem, []), stem, languages, moved)
+        if answers != _stem_answers(after.get(stem, []), stem, languages, moved):
+            return f"{path}: changes what its import stem resolves to"
         if stem and stem in import_text:
             return f"{path}: an import may resolve to it"
+    return None
+
+
+def _stem_buckets(paths: Iterable[str], stems: Collection[str | None]) -> dict[str | None, list[str]]:
+    """The stem-map buckets of *paths* for just *stems*."""
+    from repowise.core.ingestion.graph._stem import stem_key
+
+    buckets: dict[str | None, list[str]] = {}
+    for path in paths:
+        stem = stem_key(path)
+        if stem in stems:
+            buckets.setdefault(stem, []).append(path)
+    return buckets
+
+
+def _stem_answers(
+    bucket: list[str], stem: str | None, languages: dict[str, str], inert: Collection[str]
+) -> tuple[str | None, str | None]:
+    """What a stem-map bucket answers: ``(best source candidate, type target)``.
+
+    ``ResolverContext.stem_lookup`` returns the best candidate under the stem
+    map's own ordering, prose included; the resolvers whose key the import
+    may not spell (Ruby, Luau) keep it only when it is source, so a prose
+    best candidate answers as ``None``. The import-free type-reference passes
+    (``ingestion.type_ref_resolution``) read a bucket only when it holds one
+    path, and accept it only if it is source. A path of unknown language (a
+    removed source file) counts as source.
+
+    Ceiling: Go keys a module-root import on the module's directory name and
+    keeps any best candidate, so a doc can win it when that directory holds
+    no ``.go`` file, which a compiling Go import never names. The original
+    unique-stem rule accepts the same case; upgrade by comparing the raw best
+    candidate for stems that name a Go module directory.
+    """
+    from repowise.core.ingestion.graph._stem import _stem_priority
+
+    if not bucket:
+        return None, None
+    best = min(bucket, key=lambda path: _stem_priority(path, stem or ""))
+    if best in inert or languages.get(best) in _INERT_LANGUAGES:
+        return None, None
+    return best, best if len(bucket) == 1 else None
+
+
+def _manifest_named_reason(moved: Collection[str], manifest_sources: Mapping[str, bytes]) -> str | None:
+    """Refuse a moved doc whose file name a JSON manifest spells.
+
+    JSON manifests map an import onto a path the import never spells
+    (package.json ``imports``/``exports``/``main``, tsconfig ``paths``), and
+    resolvers keep any file there, prose included. Resolvers probe only
+    source extensions, so a manifest reaches a doc only by its full file name.
+    YAML and TOML manifests (mkdocs nav, pyproject) map no import to a path.
+    """
+    if not moved:
+        return None
+    text = b"\0".join(manifest_sources.values()).decode("utf-8", errors="ignore").lower()
+    for path in sorted(moved):
+        if path.rsplit("/", 1)[-1].lower() in text:
+            return f"{path}: a manifest names it"
     return None
 
 
@@ -228,10 +302,19 @@ def _removal_plan(
     return before, None
 
 
-def _edit_plan(path: str, parsed: Any, parse_cache: Any) -> tuple[Any | None, bool, str | None]:
-    """``(before, surface_changed, refusal)`` for an edited, previously parsed file."""
+def _edit_plan(
+    path: str, parsed: Any, parse_cache: Any, cleared: Collection[str] = ()
+) -> tuple[Any | None, bool, str | None]:
+    """``(before, surface_changed, refusal)`` for an edited, previously parsed file.
+
+    A path in *cleared* is a config or data file whose edit changed nothing the
+    build reads (:mod:`.config_inputs`); with an empty parse on both sides it
+    is planned like an inert edit.
+    """
     before = parse_cache.previous_entry(path, exclude_hash=parsed.content_hash)
     if before is not None and is_inert(before) and is_inert(parsed):
+        return before, False, None
+    if path in cleared and before is not None and parse_is_empty(before) and parse_is_empty(parsed):
         return before, False, None
     language = parsed.file_info.language
     if language not in PATCHABLE_LANGUAGES:
@@ -276,12 +359,16 @@ def _classify_removals(
 
 
 def _classify_changes(
-    edits: _EditSet, changed: dict[str, Any], previous_paths: Collection[str], parse_cache: Any
+    edits: _EditSet,
+    changed: dict[str, Any],
+    previous_paths: Collection[str],
+    parse_cache: Any,
+    cleared: Collection[str] = (),
 ) -> str | None:
     """File each changed or added path into *edits*; the reason to refuse, if any."""
     for path, parsed in sorted(changed.items()):
         if path in previous_paths:
-            before, surface_changed, refusal = _edit_plan(path, parsed, parse_cache)
+            before, surface_changed, refusal = _edit_plan(path, parsed, parse_cache, cleared)
             if refusal is not None:
                 return refusal
             if surface_changed:
@@ -302,13 +389,18 @@ def plan_patch(
     changed: dict[str, Any],
     traversed_paths: Collection[str] = (),
     seed_nodes: Iterable[tuple[str, Any]] = (),
+    cleared: Collection[str] = (),
+    manifest_sources: Mapping[str, bytes] | None = None,
 ) -> PatchPlan:
     """Plan a patch for the files whose content changed since the last index.
 
     *changed* maps each changed path to its fresh :class:`ParsedFile`;
     *parsed_files* is every file parsed in this run and *traversed_paths*
     every file the walk found. The parse cache stands in for the previous
-    run's manifest; *seed_nodes* are the snapshot's ``(node_id, attrs)`` rows.
+    run's manifest; *seed_nodes* are the snapshot's ``(node_id, attrs)`` rows;
+    *manifest_sources* holds the bytes of the parsed JSON manifests.
+    *cleared* names edited config and data files proven not to change what
+    the build reads.
 
     An edit that only moved bodies (or documentation) is planned here in full.
     One that adds or removes source files or changes a file's surface comes
@@ -323,16 +415,18 @@ def plan_patch(
     removed = sorted(previous_paths - current)
     edits = _EditSet()
     refusal = _classify_removals(edits, removed, parse_cache, traversed_paths) or _classify_changes(
-        edits, changed, previous_paths, parse_cache
+        edits, changed, previous_paths, parse_cache, cleared
     )
     if refusal is not None:
         return PatchPlan(False, reason=refusal)
     surface_edits, inert_added, inert_removed = edits.surface, edits.inert_added, edits.inert_removed
     seed_nodes = list(seed_nodes)
     added = inert_added + [p for p, (before, _) in surface_edits.items() if before is None]
-    reason = _path_set_change_reason(
-        inert_added, inert_removed, parsed_files, previous_paths
-    ) or _stale_seed_reason(added, seed_nodes)
+    reason = (
+        _path_set_change_reason(inert_added, inert_removed, parsed_files, previous_paths)
+        or _manifest_named_reason(inert_added + inert_removed, manifest_sources or {})
+        or _stale_seed_reason(added, seed_nodes)
+    )
     if reason is not None:
         return PatchPlan(False, reason=reason)
     scope = tuple(sorted(changed))
