@@ -625,7 +625,7 @@ Opt-in blocks, computed only when named: `outline` (page tree, two levels), `tou
 
 - `unresolved` reasons: `not_indexed`, `no_such_path` (with `removed_by_commit` and `moved_to` when git explains it), `excluded`, `not_measured`, `no_such_module` (with `known_modules`).
 - `mode`, `_meta`, `unresolved`, `known_modules` and every kept list's `*_total` survive `only`. `scope` and `counts` are echoed.
-- `_meta.health_analysis`: stored analysis, not recomputed; `status` `available`, `provenance_unknown` (no row recorded the commit) or `unavailable`. `_meta.health_analyzed_at` / `_commit` date the pass, which can lag indexing; `_meta.health_analyzed_commits_distinct` when rows span passes.
+- `_meta.health_analysis`: stored analysis, not recomputed; `status` `available`, `provenance_unknown` (no row recorded the commit) or `unavailable`, with `reason` and `refresh` when not `available`, and `analyzer_version`. `_meta.health_analyzed_at` / `_commit` date the pass, which can lag indexing; `_meta.health_analyzed_commits_distinct` when rows span passes.
 
 ### fix_first
 
@@ -676,6 +676,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 - Nothing is gated. Health is ungated on Java, C#, C and C++; refactoring, performance and dead code are preview on Java, C#, C, C++ (dead code also Kotlin, Swift).
 - **Vendored and generated files:** findings held back in every language (changed upstream or by a generator), counted in `_meta.gated.health` under `vendored` and `generated`; `_meta.gated.reasons` explains once when nothing is listed. Scores, KPIs and worst-file order still count them.
 - **History markers** (ownership, churn, change entropy, co-change, other git kinds): on tests, held back under `test_history` (code-shape findings still list); elsewhere, held from finding lists under `history`, though they order hotspots and Fix first and `get_risk` lists them.
+- **`findings`** (targeted mode): the five highest-impact open findings unless `limit` is passed; `findings_total` and `recovery.findings` name the rest.
 - **`findings_hidden`** (targeted mode): one line beside `findings` when a file or row hold kept findings off it, with their count by hold and the points they still deduct. Absent when nothing is held.
 
 ### Opt-in blocks
@@ -699,7 +700,7 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 - **`untested_complexity`:** estimated tiers only with `include=["unverified"]`; never both measures.
 - **`doc_drift`:** evidence to check, not a proven defect.
 - **`what_if`:** `ceiling` is the score with no structure deduction (history's cap shrinking with it); `target_out_of_reach` when below 8.0; `fix_all_structure` gains, top 3 `findings`, and `top_fixes` across files. Each fix has `points` (upper bound when its category is capped) and `gain` (`file`, `average`, `hotspot`). `structure_deduction` may include withheld types no fix covers.
-- **`only` aliases:** `biomarkers` -> `findings`, `accuracy` -> `defect_accuracy`, `refactoring` -> `refactoring_plans`. Dimension names land in `unknown_only_keys` with `unknown_only_keys_hint`, which names the `include` a missing include-gated key needs; for targeted `signals`, name `metrics`.
+- **`only` aliases:** `biomarkers` -> `findings`, `accuracy` -> `defect_accuracy`, `refactoring` -> `refactoring_plans`. Dimension names land in `unknown_only_keys` with `unknown_only_keys_hint`, which names the `include` a missing include-gated key needs; in targeted mode it names the keys that call has (for `signals`, name `metrics`).
 
 ### Refactoring
 
