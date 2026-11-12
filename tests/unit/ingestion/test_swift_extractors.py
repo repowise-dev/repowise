@@ -8,6 +8,7 @@ Class and protocol cases are exercised as regression coverage.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 
 import pytest
@@ -123,3 +124,49 @@ class TestSwiftExportedImport:
         by_module = {i.module_path: i for i in result.imports}
         assert by_module["FooKit"].is_reexport is True
         assert by_module["Foundation"].is_reexport is False
+
+
+def _swift_struct(members: int) -> bytes:
+    """One struct with *members* fields, each with a ``///`` doc comment."""
+    lines = ["struct Big {"]
+    for i in range(members):
+        lines.append(f"    /// Doc {i}.")
+        lines.append(f"    var m{i}: Int = {i}")
+    lines.append("}")
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _best_parse_time(parser: ASTParser, src: bytes, runs: int = 3) -> float:
+    """The fastest of *runs* parses of *src*, in seconds."""
+    best = float("inf")
+    for _ in range(runs):
+        start = time.perf_counter()
+        parser.parse_file(_file("Big.swift"), src)
+        best = min(best, time.perf_counter() - start)
+    return best
+
+
+class TestSwiftDocstringScale:
+    def test_many_member_struct_keeps_docstrings(self, parser: ASTParser) -> None:
+        members = 5000
+        result = parser.parse_file(_file("Big.swift"), _swift_struct(members))
+
+        docs = {s.name: s.docstring for s in result.symbols}
+        assert docs["m0"] == "Doc 0."
+        assert docs[f"m{members - 1}"] == f"Doc {members - 1}."
+        assert sum(1 for name in docs if name.startswith("m")) == members
+        assert all(docs[f"m{i}"] for i in range(members))
+
+    def test_docstring_lookup_scales_linearly(self, parser: ASTParser) -> None:
+        # #5277: each docstring lookup copied the parent's children, so N members
+        # cost N^2. 4x the members should take about 4x as long, not 16x.
+        _best_parse_time(parser, _swift_struct(10), runs=1)  # warm-up
+
+        small = _best_parse_time(parser, _swift_struct(1000))
+        large = _best_parse_time(parser, _swift_struct(4000))
+
+        ratio = large / small
+        assert ratio < 8, (
+            f"4000 members took {ratio:.1f}x as long as 1000 "
+            f"({large:.2f}s vs {small:.2f}s); linear is about 4x"
+        )
