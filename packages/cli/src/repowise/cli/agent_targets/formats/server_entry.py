@@ -128,6 +128,11 @@ class ServerSpec:
                 raise RemoteServerEntryError(f"its '{LOCAL_NAME}' entry names a remote server")
             return LOCAL_NAME
 
+        hosted_slot = servers.get(HOSTED_NAME)
+        if isinstance(hosted_slot, dict) and remote(HOSTED_NAME) is None:
+            # Someone put a local server under the hosted name. Merging a URL
+            # into it would leave an entry that is neither; leave it and say so.
+            raise ValueError(f"its '{HOSTED_NAME}' entry is a local server, not a remote one")
         url = remote_url(self.entry)
         for name in (LOCAL_NAME, HOSTED_NAME):
             stored = remote(name)

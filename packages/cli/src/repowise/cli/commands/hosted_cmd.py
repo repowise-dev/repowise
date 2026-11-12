@@ -294,6 +294,21 @@ def _error(code: str, message: str) -> dict[str, Any]:
 def _render(payload: dict[str, Any]) -> None:
     from rich.table import Table
 
+    _render_header(payload)
+    steps = [step for step in payload.get("steps") or [] if isinstance(step, dict)]
+    if steps:
+        table = Table(title="Setup")
+        for column in ("Step", "Done", "Who", "Next"):
+            table.add_column(column, style="cyan" if column == "Step" else None)
+        for step in steps:
+            table.add_row(*_step_cells(step))
+        console.print(table)
+    if payload.get("complete"):
+        console.print("[green]Setup is complete.[/green]")
+
+
+def _render_header(payload: dict[str, Any]) -> None:
+    """Who is signed in, and the repo's hosted index."""
     account = payload.get("account") or {}
     tier = payload.get("effective_tier") or payload.get("tier") or "free"
     console.print(f"Signed in as [bold]{escape(str(account.get('user') or '?'))}[/bold] ({tier})")
@@ -304,23 +319,12 @@ def _render(payload: dict[str, Any]) -> None:
     else:
         console.print("[dim]No repo on repowise.dev yet. Run 'repowise publish' in a checkout.[/dim]")
 
-    steps = [step for step in payload.get("steps") or [] if isinstance(step, dict)]
-    if steps:
-        table = Table(title="Setup")
-        table.add_column("Step", style="cyan")
-        table.add_column("Done")
-        table.add_column("Who")
-        table.add_column("Next")
-        for step in steps:
-            action = escape(str(step.get("action") or ""))
-            if step.get("url") and not step.get("done"):
-                action = f"{action}\n[dim]{escape(str(step['url']))}[/dim]"
-            table.add_row(
-                f"{step.get('id')}{' (optional)' if step.get('optional') else ''}",
-                "[green]yes[/green]" if step.get("done") else "no",
-                str(step.get("who") or ""),
-                action,
-            )
-        console.print(table)
-    if payload.get("complete"):
-        console.print("[green]Setup is complete.[/green]")
+
+def _step_cells(step: dict[str, Any]) -> tuple[str, str, str, str]:
+    """One setup step as table cells; the link shows only while the step is open."""
+    action = escape(str(step.get("action") or ""))
+    if step.get("url") and not step.get("done"):
+        action = f"{action}\n[dim]{escape(str(step['url']))}[/dim]"
+    optional = " (optional)" if step.get("optional") else ""
+    done = "[green]yes[/green]" if step.get("done") else "no"
+    return f"{step.get('id')}{optional}", done, str(step.get("who") or ""), action

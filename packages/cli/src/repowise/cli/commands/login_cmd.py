@@ -312,36 +312,12 @@ def device_sign_in(device: str | None) -> dict:
     from repowise.cli.platform import auth
 
     for attempt in range(2):
-        status, body = auth.request_device_code(device)
-        error = body.get("error")
-        if status in (404, 405) or error == "unsupported_grant_type":
-            raise click.ClickException(_DEVICE_UNSUPPORTED)
-        if error == "unauthorized_client":
-            raise click.ClickException(_DEVICE_UNAUTHORIZED)
-        if status == 0:
-            raise click.ClickException(
-                "Could not reach repowise.dev. Check the connection and try again."
-            )
-        if status != 200 or not body.get("device_code") or not body.get("user_code"):
-            detail = body.get("error_description") or error or f"HTTP {status}"
-            raise click.ClickException(f"Device sign-in could not start: {detail}")
-
+        body = _start_device_flow(device)
         # Bounded: a server value we cannot read, or one far outside RFC 8628's
         # norms, must not leave the command waiting for hours.
         expires_in = _bounded_seconds(body.get("expires_in"), default=600, low=60, high=1800)
         interval = _bounded_seconds(body.get("interval"), default=5, low=1, high=60)
-        verify = escape(str(body.get("verification_uri") or "https://repowise.dev/device"))
-        console.print(f"To sign in, open [cyan]{verify}[/cyan] on any device")
-        console.print(f"and enter the code [bold]{escape(str(body['user_code']))}[/bold]")
-        if body.get("verification_uri_complete"):
-            complete = escape(str(body["verification_uri_complete"]))
-            console.print(f"(or open [cyan]{complete}[/cyan] with the code filled in).")
-        console.print(
-            "Approve it only if you started this sign-in yourself, on a machine you control."
-        )
-        console.print(
-            f"[dim]Waiting for approval (the code expires in {expires_in // 60} min)...[/dim]"
-        )
+        _print_device_prompt(body, expires_in)
 
         outcome, token = auth.poll_device_token(
             body["device_code"], interval=interval, expires_in=expires_in
@@ -349,16 +325,49 @@ def device_sign_in(device: str | None) -> dict:
         if outcome == "ok":
             return _complete_sign_in(token, device)
         if outcome == "invalid_grant" and attempt == 0:
-            console.print("[yellow]That code is no longer valid. Starting over with a new one.[/yellow]")
+            console.print(
+                "[yellow]That code is no longer valid. Starting over with a new one.[/yellow]"
+            )
             continue
-        message = _DEVICE_ERRORS.get(outcome)
-        if message is None:
-            detail = token.get("error_description") or outcome
-            message = f"Device sign-in failed: {detail}"
-        raise click.ClickException(message)
+        detail = token.get("error_description") or outcome
+        raise click.ClickException(
+            _DEVICE_ERRORS.get(outcome) or f"Device sign-in failed: {detail}"
+        )
     raise click.ClickException(
         "Device sign-in failed twice with an invalid code. Run 'repowise login --device' again."
     )
+
+
+def _start_device_flow(device: str | None) -> dict:
+    """Ask for a device code; the server's answer, or a ``ClickException`` saying why not."""
+    from repowise.cli.platform import auth
+
+    status, body = auth.request_device_code(device)
+    error = body.get("error")
+    if status in (404, 405) or error == "unsupported_grant_type":
+        raise click.ClickException(_DEVICE_UNSUPPORTED)
+    if error == "unauthorized_client":
+        raise click.ClickException(_DEVICE_UNAUTHORIZED)
+    if status == 0:
+        raise click.ClickException(
+            "Could not reach repowise.dev. Check the connection and try again."
+        )
+    if status != 200 or not body.get("device_code") or not body.get("user_code"):
+        detail = body.get("error_description") or error or f"HTTP {status}"
+        raise click.ClickException(f"Device sign-in could not start: {detail}")
+    return body
+
+
+def _print_device_prompt(body: dict, expires_in: int) -> None:
+    """Where to go and what to type. Server strings are escaped, never markup."""
+    verify = escape(str(body.get("verification_uri") or "https://repowise.dev/device"))
+    console.print(f"To sign in, open [cyan]{verify}[/cyan] on any device")
+    console.print(f"and enter the code [bold]{escape(str(body['user_code']))}[/bold]")
+    if body.get("verification_uri_complete"):
+        complete = escape(str(body["verification_uri_complete"]))
+        console.print(f"(or open [cyan]{complete}[/cyan] with the code filled in).")
+    console.print("Approve it only if you started this sign-in yourself, on a machine you control.")
+    console.print(f"[dim]Waiting for approval (the code expires in {expires_in // 60} min)...[/dim]")
 
 
 @click.command(name="logout")

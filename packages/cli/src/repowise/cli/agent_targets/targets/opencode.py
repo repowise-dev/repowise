@@ -313,35 +313,47 @@ def write_server(
 
     OpenCode merges the project config over the user one key by key, so a
     hosted ``repowise`` in the project file would land on a local ``repowise``
-    in the user file and leave an entry that is neither. A local server at
-    user scope therefore sends the hosted one to ``repowise-hosted``.
+    in the user file and leave an entry that is neither. So the two scopes
+    look at each other: a local server at user scope sends the hosted one to
+    ``repowise-hosted``, and a remote ``repowise`` in this repo's project file
+    stops a local user-scope write (``RemoteServerEntryError``).
     """
-    from ..formats.server_entry import write_json_servers
+    from ..formats.server_entry import RemoteServerEntryError, write_json_servers
 
+    local_elsewhere = False
+    if spec.hosted and scope is Scope.PROJECT:
+        local_elsewhere = _stored_is_remote(Scope.USER, None) is False
+    elif (
+        not spec.hosted
+        and scope is Scope.USER
+        and repo_path is not None
+        and _stored_is_remote(Scope.PROJECT, repo_path)
+    ):
+        raise RemoteServerEntryError(f"its project '{SERVER_NAME}' entry names a remote server")
     return write_json_servers(
         write_target_path(scope, repo_path),
         "mcp",
         spec,
         local_type=LOCAL_TYPE,
-        local_elsewhere=spec.hosted and scope is Scope.PROJECT and _user_local_server(),
+        local_elsewhere=local_elsewhere,
         merge=_merge_servers,
     )
 
 
-def _user_local_server() -> bool:
-    """Whether a user-scope OpenCode config holds a local ``repowise`` server."""
+def _stored_is_remote(scope: Scope, repo_path: Path | None) -> bool | None:
+    """Whether the ``repowise`` entry at *scope* is remote; ``None`` when there is none."""
     from ..formats.server_entry import is_remote_entry
 
-    for path in config_paths(Scope.USER):
+    for path in config_paths(scope, repo_path):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         servers = data.get("mcp") if isinstance(data, dict) else None
         stored = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
-        if isinstance(stored, dict) and not is_remote_entry(stored, local_type=LOCAL_TYPE):
-            return True
-    return False
+        if isinstance(stored, dict):
+            return is_remote_entry(stored, local_type=LOCAL_TYPE)
+    return None
 
 
 def write_mcp_config(scope: Scope, repo_path: Path | None = None) -> FileWrite:

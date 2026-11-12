@@ -803,3 +803,29 @@ def test_permission_needed_carries_the_card(bot_server) -> None:
     bot_server["action"] = (409, {"detail": card})
     result = _hosted("coverage-pr", "--repo", "acme/api", "--format", "json")
     assert json.loads(result.output)["card"] == card
+
+
+def test_a_local_server_under_the_hosted_name_is_left_alone(repo: Path) -> None:
+    path = repo / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    local = {"command": "repowise", "args": ["mcp"]}
+    path.write_text(
+        json.dumps({"mcpServers": {LOCAL_NAME: local, HOSTED_NAME: local}}), encoding="utf-8"
+    )
+
+    result = _install_hosted("cursor", repo)
+
+    assert result.server_name is None
+    assert result.files[0].action is FileAction.KEPT
+    assert _read_json(path)["mcpServers"][HOSTED_NAME] == local
+
+
+def test_opencode_local_user_write_refuses_under_a_hosted_project_entry(repo: Path) -> None:
+    _install_hosted("opencode", repo)
+    opencode = get_target("opencode")
+    assert opencode is not None
+
+    result = opencode.install(Scope.USER, InstallOptions(), repo_path=repo)
+
+    assert any(f.action is FileAction.KEPT and f.reason == RENAME_HINT for f in result.files)
+    assert not (Path.home() / ".config" / "opencode" / "opencode.json").exists()
