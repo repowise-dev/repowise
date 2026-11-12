@@ -151,6 +151,12 @@ async def test_a_self_managed_gitlab_is_known_by_its_ref_shape(client, tmp_path)
         "!12",
         "merge request",
     )
+    # With no ref to go by, the link's prefix names it.
+    missing = await client.post(
+        f"/api/repos/{repo['id']}/blast-radius/change", json={"change_id": "mr:99"}
+    )
+    assert missing.status_code == 404
+    assert "merge request !99" in missing.json()["detail"]
 
 
 async def test_a_request_this_clone_lacks_is_not_fetched_into_a_developer_clone(
@@ -178,9 +184,13 @@ async def test_a_request_this_clone_lacks_is_not_fetched_into_a_developer_clone(
 
 
 async def test_a_managed_checkout_fetches_the_published_ref(client, tmp_path):
-    """A clone the server owns fetches the one ref; its branch and working tree stay put."""
+    """A clone the server owns fetches the one ref, on each open; its branch stays put.
+
+    The host is a self-managed GitLab no setting maps, so only the ``mr:``
+    prefix says which ref shape to fetch.
+    """
     seed = tmp_path / "seed"
-    url = "https://gitlab.com/group/project.git"
+    url = "https://git.corp.example/group/project.git"
     base, head = _repo_with_request(seed, url=url, ref="refs/merge-requests/5/head")
     bare = tmp_path / "remote.git"
     _git(tmp_path, "clone", "-q", "--mirror", str(seed), str(bare))
@@ -195,11 +205,20 @@ async def test_a_managed_checkout_fetches_the_published_ref(client, tmp_path):
     assert _git(checkout, "for-each-ref", "refs/merge-requests") == ""
     repo = await create_test_repo(client, tmp_path)
 
-    resp = await client.post(
-        f"/api/repos/{repo['id']}/blast-radius/change", json={"change_id": "mr:5"}
-    )
+    url_change = f"/api/repos/{repo['id']}/blast-radius/change"
+
+    resp = await client.post(url_change, json={"change_id": "mr:5"})
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["change_id"] == f"mr:5@{base}...{head}"
     assert _git(checkout, "rev-parse", "refs/merge-requests/5/head") == head
     assert _git(checkout, "rev-parse", "HEAD") == main_before
+
+    # A push to the request: the next open reads the new head, not the ref fetched before.
+    _git(seed, "checkout", "-q", head)
+    newer = _commit(seed, {"extra.py": "y = 1\n"}, "feat: more")
+    _git(seed, "checkout", "-q", "main")
+    _git(seed, "update-ref", "refs/merge-requests/5/head", newer)
+    _git(bare, "fetch", "-q", str(seed), "+refs/merge-requests/5/head:refs/merge-requests/5/head")
+    again = await client.post(url_change, json={"change_id": "mr:5"})
+    assert again.json()["change_id"] == f"mr:5@{base}...{newer}"

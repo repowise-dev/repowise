@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core import git_refs
 from repowise.core.analysis.git_cli import _git, checkout_relative
-from repowise.core.forges import BaseForge, all_forges, detect_forge, get_forge
+from repowise.core.forges import BaseForge, ForgeKind, all_forges, detect_forge, get_forge
 from repowise.core.persistence.models import GitCommit, GitCommitFile
 
 #: A ``change_request`` (a merge or pull request) is never listed: it opens
@@ -418,30 +418,40 @@ def _branch_tip(repo_path: str, name: str) -> str:
 
 def is_change_request(change_id: str) -> bool:
     """Whether *change_id* names a merge or pull request, pinned or not."""
-    return bool(_CHANGE_REQUEST.match(change_id))
+    return bool(_CHANGE_REQUEST.fullmatch(change_id))
 
 
-def _published_head(repo_path: str, number: int) -> tuple[BaseForge, str]:
+def _request_forge(repo_path: str, prefix: str) -> BaseForge:
+    """The checkout's forge; for a host no setting maps (a self-managed GitLab
+    on its own domain reads as plain git), the forge the id's prefix names."""
+    own = get_forge(detect_forge(repo_path))
+    if own.kind != ForgeKind.GENERIC:
+        return own
+    return get_forge(ForgeKind.GITLAB if prefix == "mr" else ForgeKind.GITHUB)
+
+
+def _published_head(repo_path: str, prefix: str, number: int) -> tuple[BaseForge, str]:
     """The forge whose published ref holds request *number*, and the head it points at.
 
-    The checkout's own forge is asked first; a self-managed GitLab on a host
-    no setting maps reads as a plain git host, so the other forges' ref shapes
-    are tried after it. ``(the checkout's forge, "")`` when no ref is here.
+    :func:`_request_forge` is asked first, then every other forge's ref
+    shape. ``(that forge, "")`` when no ref is here.
     """
-    own = get_forge(detect_forge(repo_path))
-    for forge in (own, *(f for f in all_forges() if f is not own)):
+    first = _request_forge(repo_path, prefix)
+    for forge in (first, *(f for f in all_forges() if f is not first)):
         if forge.change_head_ref:
             sha = git_refs.ref_sha(repo_path, forge.change_head_ref.format(number=number))
             if sha:
                 return forge, sha
-    return own, ""
+    return first, ""
 
 
 def change_request_ref(repo_path: str, change_id: str) -> str:
-    """The ref the checkout's forge publishes the request's head under; ``""`` for none."""
-    match = _CHANGE_REQUEST.match(change_id)
-    template = get_forge(detect_forge(repo_path)).change_head_ref
-    return template.format(number=int(match.group(2))) if match and template else ""
+    """The ref the request's head is published under, to fetch; ``""`` when there is none."""
+    match = _CHANGE_REQUEST.fullmatch(change_id)
+    if not match:
+        return ""
+    template = _request_forge(repo_path, match.group(1)).change_head_ref
+    return template.format(number=int(match.group(2))) if template else ""
 
 
 def _request_commits(
@@ -476,11 +486,11 @@ def resolve_change_request(repo_path: str, change_id: str) -> ChangeCandidate:
     form. Raises :class:`UnknownChangeError` when the ref or the commits are
     not in this clone.
     """
-    match = _CHANGE_REQUEST.match(change_id)
+    match = _CHANGE_REQUEST.fullmatch(change_id)
     if not match:
         raise UnknownChangeError(f"unknown change {change_id!r}")
     prefix, number = match.group(1), int(match.group(2))
-    forge, published = _published_head(repo_path, number)
+    forge, published = _published_head(repo_path, prefix, number)
     name = f"{forge.change_term} {forge.format_change_ref(number)}"
     base = git_refs.default_base(repo_path)
     base_sha, head_sha = _request_commits(repo_path, match, name, published, base)

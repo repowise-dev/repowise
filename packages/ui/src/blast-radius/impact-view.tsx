@@ -734,6 +734,8 @@ function usePinnedLink(analysis: Analysis | null, onChangePicked: ((linkParam: s
   const asked = analysis?.selection.kind === "change" ? analysis.selection.id : null;
   const resolvedId = analysis?.change?.id ?? null;
   useEffect(() => {
+    // Another pick clears it, so opening the same request again pins the link again.
+    if (!resolvedId) pinned.current = null;
     if (!resolvedId || resolvedId === asked || pinned.current === resolvedId) return;
     pinned.current = resolvedId;
     onPicked.current?.(changeLinkParam(resolvedId));

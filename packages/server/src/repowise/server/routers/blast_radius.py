@@ -199,14 +199,25 @@ async def _review(
 def _change_request(checkout: str, change_id: str) -> ChangeCandidate:
     """The merge or pull request *change_id* names, pinned to its commits.
 
-    A checkout the server owns fetches the forge's ref for a request this
-    clone lacks; a developer's clone is never fetched.
+    A checkout the server owns fetches the forge's ref: every time for
+    ``mr:<n>``, so it reads the request's latest head, and for a pinned id
+    only when its commits are missing. A developer's clone is never fetched.
     """
+    ref = change_request_ref(checkout, change_id)
+    managed = bool(ref) and is_managed_checkout(checkout)
+    pinned = "@" in change_id
+    fetch_failed: ManagedCheckoutError | None = None
+    if managed and not pinned:
+        try:
+            fetch_ref(checkout, ref)
+        except ManagedCheckoutError as exc:  # a ref fetched earlier still answers
+            fetch_failed = exc
     try:
         return resolve_change_request(checkout, change_id)
     except UnknownChangeError:
-        ref = change_request_ref(checkout, change_id)
-        if not ref or not is_managed_checkout(checkout):
+        if fetch_failed is not None:
+            raise UnknownChangeError(str(fetch_failed)) from fetch_failed
+        if not (managed and pinned):
             raise
     try:
         fetch_ref(checkout, ref)
