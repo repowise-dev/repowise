@@ -566,6 +566,8 @@ export interface ChangeBlastRadiusResponse {
   change_id: string;
   changed_files: string[];
   changed_files_total: number;
+  review?: ChangeReview | null;
+  review_unavailable?: string | null;
 }
 
 export interface ChangeCandidateModel {
@@ -763,6 +765,72 @@ export interface ChangeRecord {
   metadata: ChangeForgeMetadata;
   evidence?: ChangeEvidence | null;
   evidence_building?: boolean;
+}
+
+/**
+ * The change's score and tests, from the functions ``repowise risk`` and
+ * ``get_change_risk`` use, so all three give the same answer.
+ */
+export interface ChangeReview {
+  revspec: string | null;
+  risk: ChangeRiskBlock;
+  tests: ChangeTestsBlock;
+}
+
+/**
+ * ``repowise risk <revspec> --format json`` for the change, field for field.
+ *
+ * ``fix_history`` says how often the touched files needed fixes;
+ * ``risk_percentile`` ranks the diff's size and spread against the
+ * repository's recent commits (``score`` is the 0-10 model score it ranks).
+ * Neither is a probability that the change breaks something.
+ */
+export interface ChangeRiskBlock {
+  ref: string;
+  working_tree: boolean;
+  fix_history: FixHistoryResponse;
+  risk_authority: RiskAuthority;
+  score: number;
+  score_measures: string;
+  score_unit: string;
+  risk_percentile: number | null;
+  review_priority: string | null;
+  classification: string | null;
+  fallback_band: string | null;
+  baseline_sample_size: number;
+  exclude_patterns: string[];
+  is_fix: boolean;
+  features: ChangeFeaturesResponse;
+  drivers: RiskDriverResponse[];
+}
+
+/**
+ * The tests the change needs: ``get_change_risk``'s ``impacted_tests``, longer.
+ *
+ * ``run_all`` true means run the whole suite, for ``reasons``; false with an
+ * empty ``tests_to_run`` means no test needs to run. ``status`` is
+ * ``selected``, ``run_all``, ``degraded`` (the index lags the checkout and the
+ * list holds most of the suite), or why no selection was made (``no_index``,
+ * ``unknown``, ``timeout``, ``busy``, ``config_invalid``).
+ */
+export interface ChangeTestsBlock {
+  status: string;
+  run_all: boolean;
+  reasons: string[];
+  reasons_total?: number | null;
+  basis: string;
+  map_present?: boolean | null;
+  tests_to_run: string[];
+  tests_to_run_kind?: string | null;
+  total: number;
+  truncated: boolean;
+  always_run_total?: number | null;
+  broadcast_total?: number | null;
+  import_closure_total?: number | null;
+  summary: string;
+  why?: Record<string, string> | null;
+  basis_by_file?: Record<string, string> | null;
+  basis_by_file_total?: number | null;
 }
 
 /** Who owns some of the changed files, by primary authorship. */
