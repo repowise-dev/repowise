@@ -136,9 +136,32 @@ def _partners(r: ChangeBlastRadiusResponse) -> list[tuple[str, str]]:
     return list(seen.items())
 
 
+def _says(n: int, one: str, many: str) -> str:
+    return one if n == 1 else many
+
+
+def _look_reason(r: ChangeBlastRadiusResponse, reach: _Reach) -> str | None:
+    """Why a change asks to be read first, or ``None`` when nothing does."""
+    risky = sum(1 for m in reach.changed if m.hotspot or m.weak)
+    if risky:
+        return (
+            f"{plural(risky, 'changed file')} {_says(risky, 'changes', 'change')} often "
+            f"or {_says(risky, 'has', 'have')} poor health."
+        )
+    wide = len(reach.files)
+    if r.structural_impact_band == "broad" or wide > _WIDE_REACH:
+        return f"{plural(wide, 'source file')} {_says(wide, 'depends', 'depend')} on it."
+    partners = len(_partners(r))
+    if partners:
+        return (
+            f"{plural(partners, 'file')} that usually {_says(partners, 'changes', 'change')} "
+            f"with these {_says(partners, 'is', 'are')} not in it."
+        )
+    return None
+
+
 def _verdict(r: ChangeBlastRadiusResponse, reach: _Reach, total: int) -> tuple[str, str, str]:
     """The page's one-line verdict: a word, the fact behind it, and what to do first."""
-    tests = r.test_impact.recommendations_total
     untested = sum(m.untested for m in reach.changed)
     if untested:
         return (
@@ -146,33 +169,17 @@ def _verdict(r: ChangeBlastRadiusResponse, reach: _Reach, total: int) -> tuple[s
             f"{plural(untested, 'changed file')} with no test found.",
             "Add or point to a test for it before merging, then read the files under Look at first.",
         )
-    risky = sum(1 for m in reach.changed if m.hotspot or m.weak)
-    reason = None
-    reach_n, partners = len(reach.files), len(_partners(r))
-    if risky:
-        one = risky == 1
-        reason = (
-            f"{plural(risky, 'changed file')} {'changes' if one else 'change'} often "
-            f"or {'has' if one else 'have'} poor health."
-        )
-    elif r.structural_impact_band == "broad" or reach_n > _WIDE_REACH:
-        reason = f"{plural(reach_n, 'source file')} {'depends' if reach_n == 1 else 'depend'} on it."
-    elif partners:
-        one = partners == 1
-        reason = (
-            f"{plural(partners, 'file')} that usually {'changes' if one else 'change'} "
-            f"with these {'is' if one else 'are'} not in it."
-        )
+    reason = _look_reason(r, reach)
     if reason:
         return "Look first", reason, "Read the files under Look at first, then run the tests."
-    small = total <= _SMALL_FILES and len(reach.files) <= _SMALL_REACH
-    run = f"{plural(tests, 'test')} to run" if tests else "no test found to run"
+    tests = r.test_impact.recommendations_total
+    word = "Small change" if total <= _SMALL_FILES and len(reach.files) <= _SMALL_REACH else "Contained"
+    if not tests:
+        return word, f"{plural(total, 'file')} changed, no test found to run.", "Nothing here asks for a closer look."
     return (
-        "Small change" if small else "Contained",
-        f"{plural(total, 'file')} changed, {run}.",
-        "Run the tests below and merge when they pass."
-        if tests
-        else "Nothing here asks for a closer look.",
+        word,
+        f"{plural(total, 'file')} changed, {plural(tests, 'test')} to run.",
+        "Run the tests below and merge when they pass.",
     )
 
 
@@ -240,6 +247,20 @@ def _tests_limited(r: ChangeBlastRadiusResponse) -> bool:
     return impact.coverage.status in ("unavailable", "degraded") or impact.analysis.partial or impact.analysis.stale
 
 
+def _command(commands: list[str]) -> list[str]:
+    """The commands that run the tests, whole, or a line saying why they are left out."""
+    if not commands:
+        return []
+    text = "\n".join(commands)
+    if len(text) > COMMAND_LIMIT:
+        return [
+            "",
+            f"The test command is {len(text)} characters, too long to include; "
+            "run the tests listed below.",
+        ]
+    return ["", "```sh", text, "```"]
+
+
 def _tests(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     impact = r.test_impact
     out = ["## Run these tests", ""]
@@ -258,14 +279,7 @@ def _tests(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     )
     if _tests_limited(r):
         out.append("Coverage data is limited here, so the list is a floor.")
-    commands = r.test_commands or []
-    if commands:
-        text = "\n".join(commands)
-        if len(text) <= COMMAND_LIMIT:
-            fence = "```"
-            out += ["", f"{fence}sh", text, fence]
-        else:
-            out += ["", f"The test command is {len(text)} characters, too long to include; run the tests listed below."]
+    out += _command(r.test_commands or [])
     shown = impact.recommendations[:TESTS_LIMIT]
     rows = [
         f"- {code(t.test_file or t.test_id)}" + (" (measured)" if t.basis == "measured" else "")

@@ -698,6 +698,17 @@ function ResultPane({
   );
 }
 
+/** The shown change's review as Markdown, with the health check once the reader has run it here. */
+function markdownHrefFor(
+  adapter: ImpactAdapter,
+  change: ChangeCandidate | undefined,
+  maxDepth: number,
+  check: ChangeCheck | undefined,
+): string | undefined {
+  if (!change || !adapter.changeMarkdownHref) return undefined;
+  return adapter.changeMarkdownHref({ changeId: change.id, maxDepth, healthCheck: check?.state?.status === "done" });
+}
+
 const EMPTY_WITH_LIST =
   "There is no uncommitted work, no branch ahead of the default branch, and no indexed commit yet. Pick files to see what depends on them.";
 const EMPTY_WITHOUT_LIST =
@@ -763,15 +774,7 @@ export function ImpactView({
       ? { state: health.checks[shownChange.id], onRun: () => void health.run(shownChange.id) }
       : undefined;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
-  // The Markdown carries the health check once the reader has run it here.
-  const markdownHref =
-    shownChange && adapter.changeMarkdownHref
-      ? adapter.changeMarkdownHref({
-          changeId: shownChange.id,
-          maxDepth,
-          healthCheck: check?.state?.status === "done",
-        })
-      : undefined;
+  const markdownHref = markdownHrefFor(adapter, shownChange, maxDepth, check);
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
     setFilesOpen(false);
