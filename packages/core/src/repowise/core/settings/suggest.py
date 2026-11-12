@@ -3,8 +3,10 @@
 A setting that can be suggested carries a ``suggest_when`` predicate (see
 :class:`~repowise.core.settings.model.Setting`). :func:`gather_facts` reads a
 few small things once: the settings' values, the index scope, what the agent
-hooks measured, whether coverage is stored, the tracked decisions and which
-embedder is ready. :func:`suggestions` then asks every predicate.
+hooks measured, whether coverage is stored, the tracked decisions, which
+embedder is ready, how much git history and how many file pages the index
+holds, and which directories hold only vendored or generated files.
+:func:`suggestions` then asks every predicate.
 
 Nothing is written and no model is called. A read that fails reads as no
 evidence, so an unreadable file means fewer suggestions, never a wrong one.
@@ -52,6 +54,21 @@ class RepoFacts:
     coverage_ingested: bool = False
     #: Active decisions in ``.repowise/decisions.yaml``.
     tracked_decisions: int = 0
+    #: The last full git pass's ``git_history_coverage`` (see
+    #: :class:`~repowise.core.ingestion.git_indexer.records.GitHistoryCoverage`).
+    git_history: Mapping[str, Any] = field(default_factory=dict)
+    #: Non-merge commits reachable from HEAD when the repository was indexed.
+    total_commits: int = 0
+    #: The index scope's ``file_pages`` figures and how the pages were written.
+    file_pages: Mapping[str, Any] = field(default_factory=dict)
+    content_provenance: str = "unknown"
+    #: Production files (by stored ``code_origin``) with no file page, read
+    #: only when the scope says file pages were left out.
+    unpaged_production: int = 0
+    #: Files with a stored ``code_origin``, and the largest directories in
+    #: which every one of them is vendored or generated: ``(dir, files)``.
+    analysed_files: int = 0
+    copied_dirs: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,9 +161,15 @@ def gather_facts(root: Path | str, values: Mapping[str, Any]) -> RepoFacts:
     dot = root / ".repowise"
     now = time.time()
     wiki = dot / "wiki.db"
+    scope = _scope(root)
+    file_pages = scope.get("file_pages") or {}
+    # The per-file reads are not scoped by repository, so a store holding
+    # several gives none of them.
+    one_repo = _count(wiki, "SELECT COUNT(*) FROM repositories") == 1
+    analysed, copied = _copied_dirs(wiki) if one_repo else (0, ())
     return RepoFacts(
         values=dict(values),
-        search=_search(root),
+        search=scope.get("search") or {},
         embedder_found=_embedder_found(root),
         forgone=_forgone(dot / "omissions" / "omissions.db", now - MEASURE_DAYS * 86400),
         agent_sessions=_recent_files(dot / "hook-sessions", now - SESSION_DAYS * 86400),
@@ -156,17 +179,85 @@ def gather_facts(root: Path | str, values: Mapping[str, Any]) -> RepoFacts:
             for table in ("coverage_ingests", "coverage_files")
         ),
         tracked_decisions=_tracked_decisions(root),
+        git_history=scope.get("git_history_coverage") or {},
+        total_commits=_total_commits(wiki),
+        file_pages=file_pages,
+        content_provenance=str(scope.get("content_provenance") or "unknown"),
+        # The join is the one read here that grows with the wiki, so it waits
+        # for the scope to say some file pages were left out.
+        unpaged_production=_count(wiki, _UNPAGED_PRODUCTION_SQL)
+        if one_repo and (file_pages.get("omitted") or 0) > 0
+        else 0,
+        analysed_files=analysed,
+        copied_dirs=copied,
     )
 
 
-def _search(root: Path) -> Mapping[str, Any]:
+def _scope(root: Path) -> Mapping[str, Any]:
     from repowise.core.index_scope import load_index_scope
 
     try:
-        scope = load_index_scope(root)
+        return load_index_scope(root) or {}
     except Exception:
         return {}
-    return (scope or {}).get("search") or {}
+
+
+def _total_commits(wiki: Path) -> int:
+    """The stored whole-history commit count, when the store holds one repository."""
+    rows = _query(wiki, "SELECT total_commit_count FROM repositories")
+    return int(rows[0][0] or 0) if len(rows) == 1 else 0
+
+
+_UNPAGED_PRODUCTION_SQL = (
+    "SELECT COUNT(*) FROM health_file_metrics WHERE code_origin = 'production' "
+    "AND file_path NOT IN (SELECT target_path FROM wiki_pages WHERE page_type = 'file_page')"
+)
+#: Origins of code nobody here edits: the ones an exclude pattern is for.
+_COPIED_ORIGINS = ("vendored", "generated")
+_COPIED_COUNT_SQL = (
+    "SELECT COUNT(*), SUM(code_origin IN ('vendored', 'generated')) FROM health_file_metrics"
+)
+_ORIGINS_SQL = "SELECT file_path, code_origin FROM health_file_metrics"
+#: A directory holding fewer copied files than this costs the index little.
+MIN_COPIED_DIR_FILES = 200
+
+
+def _copied_dirs(wiki: Path) -> tuple[int, tuple[tuple[str, int], ...]]:
+    """Analysed files, and the top directories holding only vendored or generated ones.
+
+    Reads the stored ``code_origin``, never a fresh guess. The per-path walk
+    runs only when copied files are a sizeable share of the store at all.
+    """
+    rows = _query(wiki, _COPIED_COUNT_SQL)
+    total, copied = (int(rows[0][0] or 0), int(rows[0][1] or 0)) if rows else (0, 0)
+    if copied < MIN_COPIED_DIR_FILES:
+        return total, ()
+    counts = _folder_counts(_query(wiki, _ORIGINS_SQL))
+    whole = {d for d, (n, c) in counts.items() if c == n and n >= MIN_COPIED_DIR_FILES}
+    top = [d for d in whole if not any(d.startswith(f"{p}/") for p in whole)]
+    found = sorted(((d, counts[d][0]) for d in top), key=lambda item: (-item[1], item[0]))
+    return total, tuple(found)
+
+
+def _folder_counts(rows: list[tuple[Any, ...]]) -> dict[str, list[int]]:
+    """``{folder: [files, copied files]}`` under every folder, from ``(path, origin)`` rows.
+
+    Counts per parent folder first, then carries each count up its ancestors:
+    one step per file plus one per folder level, not one per file and level.
+    """
+    direct: dict[str, list[int]] = {}
+    for path, origin in rows:
+        counts = direct.setdefault(str(path).rpartition("/")[0], [0, 0])
+        counts[0] += 1
+        counts[1] += origin in _COPIED_ORIGINS
+    out: dict[str, list[int]] = {}
+    for folder, (files, copied) in direct.items():
+        parts = folder.split("/") if folder else []
+        for depth in range(1, len(parts) + 1):
+            counts = out.setdefault("/".join(parts[:depth]), [0, 0])
+            counts[0] += files
+            counts[1] += copied
+    return out
 
 
 def _embedder_found(root: Path) -> tuple[str, str] | None:
