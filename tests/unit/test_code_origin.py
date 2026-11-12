@@ -47,7 +47,10 @@ _OWN_HEADER = (
         ("pkg/external/client.go", "production"),  # external/ only at the root
         ("tests/test_app.py", "test"),
         ("src/app.test.ts", "test"),
-        ("packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx", "test"),
+        (
+            "packages/codemods/src/v5/remove-overloads/__testfixtures__/default-import.input.tsx",
+            "test",
+        ),
         ("__testfixtures__/default-import.output.tsx", "test"),
         ("src/transforms/__testfixtures__/nested/input.js", "test"),
         ("src\\transforms\\__testfixtures__\\input.js", "test"),
@@ -396,6 +399,39 @@ def test_third_party_header_under_asset_dirs_is_vendored(header: str, folder: st
 def test_third_party_header_outside_asset_dirs_stays() -> None:
     assert code_origin("src/lib.js", _JQUERY) == "production"
     assert code_origin("src/lib.js", _JQUERY, project="app") == "production"
+
+
+_SORTTABLE = (
+    "/*\n"
+    "  SortTable\n"
+    "  version 2\n"
+    "  7th April 2007\n"
+    "  Stuart Langridge, http://www.kryogenix.org/code/browser/sorttable/\n"
+    "\n"
+    "  Thanks to many, many people for contributions and suggestions.\n"
+    "  Licenced as X11: http://www.kryogenix.org/code/browser/licence.html\n"
+    "  This basically means: do anything you want with it.\n"
+    "*/\n"
+    "var stIsIE = /*@cc_on!@*/false;\n"
+)
+
+
+def test_third_party_js_under_resources_dir_is_vendored() -> None:
+    path = "jvm/core/src/main/resources/org/scalatest/sorttable.js"
+    assert code_origin(path, _SORTTABLE) == "vendored"
+    assert code_origin(path, _SORTTABLE, project="scalatest") == "vendored"
+    assert code_origin("src/main/resources/org/example/lib.js", _JQUERY) == "vendored"
+
+    own = (
+        "// Copyright (c) 2024 Example Contributors.\n"
+        "// Licensed under the Apache License, Version 2.0.\n"
+        "function initTable() {}\n"
+    )
+    assert code_origin(path, own) == "production"
+    assert (
+        code_origin("src/main/resources/org/example/helper.js", own, project="example")
+        == "production"
+    )
 
 
 _JSON_HPP = (
