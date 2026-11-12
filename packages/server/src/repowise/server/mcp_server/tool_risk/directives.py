@@ -32,6 +32,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._test_selection import (
     UNAVAILABLE_REASON,
     basis_of,
+    of_the_change,
     split_apart,
 )
 from repowise.server.mcp_server.tool_risk.directives_pr import (
@@ -583,8 +584,8 @@ def _tests_to_run(
     counts = dict(zip(APART_FIELDS, apart, strict=True))
     # A test that runs with every subset is not a test of these files: it runs,
     # counted in ``tests_always_run_total``, but never takes a listed slot.
-    counts[ALWAYS_RUN_FIELD] = [t for t in population if not selected_by_change(selection, t)]
-    population = [t for t in population if selected_by_change(selection, t)]
+    counts[ALWAYS_RUN_FIELD] = [t for t in population if not of_the_change(selection, t)]
+    population = [t for t in population if of_the_change(selection, t)]
     for key, tests in counts.items():
         if tests:
             collector.add(f"directive.{key.removesuffix('_total')} ({len(tests)})", tests)

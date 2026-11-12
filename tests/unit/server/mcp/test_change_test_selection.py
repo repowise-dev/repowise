@@ -892,3 +892,22 @@ async def test_direct_test_selectors_read_the_edited_functions_links(tmp_path) -
 
     # test_far is two hops out; test_other.py is not in the selection's run.
     assert selectors == ["tests/test_a.py::test_edited"]
+
+
+def test_a_test_the_change_edits_is_listed_whatever_rule_runs_it(tmp_path) -> None:
+    from repowise.core.analysis.test_selection import Selection
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    selection = Selection(
+        run_all=False,
+        reasons=(),
+        tests=("tests/test_new.py",),
+        test_files=("tests/test_new.py",),
+        basis={"tests/test_new.py": "changed-test"},
+        why={"tests/test_new.py": "runs with every subset: not indexed yet"},
+    )
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block({}, selection, collector, limit=10, label="t", direct=[])
+
+    assert block["tests_to_run"] == ["tests/test_new.py"]

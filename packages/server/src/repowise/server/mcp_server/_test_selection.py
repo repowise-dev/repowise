@@ -471,19 +471,25 @@ def selection_block(
     return block
 
 
+def of_the_change(selection: Selection, test: str) -> bool:
+    """Whether a changed file put *test* in the selection, or the change edits
+    it: either way it is a test of this change, whatever rule also runs it."""
+    return selected_by_change(selection, test) or test.split("::", 1)[0] in selection.basis
+
+
 def agent_head(
     selection: Selection, run_list: list[str], direct: Sequence[str], limit: int
 ) -> tuple[list[str], list[str]]:
     """``(listed head, run-list entries it leaves out)`` for an agent.
 
-    *direct* selectors lead, then the tests the change reaches; a file whose
-    selector is listed is not listed again. A test that runs with every subset
-    is never listed: nothing links it to this change, so listing it would read
-    as a test of the changed code (``always_run_total`` counts them). The head
+    *direct* selectors lead, then the tests the change reaches or edits; a file
+    whose selector is listed is not listed again. Any other test that runs
+    with every subset is never listed: nothing links it to this change, so
+    listing it would read as a test of the changed code (``always_run_total`` counts them). The head
     takes no more characters than the first *limit* reached tests would, since
     a test id is longer than its file and the head must not grow the response.
     """
-    reached = [t for t in run_list if selected_by_change(selection, t)]
+    reached = [t for t in run_list if of_the_change(selection, t)]
     budget = sum(len(t) for t in reached[:limit])
     head: list[str] = []
     files: set[str] = set()
