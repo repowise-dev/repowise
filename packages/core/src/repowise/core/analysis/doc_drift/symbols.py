@@ -61,6 +61,9 @@ _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SOURCE_EXTS = REGISTRY.extensions_for(REGISTRY.code_languages())
 
 _OVER_BUDGET = "over-budget"
+#: Repowise's state directory in the working tree (``persistence.database.REPOWISE_DIRNAME``,
+#: not imported here to keep the database layer out of this module).
+_REPOWISE_DIR = ".repowise"
 
 
 @dataclass(frozen=True)
@@ -340,10 +343,13 @@ def _grep(root: Path, revs: Sequence[str], names: Sequence[str]) -> list[tuple[s
     # pattern, so a line per name costs a pass per name.
     alternation = "|".join(re.escape(n) for n in names)
     pattern = f"(^|[^A-Za-z0-9_])({alternation})([^A-Za-z0-9_]|$)\n".encode()
-    where = list(revs) or ["--untracked"]
+    # The working tree without repowise's own directory: its untracked
+    # artifacts are written from this repository's code and documents, so a
+    # name in them is not a mention, and they can outweigh the tree itself.
+    where = list(revs) or ["--untracked", "--", ".", f":(exclude){_REPOWISE_DIR}"]
     ran = git_run(
         root, "grep", "-E", "-I", "-z", "-f", "-", *where,
-        stdin=pattern, timeout=_GIT_TIMEOUT_SECONDS,
+        stdin=pattern, timeout=_GIT_TIMEOUT_SECONDS, pathspec_magic=not revs,
     )
     if ran is None or ran[0] not in (0, 1):
         return None
