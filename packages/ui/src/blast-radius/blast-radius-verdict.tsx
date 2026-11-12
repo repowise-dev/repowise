@@ -300,7 +300,7 @@ const TONE_DOT: Record<ReviewStatus["tone"], string> = {
 
 function StatusLine({ status }: { status: ReviewStatus }) {
   return (
-    <p className="flex flex-wrap items-baseline gap-x-2 text-[15px]" role="status">
+    <p className="flex flex-wrap items-baseline gap-x-2 text-[15px]">
       <span className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full" style={{ background: TONE_DOT[status.tone] }} aria-hidden />
       <span className="font-semibold text-[var(--color-text-primary)]">{status.word}.</span>
       <span className="text-[var(--color-text-secondary)]">{status.reason}</span>
@@ -321,18 +321,21 @@ function Stat({ figure, label }: { figure: string; label: string }) {
 function Stats({ reach, total, analyzed, testsTotal }: { reach: Reach; total: number; analyzed: number; testsTotal: number }) {
   const files = reach.files.length;
   return (
-    <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
-      <Stat figure={formatNumber(total)} label={`${total === 1 ? "file" : "files"} changed${total > analyzed ? ` (first ${formatNumber(analyzed)} analyzed)` : ""}`} />
-      {files === 0 ? (
-        <Stat figure="0" label="source files depend on it" />
-      ) : (
-        <Stat figure={roughCount(files)} label={`source ${files === 1 ? "file depends" : "files depend"} on it, ${formatNumber(reach.direct)} directly`} />
-      )}
-      <Stat figure={formatNumber(testsTotal)} label={testsTotal === 1 ? "test to run" : "tests to run"} />
+    // The glossary button sits beside the list, not in it: a <dl> holds only terms and definitions.
+    <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
+      <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
+        <Stat figure={formatNumber(total)} label={`${total === 1 ? "file" : "files"} changed${total > analyzed ? ` (first ${formatNumber(analyzed)} analyzed)` : ""}`} />
+        {files === 0 ? (
+          <Stat figure="0" label="source files depend on it" />
+        ) : (
+          <Stat figure={roughCount(files)} label={`source ${files === 1 ? "file depends" : "files depend"} on it, ${formatNumber(reach.direct)} directly`} />
+        )}
+        <Stat figure={formatNumber(testsTotal)} label={testsTotal === 1 ? "test to run" : "tests to run"} />
+      </dl>
       <span className="self-center">
         <InfoTip content={GLOSSARY} label="What these words mean" />
       </span>
-    </dl>
+    </div>
   );
 }
 

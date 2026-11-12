@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
+import axe from "axe-core";
 import type { ReactElement } from "react";
 import { ImpactView, changeIdFromLink, changeLinkParam } from "../../src/blast-radius/impact-view.js";
 import type { ImpactAdapter } from "../../src/blast-radius/impact-adapter.js";
@@ -8,6 +9,7 @@ import type {
   BlastRadiusResponse,
   ChangeBlastRadiusResponse,
   ChangeCandidatesResponse,
+  ChangeHealthCheckResponse,
 } from "@repowise-dev/types/blast-radius";
 
 const RESULT: BlastRadiusResponse = {
@@ -429,5 +431,77 @@ describe("what the page counts", () => {
     // Whether a dependent is tested is not about this change: no count, section or chip says it.
     expect(screen.queryByText(/Dependent files with no test/)).not.toBeInTheDocument();
     expect(screen.getByText("1 changed file with no test found.")).toBeInTheDocument();
+  });
+});
+
+describe("accessibility", () => {
+  const CHECK: ChangeHealthCheckResponse = {
+    change_id: "working-tree",
+    revspec: "HEAD",
+    status: "complete",
+    explanation: null,
+    scope: {},
+    skipped: {},
+    gate: { passed: false, verdict: "fail", fail_on: "introduced", fail_at: "high", failing_count: 1, warning_count: 0, note_count: 0, notes: [] },
+    findings: [
+      { source: "health", rule: "deep_nesting", level: "error", file_path: "src/a.py", line_number: 3, symbol: null, message: "Deep nesting", fingerprint: "1", change_kind: "introduced", severity: "high" },
+    ],
+  };
+  const analyzeChange = () =>
+    vi.fn(async () => ({
+      ...changeResult(["packages/s/src/core/x.py"]),
+      transitive_affected: [
+        { path: "packages/s/src/a/1.py", depth: 1, via: "packages/s/src/core/x.py" },
+        { path: "packages/s/src/b/1.py", depth: 2, via: "packages/s/src/a/1.py" },
+      ],
+      affected_signals: [{ path: "packages/s/src/a/1.py", is_hotspot: true, health_score: 3, module: "packages/s" }],
+    }));
+
+  // jsdom computes no layout, so contrast is checked on the tokens instead (scripts/contrast-check.py);
+  // landmarks belong to the host page, not this view.
+  const violations = async () => {
+    const r = await axe.run(document.body, { rules: { "color-contrast": { enabled: false }, region: { enabled: false } } });
+    return r.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).join(", ")}`);
+  };
+
+  it("passes axe on a reviewed change with its health check", async () => {
+    const adapter = makeAdapter({
+      listChanges: vi.fn(async () => ({ ...CHANGES, health_check_supported: true })),
+      analyzeChange: analyzeChange(),
+      checkHealth: vi.fn(async () => CHECK),
+    });
+    renderView(<ImpactView adapter={adapter} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Run health check/ }));
+    await screen.findByText("Deep nesting");
+    expect(await violations()).toEqual([]);
+    // The open picker renders in a portal; it is checked too.
+    await openPicker(/Change under review/);
+    expect(await violations()).toEqual([]);
+  });
+
+  it("passes axe on the files form and on a change that fails to open", async () => {
+    const first = renderView(<ImpactView adapter={makeAdapter()} />);
+    await screen.findByRole("button", { name: "Add hotspot src/hot.ts" });
+    expect(await violations()).toEqual([]);
+    first.unmount();
+    const analyzeChange = vi.fn().mockRejectedValue(new Error("API error 500: boom"));
+    renderView(<ImpactView adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })} />);
+    await screen.findByText("boom");
+    expect(await violations()).toEqual([]);
+  });
+
+  it("names each finding's severity in words and announces only the outcomes", async () => {
+    const adapter = makeAdapter({
+      listChanges: vi.fn(async () => ({ ...CHANGES, health_check_supported: true })),
+      analyzeChange: analyzeChange(),
+      checkHealth: vi.fn(async () => CHECK),
+    });
+    const { container } = renderView(<ImpactView adapter={adapter} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Run health check/ }));
+    await screen.findByText("Deep nesting");
+    expect(screen.getByText("High")).not.toHaveClass("sr-only");
+    expect(container.querySelector("[aria-live]")).toBeNull();
+    const said = screen.getAllByRole("status").map((s) => s.textContent);
+    expect(said).toEqual(expect.arrayContaining(["Review ready.", "Health check: Fail, 1 failing, 0 warnings."]));
   });
 });
