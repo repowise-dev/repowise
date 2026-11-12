@@ -804,8 +804,11 @@ def test_direct_test_links_lead_the_listed_tests(tmp_path) -> None:
         direct=["tests/test_b.py::test_edit"],
     )
 
-    assert block["tests_to_run"] == ["tests/test_b.py::test_edit", "tests/test_a.py"]
+    # The test id leads; the head never takes more characters than the file
+    # list it replaces ("tests/test_a.py" + "tests/test_b.py"), so it stops there.
+    assert block["tests_to_run"] == ["tests/test_b.py::test_edit"]
     assert block["tests_to_run_kind"] == "test_id"
+    assert block["total"] == 3 and block["truncated"] is True
 
 
 def test_get_risk_never_lists_a_rule_selected_test(tmp_path) -> None:

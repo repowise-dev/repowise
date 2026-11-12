@@ -407,7 +407,7 @@ def selection_block(
         if tests:
             collector.add(f"{label}.{key.removesuffix('_total')}_tests ({len(tests)})", tests)
     reached = [t for t in run_list if selected_by_change(selection, t)]
-    shown = list(dict.fromkeys([*direct, *reached]))[:limit]
+    shown = _head(list(dict.fromkeys([*direct, *reached])), reached, limit)
     listed = set(shown)
     rest = [t for t in run_list if t not in listed]
     known = set(selection.known_tests)
@@ -470,6 +470,20 @@ def selection_block(
     return block
 
 
+def _head(candidates: list[str], reached: list[str], limit: int) -> list[str]:
+    """Up to *limit* of *candidates*, in no more characters than the first
+    *limit* of *reached* would take: a test id is longer than its file, and the
+    precise head must not make the response grow. Always at least one."""
+    budget = sum(len(t) for t in reached[:limit])
+    head: list[str] = []
+    for test in candidates[:limit]:
+        budget -= len(test)
+        if head and budget < 0:
+            break
+        head.append(test)
+    return head
+
+
 NO_TESTS = "No test needs to run for this change."
 
 
@@ -481,7 +495,7 @@ def _summary(
     broadcast: int = 0,
     closure: int = 0,
 ) -> str:
-    shown = f"; showing {listed} the change reaches" if total > listed else ""
+    shown = f"; showing {listed}" if total > listed else ""
     if selection.run_all:
         lead = selection.reasons[0] if selection.reasons else "the selection could not vouch"
         named = f" Run these {total} first{shown}." if total else ""
@@ -580,8 +594,8 @@ async def direct_test_selectors(
     session_factory: Any, change: Any, selection: Selection, repo: str | None = None
 ) -> list[str]:
     """Runnable selectors of the tests that call a function the change edits,
-    one call away, in changed-file and line order. Never raises: an empty list
-    only means no such link is stored.
+    one call away: the first per test file, then the rest, each in changed-file
+    and line order. Never raises: an empty list only means no such link is stored.
 
     One-hop links from ``function_facts.tests_json`` were right on every
     hand-checked sample, where a file's test list mixes in import-only and
@@ -642,7 +656,11 @@ async def direct_test_selectors(
         for t in decode_tests(facts.get(symbol_id)) or ()
         if t.hops == 1 and (selection.run_all or t.selector.split("::", 1)[0] in runs)
     )
-    return list(dict.fromkeys(selectors))
+    ordered = list(dict.fromkeys(selectors))
+    # One per test file first, so a short head spans the files that test the edit.
+    firsts = {t.split("::", 1)[0]: t for t in reversed(ordered)}
+    lead = [t for t in ordered if firsts[t.split("::", 1)[0]] == t]
+    return [*lead, *(t for t in ordered if t not in set(lead))]
 
 
 def degraded_block(exc: Exception) -> dict[str, Any]:
