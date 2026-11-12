@@ -368,6 +368,42 @@ async def _open_store(db_url: str) -> Any:
     return engine
 
 
+async def _open_single_repo_store(
+    configured_db_url: str | None,
+) -> tuple[Any, StoreUnavailableError | None]:
+    """``(engine, None)`` on the served repo's store, or ``(None, error)`` when it
+    cannot open. A directory with no ``.repowise/`` gets the empty store."""
+    # When repo path is set and no env override, prefer repo-local DB.
+    store_location: str | None = None
+    db_url: str | None = None
+    try:
+        if _state._repo_path and configured_db_url is None:
+            db_path = get_repo_db_path(_state._repo_path)
+            repowise_dir = db_path.parent
+            store_location = str(repowise_dir)
+            if not repowise_dir.exists():
+                # An unindexed directory, often just wherever a globally
+                # installed plugin was launched. Exiting here made the host
+                # respawn the server in a loop and the agent never saw why.
+                # Serve an empty in-memory store instead, so every tool returns
+                # the "no index, run repowise init" notice, without leaving a
+                # stray .repowise/ on disk (#3163).
+                _log.warning(
+                    "No %s in %s; run 'repowise init'", repowise_dir.name, repowise_dir.parent
+                )
+                db_url = _NO_INDEX_DB_URL
+                _state._serving_no_index = True
+            elif not db_path.exists():
+                _log.warning(
+                    "No wiki.db in %s — run 'repowise init' to generate the wiki",
+                    repowise_dir,
+                )
+        return await _open_store(db_url or resolve_db_url(_state._repo_path)), None
+    except (OSError, OperationalError) as exc:
+        # A read-only or missing directory, or a .repowise that is a file.
+        return None, _store_unavailable(store_location, _state._repo_path, exc)
+
+
 async def _serve_no_index(store_error: StoreUnavailableError, *tasks: asyncio.Task) -> Any:
     """Serve the empty in-memory store in place of one that cannot open.
 
@@ -685,37 +721,8 @@ async def _lifespan(server: FastMCP):
     # --- Single-repo mode, or a workspace whose default store cannot open -----
     configured_db_url = get_configured_db_url()
 
-    # When repo path is set and no env override, prefer repo-local DB.
-    store_location: str | None = None
-    db_url: str | None = None
     if store_error is None:
-        try:
-            if _state._repo_path and configured_db_url is None:
-                db_path = get_repo_db_path(_state._repo_path)
-                repowise_dir = db_path.parent
-                store_location = str(repowise_dir)
-                if not repowise_dir.exists():
-                    # An unindexed directory, often just wherever a globally
-                    # installed plugin was launched. Exiting here made the host
-                    # respawn the server in a loop and the agent never saw why.
-                    # Serve an empty in-memory store instead, so every tool
-                    # returns the "no index, run repowise init" notice, without
-                    # leaving a stray .repowise/ on disk (#3163).
-                    _log.warning(
-                        "No %s in %s; run 'repowise init'", repowise_dir.name, repowise_dir.parent
-                    )
-                    db_url = _NO_INDEX_DB_URL
-                    _state._serving_no_index = True
-                elif not db_path.exists():
-                    _log.warning(
-                        "No wiki.db in %s — run 'repowise init' to generate the wiki",
-                        repowise_dir,
-                    )
-
-            engine = await _open_store(db_url or resolve_db_url(_state._repo_path))
-        except (OSError, OperationalError) as exc:
-            # A read-only or missing directory, or a .repowise that is a file.
-            store_error = _store_unavailable(store_location, _state._repo_path, exc)
+        engine, store_error = await _open_single_repo_store(configured_db_url)
     if store_error is not None:
         engine = await _serve_no_index(store_error, _release_task, _warm_task)
 
