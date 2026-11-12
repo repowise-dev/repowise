@@ -126,7 +126,7 @@ def documents_holding(root: Path, needle: str) -> list[str]:
 
 
 def _doc_row(root: Path, rel: str, word: re.Pattern[str]) -> dict[str, Any] | None:
-    """The first line of *rel* matching *word*, with ``mentions`` past one."""
+    """The first line of *rel* matching *word*, with ``mentions`` and ``lines`` past one."""
     hits = [(n, t) for n, t in enumerate(_read_lines(root, rel) or [], 1) if word.search(t)]
     if not hits:
         return None
@@ -136,6 +136,7 @@ def _doc_row(root: Path, rel: str, word: re.Pattern[str]) -> dict[str, Any] | No
     }
     if len(hits) > 1:
         row["mentions"] = len(hits)
+        row["lines"] = [n for n, _ in hits]
     return row
 
 
