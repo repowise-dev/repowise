@@ -380,7 +380,8 @@ def _wrote_nothing_and_failed(outcome: Any) -> bool:
     if not planned:
         return False
     c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
-    return c["failed"] > 0 and c["written"] + c["unchanged"] == 0
+    # A reused page is not written: a dead sign-in on a rerun still fails.
+    return c["failed"] > 0 and c["written"] == 0
 
 
 def _account_for_plan(

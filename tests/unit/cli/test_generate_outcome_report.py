@@ -93,6 +93,15 @@ def test_exit_status_fails_only_when_nothing_was_written() -> None:
         swept_page_ids=[],
     )
     assert command._wrote_nothing_and_failed(all_failed)
+    # A rerun that reuses some pages and fails the rest still wrote nothing.
+    reused_and_failed = _outcome(
+        generated_pages=[
+            _page("module_page:m0", reused_from_prior_run=True),
+            _page("module_page:m1", **failed),
+        ],
+        swept_page_ids=[],
+    )
+    assert command._wrote_nothing_and_failed(reused_and_failed)
     # Partial success keeps its pages and exits 0.
     assert not command._wrote_nothing_and_failed(_outcome())
     # Nothing failed (every page reused, or nothing planned): exit 0.
