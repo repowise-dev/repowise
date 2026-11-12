@@ -212,3 +212,29 @@ async def test_an_issue_key_is_one_word_and_its_own_page_leads(tmp_path):
     docs = await _find(root, "what is PROJ-12")
 
     assert [h["target_path"] for h in docs.hits] == ["jira/PROJ-12.md", "confluence/guide.md"]
+
+
+async def test_an_issue_key_in_code_comments_still_reaches_its_ticket(tmp_path):
+    ticket = '---\nkey: "PROJ-12"\n---\n\n# PROJ-12: Deploys stall\n'
+    root = _repo(
+        tmp_path / "r",
+        {"deploy.py": "# TODO(PROJ-12): drain first\nx = 1\n", "jira/PROJ/PROJ-12.md": ticket},
+    )
+
+    docs = await _find(root, "what is PROJ-12")
+
+    assert [h["target_path"] for h in docs.hits] == ["jira/PROJ/PROJ-12.md"]
+    assert docs.hits[0]["summary"] == "Line 5: # PROJ-12: Deploys stall"
+    assert docs.hits[0]["excerpt"] == '5: # PROJ-12: Deploys stall\n2: key: "PROJ-12"'
+
+
+async def test_an_ordinary_word_in_code_still_names_no_document(tmp_path):
+    root = _repo(tmp_path / "r", {"deploy.py": "# quokkaballast\n", "a.md": "quokkaballast\n"})
+
+    assert (await _find(root, "what is quokkaballast")).hits == []
+
+
+async def test_a_key_shaped_word_without_its_own_document_is_an_ordinary_word(tmp_path):
+    root = _repo(tmp_path / "r", {"io.py": "ENC = 'UTF-8'  # force output\n", "CHANGELOG.md": "Force UTF-8 output.\n"})
+
+    assert (await _find(root, "why force UTF-8 output")).hits == []

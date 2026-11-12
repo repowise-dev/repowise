@@ -27,7 +27,7 @@ from repowise.core.code_origin import path_origin
 from repowise.core.owned_paths import MANAGED_FILES, OWNED_PATTERNS
 from repowise.core.support_paths import DOC_EXTENSIONS, classification_token
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._helpers import _get_exclude_spec, is_excluded
+from repowise.server.mcp_server._helpers import _get_exclude_spec, is_excluded, read_repo_file_text
 from repowise.server.mcp_server._line_hits import _files_holding, scan_literal
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
 from repowise.server.mcp_server._query_terms import _WORD_RE, QUESTION_FRAME_VERBS, content_terms
@@ -113,13 +113,23 @@ def _few(files: set[tuple] | None) -> bool:
     return bool(files) and len(files) <= _SPECIFIC_TOKEN_MAX_FILES
 
 
+def _front_matter_end(root: Path, path: str) -> int:
+    """The last line of a leading ``---`` front-matter block, or 0 without one."""
+    lines = (read_repo_file_text(root, path) or "").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return 0
+    return next((n for n, line in enumerate(lines[1:], 2) if line.strip() == "---"), 0)
+
+
 def _lines(root: Path, path: str, terms: list[str]) -> list[dict]:
-    """The lines of *path* holding any of *terms*, in file order."""
+    """The lines of *path* holding any of *terms*: the body's in file order,
+    then front matter's (``key:``, ``url:``), which says less."""
     rows: dict[int, dict] = {}
     for term in terms:
         for row in scan_literal(root, [path], term, True)[0]:
             rows.setdefault(row["line"], row)
-    return [rows[n] for n in sorted(rows)][:_DOC_LINES_MAX]
+    end = _front_matter_end(root, path) if rows else 0
+    return [rows[n] for n in sorted(rows, key=lambda n: (n <= end, n))][:_DOC_LINES_MAX]
 
 
 def _hit(path: str, lines: list[dict]) -> dict:
@@ -163,19 +173,35 @@ async def _held(roots: list[tuple], term: str, globs: tuple[str, ...]) -> set[tu
     return None if any(f is None for f in found) else set().union(*found)
 
 
+def _ticket(term: str, docs: set[tuple] | None) -> bool:
+    """An issue key some document is named after (``PROJ-12.md``). The file name
+    is what tells a ticket from a key-shaped word such as ``UTF-8``."""
+    return bool(docs) and bool(_ISSUE_KEY_RE.fullmatch(term)) and any(
+        term in Path(p).stem for _a, p in docs
+    )
+
+
 async def _named_documents(
     terms: list[str], roots: list[tuple], scope: str | None
 ) -> dict[tuple, list[str]]:
-    """The question words each servable ``(alias, path)`` document is named by."""
+    """The question words each servable ``(alias, path)`` document is named by.
+
+    An issue key with its own document names every document holding it: code
+    citing ``PROJ-12`` in a comment is the code legs' to serve, and does not make
+    the ticket less its own.
+    """
     # Documents first, a cheap grep on a large code base; the whole tree only
     # for a word few documents hold, to see that no other file holds it.
     in_docs = await asyncio.gather(*(_held(roots, t, _DOC_GLOBS) for t in terms))
-    terms = [t for t, docs in zip(terms, in_docs, strict=True) if _few(docs)]
-    in_all = await asyncio.gather(*(_held(roots, t, ()) for t in terms))
+    named = {t: docs for t, docs in zip(terms, in_docs, strict=True) if _ticket(t, docs)}
+    words = [t for t, docs in zip(terms, in_docs, strict=True) if t not in named and _few(docs)]
+    in_all = await asyncio.gather(*(_held(roots, t, ()) for t in words))
+    for term, files in zip(words, in_all, strict=True):
+        if _few(files) and all(_is_document(p) for _a, p in files):
+            named[term] = files
     by_doc: dict[tuple, list[str]] = {}
-    for term, files in zip(terms, in_all, strict=True):
-        named = files if _few(files) and all(_is_document(p) for _a, p in files) else ()
-        for doc in (d for d in named if _servable(d[0], d[1], scope)):
+    for term, files in named.items():
+        for doc in (d for d in files if _servable(d[0], d[1], scope)):
             by_doc.setdefault(doc, []).append(term)
     return by_doc
 
