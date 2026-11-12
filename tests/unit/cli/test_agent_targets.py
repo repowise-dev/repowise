@@ -57,6 +57,7 @@ def test_registry_exposes_the_shipped_targets() -> None:
         "hermes",
         "copilot",
         "kiro",
+        "pi",
     ]
 
 
@@ -93,8 +94,10 @@ def test_unknown_target_flag_names_the_known_ids(tmp_path: Path) -> None:
     assert "auto" in message
 
 
-def test_auto_falls_back_to_claude_code_when_nothing_is_detected(tmp_path: Path) -> None:
+def test_auto_falls_back_to_claude_code_when_nothing_is_detected(tmp_path: Path, monkeypatch) -> None:
     """Least surprise: an empty machine still gets the agent almost everyone has."""
+    for target_id in ALL_IDS:
+        monkeypatch.setattr(get_target(target_id), "is_present", lambda _repo=None: False)
     resolved = resolve_target_flag("auto", tmp_path)
     assert [t.id for t in resolved] == ["claude-code"]
 
@@ -138,6 +141,7 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     assert tier_of("hermes") is Tier.GOOD
     assert tier_of("copilot") is Tier.GOOD
     assert tier_of("kiro") is Tier.GOOD
+    assert tier_of("pi") is Tier.GOOD
 
 
 def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:

@@ -2083,7 +2083,7 @@ repowise generate-claude-md --stdout
 
 ### `repowise agents`
 
-Wire agents after `init`: Claude Code, Codex, VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI, Kiro, and any host
+Wire agents after `init`: Claude Code, Codex, VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI, Kiro, Pi, and any host
 via `print-config`. With no subcommand, lists each agent for the cwd repo: tier, installed or not, every wiring.
 
 ```bash
@@ -2103,6 +2103,7 @@ repowise agents print-config claude-code [PATH]
 | `print-config --scope` | `project` or `user` snippet. | `project` |
 | `print-config --format` | `table`: bare paste-ready snippet; `json`: with target, scope, repo, docs URL. | `table` |
 
+- `--target=auto` selects wired agents first; if none are wired, it selects installed agents, falling back to Claude Code when none are found.
 - `refresh` only repoints wired agents (after an upgrade or repo move), never adds, so `repowise doctor --repair` calls it.
 - `print-config` prints the MCP entry, writing nothing, for hosts like Cline, Windsurf, Zed, Gemini CLI.
 

@@ -104,6 +104,7 @@ Other hosts need one more command, run after `init`:
 | Hermes | `repowise agents add --target=hermes --yes` |
 | GitHub Copilot CLI | `repowise agents add --target=copilot --yes` |
 | Kiro | `repowise agents add --target=kiro --yes` |
+| Pi | `repowise agents add --target=pi --yes` |
 | Any other MCP client | `repowise agents print-config claude-code`, then paste the entry into its MCP config |
 
 `repowise agents` lists every supported host and whether it is wired.
