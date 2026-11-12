@@ -138,6 +138,13 @@ _GRAMMAR_LINE_RE = re.compile(r'^#\s*line\s+\d+\s+"[^"]*\.(?:rl|y|yy|l|ll)"')
 # a Ragel grammar target counts, not an ordinary ``// line N "Foo.java"``.
 _JAVA_GRAMMAR_LINE_RE = re.compile(r'^//\s*line\s+\d+\s+"[^"]*\.rl"')
 _GRAMMAR_LINE_LINES = 10
+# llparse (llhttp's generator) writes no banner. Its C output declares its match
+# tables in the first 4 KB as ``static const unsigned char llparse_blob0[]``, some
+# with ``ALIGN(16)``. Only that declaration counts: a comment or string that
+# mentions llparse is not one.
+_LLPARSE_BLOB_RE = re.compile(
+    r"^static\s+const\s+unsigned\s+char\s+(?:ALIGN\(\d+\)\s+)?llparse_blob\d+\s*\["
+)
 _GENERATED_SENTENCE_LINES = 40
 _PREAMBLE_PREFIXES = ("package ", "import ", "from ", "using ")
 
@@ -228,6 +235,13 @@ def _from_grammar(name: str, header: str) -> bool:
         return False
     lines = header.splitlines()[:_GRAMMAR_LINE_LINES]
     return any(pattern.match(line.strip()) for line in lines)
+
+
+def _from_llparse(name: str, header: str) -> bool:
+    """A C or C++ file whose head declares llparse's match tables."""
+    if not name.lower().endswith(_deps_suffixes()):
+        return False
+    return any(_LLPARSE_BLOB_RE.match(line.strip()) for line in header.splitlines())
 
 
 def _above_import(lines: list[str], i: int) -> bool:
@@ -986,6 +1000,7 @@ def _is_generated_content(name: str, dirs: list[str], header: str) -> bool:
         or _is_reference_stub(name, dirs, header)
         or _is_bundler_output(header)
         or _from_grammar(name, header)
+        or _from_llparse(name, header)
     )
 
 
