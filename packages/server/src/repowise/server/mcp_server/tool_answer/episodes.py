@@ -25,6 +25,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
+from repowise.core.precedent.currency import GIT_UNASKED, episode_currency
 from repowise.core.precedent.store import EpisodeStore, default_store_path
 from repowise.server.mcp_server._budget import effective_char_budget
 from repowise.server.mcp_server._code_rationale import _head as _live_head
@@ -318,6 +319,11 @@ _VERDICTS_MAX = 512
 _VERDICTS_LOCK = threading.Lock()
 
 
+def _git_unanswered(sentence: str) -> bool:
+    """True for the two verdicts :func:`episode_currency` gives when git failed."""
+    return sentence.endswith((GIT_UNASKED, "not re-checked since"))
+
+
 def _verdict(row: dict, *, root: Path, head: str | None) -> str | None:
     """:data:`_still_true` for *row*, asked of git once per HEAD."""
     if head is None:
@@ -327,7 +333,11 @@ def _verdict(row: dict, *, root: Path, head: str | None) -> str | None:
         if key in _VERDICTS:
             _VERDICTS.move_to_end(key)
             return _VERDICTS[key]
-    verdict = _still_true(row, root=root)
+    currency = episode_currency(row, root=root)
+    verdict = currency.sentence if currency.current else None
+    # A query git could not answer is asked again next time, not pinned.
+    if _git_unanswered(currency.sentence):
+        return verdict
     with _VERDICTS_LOCK:
         _VERDICTS[key] = verdict
         while len(_VERDICTS) > _VERDICTS_MAX:

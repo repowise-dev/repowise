@@ -32,6 +32,9 @@ QUESTION = "how does the auth service check a token"
 
 def _patch_retrieval(monkeypatch, answer_mod) -> list[str]:
     asked: list[str] = []
+    # The leg record is begun inside the real retrieval; pin it so another
+    # test's failed leg cannot carry over.
+    monkeypatch.setattr(answer_mod, "_retrieval_legs", lambda: {"fts": "ok", "vector": "keyless"})
 
     async def _fake_retrieve(question, ctx):
         asked.append(question)
@@ -324,3 +327,39 @@ async def test_a_synthesized_answer_logs_where_its_time_went(setup_mcp, monkeypa
     for stage in ("lookup=", "retrieve=", "prepare=", "synthesize=", "grade=", "total="):
         assert stage in lines[0]
     assert "(synthesized)" in lines[0]
+
+
+def test_a_query_git_could_not_answer_is_asked_again(repo, monkeypatch):
+    from repowise.core.precedent import currency as mod
+
+    real = mod.commits_since
+    answers = iter([None])
+    calls: list[int] = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        return next(answers, real(*args, **kwargs))
+
+    monkeypatch.setattr(mod, "commits_since", flaky)
+
+    silenced = _attach(_answer(), repo)
+    served = _attach(_answer(), repo)
+
+    assert "episodes" not in silenced
+    assert served["episodes"][0]["scope"] == ["app.py"]
+    assert len(calls) == 2
+
+
+def test_a_kept_reply_is_dropped_once_the_index_syncs_again(monkeypatch):
+    from datetime import UTC, datetime
+
+    monkeypatch.setattr(cache, "_KEYLESS_REPLIES", cache.OrderedDict())
+    synced = SimpleNamespace(head_commit="abc", name="demo", updated_at=datetime(2026, 1, 1, tzinfo=UTC))
+    cache.remember_keyless_reply({"answer": "x"}, repository=synced, repo_id="r1", qhash="q1")
+    resynced = SimpleNamespace(head_commit="abc", name="demo", updated_at=datetime(2026, 1, 2, tzinfo=UTC))
+
+    served = cache.serve_keyless_reply(
+        repository=resynced, repo_id="r1", qhash="q1", exclude_spec=None, t0=time.perf_counter()
+    )
+
+    assert served is None

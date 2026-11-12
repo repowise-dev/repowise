@@ -16,6 +16,7 @@ from collections import OrderedDict
 
 from sqlalchemy import delete, select
 
+from repowise.core.persistence.crud.repository import index_synced_at
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import AnswerCache
 from repowise.server.mcp_server._helpers import is_excluded
@@ -221,15 +222,20 @@ async def _write_answer_cache(
 #: Replies made without a model, kept for this process: the database cache is
 #: written only by synthesis, so a repeated keyless question re-ran retrieval.
 #: Keyed like the database rows, (repo id, question and scope identity).
-_KEYLESS_REPLIES: OrderedDict[tuple[str, str], tuple[str | None, dict]] = OrderedDict()
+_KEYLESS_REPLIES: OrderedDict[tuple[str, str], tuple[tuple, dict]] = OrderedDict()
 #: Ceiling on held replies; the oldest goes first.
 _KEYLESS_REPLIES_MAX = 64
 
 
+def _index_stamp(repository) -> tuple:
+    """The commit the index is at and when it last synced; either moving drops a kept reply."""
+    return (getattr(repository, "head_commit", None), index_synced_at(repository))
+
+
 def remember_keyless_reply(payload: dict, *, repository, repo_id, qhash: str) -> None:
-    """Keep a reply made without a model, stamped with the commit it answered at."""
+    """Keep a reply made without a model, stamped with the index it answered from."""
     key = (repo_id, qhash)
-    _KEYLESS_REPLIES[key] = (getattr(repository, "head_commit", None), copy.deepcopy(payload))
+    _KEYLESS_REPLIES[key] = (_index_stamp(repository), copy.deepcopy(payload))
     _KEYLESS_REPLIES.move_to_end(key)
     while len(_KEYLESS_REPLIES) > _KEYLESS_REPLIES_MAX:
         _KEYLESS_REPLIES.popitem(last=False)
@@ -238,16 +244,16 @@ def remember_keyless_reply(payload: dict, *, repository, repo_id, qhash: str) ->
 def serve_keyless_reply(*, repository, repo_id, qhash: str, exclude_spec, t0: float) -> dict | None:
     """The kept keyless reply for this question, or None to answer afresh.
 
-    Dropped once the index moves to another commit or the reply names a file
-    excluded since. The caller also answers afresh once a model can be used.
+    Dropped once the index moves to another commit or syncs again, or the reply
+    names a file excluded since. The caller also answers afresh once a model can be used.
     """
     key = (repo_id, qhash)
     entry = _KEYLESS_REPLIES.get(key)
     if entry is None:
         return None
-    commit, kept = entry
+    stamp, kept = entry
     paths = [p for p in _cached_payload_paths(kept) if isinstance(p, str) and p]
-    if commit != getattr(repository, "head_commit", None) or any(
+    if stamp != _index_stamp(repository) or any(
         is_excluded(p, exclude_spec) for p in paths
     ):
         del _KEYLESS_REPLIES[key]
