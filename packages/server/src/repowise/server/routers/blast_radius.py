@@ -41,9 +41,12 @@ MAX_CHANGED_FILES = 400
 #: How far the Review page looks on arrival; the change listing warms this depth.
 DEFAULT_DEPTH = 3
 
-#: Co-change pairs and recommended tests a change reply lists, strongest first;
-#: the rest are counted. A long branch can hold thousands of each.
+#: Co-change pairs, recommended tests and per-file test rows a change reply
+#: lists, strongest first; the rest are counted. A long branch holds hundreds
+#: to thousands of each.
 _LIST_ROWS = 100
+#: Changed files named per recommended test, with the evidence for each.
+_PER_TEST = 10
 
 log = logging.getLogger(__name__)
 
@@ -323,6 +326,56 @@ def _module_of(path: str, module: str | None) -> str:
     return "/".join(parts[: min(2, len(parts) - 1)]) if len(parts) > 1 else "(root)"
 
 
+def _reach_summary(rows: list[dict[str, Any]], signals: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Counts over every reached file, tests apart, as the Review page counts them."""
+    source = [(r, signals.get(r["path"]) or {}) for r in rows]
+    source = [(r, s) for r, s in source if not s.get("is_test")]
+    return {
+        "files": len(source),
+        "tests": len(rows) - len(source),
+        "direct": sum(1 for r, _ in source if r["depth"] == 1),
+        "modules": len({_module_of(r["path"], s.get("module")) for r, s in source}),
+        "max_depth": max((r["depth"] for r, _ in source), default=0),
+        "imported": sorted({r["via"] for r, _ in source if r["depth"] == 1 and r.get("via")}),
+    }
+
+
+def _cut_test(rec: dict[str, Any]) -> dict[str, Any]:
+    """One recommended test with its evidence cut to the first few changed files it reaches."""
+    return rec | {
+        "source_files": rec["source_files"][:_PER_TEST],
+        "source_files_total": len(rec["source_files"]),
+        "evidence": rec["evidence"][:_PER_TEST],
+    }
+
+
+def _cut_lists(result: dict[str, Any]) -> dict[str, Any]:
+    """The co-change pairs and the test impact cut to what a page reads, with what was cut counted.
+
+    Each of these grows with the changed files, up to hundreds of rows on a
+    long branch; the totals (``files_total``, the coverage counts,
+    ``recommendations_total``) stay whole.
+    """
+    cochange = result["cochange_warnings"]
+    tests = result["test_impact"]
+    kept = tests["recommendations"][:_LIST_ROWS]
+    return {
+        # Strongest first, so the cut keeps the pairs most worth a look.
+        "cochange_warnings": cochange[:_LIST_ROWS],
+        "missing_partners_total": len({w["missing_partner"] for w in cochange}),
+        "test_impact": tests
+        | {
+            "recommendations": [_cut_test(rec) for rec in kept],
+            "recommendations_emitted": len(kept),
+            "recommendations_truncated": len(kept) < len(tests["recommendations"]),
+            "recommendations_omitted": len(tests["recommendations"]) - len(kept),
+            "files": tests["files"][:_LIST_ROWS],
+            "files_without_measured_tests": tests["files_without_measured_tests"][:_LIST_ROWS],
+            "unknown_files": tests["unknown_files"][:_LIST_ROWS],
+        },
+    }
+
+
 def _page(result: dict[str, Any], changed: list[str], body: ChangeBlastRadiusRequest) -> dict[str, Any]:
     """One page of the reached files, with counts over all of them.
 
@@ -334,37 +387,16 @@ def _page(result: dict[str, Any], changed: list[str], body: ChangeBlastRadiusReq
     window = rows[body.offset : body.offset + body.limit]
     shown = set(changed).union(r["path"] for r in window)
     signals = {s["path"]: s for s in result.get("affected_signals") or []}
-    reached = [(r, signals.get(r["path"]) or {}) for r in rows]
-    source = [(r, s) for r, s in reached if not s.get("is_test")]
     end = body.offset + len(window)
-    cochange = result["cochange_warnings"]
-    tests = result["test_impact"]
-    kept_tests = tests["recommendations"][:_LIST_ROWS]
     return {
         **result,
+        **_cut_lists(result),
         "transitive_affected": window if body.with_graph else [r | {"via": None} for r in window],
         "affected_signals": [s for p, s in signals.items() if p in shown],
         "test_gaps": [p for p in result["test_gaps"] if p in shown],
-        # Strongest first, so the cut keeps the pairs most worth a look.
-        "cochange_warnings": cochange[:_LIST_ROWS],
-        "missing_partners_total": len({w["missing_partner"] for w in cochange}),
-        "test_impact": tests
-        | {
-            "recommendations": kept_tests,
-            "recommendations_emitted": len(kept_tests),
-            "recommendations_truncated": len(kept_tests) < len(tests["recommendations"]),
-            "recommendations_omitted": len(tests["recommendations"]) - len(kept_tests),
-        },
         "transitive_total": len(rows),
         "next_offset": end if end < len(rows) else None,
-        "reach_summary": {
-            "files": len(source),
-            "tests": len(reached) - len(source),
-            "direct": sum(1 for r, _ in source if r["depth"] == 1),
-            "modules": len({_module_of(r["path"], s.get("module")) for r, s in source}),
-            "max_depth": max((r["depth"] for r, _ in source), default=0),
-            "imported": sorted({r["via"] for r, _ in source if r["depth"] == 1 and r.get("via")}),
-        },
+        "reach_summary": _reach_summary(rows, signals),
     }
 
 

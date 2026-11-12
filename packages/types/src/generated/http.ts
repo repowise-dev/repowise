@@ -4782,6 +4782,7 @@ export interface TestRecommendation {
   basis: "measured" | "inferred";
   bases: ("measured" | "inferred")[];
   source_files: string[];
+  source_files_total?: number | null;
   evidence: TestImpactEvidence[];
   stale?: boolean;
   stale_reason?: "test_file_missing" | "test_file_changed" | null;

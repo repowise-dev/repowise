@@ -389,27 +389,45 @@ interface ReachPages {
   error: string | null;
 }
 
+/** A read the reader started: whether it is running, and its failure in words. */
+function useRead(failure: string) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = useCallback(
+    async (read: () => Promise<void>) => {
+      setLoading(true);
+      setError(null);
+      try {
+        await read();
+      } catch (err) {
+        setError(toFriendlyMessage(err, failure));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [failure],
+  );
+  return { run, loading, error };
+}
+
 /** The analysis with every page read so far; a new analysis starts from its first page. */
 function useReachPages(first: ChangeResult, loadPage: LoadPage | undefined): { result: ChangeResult; more: ReachPages } {
   const [read, setRead] = useState<{ first: ChangeResult; result: ChangeResult } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { run, loading, error } = useRead("Could not read more files.");
   const result = read?.first === first ? read.result : first;
   const next = result.next_offset;
-  const onMore = useCallback(async () => {
-    if (!loadPage || next == null) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const page = await loadPage({ offset: next });
-      setRead({ first, result: appendPage(result, page) });
-    } catch (err) {
-      setError(toFriendlyMessage(err, "Could not read more files."));
-    } finally {
-      setLoading(false);
-    }
-  }, [first, result, next, loadPage]);
-  return { result, more: { onMore: loadPage && next != null ? () => void onMore() : undefined, loading, error } };
+  const onMore =
+    loadPage && next != null
+      ? () => void run(async () => setRead({ first, result: appendPage(result, await loadPage({ offset: next })) }))
+      : undefined;
+  return { result, more: { onMore, loading, error } };
+}
+
+/** Whether the list already carries the map's edges, and whether the map is read on arrival. */
+function mapPlan(first: ChangeResult, loadPage: LoadPage | undefined): { inline: boolean; auto: boolean; total: number } {
+  const total = first.transitive_total ?? first.transitive_affected.length;
+  const inline = hasEdges(first) || !loadPage;
+  return { inline, auto: !inline && total > 0 && total <= AUTO_MAP_FILES, total };
 }
 
 /**
@@ -419,35 +437,37 @@ function useReachPages(first: ChangeResult, loadPage: LoadPage | undefined): { r
  */
 function useMapReach(first: ChangeResult, listReach: Reach, changedFiles: string[], loadPage: LoadPage | undefined) {
   const [drawn, setDrawn] = useState<{ first: ChangeResult; result: ChangeResult } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const inline = hasEdges(first) || !loadPage;
+  const { run, loading, error } = useRead("Could not read the map.");
+  const { inline, auto, total } = mapPlan(first, loadPage);
   const graph = drawn?.first === first ? drawn.result : null;
-  const reach = useMemo(
-    () => (inline ? listReach : graph ? readReach(graph, changedFiles) : null),
-    [inline, listReach, graph, changedFiles],
-  );
-  const open = useCallback(async () => {
-    if (inline || !loadPage) return;
-    setLoading(true);
-    setError(null);
-    try {
-      setDrawn({ first, result: await loadPage({ offset: 0, limit: MAP_FILES, withGraph: true }) });
-    } catch (err) {
-      setError(toFriendlyMessage(err, "Could not read the map."));
-    } finally {
-      setLoading(false);
-    }
-  }, [first, inline, loadPage]);
-  const total = first.transitive_total ?? first.transitive_affected.length;
-  const auto = !inline && total > 0 && total <= AUTO_MAP_FILES;
+  const reach = useMemo(() => {
+    if (inline) return listReach;
+    return graph ? readReach(graph, changedFiles) : null;
+  }, [inline, listReach, graph, changedFiles]);
+  const open = () => {
+    if (!inline && loadPage)
+      void run(async () => setDrawn({ first, result: await loadPage({ offset: 0, limit: MAP_FILES, withGraph: true }) }));
+  };
+  const openRef = useRef(open);
+  openRef.current = open;
+  // Once per analysis: a failed read waits for the reader rather than retrying in a loop.
+  const autoRead = useRef<ChangeResult | null>(null);
   useEffect(() => {
-    if (auto && !graph) void open();
-    // Once per analysis: a failed read waits for the reader rather than retrying in a loop.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!auto || autoRead.current === first) return;
+    autoRead.current = first;
+    openRef.current();
   }, [first, auto]);
   const partial = graph && isPartial(graph) ? { drawn: graph.transitive_affected.length, total } : null;
-  return { reach, open: () => void open(), loading, error, partial };
+  return { reach, open, loading, error, partial };
+}
+
+/** How the picked change reads one more slice of itself; none for a hand-picked file set, which is never paged. */
+function useLoadPage(adapter: ImpactAdapter, analyzed: Selection | undefined, maxDepth: number): LoadPage | undefined {
+  const changeId = analyzed?.kind === "change" ? analyzed.id : null;
+  return useMemo(() => {
+    if (!changeId || !adapter.analyzeChange) return undefined;
+    return (input) => adapter.analyzeChange!({ changeId, maxDepth, ...input });
+  }, [changeId, adapter, maxDepth]);
 }
 
 /** Where the map would be, for a change too wide to draw before the reader asks. */
@@ -904,14 +924,7 @@ export function ImpactView({
       ? { state: health.checks[shownChange.id], onRun: () => void health.run(shownChange.id) }
       : undefined;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
-  const pagedId = analyzed?.kind === "change" ? analyzed.id : null;
-  const loadPage = useMemo<LoadPage | undefined>(
-    () =>
-      pagedId && adapter.analyzeChange
-        ? (input) => adapter.analyzeChange!({ changeId: pagedId, maxDepth, ...input })
-        : undefined,
-    [pagedId, adapter, maxDepth],
-  );
+  const loadPage = useLoadPage(adapter, analyzed, maxDepth);
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
     setFilesOpen(false);

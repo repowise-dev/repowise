@@ -447,6 +447,7 @@ async def test_page_lists_the_strongest_pairs_and_tests_and_counts_the_rest(monk
     from repowise.server.schemas.blast_radius import ChangeBlastRadiusRequest
 
     monkeypatch.setattr(route, "_LIST_ROWS", 2)
+    monkeypatch.setattr(route, "_PER_TEST", 1)
     pairs = [
         {"changed": "a.py", "missing_partner": p, "score": s}
         for p, s in (("x.py", 9), ("y.py", 5), ("x.py", 4), ("z.py", 1))
@@ -457,8 +458,15 @@ async def test_page_lists_the_strongest_pairs_and_tests_and_counts_the_rest(monk
         "test_gaps": ["a.py", "far.py"],
         "cochange_warnings": pairs,
         "test_impact": {
-            "recommendations": [{"test_id": t} for t in ("t1", "t2", "t3")],
+            "recommendations": [
+                {"test_id": t, "source_files": ["a.py", "b.py"], "evidence": [{"x": 1}, {"x": 2}]}
+                for t in ("t1", "t2", "t3")
+            ],
             "recommendations_total": 3,
+            "files": [{"source_file": p} for p in ("a.py", "b.py", "c.py")],
+            "files_total": 3,
+            "files_without_measured_tests": ["a.py", "b.py", "c.py"],
+            "unknown_files": ["a.py", "b.py", "c.py"],
         },
     }
 
@@ -470,6 +478,16 @@ async def test_page_lists_the_strongest_pairs_and_tests_and_counts_the_rest(monk
     assert [t["test_id"] for t in tests["recommendations"]] == ["t1", "t2"]
     assert (tests["recommendations_total"], tests["recommendations_emitted"]) == (3, 2)
     assert (tests["recommendations_truncated"], tests["recommendations_omitted"]) == (True, 1)
+    first = tests["recommendations"][0]
+    assert (first["source_files"], first["source_files_total"], first["evidence"]) == (
+        ["a.py"],
+        2,
+        [{"x": 1}],
+    )
+    # Per changed file rows are cut too; their total stays whole.
+    assert [f["source_file"] for f in tests["files"]] == ["a.py", "b.py"]
+    assert tests["files_total"] == 3
+    assert tests["unknown_files"] == ["a.py", "b.py"]
     # Gaps are the changed files' and the page's, not every reached file's.
     assert page["test_gaps"] == ["a.py"]
 

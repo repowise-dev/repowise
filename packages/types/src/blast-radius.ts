@@ -74,6 +74,8 @@ export interface TestRecommendation {
   /** Every retained evidence category; measured and inferred may both occur. */
   bases: TestRecommendationBasis[];
   source_files: string[];
+  /** Every changed file this test reaches, where a change reply's `source_files` names the first few. */
+  source_files_total?: number | null;
   evidence: TestImpactEvidence[];
   /** A measured row whose test file is gone or changed since the coverage run. */
   stale?: boolean;

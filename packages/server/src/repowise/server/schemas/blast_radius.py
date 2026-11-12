@@ -78,6 +78,8 @@ class TestRecommendation(BaseModel):
     basis: Literal["measured", "inferred"]
     bases: list[Literal["measured", "inferred"]]
     source_files: list[str]
+    #: Every changed file this test reaches, where ``source_files`` names the first few.
+    source_files_total: int | None = None
     evidence: list[TestImpactEvidence]
     #: A measured row whose test file is gone or changed since the coverage run.
     stale: bool = False
