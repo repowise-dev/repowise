@@ -512,7 +512,7 @@ The `repowise impacted-tests` selection over every touched path, ignoring the sc
 |-------|---------|
 | `status` | `selected`, `run_all`, `degraded`, or a nothing-selected reason |
 | `run_all`, `reasons`, `reasons_total` | No subset can be vouched for; up to 3 reasons |
-| `tests_to_run`, `total`, `truncated` | Max 10: first the tests that call an edited function directly (pytest node ids or JS/TS test files), then the rest in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec). Tests that run with every subset are counted in `total` and `always_run_total`, never listed |
+| `tests_to_run`, `total`, `truncated` | Max 10: first the tests that call an edited function directly (pytest node ids or JS/TS test files), then the rest in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec). A listed id stands for its file, and the list takes no more characters than the first ten files would. Tests that run with every subset are counted in `total` and `always_run_total`, never listed |
 | `broadcast_total`, `import_closure_total` | Left out of the list and `total`, still run (as in `get_risk`) |
 | `tests_to_run_kind` | `test_id` when a coverage node id is listed, else `test_file` |
 | `basis` | `measured`, `inferred` or `none`, as in `get_risk` |

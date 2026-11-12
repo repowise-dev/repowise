@@ -782,12 +782,42 @@ def test_a_rule_selected_test_is_never_listed_as_a_test_of_the_change(tmp_path, 
 
     collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
     block = selection_block(
-        {}, _with_rule_tests(run_all=run_all), collector, limit=10, label="impacted_tests"
+        {}, _with_rule_tests(run_all=run_all), collector, limit=10, label="impacted_tests",
+        direct=[],
     )
 
     assert block["tests_to_run"] == ["tests/test_a.py", "tests/test_b.py"]
     assert block["total"] == 3 and block["always_run_total"] == 1
     assert block["truncated"] is True and not collector.empty
+
+    # The Review page and ``repowise risk`` build the command from the list:
+    # without an agent head it is the whole run list, rule-selected tests too.
+    review = selection_block(
+        {}, _with_rule_tests(run_all=run_all), collector, limit=10, label="impacted_tests"
+    )
+    assert review["tests_to_run"] == ["tests/test_a.py", "tests/lens.test.ts", "tests/test_b.py"]
+    assert review["truncated"] is False
+
+
+def test_a_direct_selector_stands_for_its_file(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block(
+        {},
+        _with_rule_tests(),
+        collector,
+        limit=200,
+        label="impacted_tests",
+        direct=["tests/test_a.py::t"],
+    )
+
+    # The id stands for its file, which is not listed again; test_b.py would
+    # take the head past the characters the two files take, so it waits.
+    assert block["tests_to_run"] == ["tests/test_a.py::t"]
+    assert block["truncated"] is True
+    assert block["summary"].startswith("3 test(s) to run for this change")
 
 
 def test_direct_test_links_lead_the_listed_tests(tmp_path) -> None:

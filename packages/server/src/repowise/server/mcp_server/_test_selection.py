@@ -380,7 +380,7 @@ def selection_block(
     limit: int,
     label: str,
     detail: bool = True,
-    direct: Sequence[str] = (),
+    direct: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """The wire view of *selection*: verdict, reasons, the run list's head and why.
 
@@ -395,21 +395,22 @@ def selection_block(
     ``import_closure_total`` when there are any and stored for recovery.
     *detail* adds ``why`` and ``basis_by_file``.
 
-    The shown head leads with *direct*, the selectors of tests that call a
-    changed function themselves (:func:`direct_test_selectors`), then the run
-    list. A test that runs with every subset is never shown: nothing links it
-    to this change, so listing it would read as a test of the changed code.
-    ``always_run_total`` counts those, and they are stored with the tail.
+    With *direct* (an agent's head, see :func:`agent_head`) the listed head
+    leads with the selectors of tests that call a changed function themselves
+    and never lists a test that runs with every subset. Without it the head is
+    the run list itself, which the Review page and ``repowise risk`` turn into
+    the command to run.
     """
     # In run order (``test_ranking``).
     run_list, broadcast, closure = split_apart(selection)
     for key, tests in zip(APART_KEYS, (broadcast, closure), strict=True):
         if tests:
             collector.add(f"{label}.{key.removesuffix('_total')}_tests ({len(tests)})", tests)
-    reached = [t for t in run_list if selected_by_change(selection, t)]
-    shown = _head(list(dict.fromkeys([*direct, *reached])), reached, limit)
-    listed = set(shown)
-    rest = [t for t in run_list if t not in listed]
+    if direct is None:
+        shown = run_list[:limit]
+        rest = run_list[limit:]
+    else:
+        shown, rest = agent_head(selection, run_list, direct, limit)
     known = set(selection.known_tests)
     held = len(known & set(selection.test_files))
     broad = held > len(known) * _DEGRADED_SHARE
@@ -470,18 +471,34 @@ def selection_block(
     return block
 
 
-def _head(candidates: list[str], reached: list[str], limit: int) -> list[str]:
-    """Up to *limit* of *candidates*, in no more characters than the first
-    *limit* of *reached* would take: a test id is longer than its file, and the
-    precise head must not make the response grow. Always at least one."""
+def agent_head(
+    selection: Selection, run_list: list[str], direct: Sequence[str], limit: int
+) -> tuple[list[str], list[str]]:
+    """``(listed head, run-list entries it leaves out)`` for an agent.
+
+    *direct* selectors lead, then the tests the change reaches; a file whose
+    selector is listed is not listed again. A test that runs with every subset
+    is never listed: nothing links it to this change, so listing it would read
+    as a test of the changed code (``always_run_total`` counts them). The head
+    takes no more characters than the first *limit* reached tests would, since
+    a test id is longer than its file and the head must not grow the response.
+    """
+    reached = [t for t in run_list if selected_by_change(selection, t)]
     budget = sum(len(t) for t in reached[:limit])
     head: list[str] = []
-    for test in candidates[:limit]:
+    files: set[str] = set()
+    for test in dict.fromkeys([*direct, *reached]):
+        path = test.split("::", 1)[0]
+        if test == path and path in files:
+            continue
         budget -= len(test)
-        if head and budget < 0:
+        if len(head) == limit or (head and budget < 0):
             break
         head.append(test)
-    return head
+        files.add(path)
+    listed = set(head)
+    rest = [t for t in run_list if t not in listed and t not in files]
+    return head, rest
 
 
 NO_TESTS = "No test needs to run for this change."
@@ -495,7 +512,7 @@ def _summary(
     broadcast: int = 0,
     closure: int = 0,
 ) -> str:
-    shown = f"; showing {listed}" if total > listed else ""
+    shown = f"; showing {listed}" if 0 < listed < total else ""
     if selection.run_all:
         lead = selection.reasons[0] if selection.reasons else "the selection could not vouch"
         named = f" Run these {total} first{shown}." if total else ""
@@ -548,6 +565,7 @@ async def change_tests_block(
     owned_excludes: tuple[str, ...] = (),
     detail: bool = True,
     repo: str | None = None,
+    agent: bool = False,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], Any] | None]:
     """The tests a scored change needs: ``get_change_risk``, ``repowise risk`` and
     the Review page all read them here.
@@ -557,7 +575,9 @@ async def change_tests_block(
     only *owned_excludes*, repowise's own output, leaves it. *working_tree* and
     *owned_excludes* come from the score
     (:func:`~repowise.core.analysis.change_risk.score_live_change`), so the
-    tests are for the change it scored. Returns ``(block, (collection result,
+    tests are for the change it scored. *agent* shapes the listed head for an
+    agent (:func:`agent_head`); the Review page and ``repowise risk`` keep the
+    run list, which they turn into the command. Returns ``(block, (collection result,
     change))``, or ``(block, None)`` when no selection was made; never raises,
     so it cannot fail the score beside it.
     """
@@ -583,7 +603,7 @@ async def change_tests_block(
         result, selection, _ = await select_change_tests(repo_path, session_factory, change, repo)
     except Exception as exc:
         return degraded_block(exc), None
-    direct = await direct_test_selectors(session_factory, change, selection, repo)
+    direct = await direct_test_selectors(session_factory, change, selection, repo) if agent else None
     block = selection_block(
         result, selection, collector, limit=limit, label=label, detail=detail, direct=direct
     )
