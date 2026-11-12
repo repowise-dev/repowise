@@ -14,6 +14,8 @@ from repowise.server.mcp_server import mcp
 
 # Well under the 2,000 chars some hosts keep.
 _MAX_INSTRUCTIONS_CHARS = 1500
+#: The base text before a repository or workspace line is added.
+_BASE_INSTRUCTIONS_CHARS = 720
 
 
 def test_instructions_fit_the_length_cap() -> None:
@@ -27,8 +29,14 @@ def test_instructions_say_when_each_tool_replaces_a_text_search() -> None:
     assert "get_answer" in text and "per call" in text
     assert 'include=["files"]' in text
     assert "get_risk" in text and "get_change_risk" in text and "get_why" in text
-    assert "uncommitted edits are flagged" in text
     assert "repowise update" not in text
+
+
+def test_instructions_stay_short() -> None:
+    # Read into every session and paid again per registration; a response
+    # already flags what it says about uncommitted edits, so that stays there.
+    assert len(mcp.instructions) <= _BASE_INSTRUCTIONS_CHARS
+    assert "uncommitted" not in mcp.instructions
 
 
 def test_instructions_keep_the_no_index_and_workspace_guidance() -> None:

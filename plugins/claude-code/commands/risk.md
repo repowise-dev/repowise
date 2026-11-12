@@ -1,6 +1,7 @@
 ---
 description: Rank a live change for review using a repo-relative percentile and an auditable supporting diff-shape score.
 allowed-tools: Bash(repowise risk:*), Read
+disable-model-invocation: true
 ---
 
 # Repowise Risk

@@ -797,7 +797,9 @@ class ClaudeCodeTarget:
                 repairable=False,
             )
 
-        registrations = detect()
+        # With the repository: the project ``.mcp.json`` that `repowise init`
+        # writes is the registration most often doubled by the plugin.
+        registrations = detect(repo_path)
         if not registrations:
             return DoctorReport(
                 target_id=ID,
@@ -827,8 +829,9 @@ class ClaudeCodeTarget:
         ]
         if duplicates:
             issues.append(
-                "repowise is registered twice, once by the plugin and once directly, "
-                "so its MCP tool schemas and hooks are loaded twice."
+                "repowise is registered twice, once by the plugin and once directly "
+                f"({duplicates[0].config_path}), so its MCP instructions, tool schemas "
+                "and hooks are loaded twice."
             )
 
         # Reported last and fixed first: an out-of-date plugin ships its own

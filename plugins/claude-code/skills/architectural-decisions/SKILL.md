@@ -1,11 +1,6 @@
 ---
 name: architectural-decisions
-description: >
-  Use when encountering questions about WHY code is built a certain way, when about to make
-  architectural changes (new patterns, restructuring, choosing between approaches), or when
-  the user asks about design rationale in a Repowise-indexed codebase (.repowise/ directory exists).
-  Also activates when commit messages or code comments contain decision signals like "WHY:",
-  "DECISION:", "TRADEOFF:", "ADR:".
+description: Why code is built this way, before changing a pattern.
 user-invocable: false
 ---
 

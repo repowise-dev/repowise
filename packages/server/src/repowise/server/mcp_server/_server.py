@@ -857,21 +857,15 @@ class _RepowiseMCP(FastMCP):
 # Hosts that defer tool schemas show the model only tool names and this
 # string, so it says when to call; tests pin the key lines and a length cap.
 _INSTRUCTIONS = (
-    "repowise indexes this repository's code graph, git history and "
-    "decisions. One call here often replaces several text searches and "
-    "file reads.\n"
-    "- Use search_codebase(query) to find an identifier or literal: `lines` "
-    "(path, line, kind, text) are read from live files; `complete: true` "
-    "means every match.\n"
-    '- Use get_context(targets=[symbol], include=["references"]) before a '
-    "rename: a `complete` list is the whole edit set. On a directory, "
-    'include=["files"] lists its files and tests.\n'
-    "- Use get_answer(question) for one how/where/why question per call.\n"
-    "- Use get_risk before editing a widely imported file, get_change_risk "
-    "before committing a multi-file change, get_why before changing an "
-    "established pattern. Skip them for one-line fixes.\n"
-    "- Targets with uncommitted edits are flagged: index facts for them "
-    "predate the edit.\n"
+    "repowise indexes this repository's code graph, git history and decisions.\n"
+    "- search_codebase(query) finds an identifier or literal: `lines` are read "
+    "from live files; `complete: true` means every match.\n"
+    '- get_context(targets=[symbol], include=["references"]) before a rename: a '
+    '`complete` list is the whole edit set. include=["files"] on a directory '
+    "lists its files and tests.\n"
+    "- get_answer(question): one how/where/why question per call.\n"
+    "- get_risk before editing a widely imported file, get_change_risk before "
+    "committing, get_why before changing an established pattern.\n"
     "No index: tell the user to run 'repowise init --yes --no-prose' (no "
     "API key or model calls). Suggest it, do not run it yourself."
 )
