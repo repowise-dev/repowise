@@ -259,7 +259,9 @@ def git_run(
     for a caller whose pathspecs are its own constants, not repository paths.
     """
     env = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
-    if not pathspec_magic:
+    if pathspec_magic:
+        env.pop("GIT_LITERAL_PATHSPECS", None)
+    else:
         env["GIT_LITERAL_PATHSPECS"] = "1"
     try:
         proc = run_git(

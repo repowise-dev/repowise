@@ -73,3 +73,10 @@ def test_without_a_directory_nothing_is_written(tmp_path):
     assert cache.lookup("a.md", "text", lambda: (["x"], [])) == (["x"], [])
     cache.save()
     assert list(tmp_path.iterdir()) == []
+
+
+def test_fingerprint_covers_the_rules_extraction_consults():
+    names = {source.name for source in extract_cache._EXTRACTOR_SOURCES}
+    assert {"extractor.py", "registry.py", "test_paths.py"} <= names
+    assert all(source.is_file() for source in extract_cache._EXTRACTOR_SOURCES)
+    assert extract_cache.extract_fingerprint() is not None

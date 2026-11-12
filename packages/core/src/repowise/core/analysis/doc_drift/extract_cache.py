@@ -5,9 +5,9 @@ re-ran it for every document in the repository when one file changed. Its
 result is cached under ``(path, text hash)``. Resolution, which depends on the
 rest of the tree, always runs.
 
-The fingerprint covers the extractor modules' source and the Python version.
-Ceiling: a behavior change in a helper outside those modules needs one of them
-touched. Best-effort like the framework scan cache: any load or save error
+The fingerprint covers the extractor modules' source, the language registry,
+the test-path rules and the Python version. Ceiling: a behavior change in a
+helper outside those modules needs one of them touched. Best-effort like the framework scan cache: any load or save error
 means a cold extraction, and only entries used this run are kept.
 """
 
@@ -28,12 +28,16 @@ log = structlog.get_logger(__name__)
 
 _CACHE_FILENAME = "doc_drift_extract_cache.pkl"
 _HERE = Path(__file__).resolve().parent
-# Every module whose code decides an extraction result.
+_CORE = _HERE.parent.parent
+# Every module whose code decides an extraction result: the extractor, and the
+# language registry and test-path rules it consults.
 _EXTRACTOR_SOURCES = (
     _HERE / "extractor.py",
     _HERE / "models.py",
     _HERE / "constants.py",
     _HERE / "extract_cache.py",
+    _CORE / "ingestion" / "languages" / "registry.py",
+    _CORE / "test_paths.py",
 )
 
 Extracted = tuple[list[Any], list[Any]]

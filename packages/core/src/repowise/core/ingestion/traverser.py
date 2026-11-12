@@ -628,6 +628,9 @@ class FileTraverser:
 
     def _walk(self) -> Iterator[Path]:
         """Yield all absolute file paths, skipping blocked directories."""
+        # The walk decides every directory it reaches; a verdict asked for
+        # before it (``_ignored_tracked_dirs`` still empty) must not outlive it.
+        self._dir_skipped.clear()
         for dirpath, dirnames, filenames in os.walk(self.repo_root):
             dirpath_obj = Path(dirpath)
             rel_dir = dirpath_obj.relative_to(self.repo_root)
