@@ -119,9 +119,10 @@ def _payload_failure(payload: dict[str, Any]) -> tuple[str, int | None]:
     result_text = payload.get("result")
     text = result_text.strip() if isinstance(result_text, str) else ""
     # The CLI's "Please run /login" names an interactive command, and a server
-    # has no session to type it into.
-    if "Please run /login" in text:
-        return _NOT_SIGNED_IN, status_code
+    # has no session to type it into. With an API status (a rejected key or
+    # token), the status and the CLI's own text say more, so they stay.
+    if raw_status is None and "Please run /login" in text:
+        return _NOT_SIGNED_IN, None
     # A failed call can still carry subtype "success", which reads as a
     # contradiction when quoted.
     subtype = payload.get("subtype")

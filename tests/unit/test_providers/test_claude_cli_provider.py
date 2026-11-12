@@ -329,6 +329,23 @@ async def test_missing_sign_in_names_the_headless_fix(claude_on_path, monkeypatc
     assert "success" not in message
 
 
+async def test_rejected_credential_keeps_its_status(claude_on_path, monkeypatch):
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(
+            returncode=1,
+            stdout=_success_json(
+                "Invalid API key · Please run /login", is_error=True, api_error_status=401
+            ),
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ProviderError, match="401: Invalid API key") as caught:
+        await ClaudeCliProvider().generate("sys", "user")
+
+    assert caught.value.status_code == 401
+
+
 async def test_empty_result_raises(claude_on_path, monkeypatch):
     async def fake_exec(*_args, **_kwargs):
         return FakeProcess(stdout=_success_json("   "))
