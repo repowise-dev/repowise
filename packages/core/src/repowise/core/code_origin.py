@@ -517,8 +517,9 @@ def _third_party_header(
     ``Copyright (c) 2024 Acme`` header has no release banner, so it stays.
     With *names_file*, the banner must be preserved (``/*!``) or a URL to the
     file's own home page, and the comments must name the file's stem. With
-    *allow_homepage*, a home page URL naming the file's stem also satisfies the
-    banner check alongside versioned banners.
+    *allow_homepage*, a preserved banner (``/*!``) or a home page URL naming
+    the file's stem satisfies the check without falling back to loose
+    ``_BANNER_RE`` version strings.
     """
     comments = "\n".join(_comment_lines(header))
     stem = _squash(PurePosixPath(name).stem)
@@ -546,8 +547,8 @@ def _has_banner(
     if names_file:
         # "protocol v1.2" in a first-party header is not a release banner.
         return _homepage_names(stem, comments)
-    if allow_homepage and len(stem) >= _MIN_SELF_NAME and _homepage_names(stem, comments):
-        return True
+    if allow_homepage:
+        return len(stem) >= _MIN_SELF_NAME and _homepage_names(stem, comments)
     return bool(_BANNER_RE.search(_LICENSE_VERSION_RE.sub(" ", comments)))
 
 
