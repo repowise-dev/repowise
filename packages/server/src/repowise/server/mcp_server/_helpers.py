@@ -318,17 +318,19 @@ async def wait_for_vector_store(ctx: Any) -> None:
 
 def _unsupported_repo_all(tool_name: str) -> dict:
     """Return an error dict for tools that don't support ``repo='all'``."""
-    from repowise.server.mcp_server._savings.interaction import note_error_reason
+    from repowise.server.mcp_server._savings.interaction import error_reply
 
-    note_error_reason("invalid_args")
     registry = _state._registry
     available = registry.get_all_aliases() if registry is not None else []
-    return {
-        "error": (
-            f"repo='all' is not supported for {tool_name}. "
-            f"Specify a repo alias instead. Available: {available}"
-        ),
-    }
+    return error_reply(
+        "invalid_args",
+        {
+            "error": (
+                f"repo='all' is not supported for {tool_name}. "
+                f"Specify a repo alias instead. Available: {available}"
+            ),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

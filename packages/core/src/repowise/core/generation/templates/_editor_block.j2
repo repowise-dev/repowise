@@ -73,6 +73,7 @@ Recorded decisions govern some files: `get_why(targets=["<file>"])` before chang
 - **Pre-edit, not instead-of-edit.** These tools decide *which* files to read and edit. {{ read_note }}
 {{ checks }}
 - **Noisy commands** (tests, builds, `git log`/`diff`, searches, listings): prefer `repowise distill <cmd>`, the same command with its exit code preserved and errors-first output. A `[repowise#<ref>: N lines omitted]` marker is recoverable via `repowise expand <ref>` (add `-q <regex>` to filter); never re-run the command to see omitted output.
+- **Settings** (options, cost, turning something off): `repowise config list` (`--area <area>` or `--changed`) and `repowise config explain <key>`; ask the user before `repowise config set <key> <value>`.
 {% if data.record_decisions %}
 - **Recording a decision** you had to reason out: `repowise decision add --agent <your slug> --decision D --rationale '<why, what you rejected>' --affects <path> --evidence-commit <sha>` records it without prompting and prints the id (`--format json` to parse it back); the slug names you, e.g. `claude_code`. It comes into force when that commit merges to the default branch. Records mined from history are background: `get_why` serves them when asked. To put one in force yourself, `repowise decision confirm <id> --agent <your slug>` (add `--reason`, `--scope`, `--evidence` or `--decision` for a missing part); `dismiss`, `merge` and `deprecate` take `--agent` too. These are signed as yours; a repository with agent acceptance off refuses them.
 {% endif %}
@@ -86,6 +87,7 @@ Recorded decisions govern some files: `get_why(targets=["<file>"])` before chang
 - No model on this index: `get_answer` is low confidence by design, so open its top `candidate_files`; search is full-text only. A model needs a provider key and `{{ data.model_command }}`; suggest it, do not run it.
 {% endif %}
 - Noisy commands (tests, builds, `git log`/`diff`): `repowise distill <cmd>`. A `[repowise#<ref>: N lines omitted]` marker is restored by `repowise expand <ref>`; never re-run the command.
+- Settings (options, cost, turning something off): `repowise config list` (`--area <area>` or `--changed`) and `repowise config explain <key>`; ask the user before `repowise config set <key> <value>`.
 {% if data.record_decisions %}
 - Record a decision you reasoned out: `repowise decision add --agent <your slug> --decision D --rationale '<why>' --affects <path> --evidence-commit <sha>`; it comes into force when that commit merges. Mined records are background `get_why` serves when asked.
 {% endif %}

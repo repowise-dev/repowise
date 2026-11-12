@@ -144,5 +144,6 @@ SETTINGS: tuple[Setting, ...] = (
         "str",
         None,
         "GitLab access token (api scope) that posts the CI summary as a merge-request note.",
+        secret=True,
     ),
 )
