@@ -921,19 +921,42 @@ async def _refresh_sqlite_planner_stats(engine: AsyncEngine) -> None:
         log.warning("sqlite.analyze_failed", error=str(exc))
 
 
+# Tables whose statistics no longer describe them: never analyzed yet holding
+# data, or a live row count that left the band ANALYZE recorded. The SQLite
+# gate in ``_planner_stats_stale``, read from PostgreSQL's own counters. Data
+# files are checked by size, not by the live count, since a count can lag the
+# last write by about a second and a first load must never be missed.
+_PG_STALE_TABLES = f"""
+SELECT s.schemaname, s.relname
+FROM pg_stat_user_tables s
+JOIN pg_class c ON c.oid = s.relid
+WHERE s.schemaname = ANY (current_schemas(false))
+  AND CASE
+    WHEN s.last_analyze IS NULL AND s.last_autoanalyze IS NULL
+      THEN pg_relation_size(s.relid) > 0
+    ELSE s.n_live_tup NOT BETWEEN c.reltuples / {_STATS_DRIFT} AND c.reltuples * {_STATS_DRIFT}
+  END
+ORDER BY s.schemaname, s.relname
+"""
+
+
 async def _refresh_postgres_planner_stats(
     engine: AsyncEngine, tables: Sequence[str] | None
 ) -> None:
     try:
         async with engine.begin() as conn:
             if tables is not None:
-                table_list = [t for t in tables if t]
-                if not table_list:
-                    return
-                quoted = ", ".join(_quote_identifier(t) for t in table_list)
-                await conn.execute(text(f"ANALYZE {quoted}"))
+                quoted = [_quote_identifier(t) for t in tables if t]
             else:
-                await conn.execute(text("ANALYZE"))
+                stale = await conn.execute(text(_PG_STALE_TABLES))
+                quoted = [
+                    f"{_quote_identifier(schema)}.{_quote_identifier(name)}"
+                    for schema, name in stale
+                ]
+            if not quoted:
+                return
+            log.debug("postgresql.analyze", tables=len(quoted))
+            await conn.execute(text(f"ANALYZE {', '.join(quoted)}"))
     except DBAPIError as exc:
         log.warning("postgresql.analyze_failed", error=str(exc))
 
@@ -956,9 +979,11 @@ async def refresh_planner_stats(
 
     For PostgreSQL: autovacuum keeps statistics over time, but across a bulk load
     (e.g. init or update) autovacuum has not yet analyzed the newly inserted rows,
-    leaving the planner with pre-load or empty statistics. Executing ``ANALYZE``
-    refreshes planner statistics immediately. If specific tables are provided,
-    only those tables are analyzed; otherwise a full ``ANALYZE`` is executed.
+    leaving the planner with pre-load or empty statistics. ``ANALYZE`` runs on
+    the tables the same gate finds stale (never analyzed, or a row count past
+    the drift band), so a small update analyzes nothing and a first index
+    analyzes every table it filled. A whole-store ``ANALYZE`` takes about 10 s
+    on a 2 GB store. If specific tables are provided, only those are analyzed.
 
     Other backends keep their own statistics. A failure costs only a slower
     plan, so it never fails the write.
