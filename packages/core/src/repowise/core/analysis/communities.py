@@ -738,6 +738,58 @@ def place_file_communities(
     test_assignment = _assign_tests_to_communities(test_nodes, prod_assignment, graph)
     file_assignment = {**prod_assignment, **test_assignment}
 
+    extra_generic = _label_generic(file_nodes, repo_name)
+    # A production community's label reads only its production members, so a
+    # held one stands while the segments it was drawn without are the same.
+    known_labels = (
+        production.labels if production is not None and production.generic == extra_generic else {}
+    )
+    communities_info, production_labels = _community_info(
+        graph, file_assignment, non_core, undirected, extra_generic, known_labels
+    )
+
+    log.info(
+        "file_communities_detected",
+        total_files=len(file_nodes),
+        prod_files=len(prod_nodes),
+        test_files=len(test_nodes),
+        communities=len(communities_info),
+        algorithm=algorithm,
+        production_reused=production is not None,
+    )
+
+    if production is None:
+        production = ProductionPartition(
+            prod_assignment, production_labels, extra_generic, algorithm
+        )
+    return file_assignment, communities_info, algorithm, production
+
+
+def _label_generic(file_nodes: list[str], repo_name: str | None) -> frozenset[str]:
+    """Segments no community label may use."""
+    # Repo-dominant namespace segments (the repo's own package name, ``src``…)
+    # are noise, not labels — same data-driven stripping as module naming.
+    generic = {s.lower() for s in dominant_segments(sorted(file_nodes))}
+    if repo_name:
+        stem = repo_name.rsplit("/", 1)[-1].lower()
+        generic |= {stem, stem.replace("-", "_"), stem.replace("_", "-")}
+    return frozenset(generic)
+
+
+def _community_info(
+    graph: nx.DiGraph,
+    file_assignment: dict[str, int],
+    non_core: dict[str, bool],
+    undirected: nx.Graph,
+    extra_generic: frozenset[str],
+    known_labels: dict[int, str],
+) -> tuple[dict[int, CommunityInfo], dict[int, str]]:
+    """Each community's info, and each production community's label before deduplication.
+
+    *undirected* is the production link graph; *known_labels* are production
+    labels already drawn with *extra_generic*, used instead of drawing again.
+    """
+    file_nodes = list(non_core)  # keyed in sorted file-node order
     # Build community info (using all members including tests)
     community_members: dict[int, list[str]] = {}
     for node, cid in file_assignment.items():
@@ -756,19 +808,6 @@ def place_file_communities(
             and not full_undirected.has_edge(u, v)
         ):
             full_undirected.add_edge(u, v)
-
-    # Repo-dominant namespace segments (the repo's own package name, ``src``…)
-    # are noise, not labels — same data-driven stripping as module naming.
-    generic = {s.lower() for s in dominant_segments(sorted(file_nodes))}
-    if repo_name:
-        stem = repo_name.rsplit("/", 1)[-1].lower()
-        generic |= {stem, stem.replace("-", "_"), stem.replace("_", "-")}
-    extra_generic = frozenset(generic)
-    # A production community's label reads only its production members, so a
-    # held one stands while the segments it was drawn without are the same.
-    known_labels = (
-        production.labels if production is not None and production.generic == extra_generic else {}
-    )
 
     # Labels and conductance come from the production members: tests were kept
     # out of the partition so they would not shape a community, and they must
@@ -796,21 +835,7 @@ def place_file_communities(
     # share the same base (e.g. "web" → "web/components", "web/api")
     _deduplicate_labels(communities_info, extra_generic, label_members)
 
-    log.info(
-        "file_communities_detected",
-        total_files=len(file_nodes),
-        prod_files=len(prod_nodes),
-        test_files=len(test_nodes),
-        communities=len(communities_info),
-        algorithm=algorithm,
-        production_reused=production is not None,
-    )
-
-    if production is None:
-        production = ProductionPartition(
-            prod_assignment, production_labels, extra_generic, algorithm
-        )
-    return file_assignment, communities_info, algorithm, production
+    return communities_info, production_labels
 
 
 def _partition_production(undirected: nx.Graph) -> tuple[dict[str, int], str]:

@@ -372,7 +372,6 @@ class MetricsMixin:
             return self._community_cache
 
         from repowise.core.analysis.communities import (
-            ProductionPartition,
             file_community_input,
             place_file_communities,
             production_community_input,
@@ -390,18 +389,10 @@ class MetricsMixin:
                 self._community_cache = dict(reuse[0].assignment)
                 self._community_info_cache, self._community_algo = extra
                 return self._community_cache
-            held = None
             prod_key = key and self._community_key(
                 "file_production", lambda: production_community_input(self._graph)
             )
-            prod_reuse = prod_key and self._reusable_communities(
-                "file_production",
-                prod_key,
-                self._churn_budget_for(len(prod_key.nodes), len(prod_key.edges)),
-                False,
-            )
-            if prod_reuse and isinstance(prod_reuse[0].extra, ProductionPartition):
-                held = prod_reuse[0].extra
+            held, churn = self._held_production_partition(prod_key)
             assignment, info, algo, production = place_file_communities(
                 self._graph, repo_name=repo_name, production=held
             )
@@ -409,7 +400,7 @@ class MetricsMixin:
             self._community_info_cache = info
             self._community_algo = algo
             detected = production is not held
-            if key and (detected or prod_reuse[1] == 0):
+            if key and (detected or churn == 0):
                 self._store_communities("file", key, assignment, extra=(info, algo))
             if prod_key and detected:
                 self._store_communities(
@@ -424,6 +415,19 @@ class MetricsMixin:
             self._community_info_cache = {}
             self._community_algo = "failed"
         return self._community_cache
+
+    def _held_production_partition(self, key: Any | None) -> tuple[Any | None, int]:
+        """``(production partition, churn)`` a file detection may stand on, else ``(None, 0)``."""
+        from repowise.core.analysis.communities import ProductionPartition
+
+        if not key:
+            return None, 0
+        reuse = self._reusable_communities(
+            "file_production", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
+        )
+        if reuse and isinstance(reuse[0].extra, ProductionPartition):
+            return reuse[0].extra, reuse[1]
+        return None, 0
 
     def symbol_communities(self) -> dict[str, int]:
         """Assign a community ID to each symbol node using call/heritage edges.
