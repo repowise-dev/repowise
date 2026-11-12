@@ -23,8 +23,8 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from repowise.core.settings import registry
-from repowise.core.settings.model import Resolved, Setting, SettingError
-from repowise.core.settings.resolve import lookup, resolve, validate
+from repowise.core.settings.model import Resolved, Setting, SettingError, Source
+from repowise.core.settings.resolve import MISSING, lookup, resolve, validate
 
 __all__ = [
     "Change",
@@ -169,6 +169,20 @@ def _writer(setting: Setting):
     return getattr(import_module(module_name), attr)
 
 
+def _unraised(s: Setting, config: dict[str, Any], written: Any) -> Resolved:
+    """:func:`resolve`, with a value that raises reported as its problem.
+
+    A setting read with ``on_invalid="error"`` raises on a bad value, and
+    putting that value right (or changing a neighbour) must not stop on it.
+    """
+    try:
+        return resolve(s, config)
+    except SettingError as exc:
+        if written is MISSING:
+            return Resolved(None, Source.ENV, str(exc))
+        return Resolved(written, Source.REPO_FILE, str(exc))
+
+
 def _write(root: Path, setting: Setting, value: Any) -> Change:
     # A family member (openai.base_url) is not listed in its area by name.
     neighbours = [setting] + [
@@ -183,7 +197,8 @@ def _write(root: Path, setting: Setting, value: Any) -> Change:
         for s in neighbours:
             if s.path not in files:
                 files[s.path] = read_config(root, s)
-            out[s.key] = (resolve(s, files[s.path]), lookup(files[s.path], s.key))
+            written = lookup(files[s.path], s.key)
+            out[s.key] = (_unraised(s, files[s.path], written), written)
         return out
 
     before = snapshot()

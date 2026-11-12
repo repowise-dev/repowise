@@ -193,6 +193,22 @@ class Setting:
         """The file holding this key, ``None`` for an environment-only setting."""
         return self.file or _SCOPE_FILES[self.scope]
 
+    @property
+    def accepts(self) -> str:
+        """What a value must be, in plain words (``a whole number, at least 1``)."""
+        if self.choices:
+            lead = "one of" if self.type == "str" else "any of"
+            return f"{lead} {', '.join(self.choices)}"
+        if self.type in ("int", "float"):
+            kind = "a whole number" if self.type == "int" else "a number"
+            bounds = _bounds(self)
+            return f"{kind}, {bounds}" if bounds else kind
+        return {
+            "bool": "true or false",
+            "list": "a list: a,b or [a, b]",
+            "mapping": "a mapping: {key: value}",
+        }.get(self.type, "text")
+
     def to_dict(self) -> dict[str, Any]:
         """A JSON-ready description, for listings, docs and the settings API."""
         return {
@@ -214,6 +230,14 @@ class Setting:
             "internal": self.internal,
             "reload": self.reload,
         }
+
+
+def _bounds(s: Setting) -> str:
+    low = None
+    if s.minimum is not None:
+        low = f"more than {s.minimum:g}" if s.exclusive_minimum else f"at least {s.minimum:g}"
+    high = None if s.maximum is None else f"at most {s.maximum:g}"
+    return " and ".join(b for b in (low, high) if b)
 
 
 def _contradiction(s: Setting) -> str | None:

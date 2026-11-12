@@ -154,6 +154,16 @@ def test_set_and_reset_a_plain_file_setting(repo):
     assert _config(repo) == {"provider": "openai"}
 
 
+def test_reset_and_set_work_beside_a_value_that_raises(repo):
+    # max_tokens is read with on_invalid="error": its bad value must not block the fix.
+    _write_config(repo, {"max_tokens": -3, "context_window": -1})
+    out = _json(repo, "reset", "max_tokens")
+    assert out["_exit"] == 0 and out["before"]["value"] == -3
+    assert out["before"]["problem"] == "max_tokens: must be more than 0"
+    assert _json(repo, "set", "model", "m")["_exit"] == 0
+    assert _config(repo) == {"context_window": -1, "model": "m"}
+
+
 def test_set_text_prints_change_effect_and_undo(repo):
     _write_config(repo, {"commit_limit": 300})
     code, out = _run(repo, "set", "commit_limit", "400")

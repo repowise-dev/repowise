@@ -1,4 +1,4 @@
-"""Checks 1-4b: git, ``.repowise/``, hooks, database, state.json, freshness, store format."""
+"""Checks 1-4b: git, ``.repowise/``, hooks, settings, database, state.json, freshness, store format."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from repowise.cli.helpers import db_configured, read_state, run_async
 
 from .._types import DoctorCheck, _check
 from .context import CheckContext, open_store
+from .settings import settings_rows
 
 
 async def _page_count(session: object, repo_id: str) -> int:
@@ -125,23 +126,6 @@ def _attribution_notes_check(repo_path: _DoctorPath) -> DoctorCheck | None:
     return _check(name, True, f"fetch refspec and notes.rewriteRef set; {push}", check_id=check_id)
 
 
-def _events_config_check(repo_path: _DoctorPath) -> DoctorCheck | None:
-    """The ``events:`` block, when it has values that fell back to defaults."""
-    try:
-        from repowise.core.events.store import load_event_settings
-
-        errors = load_event_settings(repo_path).errors
-    except Exception as exc:
-        return _check(
-            "Events config", True, f"could not read it ({exc})", check_id="events-config", warn=True
-        )
-    if not errors:
-        return None
-    return _check(
-        "Events config", False, "; ".join(errors) + " (defaults used)", check_id="events-config"
-    )
-
-
 def _env_repo_covers(repo_path: _DoctorPath) -> bool:
     """Whether the repo ``GIT_DIR`` / ``GIT_WORK_TREE`` name holds ``repo_path`` (#1931).
 
@@ -183,9 +167,9 @@ def _hook_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
     # The post-commit hook is installed by init by default; not having it is a
     # choice (--no-hook), so its absence is informational, not a fail.
     rows = [_autosync_hook_check(repo_path)]
-    for optional in (_attribution_notes_check(repo_path), _events_config_check(repo_path)):
-        if optional is not None:
-            rows.append(optional)
+    notes = _attribution_notes_check(repo_path)
+    if notes is not None:
+        rows.append(notes)
     return rows
 
 
@@ -394,6 +378,7 @@ def core_checks(ctx: CheckContext) -> list[DoctorCheck]:
     # existence-only row would say OK for the one state that fails every call.
     checks.append(_repowise_dir_check(ctx.repowise_dir))
     checks.extend(_hook_rows(ctx.repo_path))
+    checks.extend(settings_rows(ctx))
     checks.extend(_database_rows(ctx))
     checks.append(_state_row(ctx))
     if ctx.state_ok:

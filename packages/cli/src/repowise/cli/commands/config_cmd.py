@@ -203,36 +203,12 @@ def config_get(key: str, path: str | None, fmt: str) -> None:
     console.print(f"{line}  {_note(setting, resolved)}".rstrip())
 
 
-def _bounds(s: Setting) -> str:
-    low = None
-    if s.minimum is not None:
-        low = f"more than {s.minimum:g}" if s.exclusive_minimum else f"at least {s.minimum:g}"
-    high = None if s.maximum is None else f"at most {s.maximum:g}"
-    return " and ".join(b for b in (low, high) if b)
-
-
-def _requirement(s: Setting) -> str:
-    """What a value of *s* must be, in plain words."""
-    if s.choices:
-        lead = "one of" if s.type == "str" else "any of"
-        return f"{lead} {', '.join(s.choices)}"
-    if s.type in ("int", "float"):
-        kind = "a whole number" if s.type == "int" else "a number"
-        bounds = _bounds(s)
-        return f"{kind}, {bounds}" if bounds else kind
-    return {
-        "bool": "true or false",
-        "list": "a list: a,b or [a, b]",
-        "mapping": "a mapping: {key: value}",
-    }.get(s.type, "text")
-
-
 def _path_flag(path: str | None) -> str:
     return f" --path {shlex.quote(path)}" if path else ""
 
 
 def _explain_extra(s: Setting, root: Path, path: str | None) -> dict[str, Any]:
-    extra: dict[str, Any] = {"applies": _APPLIES[s.reload], "accepts": _requirement(s)}
+    extra: dict[str, Any] = {"applies": _APPLIES[s.reload], "accepts": s.accepts}
     if s.scope == "env":
         extra["set_with"] = f"{s.key}=<value> in the environment"
     else:
@@ -347,7 +323,7 @@ def _write(action: str, key: str, value: str | None, path: str | None, fmt: str)
             remedy="Fix the file, then run this again.",
         )
     except ValueError as exc:
-        emit_refusal("invalid_value", str(exc), fmt, accepts=_requirement(setting))
+        emit_refusal("invalid_value", str(exc), fmt, accepts=setting.accepts)
     _report(action, change, root, path, fmt)
 
 
