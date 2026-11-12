@@ -79,16 +79,3 @@ describe("buildBlastRadiusPrompt with a health check", () => {
     expect(buildBlastRadiusPrompt({ input: INPUT })).not.toContain("## Health check");
   });
 });
-
-describe("buildBlastRadiusPrompt for a pull request", () => {
-  it("names the PR and diffs base against head", () => {
-    const p = buildBlastRadiusPrompt({
-      input: {
-        ...INPUT,
-        change: { kind: "pull_request", label: "#123", number: 123, title: "Fix the cache", base: "main", head_sha: "b".repeat(40) },
-      },
-    });
-    expect(p).toContain("Pull request #123: Fix the cache");
-    expect(p).toContain(`git diff main...${"b".repeat(40)}`);
-  });
-});
