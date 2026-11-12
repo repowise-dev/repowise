@@ -120,7 +120,7 @@ def _payload_failure(payload: dict[str, Any]) -> tuple[str, int | None]:
     text = result_text.strip() if isinstance(result_text, str) else ""
     # The CLI's "Please run /login" names an interactive command, and a server
     # has no session to type it into.
-    if "/login" in text:
+    if "Please run /login" in text:
         return _NOT_SIGNED_IN, status_code
     # A failed call can still carry subtype "success", which reads as a
     # contradiction when quoted.

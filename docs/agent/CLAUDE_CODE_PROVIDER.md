@@ -196,7 +196,7 @@ the run's "Not generated" line.
 | `claude` not on `PATH` | The run stops before any page: "Claude Code CLI not found. Install it with ...". |
 | Not signed in | Each page fails within seconds: "claude -p is not signed in. Run `claude auth login` as this user, or set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`." |
 | Token revoked, expired or mistyped | "claude -p reported failure (401: Failed to authenticate. API Error: 401 OAuth access token is invalid.)" Make a new token with `claude setup-token`. |
-| Account limit reached | Pages fail with the CLI's limit message. Wait, lower `REPOWISE_CLAUDE_CLI_CONCURRENCY`, then run `repowise generate --unwritten`. |
+| Account limit reached | Pages fail with the CLI's own message. Wait, lower `REPOWISE_CLAUDE_CLI_CONCURRENCY`, then run `repowise generate --unwritten`. |
 | A page took too long | "claude -p timed out after 600 seconds." Run `repowise generate --unwritten`. |
 
 The run exits 0 when some pages fail, because the pages it did write are kept.
