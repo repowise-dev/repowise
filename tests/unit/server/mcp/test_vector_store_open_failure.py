@@ -123,6 +123,73 @@ def test_the_workspace_registry_reports_an_unopenable_index(tmp_path, broken_lan
 
 
 @pytest.fixture
+def no_lancedb_open(monkeypatch):
+    """Fails the test if LanceDB is imported or opened."""
+    real_to_thread = asyncio.to_thread
+
+    async def _to_thread(fn, *args, **kwargs):
+        assert args != ("lancedb",), "lancedb imported"
+        return await real_to_thread(fn, *args, **kwargs)
+
+    async def _open(self):
+        raise AssertionError("LanceDB opened")
+
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+    monkeypatch.setattr(LanceDBVectorStore, "_ensure_connected", _open)
+
+
+def test_a_keyless_server_never_imports_or_opens_lancedb(tmp_path, no_lancedb_open, monkeypatch):
+    """A keyless store is never searched, so its first tool call waits on nothing."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    for name in ("_vector_store", "_decision_store", "_vector_store_ready", "_embedder_status"):
+        monkeypatch.setattr(_state, name, None, raising=False)
+    monkeypatch.setattr(_server, "_configured_embedder_name", lambda: "mock")
+
+    async def _go():
+        _state._lancedb_ready = asyncio.Event()
+        try:
+            await _server._warm_lancedb()
+            assert _state._lancedb_ready.is_set()
+        finally:
+            _state._lancedb_ready = None
+        await _server._load_vector_stores(str(tmp_path))
+
+    asyncio.run(_go())
+
+    assert isinstance(_state._vector_store, InMemoryVectorStore)
+    assert isinstance(_state._vector_store._embedder, KeylessEmbedder)
+    assert build_meta(timing_ms=1.0)["embedder_degraded"] is False
+
+
+def test_the_workspace_registry_skips_a_keyless_store(tmp_path, no_lancedb_open):
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+    from repowise.core.workspace.registry import RepoRegistry
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True)
+    placeholder = InMemoryVectorStore(embedder=KeylessEmbedder())
+
+    async def _go():
+        ctx = SimpleNamespace(
+            alias="api", vector_store=placeholder, vector_store_ready=asyncio.Event()
+        )
+        registry = SimpleNamespace(
+            _on_vector_store_error=lambda alias, exc: None,
+            _contexts={"api": ctx},
+            _vs_tasks={},
+        )
+        await RepoRegistry._load_vector_stores(registry, ctx, tmp_path, KeylessEmbedder())
+        return ctx
+
+    ctx = asyncio.run(_go())
+
+    assert ctx.vector_store is placeholder
+    assert ctx.vector_store_ready.is_set()
+
+
+@pytest.fixture
 def bridge_repo(tmp_path, monkeypatch):
     monkeypatch.setattr(_state, "_embedder_status", None, raising=False)
     monkeypatch.setattr(

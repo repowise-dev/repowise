@@ -235,15 +235,20 @@ def mcp_command(
             workspace_mode=not no_workspace,
         )
     except StoreUnavailableError as exc:
-        # One line on stderr and exit 1, not a traceback the host respawns on.
+        # Only when even the empty in-memory store would not open; a store
+        # that cannot open is otherwise served as every tool's answer. One
+        # line on stderr and exit 1, not a traceback the host respawns on.
         # The reason slug becomes the event's failure_reason.
         raise reasoned_error(str(exc), reason=exc.reason) from exc
     finally:
         from repowise.cli.platform import telemetry
         from repowise.server.mcp_server import _state
 
+        store_error = _state._store_error
         telemetry.add_command_outcome(
             transport=transport,
             transport_outcome=outcome,
             served_no_index=bool(_state._serving_no_index),
+            # The same slug the exit used to carry, on a session that served.
+            **({"failure_reason": store_error.reason} if store_error is not None else {}),
         )
