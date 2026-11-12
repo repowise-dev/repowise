@@ -251,7 +251,7 @@ async def test_importer_with_unknown_names_is_followed_onward(session, repo_id, 
     )
     (tmp_path / "app" / "hub.py").write_text("from pkg.catalog import *\n", encoding="utf-8")
     (tmp_path / "app" / "far.py").write_text(
-        "from app.hub import thing\n\nthing(backend_of)\n", encoding="utf-8"
+        "from app.hub import thing, backend_of\n\nthing(backend_of)\n", encoding="utf-8"
     )
 
     out = await reference_edit_set(session, repo_id, tmp_path, node)
@@ -1176,3 +1176,84 @@ async def test_an_overridden_method_names_its_overrides(session, repo_id, tmp_pa
 
     assert out["complete"] is False
     assert f"1 overriding methods are not listed: {override}" in out["reasons"]
+
+
+@pytest.mark.asyncio
+async def test_uses_an_importing_file_binds_itself_are_not_sites(session, repo_id, tmp_path):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/api.py", _DEF, "imports", {"imported_names_json": '["backend_of"]'})],
+    )
+    (tmp_path / "app" / "api.py").write_text(
+        "from pkg import catalog\n"
+        "from pkg.catalog import MODELS\n"
+        "\n"
+        "class Row:\n"
+        "    backend_of: str = ''\n"
+        "\n"
+        "def run(ctx, backend_of=None):\n"
+        "    ctx.backend_of\n"
+        "    backend_of = 1\n"
+        "    return catalog.backend_of(Row(backend_of='x'))\n",
+        encoding="utf-8",
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    # Only the use through the imported module is the symbol.
+    assert [s for s in _sites(out) if s[0] == "app/api.py"] == [("app/api.py", 10, "reference")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_typescript_mock_key_is_a_site_and_a_local_mock_is_not(
+    session, repo_id, tmp_path
+):
+    node = await _seed_js(
+        session,
+        repo_id,
+        tmp_path,
+        {
+            "web/a.ts": _PICK,
+            "web/a.test.ts": (
+                "const pick = vi.fn();\n"
+                "vi.mock('./a', () => ({\n"
+                "  pick: (...args) => pick(...args),\n"
+                "}));\n"
+                "pick.mockReset();\n"
+            ),
+        },
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert [s for s in _sites(out) if s[0] == "web/a.test.ts"] == [
+        ("web/a.test.ts", 3, "reference")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_another_class_member_of_the_same_name_is_not_listed(session, repo_id, tmp_path):
+    node = await _seed_method(
+        session,
+        repo_id,
+        tmp_path,
+        "class Other:\n"
+        "    def fetch_rows(self):\n"
+        "        return self.fetch_rows()\n"
+        "\n"
+        "    def load(self, store):\n"
+        "        return store.fetch_rows()\n",
+    )
+    session.add(
+        _edge(92, repo_id, "app/other.py", "pkg/store.py", "imports", imported_names_json='["Store"]')
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    assert [s for s in _sites(out) if s[0] == "app/other.py"] == [("app/other.py", 6, "reference")]
+    assert out["complete"] is False
+    assert any(r.startswith("another class defines its own member") for r in out["reasons"])

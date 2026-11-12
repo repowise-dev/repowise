@@ -433,14 +433,16 @@ class _ProseLines:
         # Lines that name it in code or as a whole string, or the two masks.
         self._read_once: tuple[Any, Any] | None = None
 
-    def _python(self, text: str) -> tuple[set[int], set[int]] | None:
+    def _python(self, text: str) -> tuple[set[int], set[int], set[tuple[int, int]]] | None:
         word = _word(self._name)
         code: set[int] = set()
         strings: set[int] = set()
+        at: set[tuple[int, int]] = set()
         try:
             for t in tokenize.generate_tokens(io.StringIO(text).readline):
                 if t.type == tokenize.NAME and t.string == self._name:
                     code.add(t.start[0])
+                    at.add(t.start)
                 elif (
                     t.type == tokenize.STRING
                     and (m := _PY_STRING.match(t.string))
@@ -451,7 +453,7 @@ class _ProseLines:
                     strings.add(t.start[0])
         except (tokenize.TokenError, SyntaxError):
             return None
-        return code, strings
+        return code, strings, at
 
     def _read(self) -> tuple[Any, Any]:
         text = "\n".join(self._lines)
@@ -465,14 +467,28 @@ class _ProseLines:
             return ("mask", None)
         return ("mask", (full.split("\n"), comments.split("\n")))
 
-    def __call__(self, n: int, hits: list[re.Match[str]]) -> bool:
+    def _once(self) -> tuple[Any, Any]:
         if self._read_once is None:
             self._read_once = self._read()
-        how, read = self._read_once
+        return self._read_once
+
+    def is_code(self, n: int, m: re.Match[str]) -> bool:
+        """Whether hit *m* on line *n* is the name as code; false when nothing can be told."""
+        how, read = self._once()
+        if read is None:
+            return False
+        if how == "tokens":
+            return (n, m.start()) in read[2]
+        return read[0][n - 1][m.start()] != " " or bool(
+            _TAG_BEFORE.search(self._lines[n - 1], 0, m.start())
+        )
+
+    def __call__(self, n: int, hits: list[re.Match[str]]) -> bool:
+        how, read = self._once()
         if read is None:  # nothing can be told
             return False
         if how == "tokens":
-            code, strings = read
+            code, strings, _at = read
             return n not in code and n not in strings
         full, comments = read[0][n - 1], read[1][n - 1]
         text = self._lines[n - 1]
@@ -507,18 +523,147 @@ def _code_string(body: str) -> bool:
     return bool(_CODE_STRING.fullmatch(re.sub(r"\s*([|,])\s*", r"\1", body.strip())))
 
 
+#: Languages where a file reaches another file's symbol only through an import.
+_IMPORT_BOUND_EXTENSIONS = REGISTRY.extensions_for(("python", "typescript", "javascript"))
+_IDENT = re.compile(r"[A-Za-z_$][\w$]*")
+_PY_STAR_IMPORT = re.compile(r"\bimport\s+\*(?!\s*as\b)")
+_ON_OBJECT = re.compile(r"\??\.\s*$")
+# The first name of the object a use sits on: ``a`` in ``a.b.name``; none for
+# ``f().name`` or ``x[0].name``.
+_OBJECT_ROOT = re.compile(r"(?<![\w$.)\]])([A-Za-z_$][\w$]*)(?:\s*\??\.\s*[A-Za-z_$][\w$]*)*\s*\??\.\s*$")
+_ARGUMENT_BEFORE = re.compile(r"[(,]\s*$")
+_KEYWORD_AFTER = re.compile(r"\s*=(?!=)")
+_SLOT_BEFORE = re.compile(r"(?:^|[{(,])\s*$")
+_SLOT_AFTER = re.compile(r"\s*:(?!:)")
+
+
+class _Foreign:
+    """Uses in one importing file that name something other than the symbol.
+
+    In Python, TypeScript and JavaScript a file reaches another file's
+    symbol only through an import, so in a file other than the definition's:
+
+    - a bare use is not the symbol when no import line there names it and no
+      ``from x import *`` could bring it in: it is a local binding;
+    - a use on an object is not the symbol unless the object's first name
+      comes from an import (a module): ``self.name``, ``ctx.name``,
+      ``f().name`` are another object's attribute;
+    - in Python, a keyword argument (``f(name=1)``) and a field or
+      parameter (``name: str``) name a slot. A TypeScript or JavaScript
+      object key is kept: a module mock (``vi.mock(p, () => ({ name }))``)
+      spells the export by it.
+
+    Only uses the tokenizer or mask reads as code are judged. Ceiling: a
+    module bound without an import (``m = importlib.import_module(...)``)
+    reads as a plain object; the dynamic-use reason already marks that set.
+    """
+
+    def __init__(
+        self, lines: list[str], imports: set[int], name: str, prose: _ProseLines, python: bool
+    ):
+        self._python = python
+        self._words = {w for n in imports for w in _IDENT.findall(lines[n - 1])}
+        self._bare = name in self._words or any(
+            _PY_STAR_IMPORT.search(lines[n - 1]) for n in imports
+        )
+        self._prose = prose
+
+    def __call__(self, n: int, text: str, m: re.Match[str]) -> bool:
+        if not self._prose.is_code(n, m):
+            return False
+        before, after = text[: m.start()], text[m.end() :]
+        if _ON_OBJECT.search(before):
+            root = _OBJECT_ROOT.search(before)
+            return root is None or root.group(1) not in self._words
+        if _SLOT_BEFORE.search(before) and _SLOT_AFTER.match(after):
+            return self._python
+        if self._python and _ARGUMENT_BEFORE.search(before) and _KEYWORD_AFTER.match(after):
+            return True
+        return not self._bare
+
+
+def _own_member_lines(lines: list[str], name: str, python: bool) -> set[int]:
+    """Lines of a file that define a method or function of its own named *name*."""
+    esc = re.escape(name)
+    if python:
+        own = re.compile(rf"^\s*(?:async\s+)?def\s+{esc}\s*\(")
+    else:
+        own = re.compile(
+            rf"^\s*(?:(?:public|private|protected|static|async|override)\s+)*{esc}\s*"
+            rf"(?:<[^>]*>)?\(.*\)\s*(?::[^{{=]*)?\{{\s*$"
+        )
+    return {n for n, t in enumerate(lines, 1) if own.match(t)}
+
+
+_SELF_BEFORE = re.compile(r"\b(?:self|this|cls)\s*\??\.\s*$")
+
+
+class _OwnMember:
+    """Uses in a file whose own class defines a member of the same name: its
+    definition and calls on ``self``/``this`` are that member, not the symbol.
+    A call on any other receiver may be either and is kept."""
+
+    def __init__(self, own: set[int]):
+        self._own = own
+
+    def __call__(self, n: int, text: str, m: re.Match[str]) -> bool:
+        return n in self._own or bool(_SELF_BEFORE.search(text, 0, m.start()))
+
+
+class _Judge(NamedTuple):
+    """Which judge, if any, reads one file's uses."""
+
+    member: bool
+    own: set[int]
+
+    def for_file(
+        self,
+        rel: str,
+        lines: list[str],
+        imports: set[int],
+        name: str,
+        prose: _ProseLines,
+        live: bool,
+        def_path: str,
+    ) -> Any:
+        if self.own:
+            return _OwnMember(self.own)
+        suffix = PurePosixPath(rel).suffix
+        # An edit in progress may use the name before importing it: not judged.
+        if self.member or live or rel == def_path or suffix not in _IMPORT_BOUND_EXTENSIONS:
+            return None
+        return _Foreign(lines, imports, name, prose, suffix in _PYTHON_EXTENSIONS)
+
+
+class _Scope(NamedTuple):
+    """What decides which uses in a file are the symbol's."""
+
+    member: bool
+    # Files holding a base method the symbol answers for, or an override of it.
+    kin: frozenset[str]
+
+
 def _scan(
     root: Path,
     files: list[str],
     name: str,
     definition: tuple[str, int, int],
     call_lines: dict[str, set[int]],
-    dirty: frozenset[str] = frozenset(),
+    dirty: frozenset[str],
+    scope: _Scope,
 ) -> tuple[
-    list[dict[str, Any]], list[str], int, set[str], bool, dict[str, set[str]], dict[str, str]
+    list[dict[str, Any]],
+    list[str],
+    int,
+    set[str],
+    bool,
+    dict[str, set[str]],
+    dict[str, str],
+    list[str],
 ]:
     """``(sites, unreadable, stale call lines, files renaming it, default-exported,
-    local import aliases per Python file, package declared per file)``.
+    local import aliases per Python file, package declared per file, files
+    defining a member of their own by the name)``.
 
     In a *dirty* file the graph's lines predate the edit, so a call is read
     from the text (the name followed by ``(``) instead. A plain reference
@@ -532,6 +677,7 @@ def _scan(
     renamed: set[str] = set()
     python_aliases: dict[str, set[str]] = {}
     packages: dict[str, str] = {}
+    own: list[str] = []
     is_default = False
     for rel in files:
         lines = _read_lines(root, rel)
@@ -551,12 +697,20 @@ def _scan(
             is_default = True
         live = rel in dirty
         graph_calls = set() if live else call_lines.get(rel, set())
+        own_lines = (
+            _own_member_lines(lines, name, python)
+            if scope.member and rel != definition[0] and rel not in scope.kin
+            else set()
+        )
+        if own_lines:
+            own.append(rel)
         found, missed = _file_sites(
-            rel, lines, imports, name, local, definition, graph_calls, live
+            rel, lines, imports, name, local, definition, graph_calls, live,
+            _Judge(scope.member, own_lines),
         )
         sites += found
         stale += missed
-    return sites, unreadable, stale, renamed, is_default, python_aliases, packages
+    return sites, unreadable, stale, renamed, is_default, python_aliases, packages, own
 
 
 # Bound under any name by its importers, so no spelling can be scanned for.
@@ -580,8 +734,15 @@ def _file_sites(
     definition: tuple[str, int, int],
     graph_calls: set[int],
     live: bool,
+    judge: _Judge,
 ) -> tuple[list[dict[str, Any]], int]:
-    """``(sites, stale graph call lines)`` of one read file."""
+    """``(sites, stale graph call lines)`` of one read file.
+
+    Uses that name something else are left out, except on the graph's call
+    lines: for a symbol that is not a member, what an importing file binds
+    itself (:class:`_Foreign`); for a member, another class's own member of
+    that name (:class:`_OwnMember`).
+    """
     word = _word(name)
     # A rename outside an import already marks the file; its spelling is
     # not listed, since an object key (``{ name: vi.fn() }``) reads the same.
@@ -589,6 +750,7 @@ def _file_sites(
     def_path, def_start, def_end = definition
     def_seen = rel != def_path
     prose = _ProseLines(rel, lines, name)
+    foreign = judge.for_file(rel, lines, imports, name, prose, live, def_path)
     sites: list[dict[str, Any]] = []
     stale = 0
     for n, text in enumerate(lines, 1):
@@ -598,11 +760,15 @@ def _file_sites(
             continue
         if n in imports:
             hits = _outside_module(text, hits)
+        elif foreign is not None and n not in graph_calls:
+            hits = [h for h in hits if not foreign(n, text, h)]
         if not hits:
             continue
         is_def = not def_seen and def_start <= n <= def_end
         def_seen = def_seen or is_def
         kind = _line_kind(is_def, n in imports, _calls_here(text, hits, n, graph_calls, live))
+        if kind == "import" and prose(n, hits):
+            kind = "reference"  # ``import`` opening a docstring sentence
         site = _site(rel, n, kind, lines)
         _flag(site, word, text, prose(n, hits) if kind == "reference" else False)
         sites.append(site)
@@ -843,6 +1009,7 @@ class _ScanResult(NamedTuple):
     is_default: bool
     python_aliases: dict[str, set[str]]
     packages: dict[str, str]
+    own_member: list[str]
 
 
 async def _edges_into(session: AsyncSession, repo_id: str, node: GraphNode) -> list[Any]:
@@ -1060,6 +1227,11 @@ def _scope_reasons(
         reasons.append(f"renamed on import or export: {', '.join(sorted(scan.renamed_in)[:3])}")
     if scan.is_default:
         reasons.append("default export: importers may rename it")
+    if scan.own_member:
+        reasons.append(
+            "another class defines its own member of that name, whose uses are not listed: "
+            + ", ".join(scan.own_member[:3])
+        )
     touched = sorted({s["path"] for s in scan.sites if s["path"] in unindexed})
     if touched:
         reasons.append(f"unindexed edits name it: {', '.join(touched[:3])}")
@@ -1107,10 +1279,10 @@ def _member_reasons(
     return []
 
 
-async def _dispatch_reasons(session: AsyncSession, repo_id: str, node: GraphNode) -> list[str]:
-    """Why a method that answers for a base method, or is overridden, has sites
-    the name scan cannot attribute: calls written against the base type, and
-    the overriding definitions a rename or signature change also reaches."""
+async def _dispatch_kin(
+    session: AsyncSession, repo_id: str, node: GraphNode
+) -> tuple[list[str], list[str]]:
+    """``(base methods, overriding methods)`` *node* is joined to by ``dispatches_to``."""
     rows = (
         await session.execute(
             select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
@@ -1126,6 +1298,13 @@ async def _dispatch_reasons(session: AsyncSession, repo_id: str, node: GraphNode
     ).all()
     bases = sorted({src for src, tgt in rows if tgt == node.node_id and src != node.node_id})
     overrides = sorted({tgt for src, tgt in rows if src == node.node_id and tgt != node.node_id})
+    return bases, overrides
+
+
+def _dispatch_reasons(bases: list[str], overrides: list[str]) -> list[str]:
+    """Why a method that answers for a base method, or is overridden, has sites
+    the name scan cannot attribute: calls written against the base type, and
+    the overriding definitions a rename or signature change also reaches."""
     reasons: list[str] = []
     if bases:
         reasons.append(f"calls through the base method are not listed: {', '.join(bases[:3])}")
@@ -1219,9 +1398,14 @@ async def _edit_set(
         _capped_candidates, root, name, files, unseen, held, node.file_path, reasons
     )
     definition = await _definition_span(root, node, name, language, dirty)
+    bases, overrides = await _dispatch_kin(session, repo_id, node)
+    scope = _Scope(
+        node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1,
+        frozenset(i.split("::", 1)[0] for i in bases + overrides),
+    )
     scan = _ScanResult(
         *await asyncio.to_thread(
-            _scan, root, ordered + unindexed, name, definition, facts.call_lines, dirty
+            _scan, root, ordered + unindexed, name, definition, facts.call_lines, dirty, scope
         )
     )
     # Past the file cap the left-out files are said already; none is stale for it.
@@ -1238,7 +1422,7 @@ async def _edit_set(
     reasons += await asyncio.to_thread(
         _member_reasons, root, node, name, language, scanned | set(unindexed), held
     )
-    reasons += await _dispatch_reasons(session, repo_id, node)
+    reasons += _dispatch_reasons(bases, overrides)
     if wider:
         reasons += await _widen(
             session, repo_id, root, node, name, ordered + unindexed, scan.sites
