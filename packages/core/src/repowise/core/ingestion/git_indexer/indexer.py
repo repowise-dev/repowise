@@ -541,6 +541,9 @@ class GitIndexer:
         if not tracked_files:
             return _IndexSetup(outcome="no_tracked")
 
+        # Started first: the per-file pass waits for it, it reads only the
+        # object store, and on a long history it is the slowest step here.
+        graph_job = self._start_blame_graph(repo, timings, progress)
         # Two tiers. Code files get the full per-file pass (blame, churn
         # signals, the per-file fallback walk). Every other tracked file that
         # is not vendored, a lockfile or binary gets its history tier (counts,
@@ -550,8 +553,6 @@ class GitIndexer:
             self.repo_path, tracked_files, extra_exclude_patterns=self._exclude_patterns
         )
 
-        # Written beside the commit walk: it reads only the object store.
-        graph_job = self._start_blame_graph(repo, timings, progress)
         commit_sink: list[dict] = []
         prov_clf = self._provenance_classifier()
         # Agent-trace records, read once and shared with both commit-index walks
