@@ -74,7 +74,10 @@ class ScanCache:
                         str(name): {
                             str(rel): entry
                             for rel, entry in files.items()
-                            if isinstance(entry, list) and len(entry) == 2
+                            if isinstance(entry, list)
+                            and len(entry) == 2
+                            and isinstance(entry[0], str)
+                            and isinstance(entry[1], list)
                         }
                         for name, files in data["entries"].items()
                     }
