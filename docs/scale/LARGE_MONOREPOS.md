@@ -32,15 +32,14 @@ cd monorepo
 git rev-list --count HEAD        # how many commits you have
 ```
 
-To keep only recent history, trim by date, not depth:
-
-```bash
-git clone --shallow-since=2019-01-01 https://gitlab.example.com/group/monorepo.git
-```
-
-`--depth N` follows every merge parent back N steps, so on a merge-heavy
-repository it fetches far more than N commits: `--depth 22000` on
-ClickHouse fetched 320,866.
+Use a full clone and choose how much history to read with
+`--commit-limit` (below), not by trimming the clone. A shallow clone
+(`--depth` or `--shallow-since`) leaves cut-off commits at its boundary,
+and git reports each of them as adding every file in the repository. On a
+merge-heavy repository that is thousands of commits: a `--shallow-since`
+clone of ClickHouse kept 9,715 of them, each a 6 s full-tree diff, which
+added about an hour to the history pass. If you already have a shallow
+clone, run `git fetch --unshallow` before the first index.
 
 **C and C++ include paths.** repowise resolves `#include` lines through
 `compile_commands.json` when it finds one at the repo root or in `build/`,
