@@ -233,9 +233,6 @@ async def persist_result(
                 await session.commit()
             with timed(timings, "persist.generation"):
                 await persist_generation(result, session, repo.id)
-            # Commit boundary 3 of 6: generation.
-            with timed(timings, "persist.commit.generation"):
-                await session.commit()
             # persist_generation has already upserted the current pages, so the
             # sweep only retires structurally-keyed pages this run did not
             # reproduce. Without it the incremental-index path (every normal
@@ -264,16 +261,21 @@ async def persist_result(
                     result.parsed_files,
                 ),
             )
-            # Commit boundary 4 of 6: the index write itself.
-            with timed(timings, "persist.commit.index"):
-                await session.commit()
         else:
             swept_page_ids = await persist_pipeline_result(
                 result, session, repo.id, scan_commit_health=False
             )
-            # Commit boundary 4 of 6: the pipeline result (graph, git, files).
-            with timed(timings, "persist.commit.pipeline"):
-                await session.commit()
+        # The vector side of what the branch retired goes before the SQL side
+        # commits. A drop between them then leaves embeddings gone and rows
+        # present, which the next run re-creates — never the reverse, where a
+        # committed deletion keeps an embedding nothing will ever remove.
+        store = getattr(result, "vector_store", None)
+        if store is not None and swept_page_ids:
+            await store.delete_many(swept_page_ids)
+        # Commit boundary 3 of 6: generation and its structural sweep (or the
+        # pipeline result), together with the vector deletions that retire them.
+        with timed(timings, "persist.commit.generation"):
+            await session.commit()
         persisted_repo_id = repo.id
 
         # Tombstone pages whose file is simply gone. The other tombstone path
@@ -282,16 +284,18 @@ async def persist_result(
         # later index. Outside the branch above because both branches need it.
         # Its ids join the swept ones so they leave the vector store and the
         # full-text index together, below, after this session closes.
+        tombstoned: list[str] = []
         try:
-            swept_page_ids = [
-                *swept_page_ids,
-                *await tombstone_absent_file_pages(session, repo.id, repo_path),
-            ]
+            tombstoned = await tombstone_absent_file_pages(session, repo.id, repo_path)
+            swept_page_ids = [*swept_page_ids, *tombstoned]
         except Exception as exc:  # one stale page must not fail a whole index
             logger.warning("tombstone_absent_sweep_failed", error=str(exc))
-        # Commit boundary 5 of 6: the tombstone sweep. Its own boundary, because
-        # the pages it retires leave the vector store just below and that delete
-        # must not outlive a rolled-back prune.
+        # Same ordering as the sweep above, for the same reason: the embeddings
+        # go before the rows that name them, so an interruption cannot leave a
+        # committed tombstone pointing at an embedding nothing will delete.
+        if store is not None and tombstoned:
+            await store.delete_many(tombstoned)
+        # Commit boundary 4 of 6: the tombstone sweep.
         with timed(timings, "persist.commit.prune"):
             await session.commit()
 
@@ -316,22 +320,14 @@ async def persist_result(
         job.failed_pages = stub_fallbacks
         job.started_at = now
         job.finished_at = now
-        # Commit boundary 6 of 6: the generation job record. Everything before it
-        # is durable now, so the vector-store delete below cannot leave the SQL
-        # side claiming pages the store no longer has.
+        # Commit boundary 5 of 6: the generation job record.
         with timed(timings, "persist.commit.job"):
             await session.commit()
 
-        # Drop swept pages from the vector store *before* the SQL session
-        # commits. The vector store is a separate engine/file (pgvector DB,
-        # LanceDB dir, or in-memory) so there is no SQLite write-lock conflict,
-        # and the delete is idempotent. Keeping the SQL commit last as the
-        # durable source of truth means an interrupted run self-heals: the
-        # vector embedding is already gone, the SQL rows follow on commit.
-        if swept_page_ids:
-            store = getattr(result, "vector_store", None)
-            if store is not None:
-                await store.delete_many(swept_page_ids)
+        # Nothing is deleted from the vector store here: each batch of retired
+        # pages was deleted immediately before the commit that made its SQL side
+        # durable, which is the ordering the invariant needs. Deleting after the
+        # commits would leave a committed row whose embedding outlives it.
 
     # FTS deletes/indexing run outside the session: the FTS index lives in the
     # *same* SQLite file as the session, so touching it while the session still
