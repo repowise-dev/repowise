@@ -315,28 +315,31 @@ def _innermost(symbols: list[_Sym], line: int) -> _Sym | None:
     return min(holding, key=lambda s: s.end - s.start) if holding else None
 
 
+def _symbol_span(sym: _Sym, line: int, end: int | None, symbols: list[_Sym]) -> tuple[int, int]:
+    """From the definition line when the anchor is near it, else from just above
+    the anchor; on to the end of the symbol. A class window is its head: each
+    member it holds is a window of its own."""
+    start = sym.start if line - sym.start < _LEAD_LINES else line - _LEAD_LINES
+    stop = max(end or 0, sym.end)
+    inner = [s.start for s in symbols if s.kind in _CODE_KINDS and start < s.start <= sym.end]
+    if sym.kind in _CONTAINER_KINDS and inner:
+        stop = min(inner) - 1
+    return start, stop
+
+
 def _window_for(
     line: int, end: int | None, rank: int, symbols: list[_Sym], n_lines: int
 ) -> _Window:
     """The window an anchor opens: definition to end of symbol, at most the cap."""
     sym = _innermost(symbols, line)
     names: list[str] = []
-    value = next(
-        (s for s in symbols if s.start == line and s.kind not in _CODE_KINDS), None
-    )
+    value = next((s for s in symbols if s.start == line and s.kind not in _CODE_KINDS), None)
     if value is not None and (sym is None or sym.kind in _CONTAINER_KINDS):
         # A constant or field: its own lines and the comment above them.
         start, stop = max(1, value.start - 3), value.end
         names = [value.qualified or value.name]
     elif sym is not None:
-        # From the definition line when the anchor is near it, else from just
-        # above the anchor; on to the end of the symbol either way.
-        start = sym.start if line - sym.start < _LEAD_LINES else line - _LEAD_LINES
-        stop = max(end or 0, sym.end)
-        inner = [s.start for s in symbols if s.kind in _CODE_KINDS and start < s.start <= sym.end]
-        if sym.kind in _CONTAINER_KINDS and inner:
-            # A class window is its head; each member it holds is a window of its own.
-            stop = min(inner) - 1
+        start, stop = _symbol_span(sym, line, end, symbols)
         names = [sym.qualified or sym.name] if start == sym.start else []
     elif end is not None and end >= line:
         start, stop = line, end
