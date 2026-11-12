@@ -51,6 +51,47 @@ SETTINGS: tuple[Setting, ...] = (
         "Older name for REPOWISE_DB_URL, read when that is unset.",
     ),
     _e(
+        "REPOWISE_POSTGRES_KEEPALIVE",
+        "bool",
+        False,
+        "Send server-side TCP keepalive settings and a command timeout on asyncpg "
+        "connections. Leave off behind a pooler that rejects startup parameters.",
+    ),
+    _e(
+        "REPOWISE_POSTGRES_KEEPALIVES_IDLE",
+        "int",
+        60,
+        "Seconds idle before the server's first keepalive probe, when "
+        "REPOWISE_POSTGRES_KEEPALIVE is on.",
+        minimum=1,
+        on_invalid="error",
+    ),
+    _e(
+        "REPOWISE_POSTGRES_KEEPALIVES_INTERVAL",
+        "int",
+        15,
+        "Seconds between keepalive probes, when REPOWISE_POSTGRES_KEEPALIVE is on.",
+        minimum=1,
+        on_invalid="error",
+    ),
+    _e(
+        "REPOWISE_POSTGRES_KEEPALIVES_COUNT",
+        "int",
+        4,
+        "Unanswered keepalive probes before the server drops the connection, when "
+        "REPOWISE_POSTGRES_KEEPALIVE is on.",
+        minimum=1,
+        on_invalid="error",
+    ),
+    _e(
+        "REPOWISE_POSTGRES_COMMAND_TIMEOUT",
+        "int",
+        300,
+        "Seconds one database command may run, when REPOWISE_POSTGRES_KEEPALIVE is on.",
+        minimum=1,
+        on_invalid="error",
+    ),
+    _e(
         "REPOWISE_CORS_ORIGINS",
         "list",
         None,

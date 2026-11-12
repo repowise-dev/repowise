@@ -68,6 +68,11 @@ _OWN_HEADER = (
         ("third_party/zlib/inflate.c", "vendored"),
         ("src/thirdparty/docopt.py", "vendored"),
         ("external/abseil/str.cc", "vendored"),
+        # cloned reference checkouts in a root .repos/ are someone else's code
+        (".repos/foo/src/index.ts", "vendored"),
+        (".repos/foo/packages/a/src/x.ts", "vendored"),
+        ("src/repos/a.ts", "production"),
+        ("packages/external/a.ts", "production"),
         ("static/js/app.min.js", "vendored"),
         ("assets/site.min.css", "vendored"),
         ("docs_src/tutorial/first_steps.py", "docs_example"),
@@ -593,6 +598,51 @@ def test_line_directive_to_c_source_is_not_generated(text: str) -> None:
 
 def test_line_directive_rule_is_c_and_cpp_only() -> None:
     assert code_origin("src/parser.py", '#line 1 "x.rl"\nx = 1\n') == "production"
+
+
+_LLPARSE_C = (
+    "/* Additional changes for SwiftNIO:\n"
+    "    - prefixed all symbols by 'c_nio_'\n"
+    "*/\n"
+    "#include <stdlib.h>\n"
+    "#include <stdint.h>\n"
+    "#include <string.h>\n"
+    "\n"
+    "typedef int (*llhttp__internal__span_cb)(void);\n"
+    "\n"
+    "static const unsigned char llparse_blob0[] = {\n"
+    "  'o', 'n'\n"
+    "};\n"
+)
+
+
+@pytest.mark.parametrize("path", ["Sources/CNIOLLHTTP/c_nio_llhttp.c", "deps/llhttp/llhttp.cc"])
+def test_llparse_output_is_generated(path: str) -> None:
+    assert code_origin(path, _LLPARSE_C) == "generated"
+    assert not is_generated_header(_LLPARSE_C)
+
+
+def test_aligned_llparse_blob_is_generated() -> None:
+    text = "#include <stdint.h>\nstatic const unsigned char ALIGN(16) llparse_blob1[] = {\n"
+    assert code_origin("src/llhttp.c", text) == "generated"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/* Tables follow llparse's llparse_blob0 layout. */\nint parse(void);\n",
+        "// static const unsigned char llparse_blob0[] = {\nint parse(void);\n",
+        'const char *s = "static const unsigned char llparse_blob0[]";\n',
+        "static const unsigned char my_blob0[] = { 0 };\n",
+    ],
+)
+def test_llparse_mention_stays_production(text: str) -> None:
+    assert code_origin("src/http_parser.c", text) == "production"
+
+
+def test_llparse_rule_is_c_and_cpp_only() -> None:
+    text = "static const unsigned char llparse_blob0[] = {\n"
+    assert code_origin("src/parser.py", text) == "production"
 
 
 def test_own_license_header_is_not_vendored() -> None:
