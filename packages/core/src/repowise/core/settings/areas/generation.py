@@ -28,10 +28,13 @@ def _suggest_embedder(facts: Any) -> Proposal | None:
         return None
     if facts.embedder_found is None or facts.values.get("embedder") not in (None, "mock"):
         return None
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
     name, why = facts.embedder_found
+    spec = PROVIDER_SPECS.get(name)
     spend = (
-        "Runs on your local Ollama, no spend."
-        if name == "ollama"
+        f"Runs on your machine through {name}, no spend."
+        if spec is not None and spec.local
         else f"One embedding pass over the wiki pages, billed to your {name} key."
     )
     return Proposal(

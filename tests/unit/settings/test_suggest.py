@@ -179,6 +179,14 @@ def test_embedder_needs_docs_without_semantic_search_and_a_ready_embedder():
     assert _suggest("embedder", search=off, embedder_found=found, values=chosen) is None
 
 
+def test_embedder_spend_line_follows_the_provider_spec():
+    off = {"full_text": "available", "semantic": "unavailable"}
+    local = _suggest("embedder", search=off, embedder_found=("ollama", "a model is set"))
+    assert "no spend" in local.impact
+    keyed = _suggest("embedder", search=off, embedder_found=("gemini", "GEMINI_API_KEY is set"))
+    assert "billed to your gemini key" in keyed.impact
+
+
 def test_ollama_embedder_promises_no_spend():
     off = {"full_text": "available", "semantic": "unavailable"}
     found = ("ollama", "OLLAMA_EMBEDDING_MODEL is set")
