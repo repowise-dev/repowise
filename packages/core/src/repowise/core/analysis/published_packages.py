@@ -364,7 +364,8 @@ def _python_package_dirs(
     from repowise.core.workspace.code_api import _pypi_package_dirs
 
     module = name.replace("-", "_").replace(".", "_")
-    guess = [f"src/{module}", module, f"src/{module.lower()}", module.lower()]
+    # A name that is already lower case spells the same dir twice.
+    guess = list(dict.fromkeys([f"src/{module}", module, f"src/{module.lower()}", module.lower()]))
     declared = _pypi_package_dirs(data)
     if declared:
         existing = [d for d in (_join(rel_dir, c) for c in declared) if d in facts.tree]

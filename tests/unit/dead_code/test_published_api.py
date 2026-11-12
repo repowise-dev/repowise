@@ -10,6 +10,7 @@ from repowise.core.analysis.dead_code.published_api import (
     BuildFacts,
     demote_published_api,
 )
+from repowise.core.analysis.published_packages import _python_package_dirs
 from repowise.core.ingestion.resolvers.dotnet.index import build_index
 
 
@@ -47,6 +48,32 @@ def _demote(root: Path, *findings: DeadCodeFindingData) -> list[DeadCodeFindingD
 def _facts(root: Path) -> BuildFacts:
     return BuildFacts(repo_root=root, dotnet_index=build_index(root))
 
+
+
+def test_the_declared_package_dirs_are_used_when_they_exist(tmp_path: Path) -> None:
+    """The dirs the build declares are the answer while they are in the tree."""
+    _write(
+        tmp_path,
+        {
+            "pyproject.toml": (
+                '[build-system]\nrequires = ["setuptools"]\n'
+                '[project]\nname = "my-lib"\n'
+                '[tool.setuptools]\npackages = ["my_lib"]\n'
+            ),
+            "my_lib/api.py": "",
+        },
+    )
+    data = {"tool": {"setuptools": {"packages": ["my_lib"]}}}
+
+    assert _python_package_dirs(_facts(tmp_path), "", data, "my-lib") == ["my_lib"]
+
+
+def test_the_declared_package_dirs_that_are_gone_fall_back_to_the_name(tmp_path: Path) -> None:
+    """Stale declared dirs leave the name guess as the fallback."""
+    _write(tmp_path, {"src/my_lib/api.py": ""})
+    data = {"tool": {"setuptools": {"packages": ["my_lib_gone"]}}}
+
+    assert _python_package_dirs(_facts(tmp_path), "", data, "my-lib") == ["src/my_lib"]
 
 def test_a_packable_project_publishes_its_public_types(tmp_path: Path) -> None:
     _project(tmp_path, "src/Lib/Lib.csproj", "<PackageId>Acme.Lib</PackageId>")
