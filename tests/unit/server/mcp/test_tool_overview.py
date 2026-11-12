@@ -30,7 +30,7 @@ def test_legacy_placeholder_title_gets_the_real_repo_name():
 
 
 def test_title_substitution_is_exact_match_not_prefix():
-    """A repo whose name starts with \"repo\" must not be rewritten into \"repowisewise\"."""
+    """A repo whose name starts with "repo" must not be rewritten into "repowisewise"."""
     page = SimpleNamespace(title="Repository Overview: repowise")
     assert (
         ov._resolve_title(page, SimpleNamespace(name="repowise"))
@@ -60,9 +60,9 @@ def test_entry_points_at_the_cap_record_no_omission(tmp_path):
     assert collector._chunks == []
 
 
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Tool surface guide
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 def _row(name, *, tier="core", recipes=(), default=True, eligible=True):
@@ -119,9 +119,9 @@ def test_tool_surface_in_workspace_mode_reads_the_workspace_columns():
     assert guide["counts"]["default"] == 0
 
 
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Knowledge map and communities
-# ------------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 
 
 def _git(path, email, name=None, pct=0.5):
@@ -180,7 +180,7 @@ def test_community_summary_caps_at_ten_by_size_and_survives_bad_meta():
         # Community `cid` has cid + 1 members, so size order is 11, 10, ... 0.
         for m in range(cid + 1):
             nodes.append(_node(f"pkg{cid}/deep{cid}/f{m}.py", cid, meta="{not json"))
-        nodes.append(_node("pkg0/sym::Thing", 0, node_type="symbol"))
+    nodes.append(_node("pkg0/sym::Thing", 0, node_type="symbol"))
 
     summary = ov._build_community_summary(nodes)
     assert [c["id"] for c in summary] == list(range(11, 1, -1))
@@ -210,7 +210,7 @@ def test_layer_order_is_attached_under_architecture_even_without_the_tour():
     assert result == {"architecture": {"layers": [], "layer_order": ["api", "core"]}}
 
 
-def test_layer_order_yields_to_k_layers_and_never_lists_tests():
+def test_layer_order_yields_to_kg_layers_and_never_lists_tests():
     page = SimpleNamespace(metadata_json=json.dumps({"layer_order": ["api", "core", "Test"]}))
     with_layers: dict = {"architecture": {"layers": [{"name": "API", "file_count": 3}]}}
     ov._build_guided_tour(page, with_layers, {}, False)
@@ -237,6 +237,7 @@ def test_layer_order_yields_to_k_layers_and_never_lists_tests():
 # ---------------------------------------------------------------------------
 # Workspace footer
 # ---------------------------------------------------------------------------
+
 
 def _registry(aliases, default="api", root="/ws"):
     return SimpleNamespace(
@@ -297,7 +298,7 @@ async def test_code_health_read_failure_degrades_to_an_empty_block(
 
 @pytest.mark.asyncio
 async def test_key_decisions_ignore_active_records_nobody_accepted(session, populated_db):
-    """The status column alone does not make a decision \"settled\" on the front page."""
+    """The status column alone does not make a decision "settled" on the front page."""
     from repowise.core.persistence.models import DecisionRecord
 
     record = await session.get(DecisionRecord, "dec1")
