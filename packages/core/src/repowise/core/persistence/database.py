@@ -772,6 +772,25 @@ async def _sqlite_stamp_state(conn: Any) -> tuple[int, int]:
     return int(user_version or 0), int(cookie or 0)
 
 
+#: PostgreSQL advisory lock key held while a transaction creates core tables or indexes.
+_PG_SCHEMA_LOCK_KEY = 0x7277_7363_6865_6D61  # "rwschema"
+
+
+async def hold_schema_lock(conn: Any) -> None:
+    """On PostgreSQL, serialize schema DDL across processes until *conn*'s transaction ends.
+
+    ``CREATE TABLE`` checks for the table first, so two processes opening one
+    empty database at once (a server and a worker starting together) both see
+    it missing and the second fails on ``pg_type_typname_nsp_index``. Holding
+    this lock makes the second wait, then find the tables the first committed.
+    SQLite needs nothing: its writer lock already serializes DDL.
+    """
+    if conn.dialect.name == "postgresql":
+        await conn.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": _PG_SCHEMA_LOCK_KEY}
+        )
+
+
 async def init_db(engine: AsyncEngine) -> None:
     """Create all SQLAlchemy tables and the FTS index for the given engine.
 
@@ -805,6 +824,7 @@ async def init_db(engine: AsyncEngine) -> None:
                 # The stamp covers every registered revision, so none is pending here.
                 storage_migrations.settled(conn)
                 return
+        await hold_schema_lock(conn)
         await conn.run_sync(Base.metadata.create_all)
         # Raises when the walk is incomplete, so a partial reconcile is never stamped.
         await conn.run_sync(_reconcile_schema)

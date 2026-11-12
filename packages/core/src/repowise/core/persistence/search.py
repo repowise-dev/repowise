@@ -34,6 +34,7 @@ from repowise.core.fts_query import match_term as _match_term
 from repowise.core.fts_query import meaningful_terms as _meaningful_terms
 
 from .batches import chunked
+from .database import hold_schema_lock
 from .information_floor import information_floor, meets_information_floor, substantive_text
 
 
@@ -322,6 +323,8 @@ class FullTextSearch:
             await self.prune_orphans()
         elif self._dialect == "postgresql":
             async with self._engine.begin() as conn:
+                # IF NOT EXISTS alone still races a concurrent creator.
+                await hold_schema_lock(conn)
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS idx_wiki_pages_fts "
