@@ -553,6 +553,43 @@ async def test_a_short_graph_leaves_the_parser_stamp_for_the_next_update(async_s
     assert await _stored_fingerprint(async_session, repo.id) == "older-parser-build"
 
 
+def _stored_snapshot(gb, *, extra_nodes=()) -> dict[str, list]:
+    """The last persisted graph: *gb* without the edge the store lacks."""
+    return {
+        "nodes": [*gb.graph().nodes(data=True), *extra_nodes],
+        "edges": [
+            (u, v, d) for u, v, d in gb.graph().edges(data=True) if (u, v) != ("c.py", "a.py")
+        ],
+    }
+
+
+async def test_a_file_that_never_parsed_leaves_the_graph_complete(async_session, tmp_path):
+    """It had no rows to lose, so the other files are reconciled and stamped as usual."""
+    repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, "older-parser-build")
+    gb.traversed_file_paths = {pf.file_info.path for pf in parsed} | {"broken.py"}
+    gb.previous_seed_edges = _stored_snapshot(gb)
+
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
+    await async_session.commit()
+
+    assert ("c.py", "a.py", "imports") in await _db_edge_set(async_session, repo.id)
+    assert await _stored_fingerprint(async_session, repo.id) == parser_fingerprint()
+
+
+async def test_a_file_that_stopped_parsing_still_makes_the_graph_short(async_session, tmp_path):
+    repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, "older-parser-build")
+    gb.traversed_file_paths = {pf.file_info.path for pf in parsed} | {"broken.py"}
+    gb.previous_seed_edges = _stored_snapshot(
+        gb, extra_nodes=[("broken.py::f", {"node_type": "function", "file_path": "broken.py"})]
+    )
+
+    await persist_incremental_edges(async_session, repo.id, gb, parsed, ["b.py"])
+    await async_session.commit()
+
+    assert ("c.py", "a.py", "imports") not in await _db_edge_set(async_session, repo.id)
+    assert await _stored_fingerprint(async_session, repo.id) == "older-parser-build"
+
+
 async def test_without_a_snapshot_every_file_is_reconciled(async_session, tmp_path):
     """The rebuilt graph alone cannot show a call that stopped resolving."""
     repo, gb, parsed = await _seed_missing_edge(async_session, tmp_path, parser_fingerprint())
