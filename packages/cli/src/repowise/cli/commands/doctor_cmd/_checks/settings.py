@@ -115,41 +115,53 @@ def _override_row(setting: Setting, file_value: Any, env_value: Any) -> DoctorCh
     return _row(name, True, detail)
 
 
+def _variable_row(
+    s: Setting, from_file: Resolved | None, environ: Mapping[str, str]
+) -> DoctorCheck | None:
+    """*s*'s variable when it is set: invalid, or deciding against *from_file*.
+
+    *from_file* is the file's valid value, ``None`` when it has none to compare.
+    """
+    from repowise.core.settings import Source
+
+    if s.env is None or s.env.prefix or s.env.name not in environ:
+        return None
+    env_raw = environ[s.env.name]
+    from_env, env_problem = _problem(s, {}, {s.env.name: env_raw})
+    if env_problem:
+        return _env_row(s, s.env.name, env_raw, env_problem)
+    if (
+        from_file is not None
+        and from_file.source is not Source.DEFAULT
+        and from_env is not None
+        and from_env.source is Source.ENV
+        and from_env.value != from_file.value
+    ):
+        return _override_row(s, from_file.value, from_env.value)
+    return None
+
+
 def _value_rows(
     settings: list[Setting], config: Mapping[str, Any], environ: Mapping[str, str]
 ) -> tuple[list[DoctorCheck], list[str]]:
     """Rows for invalid file and env values and env overrides, and the keys to reset."""
-    from repowise.core.settings import Source
-    from repowise.core.settings.resolve import MISSING, lookup
+    from repowise.core.settings.resolve import lookup
 
     rows: list[DoctorCheck] = []
     resettable: list[str] = []
     seen: set[str] = set()
     for s in settings:
-        raw = lookup(config, s.key)
         from_file, file_problem = _problem(s, config, {})
         # The decisions area names a block-level problem on every key in the block.
         if file_problem and file_problem not in seen:
             seen.add(file_problem)
-            row, key = _file_row(s, raw, file_problem)
+            row, key = _file_row(s, lookup(config, s.key), file_problem)
             rows.append(row)
             if key:
                 resettable.append(key)
-        if s.env is None or s.env.prefix or s.env.name not in environ:
-            continue
-        env_raw = environ[s.env.name]
-        from_env, env_problem = _problem(s, {}, {s.env.name: env_raw})
-        if env_problem:
-            rows.append(_env_row(s, s.env.name, env_raw, env_problem))
-        elif (
-            raw is not MISSING
-            and not file_problem
-            and from_env is not None
-            and from_env.source is Source.ENV
-            and from_file is not None
-            and from_env.value != from_file.value
-        ):
-            rows.append(_override_row(s, from_file.value, from_env.value))
+        variable = _variable_row(s, None if file_problem else from_file, environ)
+        if variable is not None:
+            rows.append(variable)
     return rows, resettable
 
 
@@ -241,12 +253,12 @@ def _unique(rows: list[DoctorCheck]) -> list[DoctorCheck]:
     used: set[str] = set()
     out = []
     for row in rows:
-        check_id, n = row.id, 1
-        while check_id in used:
+        unique, n = row.id, 1
+        while unique in used:
             n += 1
-            check_id = f"{row.id}-{n}"
-        used.add(check_id)
-        out.append(row._replace(id=check_id))
+            unique = f"{row.id}-{n}"
+        used.add(unique)
+        out.append(row._replace(id=unique))
     return out
 
 
