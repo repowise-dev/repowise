@@ -419,127 +419,162 @@ def _scan(
     """Lines of *files* matching *pattern*, definitions first, and why they may
     not be all. *raw* is bytes every match holds, read to skip a file cheaply;
     ``None`` reads every file's text."""
-    reasons: list[str] = []
-    rows: list[dict[str, Any]] = []
-    scanned = 0
-    oversized: list[str] = []
-    unreadable: list[str] = []
-    per_file_capped = overflow = defs = 0
-    tails: list[tuple[str, list[tuple[int, str]]]] = []
-    deadline = time.monotonic() + MAX_SCAN_SECONDS
-    undecodable = binary_hits = 0
-    from repowise.core.ingestion.document_extractors import (
-        document_extractor_claims,
-        is_extracted_document,
-    )
-
-    claims = document_extractor_claims()
+    run = _ScanRun(root, pattern, definition, raw)
     for i, rel in enumerate(files):
         if i >= MAX_SCAN_FILES:
-            reasons.append(f"over {MAX_SCAN_FILES} files")
+            run.reasons.append(f"over {MAX_SCAN_FILES} files")
             break
-        if time.monotonic() > deadline:
-            reasons.append(f"time budget: scanned {i} of {len(files)} files{_unscanned(files[i:])}")
+        found = run.read(rel) if time.monotonic() <= run.deadline else _STOP_TIME
+        if found is _STOP_TIME:
+            run.reasons.append(
+                f"time budget: scanned {i} of {len(files)} files{_unscanned(files[i:])}"
+            )
             break
+        if found is _STOP_BYTES:
+            run.reasons.append(
+                f"over {MAX_SCAN_BYTES // 1_000_000} MB: scanned {i} of {len(files)}"
+                f" files, source first{_unscanned(files[i:])}"
+            )
+            break
+        if found is not None:
+            run.serve(rel, *found)
+    return run.finish()
+
+
+# What :meth:`_ScanRun.read` returns when the scan must stop at a file.
+_STOP_TIME = ("time",)
+_STOP_BYTES = ("bytes",)
+
+
+class _ScanRun:
+    """One scan's budget, rows and the tallies its reasons are written from."""
+
+    def __init__(
+        self, root: Path, pattern: re.Pattern[str], definition: re.Pattern[str], raw: bytes | None
+    ) -> None:
+        from repowise.core.ingestion.document_extractors import document_extractor_claims
+
+        self.root, self.pattern, self.definition, self.raw = root, pattern, definition, raw
+        self.claims = document_extractor_claims()
+        self.deadline = time.monotonic() + MAX_SCAN_SECONDS
+        self.reasons: list[str] = []
+        self.rows: list[dict[str, Any]] = []
+        self.tails: list[tuple[str, list[tuple[int, str]]]] = []
+        self.oversized: list[str] = []
+        self.unreadable: list[str] = []
+        self.scanned = self.per_file_capped = self.overflow = self.defs = 0
+        self.undecodable = self.binary_hits = 0
+
+    def read(self, rel: str) -> Any:
+        """``(lines, streamed)`` matching in *rel*, ``None`` to skip it, or a stop marker."""
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
         if not _inside(rel):
-            unreadable.append(rel)
-            continue
-        streamed: list[tuple[int, str]] | None = None
+            self.unreadable.append(rel)
+            return None
         try:
-            with open(root / rel, "rb") as fh:
+            with open(self.root / rel, "rb") as fh:
                 size = os.fstat(fh.fileno()).st_size
                 if size > _MAX_FILE_BYTES:
-                    if size > _MAX_STREAM_BYTES:
-                        oversized.append(rel)
-                        continue
-                    head = fh.read(_SNIFF_BYTES)
-                    if _looks_binary(head):
-                        binary_hits += raw is not None and _stream_contains(fh, raw)
-                        continue
-                    # Text past the whole-read cap is often the file the index
-                    # dropped on size, so only this scan finds what it holds.
-                    if is_extracted_document(root / rel, head, claims=claims):
-                        continue
-                    streamed = _stream_matching_lines(fh, raw, pattern, deadline)
-                    if streamed is None:
-                        reasons.append(
-                            f"time budget: scanned {i} of {len(files)} files{_unscanned(files[i:])}"
-                        )
-                        break
-                elif scanned + size > MAX_SCAN_BYTES:
-                    reasons.append(
-                        f"over {MAX_SCAN_BYTES // 1_000_000} MB: scanned {i} of {len(files)}"
-                        f" files, source first{_unscanned(files[i:])}"
-                    )
-                    break
-                else:
-                    scanned += size
-                    data = fh.read()
+                    return self._read_large(rel, fh, size)
+                if self.scanned + size > MAX_SCAN_BYTES:
+                    return _STOP_BYTES
+                self.scanned += size
+                data = fh.read()
         except FileNotFoundError:
-            continue  # deleted since indexing: nothing to match
+            return None  # deleted since indexing: nothing to match
         except OSError:
             # A graph file node can name a package directory; it holds no text.
-            if not (root / rel).is_dir():
-                unreadable.append(rel)
-            continue
-        if streamed is not None:
-            found = streamed
-        elif is_extracted_document(root / rel, data, claims=claims):
-            continue
-        elif b"\x00" in data:
+            if not (self.root / rel).is_dir():
+                self.unreadable.append(rel)
+            return None
+        if is_extracted_document(self.root / rel, data, claims=self.claims):
+            return None
+        return self._text_lines(data)
+
+    def _text_lines(self, data: bytes) -> Any:
+        """:meth:`read` for a file read whole: its matching lines, or ``None`` for
+        a binary or a file without the needle (counted when a grep would be)."""
+        raw = self.raw
+        if b"\x00" in data:
             # Binary: no lines to serve, but one holding the token is a match
             # a grep would report. UTF-16 text is not binary.
             if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-                undecodable += 1
+                self.undecodable += 1
             elif raw is not None and raw in data:
-                binary_hits += 1
-            continue
-        elif raw is not None and raw not in data:
+                self.binary_hits += 1
+            return None
+        if raw is not None and raw not in data:
             # An ASCII needle shows as the same bytes in any ASCII-compatible
             # encoding; a non-ASCII one is missed unless the file is UTF-8.
             if not raw.isascii() and not _is_utf8(data):
-                undecodable += 1
-            continue
-        else:
-            found = _matching_lines(data.decode("utf-8", errors="replace"), pattern)
+                self.undecodable += 1
+            return None
+        return _matching_lines(data.decode("utf-8", errors="replace"), self.pattern), False
+
+    def _read_large(self, rel: str, fh: Any, size: int) -> Any:
+        """:meth:`read` for a file past the whole-read cap: streamed, or skipped."""
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
+        if size > _MAX_STREAM_BYTES:
+            self.oversized.append(rel)
+            return None
+        head = fh.read(_SNIFF_BYTES)
+        if _looks_binary(head):
+            self.binary_hits += self.raw is not None and _stream_contains(fh, self.raw)
+            return None
+        # Text past the whole-read cap is often the file the index dropped on
+        # size, so only this scan finds what it holds.
+        if is_extracted_document(self.root / rel, head, claims=self.claims):
+            return None
+        streamed = _stream_matching_lines(fh, self.raw, self.pattern, self.deadline)
+        return _STOP_TIME if streamed is None else (streamed, True)
+
+    def serve(self, rel: str, found: list[tuple[int, str]], streamed: bool) -> None:
+        """Add *rel*'s matching lines under the per-file and whole-scan caps."""
         tail = found[MAX_LINES_PER_FILE:]
-        per_file_capped += bool(tail)
-        del found[MAX_LINES_PER_FILE:]
-        hits = _hit_kinds(rel, found, definition)
-        if len(rows) >= MAX_LINES:
+        self.per_file_capped += bool(tail)
+        hits = _hit_kinds(rel, found[:MAX_LINES_PER_FILE], self.definition)
+        if len(self.rows) >= MAX_LINES:
             # Full: only definitions still earn a row, as they sort first.
-            kept = [h for h in hits if h[2] == "definition"] if defs < MAX_LINES else []
-            overflow += len(hits) - len(kept)
+            kept = [h for h in hits if h[2] == "definition"] if self.defs < MAX_LINES else []
+            self.overflow += len(hits) - len(kept)
             hits = kept
         if not hits:
-            continue
+            return
         # Only a file that serves lines pays for the guarded reader: its path
         # resolution is most of a scan's cost when paid for every file. A
         # streamed file gets the reader's containment check without the read.
-        if streamed is not None:
-            servable = _resolves_inside(root, rel)
+        if streamed:
+            servable = _resolves_inside(self.root, rel)
         else:
-            servable = read_repo_file_text(root, rel) is not None
+            servable = read_repo_file_text(self.root, rel) is not None
         if not servable:
-            unreadable.append(rel)
-            continue
-        defs += sum(h[2] == "definition" for h in hits)
-        rows += [_line_row(rel, n, line, k) for n, line, k in hits]
-        tails.append((rel, tail))
-    rows, per_file_capped = _with_tails(rows, tails, definition, per_file_capped)
-    if overflow:
-        reasons.append(OVER_LINES)
-    if oversized:
-        reasons.append(f"skipped as too large: {', '.join(oversized[:3])}")
-    if unreadable:
-        reasons.append(f"unreadable: {', '.join(unreadable[:3])}")
-    if undecodable:
-        reasons.append(f"{undecodable} non-UTF-8 text files not scanned")
-    if binary_hits:
-        reasons.append(f"{binary_hits} binary files contain the token")
-    if per_file_capped:
-        reasons.append(f"{_per_file_cap_reason()} {per_file_capped} files")
-    return rows, reasons
+            self.unreadable.append(rel)
+            return
+        self.defs += sum(h[2] == "definition" for h in hits)
+        self.rows += [_line_row(rel, n, line, k) for n, line, k in hits]
+        self.tails.append((rel, tail))
+
+    def finish(self) -> tuple[list[dict[str, Any]], list[str]]:
+        """The rows, cut files' tails folded in when small, and every reason."""
+        rows, per_file_capped = _with_tails(
+            self.rows, self.tails, self.definition, self.per_file_capped
+        )
+        reasons = self.reasons
+        if self.overflow:
+            reasons.append(OVER_LINES)
+        if self.oversized:
+            reasons.append(f"skipped as too large: {', '.join(self.oversized[:3])}")
+        if self.unreadable:
+            reasons.append(f"unreadable: {', '.join(self.unreadable[:3])}")
+        if self.undecodable:
+            reasons.append(f"{self.undecodable} non-UTF-8 text files not scanned")
+        if self.binary_hits:
+            reasons.append(f"{self.binary_hits} binary files contain the token")
+        if per_file_capped:
+            reasons.append(f"{_per_file_cap_reason()} {per_file_capped} files")
+        return rows, reasons
 
 
 async def _exact_symbols(session, repo_id: str, query: str, candidates: list[str]) -> list[GraphNode]:
