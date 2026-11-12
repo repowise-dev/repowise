@@ -282,7 +282,8 @@ async def analyze_change_blast_radius(
 ) -> ChangeBlastRadiusResponse:
     """Blast radius of one listed change: one page of the files it reaches
     (``via`` on each with ``with_graph``), the per-file signals for the changed
-    files and that page, and on the first page its score and tests (``review``)."""
+    files and that page, and on a first page read without ``with_graph`` its
+    score and tests (``review``)."""
     checkout = await _checkout(session, repo_id)
     try:
         files = await resolve_change_files(session, repo_id, checkout, body.change_id)
@@ -292,7 +293,8 @@ async def analyze_change_blast_radius(
     review: ChangeReview | None = None
     unavailable: str | None = None
     reviewing: asyncio.Future[tuple[ChangeReview | None, str | None]] | None = None
-    if body.offset == 0:
+    # The review rides on the first page; a later page or the map's edges reuse the one shown.
+    if body.offset == 0 and not body.with_graph:
         key = await _review_key(session, repo_id, checkout, body.change_id)
         # The review reads git and opens its own sessions, so it runs beside the analysis.
         reviewing = asyncio.ensure_future(

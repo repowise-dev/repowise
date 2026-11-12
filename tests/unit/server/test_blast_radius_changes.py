@@ -426,7 +426,7 @@ async def test_pages_the_reached_files_and_counts_all_of_them(client, session, t
     }
     # Signals cover the changed files and this page, not every reached file.
     assert {s["path"] for s in first["affected_signals"]} == {"core.py", "a0.py", "a1.py"}
-    assert first["review"] is not None or first["review_unavailable"]
+    assert first["review"] is not None, first["review_unavailable"]
 
     last = (
         await client.post(url, json={"change_id": "branch:feat/x", "limit": 2, "offset": 4})
@@ -440,6 +440,8 @@ async def test_pages_the_reached_files_and_counts_all_of_them(client, session, t
     whole = (await client.post(url, json={"change_id": "branch:feat/x", "with_graph": True})).json()
     assert whole["next_offset"] is None
     assert {r["via"] for r in whole["transitive_affected"]} == {"core.py"}
+    # The map's read reuses the review the page already shows.
+    assert whole["review"] is None
 
 
 async def test_page_lists_the_strongest_pairs_and_tests_and_counts_the_rest(monkeypatch):

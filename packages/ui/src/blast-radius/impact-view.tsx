@@ -64,6 +64,8 @@ interface Analysis {
   result: BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
   changedFiles: string[];
   changedTotal?: number;
+  /** The depth it was read at, so a later page is read at the same one. */
+  depth: number;
 }
 
 const DEPTHS: { value: number; label: string }[] = [
@@ -462,12 +464,14 @@ function useMapReach(first: ChangeResult, listReach: Reach, changedFiles: string
 }
 
 /** How the picked change reads one more slice of itself; none for a hand-picked file set, which is never paged. */
-function useLoadPage(adapter: ImpactAdapter, analyzed: Selection | undefined, maxDepth: number): LoadPage | undefined {
-  const changeId = analyzed?.kind === "change" ? analyzed.id : null;
+function useLoadPage(adapter: ImpactAdapter, analysis: Analysis | null): LoadPage | undefined {
+  // The analysis on screen, not the depth picker: a page read while a new depth loads joins the list it extends.
+  const changeId = analysis?.selection.kind === "change" ? analysis.selection.id : null;
+  const depth = analysis?.depth;
   return useMemo(() => {
-    if (!changeId || !adapter.analyzeChange) return undefined;
-    return (input) => adapter.analyzeChange!({ changeId, maxDepth, ...input });
-  }, [changeId, adapter, maxDepth]);
+    if (!changeId || depth == null || !adapter.analyzeChange) return undefined;
+    return (input) => adapter.analyzeChange!({ changeId, maxDepth: depth, ...input });
+  }, [changeId, depth, adapter]);
 }
 
 /** Where the map would be, for a change too wide to draw before the reader asks. */
@@ -604,10 +608,10 @@ function selectionKeyOf(selection: Selection | null): string {
 async function analyzeSelection(adapter: ImpactAdapter, sel: Selection, depth: number): Promise<Analysis> {
   if (sel.kind === "change") {
     const r = await adapter.analyzeChange!({ changeId: sel.id, maxDepth: depth });
-    return { selection: sel, result: r, changedFiles: r.changed_files, changedTotal: r.changed_files_total };
+    return { selection: sel, result: r, changedFiles: r.changed_files, changedTotal: r.changed_files_total, depth };
   }
   const r = await adapter.analyze({ changedFiles: sel.files, maxDepth: depth });
-  return { selection: sel, result: r, changedFiles: sel.files };
+  return { selection: sel, result: r, changedFiles: sel.files, depth };
 }
 
 /** Answers kept per page, and how long one for a moving change (work in progress, a branch, a PR) stays good. */
@@ -924,7 +928,7 @@ export function ImpactView({
       ? { state: health.checks[shownChange.id], onRun: () => void health.run(shownChange.id) }
       : undefined;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
-  const loadPage = useLoadPage(adapter, analyzed, maxDepth);
+  const loadPage = useLoadPage(adapter, state.analysis);
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
     setFilesOpen(false);
