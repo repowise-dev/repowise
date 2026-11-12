@@ -1515,6 +1515,7 @@ class TestSecretPrecision:
             ("README.md", 'DB_PASSWORD="YOUR DB PASSWORD"\n'),
             ("a.ts", 'const REF_API_KEY = "@group:reference:api";\n'),
             ("config.py", 'DB_PASSWORD = "secrets/db/password"\n'),
+            ("config.py", 'DB_PASSWORD = "/secrets/db/password"\n'),
         ],
     )
     def test_additional_placeholders_are_not_secrets(self, path: str, source: str) -> None:
@@ -1529,6 +1530,9 @@ class TestSecretPrecision:
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
             ('password = "plain$password123"\n', "hardcoded_password"),
+            ('DB_PASSWORD = "admin:hunter@db"\n', "hardcoded_password"),
+            ('password = "correct.horse"\n', "hardcoded_password"),
+            ('DB_PASSWORD = "admin:hunter"\n', "hardcoded_password"),
         ],
     )
     def test_credential_like_values_still_fire(self, source: str, kind: str) -> None:

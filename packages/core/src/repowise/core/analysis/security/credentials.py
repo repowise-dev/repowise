@@ -70,9 +70,15 @@ _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 _UPPER_KEY_NAME_VALUE = re.compile(r"[A-Z_][A-Z0-9_]*")
 _LONG_DIGIT_RUN = re.compile(r"[0-9]{4,}")
 # Lookup/reference paths (``@group:reference:api``, ``secrets/db/password``):
-# lowercase word segments joined by ``:``, ``/``, ``.`` or ``@`` with no
-# digits or mixed-case entropy.
-_REFERENCE_PATH_VALUE = re.compile(r"[@/]?[a-z]+(?:[:/.@][a-z]+)+")
+# either a leading ``@`` lookup, a leading ``/`` path, or 3+ slash/colon
+# segments with no mid-string ``@`` so embedded ``user:pass@host`` credentials
+# and lowercase dotted/colon-joined passwords stay flagged.
+_REFERENCE_PATH_VALUE = re.compile(
+    r"@[a-z]+(?:[:/.][a-z]+)+"
+    r"|/[a-z]+(?:/[a-z]+)+"
+    r"|[a-z]+(?:/[a-z]+){2,}"
+    r"|[a-z]+(?::[a-z]+){2,}"
+)
 
 
 def _is_own_name_value(value: str, name: str) -> bool:
