@@ -90,3 +90,11 @@ async def test_deltas_adjust_each_clients_default(tmp_path, monkeypatch) -> None
     assert cursor == (set(CORE_TOOLS) | {"get_health"}) - {"get_why"}
     claude, _ = await _listed(tmp_path, monkeypatch, "claude-code", "+get_health,-get_why")
     assert claude == _STANDARD - {"get_why"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", ["core", "-get_risk,-get_change_risk", "get_answer,get_why"])
+async def test_no_notice_when_the_setting_itself_leaves_them_out(tmp_path, monkeypatch, tools) -> None:
+    _, instructions = await _listed(tmp_path, monkeypatch, "cursor-vscode", tools)
+    assert "mcp.tools standard" not in instructions
+

@@ -429,9 +429,9 @@ def render() -> str:
             "(`core`, `lean`, `standard`, `all`), optionally followed by `+name` or "
             "`-name`; `+name` or `-name` alone adjusts each client's default; plain "
             "names are the exact list. The server reads it when it starts, so restart "
-            "it (or the agent) after a change. A tool a client is not listed still "
-            "answers if called, and the server's instructions name the command that "
-            f"lists it. The `lean` profile is **{spell(counts['lean'])}** tools "
+            "it (or the agent) after a change. A tool left out only by a client's "
+            "default still answers if called, and the server's instructions name the "
+            f"command that lists it. The `lean` profile is **{spell(counts['lean'])}** tools "
             f"({spell(counts['lean_workspace'])} in workspace mode): core plus `get_risk`.",
             width=_WRAP,
         ),

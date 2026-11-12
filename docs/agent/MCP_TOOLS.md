@@ -98,7 +98,7 @@ repowise mcp --all                             # every tool usable in this mode
 
 - Unknown names are ignored with a warning, as are workspace-only tools outside workspace mode (no workspace graph to read).
 - The server resolves the surface when it starts; restart it, or the agent, after a change.
-- A tool a client is not listed still answers if the agent calls it. When some client is not listed `get_risk` or `get_change_risk`, the server instructions carry one line naming the command that lists them.
+- A tool left out only by a client's default still answers if the agent calls it; one the setting removes is not served at all. When a client's default leaves out `get_risk` or `get_change_risk`, the server instructions carry one line naming the command that lists them.
 - The dashboard's Agents settings for a repository pick a profile, toggle each tool with its schema cost, and write the same setting. See [CONFIG.md](../reference/CONFIG.md#the-mcp-block).
 
 ---

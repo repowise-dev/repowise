@@ -102,6 +102,8 @@ export function McpToolsSection({ repoId }: { repoId: string }) {
       },
       perClientHint: (core, standard) => t("mcpTools.perClientHint", { core, standard }),
       summary: (on, tokens) => t("mcpTools.summary", { on, tokens }),
+      summaryPerClient: (standard, others, tokens) =>
+        t("mcpTools.summaryPerClient", { standard, others, tokens }),
       restart: t("mcpTools.restart"),
       workspaceOnly: t("mcpTools.workspaceOnly"),
       coreBadge: t("mcpTools.coreBadge"),

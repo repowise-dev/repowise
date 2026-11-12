@@ -40,6 +40,8 @@ export interface McpToolSurfaceLabels {
   profileNames: Record<McpToolProfileName, string>;
   perClientHint: (core: number, standard: number) => string;
   summary: (on: number, tokens: number) => string;
+  /** Per-client mode: what Claude Code and the other clients are listed. */
+  summaryPerClient: (standard: number, others: number, tokens: number) => string;
   restart: string;
   workspaceOnly: string;
   coreBadge: string;
@@ -52,7 +54,7 @@ export const DEFAULT_MCP_TOOL_SURFACE_LABELS: McpToolSurfaceLabels = {
   profileNames: {
     core: "Core: answer, context, search, symbol, why",
     lean: "Lean: core plus get_risk",
-    standard: "Standard: the ten default tools",
+    standard: "Standard: Claude Code's default set",
     all: "All: every tool available here",
   },
   perClientHint: (core, standard) =>
@@ -60,6 +62,8 @@ export const DEFAULT_MCP_TOOL_SURFACE_LABELS: McpToolSurfaceLabels = {
     `Other clients load every schema each turn, so they list the ${core} core tools. ` +
     "Switches below add or remove tools for every client.",
   summary: (on, tokens) => `${on} tools on, about ${tokens.toLocaleString()} schema tokens per turn on clients that load schemas up front.`,
+  summaryPerClient: (standard, others, tokens) =>
+    `Claude Code lists ${standard} tools. Other clients list ${others}, about ${tokens.toLocaleString()} schema tokens per turn.`,
   restart: "Applies when the MCP server next starts: restart it, or your agent.",
   workspaceOnly: "workspace only",
   coreBadge: "core",
@@ -114,8 +118,14 @@ export function McpToolSurfaceEditor({
   const core = new Set(surface.profiles?.core ?? []);
   const available = surface.tools.filter((t) => !(t.requires_workspace && !surface.is_workspace));
   const on = available.filter((t) => enabled.has(t.name));
-  const tokens = on.reduce((sum, t) => sum + (t.schema_tokens ?? 0), 0);
   const standardCount = profileBase(surface, null).length;
+  // With no profile, switches are deltas on each client's own default, so
+  // the clients that load schemas up front get core with the same changes.
+  const standard = new Set(profileBase(surface, null));
+  const upFront = profile
+    ? on
+    : on.filter((t) => !standard.has(t.name) || core.has(t.name));
+  const tokens = upFront.reduce((sum, t) => sum + (t.schema_tokens ?? 0), 0);
 
   return (
     <div className="flex flex-col gap-2">
@@ -141,7 +151,9 @@ export function McpToolSurfaceEditor({
           </select>
         </SettingsRow>
       </SettingsRows>
-      <p className="text-xs text-[var(--color-text-secondary)]">{labels.summary(on.length, tokens)}</p>
+      <p className="text-xs text-[var(--color-text-secondary)]">
+        {profile ? labels.summary(on.length, tokens) : labels.summaryPerClient(on.length, upFront.length, tokens)}
+      </p>
       <SettingsRows>
         {surface.tools.map((tool) => {
           const locked = tool.requires_workspace && !surface.is_workspace;

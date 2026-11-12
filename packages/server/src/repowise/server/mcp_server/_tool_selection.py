@@ -195,13 +195,17 @@ def session_tool_names(client: str) -> frozenset[str] | None:
 
 
 def every_client_lists(names: Iterable[str]) -> bool:
-    """Whether every client, whatever its default profile, is listed *names*.
+    """Whether no client's default profile leaves out any of *names*.
 
-    Judged for a client with the smallest default (any name other than a
-    schema-deferring host's), against what boot selected.
+    Only a tool boot registered but a client's default narrows away counts: a
+    tool the configuration itself removed (a profile, a list, ``-name``) was
+    chosen, so there is nothing to tell an agent. Judged for a client with the
+    smallest default (any name other than a schema-deferring host's).
     """
     listed = session_tool_names(UNKNOWN_AGENT)
-    return listed is None or set(names) <= listed
+    if listed is None or _selected_surface is None:
+        return True
+    return not (set(names) & _selected_surface[1]) - listed
 
 
 def selected_tool_names(*, is_workspace: bool) -> set[str]:
