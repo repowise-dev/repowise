@@ -196,3 +196,19 @@ async def test_repowise_agent_notes_and_split_words_name_nothing(tmp_path):
 
     assert (await _find(root, "What is zanzibarflux?")).hits == []
     assert (await _find(root, "what does sum_line_amounts in billing.py do")).hits == []
+
+
+async def test_an_issue_key_is_one_word_and_its_own_page_leads(tmp_path):
+    root = _repo(
+        tmp_path / "r",
+        {
+            "confluence/guide.md": "Tracked in PROJ-12.\n",
+            "jira/PROJ-12.md": "# PROJ-12: Deploys stall\n",
+            "jira/PROJ-123.md": "# PROJ-123: Other\n",
+            "jira/PROJ-13.md": "# PROJ-13: Blocks on PROJ\n",
+        },
+    )
+
+    docs = await _find(root, "what is PROJ-12")
+
+    assert [h["target_path"] for h in docs.hits] == ["jira/PROJ-12.md", "confluence/guide.md"]

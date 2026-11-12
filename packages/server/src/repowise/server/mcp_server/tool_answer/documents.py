@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -51,18 +52,26 @@ class Documents(NamedTuple):
 _NONE = Documents([], [])
 
 
+# An issue key (``PROJ-12``), the shape tracker links use: one word, not
+# ``PROJ`` and ``12``.
+_ISSUE_KEY_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]{1,9}-\d+(?![A-Za-z0-9])")
+
+
 def _terms(question: str) -> list[str]:
-    """Content words of *question* as it writes them, framing verbs left out.
+    """Content words of *question* as it writes them, framing verbs left out;
+    issue keys first, as the most specific.
 
     Whole words only: ``line`` split out of ``sum_line_amounts`` is not a word
     the question asks about."""
-    written = {w.lower(): w for w in _WORD_RE.findall(question)}
+    keys = list(dict.fromkeys(_ISSUE_KEY_RE.findall(question)))
+    rest = _ISSUE_KEY_RE.sub(" ", question)
+    written = {w.lower(): w for w in _WORD_RE.findall(rest)}
     terms = [
         written[t]
-        for t in content_terms(question, max_terms=None)
+        for t in content_terms(rest, max_terms=None)
         if t in written and t not in QUESTION_FRAME_VERBS
     ]
-    return terms[:_DOC_TERMS_MAX]
+    return (keys + terms)[:_DOC_TERMS_MAX]
 
 
 def _repowise_output(path: str) -> bool:
@@ -179,8 +188,18 @@ async def _find(
         return _NONE
     roots = _roots(ctx, root, exclude_spec, scope)
     by_doc = await _named_documents(terms, roots, scope)
-    # Most question words first; this repo's documents before the others'.
-    ranked = sorted(by_doc, key=lambda d: (-len(by_doc[d]), d[0] is not None, d[0] or "", d[1]))
+    # Most question words first, then a file the word names (``PROJ-12.md``),
+    # then this repo's documents before the others'.
+    ranked = sorted(
+        by_doc,
+        key=lambda d: (
+            -len(by_doc[d]),
+            not any(t in Path(d[1]).stem for t in by_doc[d]),
+            d[0] is not None,
+            d[0] or "",
+            d[1],
+        ),
+    )
     at = {a: r for a, r, _s in roots}
     hits: list[dict] = []
     other: list[dict] = []
