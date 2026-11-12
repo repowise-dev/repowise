@@ -180,6 +180,8 @@ async def _concept_search(
         "results": output,
         "_meta": _build_meta(repository=repository, targets=_result_paths(output)),
     }
+    if output and _pkg.semantic_search_state() is False:
+        response["_meta"]["keyless_note"] = _pkg.KEYLESS_CONCEPT_SEARCH_NOTE
     if candidates := file_candidates(ranked, limit=limit):
         response["candidates"] = candidates
     _pkg._lead_candidates(response, issue, limit)
