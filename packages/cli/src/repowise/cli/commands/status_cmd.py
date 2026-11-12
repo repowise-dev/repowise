@@ -1165,11 +1165,11 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     # name the upgrade commands here too, since "Full upgrade  pending" above
     # names no command on its own (#3105). Mirrors the init closing note.
     if scope["content_provenance"] == "template":
-        note = _answers_line(repo_path, scope) or ""
+        parts = [_answers_line(repo_path, scope)]
         if scope["search"]["semantic"] != "available":
             reindex = scope["search"]["next_command"] or "repowise reindex"
-            note += f"; {reindex} adds semantic search"
-        console.print(f"[dim]{note}.[/dim]")
+            parts.append(f"{reindex} adds semantic search")
+        console.print(f"[dim]{'; '.join(p for p in parts if p)}.[/dim]")
     elif upgrade_command(scope):
         console.print(
             f"[dim]Index only: no documentation yet. {upgrade_command(scope)} builds it from "

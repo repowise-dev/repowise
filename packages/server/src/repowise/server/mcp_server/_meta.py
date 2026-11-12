@@ -1037,8 +1037,9 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
-#: How long a response waits for the agent-CLI probe it started. Past it the
-#: line names the fallback route, and a later response names what was found.
+#: How long the first response on a path waits for the agent-CLI probe. Past
+#: it the line names the fallback route; a later ``get_answer`` names what was
+#: found (the overview names its line once, whatever it held then).
 _ROUTE_WAIT_S = 2.0
 
 # The signed-in agent CLI a keyless line names, probed once per served path in
@@ -1072,13 +1073,17 @@ def _probed_route(local_path: str | None, wait: float) -> FreeRoute | None:
     key = local_path or ""
     with _route_lock:
         probe = _route_probes.get(key)
-        if probe is None:
+        started = probe is None
+        if started:
             probe = threading.Thread(
                 target=_probe_route, args=(key,), name="repowise-route-probe", daemon=True
             )
             _route_probes[key] = probe
             probe.start()
-    probe.join(wait)
+    # Only the response that started the probe waits: a slow CLI must not
+    # charge every later response on the path its wait again.
+    if started:
+        probe.join(wait)
     return _routes.get(key)
 
 

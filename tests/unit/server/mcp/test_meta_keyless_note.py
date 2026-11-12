@@ -173,3 +173,19 @@ async def test_a_medium_reply_with_a_body_does_not_carry_the_note(tmp_path, monk
     payload = await _payload("no-llm-provider", _repo(tmp_path, "deterministic"))
     assert payload["confidence"] == "medium"
     assert "keyless_note" not in payload["_meta"]
+
+
+def test_only_the_first_response_waits_for_the_probe(monkeypatch) -> None:
+    import threading
+
+    release = threading.Event()
+    monkeypatch.setattr(_meta, "_detect_route", lambda _p: release.wait(5) and None)
+    assert _meta._probed_route("slow", 0.05) is None
+    joined: list[float] = []
+    real_join = threading.Thread.join
+    monkeypatch.setattr(
+        threading.Thread, "join", lambda self, t=None: joined.append(t) or real_join(self, 0)
+    )
+    assert _meta._probed_route("slow", 0.05) is None
+    assert joined == []
+    release.set()
