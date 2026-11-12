@@ -65,7 +65,7 @@ def changed_field_names(
     (:mod:`repowise.core.ingestion.cpp_cross_file_facts`), adding the names
     that reach a fact that changed.
     """
-    from .resolution_cache import cpp_facts, field_types
+    from .resolution_cache import field_types
     from .surface import is_inert
 
     names: set[str] = set()
@@ -81,18 +81,29 @@ def changed_field_names(
         for class_id in set(before) | set(after):
             old, new = before.get(class_id, {}), after.get(class_id, {})
             names.update(field for field in set(old) | set(new) if old.get(field, 0) != new.get(field, 0))
-        facts_before = entry[3] if entry is not None else frozenset()
-        facts_after = cpp_facts(parsed, source_map.get(path)) if parsed is not None else frozenset()
-        # A removed file has no parse: its extension says whether it had facts.
-        c_family = (
-            parsed.file_info.language in ("c", "cpp")
-            if parsed is not None
-            else PurePosixPath(path).suffix.lower() in _C_EXTENSIONS
-        )
-        if c_family and (facts_before is None or facts_after is None):
+        fact_names = _changed_fact_names(path, parsed, entry, source_map)
+        if fact_names is None:
             return None
-        names.update(name for name, _fact in (facts_before or frozenset()) ^ (facts_after or frozenset()))
+        names |= fact_names
     return names
+
+
+def _changed_fact_names(
+    path: str, parsed: Any | None, entry: tuple | None, source_map: dict[str, bytes]
+) -> set[str] | None:
+    """Names reaching a C/C++ source-read fact the edit changed; ``None`` when unknown."""
+    from .resolution_cache import cpp_facts
+
+    before = entry[3] if entry is not None else frozenset()
+    after = cpp_facts(parsed, source_map.get(path)) if parsed is not None else frozenset()
+    # A removed file has no parse: its extension says whether it had facts.
+    if parsed is not None:
+        c_family = parsed.file_info.language in ("c", "cpp")
+    else:
+        c_family = PurePosixPath(path).suffix.lower() in _C_EXTENSIONS
+    if c_family and (before is None or after is None):
+        return None
+    return {name for name, _fact in (before or frozenset()) ^ (after or frozenset())}
 
 
 def _resolvable(parsed: Any) -> bool:
@@ -312,6 +323,17 @@ def _passed_on_names(
     return _star_closure_names(parsed_files, targets_of, reached)
 
 
+def _may_reroute(
+    parsed: Any, moved_stems: set[str | None], only_c_moved: bool, edited_languages: set[str]
+) -> bool:
+    """Whether an unedited file's imports can land elsewhere (see :func:`_rerouted_files`)."""
+    if parsed.file_info.language in ("c", "cpp"):
+        return any(PurePosixPath(i.module_path).stem.lower() in moved_stems for i in parsed.imports)
+    if not only_c_moved or _family(parsed) in edited_languages:
+        return True
+    return any(stem and stem in i.module_path.lower() for i in parsed.imports for stem in moved_stems)
+
+
 def _family(parsed: Any) -> str:
     """The language whose resolver reads *parsed*'s imports; JS and TS share one."""
     language = parsed.file_info.language
@@ -345,14 +367,7 @@ def _rerouted_files(
     for path, parsed in parsed_files.items():
         if path in edited or not parsed.imports:
             continue
-        if parsed.file_info.language in ("c", "cpp"):
-            if not any(PurePosixPath(i.module_path).stem.lower() in moved_stems for i in parsed.imports):
-                continue
-        elif (
-            only_c_moved
-            and _family(parsed) not in edited_languages
-            and not any(stem and stem in i.module_path.lower() for i in parsed.imports for stem in moved_stems)
-        ):
+        if not _may_reroute(parsed, moved_stems, only_c_moved, edited_languages):
             continue
         saved = resolutions[path][1]
         for imp, now, (_resolved, _sources, before) in zip(
