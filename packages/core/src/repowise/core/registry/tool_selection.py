@@ -257,6 +257,30 @@ def resolve_enabled_tools(
     return _apply_deltas(base, rest, catalog, usable, is_workspace=is_workspace)
 
 
+def _never_called() -> None:
+    """Stand-in callable for the name-only entries :func:`listed_default_tools` builds."""
+
+
+def listed_default_tools(
+    names: Iterable[str],
+    *,
+    client: str | None,
+    override: str | Sequence[str] | None = None,
+) -> frozenset[str]:
+    """Which of *names*, all default tools, a single-repo server lists to *client*.
+
+    For text written ahead of time that names tools (a generated agent file),
+    where no tool catalog is loaded. Every name the override mentions joins the
+    catalog too, so an explicit list or a delta naming an opt-in tool resolves
+    without an "unknown tool" warning.
+    """
+    wanted = set(names)
+    mentioned = {t.lstrip("+-") for t in normalize_override(override) or ()}
+    entries = [ToolEntry(fn=_never_called, name=n) for n in (wanted | mentioned) - {""}]
+    enabled = resolve_enabled_tools(entries, is_workspace=False, override=override, client=client)
+    return frozenset(enabled & wanted)
+
+
 __all__ = [
     "ALL",
     "CORE",
@@ -270,6 +294,7 @@ __all__ = [
     "AvailabilityFacts",
     "default_profile",
     "is_available",
+    "listed_default_tools",
     "normalize_override",
     "resolve_enabled_tools",
     "split_profile",

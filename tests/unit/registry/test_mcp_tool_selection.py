@@ -9,6 +9,7 @@ from repowise.core.registry.tool_selection import (
     AvailabilityFacts,
     default_profile,
     is_available,
+    listed_default_tools,
     normalize_override,
     resolve_enabled_tools,
     split_profile,
@@ -296,3 +297,36 @@ def test_a_raising_predicate_hides_only_its_tool():
     assert is_available(entry, NO_FLOWS) is False
     enabled = resolve_enabled_tools([*CATALOG, entry], is_workspace=False, facts=NO_FLOWS)
     assert enabled == {"get_answer", "get_context"}
+
+
+_BLOCK_TOOLS = ("get_answer", "get_context", "get_risk", "get_why", "get_change_risk")
+
+
+def test_listed_default_tools_follows_the_client_default():
+    assert listed_default_tools(_BLOCK_TOOLS, client="codex") == {
+        "get_answer",
+        "get_context",
+        "get_why",
+    }
+    assert listed_default_tools(_BLOCK_TOOLS, client="claude_code") == set(_BLOCK_TOOLS)
+
+
+def test_listed_default_tools_reads_the_override_like_the_server(caplog):
+    with caplog.at_level(logging.WARNING, logger="repowise.mcp"):
+        assert listed_default_tools(_BLOCK_TOOLS, client="codex", override="core +get_risk") == {
+            "get_answer",
+            "get_context",
+            "get_why",
+            "get_risk",
+        }
+        assert listed_default_tools(
+            _BLOCK_TOOLS, client="codex", override=["get_answer", "get_dead_code"]
+        ) == {"get_answer"}
+        assert listed_default_tools(_BLOCK_TOOLS, client="codex", override="standard") == set(
+            _BLOCK_TOOLS
+        )
+        assert listed_default_tools(_BLOCK_TOOLS, client="claude_code", override="-get_risk") == (
+            set(_BLOCK_TOOLS) - {"get_risk"}
+        )
+    # A tool outside the names asked about is not an unknown tool.
+    assert not caplog.records

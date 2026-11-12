@@ -121,8 +121,13 @@ default: about 250 tokens, held there by a test
 picks the sections (see
 [CONFIG.md](../reference/CONFIG.md#the-editor_files-block)); the fetcher runs
 only the queries the chosen sections render. Both templates include the shared
-`_editor_block.j2`; they differ only in the pre-edit sentence of the full
-protocol.
+`_editor_block.j2`; they differ in the pre-edit sentence of the full protocol
+and in which tools they may name. `AGENTS.md` is read by clients that load
+every tool schema up front, which the MCP server lists the core tools by
+default, so its block names only the tools such a client is listed under the
+repository's `mcp.tools` setting (resolved by
+`registry.tool_selection.listed_default_tools`); a moment line whose tool is
+not listed is left out. `CLAUDE.md` names every default tool.
 
 Every block leads with one imperative line, `repowise.core.agent_steer.AGENT_STEER`:
 call a Repowise tool first for any question about the codebase, naming the tool

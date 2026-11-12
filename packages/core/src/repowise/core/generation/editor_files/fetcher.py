@@ -158,10 +158,21 @@ class EditorFileDataFetcher:
             kg_tour=kg_tour,
             index_scope=self._get_index_scope(),
             sections=s,
+            mcp_tools=self._get_mcp_tools(),
         )
 
     def _get_index_scope(self) -> dict:
         return load_index_scope(self._repo_path) or resolve_index_scope({})
+
+    def _get_mcp_tools(self) -> str | list[str] | None:
+        """The ``mcp.tools`` setting the server resolves its tool list from."""
+        from repowise.core.repo_config import load_repo_config
+
+        try:
+            mcp = load_repo_config(self._repo_path).get("mcp")
+        except Exception:  # a broken config is reported by the commands that need it
+            return None
+        return mcp.get("tools") if isinstance(mcp, dict) else None
 
     # ------------------------------------------------------------------
     # Private helpers
