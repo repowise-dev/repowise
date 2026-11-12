@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_candidates import (
@@ -22,6 +23,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.server.auth import read_route
 from repowise.server.deps import get_db_session, resolve_request_session_factory, verify_api_key
+from repowise.server.review_markdown import render_change_markdown
 from repowise.server.schemas import BlastRadiusRequest, BlastRadiusResponse
 from repowise.server.schemas.blast_radius import (
     ChangeBlastRadiusRequest,
@@ -30,6 +32,9 @@ from repowise.server.schemas.blast_radius import (
     ChangeHealthCheckRequest,
     ChangeHealthCheckResponse,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.analysis.change_health.check import HealthCheck
 
 #: Changed paths analyzed per change. A long-lived branch can touch thousands;
 #: past this the picture is the whole repository and the response says so.
@@ -162,6 +167,25 @@ async def list_blast_radius_changes(
     )
 
 
+async def _change_analysis(
+    session: AsyncSession, repo_id: str, change_id: str, max_depth: int
+) -> ChangeBlastRadiusResponse:
+    try:
+        files = await resolve_change_files(
+            session, repo_id, await _checkout(session, repo_id), change_id
+        )
+    except UnknownChangeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    analyzed = files[:MAX_CHANGED_FILES]
+    result = await _analyze_cached(session, repo_id, analyzed, max_depth)
+    return ChangeBlastRadiusResponse(
+        **result,
+        change_id=change_id,
+        changed_files=analyzed,
+        changed_files_total=len(files),
+    )
+
+
 @router.post("/{repo_id}/blast-radius/change", response_model=ChangeBlastRadiusResponse)
 @read_route
 async def analyze_change_blast_radius(
@@ -171,27 +195,49 @@ async def analyze_change_blast_radius(
 ) -> ChangeBlastRadiusResponse:
     """Blast radius of one listed change, with the per-file signals and
     reach edges a drawing needs."""
-    try:
-        files = await resolve_change_files(
-            session, repo_id, await _checkout(session, repo_id), body.change_id
-        )
-    except UnknownChangeError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    analyzed = files[:MAX_CHANGED_FILES]
-    result = await _analyze_cached(session, repo_id, analyzed, body.max_depth)
-    return ChangeBlastRadiusResponse(
-        **result,
-        change_id=body.change_id,
-        changed_files=analyzed,
-        changed_files_total=len(files),
+    return await _change_analysis(session, repo_id, body.change_id, body.max_depth)
+
+
+@router.get("/{repo_id}/blast-radius/change.md", response_class=PlainTextResponse)
+async def change_review_markdown(
+    repo_id: str,
+    change_id: str = Query(min_length=1, max_length=300),
+    max_depth: int = Query(default=DEFAULT_DEPTH, ge=1, le=10),
+    health_check: bool = False,
+    session: AsyncSession = Depends(get_db_session),
+) -> PlainTextResponse:
+    """The Review page for one listed change as Markdown, for a coding agent.
+
+    ``health_check=true`` also runs the health check (seconds on a large
+    change) and adds its verdict and findings; without a checkout the section
+    says why it could not run.
+    """
+    from repowise.core.analysis.change_health.check import HealthCheckUnavailable
+
+    response = await _change_analysis(session, repo_id, change_id, max_depth)
+    health = None
+    if health_check:
+        root = await _checkout(session, repo_id)
+        if root is None:
+            health = "this server has no checkout to read the change from"
+        else:
+            try:
+                health = await asyncio.to_thread(_run_check, root, change_id)
+            except (UnknownChangeError, HealthCheckUnavailable) as exc:
+                health = str(exc)
+    return PlainTextResponse(
+        render_change_markdown(response, health), media_type="text/markdown; charset=utf-8"
     )
 
 
-def _health_check(root: str, change_id: str) -> ChangeHealthCheckResponse:
+def _run_check(root: str, change_id: str) -> HealthCheck:
     from repowise.core.analysis.change_health.check import run_health_check
 
-    check = run_health_check(root, change_revspec(root, change_id))
-    doc = check.as_json()
+    return run_health_check(root, change_revspec(root, change_id))
+
+
+def _health_check(root: str, change_id: str) -> ChangeHealthCheckResponse:
+    doc = _run_check(root, change_id).as_json()
     return ChangeHealthCheckResponse(
         change_id=change_id,
         revspec=doc["revspec"],

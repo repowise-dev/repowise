@@ -353,6 +353,7 @@ function ReviewBody({
   analysis,
   change,
   check,
+  markdownHref,
   fileHref,
   maxDepth,
   onDepth,
@@ -360,6 +361,7 @@ function ReviewBody({
   analysis: Analysis;
   change: ChangeCandidate | undefined;
   check: ChangeCheck | undefined;
+  markdownHref: string | undefined;
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
   onDepth: (depth: number) => void;
@@ -381,6 +383,7 @@ function ReviewBody({
         change={change}
         healthCheck={check?.state?.status === "done" ? check.state.result : undefined}
         extraActions={check && <HealthCheckButton state={check.state} onRun={check.onRun} />}
+        markdownHref={markdownHref}
         fileHref={fileHref}
       />
       {check && <HealthCheckPanel state={check.state} fileHref={fileHref} />}
@@ -652,6 +655,7 @@ function ResultPane({
   empty,
   shownChange,
   check,
+  markdownHref,
   fileHref,
   maxDepth,
   onDepth,
@@ -663,6 +667,7 @@ function ResultPane({
   empty: ReactNode;
   shownChange: ChangeCandidate | undefined;
   check: ChangeCheck | undefined;
+  markdownHref: string | undefined;
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
   onDepth: (depth: number) => void;
@@ -682,6 +687,7 @@ function ResultPane({
             analysis={analysis}
             change={shownChange}
             check={check}
+            markdownHref={markdownHref}
             fileHref={fileHref}
             maxDepth={maxDepth}
             onDepth={onDepth}
@@ -757,6 +763,15 @@ export function ImpactView({
       ? { state: health.checks[shownChange.id], onRun: () => void health.run(shownChange.id) }
       : undefined;
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
+  // The Markdown carries the health check once the reader has run it here.
+  const markdownHref =
+    shownChange && adapter.changeMarkdownHref
+      ? adapter.changeMarkdownHref({
+          changeId: shownChange.id,
+          maxDepth,
+          healthCheck: check?.state?.status === "done",
+        })
+      : undefined;
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
     setFilesOpen(false);
@@ -798,6 +813,7 @@ export function ImpactView({
         empty={empty}
         shownChange={shownChange}
         check={check}
+        markdownHref={markdownHref}
         fileHref={fileHref}
         maxDepth={maxDepth}
         onDepth={setMaxDepth}
