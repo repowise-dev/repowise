@@ -8,13 +8,11 @@ import type {
   ChangeCandidate,
   ChangeHealthCheckResponse,
   ChangeReview,
-  PrReviewSummary,
 } from "@repowise-dev/types/blast-radius";
 import { isWeak, riskySpots, type FileMarks, type Reach } from "./blast-map-model";
 import { blastPromptInput, missingPartners, ownerName, testsLimited } from "./blast-prompt-input";
 import { count, reviewStatus, roughCount, type ReviewStatus } from "./review-status";
 import { HEALTH_BAND_LABEL, bandForScore, formatScore } from "@repowise-dev/types/health";
-import { scoreTextColor } from "../health/tokens";
 import { AiPromptButton } from "../health/ai-prompt-button";
 import { AiPromptModal } from "../health/ai-prompt-modal";
 import { buildBlastRadiusPrompt } from "../health/ai-prompts/blast-radius-prompt";
@@ -353,58 +351,9 @@ const TONE_DOT: Record<ReviewStatus["tone"], string> = {
   look: "var(--color-warning)",
 };
 
-function Score({ value }: { value: number | null | undefined }) {
-  if (value == null) return <span className="text-[var(--color-text-tertiary)]">not scored</span>;
-  return <span className={`font-medium tabular-nums ${scoreTextColor(value)}`}>{formatScore(value)}</span>;
-}
-
-/**
- * What the PR bot found on this pull request, as context: health before and
- * after in the band colours, the findings it introduced, and a link to its
- * review. Shown only when the host supplies it.
- */
-export function PrReviewLine({ review }: { review: PrReviewSummary }) {
-  const { health_before: before, health_after: after, introduced, url } = review;
-  const health = before != null || after != null;
-  // Only a web link from the host is followed; anything else is left out.
-  const link = url && /^https?:\/\//i.test(url) ? url : null;
-  if (!health && introduced == null && !link) return null;
-  return (
-    <p className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-xs text-[var(--color-text-secondary)]">
-      <span className="text-[var(--color-text-tertiary)]">PR bot:</span>
-      {health && (
-        <span>
-          health <Score value={before} /> <span aria-hidden>→</span>
-          <span className="sr-only">to</span> <Score value={after} />
-        </span>
-      )}
-      {introduced != null && (
-        <>
-          <span className="text-[var(--color-text-tertiary)]" aria-hidden>
-            ·
-          </span>
-          <span className="tabular-nums">
-            {introduced === 0 ? "no new findings" : `${count(introduced, "new finding")}`}
-          </span>
-        </>
-      )}
-      {link && (
-        <>
-          <span className="text-[var(--color-text-tertiary)]" aria-hidden>
-            ·
-          </span>
-          <a href={link} target="_blank" rel="noreferrer" className="text-[var(--color-accent-primary)] hover:underline">
-            View
-          </a>
-        </>
-      )}
-    </p>
-  );
-}
-
 function StatusLine({ status }: { status: ReviewStatus }) {
   return (
-    <p className="flex flex-wrap items-baseline gap-x-2 text-[15px]" role="status">
+    <p className="flex flex-wrap items-baseline gap-x-2 text-[15px]">
       <span className="inline-block h-2.5 w-2.5 shrink-0 self-center rounded-full" style={{ background: TONE_DOT[status.tone] }} aria-hidden />
       <span className="font-semibold text-[var(--color-text-primary)]">{status.word}.</span>
       <span className="text-[var(--color-text-secondary)]">{status.reason}</span>
@@ -425,18 +374,21 @@ function Stat({ figure, label }: { figure: string; label: string }) {
 function Stats({ reach, total, analyzed, tests }: { reach: Reach; total: number; analyzed: number; tests: ReturnType<typeof testsFigure> }) {
   const files = reach.files.length;
   return (
-    <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
-      <Stat figure={formatNumber(total)} label={`${total === 1 ? "file" : "files"} changed${total > analyzed ? ` (first ${formatNumber(analyzed)} analyzed)` : ""}`} />
-      {files === 0 ? (
-        <Stat figure="0" label="source files depend on it" />
-      ) : (
-        <Stat figure={roughCount(files)} label={`source ${files === 1 ? "file depends" : "files depend"} on it, ${formatNumber(reach.direct)} directly`} />
-      )}
-      <Stat figure={tests.figure} label={tests.runAll ? "tests to run, the whole suite" : tests.total === 1 ? "test to run" : "tests to run"} />
+    // The glossary button sits beside the list, not in it: a <dl> holds only terms and definitions.
+    <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
+      <dl className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
+        <Stat figure={formatNumber(total)} label={`${total === 1 ? "file" : "files"} changed${total > analyzed ? ` (first ${formatNumber(analyzed)} analyzed)` : ""}`} />
+        {files === 0 ? (
+          <Stat figure="0" label="source files depend on it" />
+        ) : (
+          <Stat figure={roughCount(files)} label={`source ${files === 1 ? "file depends" : "files depend"} on it, ${formatNumber(reach.direct)} directly`} />
+        )}
+        <Stat figure={tests.figure} label={tests.runAll ? "tests to run, the whole suite" : tests.total === 1 ? "test to run" : "tests to run"} />
+      </dl>
       <span className="self-center">
         <InfoTip content={GLOSSARY} label="What these words mean" />
       </span>
-    </dl>
+    </div>
   );
 }
 
@@ -576,7 +528,6 @@ export function BlastRadiusVerdict({
         <StatusLine status={status} />
         {review && <RiskLine risk={review.risk} />}
         <Stats reach={reach} total={total} analyzed={changedFiles.length} tests={tests} />
-        {change?.pr_review && <PrReviewLine review={change.pr_review} />}
         <div className="flex flex-wrap items-center gap-2">
           {/* The page's one primary action: ink fill; everything else stays quiet. */}
           <AiPromptButton

@@ -9,10 +9,12 @@ Supports both file-level and symbol-level community detection with:
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import inspect
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import networkx as nx
@@ -542,6 +544,72 @@ def _assign_tests_to_communities(
 # ---------------------------------------------------------------------------
 
 
+@functools.cache
+def community_code_fingerprint() -> str:
+    """Hash of the code and libraries a partition depends on besides its graph.
+
+    A stored partition is only reused under the same fingerprint, so an upgrade
+    that changes the algorithm, or the backend it falls to, detects afresh.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    from repowise.core.analysis import _leiden, kg_curation
+
+    digest = hashlib.sha256()
+    # kg_curation holds the label vocabulary the community info is named with.
+    for module_file in (__file__, _leiden.__file__, kg_curation.__file__):
+        digest.update(Path(module_file).read_bytes())
+    digest.update(nx.__version__.encode())
+    try:
+        digest.update(version("graspologic-native").encode())
+    except PackageNotFoundError:
+        digest.update(b"no leiden")
+    return digest.hexdigest()
+
+
+@dataclass(frozen=True)
+class FileCommunityInput:
+    """What :func:`detect_file_communities` reads from a graph, hashed and fingerprinted.
+
+    *signature* changes with any of it, so equal signatures mean an equal
+    result. *nodes* and *edges* fingerprint it item by item (each file node
+    with its test/example flag and language; each non-temporal edge between
+    two file nodes with its type), so a cache can count how far it drifted.
+    """
+
+    signature: str
+    nodes: frozenset[int]
+    edges: frozenset[int]
+
+
+def file_community_input(graph: nx.DiGraph, repo_name: str | None = None) -> FileCommunityInput:
+    """:class:`FileCommunityInput` of *graph*."""
+    from repowise.core.ingestion.graph._centrality_cache import fingerprints
+
+    file_nodes = sorted(
+        n for n, d in graph.nodes(data=True)
+        if d.get("node_type", "file") == "file" and not is_external(n)
+    )
+    file_set = frozenset(file_nodes)
+    node_items = [
+        f"{n}\0{_is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])}"
+        f"\0{graph.nodes[n].get('language')}"
+        for n in file_nodes
+    ]
+    edge_items = sorted(
+        f"{u}\0{v}\0{d.get('edge_type', '<absent>')}"
+        for u, v, d in graph.edges(data=True)
+        if u in file_set and v in file_set and d.get("edge_type") not in TEMPORAL_EDGE_TYPES
+    )
+    digest = hashlib.sha256(f"{repo_name}\0{community_code_fingerprint()}".encode())
+    for item in (*node_items, "\1", *edge_items):
+        digest.update(item.encode("utf-8", "replace"))
+        digest.update(b"\n")
+    return FileCommunityInput(
+        digest.hexdigest(), fingerprints(node_items), fingerprints(edge_items)
+    )
+
+
 def detect_file_communities(
     graph: nx.DiGraph,
     repo_name: str | None = None,
@@ -729,11 +797,8 @@ def file_community_labels(graph_builder: Any) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
-    """Detect communities among symbol nodes using calls/heritage edges.
-
-    Returns {symbol_id: community_id}.
-    """
+def symbol_community_graph(graph: nx.DiGraph) -> nx.Graph:
+    """The undirected call/heritage graph over every symbol node: the whole partition input."""
     # Sorted for the same reason detect_file_communities sorts its node list:
     # insertion order seeds the partition, and the graph's is not stable
     # between runs. This half was left unsorted when the file half was fixed.
@@ -741,23 +806,34 @@ def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
         n for n, d in graph.nodes(data=True)
         if d.get("node_type") == "symbol"
     )
-
-    if not symbol_nodes:
-        return {}
-
-    # Build undirected subgraph from call/heritage edges only
     symbol_set = frozenset(symbol_nodes)
     undirected = nx.Graph()
     undirected.add_nodes_from(symbol_nodes)
-
-    community_edges = sorted(
-        (u, v)
-        for u, v, d in graph.edges(data=True)
-        if d.get("edge_type") in _SYMBOL_COMMUNITY_EDGE_TYPES
-        and u in symbol_set
-        and v in symbol_set
+    undirected.add_edges_from(
+        sorted(
+            (u, v)
+            for u, v, d in graph.edges(data=True)
+            if d.get("edge_type") in _SYMBOL_COMMUNITY_EDGE_TYPES
+            and u in symbol_set
+            and v in symbol_set
+        )
     )
-    undirected.add_edges_from(community_edges)
+    return undirected
+
+
+def detect_symbol_communities(
+    graph: nx.DiGraph, undirected: nx.Graph | None = None
+) -> dict[str, int]:
+    """Detect communities among symbol nodes using calls/heritage edges.
+
+    *undirected* is :func:`symbol_community_graph` of *graph*, when the caller
+    already built it. Returns {symbol_id: community_id}.
+    """
+    if undirected is None:
+        undirected = symbol_community_graph(graph)
+    symbol_nodes = list(undirected.nodes())
+    if not symbol_nodes:
+        return {}
 
     # Separate isolates
     connected = [n for n in undirected.nodes() if undirected.degree(n) > 0]
@@ -796,4 +872,24 @@ def detect_symbol_communities(graph: nx.DiGraph) -> dict[str, int]:
         communities=len(ordered),
     )
 
+    return result
+
+
+def carry_symbol_communities(previous: dict[str, int], undirected: nx.Graph) -> dict[str, int]:
+    """*previous* partition carried onto the current :func:`symbol_community_graph`.
+
+    The rule a reused partition follows until the next full detection: a symbol
+    keeps its community; a removed one drops out; a new one joins the community
+    most of its linked symbols are in (ties to the lower id), or gets a
+    community of its own when none of them was partitioned.
+    """
+    result = {node: previous[node] for node in undirected.nodes() if node in previous}
+    next_cid = max(previous.values(), default=-1) + 1
+    for node in sorted(n for n in undirected.nodes() if n not in previous):
+        votes = Counter(previous[m] for m in undirected.adj[node] if m in previous)
+        if votes:
+            result[node] = min(votes, key=lambda cid: (-votes[cid], cid))
+        else:
+            result[node] = next_cid
+            next_cid += 1
     return result
