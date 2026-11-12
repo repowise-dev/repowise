@@ -225,7 +225,31 @@ async def test_an_issue_key_in_code_comments_still_reaches_its_ticket(tmp_path):
 
     assert [h["target_path"] for h in docs.hits] == ["jira/PROJ/PROJ-12.md"]
     assert docs.hits[0]["summary"] == "Line 5: # PROJ-12: Deploys stall"
-    assert docs.hits[0]["excerpt"] == '5: # PROJ-12: Deploys stall\n2: key: "PROJ-12"'
+    assert docs.hits[0]["excerpt"] == "5: # PROJ-12: Deploys stall"
+
+
+async def test_a_ticket_asked_about_by_key_serves_its_opening_not_its_key_lines(tmp_path):
+    ticket = (
+        '---\nkey: "PROJ-12"\nurl: "https://jira.example/browse/PROJ-12"\n---\n\n'
+        "# PROJ-12: Deploys stall under load\n\nStatus: In Progress\n\n"
+        "[Open in Jira](https://jira.example/browse/PROJ-12)\n\n"
+        "Deploys stall when the queue fills.\n\n## Steps\n\n1. Drain the queue\n"
+    )
+    guide = "# Deploy guide\n\nRoll back first.\n\nTracked in PROJ-12.\n"
+    root = _repo(tmp_path / "r", {"jira/PROJ/PROJ-12.md": ticket, "confluence/guide.md": guide})
+
+    docs = await _find(root, "what is PROJ-12")
+
+    by_path = {h["target_path"]: h["excerpt"] for h in docs.hits}
+    assert by_path["jira/PROJ/PROJ-12.md"] == (
+        "6: # PROJ-12: Deploys stall under load\n"
+        "8: Status: In Progress\n"
+        "10: [Open in Jira](https://jira.example/browse/PROJ-12)\n"
+        "12: Deploys stall when the queue fills.\n"
+        "14: ## Steps"
+    )
+    # A page that only cites the ticket keeps the line citing it.
+    assert by_path["confluence/guide.md"] == "5: Tracked in PROJ-12."
 
 
 async def test_an_ordinary_word_in_code_still_names_no_document(tmp_path):
