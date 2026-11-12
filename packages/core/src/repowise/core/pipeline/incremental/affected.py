@@ -37,6 +37,11 @@ _SCOPE_FLOOR = 8
 # Edges that are not one file resolving another: containment, and git history.
 _NON_RESOLUTION_EDGES = frozenset({"defines", "has_method", "co_changes"})
 
+# Files that read a C/C++ declaration through includes and source text, not
+# only by a site's name. Objective-C is not patched: reaching one sends the
+# update to the full build.
+_C_LANGUAGES = frozenset({"c", "cpp", "objectivec"})
+
 #: How many ``*`` re-export hops a re-routed import's names are followed through.
 _MAX_STAR_DEPTH = 16
 
@@ -349,6 +354,20 @@ def _files_spelling(
     }
 
 
+def _files_naming(parsed_files: dict[str, Any], names: Collection[str]) -> set[str]:
+    """Files whose parsed sites (calls, their qualifiers, bases, types) name one of *names*."""
+    if not names:
+        return set()
+    wanted = set(names)
+    found: set[str] = set()
+    for path, parsed in parsed_files.items():
+        spelled = {c.target_name for c in parsed.calls} | {c.scope_name for c in parsed.calls}
+        spelled |= {r.parent_name for r in parsed.heritage} | {t.type_name for t in parsed.type_refs}
+        if any(word in wanted for value in spelled if value for word in re.findall(r"\w+", value)):
+            found.add(path)
+    return found
+
+
 def _spells(text: bytes | None, patterns: Iterable[re.Pattern[bytes] | None]) -> bool:
     """Whether *text* matches one of *patterns*; a file with no text is assumed to."""
     if text is None:
@@ -404,9 +423,17 @@ def expand_scope(
     # it; ``default`` itself is spelled by syntax, not by the code reaching it.
     seeds = names | {"default"} if plan.importers_of else names
     names |= _with_aliases(seeds, parsed_files) - {"default"}
-    scope |= _files_spelling(
-        parsed_files, graph_builder._source_map, names, plan.stems, scope
-    )
+    # A C/C++ declaration reaches another language only through the repo-wide
+    # name tiers, which key on what a site names: such a file is reached when
+    # its parsed sites name it, not when its text spells it anywhere.
+    include_only = (set(plan.include_only) - carried) & names
+    c_files = {p: pf for p, pf in parsed_files.items() if pf.file_info.language in _C_LANGUAGES}
+    others = {p: pf for p, pf in parsed_files.items() if p not in c_files}
+    source_map = graph_builder._source_map
+    scope |= _files_spelling(parsed_files, source_map, names - include_only, plan.stems, scope)
+    scope |= _files_spelling(c_files, source_map, include_only, (), scope)
+    scope |= _files_naming(others, include_only)
+    scope |= _files_naming(parsed_files, plan.site_names)
     # An unedited file that resolves nothing has no edges to redo.
     scope = {path for path in scope if path in plan.scope or _resolvable(parsed_files[path])}
     reason = _scope_refusal(scope, parsed_files)

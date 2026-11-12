@@ -60,6 +60,12 @@ class PatchPlan:
     or removed files), ``importers_of`` (files whose importers must be
     re-resolved) and ``module_imports_changed`` (edited files whose ``*`` or
     whole-module imports changed, so the names they pass on did).
+    ``include_only`` are the names among ``names`` that only C/C++ edits
+    touched: a file in another language reaches them only through a parsed
+    site that names them (the repo-wide name tiers), not through its text.
+    ``site_names`` are C/C++
+    namespaces an edit opened or closed, which reach only a C/C++ file whose
+    parsed sites name them.
     """
 
     eligible: bool
@@ -71,6 +77,8 @@ class PatchPlan:
     stems: frozenset[str] = frozenset()
     importers_of: tuple[str, ...] = ()
     module_imports_changed: tuple[str, ...] = ()
+    include_only: frozenset[str] = frozenset()
+    site_names: frozenset[str] = frozenset()
 
 
 def is_inert(parsed: Any) -> bool:
@@ -450,4 +458,6 @@ def plan_patch(
         stems=keys.stems,
         importers_of=keys.importers_of,
         module_imports_changed=keys.module_imports_changed,
+        include_only=keys.include_only,
+        site_names=keys.site_names,
     )

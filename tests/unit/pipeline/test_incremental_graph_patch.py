@@ -1346,3 +1346,27 @@ def test_cpp_edits_that_move_include_reach_fall_back(
     assert patched.patch_plan.reason == reason
     assert {"rebuild.graph.patch", "rebuild.graph.full"} <= set(timings.totals)
     _assert_equals_full(tree, patched, tmp_path / "cpp-oracle")
+
+
+def test_a_cpp_name_reaches_another_language_through_the_sites_that_name_it(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """A second ``twice`` makes the Python call's repo-wide unique match ambiguous."""
+    tree, _ = cpp_indexed
+    _write(
+        tree,
+        {
+            "py/tools.py": "def twice_py():\n    return 2\n",
+            "py/run.py": "def go():\n    return twice_py()\n",
+            "py/notes.py": "# twice_py is documented here\nVALUE = 1\n",
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    (tree / "src/extra.cpp").write_text("int twice_py() { return 3; }\n")
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "py/run.py" in patched.patch_plan.scope
+    assert "py/notes.py" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "cross-oracle")

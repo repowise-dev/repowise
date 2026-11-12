@@ -367,17 +367,23 @@ def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) 
     from .affected import changed_field_names
     from .surface import PatchPlan
 
-    names = changed_field_names(
-        graph_builder._parsed_files,
-        graph_builder._source_map,
-        (*patch_plan.scope, *patch_plan.removed),
-        resolutions,
+    parsed_files = graph_builder._parsed_files
+    paths = (*patch_plan.scope, *patch_plan.removed)
+    c_paths = [p for p in paths if p in parsed_files and parsed_files[p].file_info.language in ("c", "cpp")]
+    names = changed_field_names(parsed_files, graph_builder._source_map, c_paths, resolutions)
+    others = changed_field_names(
+        parsed_files, graph_builder._source_map, [p for p in paths if p not in c_paths], resolutions
     )
-    if names is None:
+    if names is None or others is None:
         return PatchPlan(False, reason="an edited file has no field record to compare")
-    if not names:
+    if not names and not others:
         return patch_plan
-    return replace(patch_plan, refresh=True, names=patch_plan.names | names)
+    # A C/C++ file's fields and facts are read through source text only by
+    # C/C++ files (see ``PatchPlan.include_only``).
+    include_only = (patch_plan.include_only | names) - others - (patch_plan.names - patch_plan.include_only)
+    return replace(
+        patch_plan, refresh=True, names=patch_plan.names | names | others, include_only=include_only
+    )
 
 
 def _refined_plan(

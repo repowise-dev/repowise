@@ -43,6 +43,8 @@ class SurfaceKeys:
     stems: frozenset[str]
     importers_of: tuple[str, ...]
     module_imports_changed: tuple[str, ...] = ()
+    include_only: frozenset[str] = frozenset()
+    site_names: frozenset[str] = frozenset()
 
 
 def _words(*values: Any) -> Iterator[str]:
@@ -193,12 +195,19 @@ def surface_keys(
     ``(before, after)`` parse, ``None`` where the file did not exist.
     """
     names: set[str] = set()
+    include_names: set[str] = set()
+    site_names: set[str] = set()
     stems: set[str] = set()
     importers_of: set[str] = set()
     module_imports_changed: set[str] = set()
     for path, (before, after) in surface_edits.items():
         edit_names, via_importers, module_import_changed = _edit_names(before, after)
-        names |= edit_names
+        if (after or before).file_info.language in _INCLUDE_LANGUAGES:
+            namespaces = _namespace_names(before) ^ _namespace_names(after)
+            site_names |= namespaces
+            include_names |= edit_names - namespaces
+        else:
+            names |= edit_names
         if via_importers:
             importers_of.add(path)
         if module_import_changed:
@@ -206,12 +215,29 @@ def surface_keys(
         if before is None or after is None:
             stems.update(_stem_words(path))
     parses = [*parsed_files, *(before for before, _ in surface_edits.values() if before)]
+    names = _with_inherited_members(names, parses)
+    include_names = _with_inherited_members(include_names, parses)
     return SurfaceKeys(
-        names=frozenset(_with_inherited_members(names, parses)),
+        names=frozenset(names | include_names),
         stems=frozenset(stems),
         importers_of=tuple(sorted(importers_of)),
         module_imports_changed=tuple(sorted(module_imports_changed)),
+        include_only=frozenset(include_names - names),
+        site_names=frozenset(site_names - names - include_names),
     )
+
+
+def _namespace_names(parsed: Any | None) -> set[str]:
+    """The C/C++ namespaces *parsed* opens, which the parse records as module symbols.
+
+    No site binds a namespace by its text: a qualifier is matched against a
+    class, so a changed namespace reaches only a file whose parsed sites
+    name it (``affected``).
+    """
+    if parsed is None:
+        return set()
+    others = {sym.name for sym in parsed.symbols if sym.kind != "module"}
+    return {sym.name for sym in parsed.symbols if sym.kind == "module"} - others
 
 
 def path_set_reason(
