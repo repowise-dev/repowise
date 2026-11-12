@@ -496,6 +496,7 @@ class FileTraverser:
         # package scans after the walk decide each directory once, not once per
         # level of every path below it.
         self._dir_skipped: dict[str, bool] = {}
+        self._root_cut = len(str(self.repo_root).rstrip(os.sep)) + 1
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
@@ -930,7 +931,9 @@ class FileTraverser:
             return None
 
         size_bytes = stat.st_size
-        rel_str = abs_path.relative_to(self.repo_root).as_posix()
+        # Every caller passes a path ``_walk`` joined onto the root, so slicing
+        # the root off is ``relative_to`` without a Path per file.
+        rel_str = str(abs_path)[self._root_cut :].replace(os.sep, "/")
 
         if self._skip_oversized(abs_path, rel_str, size_bytes):
             return None
