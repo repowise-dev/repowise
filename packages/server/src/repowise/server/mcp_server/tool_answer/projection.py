@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
+import logging
 import re
 from collections.abc import Callable
 from functools import wraps
@@ -18,7 +20,17 @@ from repowise.server.mcp_server.tool_answer.config import (
 )
 from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
+from repowise.server.mcp_server.tool_answer.windows import (
+    SOURCE_BUDGET_BYTES,
+    SOURCE_MIN_BYTES,
+    SourcePlan,
+    continuation_names,
+    plan_source,
+    resolve_names,
+)
 from repowise.server.mcp_server.tool_answer.withheld import _parse_continuation
+
+_log = logging.getLogger("repowise.mcp.answer")
 
 _COLLECTIONS = (
     "citations",
@@ -372,7 +384,7 @@ def _shape_candidate_files(payload: dict[str, Any], *, expanded: bool) -> None:
     if not isinstance(rows, list):
         return
     cited = {path for path in map(_nav_path, payload.get("citations") or []) if path}
-    spent = cited
+    spent = cited | {path for path in map(_nav_path, payload.get("source") or []) if path}
     if payload.get("degraded"):
         # Keyless citations also name the ranked guesses; they keep their
         # shortlist slots so citing them reorders the files served, not adds.
@@ -734,6 +746,46 @@ def _record_reductions(
         }
 
 
+# What the source windows replace in the default reply; ``include=["evidence"]``
+# serves them as before. Guidance that points at those rows, or at a Read, goes too.
+_REPLACED_BY_SOURCE = (
+    "retrieval", "best_guesses", "code_rationale", "quotes", "symbol_bodies",
+    "fallback_targets", "episodes", "note", "next_action_hint",
+)
+
+
+def _serve_source(payload: dict[str, Any], plan: SourcePlan | None) -> bool:
+    """Swap the evidence rows for live source windows and a delivery statement.
+
+    The window budget is what is left of :data:`SOURCE_BUDGET_BYTES` after the
+    rest of the reply, so the reply's size does not depend on how much source
+    the question pulls in. Returns whether source was served.
+    """
+    if plan is None or payload.get("error"):
+        return False
+    rest = {k: v for k, v in payload.items() if k not in _REPLACED_BY_SOURCE}
+    used = len(json.dumps(rest, ensure_ascii=False, default=str))
+    served = plan.serve(max(SOURCE_MIN_BYTES, SOURCE_BUDGET_BYTES - used))
+    if served is None:
+        return False
+    source, delivered = served
+    for key in _REPLACED_BY_SOURCE:
+        payload.pop(key, None)
+    payload["source"] = source
+    payload["delivered"] = delivered
+    # Ranked files that got no window lead the shortlist, so dropping the
+    # evidence rows never drops a ranked path from the reply.
+    payload["candidate_files"] = list(
+        dict.fromkeys([*plan.rest, *(payload.get("candidate_files") or [])])
+    )
+    if payload.get("degraded"):
+        payload["answer"] = (
+            f"No synthesis ({payload['degraded']}): source holds the live code ranked "
+            f"for this question, {source[0]['path']} first."
+        )
+    return True
+
+
 def project_answer_payload(
     raw: dict[str, Any], *, question: str, scope: str | None = None,
     repo: str | None = None, include: list[str] | None = None,
@@ -747,7 +799,8 @@ def project_answer_payload(
 
 def _project(
     raw: dict[str, Any], *, question: str, scope: str | None,
-    repo: str | None, include: list[str] | None, repo_root: Path | None = None
+    repo: str | None, include: list[str] | None, repo_root: Path | None = None,
+    source_plan: SourcePlan | None = None,
 ) -> tuple[dict[str, Any], bool, bool]:
     """The projection, whether it slimmed ``best_guesses``, and whether it is the ranked list."""
     payload = copy.deepcopy(raw)
@@ -764,16 +817,24 @@ def _project(
         _default_shape(payload, question, raw_fallbacks=raw_fallbacks)
         if _shape_confidence(payload) == "low":
             slimmed = _slim_best_guesses(payload, facts if isinstance(facts, dict) else {})
-    bodies_cut = not expanded and _budget_keyless_bodies(payload, repo_root)
+    sourced = not expanded and _serve_source(payload, source_plan)
+    bodies_cut = not expanded and not sourced and _budget_keyless_bodies(payload, repo_root)
     _shape_candidate_files(payload, expanded=expanded)
-    _rewrite_degraded_answer(payload)
-    ranked = not expanded and _ranked_list_only(payload)
+    if not sourced:
+        _rewrite_degraded_answer(payload)
+    ranked = not expanded and not sourced and _ranked_list_only(payload)
     if ranked:
         _serve_ranked_list(payload)
     _lead_with_graph_callers(payload)
     for key in _COLLECTIONS:
         if not payload.get(key):
             payload.pop(key, None)
+    if sourced:
+        # ``delivered`` states what was sent; counts and a recovery for the rows
+        # the source replaced would only repeat it on every call, as would the hint.
+        totals = {key: 0 for key in totals}
+        if isinstance(payload.get("_meta"), dict):
+            payload["_meta"].pop("hint", None)
     _record_reductions(
         payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
         bodies_cut=bodies_cut,
@@ -978,15 +1039,20 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
         repo: str | None = None,
         include: list[str] | None = None,
     ) -> dict[str, Any]:
+        expanded = "evidence" in set(include or [])
+        if not expanded and (reply := await _continuation_reply(question, repo, scope)) is not None:
+            return reply
         raw = await fn(question=question, scope=scope, repo=repo, include=include)
-        # Only a keyless reply with bodies reads source at projection time.
-        root = (
-            await _resolve_root(repo)
-            if raw.get("degraded") == "no-llm-provider" and raw.get("symbol_bodies")
-            else None
-        )
+        root = None
+        plan = None
+        if not expanded and not raw.get("error") and repo != "all":
+            root, plan = await _source_plan(raw, question, repo)
+        elif raw.get("degraded") == "no-llm-provider" and raw.get("symbol_bodies"):
+            # The expanded keyless reply still cuts its bodies to whole lines.
+            root = await _resolve_root(repo)
         payload, slimmed, ranked = _project(
-            raw, question=question, scope=scope, repo=repo, include=include, repo_root=root
+            raw, question=question, scope=scope, repo=repo, include=include, repo_root=root,
+            source_plan=plan,
         )
         await _refresh_freshness(payload, repo)
         # The lean projection may drop flow_path; the raw reply still says it walked a chain.
@@ -998,6 +1064,64 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
         return payload
 
     return _wrapped
+
+
+async def _source_plan(
+    raw: dict[str, Any], question: str, repo: str | None
+) -> tuple[Path | None, SourcePlan | None]:
+    """The checkout root and the source windows laid out for *raw*. Best-effort."""
+    try:
+        from repowise.server.mcp_server._helpers import _resolve_repo_context
+        from repowise.server.mcp_server.tool_answer.evidence import _repo_root
+
+        ctx = await _resolve_repo_context(repo)
+        root = _repo_root(ctx)
+        return root, await plan_source(raw, question, root, ctx)
+    except Exception:  # the evidence rows still serve when windows cannot
+        _log.warning("get_answer: source windows skipped", exc_info=True)
+        return None, None
+
+
+async def _continuation_reply(
+    question: str, repo: str | None, scope: str | None = None
+) -> dict[str, Any] | None:
+    """Source for a question made only of exact names, with no retrieval or synthesis.
+
+    The names ``delivered`` offers (``path::Name``, ``Owner.member``) come back
+    here, so the next step after a reply is the same tool. None when the
+    question is prose, a scope is set, or any name is not exactly one definition.
+    """
+    names = continuation_names(question)
+    if not names or repo == "all" or scope:
+        return None
+    try:
+        from repowise.server.mcp_server._helpers import _resolve_repo_context
+        from repowise.server.mcp_server.tool_answer.evidence import _repo_root
+
+        ctx = await _resolve_repo_context(repo)
+        spans = await resolve_names(ctx, names)
+        if not spans:
+            return None
+        root = _repo_root(ctx)
+        raw = {"symbol_bodies": [{"path": p, "lines": [a, b]} for p, a, b, _ in spans]}
+        files = list(dict.fromkeys(p for p, *_ in spans))
+        plan = await plan_source(raw, question, root, ctx, files=files, question_ids=set())
+        served = plan.serve(SOURCE_BUDGET_BYTES) if plan else None
+    except Exception:
+        _log.warning("get_answer: continuation lookup failed", exc_info=True)
+        return None
+    if served is None:
+        return None
+    source, delivered = served
+    labels = ", ".join(dict.fromkeys(label for *_, label in spans))
+    return {
+        "answer": f"Source of {labels}, read live from the index's definitions.",
+        "confidence": "high",
+        "grounding": "exact_symbol",
+        "citations": files,
+        "source": source,
+        "delivered": delivered,
+    }
 
 
 async def _declare_replaced_reads(

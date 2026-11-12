@@ -111,7 +111,7 @@ async def test_an_id_that_only_live_greps_is_still_advertised(
         answer_text="big_handler runs each step in order and returns the first.",
     )
 
-    result = await get_answer("how does big_handler use ghost_helper on each step")
+    result = await get_answer("how does big_handler use ghost_helper on each step", include=["evidence"])
 
     note = result.get("note") or ""
     hint = result.get("next_action_hint") or ""
@@ -163,7 +163,9 @@ async def test_an_id_that_resolves_to_nothing_is_not_advertised(
 
     monkeypatch.setattr(symbols_mod, "withheld_definitions", _fabricating)
 
-    result = await get_answer("how does big_handler use phantomThing on each step")
+    result = await get_answer(
+        "how does big_handler use phantomThing on each step", include=["evidence"]
+    )
 
     note = result.get("note") or ""
     hint = result.get("next_action_hint") or ""
@@ -212,7 +214,9 @@ async def test_an_unreadable_file_does_not_disqualify_its_id(
 
     monkeypatch.setattr(symbols_mod, "withheld_definitions", _from_a_vanished_file)
 
-    result = await get_answer("how does big_handler use movedAway on each step")
+    result = await get_answer(
+        "how does big_handler use movedAway on each step", include=["evidence"]
+    )
 
     hint = result.get("next_action_hint") or ""
     note = result.get("note") or ""

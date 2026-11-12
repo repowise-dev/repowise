@@ -180,7 +180,7 @@ async def test_a_bare_lookup_whose_body_was_cut_is_not_high(setup_mcp, monkeypat
     _patch_pipeline(monkeypatch, answer_mod, symbol=symbol, path="policy.py")
     _patch_provider(monkeypatch, answer_mod, "min_count_policy returns the configured floor.")
 
-    result = await get_answer("min_count_policy")
+    result = await get_answer("min_count_policy", include=["evidence"])
 
     bodies = result.get("symbol_bodies") or []
     assert any(b.get("truncated") for b in bodies), (
@@ -240,7 +240,7 @@ async def test_a_stale_end_line_does_not_cap_a_body_that_was_served_whole(
     _patch_pipeline(monkeypatch, answer_mod, symbol=stale, path="policy.py")
     _patch_provider(monkeypatch, answer_mod, "min_count_policy returns the configured floor.")
 
-    result = await get_answer("min_count_policy")
+    result = await get_answer("min_count_policy", include=["evidence"])
 
     body = (result.get("symbol_bodies") or [{}])[0]
     served = body["lines"][1] - body["lines"][0] + 1
@@ -324,7 +324,7 @@ async def test_the_served_symbol_is_described_by_its_continuation_not_as_unserve
     monkeypatch.setattr(answer_mod, "_hydrate_hits", _fake_hydrate)
     _patch_provider(monkeypatch, answer_mod, "big_handler runs each step in order.")
 
-    result = await get_answer("big_handler")
+    result = await get_answer("big_handler", include=["evidence"])
 
     body = (result.get("symbol_bodies") or [{}])[0]
     assert body.get("truncated") and body.get("continuation"), result.get("symbol_bodies")

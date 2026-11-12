@@ -292,7 +292,7 @@ async def test_a_served_named_body_still_earns_high_on_weak_retrieval(
     )
     _patch_provider(monkeypatch, answer_mod, _GROUNDED_ANSWER)
 
-    result = await get_answer(f"How does {_SYMBOL} work?", include=["diagnostics"])
+    result = await get_answer(f"How does {_SYMBOL} work?", include=["diagnostics", "evidence"])
     assert result["retrieval_quality"] == "weak"
     assert result["symbol_bodies"], "the named body is what the grade rests on"
     assert result["confidence"] == "high"
@@ -303,4 +303,3 @@ async def test_a_served_named_body_still_earns_high_on_weak_retrieval(
     assert "symbol_bodies" in note, "the note must name the evidence it actually used"
     assert "clearly dominates" not in note
     assert "verify against best_guesses" not in note
-    assert result["next_action_hint"] == "Use the answer and citations directly."

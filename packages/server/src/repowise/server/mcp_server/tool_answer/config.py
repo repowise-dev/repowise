@@ -372,7 +372,10 @@ _ANSWER_COVERAGE_FLOOR = 0.5
 #     the question, and for no remarks on missing line numbers.
 # 33: each served body shows its line range, so answers cite lines; a prose
 #     line citation is not an asserted value.
-_ANSWER_SCHEMA_VERSION = 33
+# 34: the default reply serves live source windows and a delivery statement
+#     in place of the evidence rows; the reply shape also takes in
+#     other_repo_lines (another workspace repo's lines, never cached).
+_ANSWER_SCHEMA_VERSION = 34
 
 # Above this a whole-file Read costs more than the answer, so the low-confidence
 # hint names a ranged Read or a skeleton instead.

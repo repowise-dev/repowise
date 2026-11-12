@@ -141,7 +141,7 @@ Answers a how, where or why question in one call: hybrid retrieval over the wiki
 | `include` | list[string] | none | `evidence` (full evidence, larger budget), `diagnostics` (adds `retrieval_quality`) |
 | `repo` | string | default repo | `"all"` not supported |
 
-**Returns** `answer`, `confidence`, `citations`, `symbol_bodies`, `candidate_files`, `best_guesses` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_answer)). On `low`, read the named rows, then `candidate_files`, before searching again. Without an LLM provider it answers from retrieval, marked `degraded`.
+**Returns** `answer`, `confidence`, `citations`, `source`, `delivered`, `candidate_files` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_answer)). `source` is the live code the answer rests on, numbered like Read: a window per definition the answer cites or the question names, the lead file first. `delivered` lists the lines sent per file, the definitions cut or left out, and the `path::Name` inputs that return more: a question made only of such names gets their source with no retrieval or synthesis. `include=["evidence"]` returns the ranked evidence rows (`retrieval`, `best_guesses`, `symbol_bodies`, `code_rationale`) in place of `source`. Without an LLM provider it answers from retrieval, marked `degraded`.
 
 A why-question also reads the decisions in force that answer it (ranked as `get_why` ranks a question) and the ones over the top hits, so a recorded reason is cited whichever files retrieval surfaced. Background records reach the answer labelled as not binding. With `decisions.mode: off`, no decision is read.
 
@@ -182,7 +182,7 @@ get_context(targets=["src/big_module.py"], include=["skeleton"])
 
 ## `get_symbol`
 
-Verified, line-numbered source for one symbol, a live line range, or an omission ref. A follow-up read, not an entry point: use it on an id another response gave you, an elided body, or truncated output. `get_answer` already ships `symbol_bodies`.
+Verified, line-numbered source for one symbol, a live line range, or an omission ref. A follow-up read, not an entry point: use it on an id another response gave you, an elided body, or truncated output. `get_answer` already ships `source`.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
