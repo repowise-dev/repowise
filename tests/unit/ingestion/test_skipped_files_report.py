@@ -79,6 +79,16 @@ def test_a_clean_walk_removes_the_last_report(tmp_path: Path) -> None:
     assert not (tmp_path / ingestion_phase.SKIPPED_FILES_REPORT).exists()
 
 
+def test_an_unwritable_report_never_fails_the_run(tmp_path: Path) -> None:
+    # `.repowise` is a file here, so the report's directory cannot be made.
+    (tmp_path / ".repowise").write_text("not a directory")
+    stats = TraversalStats(skipped_source_files=[SkippedSourceFile("a.cpp", 3000, "over_max_size")])
+
+    ingestion_phase.write_skipped_files_report(tmp_path, stats)
+
+    assert (tmp_path / ".repowise").read_text() == "not a directory"
+
+
 def test_few_skips_point_at_the_report_without_a_count(tmp_path: Path) -> None:
     stats = TraversalStats(skipped_source_files=[SkippedSourceFile("a.cpp", 3000, "over_max_size")])
     progress = _RecordingProgress()
