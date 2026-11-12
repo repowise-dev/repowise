@@ -84,7 +84,11 @@ async def _why_path(
     collector = OmissionCollector("get_why", repo_root=ctx.path)
     exclude_spec = _get_exclude_spec(ctx.path)
     if is_excluded(query, exclude_spec):
-        return {"query": query, "error": f"'{query}' is excluded by exclude_patterns."}
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "not_found", {"query": query, "error": f"'{query}' is excluded by exclude_patterns."}
+        )
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
         res = await session.execute(
@@ -243,12 +247,17 @@ async def _path_not_found(
             result["moved_from"] = path
             result["removed_by_commit"] = hint["removed_by_commit"][:12]
             return result
-    out: dict[str, Any] = {
-        "mode": "path",
-        "path": path,
-        "error": f"Path not found: '{path}' is neither in the checkout "
-        "nor in the indexed git history.",
-    }
+    from repowise.server.mcp_server._savings.interaction import error_reply
+
+    out: dict[str, Any] = error_reply(
+        "not_found",
+        {
+            "mode": "path",
+            "path": path,
+            "error": f"Path not found: '{path}' is neither in the checkout "
+            "nor in the indexed git history.",
+        },
+    )
     if hint.get("removed_by_commit"):
         out["error"] = f"'{path}' was removed in {hint['removed_by_commit'][:12]}."
         out["removed_by_commit"] = hint["removed_by_commit"][:12]

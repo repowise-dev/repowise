@@ -113,24 +113,26 @@ async def _container_outline(
 
 
 def _unreadable_source_response(row: Any, symbol_id: str, repository: Any, t0: float) -> dict:
-    from repowise.server.mcp_server._savings.interaction import note_error_reason
+    from repowise.server.mcp_server._savings.interaction import error_reply
 
-    note_error_reason("index_behind")
-    return {
-        "symbol_id": symbol_id,
-        "file": row.file_path,
-        "name": row.name,
-        "kind": row.kind,
-        "signature": row.signature,
-        "error": (
-            "Symbol metadata exists but source file could not be read. "
-            "The file may have been moved or deleted since indexing."
-        ),
-        "_meta": _build_meta(
-            timing_ms=_elapsed_ms(t0),
-            repository=repository,
-        ),
-    }
+    return error_reply(
+        "index_behind",
+        {
+            "symbol_id": symbol_id,
+            "file": row.file_path,
+            "name": row.name,
+            "kind": row.kind,
+            "signature": row.signature,
+            "error": (
+                "Symbol metadata exists but source file could not be read. "
+                "The file may have been moved or deleted since indexing."
+            ),
+            "_meta": _build_meta(
+                timing_ms=_elapsed_ms(t0),
+                repository=repository,
+            ),
+        },
+    )
 
 
 class _ServedBody(NamedTuple):

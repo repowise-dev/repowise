@@ -52,7 +52,9 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
     exclude_spec = _get_exclude_spec(ctx.path)
     for _p in (source, target):
         if is_excluded(_p, exclude_spec):
-            return {"error": f"'{_p}' is excluded by exclude_patterns."}
+            from repowise.server.mcp_server._savings.interaction import error_reply
+
+            return error_reply("not_found", {"error": f"'{_p}' is excluded by exclude_patterns."})
 
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
