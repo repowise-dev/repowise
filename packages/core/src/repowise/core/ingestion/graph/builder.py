@@ -322,6 +322,15 @@ class GraphBuilder(
             source_map=self._source_map,
         )
 
+    def _shared_cpp_index(self, ctx: ResolverContext) -> Any | None:
+        """The warmup's C/C++ workspace index, when the call resolver would build the same.
+
+        The call resolver's own index walks the tree pruning nested git
+        repositories; the warmup's is that index only when this build prunes
+        them too.
+        """
+        return getattr(ctx, CPP_INDEX_KEY, None) if self._prune_nested_git else None
+
     def add_file(self, parsed: ParsedFile) -> None:
         """Register one parsed file and its symbols in the graph."""
         path = parsed.file_info.path
@@ -648,15 +657,12 @@ class GraphBuilder(
             self._resolve_go_interface_satisfaction(progress=progress)
 
         # --- Phase 3: Resolve symbol-level calls ---
-        # The call resolver's own C/C++ index walks the tree pruning nested
-        # git repositories; the warmup's is the same index only when this
-        # build prunes them too.
         self._resolve_calls(
             import_targets,
             progress=progress,
             scope=scope_set,
             registrations=run_global,
-            cpp_index=getattr(ctx, CPP_INDEX_KEY, None) if self._prune_nested_git else None,
+            cpp_index=self._shared_cpp_index(ctx),
         )
 
         # --- Pascal property -> the read/write methods it runs ---
