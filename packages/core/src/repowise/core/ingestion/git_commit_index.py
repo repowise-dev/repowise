@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, NamedTuple
 import structlog
 
 if TYPE_CHECKING:
+    from concurrent.futures import Future
+
     from .git_indexer import RenameTrail, _CommitRec
     from .git_indexer.agent_provenance import AgentProvenance, GitAiNote
 
@@ -182,6 +184,7 @@ def _window_records(
     skip: int = 0,
     cache_writable: bool = True,
     cache_name: str = _WINDOW_CACHE_NAME,
+    head: str | None = None,
 ) -> list[str]:
     """The raw log records of ``depth`` non-merge commits after the newest *skip*.
 
@@ -198,6 +201,10 @@ def _window_records(
 
     Every failure on the cache path falls back to the full walk; the cache can
     only ever save time, never change the answer.
+
+    *head*, when given, is HEAD's sha already resolved. Worker threads pass it:
+    resolving it goes through the repo's one ``cat-file`` pipe, which two
+    threads must not share.
     """
     window = [f"--skip={skip}", f"-{depth}"] if skip else [f"-{depth}"]
     if cache_dir is None:
@@ -205,7 +212,7 @@ def _window_records(
 
     cache_path = Path(cache_dir) / cache_name
     try:
-        head = repo.head.commit.hexsha  # type: ignore[attr-defined]
+        head = head or repo.head.commit.hexsha  # type: ignore[attr-defined]
         context = _record_context(repo, head)
     except Exception:
         return _log_records(repo, *window)
@@ -838,8 +845,9 @@ _DEEP_READ_AHEAD = 4
 class _RegionReader:
     """Reads deep regions' raw records on worker threads, in region order.
 
-    *regions* maps a region number to its ``(skip, cache_name)``. Every region
-    is queued at once; at most :data:`_DEEP_READ_AHEAD` git processes run.
+    *regions* maps a region number to its ``(skip, cache_name)``. A region is
+    started only when the walk is at most ``ahead - 1`` regions behind it, so
+    a walk that stops early leaves at most that many reads unused.
     """
 
     def __init__(
@@ -847,20 +855,29 @@ class _RegionReader:
     ) -> None:
         from concurrent.futures import ThreadPoolExecutor
 
-        workers = max(1, min(_DEEP_READ_AHEAD, (os.cpu_count() or 1) // 2, len(regions)))
-        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="git-deep")
-        self._futures = {
-            n: self._pool.submit(read, skip=skip, cache_name=name)
-            for n, (skip, name) in regions.items()
-        }
+        self._ahead = max(1, min(_DEEP_READ_AHEAD, (os.cpu_count() or 1) // 2))
+        self._read = read
+        self._pending = dict(sorted(regions.items()))
+        self._pool = ThreadPoolExecutor(max_workers=self._ahead, thread_name_prefix="git-deep")
+        self._futures: dict[int, Future[list[str]]] = {}
+        self._fill()
+
+    def _fill(self) -> None:
+        while self._pending and len(self._futures) < self._ahead:
+            n, (skip, name) = next(iter(self._pending.items()))
+            del self._pending[n]
+            self._futures[n] = self._pool.submit(self._read, skip=skip, cache_name=name)
 
     def take(self, region: int) -> list[str]:
         """The region's records; raises what its read raised."""
-        return self._futures.pop(region).result()
+        future = self._futures.pop(region)
+        self._fill()
+        return future.result()
 
     def close(self) -> None:
-        # Ceiling: a region already being read when the walk stops finishes in
-        # the background; the walk stops early only when every file is full.
+        # Ceiling: reads already running when the walk stops (at most
+        # ``ahead - 1``) finish in the background, cache files included;
+        # killing their git process would need our own Popen in place of GitPython.
         self._pool.shutdown(wait=False, cancel_futures=True)
 
 
@@ -963,6 +980,25 @@ class _SharedWalks:
         return walked_depth if self._total is None else min(self._total, walked_depth)
 
 
+def _region_read(
+    repo: object, deep_limit: int, cache_dir: Path | None, cache_writable: bool
+) -> Callable[..., list[str]] | None:
+    """How worker threads read one deep region; ``None`` to read on this thread.
+
+    HEAD is resolved here, once, so the workers never touch the repo's shared
+    object pipe (see :func:`_window_records`).
+    """
+    head = None
+    if cache_dir is not None:
+        try:
+            head = repo.head.commit.hexsha  # type: ignore[attr-defined]
+        except Exception:
+            return None
+    return functools.partial(
+        _window_records, repo, deep_limit, cache_dir, cache_writable=cache_writable, head=head
+    )
+
+
 def _settle_fallback(
     sample: HistorySample, indexable_files: set[str], per_file_limit: int, reached_root: bool
 ) -> None:
@@ -1053,9 +1089,7 @@ def load_sampled_commit_index(
         step=deep_limit,
         cache_dir=cache_dir,
         cache_writable=cache_writable,
-        read_region=functools.partial(
-            _window_records, repo, deep_limit, cache_dir, cache_writable=cache_writable
-        ),
+        read_region=_region_read(repo, deep_limit, cache_dir, cache_writable),
     )
     underfilled = _underfilled(sample, indexable_files, per_file_limit)
     try:
