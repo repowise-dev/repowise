@@ -216,30 +216,45 @@ def mcp_command(
         # stdio mode — no console output (it would corrupt the protocol)
         pass
 
+    tools_override: str | None = "all" if all_tools else tools
+    _serve_and_record(
+        transport=transport,
+        repo_path=str(repo_path),
+        host=resolved_host,
+        port=port,
+        tools=tools_override,
+        workspace_mode=not no_workspace,
+    )
+
+
+def _serve_and_record(*, transport: str, **run_kwargs: object) -> None:
+    """Run the MCP server and record how its session ended."""
     from repowise.server.mcp_server import run_mcp
     from repowise.server.mcp_server._server import StoreUnavailableError
-
-    tools_override: str | None = "all" if all_tools else tools
+    from repowise.server.mcp_server._transport import (
+        SERVER_FAULT,
+        SERVER_REFUSED,
+        SERVER_STOPPED,
+    )
 
     # Which of the ways a session can end this one was. Recorded in a finally
     # so a fault is reported as one: leaving the field off for every failed
     # session would make its absence mean either "faulted" or "older build".
-    outcome = "server_fault"
+    outcome = SERVER_FAULT
     try:
-        outcome = run_mcp(
-            transport=transport,
-            repo_path=str(repo_path),
-            host=resolved_host,
-            port=port,
-            tools=tools_override,
-            workspace_mode=not no_workspace,
-        )
+        outcome = run_mcp(transport=transport, **run_kwargs)
     except StoreUnavailableError as exc:
         # Only when even the empty in-memory store would not open; a store
         # that cannot open is otherwise served as every tool's answer. One
         # line on stderr and exit 1, not a traceback the host respawns on.
-        # The reason slug becomes the event's failure_reason.
+        # The reason slug becomes the event's failure_reason. A deliberate
+        # exit with a reason, so not counted as a fault.
+        outcome = SERVER_REFUSED
         raise reasoned_error(str(exc), reason=exc.reason) from exc
+    except KeyboardInterrupt:
+        # Ctrl-C, or a host stopping its server that way: a stop, not a fault.
+        outcome = SERVER_STOPPED
+        raise
     finally:
         from repowise.cli.platform import telemetry
         from repowise.server.mcp_server import _state
