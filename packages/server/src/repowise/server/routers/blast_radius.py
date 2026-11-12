@@ -20,7 +20,7 @@ from repowise.core.analysis.change_candidates import (
     resolve_change_files,
     resolve_change_request,
 )
-from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
+from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer, run_commands
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.index_cache import IndexStampCache
@@ -190,7 +190,11 @@ async def _review(
         return None, f"The change could not be scored: {exc}"
     try:
         tests = await scored_change_tests(checkout, factory, revspec, scored, repo=repo_id)
-        return ChangeReview(revspec=revspec, risk=change_risk_payload(scored), tests=tests), None
+        commands = await _test_commands(factory, repo_id, tests)
+        review = ChangeReview(
+            revspec=revspec, risk=change_risk_payload(scored), tests=tests, test_commands=commands
+        )
+        return review, None
     except Exception as exc:  # a review bug must not take the blast radius with it
         log.warning("change review failed", exc_info=True)
         return None, f"The change review failed unexpectedly: {exc!r}"
@@ -224,6 +228,19 @@ def _change_request(checkout: str, change_id: str) -> ChangeCandidate:
     except ManagedCheckoutError as exc:
         raise UnknownChangeError(str(exc)) from exc
     return resolve_change_request(checkout, change_id)
+
+
+async def _test_commands(factory: Any, repo_id: str, tests: dict[str, Any]) -> list[str]:
+    """Commands that run the selected tests; none for a run-all verdict, or when
+    the runners cannot be read (the score and the list stand without them)."""
+    if tests["run_all"] or not tests["tests_to_run"]:
+        return []
+    try:
+        async with get_session(factory) as session:
+            return await run_commands(session, repo_id, tests["tests_to_run"], tests["total"])
+    except Exception:
+        log.warning("test commands failed", exc_info=True)
+        return []
 
 
 @router.post("/{repo_id}/blast-radius/change", response_model=ChangeBlastRadiusResponse)

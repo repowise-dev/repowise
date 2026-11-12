@@ -7,9 +7,10 @@
  * opens the most relevant change on arrival (work in progress, else the
  * checked-out branch) and names it in one compact picker at the top. Picking
  * files by hand stays available as a secondary path, and is the only path for
- * a host that does not list changes. Every result reads the same way: a
- * status line with the actions; what to look at, test and ask; where the
- * change reaches; every file; then the details.
+ * a host that does not list changes. Every result reads the same way: the
+ * verdict and change risk with the actions; what to check, in order, and
+ * what could not be checked; then the evidence folded: where the change
+ * reaches, every file, the details.
  *
  * Presentation and orchestration only: the host injects fetching, analysis,
  * file links and the reviewer slot through an {@link ImpactAdapter}, so web
@@ -24,6 +25,7 @@ import type {
   BlastRadiusResponse,
   ChangeCandidate,
   ChangeCandidatesResponse,
+  ChangeReview,
 } from "@repowise-dev/types/blast-radius";
 
 import { Button } from "../ui/button";
@@ -47,6 +49,7 @@ import {
 } from "./blast-step-model";
 import { ChangePicker, changeName } from "./change-picker";
 import { HealthCheckButton, HealthCheckPanel, type HealthCheckState } from "./health-check-panel";
+import type { HealthLane } from "./change-review-model";
 import { count } from "./review-status";
 import type { ImpactAdapter } from "./impact-adapter";
 import { changeIdFromLink, changeLinkParam } from "./change-links";
@@ -65,6 +68,9 @@ interface Analysis {
   changedTotal?: number;
   /** A merge or pull request as the server resolved it: the forge's words, pinned to its commits. */
   change?: ChangeCandidate;
+  /** A change's score and tests; undefined for picked files, null when the server had none. */
+  review?: ChangeReview | null;
+  reviewUnavailable?: string | null;
 }
 
 const DEPTHS: { value: number; label: string }[] = [
@@ -226,28 +232,42 @@ function NoReach({ depth, tests }: { depth: number; tests: number }) {
 }
 
 /**
- * Every changed file, folded by default: the risky ones already lead under
- * Look at first, and the page stays short until the reader asks for the rest.
+ * Evidence under the verdict, folded by default: what it says already leads
+ * under What to check, and the page stays short until the reader asks for
+ * the rest. `action` shows only while it is open.
  */
-function ChangedFilesSection({ total, children }: { total: number; children: ReactNode }) {
+function FoldedSection({
+  title,
+  hint,
+  action,
+  children,
+}: {
+  title: string;
+  hint: string;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <section className="space-y-3 border-t border-[var(--color-border-default)] pt-5">
-      <h3>
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-          className="flex items-baseline gap-2 rounded-sm text-[15px] font-medium text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] max-sm:min-h-10 max-sm:items-center"
-        >
-          <ChevronRight
-            className={`h-3.5 w-3.5 self-center text-[var(--color-text-tertiary)] transition-transform ${open ? "rotate-90" : ""}`}
-            aria-hidden
-          />
-          Changed files
-          <span className="text-xs font-normal tabular-nums text-[var(--color-text-tertiary)]">{formatNumber(total)}</span>
-        </button>
-      </h3>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3>
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => setOpen((v) => !v)}
+            className="flex items-baseline gap-2 rounded-sm text-[15px] font-medium text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] max-sm:min-h-10 max-sm:items-center"
+          >
+            <ChevronRight
+              className={`h-3.5 w-3.5 self-center text-[var(--color-text-tertiary)] transition-transform ${open ? "rotate-90" : ""}`}
+              aria-hidden
+            />
+            {title}
+            <span className="text-xs font-normal tabular-nums text-[var(--color-text-tertiary)]">{hint}</span>
+          </button>
+        </h3>
+        {open && action}
+      </div>
       {open && children}
     </section>
   );
@@ -373,6 +393,7 @@ function ReviewBody({
   analysis,
   change,
   check,
+  health,
   fileHref,
   maxDepth,
   onDepth,
@@ -380,11 +401,12 @@ function ReviewBody({
   analysis: Analysis;
   change: ChangeCandidate | undefined;
   check: ChangeCheck | undefined;
+  health: HealthLane;
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
   onDepth: (depth: number) => void;
 }) {
-  const { result, changedFiles, changedTotal } = analysis;
+  const { result, changedFiles, changedTotal, review, reviewUnavailable } = analysis;
   const reach = useMemo(() => readReach(result, changedFiles), [result, changedFiles]);
   const columns = useExpandedColumns();
   const steps = useMemo(() => buildStepMap(reach, columns.expanded), [reach, columns.expanded]);
@@ -401,10 +423,17 @@ function ReviewBody({
         change={change}
         healthCheck={check?.state?.status === "done" ? check.state.result : undefined}
         extraActions={check && <HealthCheckButton state={check.state} onRun={check.onRun} />}
+        review={review}
+        reviewUnavailable={reviewUnavailable}
+        health={health}
         fileHref={fileHref}
       />
       {check && <HealthCheckPanel state={check.state} fileHref={fileHref} />}
-      <Section title="Where it reaches" action={<DepthSelect value={maxDepth} onChange={onDepth} />}>
+      <FoldedSection
+        title="Where it reaches"
+        hint={formatNumber(reach.files.length)}
+        action={<DepthSelect value={maxDepth} onChange={onDepth} />}
+      >
         {reaches ? (
           <BlastRadiusSteps
             map={steps}
@@ -419,19 +448,20 @@ function ReviewBody({
         ) : (
           <NoReach depth={maxDepth} tests={reach.tests.length} />
         )}
-      </Section>
-      {reaches && (
-        <DependentsSection
-          reach={reach}
-          fileHref={fileHref}
-          focus={pick.focus}
-          onClearFocus={pick.clear}
-          onHoverPath={setHoverPath}
-        />
-      )}
-      <ChangedFilesSection total={changedTotal ?? changedFiles.length}>
+        {/* The list is the drawing's keyboard and screen-reader reading, so it folds with it. */}
+        {reaches && (
+          <DependentsSection
+            reach={reach}
+            fileHref={fileHref}
+            focus={pick.focus}
+            onClearFocus={pick.clear}
+            onHoverPath={setHoverPath}
+          />
+        )}
+      </FoldedSection>
+      <FoldedSection title="Changed files" hint={formatNumber(changedTotal ?? changedFiles.length)}>
         <ChangedFilesList result={result} reach={reach} fileHref={fileHref} />
-      </ChangedFilesSection>
+      </FoldedSection>
       <ReviewDetails result={result} reach={reach} fileHref={fileHref} />
     </>
   );
@@ -479,6 +509,8 @@ async function analyzeSelection(adapter: ImpactAdapter, sel: Selection, depth: n
       changedFiles: r.changed_files,
       changedTotal: r.changed_files_total,
       ...(r.change ? { change: r.change } : {}),
+      review: r.review ?? null,
+      reviewUnavailable: r.review_unavailable ?? null,
     };
   }
   const r = await adapter.analyze({ changedFiles: sel.files, maxDepth: depth });
@@ -591,6 +623,7 @@ function ReviewSkeleton() {
     <div className="space-y-6" aria-hidden>
       <div className="space-y-3">
         <Skeleton className="h-5 w-72 max-w-full" />
+        <Skeleton className="h-3.5 w-96 max-w-full" />
         <div className="flex flex-wrap gap-6">
           <Skeleton className="h-4 w-28" />
           <Skeleton className="h-4 w-56" />
@@ -611,18 +644,12 @@ function ReviewSkeleton() {
           </div>
         ))}
       </div>
-      <div className="space-y-3 border-t border-[var(--color-border-default)] pt-5">
-        <Skeleton className="h-4 w-36" />
-        <div className="grid grid-cols-4 gap-6">
-          {[0, 1, 2, 3].map((c) => (
-            <div key={c} className="space-y-3">
-              {Array.from({ length: c === 0 ? 3 : 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-6 w-full" />
-              ))}
-            </div>
-          ))}
+      {/* The evidence below arrives folded: one header row each. */}
+      {[0, 1].map((row) => (
+        <div key={row} className="border-t border-[var(--color-border-default)] pt-5">
+          <Skeleton className="h-4 w-40" />
         </div>
-      </div>
+      ))}
     </div>
   );
 }
@@ -691,6 +718,7 @@ function ResultPane({
   empty,
   shownChange,
   check,
+  health,
   fileHref,
   maxDepth,
   onDepth,
@@ -702,6 +730,7 @@ function ResultPane({
   empty: ReactNode;
   shownChange: ChangeCandidate | undefined;
   check: ChangeCheck | undefined;
+  health: HealthLane;
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
   onDepth: (depth: number) => void;
@@ -721,6 +750,7 @@ function ResultPane({
             analysis={analysis}
             change={shownChange}
             check={check}
+            health={health}
             fileHref={fileHref}
             maxDepth={maxDepth}
             onDepth={onDepth}
@@ -729,6 +759,18 @@ function ResultPane({
       )}
     </section>
   );
+}
+
+/** Where the health check stands for the change on screen; a host without one says nothing. */
+function healthLane(
+  change: ChangeCandidate | undefined,
+  hostChecks: boolean,
+  canCheck: boolean,
+  state: HealthCheckState | undefined,
+): HealthLane {
+  if (!change || !hostChecks) return "not_a_change";
+  if (!canCheck) return "unsupported";
+  return state?.status ?? "not_run";
 }
 
 const EMPTY_WITH_LIST =
@@ -819,6 +861,7 @@ export function ImpactView({
     shownChange && adapter.checkHealth && canCheck
       ? { state: health.checks[shownChange.id], onRun: () => void health.run(shownChange.id) }
       : undefined;
+  const healthState = healthLane(shownChange, Boolean(adapter.checkHealth), canCheck, check?.state);
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
@@ -861,6 +904,7 @@ export function ImpactView({
         empty={empty}
         shownChange={shownChange}
         check={check}
+        health={healthState}
         fileHref={fileHref}
         maxDepth={maxDepth}
         onDepth={setMaxDepth}
