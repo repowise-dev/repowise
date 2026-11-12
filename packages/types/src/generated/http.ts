@@ -546,6 +546,9 @@ export interface ChangeAuthor {
 export interface ChangeBlastRadiusRequest {
   change_id: string;
   max_depth?: number;
+  with_graph?: boolean;
+  offset?: number;
+  limit?: number;
 }
 
 export interface ChangeBlastRadiusResponse {
@@ -566,6 +569,10 @@ export interface ChangeBlastRadiusResponse {
   change_id: string;
   changed_files: string[];
   changed_files_total: number;
+  transitive_total?: number;
+  next_offset?: number | null;
+  reach_summary?: ReachSummary | null;
+  missing_partners_total?: number | null;
   review?: ChangeReview | null;
   review_unavailable?: string | null;
 }
@@ -3754,6 +3761,16 @@ export interface QuietOwner {
   last_commit_at: string | null;
   files_owned: number;
   changing_files_owned: number;
+}
+
+/** Counts over every file a change reaches, not only the page sent. */
+export interface ReachSummary {
+  files: number;
+  tests: number;
+  direct: number;
+  modules: number;
+  max_depth: number;
+  imported: string[];
 }
 
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */

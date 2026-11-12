@@ -461,9 +461,35 @@ def change_revspec(repo_path: str, change_id: str) -> str | None:
         return None
     kind, _, ref = change_id.partition(":")
     if kind == "branch":
-        if ref not in {b.name for b in git_refs.list_branches(repo_path)}:
+        # One exact ref lookup: listing every branch to find this one takes
+        # seconds on a repository with thousands of them.
+        if not _branch_tip(repo_path, ref):
             raise UnknownChangeError(f"unknown branch {ref!r}")
         return f"{git_refs.default_base(repo_path)}...{ref}"
     if kind == "commit" and _SHA.match(ref) and git_refs.resolve(repo_path, ref):
         return ref
+    raise UnknownChangeError(f"unknown change {change_id!r}")
+
+
+def change_identity(repo_path: str, change_id: str) -> tuple[str, ...] | None:
+    """The commits a listed change is read from, so an answer about it can be
+    kept until one of them moves; ``None`` for uncommitted work, which moves
+    without a commit.
+
+    A branch is its tip and the default branch's tip, the two ends of what it
+    would bring; a commit is its sha. The checkout's ``HEAD`` joins both,
+    since a score ranks the change against the history behind it.
+    """
+    if change_id == WORKING_TREE_ID:
+        return None
+    head = git_refs.resolve(repo_path, "HEAD")
+    kind, _, ref = change_id.partition(":")
+    if kind == "branch":
+        tip = _branch_tip(repo_path, ref)
+        if not tip:
+            raise UnknownChangeError(f"unknown branch {ref!r}")
+        base = git_refs.resolve(repo_path, git_refs.default_base(repo_path))
+        return (change_id, tip, base, head)
+    if kind == "commit" and _SHA.match(ref):
+        return (change_id, head)
     raise UnknownChangeError(f"unknown change {change_id!r}")
