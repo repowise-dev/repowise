@@ -646,11 +646,14 @@ async def _lifespan(server: FastMCP):
         if ws_repo_alias and ws_config.get_repo(ws_repo_alias):
             ws_config.default_repo = ws_repo_alias
 
+        # With REPOWISE_DB_URL set, every member is read from that one store.
+        shared_db_url = get_configured_db_url()
         registry = RepoRegistry(
             workspace_root=ws_root,
             ws_config=ws_config,
             embedder_factory=_query_embedder,
             on_vector_store_error=lambda alias, exc: _mark_vector_store_unreadable(exc, alias),
+            db_url=shared_db_url,
         )
 
         # Eagerly load the default repo so tools work immediately. A store
@@ -659,9 +662,13 @@ async def _lifespan(server: FastMCP):
         # cancelled by hand or they outlive the loop.
         try:
             default_ctx = await registry.get_default()
-        except (OSError, OperationalError) as exc:
+        except (OSError, OperationalError, LookupError) as exc:
+            # LookupError: the shared store has no row for the default repo.
             store_error = _store_unavailable(
-                str(ws_root), str(ws_root), exc, reason="workspace_default_failed"
+                None if shared_db_url else str(ws_root),
+                str(ws_root),
+                exc,
+                reason="workspace_default_failed",
             )
             with contextlib.suppress(Exception):
                 await registry.close()
@@ -818,6 +825,14 @@ class _RepowiseMCP(FastMCP):
             from mcp.server.fastmcp.exceptions import ToolError
 
             from repowise.server.mcp_server._http_auth import call_denial
+
+            if _state._registry is not None:
+                # Repo checks read ids synchronously; a shared store's are read
+                # here. Unreadable, an id stays unknown and its check refuses.
+                try:
+                    await _state._registry.ensure_repo_ids()
+                except (OSError, OperationalError):
+                    _log.warning("repowise MCP: could not read repository ids", exc_info=True)
 
             denial = call_denial(principal, name, arguments)
             if denial is not None:

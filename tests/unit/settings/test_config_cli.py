@@ -107,6 +107,19 @@ def test_get_reports_the_env_source(repo, monkeypatch):
     assert (out["value"], out["source"]) == (True, "env")
 
 
+def test_a_url_password_is_masked_but_the_file_keeps_it(repo, monkeypatch):
+    _write_config(repo, {"openai": {"base_url": "https://me:hunter2@llm.example/v1"}})
+    monkeypatch.setenv("REPOWISE_PUBLIC_URL", "https://ci:s3cret@repowise.example")
+    out = _json(repo, "get", "openai.base_url")
+    assert out["value"] == "https://***@llm.example/v1"
+    assert _json(repo, "get", "REPOWISE_PUBLIC_URL")["value"] == "https://***@repowise.example"
+    for args in (("list", "--changed"), ("explain", "openai.base_url")):
+        for fmt in ((), ("--format", "json")):
+            text = _run(repo, *args, *fmt)[1]
+            assert "hunter2" not in text and "s3cret" not in text
+    assert _config(repo)["openai"]["base_url"] == "https://me:hunter2@llm.example/v1"
+
+
 def test_a_set_credential_is_listed_but_never_printed(repo, monkeypatch):
     monkeypatch.setenv("REPOWISE_GITLAB_TOKEN", "glpat-not-a-real-token")
     out = _json(repo, "get", "REPOWISE_GITLAB_TOKEN")
@@ -162,6 +175,16 @@ def test_set_and_reset_a_plain_file_setting(repo):
     assert _config(repo) == {"provider": "openai", "hooks": {"read_skeleton": True}}
     assert _json(repo, "reset", "hooks.read_skeleton")["after"]["value"] is False
     assert _config(repo) == {"provider": "openai"}
+
+
+def test_reset_and_set_work_beside_a_value_that_raises(repo):
+    # max_tokens is read with on_invalid="error": its bad value must not block the fix.
+    _write_config(repo, {"max_tokens": -3, "context_window": -1})
+    out = _json(repo, "reset", "max_tokens")
+    assert out["_exit"] == 0 and out["before"]["value"] == -3
+    assert out["before"]["problem"] == "max_tokens: must be more than 0"
+    assert _json(repo, "set", "model", "m")["_exit"] == 0
+    assert _config(repo) == {"context_window": -1, "model": "m"}
 
 
 def test_set_text_prints_change_effect_and_undo(repo):

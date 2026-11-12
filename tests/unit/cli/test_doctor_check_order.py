@@ -118,7 +118,9 @@ def env(monkeypatch) -> dict:
         core, "_autosync_hook_check", lambda _p: _check("<hook>", True, "", check_id="hook")
     )
     monkeypatch.setattr(core, "_attribution_notes_check", lambda _p: None)
-    monkeypatch.setattr(core, "_events_config_check", lambda _p: None)
+    monkeypatch.setattr(
+        core, "settings_rows", lambda _ctx: [_check("<settings>", True, "", check_id="settings")]
+    )
     monkeypatch.setattr(
         providers,
         "_provider_checks",
@@ -162,6 +164,7 @@ HEALTHY_ORDER = [
     "Git repository",
     ".repowise/ directory",
     "<hook>",
+    "<settings>",
     "Database",
     "state.json",
     "Store format",
@@ -232,12 +235,9 @@ def test_optional_rows_slot_in_after_the_hook(env, monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(
         core, "_attribution_notes_check", lambda _p: _check("<notes>", True, "", check_id="notes")
     )
-    monkeypatch.setattr(
-        core, "_events_config_check", lambda _p: _check("<events>", False, "", check_id="events")
-    )
     repo = asyncio.run(_build(tmp_path))
     names = [r[0] for r in _rows(repo)]
-    assert names[2:5] == ["<hook>", "<notes>", "<events>"]
+    assert names[2:5] == ["<hook>", "<notes>", "<settings>"]
 
 
 def test_unindexed_repo_rows(env, monkeypatch, tmp_path) -> None:
@@ -252,6 +252,7 @@ def test_unindexed_repo_rows(env, monkeypatch, tmp_path) -> None:
         "Git repository",
         ".repowise/ directory",
         "<hook>",
+        "<settings>",
         "Database",
         "state.json",
         "<provider>",

@@ -2131,7 +2131,7 @@ repowise doctor --workspace --repair
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--repair` | Rebuild FTS, re-embed missing pages, sync workspace drift, drop dead workspace entries. | off |
+| `--repair` | Reset `config.yaml` values repowise cannot use, rebuild FTS, re-embed missing pages, sync workspace drift, drop dead workspace entries. | off |
 | `--workspace` / `-w`, `--no-workspace` | Workspace table (dir exists, git repo, state.json ↔ config drift) then per-repo checks / single repo. | auto-detect |
 | `--format` | `table` or `json`. | `table` |
 | `--quick` | Skip the slow checks: starting the MCP server (`mcp-responds`) and reconciling the vector and full-text stores (`vector-store-sync`, `fts-index-sync`, `coordinator-drift`). Not with `--repair`. | off |
@@ -2141,6 +2141,15 @@ repowise doctor --workspace --repair
   `fail`), a `detail` and a `fix`: the exact command that resolves it, or `null`. Match on `id`; names can change.
   A `warn` never changes the exit code. With `--workspace`, ids repeat once per repo and `name` starts with the
   repo's alias.
+- **Settings** checks `.repowise/config.yaml` and the environment variables repowise reads against the settings
+  registry, resolving each value the way the code does. A clean repo shows one `settings` row. Otherwise each
+  finding is its own row, `setting-<key or variable>`: a value repowise cannot use fails, naming the key, the value,
+  what it accepts and the fix (`repowise config reset <key>`, or `repowise config set <key> <value>`); an invalid
+  variable fails with the same detail and no fix command; a key no setting reads, or a block written as one value,
+  warns with the closest real key; a key repowise has retired is an `ok` row saying it is safe to remove
+  (`--repair` removes it); a variable that overrides the file, or is set but loses to it, is an `ok` row
+  saying so. `--repair` resets invalid file values to their defaults, except `decisions.*` and the provider
+  selection, whose writers rewrite their whole block (run the row's fix for those); it never touches the environment.
 - **Index data** (`index-data`, also under `--quick`) warns when the index is incomplete or the next `repowise update`
   would redo stored work: git history written by older rules, health or security results from an older analyzer or
   scanner, pages from an older page renderer, or empty git, graph, symbol or health tables. The detail names each
