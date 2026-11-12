@@ -62,7 +62,9 @@ class PatchPlan:
     whole-module imports changed, so the names they pass on did).
     ``include_only`` are the names among ``names`` that only C/C++ edits
     touched: a file in another language reaches them only through a parsed
-    site that names them (the repo-wide name tiers), not through its text.
+    site that names them (the repo-wide name tiers), not through its text,
+    and only when the edit added or removed a symbol of that name
+    (``cross_names``).
     ``site_names`` are C/C++
     namespaces an edit opened or closed, which reach only a C/C++ file whose
     parsed sites name them.
@@ -79,6 +81,7 @@ class PatchPlan:
     module_imports_changed: tuple[str, ...] = ()
     include_only: frozenset[str] = frozenset()
     site_names: frozenset[str] = frozenset()
+    cross_names: frozenset[str] = frozenset()
 
 
 def is_inert(parsed: Any) -> bool:
@@ -460,4 +463,5 @@ def plan_patch(
         module_imports_changed=keys.module_imports_changed,
         include_only=keys.include_only,
         site_names=keys.site_names,
+        cross_names=keys.cross_names,
     )

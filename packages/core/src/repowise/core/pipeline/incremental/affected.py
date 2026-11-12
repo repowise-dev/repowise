@@ -446,15 +446,16 @@ def expand_scope(
     seeds = names | {"default"} if plan.importers_of else names
     names |= _with_aliases(seeds, parsed_files) - {"default"}
     # A C/C++ declaration reaches another language only through the repo-wide
-    # name tiers, which key on what a site names: such a file is reached when
-    # its parsed sites name it, not when its text spells it anywhere.
+    # name tiers, which key on what a site names and count a name's symbols:
+    # such a file is reached when its parsed sites name a symbol the edit
+    # added or removed, not when its text spells a name anywhere.
     include_only = (set(plan.include_only) - carried) & names
     c_files = {p: pf for p, pf in parsed_files.items() if pf.file_info.language in _C_LANGUAGES}
     others = {p: pf for p, pf in parsed_files.items() if p not in c_files}
     source_map = graph_builder._source_map
     scope |= _files_spelling(parsed_files, source_map, names - include_only, plan.stems, scope)
     scope |= _files_spelling(c_files, source_map, include_only, (), scope)
-    scope |= _files_naming(others, include_only)
+    scope |= _files_naming(others, include_only & plan.cross_names)
     scope |= _files_naming(parsed_files, plan.site_names)
     # An unedited file that resolves nothing has no edges to redo.
     scope = {path for path in scope if path in plan.scope or _resolvable(parsed_files[path])}

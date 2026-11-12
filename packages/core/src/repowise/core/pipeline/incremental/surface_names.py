@@ -45,6 +45,7 @@ class SurfaceKeys:
     module_imports_changed: tuple[str, ...] = ()
     include_only: frozenset[str] = frozenset()
     site_names: frozenset[str] = frozenset()
+    cross_names: frozenset[str] = frozenset()
 
 
 def _words(*values: Any) -> Iterator[str]:
@@ -197,6 +198,7 @@ def surface_keys(
     names: set[str] = set()
     include_names: set[str] = set()
     site_names: set[str] = set()
+    cross_names: set[str] = set()
     stems: set[str] = set()
     importers_of: set[str] = set()
     module_imports_changed: set[str] = set()
@@ -206,6 +208,7 @@ def surface_keys(
             namespaces = _namespace_names(before) ^ _namespace_names(after)
             site_names |= namespaces
             include_names |= edit_names - namespaces
+            cross_names |= _declared_names(before, after) - namespaces
         else:
             names |= edit_names
         if via_importers:
@@ -224,7 +227,22 @@ def surface_keys(
         module_imports_changed=tuple(sorted(module_imports_changed)),
         include_only=frozenset(include_names - names),
         site_names=frozenset(site_names - names - include_names),
+        cross_names=frozenset(cross_names - names),
     )
+
+
+def _declared_names(before: Any | None, after: Any | None) -> set[str]:
+    """Names of the symbols a C/C++ edit added, removed or re-filed (kind, owner, body).
+
+    Another language meets a C/C++ declaration only in the repo-wide name
+    tiers, which count the symbols of a name before keeping one of its own
+    language: an edit reaches it only by changing that count.
+    """
+    def entries(parsed: Any | None) -> set[tuple]:
+        symbols = parsed.symbols if parsed is not None else ()
+        return {(s.name, s.id, str(s.kind), s.parent_name, s.is_declaration) for s in symbols}
+
+    return {entry[0] for entry in entries(before) ^ entries(after)}
 
 
 def _namespace_names(parsed: Any | None) -> set[str]:
