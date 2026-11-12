@@ -355,17 +355,19 @@ class RepoRegistry:
             if lance_dir.exists() and self._on_vector_store_error is not None:
                 self._on_vector_store_error(ctx.alias, exc)
 
-        from repowise.core.providers.embedding.base import warm_query_embedder
+        from repowise.core.providers.embedding.base import is_semantic_embedder, warm_query_embedder
 
-        has_index = lance_dir.exists()
+        # A keyless store is never searched (``store_has_semantic_vectors``),
+        # so it is not worth opening.
+        has_index = lance_dir.exists() and is_semantic_embedder(embedder)
         # Overlaps the import and open below; awaited before ready is set.
         warmup = asyncio.ensure_future(warm_query_embedder(embedder if has_index else None))
         try:
             try:
-                await asyncio.to_thread(__import__, "lancedb")
-                from repowise.core.persistence.vector_store import LanceDBVectorStore
-
                 if has_index:
+                    await asyncio.to_thread(__import__, "lancedb")
+                    from repowise.core.persistence.vector_store import LanceDBVectorStore
+
                     vs = LanceDBVectorStore(str(lance_dir), embedder=embedder)
                     await vs._ensure_connected()
                     await warmup
