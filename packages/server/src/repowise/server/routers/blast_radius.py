@@ -136,7 +136,12 @@ async def _review_key(
 
 
 def _keep_review(answer: tuple[ChangeReview | None, str | None]) -> bool:
-    """A review is kept unless it failed or its tests waited on another change's selection."""
+    """A review is kept unless it failed or its tests waited on another change's selection.
+
+    A selection that ran past its budget is kept: the same change on the same
+    index runs past it again, and a reader should not wait the budget out on
+    every visit.
+    """
     review, _ = answer
     return review is not None and review.tests.status != "busy"
 

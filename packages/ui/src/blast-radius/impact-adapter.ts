@@ -43,8 +43,18 @@ export interface ImpactAdapter {
    * most relevant change; without them it falls back to picking files.
    */
   listChanges?(): Promise<ChangeCandidatesResponse>;
-  /** Analyze one change from {@link listChanges} by its id. */
-  analyzeChange?(input: { changeId: string; maxDepth: number }): Promise<ChangeBlastRadiusResponse>;
+  /**
+   * Analyze one change from {@link listChanges} by its id. A server that pages
+   * the reached files takes `offset` and `limit` for the next page, and
+   * `withGraph` for the edges the map is drawn from; pass them through.
+   */
+  analyzeChange?(input: {
+    changeId: string;
+    maxDepth: number;
+    offset?: number;
+    limit?: number;
+    withGraph?: boolean;
+  }): Promise<ChangeBlastRadiusResponse>;
 
   /**
    * Run `repowise health check` on a listed change. Needs a checkout, so a

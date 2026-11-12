@@ -38,8 +38,14 @@ export function ImpactTab({ repoId }: { repoId: string }) {
     analyze: ({ changedFiles, maxDepth }) =>
       analyzeBlastRadius(repoId, { changed_files: changedFiles, max_depth: maxDepth, with_graph: true }),
     listChanges: () => listBlastRadiusChanges(repoId),
-    analyzeChange: ({ changeId, maxDepth }) =>
-      analyzeChangeBlastRadius(repoId, { change_id: changeId, max_depth: maxDepth }),
+    analyzeChange: ({ changeId, maxDepth, offset, limit, withGraph }) =>
+      analyzeChangeBlastRadius(repoId, {
+        change_id: changeId,
+        max_depth: maxDepth,
+        ...(offset != null ? { offset } : {}),
+        ...(limit != null ? { limit } : {}),
+        ...(withGraph ? { with_graph: true } : {}),
+      }),
     checkHealth: (changeId) => checkChangeHealth(repoId, changeId),
     fileHref: (path) => fileEntityPath(`/repos/${repoId}`, path),
   }), [repoId]);
