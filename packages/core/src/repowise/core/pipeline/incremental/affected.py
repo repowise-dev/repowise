@@ -83,7 +83,12 @@ def changed_field_names(
             names.update(field for field in set(old) | set(new) if old.get(field, 0) != new.get(field, 0))
         facts_before = entry[3] if entry is not None else frozenset()
         facts_after = cpp_facts(parsed, source_map.get(path)) if parsed is not None else frozenset()
-        c_family = parsed is not None and parsed.file_info.language in ("c", "cpp")
+        # A removed file has no parse: its extension says whether it had facts.
+        c_family = (
+            parsed.file_info.language in ("c", "cpp")
+            if parsed is not None
+            else PurePosixPath(path).suffix.lower() in _C_EXTENSIONS
+        )
         if c_family and (facts_before is None or facts_after is None):
             return None
         names.update(name for name, _fact in (facts_before or frozenset()) ^ (facts_after or frozenset()))
