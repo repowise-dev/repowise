@@ -15,6 +15,7 @@ _INCLUDE_BLOCKS = (
     "callers",
     "callees",
     "references",
+    "references+",
     "metrics",
     "community",
     "decisions",
