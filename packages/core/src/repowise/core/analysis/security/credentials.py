@@ -69,6 +69,10 @@ _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 # consecutive digits are credential-shaped, so keep those values reportable.
 _UPPER_KEY_NAME_VALUE = re.compile(r"[A-Z_][A-Z0-9_]*")
 _LONG_DIGIT_RUN = re.compile(r"[0-9]{4,}")
+# Lookup/reference paths (``@group:reference:api``, ``secrets/db/password``):
+# lowercase word segments joined by ``:``, ``/``, ``.`` or ``@`` with no
+# digits or mixed-case entropy.
+_REFERENCE_PATH_VALUE = re.compile(r"[@/]?[a-z]+(?:[:/.@][a-z]+)+")
 
 
 def _is_own_name_value(value: str, name: str) -> bool:
@@ -126,6 +130,7 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         or _SCHEME_TEMPLATE_VALUE.search(value)
         or _REGEX_VALUE.search(value)
         or _is_plain_word(value)
+        or bool(_REFERENCE_PATH_VALUE.fullmatch(value))
         or value.startswith("--")
     )
 

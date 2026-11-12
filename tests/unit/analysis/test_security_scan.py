@@ -1513,6 +1513,8 @@ class TestSecretPrecision:
             ("src/auth.ts", 'const token = "Basic ${btoa(user)}";\n'),
             ("README.md", '--spring.datasource.password="DB PASSWORD"\n'),
             ("README.md", 'DB_PASSWORD="YOUR DB PASSWORD"\n'),
+            ("a.ts", 'const REF_API_KEY = "@group:reference:api";\n'),
+            ("config.py", 'DB_PASSWORD = "secrets/db/password"\n'),
         ],
     )
     def test_additional_placeholders_are_not_secrets(self, path: str, source: str) -> None:
