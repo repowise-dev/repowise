@@ -327,7 +327,7 @@ async def persist_result(
                 await upsert_repository(_ls, name=result.repo_name, local_path=str(repo_path))
             ).id
         ledger = ResumeLedger(sf, repo_id)
-        await ledger.mark_completed(ResumePhase.ANALYSIS)
+        await _stamp_analysis_checkpoint(ledger, result)
         if result.generated_pages:
             await ledger.mark_completed(ResumePhase.GENERATION)
 
@@ -340,6 +340,20 @@ async def persist_result(
     if progress is not None:
         progress.on_phase_done("persist")
     await publish_index_persistence(persisted_repo_id, repo_path)
+
+
+async def _stamp_analysis_checkpoint(ledger: Any, result: Any) -> None:
+    """Keep availability evidence when final persistence adds a newer job."""
+    from repowise.core.pipeline.resume import ResumePhase
+
+    previous = await ledger.get_completed_job(ResumePhase.ANALYSIS)
+    metadata = dict(previous.metadata) if previous is not None else {}
+    metadata["health_analysis_completed"] = (
+        getattr(result, "reused_health_available", False)
+        if getattr(result, "analysis_reused", False)
+        else getattr(result, "health_report", None) is not None
+    )
+    await ledger.mark_completed(ResumePhase.ANALYSIS, metadata=metadata)
 
 
 # ---------------------------------------------------------------------------

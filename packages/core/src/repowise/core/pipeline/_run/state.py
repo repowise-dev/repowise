@@ -60,6 +60,7 @@ class PipelineRun:
     # Analysis phase outputs. The ``gen_`` reports feed generation and the KG:
     # rehydrated on a resumed run, the freshly computed ones otherwise.
     skip_analysis: bool = False
+    reused_health_available: bool = False
     dead_code_report: Any = None
     health_report: Any = None
     decision_report: Any = None

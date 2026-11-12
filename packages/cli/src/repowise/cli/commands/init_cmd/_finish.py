@@ -209,7 +209,12 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
     provider = run.provider
     scope_embedder = run.scope_embedder
     unavailable = []
-    if getattr(result, "health_report", None) is None:
+    health_available = (
+        getattr(result, "reused_health_available", False)
+        if getattr(result, "analysis_reused", False)
+        else getattr(result, "health_report", None) is not None
+    )
+    if not health_available:
         unavailable.append("health")
     skipped = ["generation"] if run_mode == "fast" else []
     stamp_index_scope(

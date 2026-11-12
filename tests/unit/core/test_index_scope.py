@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.index_scope import file_page_scope, resolve_index_scope, stamp_index_scope
 
 
@@ -122,3 +124,145 @@ def test_scope_with_only_legacy_tips_reports_complete() -> None:
     assert compact["status"] == "complete"
     assert "degraded_analyses" not in compact
 
+
+
+@pytest.mark.parametrize(
+    ("reused", "persisted_health", "health_report", "unavailable"),
+    [
+        (True, True, None, []),
+        (True, False, None, ["health"]),
+        (False, False, object(), []),
+        (False, True, None, ["health"]),
+    ],
+)
+def test_init_scope_distinguishes_reused_health_from_fresh_failure(
+    reused, persisted_health, health_report, unavailable
+) -> None:
+    from repowise.cli.commands.init_cmd._finish import _stamp_scope
+
+    result = SimpleNamespace(
+        analysis_reused=reused,
+        reused_health_available=persisted_health,
+        health_report=health_report,
+        parsed_files=[],
+        generated_pages=None,
+    )
+    run = SimpleNamespace(
+        result=result,
+        opts=SimpleNamespace(run_mode="standard", test_run=False),
+        provider=None,
+        scope_embedder=None,
+        resolved_commit_limit=500,
+        max_file_pages=None,
+    )
+    # No previous state is required: generation can have been interrupted
+    # after the analysis checkpoint but before state.json was ever written.
+    state = {}
+    _stamp_scope(run, state, "deterministic")
+    assert state["index_scope"]["analysis"]["unavailable"] == unavailable
+
+
+def test_pipeline_result_carries_checkpoint_health_availability(tmp_path) -> None:
+    from dataclasses import MISSING, fields
+
+    from repowise.core.pipeline._run.state import PipelineRun
+    from repowise.core.pipeline.orchestrator import _build_result
+
+    required = {
+        f.name: None
+        for f in fields(PipelineRun)
+        if f.default is MISSING and f.default_factory is MISSING
+    }
+    required.update(repo_path=tmp_path, start=0.0)
+    run = PipelineRun(**required)
+    run.skip_analysis = True
+    run.reused_health_available = True
+    result = _build_result(run)
+    assert result.analysis_reused is True
+    assert result.reused_health_available is True
+    assert result.health_report is None
+
+
+@pytest.mark.parametrize("available", [True, False])
+async def test_reused_analysis_reads_health_status_without_rehydrating_report(available) -> None:
+    from unittest.mock import AsyncMock
+
+    from repowise.core.pipeline._run.analysis import _rehydrate_analysis
+
+    controller = SimpleNamespace(
+        can_skip=AsyncMock(return_value=True),
+        rehydrate_analysis=AsyncMock(return_value=(object(), object())),
+        has_persisted_health=AsyncMock(return_value=available),
+        has_completed_decision_extraction=AsyncMock(return_value=True),
+    )
+    run = SimpleNamespace(resume_controller=controller, progress=None, health_report=None)
+    assert await _rehydrate_analysis(run) is True
+    assert run.reused_health_available is available
+    assert run.health_report is None
+
+
+async def test_health_checkpoint_read_failure_falls_back_to_recomputation() -> None:
+    from unittest.mock import AsyncMock
+
+    from repowise.core.pipeline._run.analysis import _rehydrate_analysis
+
+    controller = SimpleNamespace(
+        can_skip=AsyncMock(return_value=True),
+        rehydrate_analysis=AsyncMock(return_value=(object(), object())),
+        has_persisted_health=AsyncMock(side_effect=RuntimeError("database unavailable")),
+    )
+    run = SimpleNamespace(resume_controller=controller, progress=None, health_report=None)
+    assert await _rehydrate_analysis(run) is False
+
+
+async def test_legacy_health_evidence_is_recomputed_instead_of_assumed_healthy() -> None:
+    from unittest.mock import AsyncMock
+
+    from repowise.core.pipeline._run.analysis import _rehydrate_analysis
+
+    controller = SimpleNamespace(
+        can_skip=AsyncMock(return_value=True),
+        rehydrate_analysis=AsyncMock(return_value=(object(), object())),
+        has_persisted_health=AsyncMock(return_value=None),
+    )
+    run = SimpleNamespace(resume_controller=controller, progress=None, health_report=None)
+    assert await _rehydrate_analysis(run) is False
+
+
+def test_checkpoint_fields_preserve_pipeline_result_positional_prefix() -> None:
+    from dataclasses import fields
+
+    from repowise.core.pipeline.orchestrator import PipelineResult
+
+    names = [f.name for f in fields(PipelineResult)]
+    assert names[names.index("health_report") + 1] == "doc_drift_report"
+    assert names[-2:] == ["analysis_reused", "reused_health_available"]
+
+
+@pytest.mark.parametrize(
+    ("reused", "persisted_health", "report", "expected"),
+    [(True, True, None, True), (True, False, None, False),
+     (False, True, None, False), (False, False, object(), True)],
+)
+async def test_final_persistence_preserves_analysis_availability(
+    reused, persisted_health, report, expected
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from repowise.cli.commands.init_cmd.persistence import _stamp_analysis_checkpoint
+    from repowise.core.pipeline.resume import ResumePhase
+
+    previous = {"decision_extraction_completed": True, "health_analysis_completed": True}
+    ledger = SimpleNamespace(
+        get_completed_job=AsyncMock(return_value=SimpleNamespace(metadata=previous)),
+        mark_completed=AsyncMock(),
+    )
+    result = SimpleNamespace(
+        analysis_reused=reused, reused_health_available=persisted_health, health_report=report
+    )
+    await _stamp_analysis_checkpoint(ledger, result)
+    ledger.mark_completed.assert_awaited_once_with(
+        ResumePhase.ANALYSIS,
+        metadata={"decision_extraction_completed": True, "health_analysis_completed": expected},
+    )
+    assert previous["health_analysis_completed"] is True

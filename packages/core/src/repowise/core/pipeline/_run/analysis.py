@@ -62,6 +62,12 @@ async def _rehydrate_analysis(run: PipelineRun) -> bool:
             run.gen_dead_code_report,
             run.gen_decision_report,
         ) = await controller.rehydrate_analysis()
+        health_available = await controller.has_persisted_health()
+        if health_available is None:
+            # Older checkpoints cannot distinguish fresh health from stale rows
+            # left behind by a failed pass. Recompute once to record the status.
+            return False
+        run.reused_health_available = health_available
         if run.progress:
             run.progress.on_message("info", "  ↳ Resuming — reusing persisted analysis")
     except Exception as exc:
