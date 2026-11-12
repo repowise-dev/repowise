@@ -376,9 +376,10 @@ class MetricsMixin:
             reuse = key and self._reusable_communities(
                 "file", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
             )
-            if reuse:
+            extra = reuse[0].extra if reuse else None
+            if isinstance(extra, tuple) and len(extra) == 2:
                 self._community_cache = dict(reuse[0].assignment)
-                self._community_info_cache, self._community_algo = reuse[0].extra
+                self._community_info_cache, self._community_algo = extra
                 return self._community_cache
             assignment, info, algo = detect_file_communities(self._graph, repo_name=repo_name)
             self._community_cache = assignment

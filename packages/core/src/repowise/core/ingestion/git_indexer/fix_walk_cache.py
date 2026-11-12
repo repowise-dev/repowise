@@ -44,6 +44,24 @@ def _code_fingerprint() -> str:
     return digest.hexdigest()
 
 
+def _rows_ok(rows: Any) -> bool:
+    return isinstance(rows, list) and all(
+        isinstance(row, list) and len(row) == 2 and isinstance(row[0], str) for row in rows
+    )
+
+
+def _well_formed(record: Any) -> bool:
+    """Whether *record* has the shape the replay reads; a cache with any other is dropped."""
+    if isinstance(record, dict):
+        return (
+            isinstance(record.get("t"), int)
+            and isinstance(record.get("s"), str)
+            and isinstance(record.get("b"), str)
+            and _rows_ok(record.get("r"))
+        )
+    return _rows_ok(record)
+
+
 class FixWalkCache:
     """``sha -> record`` for the commits of the last fix walk.
 
@@ -84,6 +102,8 @@ class FixWalkCache:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if data.get("version") == _CACHE_VERSION and data.get("key") == key:
                     records = dict(data["records"])
+                    if not all(map(_well_formed, records.values())):
+                        records = {}
             except (OSError, ValueError, TypeError, AttributeError, KeyError) as exc:
                 logger.debug("fix_walk_cache_read_failed", error=str(exc))
         return cls(path if writable else None, key, records)

@@ -279,3 +279,21 @@ def test_a_full_index_seeds_the_update_caches(tmp_path) -> None:
     GitIndexer(root)._repo_wide_passes({"a.py", "b.py", "c.py", "test_a.py"}, None, None)
     assert FixShapeCache.load(root / ".repowise").shapes
     assert (root / ".repowise" / "fix_walk_cache.json").is_file()
+
+
+def test_a_misshapen_fix_walk_cache_is_dropped(tmp_path) -> None:
+    import json
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = _build_repo(root)
+    prior_defects.collect_fix_commits(
+        repo, {"a.py"}, as_of_ts=None, walk_cache=FixWalkCache.load(tmp_path, repo)
+    )
+    path = tmp_path / "fix_walk_cache.json"
+    data = json.loads(path.read_text())
+    sha = next(s for s, r in data["records"].items() if isinstance(r, dict))
+    del data["records"][sha]["t"]
+    path.write_text(json.dumps(data))
+    assert FixWalkCache.load(tmp_path, repo).records == {}
+    repo.close()

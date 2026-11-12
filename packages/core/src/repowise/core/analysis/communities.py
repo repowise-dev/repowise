@@ -551,15 +551,19 @@ def community_code_fingerprint() -> str:
     A stored partition is only reused under the same fingerprint, so an upgrade
     that changes the algorithm, or the backend it falls to, detects afresh.
     """
-    import importlib.util
+    from importlib.metadata import PackageNotFoundError, version
 
-    from repowise.core.analysis import _leiden
+    from repowise.core.analysis import _leiden, kg_curation
 
     digest = hashlib.sha256()
-    for module_file in (__file__, _leiden.__file__):
+    # kg_curation holds the label vocabulary the community info is named with.
+    for module_file in (__file__, _leiden.__file__, kg_curation.__file__):
         digest.update(Path(module_file).read_bytes())
     digest.update(nx.__version__.encode())
-    digest.update(str(importlib.util.find_spec("graspologic_native") is not None).encode())
+    try:
+        digest.update(version("graspologic-native").encode())
+    except PackageNotFoundError:
+        digest.update(b"no leiden")
     return digest.hexdigest()
 
 
