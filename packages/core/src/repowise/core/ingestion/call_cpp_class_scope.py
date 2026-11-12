@@ -144,11 +144,15 @@ class CppClassScopeMixin:
             path = self._symbol_paths_by_id.get(class_id, "")
             parsed = self._parsed_files.get(path)
             symbols = parsed.symbols if parsed else ()
-            lines = self._text_of(path).splitlines() if symbols else []
-            name = self._symbols_by_id[class_id].name
-            found = self._cpp_template_names[class_id] = template_parameters(
-                lines, symbols, class_id, name
-            )
+            found = frozenset()
+            if any(s.id == class_id for s in symbols):
+                found = template_parameters(
+                    self._text_of(path).splitlines(),
+                    symbols,
+                    class_id,
+                    self._symbols_by_id[class_id].name,
+                )
+            self._cpp_template_names[class_id] = found
         return found
 
 

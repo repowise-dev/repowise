@@ -65,3 +65,16 @@ def test_other_languages_have_no_facts(tmp_path: Path) -> None:
     parsed = ASTParser().parse_file(fi, (tmp_path / "m.py").read_bytes())
     assert cpp_cross_file_facts(parsed, "def f():\n    return 1\n") is None
     assert changed_fact_names(None, frozenset()) is None
+
+
+def test_template_parameters_of_an_unknown_scope_are_empty(tmp_path: Path) -> None:
+    """A nested scope with no symbol of its own (``Outer::Inner`` under a macro) reads as no template."""
+    from repowise.core.ingestion.call_resolver import CallResolver
+
+    (tmp_path / "box.h").write_text(_HEADER)
+    parser = ASTParser()
+    parsed = {fi.path: parser.parse_file(fi, Path(fi.abs_path).read_bytes()) for fi in FileTraverser(tmp_path).traverse()}
+    resolver = CallResolver(parsed, {path: set() for path in parsed}, repo_path=str(tmp_path))
+
+    assert resolver._cpp_template_parameters("box.h::Missing") == frozenset()
+    assert resolver._cpp_template_parameters("box.h::Box") == frozenset({"T"})
