@@ -353,9 +353,10 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
     ``last_sync_commit`` without re-running the persistence that stamps the
     ``repositories`` row, which the server reads for the indexed commit and
     the "indexed at" time. Stamps ``head_commit`` only on drift, and advances
-    ``updated_at`` on drift or once per UTC day: every surface reads it at
-    day resolution, so a repeat check the same day leaves the store
-    untouched. Creates a missing row in an existing store (a
+    ``updated_at`` on drift or once per UTC day, so a repeat check the same
+    day leaves the store untouched. The index age and the editor-file stamp
+    read it in days; a surface showing the full time shows the first check
+    of the day. Creates a missing row in an existing store (a
     configured database counts as existing); a no-op when no store exists.
     The single head-commit stamper for the CLI and workspace update paths.
     """
