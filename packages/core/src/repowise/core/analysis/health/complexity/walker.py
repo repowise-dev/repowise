@@ -57,6 +57,7 @@ from .ast_utils import (
     _find_function_entry_name,
     _nested_function_nodes,
     _parameter_list,
+    function_start_line,
     unit_extent,
 )
 from .class_analysis import _collect_classes
@@ -197,9 +198,7 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
-    markup = markup_rows(
-        tree.root_node, grammar_tag, source, scan.literals, scan.arms, scan.chains
-    )
+    markup = markup_rows(tree.root_node, grammar_tag, source, scan.literals, scan.arms, scan.chains)
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
     fn_nodes = _collect_function_nodes(tree.root_node, lmap)
@@ -236,7 +235,7 @@ def walk_file(
         dispatch = dispatch_points(body, lmap)
         fc = FunctionComplexity(
             name=name,
-            start_line=fn_node.start_point[0] + 1,
+            start_line=function_start_line(fn_node),
             end_line=fn_node.end_point[0] + 1,
             ccn=ccn,
             max_nesting=max_nest,
@@ -277,9 +276,7 @@ def walk_file(
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc
 
-    classes = _collect_classes(
-        scan.class_nodes, lmap, source, fc_by_node_id, scan.lines, language
-    )
+    classes = _collect_classes(scan.class_nodes, lmap, source, fc_by_node_id, scan.lines, language)
     perf_hits, io_boundary_names, perf_fn_facts = _collect_perf_hits(
         tree.root_node, language, lmap, scan.io_names
     )
@@ -323,9 +320,7 @@ def _direct_units(measured: list[Node], units: list[Node]) -> dict[int, list[Nod
     return holders
 
 
-def _unit_rows(
-    lines: CodeLineIndex, body: Node, units: list[Node] | None
-) -> list[tuple[int, int]]:
+def _unit_rows(lines: CodeLineIndex, body: Node, units: list[Node] | None) -> list[tuple[int, int]]:
     """The rows of *body* only its nested *units* cover; ``[]`` without any.
 
     A unit covers its binding too (:func:`unit_extent`): the ``const f =`` and
