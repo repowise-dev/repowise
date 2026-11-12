@@ -107,7 +107,7 @@ Exclusions:
   --skip-infra           Skip infrastructure files (Dockerfile, Makefile, Terraform, shell)
 
 Git:
-  --commit-limit N       Max commits to analyze per file (default: 5000, max: 10000)
+  --commit-limit N       Newest commits to analyze (default: 5000; above the commit count reads the full history)
   --follow-renames       Track files across renames (slower but more accurate history)
 
 Editor integration:

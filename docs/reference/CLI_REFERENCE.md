@@ -124,7 +124,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--skip-infra` | No docs for infra (Dockerfiles, Makefiles, Terraform). | off |
 | `--include-submodules` | Include git submodules. | excluded |
 | `--coverage-report` | LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, Salesforce Apex JSON. Repeatable. Feeds code health only; every code file is documented regardless. | auto-discovered |
-| `--commit-limit` | Max commits per file and for co-change; cap 10000. Saved. | `5000` |
+| `--commit-limit` | Newest commits read for file history and co-change. Above the commit count reads the full history. Saved. | `5000` |
 | `--follow-renames` | Track renames via `git log --follow` (slower, more accurate). Saved. | off |
 | `--resume` | Continue a previous run; see notes. | off |
 | `--force` | Regenerate all pages; see notes. | off |
@@ -512,7 +512,7 @@ Plus the [shared options](#shared-options-ask-context-symbol-why).
 
 **`--include` values:** `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`,
 `community`, `decisions`, `health`, `skeleton`, `skeleton+`, `doc_drift`, `symbols`, `changes`, `provenance`,
-`suspects`, `files` (on a directory: every file and its tests).
+`suspects`, `files` (on a directory: every file and its tests), `facts` (a symbol's fact row and tests).
 
 - Card: title, summary, layer, signatures with lines, hotspot and bug-fix history, doc freshness, skeleton shape.
   `--include skeleton` adds the file body-elided and line-verified; `--full` only then carries one.
@@ -602,6 +602,7 @@ repowise status --workspace --format json
 | `--format` | `table` or `json`. | `table` |
 
 - **Workspace:** a **Docs** column (page count) and per-repo **Docs status** with skip reasons (e.g. `cost gate declined`) and fix command.
+- **Single repo:** an **Update lock** row (JSON `stuck_update_lock`) when a live update has held the lock for more than 30 minutes.
 - **Single repo:** a **Next** block: count worth doing this week (or quarter if quiet) and the first; JSON `next_actions`; `repowise next` lists them.
 
 ---
@@ -1483,7 +1484,7 @@ repowise check origin/main..HEAD --sarif-file check.sarif
 
 ### `repowise ci-summary DIR`
 
-Combines the gates a CI job ran into one verdict table, appended to the GitHub job summary, and prints the combined verdict (`pass`, `warn` or `fail`). Each gate run with `--format github` while `REPOWISE_GATE_SUMMARY_DIR` names a directory leaves its result there, and each `--gate NAME=EXIT_CODE` reconciles one with its exit code; a gate that left nothing reads as could not evaluate. `--comment-file` writes a pull-request comment that also lists each gate's findings, `--previous` (the comment it replaces) adds how many findings were resolved since, and `--comment-key` keeps one comment per working directory.
+Combines the gates a CI job ran into one verdict table, appended to the GitHub job summary, and prints the combined verdict (`pass`, `warn` or `fail`). Each gate run with `--format github` or `--format markdown` while `REPOWISE_GATE_SUMMARY_DIR` names a directory leaves its result there, and each `--gate NAME=EXIT_CODE` reconciles one with its exit code; a gate that left nothing reads as could not evaluate. `--comment-file` writes a pull-request comment that also lists each gate's findings, `--previous` (the comment it replaces) adds how many findings were resolved since, and `--comment-key` keeps one comment per working directory. In a GitLab merge request pipeline, `--gitlab-note` posts that comment as one merge-request note, edited in place by later pipelines, using `REPOWISE_GITLAB_TOKEN`, `CI_API_V4_URL`, `CI_PROJECT_ID` and `CI_MERGE_REQUEST_IID`; elsewhere it posts nothing and says so on stderr.
 
 ```bash
 repowise ci-summary DIR --gate NAME=EXIT_CODE... [--comment-file FILE] [--previous FILE] [--comment-key KEY]
@@ -2146,6 +2147,10 @@ repowise doctor --workspace --repair
   problem and the row's fix is one command: `repowise init` when any table set is empty (an update at an unchanged
   HEAD does not refill them), `repowise update` when model-written pages need re-rendering, otherwise
   `repowise update --index-only` (no model calls).
+- **Index freshness** (`index-freshness`) compares `last_sync_commit` with HEAD, read from the ref files: a warn
+  with `repowise update` when HEAD has moved on, or with `repowise update --since <ref>` when the commit is not in
+  the repository's history. **Update lock** (`update-lock`) appears only when a live `repowise update` has held
+  `.repowise/.update.lock` for more than 30 minutes, and says what `update` says about it; `status` shows it too.
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.

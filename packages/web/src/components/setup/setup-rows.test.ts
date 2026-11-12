@@ -73,6 +73,44 @@ describe("deriveSetup", () => {
     expect(view.doneCount).toBe(1);
   });
 
+  it("offers --since when the indexed commit is no longer in the history", () => {
+    const s = setupFixture();
+    const index = { ...s.index, state: "behind" as const, live_head: "9999999aaa", indexed_commit_missing: true };
+    const row = deriveSetup({ ...s, index }, OPTS).attention[0]!;
+    expect(row.id).toBe("index-behind");
+    expect(row.command).toBe("repowise update --since <ref>");
+    expect(row.detail).toEqual({ key: "index.detailMissing", values: { indexed: "abcdef1" } });
+    expect(row.prompt!.command).toBe("repowise update --since <ref>");
+    expect(row.prompt!.state).toContain("abcdef1, which is no longer in this repository's history");
+  });
+
+  it("shows an index behind HEAD once when doctor reports it too", () => {
+    const s = setupFixture();
+    const view = deriveSetup(
+      {
+        ...s,
+        index: { ...s.index, state: "behind", live_head: "9999999aaa" },
+        checks: [
+          {
+            id: "index-freshness",
+            name: "Index freshness",
+            level: "warn",
+            detail: "indexed at 1234567a; HEAD has moved on to 9999999a",
+            fix: "repowise update",
+          },
+          {
+            id: "update-lock",
+            name: "Update lock",
+            level: "warn",
+            detail: "An update (pid 42) has held the lock for 9.0h.",
+          },
+        ],
+      },
+      OPTS,
+    );
+    expect(ids(view.attention)).toEqual(["index-behind", "check-update-lock"]);
+  });
+
   it("names the wrong-folder case for an agent with no call a day after it connected", () => {
     const s = setupFixture();
     const old = { ...s, index: { ...s.index, indexed_at: "2026-10-23T12:00:00Z" } };
