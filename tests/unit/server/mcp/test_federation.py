@@ -357,3 +357,33 @@ async def test_search_all_says_a_failed_repos_lines_are_missing(workspace_mcp, m
     assert [f["repo"] for f in result["repos_failed"]] == ["backend"]
     assert result["complete"] is False
     assert result["reasons"] == ["the repos in repos_failed were not read"]
+
+
+async def test_search_all_names_a_failed_repo_when_no_other_has_lines(workspace_mcp, monkeypatch):  # noqa: F811
+    from repowise.server.mcp_server import _line_hits, search_codebase
+
+    async def backend_breaks(ctx, *args):
+        if ctx.alias == "backend":
+            raise OSError("disk gone")
+        return None
+
+    monkeypatch.setattr(_line_hits, "_repo_line_rows", backend_breaks)
+
+    result = await search_codebase("zanzibarflux", repo="all")
+
+    assert [f["repo"] for f in result["repos_failed"]] == ["backend"]
+    assert "lines" not in result
+
+
+def test_a_shared_name_counts_only_its_own_repos_results_as_shown(tmp_path):
+    from repowise.server.mcp_server import _line_hits
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/util.py").write_text("def probe():\n    pass\n", encoding="utf-8")
+    node = SimpleNamespace(file_path="src/util.py", start_line=1, name="probe", qualified_name="probe", node_id="src/util.py::probe")
+    response = {"results": [{"type": "symbol", "repo": "frontend", "path": "src/util.py", "start_line": 1}]}
+
+    rows, _ = _line_hits._ambiguous_rows(tmp_path, [node], response, "backend")
+    assert [(r["path"], r["line"]) for r in rows] == [("src/util.py", 1)]
+    rows, _ = _line_hits._ambiguous_rows(tmp_path, [node], response, "frontend")
+    assert rows == []

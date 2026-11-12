@@ -641,10 +641,11 @@ async def _served_rows(
         served = await one(ctx)
         return None if served is None else (ctx, served)
     answered = await fed.run(one)
-    served = _across_repos(answered)
+    served = _across_repos(answered, tag=fed.multi)
+    # Before the early return: a repo that failed here is named even when no other had lines.
+    fed.annotate(response, served[0] if served else ())
     if served is None:
         return None
-    fed.annotate(response, served[0])
     if response.get("repos_failed"):
         served[1].append("the repos in repos_failed were not read")
     return answered[0][0], served
@@ -669,21 +670,24 @@ async def _repo_line_rows(
         sets = None if len(nodes) > MAX_SYMBOLS else [
             await reference_edit_set(session, repository.id, root, n) for n in nodes
         ]
-    served = await _line_rows(root, nodes, sets, literal, response)
+    served = await _line_rows(root, nodes, sets, literal, response, ctx.alias)
     return None if served is None else (*served, not sets)
 
 
 def _across_repos(
     answered: list[tuple[Any, tuple[list[dict[str, Any]], list[str], bool] | None]],
+    *,
+    tag: bool,
 ) -> tuple[list[dict[str, Any]], list[str], bool] | None:
-    """Every repo's rows, each naming its ``repo``; ``None`` when no repo had any to read."""
+    """Every repo's rows, each naming its ``repo`` when *tag* (more than one repo,
+    as ``results`` does); ``None`` when no repo had any to read."""
     served = [(ctx.alias, s) for ctx, s in answered if s is not None]
     if not served:
         return None
     rows: list[dict[str, Any]] = []
     reasons: list[str] = []
     for alias, (repo_rows, repo_reasons, _scan) in served:
-        rows += [{"repo": alias, **r} for r in repo_rows]
+        rows += [{"repo": alias, **r} if tag else r for r in repo_rows]
         reasons += [r for r in repo_reasons if r not in reasons]
     return rows, reasons, all(scan for _a, (_r, _rs, scan) in served)
 
@@ -694,11 +698,12 @@ async def _line_rows(
     sets: list[dict[str, Any]] | None,
     literal: tuple[str, bool] | None,
     response: dict,
+    alias: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]] | None:
     """``(rows, reasons)`` from the edit sets, a shared name's definitions, or a
     literal scan; ``None`` when there is nothing to read."""
     if sets is None:
-        return await asyncio.to_thread(_ambiguous_rows, root, nodes, response)
+        return await asyncio.to_thread(_ambiguous_rows, root, nodes, response, alias)
     if sets:
         return _merge(sets)
     if literal:
@@ -707,16 +712,18 @@ async def _line_rows(
 
 
 def _ambiguous_rows(
-    root: Path, nodes: list[GraphNode], response: dict
+    root: Path, nodes: list[GraphNode], response: dict, alias: str | None = None
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Definition rows for the *nodes* ``results`` does not show, and the reason saying so.
 
-    Between them ``results`` and these rows name every definition, once.
+    Between them ``results`` and these rows name every definition, once. In a
+    workspace search only *alias*'s results count: a row naming another repo
+    is another file.
     """
     shown = {
         (r.get("path") or r.get("file"), r.get("start_line"))
         for r in response.get("results") or ()
-        if isinstance(r, dict) and r.get("type") == "symbol"
+        if isinstance(r, dict) and r.get("type") == "symbol" and r.get("repo", alias) == alias
     }
     rest = [n for n in nodes if (n.file_path, n.start_line) not in shown]
     reason = (
