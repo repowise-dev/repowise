@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Collection, Iterable
 from dataclasses import replace
+from pathlib import PurePosixPath
 from typing import Any
 
 from ._common import logger
@@ -240,14 +241,16 @@ def _import_lookup(
 ) -> Callable[[str], list[tuple[str, ...]]]:
     """``targets_of(path)``: each import's targets now, or as last saved for a deleted file.
 
-    Resolves against a copy of the graph, after the same warmups a build
-    runs, so nothing here touches the graph the build will patch.
+    Resolves against a copy of the graph, after the warmup a build runs for
+    the file's language, so nothing here touches the graph the build will
+    patch. Both are made on first need: a patch that re-resolves no import
+    pays for neither.
     """
     from repowise.core.ingestion.graph_warmups import run_warmups
 
     parsed_files = graph_builder._parsed_files
-    ctx = graph_builder.resolver_context(graph_builder._graph.copy())
-    run_warmups(parsed_files, ctx)
+    contexts: list[Any] = []
+    warmed: set[str] = set()
     fresh: dict[str, list[tuple[str, ...]]] = {}
 
     def targets_of(path: str) -> list[tuple[str, ...]]:
@@ -255,7 +258,13 @@ def _import_lookup(
         if parsed is None:
             return [found for _r, _s, found in resolutions.get(path, (None, []))[1]]
         if path not in fresh:
-            fresh[path] = _resolve_unchanged_imports(path, parsed, ctx)
+            if not contexts:
+                contexts.append(graph_builder.resolver_context(graph_builder._graph.copy()))
+            language = parsed.file_info.language
+            if language not in warmed:
+                warmed.add(language)
+                run_warmups({path: parsed}, contexts[0])
+            fresh[path] = _resolve_unchanged_imports(path, parsed, contexts[0])
         return fresh[path]
 
     return targets_of
@@ -287,11 +296,24 @@ def _rerouted_files(
     edited: Collection[str],
     resolutions: dict[str, tuple],
 ) -> tuple[set[str], set[str]]:
-    """Unedited files whose imports now land elsewhere, and the names they carry."""
+    """Unedited files whose imports now land elsewhere, and the names they carry.
+
+    A C/C++ include resolves from the file set and the build configuration
+    alone, and only ever to a file of its own stem: it reroutes only when a
+    file of that stem was added or removed.
+    """
+    from repowise.core.ingestion.graph._stem import stem_key
+
+    moved = {p for p in parsed_files if p not in resolutions} | {p for p in resolutions if p not in parsed_files}
+    moved_stems = {stem_key(p) for p in moved}
     rerouted: set[str] = set()
     names: set[str] = set()
     for path, parsed in parsed_files.items():
         if path in edited or not parsed.imports:
+            continue
+        if parsed.file_info.language in ("c", "cpp") and not any(
+            PurePosixPath(imp.module_path).stem.lower() in moved_stems for imp in parsed.imports
+        ):
             continue
         saved = resolutions[path][1]
         for imp, now, (_resolved, _sources, before) in zip(
