@@ -111,9 +111,12 @@ def test_the_graph_build_leaves_the_collector_as_it_found_it(tmp_path: Path) -> 
         gc.enable()
 
 
+@pytest.mark.parametrize(("nested", "builds"), [(False, 1), (True, 2)])
 def test_the_call_resolver_reuses_the_warmed_cpp_index(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested: bool, builds: int
 ) -> None:
+    # A build that indexes nested repositories walks them for CMake files; the
+    # call resolver's own index does not, so it keeps building that one.
     from repowise.core.ingestion.resolvers import cpp_workspace
 
     (tmp_path / "CMakeLists.txt").write_text("add_library(core a.cpp b.cpp)\n")
@@ -128,7 +131,9 @@ def test_the_call_resolver_reuses_the_warmed_cpp_index(
 
     monkeypatch.setattr(cpp_workspace, "build_cpp_workspace_index", counting)
 
-    graph = build_repo_graph(tmp_path, [], collect_sources=True, read_only=True)[2].graph()
+    graph = build_repo_graph(
+        tmp_path, [], collect_sources=True, read_only=True, include_nested_repos=nested
+    )[2].graph()
 
-    assert len(built) == 1
+    assert len(built) == builds
     assert graph.has_edge("a.cpp::run", "b.cpp::helper")

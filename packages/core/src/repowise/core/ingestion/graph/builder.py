@@ -648,12 +648,15 @@ class GraphBuilder(
             self._resolve_go_interface_satisfaction(progress=progress)
 
         # --- Phase 3: Resolve symbol-level calls ---
+        # The call resolver's own C/C++ index walks the tree pruning nested
+        # git repositories; the warmup's is the same index only when this
+        # build prunes them too.
         self._resolve_calls(
             import_targets,
             progress=progress,
             scope=scope_set,
             registrations=run_global,
-            cpp_index=getattr(ctx, CPP_INDEX_KEY, None),
+            cpp_index=getattr(ctx, CPP_INDEX_KEY, None) if self._prune_nested_git else None,
         )
 
         # --- Pascal property -> the read/write methods it runs ---
