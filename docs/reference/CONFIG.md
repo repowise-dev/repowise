@@ -80,12 +80,13 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `embedder` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `REPOWISE_EMBEDDER` (wins over the file) |
 | `embedding_model` | unset |  | The embedding model id. Unset uses the embedder's default. | `REPOWISE_EMBEDDING_MODEL` (wins over the file) |
 | `exclude_patterns` | `[]` |  | Extra paths to skip, as gitignore patterns. |  |
-| `commit_limit` | `5000` | 1-10000 | How many of the newest commits are analysed. Above 10000 reads as 10000. |  |
+| `commit_limit` | `5000` | >= 1 | How many of the newest commits are analysed. |  |
 | `follow_renames` | `false` |  | Follow files across renames in git history. |  |
 | `sql_dialect` | unset |  | SQL dialect for parsing .sql files (a sqlglot name such as postgres). |  |
 | `forges.hosts` | `{}` |  | Which forge a self-hosted git host is: host to github, gitlab, azure, bitbucket or generic. |  |
 | `editor_setup` | `true` |  | Let update keep agent and editor files current. init --no-editor-setup writes false, which leaves them alone. |  |
 | `changes.outcome_fix_days` | `30` | 1-365 | Days after a change in which fix commits to its files are counted. |  |
+| `managed_checkout` | `false` |  | This checkout is a clone the server owns: before each server sync it fetches the tracked branch and fast-forwards to it. Leave off for a working tree you edit. |  |
 <!-- END GENERATED settings:config-yaml -->
 
 More on [`commit_limit`](#commit_limit), [`reasoning`](#reasoning),
@@ -95,7 +96,9 @@ More on [`commit_limit`](#commit_limit), [`reasoning`](#reasoning),
 [Exclude patterns](#exclude-patterns), `embedder` in
 [Embeddings](#embeddings-for-semantic-search), `forges.hosts` in
 [GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts), and
-`changes.outcome_fix_days` under [`repowise changes`](CLI_REFERENCE.md#repowise-changes).
+`changes.outcome_fix_days` under [`repowise changes`](CLI_REFERENCE.md#repowise-changes),
+and `managed_checkout` in
+[AUTO_SYNC.md](../scale/AUTO_SYNC.md#7-server-owned-clones).
 
 Blocks, each with its own section: [`generation_context`](#grounded-generation-context),
 [`distill`](#the-distill-block), [`hooks`](#the-hooks-block), [`mcp`](#the-mcp-block),
@@ -113,7 +116,8 @@ run and are not stored here; `--include-submodules` is recorded in `state.json`
 
 ### `commit_limit`
 
-- Sets how far back churn, co-change, the commit list and change records see.
+- Sets how far back churn, co-change, the commit list and change records
+  (newest 10,000 at most) see.
 - The first `repowise update` after upgrading re-reads history once, with no
   model calls.
 - A value written here is kept; below the default, `update` says so once.
@@ -1492,6 +1496,17 @@ rewrite-hook offer), like `init --no-editor-setup`
 ([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)). Use it for CI,
 sandboxes and benchmark runs. Project files (`.repowise/mcp.json`,
 `CLAUDE.md`, Codex config) are still written.
+
+### CI gates
+
+<!-- BEGIN GENERATED settings:env-health (python scripts/gen_config_docs.py) -->
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `REPOWISE_GITLAB_TOKEN` | unset | GitLab access token (api scope) that posts the CI summary as a merge-request note. |
+<!-- END GENERATED settings:env-health -->
+
+`REPOWISE_GITLAB_TOKEN` is read by `repowise ci-summary --gitlab-note`; set it
+as a masked CI/CD variable ([CI.md](../start/CI.md#gitlab)).
 
 ### BLAS thread pool
 

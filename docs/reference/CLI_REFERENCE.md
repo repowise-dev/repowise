@@ -124,7 +124,7 @@ Workspaces add repo scanning, per-repo indexing, cross-repo analysis (co-changes
 | `--skip-infra` | No docs for infra (Dockerfiles, Makefiles, Terraform). | off |
 | `--include-submodules` | Include git submodules. | excluded |
 | `--coverage-report` | LCOV, Cobertura, Clover, JaCoCo, Go coverprofile, Salesforce Apex JSON. Repeatable. Feeds code health only; every code file is documented regardless. | auto-discovered |
-| `--commit-limit` | Max commits per file and for co-change; cap 10000. Saved. | `5000` |
+| `--commit-limit` | Newest commits read for file history and co-change. Above the commit count reads the full history. Saved. | `5000` |
 | `--follow-renames` | Track renames via `git log --follow` (slower, more accurate). Saved. | off |
 | `--resume` | Continue a previous run; see notes. | off |
 | `--force` | Regenerate all pages; see notes. | off |
@@ -1483,7 +1483,7 @@ repowise check origin/main..HEAD --sarif-file check.sarif
 
 ### `repowise ci-summary DIR`
 
-Combines the gates a CI job ran into one verdict table, appended to the GitHub job summary, and prints the combined verdict (`pass`, `warn` or `fail`). Each gate run with `--format github` while `REPOWISE_GATE_SUMMARY_DIR` names a directory leaves its result there, and each `--gate NAME=EXIT_CODE` reconciles one with its exit code; a gate that left nothing reads as could not evaluate. `--comment-file` writes a pull-request comment that also lists each gate's findings, `--previous` (the comment it replaces) adds how many findings were resolved since, and `--comment-key` keeps one comment per working directory.
+Combines the gates a CI job ran into one verdict table, appended to the GitHub job summary, and prints the combined verdict (`pass`, `warn` or `fail`). Each gate run with `--format github` or `--format markdown` while `REPOWISE_GATE_SUMMARY_DIR` names a directory leaves its result there, and each `--gate NAME=EXIT_CODE` reconciles one with its exit code; a gate that left nothing reads as could not evaluate. `--comment-file` writes a pull-request comment that also lists each gate's findings, `--previous` (the comment it replaces) adds how many findings were resolved since, and `--comment-key` keeps one comment per working directory. In a GitLab merge request pipeline, `--gitlab-note` posts that comment as one merge-request note, edited in place by later pipelines, using `REPOWISE_GITLAB_TOKEN`, `CI_API_V4_URL`, `CI_PROJECT_ID` and `CI_MERGE_REQUEST_IID`; elsewhere it posts nothing and says so on stderr.
 
 ```bash
 repowise ci-summary DIR --gate NAME=EXIT_CODE... [--comment-file FILE] [--previous FILE] [--comment-key KEY]

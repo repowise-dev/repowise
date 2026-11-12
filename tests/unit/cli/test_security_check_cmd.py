@@ -98,6 +98,16 @@ def test_github_format_annotates_and_fills_the_step_summary(repo, tmp_path):
     assert "a floor, not a scanner" in summary.read_text(encoding="utf-8")
 
 
+def test_markdown_format_leaves_the_row_the_combined_summary_reads(repo, tmp_path):
+    _commit(repo, "run.py", "import os\nos.system(cmd)\n")
+    rows = tmp_path / "rows"
+    result = _check(repo, "--format", "markdown", env={"REPOWISE_GATE_SUMMARY_DIR": str(rows)})
+    assert result.exit_code == 1
+    row = json.loads((rows / "security.json").read_text(encoding="utf-8"))
+    assert row["verdict"] == "fail"
+    assert [f["file_path"] for f in row["findings"]] == ["run.py"]
+
+
 def test_sarif_format_is_one_log(repo):
     _commit(repo, "run.py", "import os\nos.system(cmd)\n")
     result = _check(repo, "--format", "sarif")

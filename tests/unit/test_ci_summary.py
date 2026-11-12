@@ -92,7 +92,7 @@ def test_comment_caps_each_gate_and_counts_the_rest() -> None:
     findings = tuple(_finding(f"f{i}", line=i + 1) for i in range(ROW_LIMIT + 3))
     body = render_comment([GateSummary("health", "fail", "x", findings)])
     assert len(fingerprints_in(body)) == ROW_LIMIT
-    assert "And 3 more findings. See the job summary." in body
+    assert "And 3 more findings. The gate's own report lists them all." in body
 
 
 def test_comment_counts_findings_resolved_since_the_previous_one() -> None:

@@ -10,6 +10,14 @@ _s = factory(AREA)
 _e = factory(AREA, scope="env")
 
 SETTINGS: tuple[Setting, ...] = (
+    _s(
+        "managed_checkout",
+        "bool",
+        False,
+        "This checkout is a clone the server owns: before each server sync it "
+        "fetches the tracked branch and fast-forwards to it. Leave off for a "
+        "working tree you edit.",
+    ),
     _e(
         "REPOWISE_API_KEY",
         "str",
