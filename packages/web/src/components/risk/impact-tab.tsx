@@ -14,6 +14,7 @@ import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import {
   analyzeBlastRadius,
   analyzeChangeBlastRadius,
+  changeReviewMarkdownPath,
   checkChangeHealth,
   listBlastRadiusChanges,
 } from "@/lib/api/blast-radius";
@@ -47,6 +48,7 @@ export function ImpactTab({ repoId }: { repoId: string }) {
         ...(withGraph ? { with_graph: true } : {}),
       }),
     checkHealth: (changeId) => checkChangeHealth(repoId, changeId),
+    changeMarkdownHref: (input) => changeReviewMarkdownPath(repoId, input),
     fileHref: (path) => fileEntityPath(`/repos/${repoId}`, path),
   }), [repoId]);
 

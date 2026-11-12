@@ -62,6 +62,12 @@ export interface ImpactAdapter {
    */
   checkHealth?(changeId: string): Promise<ChangeHealthCheckResponse>;
 
+  /**
+   * Where the review of a listed change reads as Markdown for a coding agent;
+   * `healthCheck` adds the health check the reader ran. Omit to hide the link.
+   */
+  changeMarkdownHref?(input: { changeId: string; maxDepth: number; healthCheck: boolean }): string;
+
   /** Where a file on the map or in the verdict links to; omit for plain text. */
   fileHref?(path: string): string;
 

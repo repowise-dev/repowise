@@ -6,9 +6,10 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_candidates import (
@@ -24,6 +25,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.server.auth import read_route
 from repowise.server.deps import get_db_session, resolve_request_session_factory, verify_api_key
+from repowise.server.review_markdown import render_change_markdown
 from repowise.server.schemas import BlastRadiusRequest, BlastRadiusResponse
 from repowise.server.schemas.blast_radius import (
     ChangeBlastRadiusRequest,
@@ -33,6 +35,9 @@ from repowise.server.schemas.blast_radius import (
     ChangeHealthCheckResponse,
     ChangeReview,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.analysis.change_health.check import HealthCheck
 
 #: Changed paths analyzed per change. A long-lived branch can touch thousands;
 #: past this the picture is the whole repository and the response says so.
@@ -276,6 +281,52 @@ async def _review(
         return None, f"The change review failed unexpectedly: {exc!r}"
 
 
+async def _change_analysis(
+    session: AsyncSession,
+    request: Request,
+    repo_id: str,
+    body: ChangeBlastRadiusRequest,
+    *,
+    review: bool,
+) -> ChangeBlastRadiusResponse:
+    """One page of the files a listed change reaches (``via`` on each with
+    ``with_graph``), the per-file signals for the changed files and that page,
+    and with *review* its score and tests (``review``)."""
+    checkout = await _checkout(session, repo_id)
+    try:
+        files = await resolve_change_files(session, repo_id, checkout, body.change_id)
+    except UnknownChangeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    analyzed = files[:MAX_CHANGED_FILES]
+    scored: ChangeReview | None = None
+    unavailable: str | None = None
+    reviewing: asyncio.Future[tuple[ChangeReview | None, str | None]] | None = None
+    if review:
+        key = await _review_key(session, repo_id, checkout, body.change_id)
+        # The review reads git and opens its own sessions, so it runs beside the analysis.
+        reviewing = asyncio.ensure_future(
+            _review_cached(
+                key, resolve_request_session_factory(request), repo_id, checkout, body.change_id
+            )
+        )
+    try:
+        result = await _analyze_cached(session, repo_id, analyzed, body.max_depth)
+    except BaseException:
+        if reviewing is not None:
+            reviewing.cancel()
+        raise
+    if reviewing is not None:
+        scored, unavailable = await reviewing
+    return ChangeBlastRadiusResponse(
+        **_page(result, analyzed, body),
+        change_id=body.change_id,
+        changed_files=analyzed,
+        changed_files_total=len(files),
+        review=scored,
+        review_unavailable=unavailable,
+    )
+
+
 async def _test_commands(factory: Any, repo_id: str, tests: dict[str, Any]) -> list[str]:
     """Commands that run the selected tests; none for a run-all verdict, or when
     the runners cannot be read (the score and the list stand without them)."""
@@ -301,39 +352,9 @@ async def analyze_change_blast_radius(
     (``via`` on each with ``with_graph``), the per-file signals for the changed
     files and that page, and on a first page read without ``with_graph`` its
     score and tests (``review``)."""
-    checkout = await _checkout(session, repo_id)
-    try:
-        files = await resolve_change_files(session, repo_id, checkout, body.change_id)
-    except UnknownChangeError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    analyzed = files[:MAX_CHANGED_FILES]
-    review: ChangeReview | None = None
-    unavailable: str | None = None
-    reviewing: asyncio.Future[tuple[ChangeReview | None, str | None]] | None = None
     # The review rides on the first page; a later page or the map's edges reuse the one shown.
-    if body.offset == 0 and not body.with_graph:
-        key = await _review_key(session, repo_id, checkout, body.change_id)
-        # The review reads git and opens its own sessions, so it runs beside the analysis.
-        reviewing = asyncio.ensure_future(
-            _review_cached(
-                key, resolve_request_session_factory(request), repo_id, checkout, body.change_id
-            )
-        )
-    try:
-        result = await _analyze_cached(session, repo_id, analyzed, body.max_depth)
-    except BaseException:
-        if reviewing is not None:
-            reviewing.cancel()
-        raise
-    if reviewing is not None:
-        review, unavailable = await reviewing
-    return ChangeBlastRadiusResponse(
-        **_page(result, analyzed, body),
-        change_id=body.change_id,
-        changed_files=analyzed,
-        changed_files_total=len(files),
-        review=review,
-        review_unavailable=unavailable,
+    return await _change_analysis(
+        session, request, repo_id, body, review=body.offset == 0 and not body.with_graph
     )
 
 
@@ -419,11 +440,53 @@ def _page(result: dict[str, Any], changed: list[str], body: ChangeBlastRadiusReq
     }
 
 
-def _health_check(root: str, change_id: str) -> ChangeHealthCheckResponse:
+@router.get("/{repo_id}/blast-radius/change.md", response_class=PlainTextResponse)
+async def change_review_markdown(
+    repo_id: str,
+    change_id: str = Query(min_length=1, max_length=300),
+    max_depth: int = Query(default=DEFAULT_DEPTH, ge=1, le=10),
+    health_check: bool = False,
+    *,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> PlainTextResponse:
+    """The Review page for one listed change as Markdown, for a coding agent.
+
+    ``health_check=true`` also runs the health check (seconds on a large
+    change) and adds its verdict and findings; without a checkout the section
+    says why it could not run.
+    """
+    from repowise.core.analysis.change_health.check import HealthCheckUnavailable
+
+    # The nearest page of reached files with how each is reached; counts over
+    # every reached file come from ``reach_summary``.
+    page = ChangeBlastRadiusRequest(change_id=change_id, max_depth=max_depth, with_graph=True)
+    response = await _change_analysis(session, request, repo_id, page, review=True)
+    health = None
+    if health_check:
+        root = await _checkout(session, repo_id)
+        if root is None:
+            health = "this server has no checkout to read the change from"
+        else:
+            try:
+                health = await asyncio.to_thread(_run_check, root, change_id)
+            except (UnknownChangeError, HealthCheckUnavailable) as exc:
+                health = str(exc)
+            except Exception as exc:  # git timeouts, unreadable blobs: the review still renders
+                health = f"it failed unexpectedly: {exc!r}"
+    return PlainTextResponse(
+        render_change_markdown(response, health), media_type="text/markdown; charset=utf-8"
+    )
+
+
+def _run_check(root: str, change_id: str) -> HealthCheck:
     from repowise.core.analysis.change_health.check import run_health_check
 
-    check = run_health_check(root, change_revspec(root, change_id))
-    doc = check.as_json()
+    return run_health_check(root, change_revspec(root, change_id))
+
+
+def _health_check(root: str, change_id: str) -> ChangeHealthCheckResponse:
+    doc = _run_check(root, change_id).as_json()
     return ChangeHealthCheckResponse(
         change_id=change_id,
         revspec=doc["revspec"],

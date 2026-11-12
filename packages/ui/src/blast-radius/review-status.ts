@@ -7,6 +7,9 @@
  * often or has poor health, many files depend on the change, or files that
  * usually move with it were left out; otherwise "Small change" or
  * "Contained", with the size of it.
+ *
+ * The Markdown review for agents says the same verdict from the server
+ * (`repowise/server/review_markdown.py`); change the two together.
  */
 
 import { isWeak, type Reach } from "./blast-map-model";
