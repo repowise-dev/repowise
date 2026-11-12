@@ -984,3 +984,16 @@ async def test_alternatives_past_the_cap_are_named_and_leave_lines_incomplete(tr
     cap = _line_hits._MAX_ALTERNATIVES
     assert out["complete"] is False
     assert f"only the first {cap} of {len(parts)} alternatives searched" in out["reasons"]
+
+
+def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
+    import re
+
+    # A form feed and a line separator are not line breaks to grep.
+    (tmp_path / "a.py").write_text("x = 1\f y = 2 z\ndef target():\n", encoding="utf-8")
+    rows, reasons = _line_hits._scan(
+        tmp_path, ["a.py"], re.compile(r"def \w+\("), _line_hits._DECLARATION_LINE, None, per_line=True
+    )
+
+    assert [(r["line"], r["kind"]) for r in rows] == [(2, "definition")]
+    assert reasons == []

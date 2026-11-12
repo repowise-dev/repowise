@@ -546,7 +546,9 @@ class _ScanRun:
             return None
         text = data.decode("utf-8", errors="replace")
         if self.per_line:
-            return self._lines_each(text.splitlines())
+            # Lines end at "\n" only, as grep and the streamed reader count them.
+            lines = text.removesuffix("\n").split("\n")
+            return self._lines_each(line.removesuffix("\r") for line in lines)
         return _matching_lines(text, self.pattern), False
 
     def _lines_each(self, lines: Any, streamed: bool = False) -> Any:
