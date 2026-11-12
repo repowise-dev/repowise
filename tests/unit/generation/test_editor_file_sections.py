@@ -298,3 +298,13 @@ def test_read_only_drops_the_record_a_decision_line(gen):
         assert "repowise decision add" not in read_only
         assert "### Decisions" in read_only
         assert len(read_only) < len(full)
+
+
+@pytest.mark.parametrize("sections", [None, frozenset({"how_to_work_full"})], ids=["short", "full"])
+def test_how_to_work_points_at_settings_in_one_line(gen, sections):
+    rendered = gen.render(_full_data(sections=sections) if sections else _full_data())
+    lines = [line for line in rendered.splitlines() if "repowise config" in line]
+    assert len(lines) == 1
+    assert "`repowise config list`" in lines[0]
+    assert "`repowise config explain <key>`" in lines[0]
+    assert "ask the user before `repowise config set <key> <value>`" in lines[0]

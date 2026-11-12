@@ -15,6 +15,7 @@ from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
+from repowise.server.mcp_server._savings.interaction import error_reply
 
 #: Inline caps so the agent payload stays tight; true counts are reported and the
 #: full set is on the REST endpoint.
@@ -42,36 +43,45 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
         repo: optional repo alias — limit findings to those involving this repo.
     """
     if not _is_workspace_mode():
-        return {
-            "error": "get_conformance is only available in workspace mode.",
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "error": "get_conformance is only available in workspace mode.",
+                "_meta": _build_meta(),
+            },
+        )
 
     enricher = _state._cross_repo_enricher
     report = enricher.get_conformance() if enricher is not None else None
     if not report:
-        return {
-            "error": (
-                "No conformance report is available yet. Run `repowise update "
-                "--workspace` to build cross-repo relationships, and declare rules "
-                "under `conformance:` in `.repowise-workspace.yaml`."
-            ),
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "no_index",
+            {
+                "error": (
+                    "No conformance report is available yet. Run `repowise update "
+                    "--workspace` to build cross-repo relationships, and declare rules "
+                    "under `conformance:` in `.repowise-workspace.yaml`."
+                ),
+                "_meta": _build_meta(),
+            },
+        )
 
     # A report with no timestamp is one nothing ever wrote a result into. Its
     # zeros are the absence of a check, not the absence of findings, and an
     # agent told "no violations" would act on that.
     ran = bool(report.get("generated_at"))
     if not ran:
-        return {
-            "error": (
-                "The conformance check has not run for this workspace. Its stored "
-                "report has no result in it, so its zero counts mean nothing. Run "
-                "`repowise update --workspace` to produce one."
-            ),
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "no_index",
+            {
+                "error": (
+                    "The conformance check has not run for this workspace. Its stored "
+                    "report has no result in it, so its zero counts mean nothing. Run "
+                    "`repowise update --workspace` to produce one."
+                ),
+                "_meta": _build_meta(),
+            },
+        )
 
     graph = enricher.get_system_graph() or {}
     analysis_commits = {

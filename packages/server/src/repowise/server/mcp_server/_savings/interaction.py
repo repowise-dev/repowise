@@ -92,8 +92,21 @@ def current() -> Interaction | None:
 
 
 #: Every ``error_reason`` a tool call can report. Fixed slugs, never message text.
+#: ``git_unavailable``: git is missing or cannot read the repository.
+#: ``timeout``: a bounded git read ran out of time. ``no_provider``: the tool
+#: needs an LLM provider and none is configured.
 ERROR_REASONS = frozenset(
-    {"not_found", "invalid_args", "no_index", "index_behind", "server_stale", "internal"}
+    {
+        "not_found",
+        "invalid_args",
+        "no_index",
+        "index_behind",
+        "server_stale",
+        "internal",
+        "git_unavailable",
+        "timeout",
+        "no_provider",
+    }
 )
 
 
@@ -106,6 +119,18 @@ def note_error_reason(reason: str) -> None:
     live = _CURRENT.get()
     if live is not None and live.error_reason is None and reason in ERROR_REASONS:
         live.error_reason = reason
+
+
+def error_reply(reason: str, reply: dict[str, Any]) -> dict[str, Any]:
+    """Return *reply*, a tool's top-level ``{"error": ...}`` answer, with *reason* noted.
+
+    Every top-level error dict is built inside this call, so none leaves
+    without a reason; a test holds that, and every *reason* passed here to
+    :data:`ERROR_REASONS`. Error cards nested inside an ok reply (one target of
+    several) do not use it: they must not claim the call's reason.
+    """
+    note_error_reason(reason)
+    return reply
 
 
 @contextmanager

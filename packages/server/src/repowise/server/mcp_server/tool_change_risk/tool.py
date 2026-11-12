@@ -85,25 +85,43 @@ async def _score_guarded(
     revspec: str | None, score: Any, *args: Any, **kwargs: Any
 ) -> tuple[Any, dict | None]:
     """Run a git-reading *score* off the loop: ``(result, None)``, or ``(None, error reply)``."""
+    from repowise.server.mcp_server._savings.interaction import error_reply
+
     try:
         result = await asyncio.to_thread(score, *args, **kwargs)
     except ValueError as exc:
-        return None, {"error": str(exc)}
+        return None, error_reply("invalid_args", {"error": str(exc)})
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").partition("\nUse '--' to separate paths from revisions")[0]
+        stderr = exc.stderr or ""
+        detail = stderr.partition("\nUse '--' to separate paths from revisions")[0]
         detail = detail.strip() or str(exc)
-        return None, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
+        # A revspec that does not resolve is the caller's to fix; any other git
+        # failure (not a repository, dubious ownership, a corrupt or shallow
+        # clone) is git unable to read this repository.
+        bad_rev = any(marker in stderr for marker in _BAD_REVISION)
+        reason = "invalid_args" if bad_rev else "git_unavailable"
+        return None, error_reply(
+            reason, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
+        )
     except subprocess.TimeoutExpired:
-        return None, {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+        return None, error_reply(
+            "timeout", {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+        )
     except FileNotFoundError:
         # Scoring spawns git from several readers, so the missing binary is
         # named once here. Any other missing file is a real bug: re-raise.
         if shutil.which("git") is not None:
             raise
-        return None, {
-            "error": "git was not found on PATH; change risk reads the repository history."
-        }
+        return None, error_reply(
+            "git_unavailable",
+            {"error": "git was not found on PATH; change risk reads the repository history."},
+        )
     return result, None
+
+
+#: git's stderr for a revision that does not resolve. English only: under a
+#: localized git a bad revspec is filed as ``git_unavailable``, never ``other``.
+_BAD_REVISION = ("unknown revision", "bad revision", "invalid revision", "bad object")
 
 
 @contextlib.contextmanager

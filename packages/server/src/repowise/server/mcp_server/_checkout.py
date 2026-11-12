@@ -210,13 +210,15 @@ def caller_revspec(revspec: str | None) -> tuple[str | None, dict[str, Any] | No
 
         if _working_tree_dirty_paths(str(caller.caller)) == frozenset():
             return head, None
-    from repowise.server.mcp_server._savings.interaction import note_error_reason
+    from repowise.server.mcp_server._savings.interaction import error_reply
 
-    note_error_reason("invalid_args")
-    return None, {
-        "error": (
-            f"The working tree, HEAD and reflog of {caller.caller} are not "
-            f"readable here: this server reads {caller.served}."
-        ),
-        "remedy": "Pass revspec as commits or a range of them; commits are shared between worktrees.",
-    }
+    return None, error_reply(
+        "invalid_args",
+        {
+            "error": (
+                f"The working tree, HEAD and reflog of {caller.caller} are not "
+                f"readable here: this server reads {caller.served}."
+            ),
+            "remedy": "Pass revspec as commits or a range of them; commits are shared between worktrees.",
+        },
+    )

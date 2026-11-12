@@ -180,6 +180,9 @@ class Setting:
     #: Test, debug or plumbing knobs: registered so nothing is unaccounted
     #: for, hidden from user listings.
     internal: bool = False
+    #: A credential: listings and the settings API say it is set, never
+    #: what it is.
+    secret: bool = False
     reload: Reload = "immediate"
     on_invalid: OnInvalid = "default"
     #: The value an unusable one reads as, when ``on_invalid="fallback"``.
@@ -249,6 +252,9 @@ def _contradiction(s: Setting) -> str | None:
         return "a <placeholder> key and members come together"
     if s.scope == "env" and not _keyed_by_env(s):
         return "an env-scoped setting is keyed by its variable"
+    if s.secret and s.scope != "env":
+        # Listings hide its value, so an editable one would save the mask back.
+        return "a secret is read from the environment only"
     return None
 
 
