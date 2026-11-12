@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDown, GitBranch, GitCommitHorizontal, GitPullRequest, Pencil } from "lucide-react";
+import { ChevronDown, GitBranch, GitCommitHorizontal, Pencil } from "lucide-react";
 import type { ChangeCandidate, ChangeCandidateKind, ChangeCandidatesResponse } from "@repowise-dev/types/blast-radius";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
@@ -9,17 +9,15 @@ import { Segmented, type SegmentOption } from "../shared/segmented";
 import { formatNumber, formatRelativeTimeOrNull } from "../lib/format";
 import { cn } from "../lib/cn";
 
-/** In picker order: work in progress, then pull requests, branches, commits. */
+/** In picker order: work in progress, then branches, commits. */
 const KIND_LABEL: Record<ChangeCandidateKind, string> = {
   working_tree: "Working tree",
-  pull_request: "Pull requests",
   branch: "Branches",
   commit: "Commits",
 };
 
 const KIND_ICON: Record<ChangeCandidateKind, typeof GitBranch> = {
   working_tree: Pencil,
-  pull_request: GitPullRequest,
   branch: GitBranch,
   commit: GitCommitHorizontal,
 };
@@ -35,7 +33,6 @@ function plural(n: number, word: string): string {
 export function changeMeta(c: ChangeCandidate): string {
   const parts: string[] = [];
   if (c.kind === "commit") parts.push(c.label);
-  if (c.kind === "pull_request" && c.author) parts.push(c.author);
   if (c.kind === "branch" && c.ahead !== null) parts.push(`${plural(c.ahead, "commit")} ahead`);
   if (c.files_changed !== null) parts.push(plural(c.files_changed, "file"));
   const when = formatRelativeTimeOrNull(c.committed_at, "");
@@ -45,9 +42,8 @@ export function changeMeta(c: ChangeCandidate): string {
   return parts.join(", ");
 }
 
-/** A change's name: a commit by its subject, a pull request as "#123 title", anything else by its label. */
+/** A change's name: a commit by its subject, anything else by its label. */
 export function changeName(c: ChangeCandidate): string {
-  if (c.kind === "pull_request") return [c.number != null ? `#${c.number}` : c.label, c.title].filter(Boolean).join(" ");
   return c.kind === "commit" ? (c.title ?? c.label) : c.label;
 }
 
@@ -128,12 +124,10 @@ function ChangeList({
 
 /**
  * The kinds worth a tab. A kind the host cannot offer at all is left out
- * rather than shown disabled: the working tree without a checkout, pull
- * requests where none are listed (a local server never lists them).
+ * rather than shown disabled: the working tree without a checkout.
  */
 function kindOptions(data: ChangeCandidatesResponse): SegmentOption<ChangeCandidateKind>[] {
   const offered = (Object.keys(KIND_LABEL) as ChangeCandidateKind[]).filter((kind) => {
-    if (kind === "pull_request") return data.changes.some((c) => c.kind === "pull_request");
     if (kind === "working_tree") return data.working_tree_supported;
     return true;
   });
@@ -203,7 +197,7 @@ export function ChangePicker({
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" aria-hidden />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(26rem,calc(100vw-2rem))] space-y-2 p-2">
+      <PopoverContent align="start" aria-label="Changes to review" className="w-[min(26rem,calc(100vw-2rem))] space-y-2 p-2">
         {data ? (
           <>
             <Segmented label="Kind of change" value={activeKind} options={kindOptions(data)} onChange={setKind} />
