@@ -170,7 +170,12 @@ def _report_store_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
         console.print(f"[bold green]Repaired {repaired_count} entries.[/bold green]")
         if ctx.stale_count:
             console.print(f"[yellow]{_stale_page_guidance(ctx.stale_counts)}[/yellow]")
-    elif not ctx.registration_wedged and not ctx.agents_need_refresh and not ctx.invalid_settings:
+    elif not (
+        ctx.registration_wedged
+        or ctx.agents_need_refresh
+        or ctx.invalid_settings
+        or ctx.retired_settings
+    ):
         if ctx.stale_count:
             console.print(
                 f"[yellow]No store drift to repair. "
@@ -238,6 +243,20 @@ def _reset_invalid_settings(ctx: CheckContext) -> None:
         )
 
 
+def _remove_retired_settings(ctx: CheckContext) -> None:
+    """Drop config.yaml keys repowise no longer reads; every other key is kept."""
+    from repowise.core.settings.writers import write_file_value
+
+    console.print("\n[bold]Removing settings repowise no longer reads...[/bold]")
+    for key in ctx.retired_settings:
+        try:
+            write_file_value(ctx.repo_path, key, None)
+        except Exception as exc:
+            console.print(f"  [yellow]{key}: not removed ({exc})[/yellow]")
+            continue
+        console.print(f"  [green]{key}[/green] removed from .repowise/config.yaml")
+
+
 def run_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
     """Invalid settings, then store drift, agent integrations and the Claude Code entry.
 
@@ -247,6 +266,8 @@ def run_repair(ctx: CheckContext, *, repo_ok: bool = True) -> None:
     """
     if ctx.invalid_settings:
         _reset_invalid_settings(ctx)
+    if ctx.retired_settings:
+        _remove_retired_settings(ctx)
     _report_store_repair(ctx, repo_ok=repo_ok)
     if ctx.agents_need_refresh:
         _refresh_agents(ctx.repo_path)

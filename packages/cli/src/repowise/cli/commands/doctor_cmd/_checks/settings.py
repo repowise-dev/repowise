@@ -16,6 +16,7 @@ from collections.abc import Mapping
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.settings.registry import RETIRED
 from repowise.core.settings.views import masked, requirement
 
 from .._types import DoctorCheck, _check
@@ -224,6 +225,13 @@ def _unknown_rows(config: Mapping[str, Any], settings: list[Setting]) -> list[Do
     blocks = {k.rsplit(".", i)[0] for k in known for i in range(1, k.count(".") + 1)}
     rows = []
     for path, block_scalar in _unknown_keys(config, "", known, blocks):
+        if path in RETIRED:
+            detail = (
+                f"{path} in {_FILE} is no longer used; safe to remove "
+                "(delete the line, or run 'repowise doctor --repair')"
+            )
+            rows.append(_row(path, True, detail))
+            continue
         if block_scalar:
             if _judges_itself(path, settings):
                 continue
@@ -268,8 +276,9 @@ def _unique(rows: list[DoctorCheck]) -> list[DoctorCheck]:
 
 
 def settings_rows(ctx: CheckContext) -> list[DoctorCheck]:
-    """The Settings rows; fills ``ctx.invalid_settings`` with the keys ``--repair`` may reset."""
+    """The Settings rows; fills the ``ctx`` lists of keys ``--repair`` may reset or remove."""
     from repowise.core.repo_config import RepoConfigError, load_repo_config
+    from repowise.core.settings.resolve import MISSING, lookup
 
     try:
         config = load_repo_config(ctx.repo_path)
@@ -281,6 +290,7 @@ def settings_rows(ctx: CheckContext) -> list[DoctorCheck]:
         rows, ctx.invalid_settings = _value_rows(settings, config, environ)
         rows += _env_only_rows(environ)
         rows += _unknown_rows(config, settings)
+        ctx.retired_settings = sorted(k for k in RETIRED if lookup(config, k) is not MISSING)
     except Exception as exc:
         return [
             _check(NAME, True, f"could not check them ({exc})", check_id="settings", warn=True)

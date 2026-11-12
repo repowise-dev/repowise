@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "AREAS",
+    "RETIRED",
     "all_settings",
     "area_module",
     "area_resolver",
@@ -41,6 +42,10 @@ __all__ = [
 
 #: Every area module under ``areas/``. A new area is a new file plus its name
 #: here; a test fails when a file is missing from this list.
+#: config.yaml keys repowise once read and no longer does. Listed so an upgraded
+#: repository is told it can drop them rather than warned about a typo.
+RETIRED: frozenset[str] = frozenset({"tier2_tail_enabled"})
+
 AREAS: tuple[str, ...] = (
     "account",
     "attribution",

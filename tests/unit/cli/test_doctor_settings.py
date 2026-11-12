@@ -103,6 +103,20 @@ def test_an_unknown_key_in_a_block_does_not_suggest_its_block(repo) -> None:
     assert "did you mean" not in rows["setting-retired-knob"].detail
 
 
+def test_a_retired_key_is_information_and_repair_removes_it(repo, monkeypatch) -> None:
+    _write(repo, "tier2_tail_enabled: true\ncommit_limit: 300\n")
+    ctx, rows = _rows(repo)
+    assert list(rows) == ["settings", "setting-tier2-tail-enabled"]
+    row = rows["setting-tier2-tail-enabled"]
+    assert (row.level, row.fix) == ("ok", None)
+    assert "is no longer used; safe to remove" in row.detail
+    assert ctx.retired_settings == ["tier2_tail_enabled"]
+    monkeypatch.setattr(_repair.console, "print", lambda *a, **_k: None)
+    _repair.run_repair(ctx)
+    config = yaml.safe_load((repo / ".repowise" / "config.yaml").read_text(encoding="utf-8"))
+    assert config == {"commit_limit": 300}
+
+
 def test_a_block_written_as_one_value_warns(repo) -> None:
     _write(repo, "events: true\n")
     _ctx, rows = _rows(repo)

@@ -2146,7 +2146,8 @@ repowise doctor --workspace --repair
   finding is its own row, `setting-<key or variable>`: a value repowise cannot use fails, naming the key, the value,
   what it accepts and the fix (`repowise config reset <key>`, or `repowise config set <key> <value>`); an invalid
   variable fails with the same detail and no fix command; a key no setting reads, or a block written as one value,
-  warns with the closest real key; a variable that overrides the file, or is set but loses to it, is an `ok` row
+  warns with the closest real key; a key repowise has retired is an `ok` row saying it is safe to remove
+  (`--repair` removes it); a variable that overrides the file, or is set but loses to it, is an `ok` row
   saying so. `--repair` resets invalid file values to their defaults, except `decisions.*` and the provider
   selection, whose writers rewrite their whole block (run the row's fix for those); it never touches the environment.
 - **Index data** (`index-data`, also under `--quick`) warns when the index is incomplete or the next `repowise update`
