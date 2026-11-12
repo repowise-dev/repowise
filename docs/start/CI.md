@@ -144,11 +144,13 @@ Include the template and set variables for the gates you use:
 
 ```yaml
 include:
-  - remote: https://raw.githubusercontent.com/repowise-dev/repowise/main/ci/gitlab/repowise.gitlab-ci.yml
+  # The template at a release tag (v<version>, e.g. v0.60.1), installing that same release.
+  - remote: https://raw.githubusercontent.com/repowise-dev/repowise/v<version>/ci/gitlab/repowise.gitlab-ci.yml
   # or a committed copy, when GitLab cannot reach GitHub:
   # - local: ci/repowise.gitlab-ci.yml
 
 variables:
+  REPOWISE_VERSION: "<version>"
   REPOWISE_COVERAGE_REPORT: coverage/lcov.info
   REPOWISE_COVERAGE_FAIL_UNDER: "80"
 
@@ -170,7 +172,9 @@ Each job logs its markdown report and keeps it as an artifact; override
 | `repowise-code-quality` | the default branch; never fails the pipeline | `gl-code-quality-doc-drift.json` |
 | `repowise-note` | merge requests, when `REPOWISE_GITLAB_TOKEN` is set; never fails the pipeline | none |
 
-- `REPOWISE_VERSION` pins the release; gate variables are in each gate's table.
+- `REPOWISE_VERSION` pins the release; keep it equal to the tag in the
+  `include` URL. The template on `main` can call options the latest release
+  does not have yet. Gate variables are in each gate's table.
 - The jobs install Repowise from PyPI (or your package mirror) and download
   nothing else.
 - Report lists (`REPOWISE_COVERAGE_REPORT`, `REPOWISE_COVERAGE_BASE_REPORT`)
