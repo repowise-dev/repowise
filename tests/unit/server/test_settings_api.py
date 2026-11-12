@@ -76,6 +76,17 @@ async def test_get_marks_env_and_user_settings_not_writable(client: AsyncClient)
     assert _setting(body, "hints_enabled")["writable"] is False
 
 
+async def test_get_never_sends_a_credential(client: AsyncClient, monkeypatch):
+    monkeypatch.setenv("REPOWISE_GITLAB_TOKEN", "glpat-not-a-real-token")
+    repo = await create_test_repo(client)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/settings")
+
+    assert "glpat-not-a-real-token" not in resp.text
+    token = _setting(resp.json(), "REPOWISE_GITLAB_TOKEN")
+    assert (token["value"], token["source"]) == ("(set, hidden)", "env")
+
+
 async def test_get_refuses_an_unreadable_config(client: AsyncClient):
     repo = await create_test_repo(client)
     _write_config(repo, "commit_limit: [unclosed\n")

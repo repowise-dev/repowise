@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from repowise.core.settings.model import Resolved, Setting, Source
 
 __all__ = [
     "APPLIES",
+    "HIDDEN",
     "change_report",
     "changed",
     "cli_value",
@@ -26,6 +28,9 @@ __all__ = [
     "undo_command",
     "view",
 ]
+
+#: What a set credential's value reads as in listings and the settings API.
+HIDDEN = "(set, hidden)"
 
 #: When a change takes effect, in plain words.
 APPLIES = {
@@ -49,8 +54,15 @@ def resolve_many(root: Path | str, settings: tuple[Setting, ...]) -> list[Resolv
     for s in settings:
         if s.path not in files:
             files[s.path] = read_config(root, s)
-        out.append(current(root, s, config=files[s.path]))
+        out.append(_hide_secret(s, current(root, s, config=files[s.path])))
     return out
+
+
+def _hide_secret(s: Setting, r: Resolved) -> Resolved:
+    """A credential that is set reads as :data:`HIDDEN`, so no listing prints it."""
+    if s.secret and r.value not in (None, ""):
+        return replace(r, value=HIDDEN)
+    return r
 
 
 def changed(s: Setting, r: Resolved) -> bool:
