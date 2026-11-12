@@ -148,7 +148,7 @@ async def _open_workspace(repo_path: Path, ws_root: Path) -> Any:
         if isinstance(exc, (OSError, OperationalError, LookupError)):
             return None
         raise
-    publish_workspace_state(registry, default_ctx)
+    publish_workspace_state(registry, default_ctx, ws_root)
     return registry
 
 

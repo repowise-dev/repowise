@@ -94,14 +94,11 @@ def project(payload: dict, question: str) -> dict:
     dropped = [key for key in _DROPPED_BLOCKS if payload.get(key)]
     if dropped:
         out["dropped_blocks"] = dropped
-    if payload.get("fallback_targets"):
-        out["fallback_targets"] = list(payload["fallback_targets"])
-    if payload.get("candidate_files"):
-        out["candidate_files"] = list(payload["candidate_files"])
-    # Lines from the workspace's other repos: the evidence for an answer that
-    # cites them, and no other kept block carries a repo besides this one.
-    if payload.get("other_repo_lines"):
-        out["other_repo_lines"] = list(payload["other_repo_lines"])
+    # ``other_repo_lines``: lines from the workspace's other repos, the evidence
+    # for an answer citing them; no other kept block names another repo.
+    for key in ("fallback_targets", "candidate_files", "other_repo_lines"):
+        if payload.get(key):
+            out[key] = list(payload[key])
     episodes = payload.get("episodes") or []
     if episodes:
         out["episodes"] = [
@@ -243,15 +240,7 @@ def _render(projected: dict) -> None:
             where = f":{lines[0]}" if lines else ""
             console.print(f"  [cyan]{q.get('path', '')}{where}[/cyan]  {q.get('quote', '')}")
 
-    other = projected.get("other_repo_lines") or []
-    if other:
-        from rich.markup import escape
-
-        # Escaped: document lines are prose and Markdown, brackets included.
-        console.print("\n[bold]Other workspace repos[/bold]")
-        for r in other:
-            where = escape(f"{r.get('repo', '')}: {r.get('path', '')}:{r.get('line', '')}")
-            console.print(f"  [cyan]{where}[/cyan]  {escape(str(r.get('text', '')))}")
+    _render_other_repo_lines(projected)
 
     episodes = projected.get("episodes") or []
     if episodes:
@@ -260,3 +249,19 @@ def _render(projected: dict) -> None:
             console.print(f"  {e.get('subject', '')}: {e.get('recorded', '')}")
             if e.get("still_true"):
                 console.print(f"    [dim]{e['still_true']}[/dim]")
+
+
+def _render_other_repo_lines(projected: dict) -> None:
+    """The lines the tool read in the workspace's other repos, as ``repo: path:line  text``."""
+    rows = projected.get("other_repo_lines") or []
+    if not rows:
+        return
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+
+    # Escaped: document lines are prose and Markdown, brackets included.
+    console.print("\n[bold]Other workspace repos[/bold]")
+    for r in rows:
+        where = escape(f"{r.get('repo', '')}: {r.get('path', '')}:{r.get('line', '')}")
+        console.print(f"  [cyan]{where}[/cyan]  {escape(str(r.get('text', '')))}")

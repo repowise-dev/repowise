@@ -457,7 +457,6 @@ class _FakeRegistry:
         self.default_ctx = default_ctx
         self.error = error
         self.closed = False
-        self.workspace_root = None
 
     async def get_default(self):
         if self.error is not None:
@@ -492,7 +491,6 @@ def workspace(wired, monkeypatch):
 
     def _fake_registry(root, config, alias, db_url):
         built.append(alias)
-        registry.workspace_root = root
         return registry
 
     monkeypatch.setattr(

@@ -624,10 +624,10 @@ def workspace_registry(ws_root: Any, ws_config: Any, default_alias: str | None, 
     )
 
 
-def publish_workspace_state(registry: Any, default_ctx: Any) -> None:
+def publish_workspace_state(registry: Any, default_ctx: Any, ws_root: Any) -> None:
     """Serve *registry*, with its default repo's resources as the ``_state`` globals."""
     _state._registry = registry
-    _state._workspace_root = str(registry.workspace_root)
+    _state._workspace_root = str(ws_root)
     _state._session_factory = default_ctx.session_factory
     _state._fts = default_ctx.fts
     _state._vector_store = default_ctx.vector_store
@@ -693,7 +693,7 @@ async def _lifespan(server: FastMCP):
             raise
 
     if ws_root is not None and ws_config is not None and store_error is None:
-        publish_workspace_state(registry, default_ctx)
+        publish_workspace_state(registry, default_ctx, ws_root)
 
         # Load cross-repo enricher (Phase 3 + 4)
         try:
