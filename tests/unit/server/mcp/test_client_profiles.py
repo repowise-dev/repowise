@@ -34,8 +34,11 @@ async def _listed(tmp_path: Any, monkeypatch: Any, client: str | None, tools: An
     from repowise.server.mcp_server import _state, _tool_selection, create_mcp_server, mcp
 
     monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: False)
-    monkeypatch.setattr(_state, "_repo_path", _state._repo_path)
-    monkeypatch.setattr(_state, "_force_single_repo", _state._force_single_repo)
+    # The session runs the server lifespan, which records process state (the
+    # embedder status among it) that later tests' payloads read: put it all back.
+    for name, value in list(vars(_state).items()):
+        if name.startswith("_") and not name.startswith("__") and not callable(value):
+            monkeypatch.setattr(_state, name, value)
     monkeypatch.setattr(mcp._mcp_server, "instructions", mcp.instructions)
     info = Implementation(name=client, version="1") if client else None
     try:
