@@ -30,6 +30,7 @@ from repowise.server.mcp_server._line_hits import _files_holding, scan_literal
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
 from repowise.server.mcp_server._query_terms import _WORD_RE, QUESTION_FRAME_VERBS, content_terms
 from repowise.server.mcp_server.tool_answer.config import _SPECIFIC_TOKEN_MAX_FILES
+from repowise.server.mcp_server.tool_answer.symbols import place_named_files
 
 _log = logging.getLogger("repowise.mcp.answer")
 
@@ -126,6 +127,34 @@ async def find_documents(
         return _NONE
 
 
+async def _held(roots: list[tuple], term: str, globs: tuple[str, ...]) -> set[tuple] | None:
+    """``(alias, path)`` of every file in every repo holding *term*; ``None`` if any grep failed."""
+
+    async def one(alias: str | None, at: Path, spec: Any) -> set[tuple] | None:
+        files = await asyncio.to_thread(_files_holding, at, term, word=True, globs=globs)
+        return None if files is None else {(alias, f) for f in files if not is_excluded(f, spec)}
+
+    found = await asyncio.gather(*(one(a, r, s) for a, r, s in roots))
+    return None if any(f is None for f in found) else set().union(*found)
+
+
+async def _named_documents(
+    terms: list[str], roots: list[tuple], scope: str | None
+) -> dict[tuple, list[str]]:
+    """The question words each servable ``(alias, path)`` document is named by."""
+    # Documents first, a cheap grep on a large code base; the whole tree only
+    # for a word few documents hold, to see that no other file holds it.
+    in_docs = await asyncio.gather(*(_held(roots, t, _DOC_GLOBS) for t in terms))
+    terms = [t for t, docs in zip(terms, in_docs, strict=True) if _few(docs)]
+    in_all = await asyncio.gather(*(_held(roots, t, ()) for t in terms))
+    by_doc: dict[tuple, list[str]] = {}
+    for term, files in zip(terms, in_all, strict=True):
+        named = files if _few(files) and all(_is_document(p) for _a, p in files) else ()
+        for doc in (d for d in named if _servable(d[0], d[1], scope)):
+            by_doc.setdefault(doc, []).append(term)
+    return by_doc
+
+
 async def _find(
     question: str, root: Path | None, ctx: Any, scope: str | None, exclude_spec: Any
 ) -> Documents:
@@ -133,31 +162,7 @@ async def _find(
     if root is None or not terms:
         return _NONE
     roots = _roots(ctx, root, exclude_spec, scope)
-
-    async def held(term: str, globs: tuple[str, ...]) -> set[tuple] | None:
-        """``(alias, path)`` of every file in every repo holding *term*; None if any grep failed."""
-
-        async def one(alias: str | None, at: Path, spec: Any) -> set[tuple] | None:
-            files = await asyncio.to_thread(_files_holding, at, term, word=True, globs=globs)
-            return None if files is None else {(alias, f) for f in files if not is_excluded(f, spec)}
-
-        found = await asyncio.gather(*(one(a, r, s) for a, r, s in roots))
-        return None if any(f is None for f in found) else set().union(*found)
-
-    # Documents first, a cheap grep on a large code base; the whole tree only
-    # for a word few documents hold, to see that no other file holds it.
-    in_docs = await asyncio.gather(*(held(t, _DOC_GLOBS) for t in terms))
-    terms = [t for t, docs in zip(terms, in_docs, strict=True) if _few(docs)]
-    in_all = await asyncio.gather(*(held(t, ()) for t in terms))
-    by_doc: dict[tuple, list[str]] = {}
-    for term, files in zip(terms, in_all, strict=True):
-        if not _few(files) or not all(_is_document(p) for _a, p in files):
-            continue
-        for doc in files:
-            if _servable(doc[0], doc[1], scope):
-                by_doc.setdefault(doc, []).append(term)
-    if not by_doc:
-        return _NONE
+    by_doc = await _named_documents(terms, roots, scope)
     # Most question words first; this repo's documents before the others'.
     ranked = sorted(by_doc, key=lambda d: (-len(by_doc[d]), d[0] is not None, d[0] or "", d[1]))
     at = {a: r for a, r, _s in roots}
@@ -170,3 +175,15 @@ async def _find(
         else:
             other += [{"repo": alias, "path": path, "line": r["line"], "text": r["text"]} for r in lines]
     return Documents(hits, other[:_DOC_LINES_MAX])
+
+
+def place_documents(hits: list[dict], documents: list[dict]) -> list[dict]:
+    """*hits* with each document hit just below the top three, as a named file
+    joins; a hit already carrying the document gets its lines as the excerpt."""
+    if not documents:
+        return hits
+    found = {h["target_path"]: h for h in documents}
+    for h in hits:
+        if h.get("target_path") in found:
+            h.setdefault("excerpt", found[h["target_path"]]["excerpt"])
+    return place_named_files(hits, list(found), found)

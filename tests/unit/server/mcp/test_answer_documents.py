@@ -16,7 +16,7 @@ import pytest
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server.tool_answer.answer import _Ask, _user_prompt
 from repowise.server.mcp_server.tool_answer.callers import NO_EVIDENCE
-from repowise.server.mcp_server.tool_answer.documents import find_documents
+from repowise.server.mcp_server.tool_answer.documents import find_documents, place_documents
 
 _GUIDE = "# Deploy guide\n\nTo roll back, flip the zanzibarflux switch.\n"
 
@@ -161,3 +161,27 @@ async def test_other_repo_lines_reach_the_synthesis_prompt():
 
     assert "- mirror: jira/PROJ-12.md:17: Deploys stall." in prompt
     assert "other repositories" not in await _user_prompt(ask, [], NO_EVIDENCE, [])
+
+
+def _page(path: str, score: float) -> dict:
+    return {"target_path": path, "page_type": "file_page", "score": score}
+
+
+def test_a_document_joins_below_the_top_three():
+    doc = {"target_path": "guide.md", "page_type": "file", "score": 0.0, "excerpt": "3: x"}
+    hits = [_page(f"m{i}.py", 5.0 - i) for i in range(5)]
+
+    placed = place_documents(hits, [doc])
+
+    assert [h["target_path"] for h in placed] == ["m0.py", "m1.py", "m2.py", "guide.md", "m3.py", "m4.py"]
+    assert place_documents([], [doc]) == [doc]
+    assert place_documents(hits, []) is hits
+
+
+def test_a_hit_already_on_the_document_gets_its_lines():
+    doc = {"target_path": "guide.md", "page_type": "file", "score": 0.0, "excerpt": "3: x"}
+    hits = [_page("guide.md", 9.0)]
+
+    placed = place_documents(hits, [doc])
+
+    assert placed == [{**_page("guide.md", 9.0), "excerpt": "3: x"}]

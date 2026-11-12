@@ -161,7 +161,7 @@ from repowise.server.mcp_server.tool_answer.data_shape import (
     mine_data_shape,
 )
 from repowise.server.mcp_server.tool_answer.degraded import _degraded_payload
-from repowise.server.mcp_server.tool_answer.documents import find_documents
+from repowise.server.mcp_server.tool_answer.documents import find_documents, place_documents
 from repowise.server.mcp_server.tool_answer.episodes import (
     attach_episode as _attach_episode,
 )
@@ -375,12 +375,7 @@ async def _run_retrieval_pipeline(
             hits = place_named_files(hits, named)
     # Documents a question word names join the same way; no page carries them.
     docs = await documents
-    if docs.hits:
-        found = {h["target_path"]: h for h in docs.hits}
-        for h in hits:
-            if h.get("target_path") in found:
-                h.setdefault("excerpt", found[h["target_path"]]["excerpt"])
-        hits = place_named_files(hits, list(found), found)
+    hits = place_documents(hits, docs.hits)
     hits = drop_ruled_out_files(hits, question)
     # A compound question gets each later clause's best file into the top five.
     with contextlib.suppress(Exception):
