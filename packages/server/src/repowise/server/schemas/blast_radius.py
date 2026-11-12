@@ -199,24 +199,9 @@ class BlastRadiusResponse(BaseModel):
     overall_risk_score_compatibility: RiskCompatibilityField
 
 
-class PrReviewSummary(BaseModel):
-    """What the PR bot stored for a pull request: code health before and after, and new findings.
-
-    A host that runs the bot fills it; a local server never does.
-    """
-
-    health_before: float | None = None
-    health_after: float | None = None
-    #: Findings the pull request introduced.
-    introduced: int | None = None
-    #: The bot's review of the pull request.
-    url: str | None = None
-
-
 class ChangeCandidateModel(BaseModel):
     id: str
-    #: ``pr`` is listed by a host that knows pull requests; a local server never lists one.
-    kind: Literal["working_tree", "branch", "commit", "pull_request"]
+    kind: Literal["working_tree", "branch", "commit"]
     label: str
     title: str | None = None
     author: str | None = None
@@ -229,12 +214,6 @@ class ChangeCandidateModel(BaseModel):
     #: For a branch: whether it exists on the remote. A local-only branch is
     #: often scratch work, so the picker shows it quieter.
     pushed: bool | None = None
-    #: For a pull request: its number.
-    number: int | None = None
-    #: For a pull request: the base commit it is compared against.
-    base_sha: str | None = None
-    #: For a pull request: the PR bot's stored health before and after, when a host has one.
-    pr_review: PrReviewSummary | None = None
 
 
 class ChangeCandidatesResponse(BaseModel):

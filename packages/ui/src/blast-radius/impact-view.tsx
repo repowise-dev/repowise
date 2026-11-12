@@ -92,8 +92,6 @@ export function changeFor(id: string, listed: ChangeCandidate[]): ChangeCandidat
     return { ...base, id, kind: "branch", label: ref, head_sha: null, base: trunk };
   }
   if (kind === "commit") return { ...base, id, kind: "commit", label: ref.slice(0, 8), head_sha: ref, base: null };
-  if (kind === "pr" && /^\d+$/.test(ref))
-    return { ...base, id, kind: "pull_request", label: `#${ref}`, number: Number(ref), head_sha: null, base: null };
   return undefined;
 }
 
@@ -446,7 +444,7 @@ async function analyzeSelection(adapter: ImpactAdapter, sel: Selection, depth: n
   return { selection: sel, result: r, changedFiles: sel.files };
 }
 
-/** Answers kept per page, and how long one for a moving change (work in progress, a branch, a PR) stays good. */
+/** Answers kept per page, and how long one for a moving change (work in progress, a branch) stays good. */
 const KEPT_ANALYSES = 20;
 const MOVING_MS = 60_000;
 
