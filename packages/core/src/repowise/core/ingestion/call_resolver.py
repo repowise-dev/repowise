@@ -220,6 +220,21 @@ def _is_kotlin_alias(sym: Symbol | None) -> bool:
     return sym is not None and sym.kind == "type_alias" and sym.language == "kotlin"
 
 
+# The head of a Kotlin alias target that names one plain type: ``Repo``,
+# ``Holder<String>``, ``Repo?``. A qualified name (``java.io.IOException``), a
+# function type (``(String) -> Unit``, ``suspend () -> Unit``) matches nothing.
+_ALIAS_TARGET_HEAD = re.compile(r"(?P<head>[A-Za-z_]\w*)\s*(?:<.*>)?\s*\??")
+
+
+def _kotlin_alias_head(sym: Symbol) -> str | None:
+    """The type name a Kotlin ``typealias`` symbol aliases, from its signature."""
+    _, sep, target = (sym.signature or "").partition(" = ")
+    if not sep:
+        return None
+    match = _ALIAS_TARGET_HEAD.fullmatch(target.strip())
+    return match.group("head") if match else None
+
+
 def _is_data_member(sym: Symbol) -> bool:
     if sym.kind in _NON_CALLABLE_KINDS:
         return True
@@ -1153,6 +1168,36 @@ class CallResolver(
         if hit is None or call.receiver_call is not None:
             return hit
         return None if self._lacks_extension_receiver(file_path, call, hit.callee_id) else hit
+
+    def _through_kotlin_alias(
+        self,
+        hit: ResolvedCall,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """``Repo()`` through ``typealias Repo = DefaultRepository``: the class, or nothing.
+
+        The aliased name is looked up as a constructor call written in the
+        alias's own file would be. Refused unless that lands on a repo class: a
+        qualified, function-type or primitive target resolves to none, and a
+        name that comes back to the alias's own name (or to another alias) is
+        no class.
+        """
+        alias = self._symbols_by_id[hit.callee_id]
+        head = _kotlin_alias_head(alias)
+        if head is None or head == alias.name:
+            return None
+        alias_call = replace(call, target_name=head, receiver_name=None, receiver_call=None)
+        alias_file = file_path_of(alias.id)
+        if alias_file is None:
+            return None
+        found = self._resolve_free_call(alias_file, alias_call, alias.id)
+        target = self._symbols_by_id.get(found.callee_id) if found else None
+        if target is None or target.kind != "class" or target.language != "kotlin":
+            return None
+        if target.name != head:
+            return None
+        return replace(found, caller_id=caller_id, line=call.line)
 
     def _operator_invoke_call(
         self,
