@@ -231,9 +231,8 @@ export function CodeHealthView() {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await mutateAll((key) => typeof key === "string" && key.includes(repoId), undefined, {
-        revalidate: true,
-      });
+      // No data argument, so each key keeps what it shows while it refetches.
+      await mutateAll((key) => typeof key === "string" && key.includes(repoId));
     } finally {
       setRefreshing(false);
     }
