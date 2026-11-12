@@ -2147,7 +2147,8 @@ repowise doctor --workspace --repair
   what it accepts and the fix (`repowise config reset <key>`, or `repowise config set <key> <value>`); an invalid
   variable fails with the same detail and no fix command; a key no setting reads, or a block written as one value,
   warns with the closest real key; a variable that overrides the file, or is set but loses to it, is an `ok` row
-  saying so. `--repair` resets the invalid file values to their defaults and never touches the environment.
+  saying so. `--repair` resets invalid file values to their defaults, except `decisions.*` and the provider
+  selection, whose writers rewrite their whole block (run the row's fix for those); it never touches the environment.
 - **Index data** (`index-data`, also under `--quick`) warns when the index is incomplete or the next `repowise update`
   would redo stored work: git history written by older rules, health or security results from an older analyzer or
   scanner, pages from an older page renderer, or empty git, graph, symbol or health tables. The detail names each

@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 NAME = "Settings"
 _FILE = ".repowise/config.yaml"
+#: Writers that change one key and nothing else (``None`` is the registry's own).
+_ONE_KEY_WRITERS = (None, "repowise.core.repo_config:write_file_setting")
 
 
 def _file_settings() -> list[Setting]:
@@ -88,7 +90,10 @@ def _file_row(setting: Setting, raw: Any, problem: str) -> tuple[DoctorCheck, st
         f"Accepts {requirement(setting)}. Run 'repowise config set {key} <value>' or "
         f"'repowise config reset {key}'"
     )
-    return _row(key, False, detail, fix=f"repowise config reset {key}"), key
+    # Only a one-key write is safe to make unasked. An area writer (decisions,
+    # the provider) re-resolves the whole block and can rewrite its neighbours.
+    resettable = key if setting.writer in _ONE_KEY_WRITERS else None
+    return _row(key, False, detail, fix=f"repowise config reset {key}"), resettable
 
 
 def _env_row(setting: Setting, name: str, raw: str, problem: str) -> DoctorCheck:

@@ -181,6 +181,14 @@ def test_repair_resets_invalid_file_values_and_keeps_the_rest(repo, monkeypatch)
     assert rows["setting-repowise-reasoning"].level == "fail"
 
 
+def test_repair_leaves_settings_with_an_area_writer_alone(repo) -> None:
+    # The decisions writer rewrites the whole block, which could drop valid neighbours.
+    _write(repo, "decisions:\n  preset: nope\n  sources:\n    adr: false\n")
+    ctx, rows = _rows(repo)
+    assert rows["setting-decisions-preset"].fix == "repowise config reset decisions.preset"
+    assert ctx.invalid_settings == []
+
+
 def test_json_carries_the_settings_rows_in_the_doctor_shape(repo, monkeypatch) -> None:
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     integrations._mcp_responds_check.cache_clear()

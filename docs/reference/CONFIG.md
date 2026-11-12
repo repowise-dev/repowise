@@ -45,7 +45,8 @@ column names it and says whether it or the file wins.
 > repowise cannot use fails with the form it accepts and the
 > `repowise config set` or `reset` command that fixes it, an unknown key warns
 > with the closest real key, and a variable that decides against the file is
-> named. `repowise doctor --repair` resets bad file values to their defaults.
+> named. `repowise doctor --repair` resets bad file values to their defaults
+> (outside `decisions:` and the provider selection, which take the row's command).
 
 ```yaml
 provider: anthropic
