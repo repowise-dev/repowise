@@ -249,9 +249,12 @@ def _listed_files(root: Path) -> list[str]:
     ]
 
 
-def _files_holding(root: Path, needle: str) -> list[str] | None:
+def _files_holding(
+    root: Path, needle: str, *, word: bool = False, globs: tuple[str, ...] = ()
+) -> list[str] | None:
     """The files :func:`_listed_files` would list whose bytes hold *needle*, via git grep.
 
+    With *word*, only as a whole word; with *globs*, only files they match.
     ``None`` when git cannot answer in time, for a needle that is not one plain
     argument, or for a non-ASCII one, whose misses in non-UTF-8 files only the
     Python scan can report.
@@ -259,7 +262,9 @@ def _files_holding(root: Path, needle: str) -> list[str] | None:
     if not needle.isascii() or "\n" in needle or "\0" in needle or needle.startswith("-"):
         return None
     args = ["-c", "grep.fullName=false", "grep", "-l", "-z", "--untracked", "--no-color", "-F"]
-    args += ["-e", needle]
+    args += ["-w", "-e", needle] if word else ["-e", needle]
+    if globs:
+        args += ["--", *globs]
     # Exit 1 is "no file matched".
     return _git_paths(root, args, _GIT_GREP_SECONDS, (0, 1))
 

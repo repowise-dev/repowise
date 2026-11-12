@@ -161,6 +161,7 @@ from repowise.server.mcp_server.tool_answer.data_shape import (
     mine_data_shape,
 )
 from repowise.server.mcp_server.tool_answer.degraded import _degraded_payload
+from repowise.server.mcp_server.tool_answer.documents import find_documents, place_documents
 from repowise.server.mcp_server.tool_answer.episodes import (
     attach_episode as _attach_episode,
 )
@@ -258,6 +259,8 @@ class _Retrieved(NamedTuple):
     question_ids: set[str]
     homonyms: dict
     flow_paths: list[list[str]]
+    # Lines in another workspace repo's documents (see ``documents``).
+    other_repo_lines: list[dict]
 
 
 async def _run_retrieval_pipeline(
@@ -269,6 +272,10 @@ async def _run_retrieval_pipeline(
     Each expansion stage is best-effort and suppressed on its own, so one slow
     or broken backend costs its contribution and never the call.
     """
+    # Live git greps: run beside retrieval rather than after it.
+    documents = asyncio.create_task(
+        find_documents(question, _repo_root(ctx), ctx, scope=scope, exclude_spec=exclude_spec)
+    )
     hits = await _hybrid_retrieve(question, ctx)
     hits = await _hydrate_hits(hits, ctx, scope=scope)
 
@@ -366,6 +373,9 @@ async def _run_retrieval_pipeline(
             hits = lead_with_files(hits, traced)
         if named := _in_scope(issue.named):
             hits = place_named_files(hits, named)
+    # Documents a question word names join the same way; no page carries them.
+    docs = await documents
+    hits = place_documents(hits, docs.hits)
     hits = drop_ruled_out_files(hits, question)
     # A compound question gets each later clause's best file into the top five.
     with contextlib.suppress(Exception):
@@ -387,7 +397,9 @@ async def _run_retrieval_pipeline(
                 await _hydrate_candidate_defines(
                     session, repo_id, resolved_pool, question_ids=question_ids
                 )
-    return _Retrieved(hits, resolved_pool, question_ids, homonyms, flow_paths)
+    return _Retrieved(
+        hits, resolved_pool, question_ids, homonyms, flow_paths, docs.other_repo_lines
+    )
 
 
 @dataclass(frozen=True)
@@ -575,7 +587,9 @@ async def _gated_reply(
     return None
 
 
-async def _user_prompt(ask: _Ask, hits: list[dict], graph_callers) -> str:
+async def _user_prompt(
+    ask: _Ask, hits: list[dict], graph_callers, other_repo_lines: list[dict]
+) -> str:
     """The synthesis prompt; decisions (why questions) and prelude drop out when empty."""
     top_paths = [h["target_path"] for h in hits if h.get("target_path")]
     decisions: list[dict] = []
@@ -596,6 +610,11 @@ async def _user_prompt(ask: _Ask, hits: list[dict], graph_callers) -> str:
             f"- {line}" for line in caller_lines(graph_callers.rows)
         )
         prelude = f"{prelude}\n\n{graph_block}" if prelude else graph_block
+    if other_repo_lines:
+        docs_block = "Lines from documents in other repositories of this workspace:\n" + "\n".join(
+            f"- {r['repo']}: {r['path']}:{r['line']}: {r['text']}" for r in other_repo_lines
+        )
+        prelude = f"{prelude}\n\n{docs_block}" if prelude else docs_block
     return _USER_TEMPLATE.format(
         question=ask.question.strip(),
         n=len(hits),
@@ -817,6 +836,8 @@ async def get_answer(
 
     def _finish(payload: dict) -> dict:
         _with_scan_gaps(payload, retrieved.homonyms)
+        if retrieved.other_repo_lines:
+            payload["other_repo_lines"] = retrieved.other_repo_lines
         return _with_candidates(payload, resolved_pool)
 
     # Every return from here on goes through ``_finish`` (or the
@@ -879,7 +900,7 @@ async def get_answer(
     answer_text, failure_note, stop_reason = await synthesize(
         provider,
         _SYSTEM_PROMPT,
-        await _user_prompt(ask, hits, graph_callers),
+        await _user_prompt(ask, hits, graph_callers, retrieved.other_repo_lines),
         reasoning=_resolve_reasoning_for_answer(getattr(ctx, "path", None)),
         session_factory=getattr(ctx, "session_factory", None),
         repo_id=ask.repo_id,
@@ -899,7 +920,9 @@ async def get_answer(
     await _cache_and_stamp(
         payload,
         ask,
-        write_cache=bool(answer_text) and not cache_disabled,
+        # Another repo's documents change without this repo's commit moving,
+        # and the cache only watches this repo's head.
+        write_cache=bool(answer_text) and not cache_disabled and not retrieved.other_repo_lines,
         cut_off=answer_cut_off(answer_text, stop_reason),
         qhash=qhash,
         provider=provider,
