@@ -205,11 +205,11 @@ get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 
 ## `search_codebase`
 
-Hybrid search routed by query shape: identifiers hit the symbol index, paths resolve files, prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. Use it for ranked hits (enumerating matches, resolving an identifier to a `symbol_id`, scoping a `get_context`); for a question, use `get_answer`, which runs this retrieval.
+Hybrid search routed by query shape: identifiers hit the symbol index, paths resolve files (a query naming one directory leads with it), prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. A grep pattern is taken as written: `a|b|c` searches each alternative as its own query and serves its lines as one group, in query order; a regex (`enqueue\(`, `class \w+Analyzer\b`) serves the lines it matches. Use it for ranked hits (enumerating matches, resolving an identifier to a `symbol_id`, scoping a `get_context`); for a question, use `get_answer`, which runs this retrieval.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `query` | string | `""` | Identifier, path or natural language. Required unless `pattern` is given |
+| `query` | string | `""` | Identifier, `a\|b` alternation, regex, path or natural language. Required unless `pattern` is given |
 | `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments` |
 | `limit` | int | `5` | Max results; outside `symbol` mode, max distinct files |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path`, `hybrid`; unknown runs as `auto` |
@@ -218,12 +218,15 @@ Hybrid search routed by query shape: identifiers hit the symbol index, paths res
 | `page_type` | string | none | One page type, usually `file_page` or `module_page` |
 | `repo` | string | default repo | Or `"all"` for every repo |
 
-**Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
+**Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier, literal, alternation and regex queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
 
 ```
 search_codebase(query="GitIndexer index_repo")
 search_codebase(query="login", mode="symbol", symbol_kind="method")
+search_codebase(query="short_code|share_code|public_code")
 ```
+
+On an index with no embedder, the first natural-language search with rows says once, in `_meta.keyless_note`, that its rows are keyword matches; `_meta.semantic_search: false` stays on every reply.
 
 ---
 

@@ -1054,6 +1054,30 @@ def keyless_note_meta(local_path: str | None) -> dict[str, Any]:
     return prose_upgrade_meta(local_path) or {"keyless_note": _KEY_ONLY_NOTE}
 
 
+#: For a natural-language search on an index with no embedder (#5049).
+KEYLESS_SEARCH_NOTE = (
+    "keyword match only (no embedder): rows share words, not meaning; "
+    "mode=symbol or mode=path is exact"
+)
+
+
+def keyless_search_note_meta() -> dict[str, Any]:
+    """``keyless_note`` for the first natural-language search with rows on an
+    index with no embedder, once per server process.
+
+    Once, not per call: ``semantic_search: false`` already rides on every
+    reply, and a sentence on each would grow every keyless search. A server
+    shared by several conversations tells only the first; the flag still
+    tells the rest.
+    """
+    from repowise.server.mcp_server import _state
+
+    if semantic_search_state() is not False or _state._keyless_search_noted:
+        return {}
+    _state._keyless_search_noted = True
+    return {"keyless_note": KEYLESS_SEARCH_NOTE}
+
+
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
     """Hint for source retrieval (kept for backward compat with tool_symbol.py)."""
     return None

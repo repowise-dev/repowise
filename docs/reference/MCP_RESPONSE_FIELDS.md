@@ -31,7 +31,7 @@ Routine responses carry a lean envelope. `get_overview` (called once per session
 | `semantic_search` | Only when `false` | Retrieval is full-text only (keyless install or degraded embedder) |
 | `newer_release` | Once per server process | A newer repowise is published; restart the server after upgrading |
 | `server_stale` | Every response, once repowise's code changed on disk after the server started | The server mixes old and new code (after a pull or an upgrade) until it restarts |
-| `keyless_note` | Keyless `get_answer`; `get_overview` until a model writes the prose | The command that adds answers and docs |
+| `keyless_note` | Keyless `get_answer`; `get_overview` until a model writes the prose; the first natural-language `search_codebase` with rows on an index with no embedder | The command that adds answers and docs; on search, that rows are keyword matches only |
 | `omitted` | Content was cut | `refs`, `tokens`, `restore`; see [Truncation and recovery](#truncation-and-recovery) |
 | `recovery_unavailable` | The omission store could not be written | The storage failure; cut rows cannot be restored |
 | `complete` | Whole units were served | Verified symbol bodies or whole files. Do not re-read them |
@@ -352,8 +352,10 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 |-------|---------|
 | `results` | Ranked symbol, file and concept rows |
 | `candidates` | Up to `limit` distinct openable file paths, best first. Read these before a Read. Absent when it would only repeat the `results` paths in order |
-| `lines` | Identifier or literal query: `{path, line, kind, text}`, definitions first, max 50 |
-| `complete`, `reasons` | Whether `lines` is every match, and why not |
+| `lines` | Identifier, literal, alternation or regex query: `{path, line, kind, text}`, definitions first, max 50; an `a\|b` query serves one group per alternative, in query order, sharing the 50 |
+| `matched_as` | `alternation` or `regex`: how a grep-shaped query was read |
+| `unmatched` | Alternatives with no line; with `complete: true` they occur nowhere |
+| `complete`, `reasons` | Whether `lines` is every match, and why not; a scan stopped by its budget names the top directories it did not read |
 
 | Row | Fields |
 |-----|--------|

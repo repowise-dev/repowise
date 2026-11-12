@@ -57,6 +57,8 @@ from repowise.server.mcp_server._query_shape import (
     _canonical_symbol_query,
     _identifier_candidates,
     _qual_norm,
+    query_pattern,
+    required_literal,
 )
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
 from repowise.server.mcp_server._verify import name_at_line
@@ -190,7 +192,7 @@ def _stream_contains(fh: Any, raw: bytes, chunk: int = 1 << 20) -> bool:
 
 
 def _stream_matching_lines(
-    fh: Any, raw: bytes, pattern: re.Pattern[str], deadline: float
+    fh: Any, raw: bytes | None, pattern: re.Pattern[str], deadline: float
 ) -> list[tuple[int, str]] | None:
     """:func:`_matching_lines` for a text file too big to read whole, line by
     line; ``None`` when the scan's deadline passes first."""
@@ -199,7 +201,7 @@ def _stream_matching_lines(
     for n, line in enumerate(fh, 1):
         if n % 10_000 == 0 and time.monotonic() > deadline:
             return None
-        if raw not in line:
+        if raw is not None and raw not in line:
             continue
         text = line.decode("utf-8", errors="replace").removesuffix("\n")
         if pattern.search(text):
@@ -277,7 +279,15 @@ def _scan_rank(rel: str) -> int:
 
 
 def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, Any]], list[str]]:
-    held = _files_holding(root, needle)
+    files, reasons = _scan_files(root, needle)
+    rows, scan_reasons = scan_literal(root, files, needle, word)
+    return rows, reasons + scan_reasons
+
+
+def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
+    """The listed files to scan (those holding *needle* when git can say), source
+    first, and the reason excluded paths were left out."""
+    held = _files_holding(root, needle) if needle else None
     files = _listed_files(root) if held is None else held
     # Ordered so a scan that stops on a budget has read source before docs.
     files = sorted(files, key=lambda f: (_scan_rank(f), f))
@@ -292,7 +302,26 @@ def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, An
             # A grep would still read these.
             reasons.append("excluded paths not scanned")
         files = kept
-    rows, scan_reasons = scan_literal(root, files, needle, word)
+    return files, reasons
+
+
+# A line declaring something, for a regex query's definition rows.
+_DECLARATION_LINE = re.compile(
+    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*(?:{_DECL_WORDS})\b"
+)
+
+
+def _scan_listed_regex(root: Path, pattern: re.Pattern[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lines matching a regex query in every listed file, declarations first.
+
+    git grep narrows the files to those holding the pattern's required text
+    when it has one; without one every listed file is read, inside the scan's
+    time budget, and the reasons say how far it got.
+    """
+    needle = required_literal(pattern)
+    files, reasons = _scan_files(root, needle)
+    raw = needle.encode("utf-8") if needle else None
+    rows, scan_reasons = _scan(root, files, pattern, _DECLARATION_LINE, raw)
     return rows, reasons + scan_reasons
 
 
@@ -369,8 +398,27 @@ def scan_literal(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Matching lines in *files*, definitions first, and why they may not be all."""
     pattern = re.compile(rf"(?<![\w$]){re.escape(needle)}(?![\w$])" if word else re.escape(needle))
-    definition = _definition_re(needle, word)
-    raw = needle.encode("utf-8")
+    return _scan(root, files, pattern, _definition_re(needle, word), needle.encode("utf-8"))
+
+
+def _unscanned(files: list[str]) -> str:
+    """Where the files a scan never opened live, by top directory, largest first."""
+    tops = Counter(f.split("/", 1)[0] + ("/" if "/" in f else "") for f in files)
+    shown = ", ".join(f"{top} {n}" for top, n in tops.most_common(MAX_OMITTED_FILES))
+    more = len(tops) - MAX_OMITTED_FILES
+    return f"; not scanned: {shown}" + (f" and {more} more" if more > 0 else "")
+
+
+def _scan(
+    root: Path,
+    files: list[str],
+    pattern: re.Pattern[str],
+    definition: re.Pattern[str],
+    raw: bytes | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lines of *files* matching *pattern*, definitions first, and why they may
+    not be all. *raw* is bytes every match holds, read to skip a file cheaply;
+    ``None`` reads every file's text."""
     reasons: list[str] = []
     rows: list[dict[str, Any]] = []
     scanned = 0
@@ -391,7 +439,7 @@ def scan_literal(
             reasons.append(f"over {MAX_SCAN_FILES} files")
             break
         if time.monotonic() > deadline:
-            reasons.append(f"time budget: scanned {i} of {len(files)} files")
+            reasons.append(f"time budget: scanned {i} of {len(files)} files{_unscanned(files[i:])}")
             break
         if not _inside(rel):
             unreadable.append(rel)
@@ -406,7 +454,7 @@ def scan_literal(
                         continue
                     head = fh.read(_SNIFF_BYTES)
                     if _looks_binary(head):
-                        binary_hits += _stream_contains(fh, raw)
+                        binary_hits += raw is not None and _stream_contains(fh, raw)
                         continue
                     # Text past the whole-read cap is often the file the index
                     # dropped on size, so only this scan finds what it holds.
@@ -414,12 +462,14 @@ def scan_literal(
                         continue
                     streamed = _stream_matching_lines(fh, raw, pattern, deadline)
                     if streamed is None:
-                        reasons.append(f"time budget: scanned {i} of {len(files)} files")
+                        reasons.append(
+                            f"time budget: scanned {i} of {len(files)} files{_unscanned(files[i:])}"
+                        )
                         break
                 elif scanned + size > MAX_SCAN_BYTES:
                     reasons.append(
                         f"over {MAX_SCAN_BYTES // 1_000_000} MB: scanned {i} of {len(files)}"
-                        " files, source first"
+                        f" files, source first{_unscanned(files[i:])}"
                     )
                     break
                 else:
@@ -441,10 +491,10 @@ def scan_literal(
             # a grep would report. UTF-16 text is not binary.
             if data.startswith((b"\xff\xfe", b"\xfe\xff")):
                 undecodable += 1
-            elif raw in data:
+            elif raw is not None and raw in data:
                 binary_hits += 1
             continue
-        elif raw not in data:
+        elif raw is not None and raw not in data:
             # An ASCII needle shows as the same bytes in any ASCII-compatible
             # encoding; a non-ASCII one is missed unless the file is UTF-8.
             if not raw.isascii() and not _is_utf8(data):
@@ -561,6 +611,9 @@ async def _attach(
 ) -> None:
     if repo == "all" and fed is None:
         return
+    if mode != "path" and (shape := query_pattern(query)):
+        await _attach_pattern(response, query, shape, repo, fed)
+        return
     literal = _literal(query)
     if mode == "path" and (
         response.get("results") or literal is None or "/" not in literal[0]
@@ -580,32 +633,55 @@ async def _attach(
         return
     ctx, (rows, reasons, literal_scan) = found
     mixed = not literal and len(query.split()) > 1
+    rows.sort(key=_row_order(mixed))
+    kept = _capped_per_file(rows, reasons)
+    cap, over = (MAX_LINES_MIXED, OVER_LINES_MIXED) if mixed else (MAX_LINES, OVER_LINES)
+    if len(kept) > cap and over not in reasons:
+        reasons.append(over)
+    _serve_lines(response, query, ctx, rows, kept[:cap], reasons, mixed, literal_scan)
+
+
+def _row_order(mixed: bool) -> Any:
+    """Sort key: production before test within each kind group, every kind for
+    a mixed query, definitions against the rest otherwise."""
     order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
-    # Production before test within each kind group: every kind for a mixed
-    # query, definitions against the rest otherwise.
-    rows.sort(
-        key=lambda r: (
-            order[r["kind"]] if mixed else r["kind"] != "definition",
-            is_test_related_path(r["path"]),
-            order[r["kind"]],
-            r.get("repo") or "",
-            r["path"],
-            r["line"],
-        )
+    return lambda r: (
+        order[r["kind"]] if mixed else r["kind"] != "definition",
+        is_test_related_path(r["path"]),
+        order[r["kind"]],
+        r.get("repo") or "",
+        r["path"],
+        r["line"],
     )
+
+
+def _capped_per_file(rows: list[dict[str, Any]], reasons: list[str]) -> list[dict[str, Any]]:
+    """*rows* under the per-file reference cap, the cut counted in *reasons*."""
     kept = _cap_references_per_file(rows)
     if len(kept) < len(rows):
         reasons.append(
             f"{len(rows) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
             " not shown: lines_omitted_by_file; the full list is under _meta.omitted"
         )
-    cap, over = (MAX_LINES_MIXED, OVER_LINES_MIXED) if mixed else (MAX_LINES, OVER_LINES)
-    if len(kept) > cap and over not in reasons:
-        reasons.append(over)
-    response["lines"] = kept[:cap]
-    if len(response["lines"]) < len(rows):
-        shown = {id(r) for r in response["lines"]}
-        hidden = [r for r in rows if id(r) not in shown]
+    return kept
+
+
+def _serve_lines(
+    response: dict,
+    query: str,
+    ctx: Any,
+    rows: list[dict[str, Any]],
+    shown: list[dict[str, Any]],
+    reasons: list[str],
+    mixed: bool,
+    literal_scan: bool,
+) -> None:
+    """Serve *shown* as ``lines``, account for the rest of *rows*, and say
+    whether the lines are every match."""
+    response["lines"] = shown
+    if len(shown) < len(rows):
+        ids = {id(r) for r in shown}
+        hidden = [r for r in rows if id(r) not in ids]
         collector = OmissionCollector("search_codebase", repo_root=ctx.path)
         collector.add(f"{query} :: lines not shown", hidden)
         collector.attach(response)
@@ -618,8 +694,85 @@ async def _attach(
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
-    if response["lines"]:
+    if shown:
         _reconcile_symbol_miss(response, literal_scan=literal_scan)
+
+
+async def _attach_pattern(
+    response: dict,
+    query: str,
+    shape: tuple[str, Any],
+    repo: str | None,
+    fed: Federation | None,
+) -> None:
+    """``lines`` for a grep-shaped query: each alternative searched as its own
+    query and served as its own group in query order, or a regex's matching
+    lines. ``matched_as`` says which reading was used."""
+    kind, value = shape
+    if kind == "regex":
+        found = await _served(response, repo, fed, lambda ctx: _repo_regex_rows(ctx, value))
+        if found is None:
+            return
+        ctx, (rows, reasons, _scan_only) = found
+        rows.sort(key=_row_order(False))
+        groups = [_capped_per_file(rows, reasons)]
+        literal_scan = True
+    else:
+        ctx, rows, groups, reasons, literal_scan = None, [], [], [], True
+        unmatched: list[str] = []
+        for part in value:
+            literal = _literal(part) or (part, False)
+            found = await _served_rows(
+                response, repo, fed, part, [part] if literal[1] else [], literal
+            )
+            part_rows, part_reasons, scan = ([], [], True) if found is None else found[1]
+            ctx = ctx or (found[0] if found else None)
+            part_rows.sort(key=_row_order(False))
+            cut: list[str] = []
+            groups.append(_capped_per_file(part_rows, cut))
+            rows += part_rows
+            reasons += [f"{part}: {r}" for r in part_reasons + cut]
+            literal_scan = literal_scan and scan
+            if not part_rows:
+                unmatched.append(part)
+        if ctx is None:
+            return
+        if unmatched:
+            # Read with ``complete``: true means these parts match nowhere.
+            response["unmatched"] = unmatched
+    caps = _fair_caps([len(g) for g in groups], MAX_LINES)
+    if any(len(g) > c for g, c in zip(groups, caps, strict=True)):
+        reasons.append(OVER_LINES)
+    shown = [row for g, c in zip(groups, caps, strict=True) for row in g[:c]]
+    response["matched_as"] = kind
+    _serve_lines(response, query, ctx, rows, shown, reasons, False, literal_scan)
+
+
+def _fair_caps(sizes: list[int], cap: int) -> list[int]:
+    """Rows each group may show: *cap* shared evenly, a small group's unused
+    share passed on to the larger ones."""
+    caps = [0] * len(sizes)
+    left = cap
+    while left > 0:
+        open_ = [i for i, size in enumerate(sizes) if caps[i] < size]
+        if not open_:
+            break
+        share = max(1, left // len(open_))
+        for i in open_:
+            add = min(share, sizes[i] - caps[i], left)
+            caps[i] += add
+            left -= add
+    return caps
+
+
+async def _repo_regex_rows(
+    ctx: Any, pattern: re.Pattern[str]
+) -> tuple[list[dict[str, Any]], list[str], bool]:
+    """One repo's lines matching *pattern*, read from its live files."""
+    async with get_session(ctx.session_factory) as session:
+        root = Path(served_root(await _get_repo(session), ctx.path))
+    rows, reasons = await asyncio.to_thread(_scan_listed_regex, root, pattern)
+    return rows, reasons, True
 
 
 async def _served_rows(
@@ -632,10 +785,16 @@ async def _served_rows(
 ) -> tuple[Any, tuple[list[dict[str, Any]], list[str], bool]] | None:
     """``(context, (rows, reasons, literal_scan))`` from *repo*, or from every repo
     with *fed* (the context is then the first repo's); ``None`` with nothing to read."""
+    return await _served(
+        response, repo, fed, lambda ctx: _repo_line_rows(ctx, query, candidates, literal, response)
+    )
 
-    def one(ctx: Any):
-        return _repo_line_rows(ctx, query, candidates, literal, response)
 
+async def _served(
+    response: dict, repo: str | None, fed: Federation | None, one: Any
+) -> tuple[Any, tuple[list[dict[str, Any]], list[str], bool]] | None:
+    """What *one* reads from *repo*, or from every repo with *fed*, as for
+    :func:`_served_rows`."""
     if fed is None:
         ctx = await _resolve_repo_context(repo)
         served = await one(ctx)

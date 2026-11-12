@@ -11,6 +11,7 @@ import os.path
 import re
 from collections.abc import Container, Sequence
 from functools import cache
+from typing import Any
 
 from repowise.core.stack_trace import parse_trace
 
@@ -237,6 +238,13 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
     """
     if names is None:
         return _IDENT_TOKEN_RE.findall(query)
+    if parts := alternation_parts(query):
+        # Each part of ``a|b`` is a name on its own, never prose.
+        return [
+            p
+            for p in parts
+            if _WORD_CHAIN_RE.fullmatch(p) and (_looks_like_code_name(p) or _names_symbol(p, names))
+        ]
     return [
         m.group()
         for m in _name_token_matches(query)
@@ -432,6 +440,139 @@ def _has_exact_symbol(candidates: list[str], symbols: list[dict]) -> bool:
     return any(_symbol_matches_name(symbol, wanted) for symbol in symbols)
 
 
+_MAX_ALTERNATIVES = 8
+# Regex syntax a plain identifier, path or sentence never carries: an escaped
+# punctuation mark, an escape class before a quantifier or at a word edge, a
+# wildcard run, a character class (a range, a negation or an escape: ``[id]``
+# is a Next.js route segment), an anchor, a non-capturing group or a count.
+# ``\s`` before a letter is a Windows path segment (``packages\server``).
+_REGEX_SYNTAX = re.compile(
+    r"\\[().\[\]{}|*+?^$]"
+    r"|\\[sSdDwW](?:[*+?{)|\\]|$)"
+    r"|\\b(?![A-Za-z])|^\\b"
+    r"|\.[*+]"
+    r"|\[\^[^\]]+\]|\[[^\]\s]*(?:\w-\w|\\)[^\]\s]*\]"
+    r"|^\^|(?<!\\)\$$"
+    r"|\(\?:"
+    r"|\{\d+(?:,\d*)?\}"
+)
+# One outer group or word-boundary wrapper around an alternation: ``\b(a|b)\b``.
+_ALT_WRAPPER = re.compile(r"^\^?(?:\\b)?\((?:\?:)?(?P<body>[^()]*)\)(?:\\b)?\$?$")
+_REGEX_META = frozenset("\\^$*+?()[]{}|")
+
+
+def _unescape_literal(part: str) -> str | None:
+    """*part* as the literal text it matches, or ``None`` when it uses regex syntax.
+
+    A bare ``.`` is read as a dot, as agents mean it in ``config.yaml|setup.py``.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(part):
+        ch = part[i]
+        if ch == "\\":
+            if i + 1 >= len(part) or part[i + 1].isalnum():
+                return None
+            out.append(part[i + 1])
+            i += 2
+            continue
+        if ch in _REGEX_META:
+            return None
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def alternation_parts(query: str) -> list[str] | None:
+    """The literal alternatives of an ``a|b|c`` query (grep's most common
+    shape), at most ``_MAX_ALTERNATIVES``, else ``None``.
+
+    An outer group or ``\\b`` wrapper is dropped; ``\\.`` and ``\\(`` read as
+    the character. A part using other regex syntax makes the query a regex.
+    """
+    q = query.strip()
+    if "|" not in q or "\n" in q or "||" in q:
+        return None
+    if m := _ALT_WRAPPER.match(q):
+        q = m.group("body")
+    elif q.startswith("\\b") and q.endswith("\\b") and "(" not in q:
+        q = q[2:-2]
+    parts = [_unescape_literal(p.strip()) for p in re.split(r"(?<!\\)\|", q)]
+    if len(parts) < 2 or not all(parts):
+        return None
+    return list(dict.fromkeys(p for p in parts if p))[:_MAX_ALTERNATIVES]
+
+
+def _nested_repeat(items: Any) -> bool:
+    """Whether a parsed pattern repeats something that itself repeats
+    (``(a+)+``), the shape that backtracks without bound."""
+    from re import _constants as c  # type: ignore[attr-defined]
+
+    repeats = (c.MAX_REPEAT, c.MIN_REPEAT, getattr(c, "POSSESSIVE_REPEAT", c.MAX_REPEAT))
+
+    def walk(seq: Any, under_repeat: bool) -> bool:
+        for op, av in seq:
+            repeat = op in repeats
+            if repeat and under_repeat:
+                return True
+            children = (
+                [av[2]] if repeat else [av[-1]] if op is c.SUBPATTERN else av[1] if op is c.BRANCH else []
+            )
+            if any(walk(child, under_repeat or repeat) for child in children):
+                return True
+        return False
+
+    return walk(items, False)
+
+
+def regex_query(query: str) -> re.Pattern[str] | None:
+    """The compiled pattern for a query written as a regex, else ``None``.
+
+    Only a one-line query carrying unmistakable regex syntax counts, and only
+    one that compiles and cannot backtrack without bound.
+    """
+    q = query.strip()
+    if not q or "\n" in q or not _REGEX_SYNTAX.search(q):
+        return None
+    try:
+        from re import _parser  # type: ignore[attr-defined]
+
+        if _nested_repeat(_parser.parse(q)):
+            return None
+        # Per line, as grep reads it: ``^`` and ``$`` anchor each line.
+        return re.compile(q, re.MULTILINE)
+    except (re.error, ImportError, RecursionError, OverflowError):
+        return None
+
+
+def required_literal(pattern: re.Pattern[str]) -> str | None:
+    """The longest run of plain characters every match contains, 3 or more long.
+
+    Read off the top level of the parsed pattern, so text inside a branch, an
+    optional group or a repeat never counts. ``None`` for a case-insensitive
+    pattern: a byte search for one spelling would miss the others.
+    """
+    if pattern.flags & re.IGNORECASE:
+        return None
+    from re import _constants as c  # type: ignore[attr-defined]
+    from re import _parser  # type: ignore[attr-defined]
+
+    best = run = ""
+    for op, av in _parser.parse(pattern.pattern):
+        run = run + chr(av) if op is c.LITERAL else ""
+        best = max(best, run, key=len)
+    return best if len(best) >= 3 else None
+
+
+def query_pattern(query: str) -> tuple[str, Any] | None:
+    """``("alternation", parts)`` or ``("regex", pattern)`` for a grep-shaped query."""
+    if parts := alternation_parts(query):
+        return "alternation", parts
+    if pattern := regex_query(query):
+        return "regex", pattern
+    return None
+
+
 _VALID_MODES = {"auto", "concept", "symbol", "path", "hybrid"}
 
 
@@ -452,7 +593,8 @@ def _resolve_mode(query: str, mode: str | None, names: Container[str] | None = N
         return m
     if _canonical_symbol_query(query):
         return "symbol"
-    if _is_path(query):
+    # A grep pattern's backslashes and dots are not path separators.
+    if query_pattern(query) is None and _is_path(query):
         return "path"
     if _looks_like_exact_token(query):
         return "symbol"

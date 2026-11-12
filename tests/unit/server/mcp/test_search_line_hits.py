@@ -755,7 +755,10 @@ def test_byte_budget_reads_source_before_tests_and_docs(scan_repo, monkeypatch):
     rows, reasons = _line_hits._scan_listed(scan_repo, "retryLimit", True)
 
     assert {r["path"].split("/")[0] for r in rows} == {"src"}
-    assert reasons == [f"over 0 MB: scanned 3 of {len(_SCAN_TREE)} files, source first"]
+    assert reasons == [
+        f"over 0 MB: scanned 3 of {len(_SCAN_TREE)} files, source first;"
+        " not scanned: docs/ 2, tests/ 1, README.md 1"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -894,3 +897,80 @@ def test_a_stream_past_the_deadline_stops(tmp_path):
         assert _line_hits._stream_matching_lines(fh, b"token47", pattern, float("inf")) == [
             (20_001, "token47")
         ]
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_serves_each_part_as_its_own_group(tree):
+    out = await search_codebase("backend_of|GREETING")
+
+    assert out["matched_as"] == "alternation"
+    # Query order, each group definitions first: the edit set, then the scan.
+    assert _rows(out) == [
+        ("pkg/catalog.py", 4, "definition"),
+        ("app/widget.py", 1, "import"),
+        ("app/widget.py", 6, "call"),
+        ("pkg/catalog.py", 2, "definition"),
+    ]
+    assert out["complete"] is True
+    assert "unmatched" not in out
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_names_the_parts_that_match_nowhere(tree):
+    out = await search_codebase(r"\b(backend_of|nowhere_at_all)\b")
+
+    assert [r[0] for r in _rows(out)] == ["pkg/catalog.py", "app/widget.py", "app/widget.py"]
+    assert out["unmatched"] == ["nowhere_at_all"]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_of_indexed_names_is_not_reported_missing(tree):
+    out = await search_codebase("AuthService|User", mode="hybrid")
+
+    assert out["exact_match"] is True
+    assert "No indexed symbol" not in out.get("note", "")
+    assert {r.get("name") for r in out["results"] if r.get("type") == "symbol"} >= {
+        "AuthService",
+        "User",
+    }
+
+
+def test_the_line_cap_is_shared_evenly_and_unused_share_passes_on():
+    assert _line_hits._fair_caps([3, 100], 50) == [3, 47]
+    assert _line_hits._fair_caps([100, 100], 50) == [25, 25]
+    assert _line_hits._fair_caps([0, 0], 50) == [0, 0]
+    assert sum(_line_hits._fair_caps([30, 30, 30], 50)) == 50
+
+
+@pytest.mark.asyncio
+async def test_a_regex_serves_the_lines_it_matches(tree):
+    out = await search_codebase(r"connect\(\d+\)")
+
+    assert out["matched_as"] == "regex"
+    assert _rows(out) == [("app/widget.py", 4, "match")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_regex_lists_declarations_first(tree):
+    out = await search_codebase(r"^def \w+\(")
+
+    assert _rows(out) == [
+        ("app/widget.py", 3, "definition"),
+        ("pkg/catalog.py", 4, "definition"),
+    ]
+
+
+def test_a_scan_out_of_time_names_what_it_did_not_read(scan_repo, monkeypatch):
+    import re
+
+    _python_only(monkeypatch)
+    monkeypatch.setattr(_line_hits, "MAX_SCAN_SECONDS", -1.0)
+    rows, reasons = _line_hits._scan_listed_regex(scan_repo, re.compile(r"retry\w+"))
+
+    assert rows == []
+    assert reasons == [
+        f"time budget: scanned 0 of {len(_SCAN_TREE)} files;"
+        " not scanned: src/ 3, docs/ 2, tests/ 1, README.md 1"
+    ]
