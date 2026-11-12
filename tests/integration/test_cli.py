@@ -291,19 +291,27 @@ class TestInitIndexOnly:
         providers = set(_db_column(db_path, "SELECT DISTINCT provider_name FROM wiki_pages"))
         assert providers == {"template"}
 
-    def test_index_only_persists_clamped_commit_limit_and_excludes(self, runner, work_repo):
+    def test_index_only_persists_commit_limit_and_excludes(self, runner, work_repo):
         from repowise.cli.helpers import load_config
 
         result = runner.invoke(
             cli,
-            ["init", str(work_repo), "--index-only", "-x", "vendor/", "--commit-limit", "99999"],
+            ["init", str(work_repo), "--index-only", "-x", "vendor/", "--commit-limit", "2500"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
 
         cfg = load_config(work_repo)
         assert cfg["exclude_patterns"] == ["vendor/"]
-        assert cfg["commit_limit"] == 10000  # 99999 clamped to the 10000 max
+        assert cfg["commit_limit"] == 2500
+
+    def test_index_only_rejects_commit_limit_above_max(self, runner, work_repo):
+        result = runner.invoke(
+            cli,
+            ["init", str(work_repo), "--index-only", "--commit-limit", "99999"],
+        )
+        assert result.exit_code == 2
+        assert "--commit-limit" in result.output
 
     def test_index_only_omits_excludes_when_none_given(self, runner, work_repo):
         from repowise.cli.helpers import load_config
