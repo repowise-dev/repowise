@@ -4,7 +4,7 @@ Every `repowise` command and flag. For a guided introduction, see the [Quickstar
 
 Top-level commands (alphabetical): `agents`, `ask`, `attribution`, `augment`, `changes`, `check`, `ci-summary`, `components`,
 `config`, `context`, `corrections`, `costs`, `coverage`, `dead-code`, `decision`, `delete`, `distill`, `doc-drift`,
-`doctor`, `events`, `expand`, `export`, `generate`, `generate-claude-md`, `health`, `hook`, `impacted-tests`, `init`,
+`doctor`, `events`, `expand`, `export`, `generate`, `generate-claude-md`, `health`, `hook`, `hosted`, `impacted-tests`, `init`,
 `login`, `logout`, `mcp`, `next`, `overlap`, `packages`, `plugins`, `publish`, `reindex`, `report`, `restyle`, `risk`,
 `saved`, `savings`, `search`, `security`, `serve`, `status`, `suspects`, `symbol`, `telemetry`, `uninstall`, `update`,
 `watch`, `whats-new`, `whoami`, `why`, `wiki-styles`, `workspace`. `repowise --version` prints the version.
@@ -52,6 +52,7 @@ Grouped by task; `PATH` and flags are in each command's section.
 - **Maintenance:** [`doctor`](#repowise-doctor-path), [`grammars fetch`](#repowise-grammars-fetch-dir), [`whats-new`](#repowise-whats-new),
   [`telemetry`](#repowise-telemetry), [`plugins`](#repowise-plugins), [`config hints`](#repowise-config-hints-onoff),
   [`login`](#repowise-login), [`logout`](#repowise-logout), [`whoami`](#repowise-whoami),
+  [`hosted`](#repowise-hosted),
   [`publish`](#repowise-publish-path), [`delete`](#repowise-delete-repo_id), [`uninstall`](#repowise-uninstall-path),
   [`costs`](#repowise-costs), [`export`](#repowise-export-path)
 
@@ -2083,8 +2084,8 @@ repowise generate-claude-md --stdout
 
 ### `repowise agents`
 
-Wire agents after `init`: Claude Code, Codex, VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI, Kiro, and any host
-via `print-config`. With no subcommand, lists each agent for the cwd repo: tier, installed or not, every wiring.
+Wire agents after `init`: Claude Code, Codex, VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI, Kiro, Windsurf,
+and any host via `print-config`. With no subcommand, lists each agent for the cwd repo: tier, installed or not, every wiring.
 
 ```bash
 repowise agents --format json
@@ -2092,6 +2093,7 @@ repowise agents add [PATH] --target=opencode --scope=project
 repowise agents remove [PATH] --target=hermes --scope=user
 repowise agents refresh [PATH]
 repowise agents print-config claude-code [PATH]
+repowise agents add --hosted --target=auto --yes --format json
 ```
 
 | Flag | What it does | Default |
@@ -2100,11 +2102,33 @@ repowise agents print-config claude-code [PATH]
 | `--target` | `add`/`remove`: comma-separated ids or `auto`/`all`/`none`. Required for `remove` (destructive). | `add`: prompts, installed pre-ticked |
 | `--scope` | `add`/`remove`/`refresh`: `project` (repo), `user` (machine), `both`. | `both` |
 | `--yes` / `-y` | `add`: never prompt. | off |
+| `--hosted` | `add`: write the hosted server for this repo instead of the local one (see below). `--scope` is ignored. | off |
+| `--repo` | `add --hosted`: `owner/name` on repowise.dev. | the GitHub `origin` |
 | `print-config --scope` | `project` or `user` snippet. | `project` |
 | `print-config --format` | `table`: bare paste-ready snippet; `json`: with target, scope, repo, docs URL. | `table` |
 
 - `refresh` only repoints wired agents (after an upgrade or repo move), never adds, so `repowise doctor --repair` calls it.
-- `print-config` prints the MCP entry, writing nothing, for hosts like Cline, Windsurf, Zed, Gemini CLI.
+- `print-config` prints the MCP entry, writing nothing, for hosts like Cline, Zed, Gemini CLI.
+
+**`agents add --hosted`** writes `https://api.repowise.dev/mcp/<owner>/<name>` as a remote entry: a URL only, no
+key, signed in with OAuth the first time the client connects. `--target=auto` (or no `--target`) picks the clients
+that look installed. The server is named `repowise`, or `repowise-hosted` when a local `repowise` server is already
+configured; a local entry is never overwritten, and a re-run changes nothing.
+
+| Client | Where the entry goes | Shape | Then a person |
+|--------|----------------------|-------|---------------|
+| Claude Code | `~/.claude.json`, this repo's local scope (as `claude mcp add` writes it) | `type: http`, `url` | restarts, runs `/mcp`, authenticates |
+| Cursor | `.cursor/mcp.json` | `url` | clicks "Needs login" in Settings > MCP |
+| VS Code | `.vscode/mcp.json` | `type: http`, `url` | clicks Start above the server |
+| Codex CLI | `.codex/config.toml` | `[mcp_servers.<name>] url` | runs `codex mcp login <name>` |
+| OpenCode | `opencode.json` | `type: remote`, `url` | runs `opencode mcp auth <name>` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `serverUrl` | approves it in Cascade's MCP servers |
+
+Hermes, GitHub Copilot CLI and Kiro are reported as skipped with the URL to add by hand. `--format json` lists, per
+client, every file and its outcome, the `server_name` used and the `next_step` for a person.
+
+`init` never converts a remote `repowise` entry it finds; it leaves it and suggests renaming it `repowise-hosted` so
+the local server can take the name.
 
 Support matrix: [Agent integrations](../agent/INTEGRATIONS.md).
 
@@ -2242,13 +2266,19 @@ Sign in to repowise.dev (browser OAuth with PKCE; tokens in `~/.repowise/credent
 repos, reindex from local tools and account status in `doctor`. Local features never need it.
 
 ```bash
+repowise login --device
 repowise login --with-token
 ```
 
 | Flag | What it does | Default |
 |------|--------------|---------|
+| `--device` | No browser here (SSH, container, cloud agent): prints a code to approve at `repowise.dev/device` from any device, then waits. Tokens are stored as with the browser sign-in and never printed. | off (browser) |
 | `--with-token` | Paste an API key (`rw_live_...`): stdin when piped, else prompt. For SSH/headless. | off (browser) |
 | `--device-name` | Machine label in connected apps. | hostname |
+
+`--device` polls at the interval the server asks for (slower on `slow_down`), stops when the code is denied or
+expires (10 minutes), and starts over once with a fresh code if the server no longer accepts the first. Approve a
+code only if you started the sign-in yourself, on a machine you control.
 
 ### `repowise logout`
 
@@ -2265,6 +2295,33 @@ Show the signed-in account.
 ```bash
 repowise whoami
 ```
+
+### `repowise hosted`
+
+Your repowise.dev account, from the terminal. Needs `repowise login`.
+
+```bash
+repowise hosted status --format json
+repowise hosted reviews on --repo acme/api
+repowise hosted coverage-pr --format json
+```
+
+| Command | What it does |
+|---------|--------------|
+| `status` | What is set up for a repo on repowise.dev (index, agent connection, PR bot, coverage) and what is left, with who does each step and its link. Reads only. |
+| `reviews on` | Turns on PR reviews for a repo the Repowise bot is installed on. |
+| `coverage-pr` | Has the bot open a draft PR adding the coverage upload workflow. Merging it is yours. |
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--repo` | `owner/name`. | the GitHub `origin`; for `status` without one, the most recently active repo |
+| `--format` | `table` or `json`. `status --format json` prints the platform's payload as it came. | `table` |
+
+Signed out, `status` reports `{"account": {"signed_in": false}, "error": "signed_out"}` and exits 0. Every other
+failure exits 1 with an `error` code: `offline`, `unsupported` (an older server), `not_installed` (the bot does not
+cover the repo; the message links the install), `needs_plan` (a private repo below a paid plan),
+`forbidden` (usually a sign-in without write access: sign in again), `permission_needed` (the bot needs a GitHub permission
+approved), `pending` (the bot is still working; run it again).
 
 ### `repowise publish [PATH]`
 

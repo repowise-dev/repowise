@@ -133,11 +133,28 @@ class PlatformClient:
         status and body come back instead of a bool. A body that is not a
         JSON object reads as ``{}``; no answer at all is ``(0, {})``.
         """
+        return self.send_json("POST", path, payload, timeout=timeout)
+
+    def send_json(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> tuple[int, dict[str, Any]]:
+        """Send *payload* as JSON with *method* and return ``(status_code, parsed_body)``.
+
+        :meth:`post_json` for any verb (``PATCH`` a setting, ``POST`` an
+        action with no body). Same contract: never raises, ``(0, {})`` when
+        nothing answered.
+        """
         url = f"{self.base_url}/{path.lstrip('/')}"
         try:
             import httpx
 
-            resp = httpx.post(
+            resp = httpx.request(
+                method,
                 url,
                 json=payload,
                 headers=self._headers(),

@@ -56,7 +56,6 @@ for _pkg in ("cli", "core", "server"):
 #: these to a real integration and forgetting to delete the line is caught.
 PASTE_CONFIG_HOSTS: tuple[str, ...] = (
     "Cline",
-    "Windsurf",
     "Zed",
     "Continue",
     "Gemini CLI",

@@ -64,14 +64,16 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
-from ..formats.server_entry import RemoteServerEntryError
+from ..formats.server_entry import RENAME_HINT, RemoteServerEntryError, ServerSpec
 from ..types import (
     Capability,
     DoctorReport,
     DoctorStatus,
     FileAction,
     FileWrite,
+    HostedSupport,
     InstallMethod,
+    InstallOptions,
     Registration,
     Scope,
     WriteResult,
@@ -247,6 +249,14 @@ def server_entry(scope: Scope, repo_path: Path | None = None) -> dict:
     }
 
 
+#: The hosted entry is ``"type": "remote"`` in the project ``opencode.json``, so
+#: it serves this repo only. OpenCode signs in to a remote server that asks
+#: for OAuth through ``opencode mcp auth``.
+HOSTED = HostedSupport(
+    scope=Scope.PROJECT,
+    next_step='Run "opencode mcp auth {name}" and approve Repowise in the browser.',
+)
+
 #: OpenCode's spelling of "a command we launch". Its remote servers are
 #: ``type: "remote"`` and carry a ``url`` instead.
 LOCAL_TYPE = "local"
@@ -276,50 +286,67 @@ def _merge_entry(stored: object, generated: dict) -> dict:
     return merged
 
 
-def write_mcp_config(scope: Scope, repo_path: Path | None = None) -> FileWrite:
-    """Merge the repowise server into ``opencode.json{,c}``.
+def _merge_servers(servers: dict, new_entries: dict) -> None:
+    """:func:`_merge_entry` over a server map, the shape the shared writer takes."""
+    for name, generated in new_entries.items():
+        servers[name] = _merge_entry(servers.get(name), generated)
+
+
+def write_server(
+    scope: Scope, repo_path: Path | None, spec: ServerSpec
+) -> tuple[str, FileWrite]:
+    """Merge *spec* (the local server or the hosted one) into ``opencode.json{,c}``.
 
     Raises ``ValueError`` when the file is not strict JSON so the caller can
     skip it. See the module docstring for why declining beats every available
-    alternative here.
+    alternative here. A local write onto a remote ``repowise`` entry raises
+    ``RemoteServerEntryError``: this config is ``$schema``-validated, so the
+    stray key a half-conversion leaves behind can cost the whole file rather
+    than the one entry.
+
+    No ``$schema`` is seeded in a new file, deliberately. OpenCode's own
+    first-run file is exactly ``{"$schema": "..."}`` and nothing else, so a file
+    holding only that is far more likely to be the host's than ours. Writing one
+    leaves uninstall no way to tell "a stub we created" from "the config the
+    user already had". Without it, a file repowise created holds only ``mcp``
+    and empties to nothing, which is unambiguous.
+
+    OpenCode merges the project config over the user one key by key, so a
+    hosted ``repowise`` in the project file would land on a local ``repowise``
+    in the user file and leave an entry that is neither. A local server at
+    user scope therefore sends the hosted one to ``repowise-hosted``.
     """
-    from ..formats.json_merge import (
-        load_json_object_or_value_error,
-        write_json_config,
+    from ..formats.server_entry import write_json_servers
+
+    return write_json_servers(
+        write_target_path(scope, repo_path),
+        "mcp",
+        spec,
+        local_type=LOCAL_TYPE,
+        local_elsewhere=spec.hosted and scope is Scope.PROJECT and _user_local_server(),
+        merge=_merge_servers,
     )
+
+
+def _user_local_server() -> bool:
+    """Whether a user-scope OpenCode config holds a local ``repowise`` server."""
     from ..formats.server_entry import is_remote_entry
 
-    path = write_target_path(scope, repo_path)
-    generated = server_entry(scope, repo_path)
+    for path in config_paths(Scope.USER):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        servers = data.get("mcp") if isinstance(data, dict) else None
+        stored = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
+        if isinstance(stored, dict) and not is_remote_entry(stored, local_type=LOCAL_TYPE):
+            return True
+    return False
 
-    if path.exists():
-        existing = load_json_object_or_value_error(path, path.name)
-        servers = existing.get("mcp", {})
-        if not isinstance(servers, dict):
-            raise ValueError(f"{path.name} 'mcp' must be a JSON object")
-        servers = dict(servers)
-        stored = servers.get(SERVER_NAME)
-        if isinstance(stored, dict) and is_remote_entry(stored, local_type=LOCAL_TYPE):
-            # See ``formats.server_entry``. This config is ``$schema``-validated,
-            # so the stray key a half-conversion leaves behind can cost the whole
-            # file rather than the one entry.
-            raise RemoteServerEntryError(f"{path.name} 'repowise' is wired to a remote server")
-        servers[SERVER_NAME] = _merge_entry(stored, generated)
-        existing["mcp"] = servers
-        merged = existing
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # No ``$schema`` seeded here, deliberately. It would be a nice courtesy
-        # and it costs more than it gives: OpenCode's own first-run file is
-        # exactly ``{"$schema": "..."}`` and nothing else, so a file holding
-        # only that is far more likely to be the host's than ours. Writing one
-        # leaves uninstall no way to tell "a stub we created" from "the config
-        # the user already had", and the safe reading of that ambiguity is the
-        # one that never deletes. Without it, a file repowise created holds only
-        # ``mcp`` and empties to nothing, which is unambiguous.
-        merged = {"mcp": {SERVER_NAME: {**generated, "enabled": True}}}
 
-    return FileWrite(path=path, action=write_json_config(path, merged))
+def write_mcp_config(scope: Scope, repo_path: Path | None = None) -> FileWrite:
+    """Merge the local repowise server into ``opencode.json{,c}``."""
+    return write_server(scope, repo_path, ServerSpec(server_entry(scope, repo_path)))[1]
 
 
 def write_instructions(scope: Scope, repo_path: Path | None = None) -> FileWrite:
@@ -594,6 +621,7 @@ class OpenCodeTarget:
     capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
+    hosted = HOSTED
 
     def supports_scope(self, scope: Scope) -> bool:
         """Both. The user config serves every workspace, the project one is committed."""
@@ -622,9 +650,18 @@ class OpenCodeTarget:
         *,
         repo_path: Path | None = None,
     ) -> WriteResult:
-        result = WriteResult()
         if scope is Scope.PROJECT and repo_path is None:
             raise ValueError("project-scope install needs a repo_path")
+        hosted_url = options.hosted_url if isinstance(options, InstallOptions) else None
+        if hosted_url:
+            from ..formats.server_entry import install_hosted
+
+            return install_hosted(
+                write_target_path(scope, repo_path),
+                lambda spec: write_server(scope, repo_path, spec),
+                {"type": "remote", "url": hosted_url},
+            )
+        result = WriteResult()
 
         # Both writes are guarded, and neither guard is theoretical. Nothing
         # wraps ``install`` -- ``agents add``, ``agents refresh`` and
@@ -641,17 +678,8 @@ class OpenCodeTarget:
             result.record(written.path, written.action)
         except RemoteServerEntryError:
             path = write_target_path(scope, repo_path)
-            result.record(
-                path,
-                FileAction.KEPT,
-                'its "repowise" entry names a remote server',
-            )
-            result.note(
-                f'{path.name} left unchanged: its "repowise" entry names a remote server, '
-                "and converting it in place would leave an entry that is neither. Run "
-                "'repowise agents remove --target=opencode' first if you want the local "
-                "server instead."
-            )
+            result.record(path, FileAction.KEPT, RENAME_HINT)
+            result.note(f"{path.name} left unchanged: {RENAME_HINT}.")
         except (ValueError, OSError) as exc:
             # ``write_target_path`` rather than ``config_path``: the note has to
             # name the file the write actually aimed at, which is the one
