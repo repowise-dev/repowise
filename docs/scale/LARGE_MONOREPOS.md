@@ -161,7 +161,10 @@ re-analyses only what changed. Pick a trigger
 
 A change to a build file the graph reads (`CMakeLists.txt`, `BUILD`,
 `BUILD.bazel`) rebuilds the whole graph on that update, because include and
-target resolution depend on it. Source-only commits patch the graph in place.
+target resolution depend on it. So does a change to a C or C++ source file;
+commits that touch only other languages patch the graph in place. On RocksDB
+(2,185 indexed files, mostly C++), an update after a one-line `.cc` edit took
+2m 9s at 1.7 GiB peak memory.
 
 ## Memory and time levers
 
