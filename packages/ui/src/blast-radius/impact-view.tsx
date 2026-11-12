@@ -681,9 +681,9 @@ function ResultPane({
   const { analysis, error, loading, retry } = state;
   return (
     <section className="min-w-0 space-y-6">
+      <PickStatus reading={loading ? pickedName : ""} files={pickedFiles} ready={Boolean(analysis && !error)} />
       {empty}
       {error && <AnalysisFailed error={error} onRetry={retry} />}
-      <PickStatus reading={loading ? pickedName : ""} files={pickedFiles} ready={Boolean(analysis && !error)} />
       {loading && !analysis && <ReviewSkeleton />}
       {analysis && (
         <div className={loading ? "space-y-6 opacity-60 transition-opacity" : "space-y-6"}>
