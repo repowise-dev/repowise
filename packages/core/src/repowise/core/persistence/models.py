@@ -936,6 +936,44 @@ class Change(Base):
     )
 
 
+class ChangeCommit(Base):
+    """One commit a change landed: ``changes.commit_shas_json`` as rows.
+
+    Lets the health filters join a change to its commits' stored deltas in SQL
+    instead of binding every matching change id. Written with the change.
+    """
+
+    __tablename__ = "change_commits"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "change_id", "sha", name="uq_change_commit"),
+        Index("ix_change_commits_repo_sha", "repository_id", "sha"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    change_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class ChangeFile(Base):
+    """One path a change stores: ``changes.files_json`` as rows (the same capped list)."""
+
+    __tablename__ = "change_files"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "change_id", "file_path", name="uq_change_file"),
+        Index("ix_change_files_repo_path", "repository_id", "file_path"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    change_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class GitCommitFile(Base):
     """One file a commit touched, and the lines it changed there.
 

@@ -457,3 +457,175 @@ async def test_attribution_off_stores_no_provenance(tmp_path, history):
             assert (row.provenance, row.provenance_agent, row.provenance_known) == (None, None, None)
     finally:
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Health filters in SQL, and the run's commit window
+# ---------------------------------------------------------------------------
+
+_STAMP_ARGS = (50, "fp", 1)
+
+
+def _change_row(i: int, shas: list[str], paths: list[str]) -> dict:
+    return {
+        "change_id": f"commit-{i}",
+        "identity_kind": "commit",
+        "identity_value": str(i),
+        "shape": "commit",
+        "title": f"change {i}",
+        "merged_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "head_sha": shas[0],
+        "commit_shas_json": json.dumps(shas),
+        "files_json": json.dumps([{"path": p, "added": 1, "deleted": 0} for p in paths]),
+        "metadata_source": "git",
+    }
+
+
+def _delta(sha: str, *, better: int = 0, worse: int = 0, stamp=_STAMP_ARGS) -> dict:
+    version, fingerprint, performance = stamp
+    return {
+        "sha": sha,
+        "resolved_count": better,
+        "introduced_count": worse,
+        "analyzer_version": version,
+        "rules_fingerprint": fingerprint,
+        "performance_model_version": performance,
+    }
+
+
+async def _store_health(session, repo_id: str, changes: list[dict], deltas: list[dict]) -> None:
+    from sqlalchemy import insert
+
+    from repowise.core.persistence.crud import upsert_changes, upsert_git_metadata_bulk
+    from repowise.core.persistence.models import GitCommitHealthDelta
+
+    await upsert_changes(session, repo_id, changes)
+    await upsert_git_metadata_bulk(
+        session, repo_id, [{"file_path": "hot.py", "is_hotspot": True}, {"file_path": "cold.py"}]
+    )
+    for start in range(0, len(deltas), 500):
+        await session.execute(
+            insert(GitCommitHealthDelta),
+            [{"id": f"d{start + n}", "repository_id": repo_id, **d} for n, d in enumerate(deltas[start : start + 500])],
+        )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_delta_and_hotspot_filters_match_the_python_rollup(tmp_path):
+    from repowise.core.analysis.history import DeltaStamp
+    from repowise.core.persistence.crud import ChangeFilter, list_changes
+    from repowise.core.persistence.database import get_session
+
+    stamp = DeltaStamp(*_STAMP_ARGS)
+    engine, factory, repo_id = await _db(tmp_path, tmp_path)
+    try:
+        async with get_session(factory) as session:
+            await _store_health(
+                session,
+                repo_id,
+                [
+                    _change_row(1, ["a1"], ["hot.py"]),
+                    _change_row(2, ["b1", "b2"], ["cold.py"]),
+                    _change_row(3, ["c1"], ["cold.py"]),
+                    _change_row(4, ["d1"], ["hot.py", "cold.py"]),
+                    _change_row(5, ["e1", "e2"], ["cold.py"]),
+                ],
+                [
+                    _delta("a1", better=2),
+                    _delta("b1", better=1),
+                    _delta("b2", worse=1),
+                    _delta("c1"),
+                    # Another analyzer's row counts as never scanned.
+                    _delta("d1", worse=3, stamp=(49, "old", 1)),
+                    _delta("e1", worse=1),
+                ],
+            )
+        async with get_session(factory) as session:
+
+            async def ids(**kw) -> list[str]:
+                rows, total = await list_changes(
+                    session, repo_id, ChangeFilter(stamp=stamp, **kw), limit=None
+                )
+                assert total == len(rows)
+                return sorted(r.change_id for r in rows)
+
+            assert await ids(delta="improved") == ["commit-1", "commit-2"]
+            assert await ids(delta="worsened") == ["commit-2", "commit-5"]
+            assert await ids(delta="mixed") == ["commit-2"]
+            assert await ids(delta="neutral") == ["commit-3"]
+            assert await ids(touches_hotspot=True) == ["commit-1", "commit-4"]
+            assert await ids(delta="improved", touches_hotspot=True) == ["commit-1"]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_health_filter_returns_every_match_past_the_bind_limit(tmp_path):
+    from repowise.core.analysis.history import DeltaStamp
+    from repowise.core.persistence.crud import ChangeFilter, list_changes
+    from repowise.core.persistence.database import get_session
+
+    count = 40_500
+    engine, factory, repo_id = await _db(tmp_path, tmp_path)
+    try:
+        async with get_session(factory) as session:
+            await _store_health(
+                session,
+                repo_id,
+                [_change_row(i, [f"s{i}"], ["hot.py"]) for i in range(count)],
+                [_delta(f"s{i}", worse=1) for i in range(count)],
+            )
+        async with get_session(factory) as session:
+            where = ChangeFilter(
+                delta="worsened", touches_hotspot=True, stamp=DeltaStamp(*_STAMP_ARGS)
+            )
+            rows, total = await list_changes(session, repo_id, where, limit=None)
+            assert total == count == len(rows)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_refresh_takes_the_runs_commit_limit_over_the_config(tmp_path, history):
+    from repowise.core.persistence.crud import list_changes
+    from repowise.core.persistence.database import get_session
+
+    r, _ = history
+    (r.root / ".repowise").mkdir()
+    (r.root / ".repowise" / "config.yaml").write_text("commit_limit: 3\n")
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        async with get_session(factory) as session:
+            assert await refresh_changes(session, repo_id, r.root, rebuild=True) < 9
+            assert await refresh_changes(session, repo_id, r.root, rebuild=True, commit_limit=100) == 9
+            _, total = await list_changes(session, repo_id)
+            assert total == 9
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_persist_git_builds_changes_over_the_commit_window_it_walked(tmp_path, history):
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.crud import list_changes
+    from repowise.core.persistence.database import get_session
+    from repowise.core.pipeline.persist import persist_git
+
+    r, _ = history
+    (r.root / ".repowise").mkdir()
+    (r.root / ".repowise" / "config.yaml").write_text("commit_limit: 3\n")
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        async with get_session(factory) as session:
+            summary = SimpleNamespace(commit_rows=[], commit_limit=100)
+            await persist_git(
+                SimpleNamespace(git_metadata_list=[], git_summary=summary), session, repo_id
+            )
+            _, total = await list_changes(session, repo_id)
+            assert total == 9
+    finally:
+        await engine.dispose()

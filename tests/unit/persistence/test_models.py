@@ -313,6 +313,8 @@ def test_base_includes_all_models():
         "dead_code_findings",
         "doc_drift_findings",
         "doc_drift_references",
+        "change_commits",
+        "change_files",
         "changes",
         "decision_records",
         "decision_evidence",

@@ -462,6 +462,7 @@ class GitIndexer:
             history_coverage=history_coverage(
                 indexable_files, code_results, sample, self.commit_limit, workers
             ),
+            commit_limit=self.commit_limit,
         )
         repo.close()
 
