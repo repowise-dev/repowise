@@ -827,8 +827,12 @@ class _RepowiseMCP(FastMCP):
             from repowise.server.mcp_server._http_auth import call_denial
 
             if _state._registry is not None:
-                # Repo checks read ids synchronously; a shared store's are read here.
-                await _state._registry.ensure_repo_ids()
+                # Repo checks read ids synchronously; a shared store's are read
+                # here. Unreadable, an id stays unknown and its check refuses.
+                try:
+                    await _state._registry.ensure_repo_ids()
+                except (OSError, OperationalError):
+                    _log.warning("repowise MCP: could not read repository ids", exc_info=True)
 
             denial = call_denial(principal, name, arguments)
             if denial is not None:

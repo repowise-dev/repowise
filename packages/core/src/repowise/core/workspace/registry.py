@@ -320,9 +320,13 @@ class RepoRegistry:
             rows = (await conn.execute(select(Repository.id, Repository.local_path))).all()
         by_path = {self._identity_key(path): repo_id for repo_id, path in rows}
         for entry in self._ws_config.repos:
-            checkout = self._identity_key((self._workspace_root / entry.path).resolve())
-            if checkout in by_path:
-                self._repo_ids[entry.alias] = by_path[checkout]
+            # As written and resolved: an indexer may have stored either
+            # spelling of a symlinked checkout.
+            path = self._workspace_root / entry.path
+            for checkout in (self._identity_key(path.resolve()), self._identity_key(path)):
+                if checkout in by_path:
+                    self._repo_ids[entry.alias] = by_path[checkout]
+                    break
 
     async def _open_shared_store(self) -> Any:
         """The engine on the configured database, opened once for every member."""
