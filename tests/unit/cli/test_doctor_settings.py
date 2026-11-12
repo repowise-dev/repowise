@@ -198,7 +198,10 @@ def test_json_carries_the_settings_rows_in_the_doctor_shape(repo, monkeypatch) -
         "_hosted_account_check",
         lambda: _check("Hosted account", True, "", check_id="hosted-account"),
     )
-    _write(repo, 'commit_limit: "lots"\ncomit_limit: 5\n')
+    _write(
+        repo,
+        'commit_limit: "lots"\ncomit_limit: 5\nopenai:\n  base_url: "ftp://me:hunter2@x"\n',
+    )
     result = CliRunner().invoke(doctor_command, [str(repo), "--no-workspace", "--format", "json"])
     integrations._mcp_responds_check.cache_clear()
     payload = json.loads(result.output[result.output.index("{") :])
@@ -214,3 +217,5 @@ def test_json_carries_the_settings_rows_in_the_doctor_shape(repo, monkeypatch) -
     }
     assert by_id["setting-comit-limit"]["level"] == "warn"
     assert "settings" not in by_id
+    assert "hunter2" not in result.output
+    assert "ftp://***@x" in by_id["setting-openai-base-url"]["detail"]

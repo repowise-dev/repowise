@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
-from repowise.core.settings.views import requirement
+from repowise.core.settings.views import masked, requirement
 
 from .._types import DoctorCheck, _check
 from .context import CheckContext
@@ -69,11 +69,11 @@ def _problem(
 
 
 def _shown(value: Any) -> str:
-    return json.dumps(value, default=str)
+    return json.dumps(masked(value), default=str)
 
 
 def _reason(setting: Setting, problem: str) -> str:
-    return problem.removeprefix(f"{setting.key}: ").rstrip(".")
+    return masked(problem.removeprefix(f"{setting.key}: ").rstrip("."))
 
 
 def _file_row(setting: Setting, raw: Any, problem: str) -> tuple[DoctorCheck, str | None]:
@@ -83,7 +83,7 @@ def _file_row(setting: Setting, raw: Any, problem: str) -> tuple[DoctorCheck, st
     if raw is MISSING:
         # A whole block that is unreadable (``decisions.sources: 3``): no one
         # key to reset, so the file is fixed by hand.
-        return _row(setting.key, False, f"{problem} Fix it in {_FILE}."), None
+        return _row(setting.key, False, f"{masked(problem)} Fix it in {_FILE}."), None
     key = setting.key
     detail = (
         f"{key}: {_shown(raw)} in {_FILE} is not valid: {_reason(setting, problem)}. "

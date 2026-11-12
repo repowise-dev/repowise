@@ -87,6 +87,17 @@ async def test_get_never_sends_a_credential(client: AsyncClient, monkeypatch):
     assert (token["value"], token["source"]) == ("(set, hidden)", "env")
 
 
+async def test_get_masks_a_url_password(client: AsyncClient, monkeypatch):
+    monkeypatch.setenv("REPOWISE_PUBLIC_URL", "https://ci:hunter2@repowise.example/mcp")
+    repo = await create_test_repo(client)
+
+    resp = await client.get(f"/api/repos/{repo['id']}/settings")
+
+    assert "hunter2" not in resp.text
+    url = _setting(resp.json(), "REPOWISE_PUBLIC_URL")
+    assert url["value"] == "https://***@repowise.example/mcp"
+
+
 async def test_get_refuses_an_unreadable_config(client: AsyncClient):
     repo = await create_test_repo(client)
     _write_config(repo, "commit_limit: [unclosed\n")

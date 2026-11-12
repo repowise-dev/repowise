@@ -107,6 +107,19 @@ def test_get_reports_the_env_source(repo, monkeypatch):
     assert (out["value"], out["source"]) == (True, "env")
 
 
+def test_a_url_password_is_masked_but_the_file_keeps_it(repo, monkeypatch):
+    _write_config(repo, {"openai": {"base_url": "https://me:hunter2@llm.example/v1"}})
+    monkeypatch.setenv("REPOWISE_PUBLIC_URL", "https://ci:s3cret@repowise.example")
+    out = _json(repo, "get", "openai.base_url")
+    assert out["value"] == "https://***@llm.example/v1"
+    assert _json(repo, "get", "REPOWISE_PUBLIC_URL")["value"] == "https://***@repowise.example"
+    for args in (("list", "--changed"), ("explain", "openai.base_url")):
+        for fmt in ((), ("--format", "json")):
+            text = _run(repo, *args, *fmt)[1]
+            assert "hunter2" not in text and "s3cret" not in text
+    assert _config(repo)["openai"]["base_url"] == "https://me:hunter2@llm.example/v1"
+
+
 def test_a_set_credential_is_listed_but_never_printed(repo, monkeypatch):
     monkeypatch.setenv("REPOWISE_GITLAB_TOKEN", "glpat-not-a-real-token")
     out = _json(repo, "get", "REPOWISE_GITLAB_TOKEN")

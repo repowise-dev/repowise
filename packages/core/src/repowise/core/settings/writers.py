@@ -126,9 +126,13 @@ def read_config(root: Path | str, setting: Setting) -> dict[str, Any]:
 def current(
     root: Path | str, setting: Setting | str, *, config: dict[str, Any] | None = None
 ) -> Resolved:
-    """*setting*'s effective value in *root*, reading its file unless given."""
+    """*setting*'s effective value in *root*, reading its file unless given.
+
+    A value that raises comes back with its problem, so a listing shows it.
+    """
     s = registry.get(setting) if isinstance(setting, str) else setting
-    return resolve(s, read_config(root, s) if config is None else config)
+    data = read_config(root, s) if config is None else config
+    return _unraised(s, data, lookup(data, s.key))
 
 
 def parse_text(setting: Setting, text: str) -> Any:
