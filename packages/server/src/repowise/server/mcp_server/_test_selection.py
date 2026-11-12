@@ -16,6 +16,7 @@ import hashlib
 import subprocess
 import threading
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import astuple, dataclass
 from functools import partial
 from pathlib import Path
@@ -379,6 +380,7 @@ def selection_block(
     limit: int,
     label: str,
     detail: bool = True,
+    direct: Sequence[str] = (),
 ) -> dict[str, Any]:
     """The wire view of *selection*: verdict, reasons, the run list's head and why.
 
@@ -392,23 +394,29 @@ def selection_block(
     (:func:`split_apart`), counted in ``broadcast_total`` and
     ``import_closure_total`` when there are any and stored for recovery.
     *detail* adds ``why`` and ``basis_by_file``.
+
+    The shown head leads with *direct*, the selectors of tests that call a
+    changed function themselves (:func:`direct_test_selectors`), then the run
+    list. A test that runs with every subset is never shown: nothing links it
+    to this change, so listing it would read as a test of the changed code.
+    ``always_run_total`` counts those, and they are stored with the tail.
     """
     # In run order (``test_ranking``).
     run_list, broadcast, closure = split_apart(selection)
     for key, tests in zip(APART_KEYS, (broadcast, closure), strict=True):
         if tests:
             collector.add(f"{label}.{key.removesuffix('_total')}_tests ({len(tests)})", tests)
-    shown = run_list[:limit]
+    reached = [t for t in run_list if selected_by_change(selection, t)]
+    shown = list(dict.fromkeys([*direct, *reached]))[:limit]
+    listed = set(shown)
+    rest = [t for t in run_list if t not in listed]
     known = set(selection.known_tests)
     held = len(known & set(selection.test_files))
     broad = held > len(known) * _DEGRADED_SHARE
     degraded = broad and not selection.run_all and bool(result.get("index_gap"))
     # Most of the suite under a verdict to run all of it: the tail restores nothing to act on.
-    if len(run_list) > limit and not (broad and (selection.run_all or degraded)):
-        collector.add(
-            f"{label}.tests_to_run beyond cap={limit} ({len(run_list) - limit} dropped)",
-            run_list[limit:],
-        )
+    if rest and not (broad and (selection.run_all or degraded)):
+        collector.add(f"{label}.tests_to_run not listed ({len(rest)})", rest)
     reasons = list(selection.reasons)
     if len(reasons) > _REASONS_LIMIT:
         collector.add(
@@ -429,14 +437,16 @@ def selection_block(
         "tests_to_run": shown,
         "tests_to_run_kind": run_kind(shown),
         "total": len(run_list),
-        "truncated": len(run_list) > limit,
+        "truncated": bool(rest),
         "always_run_total": always,
         "summary": (
             f"the index predates files changed outside this change, so {held} of "
             f"{len(known)} test files were selected; run the whole suite, or "
             "`repowise update` to narrow it."
             if degraded
-            else _summary(selection, len(run_list), always, limit, len(broadcast), len(closure))
+            else _summary(
+                selection, len(run_list), always, len(shown), len(broadcast), len(closure)
+            )
         ),
     }
     for key, tests in zip(APART_KEYS, (broadcast, closure), strict=True):
@@ -467,11 +477,11 @@ def _summary(
     selection: Selection,
     total: int,
     always: int,
-    limit: int,
+    listed: int,
     broadcast: int = 0,
     closure: int = 0,
 ) -> str:
-    shown = f"; showing first {limit}" if total > limit else ""
+    shown = f"; showing {listed} the change reaches" if total > listed else ""
     if selection.run_all:
         lead = selection.reasons[0] if selection.reasons else "the selection could not vouch"
         named = f" Run these {total} first{shown}." if total else ""
@@ -483,7 +493,9 @@ def _summary(
     known = set(selection.known_tests)
     held = len(known & {f for f in selection.test_files if not selection.counted_apart(f)})
     share = f" ({held} of {len(known)} test files)" if known else ""
-    rule = f", {always} of them because they run with every subset" if always else ""
+    rule = (
+        f", {always} of them because they run with every subset (not listed)" if always else ""
+    )
     if known and held == len(known):
         return f"{total} test(s) to run for this change, every test file there is{rule}{shown}."
     if spread:
@@ -557,8 +569,80 @@ async def change_tests_block(
         result, selection, _ = await select_change_tests(repo_path, session_factory, change, repo)
     except Exception as exc:
         return degraded_block(exc), None
-    block = selection_block(result, selection, collector, limit=limit, label=label, detail=detail)
+    direct = await direct_test_selectors(session_factory, change, selection, repo)
+    block = selection_block(
+        result, selection, collector, limit=limit, label=label, detail=detail, direct=direct
+    )
     return block, (result, change)
+
+
+async def direct_test_selectors(
+    session_factory: Any, change: Any, selection: Selection, repo: str | None = None
+) -> list[str]:
+    """Runnable selectors of the tests that call a function the change edits,
+    one call away, in changed-file and line order. Never raises: an empty list
+    only means no such link is stored.
+
+    One-hop links from ``function_facts.tests_json`` were right on every
+    hand-checked sample, where a file's test list mixes in import-only and
+    rule-selected tests. A test file the selection does not run is left out.
+    Changed lines are the change's new side, read against the indexed spans;
+    a change far ahead of the index can miss a function that moved (the
+    upgrade is mapping lines through the diff since the indexed commit).
+    """
+    from sqlalchemy import select
+
+    from repowise.core.analysis.function_test_map import decode_tests
+    from repowise.core.persistence.database import get_session
+    from repowise.core.persistence.models import FunctionFact, WikiSymbol
+    from repowise.server.mcp_server._helpers import _get_repo
+
+    lines = {path: diff.new_lines for path, diff in change.files.items() if diff.new_lines}
+    if not lines:
+        return []
+    runs = set(selection.test_files)
+    try:
+        async with get_session(session_factory) as session:
+            repo_id = (await _get_repo(session, repo)).id
+            spans = await session.execute(
+                select(
+                    WikiSymbol.file_path,
+                    WikiSymbol.start_line,
+                    WikiSymbol.end_line,
+                    WikiSymbol.symbol_id,
+                )
+                .where(
+                    WikiSymbol.repository_id == repo_id,
+                    WikiSymbol.file_path.in_(sorted(lines)),
+                )
+                .order_by(WikiSymbol.file_path, WikiSymbol.start_line)
+            )
+            edited = list(
+                dict.fromkeys(
+                    symbol_id
+                    for path, start, end, symbol_id in spans.all()
+                    if any(start <= line <= end for line in lines[path])
+                )
+            )
+            facts: dict[str, str | None] = {}
+            for i in range(0, len(edited), 500):
+                rows = await session.execute(
+                    select(FunctionFact.symbol_id, FunctionFact.tests_json).where(
+                        FunctionFact.repository_id == repo_id,
+                        FunctionFact.symbol_id.in_(edited[i : i + 500]),
+                    )
+                )
+                facts.update(rows.all())
+    except Exception as exc:  # the selection beside it stands without these
+        _log.debug("direct_test_selectors_failed", error=f"{type(exc).__name__}: {exc}")
+        return []
+    selectors = (
+        t.selector
+        for symbol_id in edited
+        for t in decode_tests(facts.get(symbol_id)) or ()
+        if t.hops == 1 and (selection.run_all or t.selector.split("::", 1)[0] in runs)
+    )
+    return list(dict.fromkeys(selectors))
 
 
 def degraded_block(exc: Exception) -> dict[str, Any]:

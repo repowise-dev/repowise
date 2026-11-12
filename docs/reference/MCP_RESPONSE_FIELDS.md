@@ -425,9 +425,9 @@ With `changed_files`, the response leads with `directive`:
 | `missing_cochanges` | Co-change partners absent from the change |
 | `tests_to_run` | The `repowise impacted-tests` selection, max 10, in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec) |
 | `tests_to_run_basis` | `measured` (coverage decided a file), `inferred` (graph or rule), `none` |
-| `tests_to_run_why` | Per file: changed file and evidence, or `runs with every subset: ...` |
+| `tests_to_run_why` | Per listed file: changed file and evidence |
 | `tests_run_all`, `tests_run_all_reasons` | No subset can be vouched for; the list is what to run first |
-| `tests_broadcast_total`, `tests_import_closure_total` | Tests left out of the list that still run |
+| `tests_broadcast_total`, `tests_import_closure_total`, `tests_always_run_total` | Tests left out of the list that still run (`always_run`: run with every subset, nothing links them to the change) |
 | `tests_status`, `tests_status_reason` | Failed selection; names nothing |
 | `tests_to_update` | Up to 3 test files to edit, `{path, reason}` |
 | `missing_tests`, `files_without_measured_tests` | Changed files with no measured test |
@@ -512,7 +512,7 @@ The `repowise impacted-tests` selection over every touched path, ignoring the sc
 |-------|---------|
 | `status` | `selected`, `run_all`, `degraded`, or a nothing-selected reason |
 | `run_all`, `reasons`, `reasons_total` | No subset can be vouched for; up to 3 reasons |
-| `tests_to_run`, `total`, `truncated` | Max 10, in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec); `always_run_total` tests last |
+| `tests_to_run`, `total`, `truncated` | Max 10: first the tests that call an edited function directly (pytest node ids or JS/TS test files), then the rest in [run order](CLI_REFERENCE.md#repowise-impacted-tests-revspec). Tests that run with every subset are counted in `total` and `always_run_total`, never listed |
 | `broadcast_total`, `import_closure_total` | Left out of the list and `total`, still run (as in `get_risk`) |
 | `tests_to_run_kind` | `test_id` when a coverage node id is listed, else `test_file` |
 | `basis` | `measured`, `inferred` or `none`, as in `get_risk` |
@@ -739,13 +739,15 @@ Per-file `covered_line_count`, `total_coverable_lines` (targeted adds `covered_l
 
 | Field | Meaning |
 |-------|---------|
-| `tiers` | `high` (0.7+), `medium` (0.4 to 0.7), `low`: path, kind, confidence, lines, cleanup impact, stable `id` |
+| `headline` | What is shown, of how many match, and how many were withheld and of which kind |
+| `tiers` | `high` (0.7+), `medium` (0.4 to 0.7), `low`: path, kind, confidence, lines, cleanup impact, stable `id`; an empty tier has no `description` |
 | `summary` | Totals over all open findings; `filtered_findings`, `filters` (non-default), `scope` |
 | `summary.withheld_types` | Provisional types; ask with `kind=` to see them, marked unverified |
 | `summary.gated` | Gated-language findings per language; `include_unverified=true` shows them |
-| `summary.call_resolution_basis` | Per language, resolved call edges and guess share |
+| `summary.call_resolution_basis` | Per language, resolved call edges and guess share; `summary.call_resolution_note` when every language shares one note |
 | `by_directory`, `by_owner` | Rollups with `group_by` |
 | `limit_note` | A `limit` over 25 was clamped |
+| `error` | `directory` names no indexed file |
 
 - No language is gated; dead code on Java, C#, C, C++, Kotlin and Swift is preview, labelled in `_meta.preview`.
 - In workspace mode a finding another repo may use is never `safe_to_delete`, and a contract link to its file also lowers its confidence.
