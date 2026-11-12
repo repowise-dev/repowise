@@ -26,8 +26,9 @@ p50: `get_context` 0.24 s, `get_symbol` 0.29 s, `search_codebase` 2.3 s,
 
 More rows and the method: [BENCHMARKS.md](../BENCHMARKS.md#scale).
 
-A machine with 8 vCPUs, 32 GB of RAM and 50 GB of free disk runs a 4M-line
-index with room to spare. The first index is a one-time cost; after it,
+A machine with 8 vCPUs, 32 GB of RAM and 50 GB of free disk indexes a 4M-line
+repository with its full history; give it 64 GB of RAM when PostgreSQL runs on
+the same machine. The first index is a one-time cost; after it,
 `repowise update` re-analyses only what each commit changed.
 
 ## 1. Prepare the checkout
