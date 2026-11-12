@@ -491,6 +491,11 @@ class FileTraverser:
         # Repo-relative dir -> whether it holds a package manifest; asked only
         # about test-helper-named dirs (see :meth:`_is_package_root_dir`).
         self._package_root_cache: dict[str, bool] = {}
+        # Repo-relative POSIX dir -> whether it or an ancestor is pruned. Filled
+        # by :meth:`_walk` and :meth:`dir_chain_skipped`, so the manifest and
+        # package scans after the walk decide each directory once, not once per
+        # level of every path below it.
+        self._dir_skipped: dict[str, bool] = {}
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
@@ -630,9 +635,14 @@ class FileTraverser:
             dir_ignore = self._get_dir_ignore(dirpath_obj)
 
             # Prune ignored directories in-place (affects os.walk recursion)
-            dirnames[:] = sorted(
-                d for d in dirnames if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
-            )
+            kept = []
+            for d in dirnames:
+                child = rel_dir / d
+                skipped = self._should_skip_dir(d, child, dir_ignore)
+                self._dir_skipped[child.as_posix()] = skipped
+                if not skipped:
+                    kept.append(d)
+            dirnames[:] = sorted(kept)
 
             for filename in sorted(filenames):
                 self.stats.total_paths_walked += 1
@@ -1083,13 +1093,17 @@ class FileTraverser:
         nested ignore spec, so monorepo package detection has exactly the same
         boundary semantics as file traversal.
         """
-        cur = Path()
-        for part in rel_dir.parts:
-            parent_abs = self.repo_root / cur
-            cur = cur / part
-            if self._should_skip_dir(part, cur, self._get_dir_ignore(parent_abs)):
-                return True
-        return False
+        if not rel_dir.parts:
+            return False
+        key = rel_dir.as_posix()
+        skipped = self._dir_skipped.get(key)
+        if skipped is None:
+            parent = rel_dir.parent
+            skipped = self.dir_chain_skipped(parent) or self._should_skip_dir(
+                rel_dir.name, rel_dir, self._get_dir_ignore(self.repo_root / parent)
+            )
+            self._dir_skipped[key] = skipped
+        return skipped
 
 
 # ---------------------------------------------------------------------------
