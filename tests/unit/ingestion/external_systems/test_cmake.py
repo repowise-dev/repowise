@@ -113,6 +113,18 @@ def test_self_appending_set_grows_linearly(tmp_path):
     assert cm.variables["FLAGS"] == "${FLAGS} " + " ".join(f"-f{i}" for i in range(12))
 
 
+def test_a_value_is_expanded_when_set_not_when_used(tmp_path):
+    # As in CMake: DIR is undefined when SRC is set, so a later DIR does not
+    # reach into SRC's stored value.
+    _write(tmp_path, "CMakeLists.txt", """
+        set(SRC ${DIR}/a.cc)
+        set(DIR lib)
+        set(OUT ${SRC})
+    """)
+    cm = cmake.parse_cmake_lists(tmp_path / "CMakeLists.txt", repo_root=tmp_path)
+    assert cm.variables["OUT"] == "${DIR}/a.cc"
+
+
 def test_nested_variable_names_still_expand(tmp_path):
     _write(tmp_path, "CMakeLists.txt", """
         set(KIND fast)
