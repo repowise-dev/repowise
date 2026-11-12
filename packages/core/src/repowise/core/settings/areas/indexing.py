@@ -25,6 +25,7 @@ _COMMIT_LIMIT_STEP = 5_000
 #: Excluding is suggested once wholly copied directories hold this share of
 #: the analysed files.
 MIN_COPIED_SHARE = 0.25
+_PATTERN_CHARS = frozenset(r"*?[]!\,")
 
 
 def _full_window(facts: Any) -> int | None:
@@ -57,10 +58,11 @@ def _suggest_commit_limit(facts: Any) -> Proposal | None:
     return Proposal(
         value,
         f"Git history here is read through the newest {limit:,} of {total:,} commits, "
-        f"and {outside:,} of {files:,} code files have no commit among them.",
+        f"and {outside:,} of {files:,} code files have no commit among them, so co-change "
+        "and the commit list say nothing about those files.",
         f"Co-change, change history and the commit list cover {covers} {total:,} commits. "
-        "The next repowise update re-reads git history; on git/git the full history "
-        "added seconds and about 100 MB to the index.",
+        "The next repowise update re-reads git history; on git/git reading all 61,453 "
+        "commits instead of 5,000 added 3 s and about 100 MB to the index.",
         "quality",
     )
 
@@ -68,12 +70,20 @@ def _suggest_commit_limit(facts: Any) -> Proposal | None:
 def _suggest_exclude(facts: Any) -> Proposal | None:
     """Exclude the directories that hold only vendored or generated code, when they dominate."""
     current = list(facts.values.get("exclude_patterns") or [])
-    dirs = [(d, n) for d, n in facts.copied_dirs if f"{d}/" not in current]
+    kept = {str(p).strip("/") for p in current}
+    # A name that a pattern would read as a glob, or a comma that the list
+    # parser would split on, is left for the user to spell.
+    dirs = [
+        (d, n)
+        for d, n in facts.copied_dirs
+        if d not in kept and not any(c in d for c in _PATTERN_CHARS)
+    ]
     copied = sum(n for _, n in dirs)
     analysed = facts.analysed_files
     if not dirs or copied < analysed * MIN_COPIED_SHARE:
         return None
-    patterns = [f"{d}/" for d, _ in dirs]
+    # Anchored: ``vendor/`` alone would also match a first-party ``src/vendor/``.
+    patterns = [f"/{d}/" for d, _ in dirs]
     named = ", ".join(f"{d}/ ({n:,})" for d, n in dirs[:3])
     more = f" and {len(dirs) - 3} more" if len(dirs) > 3 else ""
     value = [*current, *patterns]

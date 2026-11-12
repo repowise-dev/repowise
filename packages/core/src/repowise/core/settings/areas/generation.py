@@ -64,7 +64,9 @@ def _suggest_max_file_pages(facts: Any) -> Proposal | None:
     if facts.values.get("max_file_pages") is not None or facts.content_provenance != "template":
         return None
     omitted = pages.get("omitted") or 0
-    if not pages.get("effective_cap") or not omitted or unpaged < MIN_UNPAGED_PRODUCTION:
+    # Both counts: files under the score floor have no page and never get one.
+    least = min(omitted, unpaged)
+    if not pages.get("effective_cap") or least < MIN_UNPAGED_PRODUCTION:
         return None
     size = omitted * _FILE_PAGE_KB / 1024
     return Proposal(

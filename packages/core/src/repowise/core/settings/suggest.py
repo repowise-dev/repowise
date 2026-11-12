@@ -163,7 +163,10 @@ def gather_facts(root: Path | str, values: Mapping[str, Any]) -> RepoFacts:
     wiki = dot / "wiki.db"
     scope = _scope(root)
     file_pages = scope.get("file_pages") or {}
-    analysed, copied = _copied_dirs(wiki)
+    # The per-file reads are not scoped by repository, so a store holding
+    # several gives none of them.
+    one_repo = _count(wiki, "SELECT COUNT(*) FROM repositories") == 1
+    analysed, copied = _copied_dirs(wiki) if one_repo else (0, ())
     return RepoFacts(
         values=dict(values),
         search=scope.get("search") or {},
@@ -183,7 +186,7 @@ def gather_facts(root: Path | str, values: Mapping[str, Any]) -> RepoFacts:
         # The join is the one read here that grows with the wiki, so it waits
         # for the scope to say some file pages were left out.
         unpaged_production=_count(wiki, _UNPAGED_PRODUCTION_SQL)
-        if (file_pages.get("omitted") or 0) > 0
+        if one_repo and (file_pages.get("omitted") or 0) > 0
         else 0,
         analysed_files=analysed,
         copied_dirs=copied,
