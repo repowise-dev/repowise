@@ -536,6 +536,12 @@ def _fit_target(
         value = container.pop(key)
         if collector is not None and value:
             collector.add(f"{name} :: {label}", value)
+        if isinstance(value, dict) and "complete" in value:
+            # A block with a completeness verdict keeps its counts, and stops claiming whole.
+            container[key] = {k: v for k, v in value.items() if type(v) is int} | {
+                "complete": False,
+                "reasons": ["dropped to fit the response budget"],
+            }
         result.setdefault("dropped_blocks", {}).setdefault(name, []).append(label)
         result["truncated"] = True
         if record_counts and isinstance(value, list):

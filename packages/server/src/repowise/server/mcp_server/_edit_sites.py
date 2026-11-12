@@ -11,9 +11,11 @@ scan could not see may hold another site.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
+import tokenize
 from collections import Counter
 from collections.abc import Iterable
 from itertools import islice
@@ -26,11 +28,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.fs_walk import PRUNED_DIRS, iter_glob
 from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.symbol_identity import id_segment_name
-from repowise.core.persistence.models import GraphEdge, GraphNode, WikiSymbol
+from repowise.core.persistence.batches import chunked
+from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
-from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 from repowise.server.mcp_server._helpers import read_repo_file_text
-from repowise.server.mcp_server._meta import _working_tree_dirty_paths, uncommitted_targets
+from repowise.server.mcp_server._meta import (
+    _changed_files_between,
+    _working_tree_dirty_paths,
+    read_live_head,
+    uncommitted_targets,
+)
 from repowise.server.mcp_server._verify import _MIN_GATE_NAME_LEN, name_at_line, relocate_symbol
 
 MAX_SITES = 200
@@ -41,9 +49,18 @@ MAX_REFERENCES_PER_FILE = 3
 # A set this small comes back whole: the per-file cuts only keep one busy file
 # from crowding out the rest of a large set.
 SMALL_SET_LINES = 20
-# Ceiling on files read per call; past it the set is reported incomplete
-# rather than read without bound.
-MAX_FILES = 300
+# Ceiling on files read per call, counted after the candidates are narrowed
+# to those holding the name; past it the set is reported incomplete rather
+# than read without bound.
+MAX_FILES = 1000
+# Ceiling on files the importer walk collects from the index (nothing is read).
+MAX_IMPORTERS = 5000
+# Share of the response budget one edit set may fill; the card keeps the rest.
+_BLOCK_SHARE = 0.6
+# The order a file lists its kinds in.
+_BLOCK_KINDS = (
+    "definition", "import", "call", "alias", "reference", "reexport", "prose", "same_name", "doc"
+)
 _MAX_FILE_BYTES = 2_000_000
 _MIN_CALL_CONFIDENCE = 0.7
 _MEMBER_KINDS = frozenset({"method", "constructor", "property", "field"})
@@ -397,6 +414,99 @@ async def import_sites(
     return await asyncio.to_thread(_import_sites, Path(repo_root).resolve(), files, module_path)
 
 
+class _ProseLines:
+    """Which hit lines of one file name the symbol only in prose.
+
+    Prose is a comment, a docstring or a sentence in a string: a rename does
+    not have to touch it. A string holding nothing but the name, or a path or
+    dotted name ending in it (``__all__``, a mock target), is a reference.
+    Python is read by its own tokenizer; other syntaxes by the comment and
+    string masks. Either is read once, on the first line that needs it. A
+    file that does not tokenize, or whose syntax has no mask, never reads as
+    prose.
+    """
+
+    def __init__(self, rel: str, lines: list[str], name: str) -> None:
+        self._suffix = PurePosixPath(rel).suffix.lower()
+        self._lines = lines
+        self._name = name
+        # Lines that name it in code or as a whole string, or the two masks.
+        self._read_once: tuple[Any, Any] | None = None
+
+    def _python(self, text: str) -> tuple[set[int], set[int]] | None:
+        word = _word(self._name)
+        code: set[int] = set()
+        strings: set[int] = set()
+        try:
+            for t in tokenize.generate_tokens(io.StringIO(text).readline):
+                if t.type == tokenize.NAME and t.string == self._name:
+                    code.add(t.start[0])
+                elif (
+                    t.type == tokenize.STRING
+                    and (m := _PY_STRING.match(t.string))
+                    and word.search(m.group(3))
+                    # Before 3.12 an f-string is one token: its fields may be code.
+                    and ("f" in m.group(1).lower() or _code_string(m.group(3)))
+                ):
+                    strings.add(t.start[0])
+        except (tokenize.TokenError, SyntaxError):
+            return None
+        return code, strings
+
+    def _read(self) -> tuple[Any, Any]:
+        text = "\n".join(self._lines)
+        if self._suffix in _PYTHON_EXTENSIONS:
+            return ("tokens", self._python(text))
+        from repowise.core.workspace.extractors.base import _comment_mask
+
+        full = _comment_mask(self._suffix, text, strings=True)
+        comments = _comment_mask(self._suffix, text, strings=False)
+        if full is None or comments is None:
+            return ("mask", None)
+        return ("mask", (full.split("\n"), comments.split("\n")))
+
+    def __call__(self, n: int, hits: list[re.Match[str]]) -> bool:
+        if self._read_once is None:
+            self._read_once = self._read()
+        how, read = self._read_once
+        if read is None:  # nothing can be told
+            return False
+        if how == "tokens":
+            code, strings = read
+            return n not in code and n not in strings
+        full, comments = read[0][n - 1], read[1][n - 1]
+        text = self._lines[n - 1]
+        for m in hits:
+            # A blanked character was masked, so one left standing is code; a JSX
+            # tag is code even where text before it (``Don't``) fooled the mask.
+            if full[m.start()] != " " or _TAG_BEFORE.search(text, 0, m.start()):
+                return False
+            in_comment = comments[m.start()] == " "
+            if (
+                not in_comment
+                and _NAMED_STRING.match(text[: m.start()][::-1])
+                and _NAMED_TAIL.match(text, m.end())
+            ):
+                return False
+        return True
+
+
+_TAG_BEFORE = re.compile(r"</?$")
+# Reversed text before a hit: optional path or dotted-name characters, then a
+# quote; after it, an optional dotted tail, then a quote (``"pkg.Name.attr"``).
+_NAMED_STRING = re.compile(r"[\w./@:$-]*[\"'`]")
+_NAMED_TAIL = re.compile(r"[\w.$]*[\"'`]")
+# A Python string token: prefix, opening quotes, body.
+_PY_STRING = re.compile(r"(?s)([rRbBuUfF]*)(\"\"\"|'''|\"|')(.*)\2")
+# A string that reads as code, not a sentence: a dotted or path target
+# (``"pkg.mod.Name.attr"``) or a type written as a string (``"Optional[Name]"``).
+_CODE_STRING = re.compile(r"[\w.:/@$\[\]|,-]+")
+
+
+def _code_string(body: str) -> bool:
+    return bool(_CODE_STRING.fullmatch(re.sub(r"\s*([|,])\s*", r"\1", body.strip())))
+
+
 def _scan(
     root: Path,
     files: list[str],
@@ -411,7 +521,9 @@ def _scan(
     local import aliases per Python file, package declared per file)``.
 
     In a *dirty* file the graph's lines predate the edit, so a call is read
-    from the text (the name followed by ``(``) instead.
+    from the text (the name followed by ``(``) instead. A plain reference
+    that only an import alias spells carries ``alias``; one naming it only in
+    a comment, docstring or sentence carries ``prose``.
     """
     word = _word(name)
     # Bound under any name by its importers, so no spelling can be scanned for.
@@ -443,16 +555,23 @@ def _scan(
             commonjs = any(_CJS_EXPORT.search(t) for t in lines)
             if commonjs or any(default_export.search(t) and word.search(t) for t in lines):
                 is_default = True
-        spellings = [word] + [_word(a) for a in aliases]
+        # A rename outside an import already marks the file; its spelling is
+        # not listed, since an object key (``{ name: vi.fn() }``) reads the same.
+        spellings = [word] + [_word(a) for a in local]
         live = rel in dirty
         graph_calls = set() if live else call_lines.get(rel, set())
         def_seen = rel != def_path
+        prose = _ProseLines(rel, lines, name)
         for n, text in enumerate(lines, 1):
             in_graph = n in graph_calls
             hits = [m for s in spellings for m in s.finditer(text)]
             if in_graph and not hits:
                 stale += 1
                 continue
+            if n in imports:
+                # The module an import names is not the symbol: ``from pkg.name import x``.
+                spans = [m.span(m.lastindex or 0) for m in _IMPORT_SOURCE.finditer(text)]
+                hits = [h for h in hits if not any(a <= h.start() < b for a, b in spans)]
             if not hits:
                 continue
             if live:
@@ -465,7 +584,12 @@ def _scan(
                 kind = "call"
             else:
                 kind = "reference"
-            sites.append(_site(rel, n, kind, lines))
+            site = _site(rel, n, kind, lines)
+            if kind in ("call", "reference") and not word.search(text):
+                site["alias"] = True
+            elif kind == "reference" and prose(n, hits):
+                site["prose"] = True
+            sites.append(site)
     return sites, unreadable, stale, renamed, is_default, python_aliases, packages
 
 
@@ -536,6 +660,27 @@ def _unseen_dirty_files(root: Path, local_path: str) -> list[str] | None:
         elif path.is_file():
             out.append(rel)
     return out
+
+
+def _committed_since_index(
+    root: Path, local_path: str, row_commit: str | None
+) -> tuple[list[str], list[str]]:
+    """``(files, reasons)``: live files committed since the indexed commit, and
+    why that set cannot be told. Nothing to say outside a git checkout."""
+    from repowise.core.workspace.update.state import resolve_indexed_commit
+
+    head = read_live_head(local_path)
+    if head is None:
+        return [], []
+    indexed = resolve_indexed_commit(Path(local_path), row_commit)
+    if indexed.sha is None:
+        return [], ["indexed commit unknown"] if indexed.problem else []
+    if indexed.sha == head:
+        return [], []
+    changed = _changed_files_between(local_path, indexed.sha, head)
+    if changed is None:
+        return [], ["the index is behind HEAD and git cannot list what changed"]
+    return sorted(f for f in changed if (root / f).is_file()), []
 
 
 def _declared_package(lines: list[str]) -> str | None:
@@ -678,22 +823,25 @@ async def _edges_into(session: AsyncSession, repo_id: str, node: GraphNode) -> l
 
 async def _importer_files(
     session: AsyncSession, repo_id: str, def_file: str, name: str, edges: list[Any]
-) -> set[str]:
-    """The definition file, its importers, and files re-exporting the name onward."""
+) -> tuple[set[str], bool]:
+    """``(files, cut)``: the definition file, its importers, and files
+    re-exporting the name onward; *cut* when the walk stopped at its ceiling."""
     # A package barrel's own importers are scanned too.
     files: set[str] = {def_file}
     files.update(row[0] for row in edges if row[2] == "imports")
     frontier, seen = [def_file], {def_file}
-    while frontier and len(files) <= MAX_FILES:
-        rows = (
-            await session.execute(
-                select(GraphEdge.source_node_id, GraphEdge.imported_names_json).where(
-                    GraphEdge.repository_id == repo_id,
-                    GraphEdge.edge_type == "imports",
-                    GraphEdge.target_node_id.in_(frontier),
+    while frontier and len(files) <= MAX_IMPORTERS:
+        rows: list[Any] = []
+        for batch in chunked(frontier):
+            rows += (
+                await session.execute(
+                    select(GraphEdge.source_node_id, GraphEdge.imported_names_json).where(
+                        GraphEdge.repository_id == repo_id,
+                        GraphEdge.edge_type == "imports",
+                        GraphEdge.target_node_id.in_(batch),
+                    )
                 )
-            )
-        ).all()
+            ).all()
         frontier = []
         for src, names_json in rows:
             files.add(src)
@@ -702,7 +850,7 @@ async def _importer_files(
             if src not in seen and (not names or name in names or "*" in names):
                 seen.add(src)
                 frontier.append(src)
-    return files
+    return files, bool(frontier)
 
 
 def _edge_facts(edges: list[Any], node: GraphNode, name: str, files: set[str]) -> _EdgeFacts:
@@ -740,17 +888,52 @@ async def _node_language(session: AsyncSession, repo_id: str, node: GraphNode) -
     return (language or "").lower()
 
 
+def _holds(root: Path, rel: str, name: str) -> bool:
+    """Whether *rel*'s bytes hold *name*; an unreadable file is kept for the scan to report."""
+    try:
+        return name.encode() in (root / rel).read_bytes()
+    except OSError:
+        return True
+
+
 def _capped_candidates(
-    files: set[str], unseen: list[str], reasons: list[str]
+    root: Path,
+    name: str,
+    files: set[str],
+    unseen: list[str],
+    held: set[str] | None,
+    def_file: str,
+    reasons: list[str],
 ) -> tuple[list[str], list[str]]:
-    """Indexed and unindexed candidate files, together at most ``MAX_FILES``."""
+    """Indexed and unindexed candidate files, together at most ``MAX_FILES``.
+
+    *held* (the files git grep finds holding the name, ``None`` when git
+    cannot say) narrows both lists first: a file without the name has no
+    site. An indexed file git grep does not search (ignored, or binary to
+    git) is kept when its bytes hold the name.
+    """
     unindexed = sorted(set(unseen) - files)
     ordered = sorted(files)
-    if len(ordered) + len(unindexed) > MAX_FILES:
-        reasons.append(f"over {MAX_FILES} candidate files")
+    if held is not None:
+        ordered = [f for f in ordered if f in held or f == def_file or _holds(root, f, name)]
+        unindexed = [f for f in unindexed if f in held]
+    over = len(ordered) + len(unindexed) - MAX_FILES
+    if over > 0:
+        reasons.append(
+            f"over {MAX_FILES} candidate files: {over} not read, and sites_total counts only those read"
+        )
         ordered = ordered[:MAX_FILES]
         unindexed = unindexed[: max(0, MAX_FILES - len(ordered))]
     return ordered, unindexed
+
+
+def _unread_call_lines(
+    call_lines: dict[str, set[int]], read: list[str], dirty: frozenset[str]
+) -> int:
+    """Graph call lines in files left out for not holding the name: stale, like
+    any graph line the scan finds no name on."""
+    kept = set(read) | dirty
+    return sum(len(lines) for f, lines in call_lines.items() if f not in kept)
 
 
 async def _definition_span(
@@ -846,7 +1029,12 @@ def _language_family(language: str) -> tuple[str, ...]:
 
 
 def _member_reasons(
-    root: Path, node: GraphNode, name: str, language: str, scanned: set[str]
+    root: Path,
+    node: GraphNode,
+    name: str,
+    language: str,
+    scanned: set[str],
+    held: set[str] | None,
 ) -> list[str]:
     """Why a member's set may miss calls through receivers of unknown type.
 
@@ -857,11 +1045,8 @@ def _member_reasons(
     """
     if node.kind not in _MEMBER_KINDS and node.node_id.count("::") <= 1:
         return []
-    from repowise.server.mcp_server._line_hits import _files_holding
-
     exts = REGISTRY.extensions_for(_language_family(language))
-    held = _files_holding(root, name) if exts else None
-    if held is None:
+    if not exts or held is None:
         return ["member: calls through untyped receivers are not scanned"]
     word = _word(name)
     for rel in sorted(held):
@@ -874,52 +1059,143 @@ def _member_reasons(
     return []
 
 
-def _served_sites(
-    sites: list[dict[str, Any]],
-    reasons: list[str],
-    node: GraphNode,
-    collector: OmissionCollector | None,
-) -> dict[str, Any]:
-    """Sort and cap *sites* into the reply, recording what the caps hid."""
-    sites.sort(
-        key=lambda s: (
-            s["kind"] != "definition",
-            _TRAILING_KINDS.get(s["kind"], 0),
-            is_test_related_path(s["path"]),
-            s["path"],
-            s["line"],
+async def _dispatch_reasons(session: AsyncSession, repo_id: str, node: GraphNode) -> list[str]:
+    """Why a method that answers for a base method, or is overridden, has sites
+    the name scan cannot attribute: calls written against the base type, and
+    the overriding definitions a rename or signature change also reaches."""
+    rows = (
+        await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type == "dispatches_to",
+                GraphEdge.confidence >= _MIN_CALL_CONFIDENCE,
+                or_(
+                    GraphEdge.target_node_id == node.node_id,
+                    GraphEdge.source_node_id == node.node_id,
+                ),
+            )
         )
-    )
-    kept = _cap_references_per_file(sites) if collector is not None else sites
-    if len(kept) > MAX_SITES:
-        reasons.append(f"over {MAX_SITES} sites")
-    if len(kept) < len(sites):
+    ).all()
+    bases = sorted({src for src, tgt in rows if tgt == node.node_id and src != node.node_id})
+    overrides = sorted({tgt for src, tgt in rows if src == node.node_id and tgt != node.node_id})
+    reasons: list[str] = []
+    if bases:
+        reasons.append(f"calls through the base method are not listed: {', '.join(bases[:3])}")
+    if overrides:
         reasons.append(
-            f"{len(sites) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
-            " not shown: sites_omitted_by_file; the full list is under _meta.omitted"
+            f"{len(overrides)} overriding methods are not listed: {', '.join(overrides[:3])}"
         )
-    out: dict[str, Any] = {"sites": kept[:MAX_SITES], "complete": not reasons}
-    if collector is None:
-        if len(sites) > MAX_SITES:
-            out["sites_omitted"] = len(sites) - MAX_SITES
-    elif len(out["sites"]) < len(sites):
-        shown = {id(s) for s in out["sites"]}
-        cap_collection(
-            out,
-            "sites",
-            sites,
-            MAX_SITES,
-            collector,
-            emitted=out["sites"],
-            label=f"{node.node_id} :: references.sites not shown",
-            reason="per_file_reference_cap" if len(kept) < len(sites) else "construction_cap",
-        )
-        out["sites_omitted_by_file"] = dict(
-            Counter(s["path"] for s in sites if id(s) not in shown)
-        )
+    return reasons
+
+
+def _site_order(site: dict[str, Any]) -> tuple[Any, ...]:
+    """The definition first, code before other definitions and documents,
+    production before tests."""
+    return (
+        site["kind"] != "definition",
+        _TRAILING_KINDS.get(site["kind"], 0),
+        is_test_related_path(site["path"]),
+        site["path"],
+        site["line"],
+    )
+
+
+def _served_sites(sites: list[dict[str, Any]], reasons: list[str]) -> dict[str, Any]:
+    """Sort and cap *sites* into the flat reply search_codebase merges."""
+    for site in sites:
+        # Facts the edit-set block reads; a flat row keeps its structural kind.
+        site.pop("alias", None)
+        site.pop("prose", None)
+    sites.sort(key=_site_order)
+    if len(sites) > MAX_SITES:
+        reasons.append(f"over {MAX_SITES} sites")
+    out: dict[str, Any] = {"sites": sites[:MAX_SITES], "complete": not reasons}
+    if len(sites) > MAX_SITES:
+        out["sites_omitted"] = len(sites) - MAX_SITES
     if reasons:
         out["reasons"] = reasons
     return out
+
+
+def _holding(root: Path, name: str) -> set[str] | None:
+    """The files whose text holds *name*; ``None`` when git cannot say."""
+    from repowise.server.mcp_server._line_hits import _files_holding
+
+    held = _files_holding(root, name)
+    return None if held is None else set(held)
+
+
+async def _edit_set(
+    session: AsyncSession,
+    repo_id: str,
+    repo_root: str | Path,
+    node: GraphNode,
+    *,
+    wider: bool,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """``(sites, reasons)``: every live site naming *node*, uncapped, and why
+    the list may not be all of them."""
+    root = Path(repo_root).resolve()
+    name = _bare_name(node)
+    reasons: list[str] = []
+
+    edges = await _edges_into(session, repo_id, node)
+    files, cut = await _importer_files(session, repo_id, node.file_path, name, edges)
+    if cut:
+        reasons.append(f"over {MAX_IMPORTERS} importing files")
+    facts = _edge_facts(edges, node, name, files)
+
+    unseen = await asyncio.to_thread(_unseen_dirty_files, root, str(repo_root))
+    if unseen is None:
+        reasons.append("working tree status unknown")
+        unseen = []
+    row_commit = await session.scalar(
+        select(Repository.head_commit).where(Repository.id == repo_id)
+    )
+    committed, why = await asyncio.to_thread(
+        _committed_since_index, root, str(repo_root), row_commit
+    )
+    reasons += why
+    # Committed since the index or edited since: either way the graph's lines
+    # predate the file, so it is read like an uncommitted edit.
+    unseen = sorted(set(unseen) | set(committed))
+    dirty = frozenset(unseen)
+
+    language = await _node_language(session, repo_id, node)
+    package_files, package, why = await asyncio.to_thread(_package_scope, root, node, language)
+    files.update(package_files)
+    reasons += why
+
+    held = await asyncio.to_thread(_holding, root, name)
+    ordered, unindexed = await asyncio.to_thread(
+        _capped_candidates, root, name, files, unseen, held, node.file_path, reasons
+    )
+    definition = await _definition_span(root, node, name, language, dirty)
+    scan = _ScanResult(
+        *await asyncio.to_thread(
+            _scan, root, ordered + unindexed, name, definition, facts.call_lines, dirty
+        )
+    )
+    # Past the file cap the left-out files are said already; none is stale for it.
+    if held is not None and len(ordered) + len(unindexed) < MAX_FILES:
+        scan = scan._replace(
+            stale=scan.stale + _unread_call_lines(facts.call_lines, ordered, dirty)
+        )
+    await _python_alias_exports(session, repo_id, scan.python_aliases, scan.renamed_in)
+
+    reasons += _evidence_reasons(scan, facts)
+    scanned = set(ordered) - set(scan.unreadable)
+    foreign = _foreign_package_files(package_files, scanned, scan.packages, package, language)
+    reasons += _scope_reasons(node, scan, foreign, language, set(unindexed))
+    reasons += await asyncio.to_thread(
+        _member_reasons, root, node, name, language, scanned | set(unindexed), held
+    )
+    reasons += await _dispatch_reasons(session, repo_id, node)
+    if wider:
+        reasons += await _widen(
+            session, repo_id, root, node, name, ordered + unindexed, scan.sites
+        )
+    return scan.sites, reasons
 
 
 async def reference_edit_set(
@@ -927,7 +1203,6 @@ async def reference_edit_set(
     repo_id: str,
     repo_root: str | Path,
     node: GraphNode,
-    collector: OmissionCollector | None = None,
     *,
     wider: bool = False,
 ) -> dict[str, Any]:
@@ -936,50 +1211,89 @@ async def reference_edit_set(
     Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
     plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
     definition | import | call | reference, and with *wider* also reexport |
-    same_name | doc (see :mod:`._edit_sites_wider`). With a *collector*, plain
-    references past ``MAX_REFERENCES_PER_FILE`` in one file move to it and
-    ``sites_omitted_by_file`` counts every row not shown.
+    same_name | doc (see :mod:`._edit_sites_wider`). search_codebase serves
+    these rows; get_context serves :func:`edit_set_block`.
     """
-    root = Path(repo_root).resolve()
-    name = _bare_name(node)
-    reasons: list[str] = []
+    sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=wider)
+    return _served_sites(sites, reasons)
 
-    edges = await _edges_into(session, repo_id, node)
-    files = await _importer_files(session, repo_id, node.file_path, name, edges)
-    facts = _edge_facts(edges, node, name, files)
 
-    unseen = await asyncio.to_thread(_unseen_dirty_files, root, str(repo_root))
-    if unseen is None:
-        reasons.append("working tree status unknown")
-        unseen = []
-    dirty = frozenset(unseen)
+def _block_kind(site: dict[str, Any]) -> str:
+    if site.get("prose"):
+        return "prose"
+    return "alias" if site.get("alias") else site["kind"]
 
-    language = await _node_language(session, repo_id, node)
-    package_files, package, why = await asyncio.to_thread(_package_scope, root, node, language)
-    files.update(package_files)
-    reasons += why
 
-    ordered, unindexed = _capped_candidates(files, unseen, reasons)
-    definition = await _definition_span(root, node, name, language, dirty)
-    scan = _ScanResult(
-        *await asyncio.to_thread(
-            _scan, root, ordered + unindexed, name, definition, facts.call_lines, dirty
+def _file_lines(
+    sites: list[dict[str, Any]], prose: bool
+) -> tuple[dict[str, dict[str, list[int]]], int]:
+    """``(lines by kind per file, prose lines left out)``, files in serving order."""
+    by_file: dict[str, dict[str, list[int]]] = {}
+    left_out = 0
+    for site in sorted(sites, key=_site_order):
+        kind = _block_kind(site)
+        if kind == "prose" and not prose:
+            left_out += 1
+            continue
+        # A document row stands for every line of it naming the symbol.
+        by_file.setdefault(site["path"], {}).setdefault(kind, []).extend(
+            site.get("lines") or [site["line"]]
         )
-    )
-    await _python_alias_exports(session, repo_id, scan.python_aliases, scan.renamed_in)
+    return {
+        path: {k: sorted(set(kinds[k])) for k in _BLOCK_KINDS if k in kinds}
+        for path, kinds in by_file.items()
+    }, left_out
 
-    reasons += _evidence_reasons(scan, facts)
-    scanned = set(ordered) - set(scan.unreadable)
-    foreign = _foreign_package_files(package_files, scanned, scan.packages, package, language)
-    reasons += _scope_reasons(node, scan, foreign, language, set(unindexed))
-    reasons += await asyncio.to_thread(
-        _member_reasons, root, node, name, language, scanned | set(unindexed)
-    )
-    if wider:
-        reasons += await _widen(
-            session, repo_id, root, node, name, ordered + unindexed, scan.sites
-        )
-    return _served_sites(scan.sites, reasons, node, collector)
+
+async def edit_set_block(
+    session: AsyncSession,
+    repo_id: str,
+    repo_root: str | Path,
+    node: GraphNode,
+    collector: OmissionCollector | None = None,
+    *,
+    prose: bool = False,
+) -> dict[str, Any]:
+    """get_context's ``references`` block: the edit set, one entry per file.
+
+    ``files`` maps each path to its line numbers by kind: definition |
+    import | call | alias (a use through an import alias) | reference |
+    reexport | same_name (another symbol of that name) | doc, and with
+    *prose* also prose (a comment, docstring or sentence naming it; counted
+    in ``prose_lines`` otherwise). ``sites_total`` counts every listed line.
+    Past the block's share of the response budget the leading files are
+    served and the rest go to *collector*, with ``files_total`` and
+    ``complete: false``: nothing is left out without its count.
+    """
+    sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=True)
+    by_file, left_out = _file_lines(sites, prose)
+    budget = int(effective_char_budget() * _BLOCK_SHARE)
+    shown: dict[str, dict[str, list[int]]] = {}
+    used = 0
+    for path, kinds in by_file.items():
+        cost = len(json.dumps({path: kinds}, separators=(",", ":")))
+        if shown and used + cost > budget:
+            break
+        shown[path] = kinds
+        used += cost
+    if len(shown) < len(by_file):
+        rest = {p: k for p, k in by_file.items() if p not in shown}
+        where = "the rest are under _meta.omitted" if collector is not None else "the rest are not shown"
+        reasons.append(f"{len(shown)} of {len(by_file)} files shown to fit the response; {where}")
+        if collector is not None:
+            collector.add(f"{node.node_id} :: references.files not shown", rest)
+    out: dict[str, Any] = {
+        "complete": not reasons,
+        "sites_total": sum(len(n) for kinds in by_file.values() for n in kinds.values()),
+    }
+    if len(shown) < len(by_file):
+        out["files_total"] = len(by_file)
+    if left_out:
+        out["prose_lines"] = left_out
+    if reasons:
+        out["reasons"] = reasons
+    out["files"] = shown
+    return out
 
 
 async def _widen(

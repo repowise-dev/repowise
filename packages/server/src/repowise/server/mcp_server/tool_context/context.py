@@ -15,8 +15,11 @@ Optional ``include`` parameter widens the response:
   - include=["callers"]   → who calls this symbol (symbol targets only)
   - include=["callees"]   → what this symbol calls (symbol targets only)
   - include=["references"]→ every live edit site of a symbol (definition,
-                            imports, calls, other mentions) and whether
-                            the list is complete (symbol targets only)
+                            imports, calls, other mentions) as line numbers
+                            by kind per file, and whether the list is
+                            complete (symbol targets only)
+  - include=["references+"]→ the same, plus lines naming it in a comment,
+                            docstring or sentence
   - include=["ownership"] → primary owner, bus factor, contributor count; on a
                             component target, declared owners against recent
                             activity, with findings
@@ -104,6 +107,7 @@ _INCLUDE_BLOCKS = frozenset(
         "callers",
         "callees",
         "references",
+        "references+",
         "ownership",
         "last_change",
         "metrics",
@@ -153,7 +157,7 @@ async def get_context(
     Args:
         targets: paths, "path::Symbol", "component:<name>",
             "change:<id>" (pr-123 or a sha), "package:<name>".
-        include: callers | callees | references | skeleton | skeleton+
+        include: callers | callees | references (+ adds comments) | skeleton | skeleton+
             | files | symbols (all, not top 15) | decisions | full_doc
             | ownership | last_change | metrics | community | health
             | doc_drift | changes | provenance | suspects.

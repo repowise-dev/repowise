@@ -110,7 +110,9 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
                 quote = ""
                 i += 2
                 continue
-            if ch == quote:
+            # A quote or apostrophe string cannot run past its line: where one
+            # seems to, it is JSX text (``<p>Don't</p>``), not a string.
+            if ch == quote or (ch == "\n" and quote != "`"):
                 quote = ""
             elif strings:
                 out[i] = " " if ch != "\n" else "\n"
@@ -130,7 +132,8 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
                 out[j] = " "
             i += 2
             continue
-        if ch == "/" and prev_sig in _REGEX_PRECEDERS:
+        # ``</`` closes a JSX tag; it does not open a regex literal.
+        if ch == "/" and prev_sig in _REGEX_PRECEDERS and not (i and text[i - 1] == "<"):
             i += 1
             while i < n and text[i] != "\n":
                 if text[i] == "\\":
