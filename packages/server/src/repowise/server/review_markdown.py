@@ -413,7 +413,7 @@ def _missing_partners(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
 def _dependents(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     out = ["## Files that depend on this", ""]
     files, _, tests = _reached(r, reach)
-    if not reach.files:
+    if not files:
         out.append("No source file imports the changed files.")
     else:
         rows = []
