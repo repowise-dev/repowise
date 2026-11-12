@@ -177,7 +177,7 @@ export function touchedPath(
   if (typeof raw !== "string") return null;
   const base = cwd ?? repoRoot;
   if (base === null) return raw;
-  const isWindows = /^[A-Za-z]:[\/]|^[\/]{2}/.test(base);
+  const isWindows = /^[A-Za-z]:[\\/]|^[\\/]{2}/.test(base);
   const abs = absolutePath(raw, { cwd: base, isWindows });
   return (repoRoot === null ? null : relativeTo(abs, repoRoot, isWindows)) ?? abs;
 }
