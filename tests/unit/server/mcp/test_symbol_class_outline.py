@@ -324,3 +324,20 @@ async def test_context_lines_widen_the_outline_header_upward(setup_mcp, big_repo
     assert result["start_line"] == 3
     assert result["symbol_start_line"] == 6
     assert "value = value" not in result["source"]
+
+
+@pytest.mark.asyncio
+async def test_a_member_named_past_the_rows_keeps_an_id_that_is_not_its_name(
+    setup_mcp, big_repo, session
+):
+    from repowise.server.mcp_server import get_symbol
+
+    _source, spans, add = await _setup(big_repo, session, methods=120)
+    _name, start, end = spans[-1]
+    # An id that is not ``Big::<name>`` (an overload suffix, say).
+    add("Big::method_119#2", "method_119", "method", "def method_119(self)", start, end, parent="Big")
+    await session.flush()
+
+    result = await get_symbol("pkg/big.py::Big")
+
+    assert f"pkg/big.py::Big::method_119#2 {start}" in result["more_members"]

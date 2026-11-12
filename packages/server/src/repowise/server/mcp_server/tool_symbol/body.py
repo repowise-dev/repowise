@@ -117,7 +117,8 @@ async def _container_outline(
             if remaining >= 0:
                 listed.append(entry)
                 continue
-        named = f"{entry['name']} {start_line}"
+        # A member whose id is not the container's plus its name is named by its id.
+        named = f"{entry.get('symbol_id', entry['name'])} {start_line}"
         names_left -= len(named) + 4
         if names_left < 0:
             break
@@ -257,7 +258,7 @@ def _note_outline(response: dict, outline: _Outline, row: Any, check: Any) -> No
     if outline.total > shown:
         response["members_total"] = outline.total
         last = outline.more[-1].rsplit(" ", 1)[-1] if outline.more else (
-            members[-1]["lines"].split("-")[-1] if members else str(check.start_line)
+            members[-1]["lines"].split("-")[0] if members else str(check.start_line)
         )
         response["note"] += (
             f" {outline.total - shown} more members are not listed;"
