@@ -111,6 +111,10 @@ class GraphBuilder(
         self.console_scripts: frozenset[str] = frozenset()
         self._pytest_roots: Any | None = None
         self._built = False
+        # What every resolver context of this file set shares, made once:
+        # the stem map and the Go modules, which walk the tree. Reset by
+        # ``add_file``.
+        self._context_inputs: tuple[dict[str, list[str]], Any, str | None] | None = None
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
@@ -294,20 +298,22 @@ class GraphBuilder(
         """The import-resolution context :meth:`build` resolves against.
 
         *graph* receives the external nodes resolvers create; a caller that
-        only wants answers passes a copy.
+        only wants answers passes a throwaway graph.
         """
         path_set = set(self._parsed_files.keys())
-        go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
+        if self._context_inputs is None:
+            go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
+            go_module_path = go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
+            self._context_inputs = (build_stem_map(path_set), go_modules, go_module_path)
+        stem_map, go_modules, go_module_path = self._context_inputs
         return ResolverContext(
             path_set=path_set,
-            stem_map=build_stem_map(path_set),
+            stem_map=stem_map,
             graph=graph,
             repo_path=self._repo_path,
             prune_nested_git=self._prune_nested_git,
             tsconfig_resolver=self._tsconfig_resolver,
-            go_module_path=(
-                go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
-            ),
+            go_module_path=go_module_path,
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
             has_platform_files=detect_platform_files(path_set),
@@ -320,6 +326,7 @@ class GraphBuilder(
         path = parsed.file_info.path
         self._parsed_files[path] = parsed
         self._built = False  # invalidate cached metrics
+        self._context_inputs = None
 
         # --- File node ---
         self._graph.add_node(
