@@ -17,8 +17,8 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from repowise.core.analysis.health.grading import BAND_LABEL, band_for, format_score
-from repowise.core.ci.markdown import code, more_line, plural
-from repowise.core.code_origin import owes_a_test, path_origin
+from repowise.core.ci.markdown import cell, code, more_line, plural
+from repowise.core.code_origin import path_origin
 
 if TYPE_CHECKING:
     from repowise.core.analysis.change_health.check import HealthCheck
@@ -107,10 +107,11 @@ def _read(r: ChangeBlastRadiusResponse) -> _Reach:
             path=path,
             health=s.health_score if s else None,
             hotspot=s.is_hotspot if s else hotspot_fallback.get(path),
-            # A package's __init__ is tested through what it gathers; a file new
+            # ``test_gaps`` already holds only files whose origin owes a test. A
+            # package's __init__ is tested through what it gathers; a file new
             # since the index has no test evidence either way.
             untested=path in gaps
-            and owes_a_test(path)
+            and not is_test(path)
             and not path.endswith("__init__.py")
             and not (s and s.indexed is False),
             not_indexed=bool(s and s.indexed is False),
@@ -295,11 +296,12 @@ def _owners(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     changed = len(r.changed_files)
 
     def name(o) -> str:
-        return (o.name or "").strip() or o.email.split("@")[0] or o.email
+        # Names and emails come from git history: escaped so none can restyle the page.
+        return cell((o.name or "").strip() or o.email.split("@")[0] or o.email)
 
     if r.changed_owners is not None:
         rows = [
-            f"- {name(o)} <{o.email}>: owns {o.files} of the {plural(changed, 'changed file')}"
+            f"- {name(o)} ({code(o.email)}): owns {o.files} of the {plural(changed, 'changed file')}"
             for o in r.changed_owners
         ]
         owned = sum(o.files for o in r.changed_owners)
@@ -313,7 +315,7 @@ def _owners(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
             else []
         )
     else:
-        rows = [f"- {name(o)} <{o.email}>: owns code that depends on this" for o in r.recommended_reviewers]
+        rows = [f"- {name(o)} ({code(o.email)}): owns code that depends on this" for o in r.recommended_reviewers]
         note = []
     if not rows:
         return ["## Who to ask", "", "No one owns the changed files yet: they are new or have no history."]

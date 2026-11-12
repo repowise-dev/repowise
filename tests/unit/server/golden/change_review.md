@@ -27,7 +27,7 @@ pytest tests/test_core.py tests/test_api.py
 
 ## Who to ask
 
-- Ann Lee <ann@example.com>: owns 2 of the 3 changed files
+- Ann Lee (`ann@example.com`): owns 2 of the 3 changed files
 
 That is 2 of the 3 changed files; the rest have no owner on record.
 

@@ -225,6 +225,8 @@ async def change_review_markdown(
                 health = await asyncio.to_thread(_run_check, root, change_id)
             except (UnknownChangeError, HealthCheckUnavailable) as exc:
                 health = str(exc)
+            except Exception as exc:  # git timeouts, unreadable blobs: the review still renders
+                health = f"it failed unexpectedly: {exc!r}"
     return PlainTextResponse(
         render_change_markdown(response, health), media_type="text/markdown; charset=utf-8"
     )
