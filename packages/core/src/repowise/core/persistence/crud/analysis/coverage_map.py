@@ -5,8 +5,9 @@ collect it as a test module.
 
 
 The reverse index - "given a changed source file and lines, which tests hit
-them" - is :func:`tests_covering`; the forward direction ("what does this
-test cover") is :func:`files_covered_by`. Both are straight indexed queries
+them" - is :func:`tests_covering`, and :func:`tests_covering_changes` answers
+it for a whole change in one read; the forward direction ("what does this
+test cover") is :func:`files_covered_by`. All are straight indexed queries
 scoped to a repository. Rows are point-in-time (overwritten per ingest run),
 mirroring ``coverage_files``.
 """
@@ -14,6 +15,7 @@ mirroring ``coverage_files``.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -180,25 +182,50 @@ async def tests_covering(
             TestCoverageEntry.source_file == source_file,
         )
     )
+    return rows_touching_lines([_row_dict(row) for row in result.scalars().all()], lines)
+
+
+def _row_dict(row: TestCoverageEntry) -> dict[str, Any]:
+    return {
+        "test_id": row.test_id,
+        "test_file": row.test_file,
+        "covered_lines": _decode_lines(row),
+        "source_format": row.source_format,
+    }
+
+
+def rows_touching_lines(rows: list[dict[str, Any]], lines: set[int] | None) -> list[dict[str, Any]]:
+    """The *rows* whose ``covered_lines`` meet *lines*, narrowed to the lines they meet.
+
+    ``lines=None`` keeps every row whole. This is the narrowing
+    :func:`tests_covering` applies, so a caller holding a bulk read gets the
+    same answer without another query.
+    """
+    if lines is None:
+        return rows
     out: list[dict[str, Any]] = []
-    for row in result.scalars().all():
-        covered = _decode_lines(row)
-        if lines is not None:
-            hit = sorted(lines.intersection(covered))
-            if not hit:
-                continue
-            covered_out = hit
-        else:
-            covered_out = covered
-        out.append(
-            {
-                "test_id": row.test_id,
-                "test_file": row.test_file,
-                "covered_lines": covered_out,
-                "source_format": row.source_format,
-            }
-        )
+    for row in rows:
+        hit = sorted(lines.intersection(row["covered_lines"]))
+        if hit:
+            out.append({**row, "covered_lines": hit})
     return out
+
+
+async def tests_covering_changes(
+    session: AsyncSession,
+    repository_id: str,
+    changed: Mapping[str, set[int] | None],
+) -> dict[str, list[dict[str, Any]]]:
+    """:func:`tests_covering` for every file in *changed*, from one bulk read.
+
+    *changed* maps each source file to its changed lines, or ``None`` for every
+    test that touches it. Each file maps to exactly the rows a
+    ``tests_covering`` call for it returns (an empty list when nothing covers
+    it), but the whole set costs one query per :func:`tests_covering_files`
+    batch rather than one per file.
+    """
+    rows = await tests_covering_files(session, repository_id, set(changed))
+    return {path: rows_touching_lines(rows.get(path, []), lines) for path, lines in changed.items()}
 
 
 async def tests_covering_files(
@@ -240,14 +267,7 @@ async def tests_covering_files(
         )
         rows.extend(result.scalars().all())
     for row in rows:
-        out.setdefault(row.source_file, []).append(
-            {
-                "test_id": row.test_id,
-                "test_file": row.test_file,
-                "covered_lines": _decode_lines(row),
-                "source_format": row.source_format,
-            }
-        )
+        out.setdefault(row.source_file, []).append(_row_dict(row))
     return out
 
 

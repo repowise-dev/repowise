@@ -163,3 +163,38 @@ async def test_a_truncated_map_reads_missing_tests_as_unknown(async_session, mon
     assert report.stale_test_candidates == []
     assert sorted(report.no_data) == ["src/bar.py", "src/foo.py"]
     assert report.has_signal() is False
+
+
+async def test_every_outcome_in_one_change_reads_each_file_its_own_rows(async_session):
+    # One change touching a file per outcome: the rows are read for the whole
+    # change at once (#3345), so no file may be judged on another file's rows.
+    repo = await _seed(
+        async_session,
+        [
+            _rec("tests/test_a.py::test_a", "src/untested.py", [1, 2], "tests/test_a.py"),
+            _rec("tests/test_b.py::test_b", "src/stale.py", [5, 6], "tests/test_b.py"),
+            _rec("tests/test_c.py::test_c", "src/covered.py", [7], "tests/test_c.py"),
+            _rec("pathless.test_d", "src/pathless.py", [3], None),
+        ],
+    )
+    report = await detect_missing_tests(
+        async_session,
+        repo.id,
+        {
+            "src/untested.py": {5},
+            "src/stale.py": {6},
+            "src/covered.py": {7},
+            "tests/test_c.py": {1},
+            "src/pathless.py": {3},
+            "src/unknown.py": {1},
+        },
+    )
+
+    assert [(u.source_file, u.uncovered_lines) for u in report.untested_changes] == [
+        ("src/untested.py", [5])
+    ]
+    assert [(s.source_file, s.covering_test_files) for s in report.stale_test_candidates] == [
+        ("src/stale.py", ["tests/test_b.py"])
+    ]
+    assert report.covered == ["src/covered.py", "src/pathless.py"]
+    assert report.no_data == ["src/unknown.py", "tests/test_c.py"]

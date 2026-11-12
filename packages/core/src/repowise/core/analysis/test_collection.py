@@ -601,11 +601,11 @@ async def _record_coverage(
 
     A route *groups* names gets its files' rows.
     """
-    from ..persistence.crud import tests_covering, tests_covering_files
+    from ..persistence.crud import tests_covering_changes, tests_covering_files
 
     covered: dict[str, dict] = out["covered"]
     has_rows: set[str] = set()
-    by_file = {f: await tests_covering(session, repo_id, f, lines=ls) for f, ls in changed.items()}
+    by_file = await tests_covering_changes(session, repo_id, changed)
     if route_only and not out.get("map_empty"):
         members = {r: (groups or {}).get(r, (r,)) for r in route_only}
         rows = await tests_covering_files(

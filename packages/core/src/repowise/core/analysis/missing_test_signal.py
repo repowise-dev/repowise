@@ -87,7 +87,11 @@ async def detect_missing_tests(
     keys are also the set of files touched by the change - used to decide
     whether a covering test file was itself edited (sub-signal 2).
     """
-    from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+    from repowise.core.persistence.crud import (
+        get_test_coverage_summary,
+        rows_touching_lines,
+        tests_covering_files,
+    )
     from repowise.core.persistence.crud.analysis.coverage_map import map_is_truncated
 
     report = MissingTestReport()
@@ -104,17 +108,20 @@ async def detect_missing_tests(
     report.map_truncated = truncated = map_is_truncated(summary)
 
     changed_files = set(changed.keys())
+    # Every row for every changed file in one read; each file's line hits are
+    # narrowed from it in memory rather than queried again.
+    rows_by_file = await tests_covering_files(session, repository_id, changed_files)
 
     for source_file, lines in sorted(changed.items()):
-        # Does the file appear in the map at all? (lines=None -> every test that
-        # touches the file, regardless of which lines). Empty => no data.
-        all_rows = await tests_covering(session, repository_id, source_file, lines=None)
+        # Does the file appear in the map at all? (every test that touches the
+        # file, regardless of which lines). Empty => no data.
+        all_rows = rows_by_file.get(source_file, [])
         if not all_rows:
             report.no_data.append(source_file)
             continue
 
         # The file IS in the map. Do any tests cover the CHANGED lines?
-        hit_rows = await tests_covering(session, repository_id, source_file, lines=lines)
+        hit_rows = rows_touching_lines(all_rows, lines)
         if not hit_rows and truncated:
             report.no_data.append(source_file)
             continue

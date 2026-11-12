@@ -38,8 +38,10 @@ from .coverage_map import (
     covered_source_files,
     files_covered_by,
     get_test_coverage_summary,
+    rows_touching_lines,
     save_test_coverage,
     tests_covering,
+    tests_covering_changes,
     tests_covering_files,
 )
 from .dead_code import (
@@ -218,6 +220,7 @@ __all__ = [
     "replace_doc_drift_guarded",
     "replace_doc_drift_references",
     "replace_governance_findings",
+    "rows_touching_lines",
     "save_coverage_files",
     "save_dead_code_findings",
     "save_health_findings",
@@ -232,6 +235,7 @@ __all__ = [
     "summarize_confidence_rows",
     "summarize_open_plans",
     "tests_covering",
+    "tests_covering_changes",
     "tests_covering_files",
     "tests_for_functions",
     "update_dead_code_status",
