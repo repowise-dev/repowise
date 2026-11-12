@@ -22,12 +22,17 @@ Markers (precision-first, matching the walker's shared shapes):
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from .. import loop_lexicon as lex
+from .iterables import IterableSources, text_of
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from ..loop_facts import SinkProbe
+    from .iterables import Source
 
 _HTTP_VERBS: frozenset[str] = frozenset(
     {"get", "post", "put", "delete", "patch", "head", "read", "readBytes"}
@@ -71,7 +76,12 @@ _LITERAL_KINDS: frozenset[str] = frozenset(
 )
 
 
-class DartPerfDialect(BasePerfDialect):
+_DART_TYPE_NAME = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+_DART_RECURSIVE_ARG = re.compile(rb"\brecursive\s*:\s*true\b")
+_DART_NON_LITERAL_ENTRIES = frozenset({"spread_element", "if_element", "for_element"})
+
+
+class DartPerfDialect(IterableSources):
     language = "dart"
     markers = frozenset(
         {
@@ -206,6 +216,229 @@ class DartPerfDialect(BasePerfDialect):
         if parts is None:
             return None
         return self._dotted_path(parts.child_by_field_name("value"))
+
+    # -- what a loop walks (perf/dialects/iterables.py) -----------------------
+
+    function_kinds = frozenset({"function_body", "function_expression_body"})
+    int_kinds = frozenset({"decimal_integer_literal", "hex_integer_literal"})
+    literal_kinds = frozenset({"list_literal", "set_or_map_literal"})
+    wrapper_kinds = frozenset({"parenthesized_expression"})
+    pass_through = frozenset(
+        {"where", "map", "expand", "toList", "toSet", "keys", "values", "entries", "iterator"}
+    )
+    caps = frozenset({"take"})
+    size_names = frozenset({"length"})
+    cursor_advances = frozenset({"moveNext"})
+    change_kinds = frozenset({"assignment_expression", "postfix_expression"})
+    grow_methods = frozenset({"add", "addAll", "insert", "putIfAbsent"})
+    conditional_kinds = frozenset(
+        {
+            "if_statement",
+            "switch_statement",
+            "switch_expression",
+            "switch_statement_case",
+            "for_statement",
+            "while_statement",
+            "do_statement",
+            "try_statement",
+            "catch_clause",
+            "conditional_expression",
+        }
+    )
+
+    @staticmethod
+    def _unwrap_once(cur: Node) -> Node | None:
+        if cur.type == "unary_expression":
+            return next((c for c in cur.named_children if c.type == "await_expression"), None)
+        if cur.type in ("await_expression", "parenthesized_expression", "argument"):
+            return next((c for c in reversed(cur.named_children) if c.type != "comment"), None)
+        return None
+
+    @classmethod
+    def _chain_node_list(cls, nodes: list[Node]) -> Node | None:
+        """Trailing expression node from a Dart chain, unwrapping parens and await."""
+        cur: Node | None = nodes[-1] if nodes else None
+        while cur is not None:
+            nxt = cls._unwrap_once(cur)
+            if nxt is None:
+                break
+            cur = nxt
+        return cur
+
+    def _counted_bound(self, rel: Node) -> Node | None:
+        for i, child in enumerate(rel.children):
+            if child.type == "relational_operator" and child.text in (b"<", b"<="):
+                rhs = [c for c in rel.children[i + 1 :] if c.is_named and c.type != "comment"]
+                return self._chain_node_list(rhs)
+        return None
+
+    def _for_loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        parts = next((c for c in loop.children if c.type == "for_loop_parts"), None)
+        if parts is None:
+            return "each", None
+        values = parts.children_by_field_name("value")
+        if values:
+            return "each", self._chain_node_list(values)
+        cond = parts.child_by_field_name("condition")
+        if cond is not None and cond.type == "relational_expression":
+            return "counted", self._counted_bound(cond)
+        return "each", None
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type == "for_statement":
+            return self._for_loop_header(loop)
+        if loop.type in ("while_statement", "do_statement"):
+            cond = loop.child_by_field_name("condition") or next(
+                (c for c in loop.children if c.type == "parenthesized_expression"), None
+            )
+            return "cursor", self._chain_node_list([cond] if cond is not None else [])
+        return "each", None
+
+    def _normalize_arg(self, arg: Node) -> Node:
+        if arg.type != "argument":
+            return arg
+        return self._chain_node_list([arg]) or arg
+
+    def _call_args(self, call_selector: Node) -> list[Node]:
+        arg_part = next((c for c in call_selector.children if c.type == "argument_part"), None)
+        args_node = (
+            next((c for c in arg_part.children if c.type == "arguments"), None)
+            if arg_part is not None
+            else None
+        )
+        if args_node is None:
+            return []
+        return [self._normalize_arg(c) for c in args_node.named_children if "comment" not in c.type]
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if not self._is_call_selector(node):
+            return None
+        sibs, idx = self._chain(node)
+        if idx <= 0:
+            return None
+        prev = sibs[idx - 1]
+        member = self._selector_member(prev)
+        if member is not None:
+            method, receiver = member, (sibs[idx - 2] if idx >= 2 else None)
+        elif prev.type == "identifier" and prev.text:
+            method, receiver = prev.text.decode("utf-8", "replace"), None
+        else:
+            return None
+        return method, receiver, self._call_args(node)
+
+    def member_parts(self, node: Node) -> tuple[str, Node] | None:
+        member = self._selector_member(node)
+        if member is None:
+            return None
+        sibs, idx = self._chain(node)
+        if idx <= 0:
+            return None
+        if idx + 1 < len(sibs) and self._is_call_selector(sibs[idx + 1]):
+            return None
+        return member, sibs[idx - 1]
+
+    @staticmethod
+    def _is_type_name(node: Node | None) -> bool:
+        return (
+            node is not None
+            and node.type == "identifier"
+            and bool(_DART_TYPE_NAME.match(text_of(node)))
+        )
+
+    def _is_enum_values(self, node: Node) -> bool:
+        member = self.member_parts(node)
+        return member is not None and member[0] == "values" and self._is_type_name(member[1])
+
+    def _iterable(self, expr: Node | None, loop: Node, probe: SinkProbe, *, hop: bool) -> Source:
+        node = self._chain_node_list([expr] if expr is not None else [])
+        if node is not None and self._is_enum_values(node):
+            return "constant", "bounded"
+        return super()._iterable(node, loop, probe, hop=hop)
+
+    def is_literal(self, node: Node) -> bool:
+        if not super().is_literal(node):
+            return False
+        return not any(c.type in _DART_NON_LITERAL_ENTRIES for c in node.named_children)
+
+    def _dart_walks_repo(self, receiver: Node, loop: Node) -> bool:
+        sibs, idx = self._chain(receiver)
+        roots = sibs[: idx + 1] if idx >= 0 else [receiver]
+        names = [n for root in roots for n in self._walk(root) if n.type in self.name_kinds]
+        for node in list(names):
+            value = self.reaching_value(loop, node.text or b"")
+            if value is not None:
+                v_sibs, v_idx = self._chain(value)
+                v_roots = v_sibs[: v_idx + 1] if v_idx >= 0 else [value]
+                names.extend(n for r in v_roots for n in self._walk(r) if n.type in self.name_kinds)
+        return any(lex.names_repo_root(text_of(n)) for n in names)
+
+    def _is_int_first_arg(self, args: list[Node]) -> bool:
+        return bool(args) and self._unwrap(args[0]).type in self.int_kinds
+
+    def _listing_source(self, call: Node, receiver: Node, loop: Node) -> Source:
+        recursive = bool(_DART_RECURSIVE_ARG.search(call.text or b""))
+        grows = recursive and self._dart_walks_repo(receiver, loop)
+        return "listing", "grows_with_data" if grows else None
+
+    def special_call(
+        self,
+        call: Node,
+        parts: tuple[str, Node | None, list[Node]],
+        loop: Node,
+        probe: SinkProbe,
+    ) -> Source | None:
+        method, receiver, args = parts
+        if method == "values" and not args and self._is_type_name(receiver):
+            return "constant", "bounded"
+        if method == "generate" and text_of(receiver) == "List" and self._is_int_first_arg(args):
+            return "constant", "bounded"
+        if method == "listSync" and receiver is not None:
+            return self._listing_source(call, receiver, loop)
+        return None
+
+    def _var_binding(self, node: Node) -> list[tuple[bytes, Node]]:
+        name = node.child_by_field_name("name")
+        val = self._chain_node_list(node.children_by_field_name("value"))
+        return [(name.text, val)] if name is not None and name.text and val is not None else []
+
+    def _assign_binding(self, node: Node) -> list[tuple[bytes, Node]]:
+        left = node.child_by_field_name("left")
+        op = node.child_by_field_name("operator")
+        if left is None or op is None or op.type != "=" or left.type != "assignable_expression":
+            return []
+        if [c.type for c in left.named_children] != ["identifier"]:
+            return []
+        val = self._chain_node_list(node.children_by_field_name("right"))
+        return [(left.text, val)] if left.text and val is not None else []
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        if node.type == "initialized_variable_definition":
+            return self._var_binding(node)
+        if node.type == "assignment_expression":
+            return self._assign_binding(node)
+        return []
+
+    def declared_names(self, node: Node) -> list[bytes]:
+        if node.type in ("initialized_variable_definition", "for_loop_parts"):
+            name = node.child_by_field_name("name")
+            return [name.text] if name is not None and name.text else []
+        if node.type == "formal_parameter":
+            idents = [c for c in node.children if c.type == "identifier" and c.text]
+            return [idents[-1].text] if idents else []
+        return []
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        scope = self._scope(loop)
+        sig = scope.prev_named_sibling if scope is not None else None
+        if sig is None:
+            return set()
+        out: set[bytes] = set()
+        for fp in self._walk(sig, prune=self.function_kinds):
+            if fp.type == "formal_parameter":
+                idents = [c for c in fp.children if c.type == "identifier" and c.text]
+                if idents:
+                    out.add(idents[-1].text)
+        return out
 
     # -- extra markers ---------------------------------------------------------
 
