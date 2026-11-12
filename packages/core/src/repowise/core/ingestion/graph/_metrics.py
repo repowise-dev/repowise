@@ -375,12 +375,16 @@ class MetricsMixin:
             file_community_input,
             place_file_communities,
             production_community_input,
+            split_file_nodes,
         )
 
         try:
             repo_path = getattr(self, "_repo_path", None)
             repo_name = repo_path.name if repo_path else None
-            key = self._community_key("file", lambda: file_community_input(self._graph, repo_name))
+            files = split_file_nodes(self._graph)
+            key = self._community_key(
+                "file", lambda: file_community_input(self._graph, repo_name, files)
+            )
             reuse = key and self._reusable_communities(
                 "file", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
             )
@@ -390,22 +394,25 @@ class MetricsMixin:
                 self._community_info_cache, self._community_algo = extra
                 return self._community_cache
             prod_key = key and self._community_key(
-                "file_production", lambda: production_community_input(self._graph)
+                "file_production", lambda: production_community_input(self._graph, files)
             )
-            held, churn = self._held_production_partition(prod_key)
+            held = self._held_production_partition(prod_key)
             assignment, info, algo, production = place_file_communities(
-                self._graph, repo_name=repo_name, production=held
+                self._graph, repo_name=repo_name, production=held, files=files
             )
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
-            detected = production is not held
-            if key and (detected or churn == 0):
-                self._store_communities("file", key, assignment, extra=(info, algo))
-            if prod_key and detected:
-                self._store_communities(
-                    "file_production", prod_key, production.assignment, extra=production
-                )
+            # A result on a held partition is not written: the references stay
+            # pinned to the last full detection, and writing the cache costs
+            # more than placing the test files again.
+            if production is not held:
+                if key:
+                    self._store_communities("file", key, assignment, extra=(info, algo))
+                if prod_key:
+                    self._store_communities(
+                        "file_production", prod_key, production.assignment, extra=production
+                    )
         except Exception as exc:
             log.warning("community_detection_failed", error=str(exc))
             file_nodes = [
@@ -416,18 +423,18 @@ class MetricsMixin:
             self._community_algo = "failed"
         return self._community_cache
 
-    def _held_production_partition(self, key: Any | None) -> tuple[Any | None, int]:
-        """``(production partition, churn)`` a file detection may stand on, else ``(None, 0)``."""
+    def _held_production_partition(self, key: Any | None) -> Any | None:
+        """The stored production partition a file detection may stand on, else ``None``."""
         from repowise.core.analysis.communities import ProductionPartition
 
         if not key:
-            return None, 0
+            return None
         reuse = self._reusable_communities(
             "file_production", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
         )
         if reuse and isinstance(reuse[0].extra, ProductionPartition):
-            return reuse[0].extra, reuse[1]
-        return None, 0
+            return reuse[0].extra
+        return None
 
     def symbol_communities(self) -> dict[str, int]:
         """Assign a community ID to each symbol node using call/heritage edges.

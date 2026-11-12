@@ -582,7 +582,11 @@ class FileCommunityInput:
     edges: frozenset[int]
 
 
-def _file_nodes(graph: nx.DiGraph) -> tuple[list[str], dict[str, bool]]:
+#: :func:`split_file_nodes`' result: sorted file nodes, and whether each is test or example code.
+FileNodes = tuple[list[str], dict[str, bool]]
+
+
+def split_file_nodes(graph: nx.DiGraph) -> FileNodes:
     """*graph*'s own file nodes, sorted, and whether each is test or example code.
 
     External and framework nodes are stored as files but are code we do not
@@ -602,32 +606,35 @@ def _file_nodes(graph: nx.DiGraph) -> tuple[list[str], dict[str, bool]]:
     return file_nodes, non_core
 
 
-def _production_edges(graph: nx.DiGraph, production: Any) -> list[tuple[str, str]]:
+def _production_edges(graph: nx.DiGraph, production: list[str]) -> list[tuple[str, str]]:
     """The links the partition runs on: dependency edges between two of *production*.
 
-    Sorted: edge insertion order shifts the partition (co-change edges arrive
-    in git-indexer thread-completion order).
+    Read from *production*'s own out-edges, not the whole graph's, which are
+    mostly symbol edges. Sorted: edge insertion order shifts the partition
+    (co-change edges arrive in git-indexer thread-completion order).
     """
+    members = frozenset(production)
     return sorted(
         (u, v)
-        for u, v, d in graph.edges(data=True)
+        for u, v, d in graph.edges(production, data=True)
         if d.get("edge_type", "imports") in _FILE_COMMUNITY_EDGE_TYPES
-        and u in production
-        and v in production
+        and v in members
     )
 
 
-def file_community_input(graph: nx.DiGraph, repo_name: str | None = None) -> FileCommunityInput:
-    """:class:`FileCommunityInput` of *graph*."""
+def file_community_input(
+    graph: nx.DiGraph, repo_name: str | None = None, files: FileNodes | None = None
+) -> FileCommunityInput:
+    """:class:`FileCommunityInput` of *graph*; *files* is its :func:`split_file_nodes`."""
     from repowise.core.ingestion.graph._centrality_cache import fingerprints
 
-    file_nodes, non_core = _file_nodes(graph)
+    file_nodes, non_core = files or split_file_nodes(graph)
     file_set = frozenset(file_nodes)
     node_items = [f"{n}\0{non_core[n]}\0{graph.nodes[n].get('language')}" for n in file_nodes]
     edge_items = sorted(
         f"{u}\0{v}\0{d.get('edge_type', '<absent>')}"
-        for u, v, d in graph.edges(data=True)
-        if u in file_set and v in file_set and d.get("edge_type") not in TEMPORAL_EDGE_TYPES
+        for u, v, d in graph.edges(file_nodes, data=True)
+        if v in file_set and d.get("edge_type") not in TEMPORAL_EDGE_TYPES
     )
     digest = hashlib.sha256(f"{repo_name}\0{community_code_fingerprint()}".encode())
     for item in (*node_items, "\1", *edge_items):
@@ -638,7 +645,9 @@ def file_community_input(graph: nx.DiGraph, repo_name: str | None = None) -> Fil
     )
 
 
-def production_community_input(graph: nx.DiGraph) -> FileCommunityInput:
+def production_community_input(
+    graph: nx.DiGraph, files: FileNodes | None = None
+) -> FileCommunityInput:
     """What the production partition reads: the production files and the links between them.
 
     Test and example files are placed after the partition and never shape it,
@@ -646,9 +655,9 @@ def production_community_input(graph: nx.DiGraph) -> FileCommunityInput:
     """
     from repowise.core.ingestion.graph._centrality_cache import fingerprints
 
-    file_nodes, non_core = _file_nodes(graph)
+    file_nodes, non_core = files or split_file_nodes(graph)
     production = [n for n in file_nodes if not non_core[n]]
-    edge_items = [f"{u}\0{v}" for u, v in _production_edges(graph, frozenset(production))]
+    edge_items = [f"{u}\0{v}" for u, v in _production_edges(graph, production)]
     digest = hashlib.sha256(community_code_fingerprint().encode())
     for item in (*production, "\1", *edge_items):
         digest.update(item.encode("utf-8", "replace"))
@@ -696,6 +705,7 @@ def place_file_communities(
     graph: nx.DiGraph,
     repo_name: str | None = None,
     production: ProductionPartition | None = None,
+    files: FileNodes | None = None,
 ) -> tuple[dict[str, int], dict[int, CommunityInfo], str, ProductionPartition]:
     """:func:`detect_file_communities` on top of a *production* partition, when given.
 
@@ -704,9 +714,10 @@ def place_file_communities(
     are taken from *production*. It must cover exactly *graph*'s production
     files, else it is set aside and detected afresh. Also returns the
     production partition the result stands on: *production* itself when it
-    was used, else the one detected here.
+    was used, else the one detected here. *files* is *graph*'s
+    :func:`split_file_nodes`, when the caller already has it.
     """
-    file_nodes, non_core = _file_nodes(graph)
+    file_nodes, non_core = files or split_file_nodes(graph)
     if not file_nodes:
         return {}, {}, "none", ProductionPartition({}, {}, frozenset(), "none")
 
@@ -727,7 +738,7 @@ def place_file_communities(
     # Build undirected subgraph from production files + relevant edges
     undirected = nx.Graph()
     undirected.add_nodes_from(prod_nodes)
-    undirected.add_edges_from(_production_edges(graph, undirected))
+    undirected.add_edges_from(_production_edges(graph, prod_nodes))
 
     if production is None:
         prod_assignment, algorithm = _partition_production(undirected)
@@ -799,11 +810,10 @@ def _community_info(
     # Also build an undirected graph including test edges for cohesion scoring
     full_undirected = nx.Graph()
     full_undirected.add_nodes_from(file_nodes)
-    for u, v, d in graph.edges(data=True):
+    for u, v, d in graph.edges(file_nodes, data=True):
         edge_type = d.get("edge_type", "imports")
         if (
             edge_type in _FILE_COMMUNITY_EDGE_TYPES
-            and u in full_undirected
             and v in full_undirected
             and not full_undirected.has_edge(u, v)
         ):
