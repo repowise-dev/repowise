@@ -182,6 +182,11 @@ function TestList({ impact }: { impact: Result["test_impact"] }) {
           {all ? "Show fewer" : `Show all ${formatNumber(tests.length)}`}
         </button>
       )}
+      {(impact?.recommendations_omitted ?? 0) > 0 && (
+        <p className={NONE}>
+          The first {formatNumber(tests.length)} of {formatNumber(impact!.recommendations_total)} are listed here.
+        </p>
+      )}
     </>
   );
 }

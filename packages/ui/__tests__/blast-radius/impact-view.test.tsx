@@ -561,3 +561,58 @@ describe("a server that pages the reached files", () => {
     expect(screen.queryByRole("button", { name: "Draw the map" })).not.toBeInTheDocument();
   });
 });
+
+describe("a cut test list", () => {
+  it("says how many of the recommended tests it lists", async () => {
+    const rec = (i: number) => ({
+      test_id: `tests/test_${i}.py`,
+      test_file: `tests/test_${i}.py`,
+      repository_id: "repo-1",
+      repository: "app",
+      basis: "inferred" as const,
+      bases: ["inferred" as const],
+      source_files: ["src/core.ts"],
+      evidence: [],
+    });
+    const freshness = { status: "unknown" as const, reason: null, ingested_commit: null, indexed_commit: null };
+    const analyze = vi.fn(async (): Promise<BlastRadiusResponse> => ({
+      ...RESULT,
+      test_impact: {
+        recommendations: [rec(1), rec(2)],
+        recommendations_total: 150,
+        recommendations_emitted: 2,
+        recommendations_truncated: true,
+        recommendations_omitted: 148,
+        recommendations_by_primary_basis: { measured: 0, inferred: 150 },
+        files: [],
+        files_total: 1,
+        files_without_measured_tests: [],
+        unknown_files: [],
+        coverage: {
+          status: "unavailable" as const,
+          reason: null,
+          map_present: false,
+          pair_count: 0,
+          test_count: 0,
+          source_file_count: 0,
+          changed_files_total: 1,
+          changed_files_with_measured_tests: 0,
+          changed_files_without_measured_tests: 1,
+          ingested_at: null,
+          source_format: null,
+          freshness,
+        },
+        inference: {
+          status: "available" as const,
+          reason: null,
+          changed_files_total: 1,
+          changed_files_with_candidates: 1,
+          candidates_before_dedup: 150,
+        },
+        analysis: { status: "partial" as const, stale: false, partial: true, degraded: false, basis_categories: ["inferred" as const] },
+      },
+    }));
+    renderView(<ImpactView adapter={makeAdapter({ analyze })} initialFiles={["src/core.ts"]} />);
+    expect(await screen.findByText("The first 2 of 150 are listed here.")).toBeInTheDocument();
+  });
+});
