@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_candidates import (
@@ -16,12 +17,13 @@ from repowise.core.analysis.change_candidates import (
     list_change_candidates,
     resolve_change_files,
 )
-from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
+from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer, run_commands
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.server.auth import read_route
 from repowise.server.deps import get_db_session, resolve_request_session_factory, verify_api_key
+from repowise.server.review_markdown import render_change_markdown
 from repowise.server.schemas import BlastRadiusRequest, BlastRadiusResponse
 from repowise.server.schemas.blast_radius import (
     ChangeBlastRadiusRequest,
@@ -31,6 +33,9 @@ from repowise.server.schemas.blast_radius import (
     ChangeHealthCheckResponse,
     ChangeReview,
 )
+
+if TYPE_CHECKING:
+    from repowise.core.analysis.change_health.check import HealthCheck
 
 #: Changed paths analyzed per change. A long-lived branch can touch thousands;
 #: past this the picture is the whole repository and the response says so.
@@ -185,10 +190,54 @@ async def _review(
         return None, f"The change could not be scored: {exc}"
     try:
         tests = await scored_change_tests(checkout, factory, revspec, scored, repo=repo_id)
-        return ChangeReview(revspec=revspec, risk=change_risk_payload(scored), tests=tests), None
+        commands = await _test_commands(factory, repo_id, tests)
+        review = ChangeReview(
+            revspec=revspec, risk=change_risk_payload(scored), tests=tests, test_commands=commands
+        )
+        return review, None
     except Exception as exc:  # a review bug must not take the blast radius with it
         log.warning("change review failed", exc_info=True)
         return None, f"The change review failed unexpectedly: {exc!r}"
+
+
+async def _change_analysis(
+    session: AsyncSession, request: Request, repo_id: str, change_id: str, max_depth: int
+) -> ChangeBlastRadiusResponse:
+    checkout = await _checkout(session, repo_id)
+    try:
+        files = await resolve_change_files(session, repo_id, checkout, change_id)
+    except UnknownChangeError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    analyzed = files[:MAX_CHANGED_FILES]
+    # The review reads git and opens its own sessions, so it runs beside the analysis.
+    reviewing = asyncio.ensure_future(
+        _review(resolve_request_session_factory(request), repo_id, checkout, change_id)
+    )
+    try:
+        result = await _analyze_cached(session, repo_id, analyzed, max_depth)
+    except BaseException:
+        reviewing.cancel()
+        raise
+    review, unavailable = await reviewing
+    return ChangeBlastRadiusResponse(
+        **result,
+        change_id=change_id,
+        changed_files=analyzed,
+        changed_files_total=len(files),
+        review=review,
+        review_unavailable=unavailable,
+    )
+async def _test_commands(factory: Any, repo_id: str, tests: dict[str, Any]) -> list[str]:
+    """Commands that run the selected tests; none for a run-all verdict, or when
+    the runners cannot be read (the score and the list stand without them)."""
+    if tests["run_all"] or not tests["tests_to_run"]:
+        return []
+    try:
+        async with get_session(factory) as session:
+            return await run_commands(session, repo_id, tests["tests_to_run"], tests["total"])
+    except Exception:
+        log.warning("test commands failed", exc_info=True)
+        return []
 
 
 @router.post("/{repo_id}/blast-radius/change", response_model=ChangeBlastRadiusResponse)
@@ -201,37 +250,53 @@ async def analyze_change_blast_radius(
 ) -> ChangeBlastRadiusResponse:
     """Blast radius of one listed change, with the per-file signals and
     reach edges a drawing needs, and its score and tests (``review``)."""
-    checkout = await _checkout(session, repo_id)
-    try:
-        files = await resolve_change_files(session, repo_id, checkout, body.change_id)
-    except UnknownChangeError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    analyzed = files[:MAX_CHANGED_FILES]
-    # The review reads git and opens its own sessions, so it runs beside the analysis.
-    reviewing = asyncio.ensure_future(
-        _review(resolve_request_session_factory(request), repo_id, checkout, body.change_id)
+    return await _change_analysis(session, request, repo_id, body.change_id, body.max_depth)
+
+
+@router.get("/{repo_id}/blast-radius/change.md", response_class=PlainTextResponse)
+async def change_review_markdown(
+    repo_id: str,
+    change_id: str = Query(min_length=1, max_length=300),
+    max_depth: int = Query(default=DEFAULT_DEPTH, ge=1, le=10),
+    health_check: bool = False,
+    *,
+    request: Request,
+    session: AsyncSession = Depends(get_db_session),
+) -> PlainTextResponse:
+    """The Review page for one listed change as Markdown, for a coding agent.
+
+    ``health_check=true`` also runs the health check (seconds on a large
+    change) and adds its verdict and findings; without a checkout the section
+    says why it could not run.
+    """
+    from repowise.core.analysis.change_health.check import HealthCheckUnavailable
+
+    response = await _change_analysis(session, request, repo_id, change_id, max_depth)
+    health = None
+    if health_check:
+        root = await _checkout(session, repo_id)
+        if root is None:
+            health = "this server has no checkout to read the change from"
+        else:
+            try:
+                health = await asyncio.to_thread(_run_check, root, change_id)
+            except (UnknownChangeError, HealthCheckUnavailable) as exc:
+                health = str(exc)
+            except Exception as exc:  # git timeouts, unreadable blobs: the review still renders
+                health = f"it failed unexpectedly: {exc!r}"
+    return PlainTextResponse(
+        render_change_markdown(response, health), media_type="text/markdown; charset=utf-8"
     )
-    try:
-        result = await _analyze_cached(session, repo_id, analyzed, body.max_depth)
-    except BaseException:
-        reviewing.cancel()
-        raise
-    review, unavailable = await reviewing
-    return ChangeBlastRadiusResponse(
-        **result,
-        change_id=body.change_id,
-        changed_files=analyzed,
-        changed_files_total=len(files),
-        review=review,
-        review_unavailable=unavailable,
-    )
+
+
+def _run_check(root: str, change_id: str) -> HealthCheck:
+    from repowise.core.analysis.change_health.check import run_health_check
+
+    return run_health_check(root, change_revspec(root, change_id))
 
 
 def _health_check(root: str, change_id: str) -> ChangeHealthCheckResponse:
-    from repowise.core.analysis.change_health.check import run_health_check
-
-    check = run_health_check(root, change_revspec(root, change_id))
-    doc = check.as_json()
+    doc = _run_check(root, change_id).as_json()
     return ChangeHealthCheckResponse(
         change_id=change_id,
         revspec=doc["revspec"],

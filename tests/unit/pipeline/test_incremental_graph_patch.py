@@ -1097,3 +1097,315 @@ def test_doc_a_manifest_names_falls_back(tmp_path: Path, edit: Any, doc: str) ->
 
     assert patched.patch_plan.reason == f"{doc}: a manifest names it"
     _assert_equals_full(tree, patched, tmp_path)
+
+
+
+
+# C and C++: headers, out-of-line method definitions that calls resolve onto,
+# header/implementation pairs (``util.c`` does not include ``util.h``), a
+# function-like macro, a registration marker the warmup reads from source, and
+# the facts the resolver reads from another file's text (a pure virtual, a
+# class template's parameters, an alias).
+_CPP_TREE = {
+    "src/base.h": "#pragma once\nnamespace acme {\nusing Count = int;\n}\n",
+    "src/widget.h": (
+        "#pragma once\n"
+        '#include "base.h"\n'
+        "namespace acme {\n"
+        "class Base { public: virtual int size() const; };\n"
+        "class Widget : public Base {\n"
+        "public:\n"
+        "  int size() const override;\n"
+        "  int twice() const;\n"
+        "};\n"
+        "inline int helper(int x) { return x + 1; }\n"
+        "#define SQUARE(x) ((x) * (x))\n"
+        "}\n"
+    ),
+    "src/widget.cpp": (
+        '#include "widget.h"\n'
+        "namespace acme {\n"
+        "int Base::size() const { return 0; }\n"
+        "int Widget::size() const { return helper(1); }\n"
+        "int Widget::twice() const { return size() * 2; }\n"
+        "}\n"
+    ),
+    "src/main.cpp": (
+        '#include "widget.h"\n'
+        '#include "shape.h"\n'
+        "int run() {\n"
+        "  acme::Widget w;\n"
+        "  return w.twice() + SQUARE(2);\n"
+        "}\n"
+        "int measure(const Shape& s) { return s.area(); }\n"
+    ),
+    "src/shape.h": (
+        "#pragma once\n"
+        "class Shape { public: virtual int area() const = 0; };\n"
+        "template <typename T>\n"
+        "class Box : public T {\n"
+        "public:\n"
+        "  int area() const { return 1; }\n"
+        "};\n"
+    ),
+    "src/util.h": "int c_util(int a);\nint c_other(int a);\n",
+    "src/util.c": (
+        "int c_util(int a) { return a; }\n"
+        "int c_other(int a) { return a + 1; }\n"
+    ),
+    "src/cmain.c": '#include "util.h"\nint c_main(void) { return c_util(1); }\n',
+    "src/plugin.cpp": (
+        '#include "widget.h"\n'
+        "// PYBIND11_MODULE registers this file at load time.\n"
+        "int plugin() { return acme::helper(2); }\n"
+    ),
+}
+
+
+@pytest.fixture
+def cpp_indexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
+    tree = tmp_path / "cpp"
+    _write(tree, _CPP_TREE)
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    return tree, _seed_rows(first)
+
+
+def _replace(rel: str, old: str, new: str) -> Any:
+    def apply(t: Path) -> None:
+        text = _CPP_TREE[rel]
+        assert old in text
+        (t / rel).write_text(text.replace(old, new))
+
+    return apply
+
+
+@pytest.mark.parametrize(
+    ("edit", "scope"),
+    [
+        pytest.param(
+            _replace("src/widget.cpp", "return size() * 2;", "return size() * 2 + helper(3);"),
+            ("src/widget.cpp",),
+            id="cpp-method-body",
+        ),
+        pytest.param(
+            _replace("src/main.cpp", "w.twice() + SQUARE(2)", "w.size() + SQUARE(2)"),
+            ("src/main.cpp",),
+            id="cpp-call-retargeted",
+        ),
+        pytest.param(
+            _replace("src/widget.h", "return x + 1;", "return x + 2;"),
+            ("src/widget.h",),
+            id="header-inline-body",
+        ),
+        pytest.param(
+            _replace("src/widget.h", "((x) * (x))", "((x) * (x) * 1)"),
+            ("src/widget.h",),
+            id="header-macro-body",
+        ),
+        pytest.param(
+            _replace("src/util.c", "return a;", "return c_other(a);"),
+            ("src/util.c",),
+            id="c-body-with-header-pair",
+        ),
+        pytest.param(
+            _replace("src/plugin.cpp", "// PYBIND11_MODULE registers", "// Registers"),
+            ("src/plugin.cpp",),
+            id="registration-marker-removed",
+        ),
+        pytest.param(
+            _both(
+                _replace("src/widget.cpp", "return helper(1);", "return helper(2);"),
+                _replace("src/util.c", "return a + 1;", "return a + 2;"),
+            ),
+            ("src/util.c", "src/widget.cpp"),
+            id="c-and-cpp-bodies",
+        ),
+    ],
+)
+def test_cpp_body_edits_are_patched_and_equal_a_full_rebuild(
+    cpp_indexed: tuple[Path, dict[str, list]],
+    tmp_path: Path,
+    edit: Any,
+    scope: tuple[str, ...],
+) -> None:
+    tree, seed = cpp_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert not patched.patch_plan.refresh
+    assert patched.patch_plan.scope == scope
+    _assert_equals_full(tree, patched, tmp_path / "cpp-oracle")
+
+
+def test_cpp_header_pair_edges_survive_a_patch_of_either_side(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """The pair edges come from paths, not resolution: a patch must keep both."""
+    tree, seed = cpp_indexed
+    pairs = {("src/util.c", "src/util.h"), ("src/util.h", "src/util.c")}
+    assert pairs <= {(u, v) for u, v, _ in seed["edges"]}
+    _replace("src/util.c", "return a;", "return a * 2;")(tree)
+    (tree / "src/util.h").write_text(_CPP_TREE["src/util.h"] + "/* declarations */\n")
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert pairs <= {(u, v) for u, v in patched.graph().edges()}
+    _assert_equals_full(tree, patched, tmp_path / "pairs-oracle")
+
+
+@pytest.mark.parametrize(
+    ("edit", "reached"),
+    [
+        pytest.param(
+            _both(
+                _replace("src/widget.h", "  int twice() const;\n", "  int twice() const;\n  int thrice() const;\n"),
+                _replace("src/main.cpp", "w.twice()", "w.thrice()"),
+            ),
+            "src/main.cpp",
+            id="header-declaration-added",
+        ),
+        pytest.param(
+            _replace("src/widget.cpp", "int Widget::twice() const", "long Widget::twice() const"),
+            "src/main.cpp",
+            id="definition-signature-changed",
+        ),
+        # main.cpp already reaches base.h through widget.h: its reach is unchanged.
+        pytest.param(
+            _replace("src/main.cpp", '#include "shape.h"\n', '#include "shape.h"\n#include "base.h"\n'),
+            "src/main.cpp",
+            id="include-of-a-reached-header",
+        ),
+        pytest.param(
+            _add("src/extra.cpp", "int extra() { return c_util(2); }\n"), "src/extra.cpp", id="cpp-file-added"
+        ),
+        # Facts the parse does not record, read off the header's text.
+        pytest.param(
+            _replace("src/shape.h", "area() const = 0;", "area() const;"),
+            "src/main.cpp",
+            id="pure-virtual-dropped",
+        ),
+        pytest.param(
+            _replace("src/shape.h", "template <typename T>\nclass Box : public T", "template <typename U>\nclass Box : public U"),
+            "src/shape.h",
+            id="template-parameter-renamed",
+        ),
+        pytest.param(
+            _replace("src/base.h", "using Count = int;", "using Count = long;"),
+            "src/base.h",
+            id="alias-target-changed",
+        ),
+        # util.h loses its pair edge to util.c, whose definitions go by name.
+        pytest.param(_remove("src/util.c"), "src/cmain.c", id="c-file-removed"),
+    ],
+)
+def test_cpp_edits_other_files_see_re_resolve_the_files_they_reach(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reached: str
+) -> None:
+    tree, seed = cpp_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.refresh
+    assert reached in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "cpp-oracle")
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        # Every file that includes widget.h now reaches util.h and util.c.
+        pytest.param(
+            _replace("src/widget.h", '#include "base.h"\n', '#include "base.h"\n#include "util.h"\n'),
+            "src/widget.h: the files its includes reach changed",
+            id="header-include-added",
+        ),
+        pytest.param(
+            _replace("src/widget.h", '#include "base.h"\n', ""),
+            "src/widget.h: the files its includes reach changed",
+            id="header-include-removed",
+        ),
+    ],
+)
+def test_cpp_edits_that_move_include_reach_fall_back(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reason: str
+) -> None:
+    tree, seed = cpp_indexed
+    edit(tree)
+    timings = PhaseTimings()
+
+    patched = build_repo_graph(
+        tree, [], collect_sources=True, seed_edges=seed, patch_requested=True, timings=timings
+    )[2]
+
+    assert not patched.patch_plan.eligible
+    assert patched.patch_plan.reason == reason
+    assert {"rebuild.graph.patch", "rebuild.graph.full"} <= set(timings.totals)
+    _assert_equals_full(tree, patched, tmp_path / "cpp-oracle")
+
+
+def test_a_cpp_name_reaches_another_language_through_the_sites_that_name_it(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """A second ``twice`` makes the Python call's repo-wide unique match ambiguous."""
+    tree, _ = cpp_indexed
+    _write(
+        tree,
+        {
+            "py/tools.py": "def twice_py():\n    return 2\n",
+            "py/run.py": "def go():\n    return twice_py()\n",
+            "py/notes.py": "# twice_py is documented here\nVALUE = 1\n",
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    (tree / "src/extra.cpp").write_text("int twice_py() { return 3; }\n")
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "py/run.py" in patched.patch_plan.scope
+    assert "py/notes.py" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "cross-oracle")
+
+
+def test_a_cpp_function_reaches_the_files_that_call_it_not_those_that_mention_it(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    tree, _ = cpp_indexed
+    _write(tree, {"src/doc.cpp": "// thrice is documented here\nint doc() { return 0; }\n"})
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    _both(
+        _replace("src/widget.h", "  int twice() const;\n", "  int twice() const;\n  int thrice() const;\n"),
+        _replace("src/main.cpp", "w.twice()", "w.thrice()"),
+    )(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "src/main.cpp" in patched.patch_plan.scope
+    assert "src/doc.cpp" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "mention-oracle")
+
+
+def test_imports_of_a_file_nobody_imports_reach_no_other_file(tmp_path: Path) -> None:
+    tree = tmp_path / "py"
+    files = {
+        "pkg/util.py": "def helper():\n    return 1\n",
+        "pkg/other.py": "def helper_two():\n    return helper_two_impl()\n\ndef helper_two_impl():\n    return 2\n",
+        "tests/test_util.py": "def test_one():\n    assert True\n",
+    }
+    _write(tree, files)
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    (tree / "tests/test_util.py").write_text(
+        "from pkg.other import helper_two\n\ndef test_one():\n    assert helper_two() == 2\n"
+    )
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "pkg/other.py" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "py-oracle")
