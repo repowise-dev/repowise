@@ -352,8 +352,10 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
     The "up to date" skip and the no-relevant-changes incremental path bump
     ``last_sync_commit`` without re-running the persistence that stamps the
     ``repositories`` row, which the server reads for the indexed commit and
-    the "indexed at" time. Stamps ``head_commit`` only on drift but always
-    advances ``updated_at``. Creates a missing row in an existing store (a
+    the "indexed at" time. Stamps ``head_commit`` only on drift, and advances
+    ``updated_at`` on drift or once per UTC day: every surface reads it at
+    day resolution, so a repeat check the same day leaves the store
+    untouched. Creates a missing row in an existing store (a
     configured database counts as existing); a no-op when no store exists.
     The single head-commit stamper for the CLI and workspace update paths.
     """
@@ -369,7 +371,7 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
         init_db,
         upsert_repository,
     )
-    from ...persistence.crud import get_repository_by_path
+    from ...persistence.crud import get_repository_by_path, index_synced_at
 
     url = resolve_db_url(repo_path)
     engine = create_engine(url)
@@ -386,10 +388,12 @@ async def reconcile_repo_head_commit(repo_path: Path, head: str | None) -> None:
                     head_commit=head,
                 )
             else:
-                if repo.head_commit != head:
+                now = datetime.now(UTC)
+                synced = index_synced_at(repo)
+                if repo.head_commit != head or synced is None or synced.date() < now.date():
                     repo.head_commit = head
-                repo.updated_at = datetime.now(UTC)
-                await session.flush()
+                    repo.updated_at = now
+                    await session.flush()
     finally:
         await engine.dispose()
 
