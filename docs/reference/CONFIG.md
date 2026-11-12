@@ -1493,6 +1493,17 @@ rewrite-hook offer), like `init --no-editor-setup`
 sandboxes and benchmark runs. Project files (`.repowise/mcp.json`,
 `CLAUDE.md`, Codex config) are still written.
 
+### CI gates
+
+<!-- BEGIN GENERATED settings:env-health (python scripts/gen_config_docs.py) -->
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `REPOWISE_GITLAB_TOKEN` | unset | GitLab access token (api scope) that posts the CI summary as a merge-request note. |
+<!-- END GENERATED settings:env-health -->
+
+`REPOWISE_GITLAB_TOKEN` is read by `repowise ci-summary --gitlab-note`; set it
+as a masked CI/CD variable ([CI.md](../start/CI.md#gitlab)).
+
 ### BLAS thread pool
 
 repowise caps the BLAS thread pool to 1 before numpy loads. An uncapped pool costs about 32 MB of memory per thread (about 750 MB on a 32-core machine) and does not speed up the sparse graph work repowise runs. Spawned worker processes inherit the cap through the environment.

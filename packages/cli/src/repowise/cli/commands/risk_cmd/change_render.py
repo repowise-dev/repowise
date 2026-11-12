@@ -203,6 +203,7 @@ def _emit_machine(subject: _Subject, result: ChangeRiskResult) -> None:
         click.echo(json.dumps(payload, indent=2))
     elif fmt == "markdown":
         click.echo(render.render_markdown(result, fail_above), nl=False)
+        write_gate_summary(render.gate_summary(result, fail_above))
     else:
         for line in render.github_annotations(result, fail_above):
             click.echo(line)
