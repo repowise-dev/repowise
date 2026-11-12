@@ -4,7 +4,7 @@ repowise serves its codebase intelligence to AI coding assistants (Claude Code, 
 
 Two opt-in tools go further: `set_finding_status` records a triage verdict in the index, and `generate_refactoring_code` calls your LLM to draft a diff.
 
-18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible.
+18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible. That default is what Claude Code is listed; other clients, which load every schema up front, are listed the five core tools unless `mcp.tools` says otherwise ([Configuring the tool surface](#configuring-the-tool-surface)).
 
 This page says which tool to call and with what arguments. Response fields, the `_meta` envelope and truncation rules are in [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md).
 
@@ -53,29 +53,53 @@ repowise mcp --transport sse --port 7338  # legacy SSE transport
 - **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
 - **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
 
-Set `mcp.tools` in `.repowise/config.yaml`, or pass `--tools` per launch (it overrides the config):
+That default is what Claude Code is listed: it loads a tool's schema only when the model asks for it, so a larger surface costs only the tool names each turn. Every other client (Codex, Cursor, VS Code and Copilot, OpenCode, Windsurf, Kiro, Hermes, and any client that announces a name repowise does not recognise) sends every listed schema with every request, so with nothing configured it is listed the `core` profile instead. The server reads the client's name from the MCP handshake.
+
+**The `core` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase` and `get_why`, plus `list_repos` in workspace mode: about 1,800 tokens of schema against about 4,200 for the standard set.
+
+**The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so with `mcp.tools: lean` (or `core`), `repowise init` skips the Claude Code tool-search recommendation.
+
+| Value | Lists |
+|-------|-------|
+| unset | each client's default: `standard` on Claude Code, `core` elsewhere |
+| `core` | the core profile |
+| `lean` | the lean profile |
+| `standard` | the default set above, on every client |
+| `all` | every tool usable in this mode |
+| a profile, then `+name` / `-name` | that profile adjusted |
+| `+name` / `-name` alone | each client's default adjusted |
+| plain names | exactly those tools |
+
+One setting, `mcp.tools`, sets it for every client:
+
+```bash
+repowise config set mcp.tools standard            # Claude Code's set on every client
+repowise config set mcp.tools "core +get_health"  # core plus one specialist
+repowise config reset mcp.tools                   # back to each client's default
+repowise agents add --target cursor --tools core  # same setting, while wiring an agent
+```
 
 ```yaml
 mcp:
-  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust the default set
+  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust each client's default
+# tools: ["core", "+get_health"]                       # a profile, adjusted
 # tools: ["get_answer", "get_context"]                 # explicit allowlist
 # tools: all                                           # every tool usable in this mode
-# tools: lean                                          # the agent-lean profile
 ```
 
+`repowise mcp --tools` in one client's server entry pins that client alone and wins over the setting:
+
 ```bash
-repowise mcp --tools "+get_execution_flows"   # default set plus one
+repowise mcp --tools "+get_execution_flows"   # each client's default plus one
 repowise mcp --tools "get_answer,get_context"  # explicit allowlist
 repowise mcp --tools lean                      # agent-lean profile
 repowise mcp --all                             # every tool usable in this mode
 ```
 
-- `+` or `-` tokens adjust the default set; a list without prefixes is an allowlist.
 - Unknown names are ignored with a warning, as are workspace-only tools outside workspace mode (no workspace graph to read).
-- Clients see the surface resolved at server start; restart after changing it.
-- The dashboard Settings page toggles each tool per repo and writes the same block. See [CONFIG.md](../reference/CONFIG.md#the-mcp-block).
-
-**The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so with `mcp.tools: lean`, `repowise init` skips the Claude Code tool-search recommendation.
+- The server resolves the surface when it starts; restart it, or the agent, after a change.
+- A tool a client is not listed still answers if the agent calls it. When some client is not listed `get_risk` or `get_change_risk`, the server instructions carry one line naming the command that lists them.
+- The dashboard's Agents settings for a repository pick a profile, toggle each tool with its schema cost, and write the same setting. See [CONFIG.md](../reference/CONFIG.md#the-mcp-block).
 
 ---
 

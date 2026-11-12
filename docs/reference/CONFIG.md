@@ -365,7 +365,7 @@ in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
 <!-- BEGIN GENERATED settings:mcp (python scripts/gen_config_docs.py) -->
 | Key | Default | What it does |
 |-----|---------|--------------|
-| `tools` | unset | Which MCP tools are offered: all, lean, +name or -name to adjust the default, or plain names as the exact list. Unset offers the default set. |
+| `tools` | unset | Which MCP tools are offered, for every client: a profile (core, lean, standard, all), optionally followed by +name or -name; +name or -name alone to adjust each client's default; or plain names as the exact list. Unset: Claude Code gets standard, clients that load every schema up front get core. |
 <!-- END GENERATED settings:mcp -->
 
 | `tools` value | Effect |
