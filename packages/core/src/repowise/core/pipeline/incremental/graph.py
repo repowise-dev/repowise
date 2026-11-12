@@ -168,6 +168,7 @@ def _add_synthetic_edges(
                 dotnet_index=graph_builder.dotnet_index,
                 file_paths=[fi.path for fi in file_infos],
                 source_map=source_map or None,
+                cache_dir=getattr(graph_builder, "_cache_dir", None),
             )
             graph_builder.add_dynamic_edges(dynamic_edges)
         if dynamic_edges:
