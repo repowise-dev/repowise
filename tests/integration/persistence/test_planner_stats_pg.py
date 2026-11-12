@@ -138,8 +138,8 @@ async def test_small_write_analyzes_nothing_and_growth_reanalyzes(pg_engine) -> 
 
     # A bulk load: the statistics still describe 200 rows over 2 files, which
     # plans a read of two files as a scan of the whole table.
+    # No wait for the row counters: the file size shows the load at once.
     await _load(pg_engine, 220, 60_000, 6_000)
-    await _live_rows_reported(pg_engine, "graph_nodes", 60_220)
     await refresh_planner_stats(pg_engine)
     assert len(seen) == 1 and '"public"."graph_nodes"' in seen[0]
 

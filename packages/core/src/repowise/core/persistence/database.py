@@ -922,10 +922,12 @@ async def _refresh_sqlite_planner_stats(engine: AsyncEngine) -> None:
 
 
 # Tables whose statistics no longer describe them: never analyzed yet holding
-# data, or a live row count that left the band ANALYZE recorded. The SQLite
-# gate in ``_planner_stats_stale``, read from PostgreSQL's own counters. Data
-# files are checked by size, not by the live count, since a count can lag the
-# last write by about a second and a first load must never be missed.
+# data, a live row count that left the band ANALYZE recorded (the SQLite gate
+# in ``_planner_stats_stale``, read from PostgreSQL's own counters), or a data
+# file that grew past that band. The size checks matter because the live count
+# trails a commit by up to a second, and a bulk load must never be missed.
+# Ceiling: VACUUM also resets ``reltuples``; autoanalyze fires before it on
+# growth at the default thresholds, so the band rarely recentres unanalyzed.
 _PG_STALE_TABLES = f"""
 SELECT s.schemaname, s.relname
 FROM pg_stat_user_tables s
@@ -935,6 +937,8 @@ WHERE s.schemaname = ANY (current_schemas(false))
     WHEN s.last_analyze IS NULL AND s.last_autoanalyze IS NULL
       THEN pg_relation_size(s.relid) > 0
     ELSE s.n_live_tup NOT BETWEEN c.reltuples / {_STATS_DRIFT} AND c.reltuples * {_STATS_DRIFT}
+      OR pg_relation_size(s.relid)
+         > c.relpages::bigint * current_setting('block_size')::bigint * {_STATS_DRIFT}
   END
 ORDER BY s.schemaname, s.relname
 """
