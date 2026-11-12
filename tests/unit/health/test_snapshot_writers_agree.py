@@ -1,8 +1,8 @@
 """Every snapshot writer has to record the same thing.
 
-``save_health_snapshot`` is called from four places: the ``repowise health``
-persister, the upgrade flow, the full-index pipeline, and the store wrapper
-that forwards to crud. A repo's history is whichever of those wrote it last.
+``save_health_snapshot`` is called from three places: the ``repowise health``
+persister, the full-index pipeline (shared with the full upgrade via
+``snapshot_health_from_store``), and the store wrapper that forwards to crud. A repo's history is whichever of those wrote it last.
 
 This has already gone wrong once here, with a different argument: four
 ``HealthAnalyzer`` call sites of which only one passed ``community_label_map``, so a
@@ -54,7 +54,7 @@ def _snapshot_calls() -> list[tuple[Path, ast.Call]]:
 def test_the_writers_this_test_guards_still_exist() -> None:
     """Without this the sweep below passes vacuously if the call is renamed."""
     calls = _snapshot_calls()
-    assert len(calls) >= 3, [str(p) for p, _ in calls]
+    assert len(calls) >= 2, [str(p) for p, _ in calls]
 
 
 def test_every_writer_records_the_depth_as_well_as_the_score() -> None:

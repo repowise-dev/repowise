@@ -24,7 +24,6 @@ when ``--full`` is passed.
 
 from __future__ import annotations
 
-import contextlib
 import sys
 import time
 from pathlib import Path
@@ -662,14 +661,22 @@ async def _recompute_full_tier_health(
     from repowise.core.persistence import get_session
 
     try:
-        from repowise.core.analysis.health.trends import snapshot_fields
         from repowise.core.persistence.crud import (
-            save_health_findings,
-            save_health_metrics,
-            save_health_snapshot,
+            recompute_git_percentiles,
+            set_repo_function_mod_p80,
+            upsert_git_function_blame_bulk,
+            upsert_git_metadata_bulk,
         )
         from repowise.core.pipeline.orchestrator import _run_health_analysis
+        from repowise.core.pipeline.persist import (
+            save_full_health_report,
+            snapshot_health_from_store,
+        )
+        from repowise.core.pipeline.phases.git import label_co_change_structure
         from repowise.core.workspace.update import get_head_commit
+
+        if git_meta_map:
+            label_co_change_structure(graph_builder, git_meta_map)
 
         health_report = await _run_health_analysis(
             graph_builder,
@@ -680,21 +687,25 @@ async def _recompute_full_tier_health(
         )
         if health_report is not None:
             async with get_session(sf) as session:
-                await save_health_metrics(
+                if git_meta_map:
+                    await upsert_git_metadata_bulk(session, repo_id, list(git_meta_map.values()))
+                    await recompute_git_percentiles(session, repo_id)
+                head_sha = get_head_commit(repo_path)
+                await save_full_health_report(
                     session,
                     repo_id,
-                    health_report.metrics or [],
-                    analyzed_commit=get_head_commit(repo_path),
+                    health_report,
+                    analyzed_commit=head_sha,
+                    repo_path=repo_path,
+                    refresh_governance=True,
                 )
-                if health_report.findings:
-                    await save_health_findings(session, repo_id, health_report.findings)
-                kpis = health_report.kpis or {}
-                with contextlib.suppress(Exception):  # snapshot is best-effort
-                    fields = snapshot_fields(
-                        kpis, health_report.metrics or [], health_report.findings or []
-                    )
-                    if fields is not None:
-                        await save_health_snapshot(session, repo_id, **fields)
+                fn_blame_rows = getattr(health_report, "function_blame_rows", None)
+                if fn_blame_rows:
+                    await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+                fn_mod_p80 = getattr(health_report, "repo_function_mod_p80", None)
+                if fn_mod_p80:
+                    await set_repo_function_mod_p80(session, repo_id, fn_mod_p80)
+                await snapshot_health_from_store(session, repo_id)
             console.print(
                 f"Code health recomputed at FULL tier: "
                 f"[cyan]{len(health_report.findings)}[/cyan] findings."
