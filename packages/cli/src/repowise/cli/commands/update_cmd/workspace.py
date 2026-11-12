@@ -20,7 +20,7 @@ def _print_repo_result(result: Any) -> None:
     copies of this is what let the deferral line drift into saying only that
     something else was running, without saying for how long.
     """
-    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+    from repowise.core.update_lock import format_lock_age, lock_is_suspect
 
     if result.error:
         console.print(f"    [red]✗ {result.alias}: {result.error}[/red]")
@@ -31,11 +31,7 @@ def _print_repo_result(result: Any) -> None:
         # a normal overlap apart from an update that has stopped progressing.
         age = result.lock_age_seconds
         held = format_lock_age(age)
-        note = (
-            ""
-            if age is None or age <= UPDATE_LOCK_SUSPECT_AFTER_SECONDS
-            else " That is long enough to be worth checking on."
-        )
+        note = " That is long enough to be worth checking on." if lock_is_suspect(age) else ""
         console.print(
             f"    [yellow]↻ {result.alias}: another update has held the lock "
             f"{held}; this commit was queued for it to pick up.{note}[/yellow]"
@@ -701,11 +697,11 @@ def _deferred_tail(core_results: list[Any]) -> str:
     The oldest lock is the run most likely to have stopped progressing; "still
     running" with no age is what leaves a wedged update looking healthy.
     """
-    from repowise.core.update_lock import UPDATE_LOCK_SUSPECT_AFTER_SECONDS, format_lock_age
+    from repowise.core.update_lock import format_lock_age, lock_is_suspect
 
     ages = [r.lock_age_seconds for r in core_results if r.lock_age_seconds is not None]
     oldest = max(ages) if ages else None
-    if oldest is not None and oldest > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
+    if lock_is_suspect(oldest):
         return (
             f"An update has held the lock {format_lock_age(oldest)}, which is "
             "longer than an update normally takes. Check "

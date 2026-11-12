@@ -602,6 +602,7 @@ repowise status --workspace --format json
 | `--format` | `table` or `json`. | `table` |
 
 - **Workspace:** a **Docs** column (page count) and per-repo **Docs status** with skip reasons (e.g. `cost gate declined`) and fix command.
+- **Single repo:** an **Update lock** row (JSON `stuck_update_lock`) when a live update has held the lock for more than 30 minutes.
 - **Single repo:** a **Next** block: count worth doing this week (or quarter if quiet) and the first; JSON `next_actions`; `repowise next` lists them.
 
 ---
@@ -2146,6 +2147,10 @@ repowise doctor --workspace --repair
   problem and the row's fix is one command: `repowise init` when any table set is empty (an update at an unchanged
   HEAD does not refill them), `repowise update` when model-written pages need re-rendering, otherwise
   `repowise update --index-only` (no model calls).
+- **Index freshness** (`index-freshness`) compares `last_sync_commit` with HEAD, read from the ref files: a warn
+  with `repowise update` when HEAD has moved on, or with `repowise update --since <ref>` when the commit is not in
+  the repository's history. **Update lock** (`update-lock`) appears only when a live `repowise update` has held
+  `.repowise/.update.lock` for more than 30 minutes, and says what `update` says about it; `status` shows it too.
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.
