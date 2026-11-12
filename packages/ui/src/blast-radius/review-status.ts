@@ -45,6 +45,8 @@ export interface ReviewFacts {
   /** Distinct files that usually change with these and are left out. */
   missingPartners: number;
   band: "localized" | "moderate" | "broad";
+  /** The test selection could not narrow the suite: the whole of it is to run. */
+  runAll?: boolean;
 }
 
 function lookReason(f: ReviewFacts): string | null {
@@ -70,11 +72,19 @@ export function reviewStatus(f: ReviewFacts): ReviewStatus {
   if (look)
     return { tone: "look", word: "Look first", reason: look, next: "Read the files under Look at first, then run the tests." };
   const small = f.total <= SMALL_FILES && f.reach.files.length <= SMALL_REACH;
-  const tests = f.testsTotal > 0 ? `${count(f.testsTotal, "test")} to run` : "no test found to run";
+  const tests = f.runAll
+    ? "the whole test suite to run"
+    : f.testsTotal > 0
+      ? `${count(f.testsTotal, "test")} to run`
+      : "no test found to run";
   return {
     tone: "calm",
     word: small ? "Small change" : "Contained",
     reason: `${count(f.total, "file")} changed, ${tests}.`,
-    next: f.testsTotal > 0 ? "Run the tests below and merge when they pass." : "Nothing here asks for a closer look.",
+    next: f.runAll
+      ? "Run the whole suite and merge when it passes."
+      : f.testsTotal > 0
+        ? "Run the tests below and merge when they pass."
+        : "Nothing here asks for a closer look.",
   };
 }

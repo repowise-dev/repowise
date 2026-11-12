@@ -315,6 +315,9 @@ class ChangeReview(BaseModel):
     revspec: str | None
     risk: ChangeRiskBlock
     tests: ChangeTestsBlock
+    #: Commands that run ``tests.tests_to_run``, one per runner; empty when the
+    #: verdict is to run the whole suite or no runner is known for them.
+    test_commands: list[str] = Field(default_factory=list)
 
 
 class ChangeBlastRadiusResponse(BlastRadiusResponse):
