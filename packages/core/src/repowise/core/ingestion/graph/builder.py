@@ -587,9 +587,9 @@ class GraphBuilder(
 
         # --- C/C++ header ↔ implementation pairing ---
         # foo.h -> foo.c (same stem, same dir): consumers including the
-        # header must be able to reach the implementation.
-        if scope_set is None:
-            self._resolve_cpp_header_pairs(progress=progress)
+        # header must be able to reach the implementation. Read off paths
+        # alone and cheap, so a patch re-derives the pairs its scope cleared.
+        self._resolve_cpp_header_pairs(progress=progress)
 
         # --- C# / VB.NET partial-class co-fragments ---
         # Fragments of one partial type across files are literally one

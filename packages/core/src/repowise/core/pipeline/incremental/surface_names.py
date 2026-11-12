@@ -29,6 +29,8 @@ _WORD = re.compile(r"[A-Za-z_$][\w$]*")
 _CONSTRUCTOR_NAMES = frozenset({"__init__", "__new__", "__post_init__"})
 _JS_CONSTRUCTOR_LANGUAGES = frozenset({"typescript", "javascript"})
 
+_INCLUDE_LANGUAGES = frozenset({"c", "cpp"})
+
 #: How the class-member expansion follows ``extends`` chains, at most.
 _MAX_ANCESTOR_DEPTH = 32
 
@@ -164,11 +166,14 @@ def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool, 
     old = _name_facts(before) if before is not None else set()
     new = _name_facts(after) if after is not None else set()
     moved = before is None or after is None
+    # An include binds no name: what it passes on is the files it reaches,
+    # which the build checks itself (``include_reach``).
+    includes = (after or before).file_info.language in _INCLUDE_LANGUAGES
     names: set[str] = set()
     via_importers = False
     module_import_changed = False
     for fact in old ^ new:
-        if moved and fact[0] == "import":
+        if (moved or includes) and fact[0] == "import":
             # Another file sees an added or removed file's imports only by
             # importing that file, and that import re-routes (``affected``).
             continue

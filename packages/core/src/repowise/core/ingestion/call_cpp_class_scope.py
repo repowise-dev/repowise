@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 from .call_inheritance import _extract_class_id
 from .call_receiver_typing._shared import _FUNCTION_KINDS, _TYPE_KINDS
-from .models import CallSite
+from .models import CallSite, Symbol
 from .resolved_call import ResolvedCall
 from .symbol_identity import outer_scope
 
@@ -137,24 +138,32 @@ class CppClassScopeMixin:
         return False
 
     def _cpp_template_parameters(self, class_id: str) -> frozenset[str]:
-        """The type parameter names of the class template *class_id*, empty for a class.
-
-        A template's declaration and the class it wraps are two symbols under
-        one id, so the head is read from the first one's line to the body.
-        """
+        """The type parameter names of the class template *class_id*, empty for a class."""
         found = self._cpp_template_names.get(class_id)
         if found is None:
             path = self._symbol_paths_by_id.get(class_id, "")
             parsed = self._parsed_files.get(path)
             symbols = parsed.symbols if parsed else ()
-            spans = [(s.start_line, s.end_line) for s in symbols if s.id == class_id]
-            found = frozenset()
-            if spans:
-                start, end = min(spans)[0], max(e for _, e in spans)
-                text = "\n".join(self._text_of(path).splitlines()[start - 1 : end]).split("{", 1)[0]
-                name = re.escape(self._symbols_by_id[class_id].name)
-                head = re.search(_TEMPLATE_HEAD.format(name=name), text, re.S)
-                if head is not None:
-                    found = frozenset(_TYPE_PARAMETER.findall(head.group(1)))
-            self._cpp_template_names[class_id] = found
+            lines = self._text_of(path).splitlines() if symbols else []
+            name = self._symbols_by_id[class_id].name
+            found = self._cpp_template_names[class_id] = template_parameters(
+                lines, symbols, class_id, name
+            )
         return found
+
+
+def template_parameters(
+    lines: list[str], symbols: Iterable[Symbol], class_id: str, name: str
+) -> frozenset[str]:
+    """The type parameter names class template *class_id*, named *name*, declares in *lines*.
+
+    A template's declaration and the class it wraps are two symbols under
+    one id, so the head is read from the first one's line to the body.
+    """
+    spans = [(s.start_line, s.end_line) for s in symbols if s.id == class_id]
+    if not spans:
+        return frozenset()
+    start, end = min(spans)[0], max(e for _, e in spans)
+    text = "\n".join(lines[start - 1 : end]).split("{", 1)[0]
+    head = re.search(_TEMPLATE_HEAD.format(name=re.escape(name)), text, re.S)
+    return frozenset() if head is None else frozenset(_TYPE_PARAMETER.findall(head.group(1)))

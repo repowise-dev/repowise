@@ -495,6 +495,20 @@ def _build_graph_with_plan(
         graph_builder.build()
 
 
+def _include_reach_refusal(graph_builder: Any, seed_edges: Any) -> str | None:
+    """Why a patched graph must be rebuilt in full (:mod:`.include_reach`), or ``None``.
+
+    A checker failure is a refusal: it costs a full build, not a wrong graph.
+    """
+    from .include_reach import include_reach_refusal
+
+    try:
+        return include_reach_refusal(graph_builder._graph, seed_edges, graph_builder._parsed_files)
+    except Exception as exc:
+        logger.warning("graph_patch_reach_check_failed", error=str(exc))
+        return f"include reach check failed: {exc}"
+
+
 def _traverse_repo(
     repo_path: Any,
     exclude_patterns: list[str],
@@ -615,8 +629,14 @@ def _build_update_graph(
     current_inputs: dict[str, Any] | None,
     timings: PhaseTimings | None,
     log: LogFn,
-) -> tuple[list[Any], dict[str, bytes], int]:
-    """Parse/build/resolve one update graph, preserving the patch/full timings."""
+    refusal: str | None = None,
+) -> tuple[list[Any], dict[str, bytes], int, str | None]:
+    """Parse/build/resolve one update graph, preserving the patch/full timings.
+
+    *refusal* skips the patch planning and builds in full for that reason.
+    The last value returned is why a patched graph must be rebuilt in full
+    after all (:mod:`.include_reach`), or ``None``.
+    """
     if timings is not None:
         timings.start("rebuild.graph")
     try:
@@ -633,21 +653,26 @@ def _build_update_graph(
             source_map=source_map,
             pytest_roots=traverser.pytest_roots,
         )
-        patch_plan, resolutions = _plan_graph_patch(
-            repo_path,
-            graph_builder,
-            patch_requested=patch_requested,
-            seed_edges=seed_edges,
-            parse_cache=parse_cache,
-            parsed_files=parsed_files,
-            merged=merged,
-            to_parse=to_parse,
-            changed_paths=changed_paths,
-            traversed_paths=graph_builder.traversed_file_paths,
-            presence_changed=presence_changed,
-            current_inputs=current_inputs,
-            manifest_sources=_manifest_sources(file_bytes, merged),
-        )
+        if refusal is None:
+            patch_plan, resolutions = _plan_graph_patch(
+                repo_path,
+                graph_builder,
+                patch_requested=patch_requested,
+                seed_edges=seed_edges,
+                parse_cache=parse_cache,
+                parsed_files=parsed_files,
+                merged=merged,
+                to_parse=to_parse,
+                changed_paths=changed_paths,
+                traversed_paths=graph_builder.traversed_file_paths,
+                presence_changed=presence_changed,
+                current_inputs=current_inputs,
+                manifest_sources=_manifest_sources(file_bytes, merged),
+            )
+        else:
+            from .surface import PatchPlan
+
+            patch_plan, resolutions = PatchPlan(False, reason=refusal), None
         graph_builder.patch_plan = patch_plan
         _build_graph_with_plan(
             graph_builder,
@@ -658,7 +683,10 @@ def _build_update_graph(
             timings=timings,
             log=log,
         )
-        return parsed_files, source_map, unparsed
+        reach_refusal = (
+            _include_reach_refusal(graph_builder, seed_edges) if patch_plan.eligible else None
+        )
+        return parsed_files, source_map, unparsed, reach_refusal
     finally:
         if timings is not None:
             timings.stop("rebuild.graph")
@@ -750,38 +778,42 @@ pass reads the sources.
         timings=timings,
         log=log,
     )
-    # Built after the read, which can still drop a document from file_infos.
-    graph_builder = _new_update_graph_builder(
-        repo_path,
-        exclude_patterns,
-        read_only=read_only,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-        traverser=traverser,
-        file_infos=file_infos,
-    )
-
-    skipped = len(file_infos) - len(fi_and_bytes)
-    parsed_files, source_map, unparsed = _build_update_graph(
-        repo_path,
-        graph_builder,
-        traverser,
-        fi_and_bytes,
-        merged,
-        to_parse,
-        collect_sources=collect_sources,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-        parse_cache=parse_cache,
-        patch_requested=patch_requested,
-        seed_edges=seed_edges,
-        changed_paths=changed_paths,
-        presence_changed=presence_changed,
-        current_inputs=current_inputs,
-        timings=timings,
-        log=log,
-    )
-    skipped += unparsed
+    refusal = None
+    while True:
+        # Built after the read, which can still drop a document from file_infos.
+        graph_builder = _new_update_graph_builder(
+            repo_path,
+            exclude_patterns,
+            read_only=read_only,
+            include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
+            traverser=traverser,
+            file_infos=file_infos,
+        )
+        parsed_files, source_map, unparsed, refusal = _build_update_graph(
+            repo_path,
+            graph_builder,
+            traverser,
+            fi_and_bytes,
+            merged,
+            to_parse,
+            collect_sources=collect_sources,
+            include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
+            parse_cache=parse_cache,
+            patch_requested=patch_requested,
+            seed_edges=seed_edges,
+            changed_paths=changed_paths,
+            presence_changed=presence_changed,
+            current_inputs=current_inputs,
+            timings=timings,
+            log=log,
+            refusal=refusal,
+        )
+        # A patch whose include reach moved is redone as a full build, once.
+        if refusal is None:
+            break
+    skipped = len(file_infos) - len(fi_and_bytes) + unparsed
     if not read_only and cache_resolutions:
         from .resolution_cache import save_resolutions
 

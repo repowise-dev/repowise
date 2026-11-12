@@ -51,9 +51,12 @@ def changed_field_names(
 
     Compares each file's fields now with the record the last build saved. A
     file with no record to compare, or no source, makes the answer unknown
-    (``None``). Added and removed files count every field they declare.
+    (``None``). Added and removed files count every field they declare. A
+    C/C++ file's other source-read facts are compared the same way
+    (:mod:`repowise.core.ingestion.cpp_cross_file_facts`), adding the names
+    that reach a fact that changed.
     """
-    from .resolution_cache import field_types
+    from .resolution_cache import cpp_facts, field_types
     from .surface import is_inert
 
     names: set[str] = set()
@@ -69,6 +72,12 @@ def changed_field_names(
         for class_id in set(before) | set(after):
             old, new = before.get(class_id, {}), after.get(class_id, {})
             names.update(field for field in set(old) | set(new) if old.get(field, 0) != new.get(field, 0))
+        facts_before = entry[3] if entry is not None else frozenset()
+        facts_after = cpp_facts(parsed, source_map.get(path)) if parsed is not None else frozenset()
+        c_family = parsed is not None and parsed.file_info.language in ("c", "cpp")
+        if c_family and (facts_before is None or facts_after is None):
+            return None
+        names.update(name for name, _fact in (facts_before or frozenset()) ^ (facts_after or frozenset()))
     return names
 
 

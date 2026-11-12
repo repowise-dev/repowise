@@ -15,8 +15,9 @@ from typing import Any, Protocol
 from ..models import REGISTRATION_HINT, is_dynamic_edge
 
 # Stamped on nodes by passes every build runs over every file (warmups,
-# always-run detection), so a seeded value could only be stale.
-_REBUILT_NODE_ATTRS = frozenset({"package_export", "always_run_reason"})
+# always-run detection, C/C++ declaration pairing), so a seeded value could
+# only be stale.
+_REBUILT_NODE_ATTRS = frozenset({"package_export", "always_run_reason", "defined_by"})
 # Stamped on a re-resolved file's own node by the type-reference pass, which
 # adds to whatever is there.
 _SCOPE_REBUILT_NODE_ATTRS = frozenset({"local_type_uses"})

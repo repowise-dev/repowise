@@ -30,7 +30,7 @@ from typing import Any
 
 # Body-only patching is enabled only for languages covered by the resolver
 # convergence fixtures. Expand this set together with those fixtures.
-PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift"})
+PATCHABLE_LANGUAGES = frozenset({"java", "python", "typescript", "javascript", "go", "csharp", "kotlin", "rust", "ruby", "php", "scala", "swift", "c", "cpp"})
 
 # Prose no parser extracts from and no build pass reads. ``.mdx`` is excluded
 # because the TypeScript warmup reads its imports from disk. Config and data
@@ -41,8 +41,11 @@ _INERT_LANGUAGES = frozenset({"markdown", "asciidoc"})
 
 
 # Languages whose files may be added, removed or change their surface in a
-# patch. Each is covered by the patch-parity fixtures; expand together.
-SURFACE_PATCH_LANGUAGES = frozenset({"python", "typescript", "javascript"})
+# patch. Each is covered by the patch-parity fixtures; expand together. C/C++
+# resolution also follows includes transitively, which names cannot bound:
+# the build checks afterwards that no file's include reach moved
+# (:mod:`.include_reach`).
+SURFACE_PATCH_LANGUAGES = frozenset({"python", "typescript", "javascript", "c", "cpp"})
 
 
 @dataclass(frozen=True)
