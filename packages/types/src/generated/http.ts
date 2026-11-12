@@ -570,7 +570,7 @@ export interface ChangeBlastRadiusResponse {
 
 export interface ChangeCandidateModel {
   id: string;
-  kind: "working_tree" | "branch" | "commit" | "pull_request";
+  kind: "working_tree" | "branch" | "commit";
   label: string;
   title?: string | null;
   author?: string | null;
@@ -581,9 +581,6 @@ export interface ChangeCandidateModel {
   files_changed?: number | null;
   is_current?: boolean;
   pushed?: boolean | null;
-  number?: number | null;
-  base_sha?: string | null;
-  pr_review?: PrReviewSummary | null;
 }
 
 /** The changes a reviewer can pick, and the one to open first. */
@@ -3590,18 +3587,6 @@ export interface PopulationBreakdown {
   include_docs?: boolean;
 }
 
-/**
- * What the PR bot stored for a pull request: code health before and after, and new findings.
- *
- * A host that runs the bot fills it; a local server never does.
- */
-export interface PrReviewSummary {
-  health_before?: number | null;
-  health_after?: number | null;
-  introduced?: number | null;
-  url?: string | null;
-}
-
 /** One provider in the catalog, as the settings picker renders it. */
 export interface ProviderEntry {
   id: string;
@@ -4293,6 +4278,97 @@ export interface SetApiKeyRequest {
   repo_id?: string | null;
 }
 
+export interface SettingAlsoMoved {
+  key: string;
+  before: SettingState;
+  after: SettingState;
+}
+
+export interface SettingArea {
+  area: string;
+  settings: SettingView[];
+}
+
+/** What one write did, as ``repowise config set --format json`` reports it. */
+export interface SettingChangeResponse {
+  action: "set" | "reset";
+  key: string;
+  changed: boolean;
+  before: SettingState;
+  after: SettingState;
+  also: SettingAlsoMoved[];
+  effect: string;
+  undo: string[];
+  env_override?: string | null;
+}
+
+/** The environment variable that also sets a setting. */
+export interface SettingEnvVar {
+  name: string;
+  wins: boolean;
+  prefix: boolean;
+}
+
+/** Where one setting stands. */
+export interface SettingState {
+  value?: unknown;
+  source: string;
+  problem?: string | null;
+  locked?: boolean;
+  default?: unknown;
+  changed: boolean;
+}
+
+/** A value that fits this repository better than the current one. */
+export interface SettingSuggestion {
+  key: string;
+  current_value?: unknown;
+  suggested_value?: unknown;
+  reason: string;
+  impact?: string | null;
+  benefit?: string | null;
+  command: string;
+}
+
+/** Set one setting to ``value``, or ``reset`` it to its default. */
+export interface SettingUpdate {
+  key: string;
+  value?: unknown;
+  reset?: boolean;
+}
+
+/** One setting: what it is and where it stands. */
+export interface SettingView {
+  value?: unknown;
+  source: string;
+  problem?: string | null;
+  locked?: boolean;
+  default?: unknown;
+  changed: boolean;
+  key: string;
+  type: "bool" | "int" | "float" | "str" | "list" | "mapping";
+  default_note?: string | null;
+  description: string;
+  area: string;
+  scope: "repo" | "user" | "env";
+  file?: string | null;
+  choices?: string[];
+  minimum?: number | null;
+  maximum?: number | null;
+  exclusive_minimum?: boolean;
+  env?: SettingEnvVar | null;
+  internal?: boolean;
+  reload: "immediate" | "update" | "reindex" | "restart";
+  accepts: string;
+  applies: string;
+  writable: boolean;
+}
+
+export interface SettingsResponse {
+  areas: SettingArea[];
+  suggestions?: SettingSuggestion[];
+}
+
 export interface SetupAgent {
   id: string;
   display_name: string;
@@ -4344,6 +4420,7 @@ export interface SetupIndex {
   state: "up_to_date" | "behind" | "incomplete";
   indexed_commit?: string | null;
   live_head?: string | null;
+  indexed_commit_missing?: boolean;
   indexed_at?: string | null;
   file_count?: number;
   parse_error_count?: number;

@@ -1155,6 +1155,10 @@
       },
       "display": {
         "title": "显示"
+      },
+      "all": {
+        "title": "全部设置",
+        "description": "此仓库的所有 repowise 设置：当前值、来源和作用。修改会保存到 .repowise/config.yaml，与 repowise config set 写入的是同一个文件。"
       }
     },
     "advanced": "高级",
@@ -1169,6 +1173,60 @@
       "defaultModelHint": "没有单独设置模型的仓库使用服务器默认模型。",
       "webhooksLabel": "Webhook",
       "webhooksHint": "GitHub 或 GitLab 上的推送可以触发同步。所有仓库使用相同的地址。"
+    },
+    "registry": {
+      "search": "搜索设置",
+      "searchPlaceholder": "按名称或作用搜索",
+      "changedOnly": "仅显示已修改",
+      "showInternal": "显示内部设置",
+      "countAll": "{total, plural, other {# 项设置}}",
+      "count": "{total} 项设置中的 {shown} 项",
+      "noMatches": "没有符合筛选条件的设置。",
+      "suggestionsTitle": "为此仓库推荐",
+      "suggestionsDescription": "比当前值更适合此仓库的取值。",
+      "apply": "应用",
+      "applyAria": "为 {key} 应用推荐值",
+      "suggested": "推荐：{value}",
+      "changed": "已修改",
+      "defaultValue": "默认 {value}",
+      "sources": {
+        "default": "默认",
+        "env": "环境变量",
+        "repo_file": "仓库文件",
+        "user_file": "用户文件"
+      },
+      "envOverride": "环境中设置了 {name}，它优先于文件中的值。",
+      "envOnly": "从服务器环境中的 {name} 读取。",
+      "userSetting": "按用户保存，而非按仓库保存。请在终端中使用 repowise config set {key} 修改。",
+      "lockedReason": "由此仓库之上的层级设定，无法在此修改。",
+      "reset": "重置",
+      "resetAria": "将 {key} 重置为默认值",
+      "copyPrompt": "复制提示词",
+      "promptTitle": "让你的智能体修改 {key}",
+      "promptDescription": "你的智能体会解释这项设置，修改前先征求你的同意，并告诉你撤销命令。",
+      "saveFailed": "无法保存",
+      "unset": "未设置",
+      "none": "（无）",
+      "listPlaceholder": "a, b",
+      "loading": "正在加载设置…",
+      "loadFailed": "无法加载设置。",
+      "retry": "重试",
+      "moreOn": "更多选项见“{page}”页面",
+      "areas": {
+        "account": "账户",
+        "attribution": "AI 归属",
+        "decisions": "决策",
+        "distill": "命令输出",
+        "editor": "编辑器文件",
+        "events": "变更事件",
+        "generation": "文档",
+        "health": "代码健康",
+        "hooks": "智能体钩子",
+        "indexing": "索引",
+        "mcp": "MCP",
+        "providers": "模型提供方",
+        "server": "服务器"
+      }
     }
   },
   "repos": {
@@ -2885,6 +2943,7 @@
         "detailUpToDate": "已在 {commit} 索引 {files} 个文件。",
         "detailIncomplete": "此仓库还没有完整的索引。",
         "detailBehind": "索引位于 {indexed}，HEAD 已前进到 {live}。",
+        "detailMissing": "索引位于 {indexed}，该提交已不在当前历史中（已变基或重置），请用 --since 指定索引覆盖的提交。",
         "detailSkipped": "有 {count} 个文件无法解析，因此图中缺少它们的符号。"
       },
       "agent": {

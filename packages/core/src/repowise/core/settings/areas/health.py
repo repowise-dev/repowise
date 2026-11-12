@@ -135,7 +135,15 @@ SETTINGS: tuple[Setting, ...] = (
         "REPOWISE_GATE_SUMMARY_DIR",
         "str",
         None,
-        "Folder where each CI gate leaves its result row. The GitHub Action sets it.",
+        "Folder where each CI gate leaves its result row. The GitHub Action and the GitLab "
+        "template set it.",
         internal=True,
+    ),
+    _e(
+        "REPOWISE_GITLAB_TOKEN",
+        "str",
+        None,
+        "GitLab access token (api scope) that posts the CI summary as a merge-request note.",
+        secret=True,
     ),
 )

@@ -107,6 +107,29 @@ def test_get_reports_the_env_source(repo, monkeypatch):
     assert (out["value"], out["source"]) == (True, "env")
 
 
+def test_a_url_password_is_masked_but_the_file_keeps_it(repo, monkeypatch):
+    _write_config(repo, {"openai": {"base_url": "https://me:hunter2@llm.example/v1"}})
+    monkeypatch.setenv("REPOWISE_PUBLIC_URL", "https://ci:s3cret@repowise.example")
+    out = _json(repo, "get", "openai.base_url")
+    assert out["value"] == "https://***@llm.example/v1"
+    assert _json(repo, "get", "REPOWISE_PUBLIC_URL")["value"] == "https://***@repowise.example"
+    for args in (("list", "--changed"), ("explain", "openai.base_url")):
+        for fmt in ((), ("--format", "json")):
+            text = _run(repo, *args, *fmt)[1]
+            assert "hunter2" not in text and "s3cret" not in text
+    assert _config(repo)["openai"]["base_url"] == "https://me:hunter2@llm.example/v1"
+
+
+def test_a_set_credential_is_listed_but_never_printed(repo, monkeypatch):
+    monkeypatch.setenv("REPOWISE_GITLAB_TOKEN", "glpat-not-a-real-token")
+    out = _json(repo, "get", "REPOWISE_GITLAB_TOKEN")
+    assert (out["value"], out["source"], out["changed"]) == ("(set, hidden)", "env", True)
+    for args in (("list", "--changed"), ("get", "REPOWISE_GITLAB_TOKEN"), ("explain", "REPOWISE_GITLAB_TOKEN")):
+        assert "glpat-not-a-real-token" not in _run(repo, *args, "--format", "json")[1]
+        assert "glpat-not-a-real-token" not in _run(repo, *args)[1]
+    assert _json(repo, "get", "REPOWISE_API_KEY")["value"] is None
+
+
 def test_unknown_key_is_refused_with_a_suggestion(repo):
     out = _json(repo, "get", "commit_limt")
     assert out["_exit"] == 1 and out["error"] == "unknown_setting"
@@ -115,7 +138,7 @@ def test_unknown_key_is_refused_with_a_suggestion(repo):
 
 def test_explain_text_and_json(repo):
     out = _json(repo, "explain", "commit_limit")
-    assert out["accepts"] == "a whole number, at least 1 and at most 10000"
+    assert out["accepts"] == "a whole number, at least 1"
     assert out["applies"] == "Takes effect on the next `repowise update`."
     assert out["set_with"].startswith("repowise config set commit_limit <value>")
     code, text = _run(repo, "explain", "decisions.mode")
@@ -152,6 +175,16 @@ def test_set_and_reset_a_plain_file_setting(repo):
     assert _config(repo) == {"provider": "openai", "hooks": {"read_skeleton": True}}
     assert _json(repo, "reset", "hooks.read_skeleton")["after"]["value"] is False
     assert _config(repo) == {"provider": "openai"}
+
+
+def test_reset_and_set_work_beside_a_value_that_raises(repo):
+    # max_tokens is read with on_invalid="error": its bad value must not block the fix.
+    _write_config(repo, {"max_tokens": -3, "context_window": -1})
+    out = _json(repo, "reset", "max_tokens")
+    assert out["_exit"] == 0 and out["before"]["value"] == -3
+    assert out["before"]["problem"] == "max_tokens: must be more than 0"
+    assert _json(repo, "set", "model", "m")["_exit"] == 0
+    assert _config(repo) == {"context_window": -1, "model": "m"}
 
 
 def test_set_text_prints_change_effect_and_undo(repo):
@@ -439,7 +472,7 @@ def test_every_writer_and_parser_imports_with_the_one_signature():
 
 
 def test_init_rejects_a_commit_limit_out_of_range(tmp_path):
-    for value in ("0", "-5", "20000"):
+    for value in ("0", "-5"):
         result = CliRunner().invoke(cli, ["init", str(tmp_path), "--commit-limit", value])
         assert result.exit_code == 2, value
         assert "commit-limit" in result.output
@@ -468,7 +501,7 @@ def test_init_saves_follow_renames(repo, flag, stored, written):
 
 @pytest.mark.parametrize(
     ("cfg", "limit", "renames"),
-    [({}, 5000, False), ({"commit_limit": 20000, "follow_renames": "true"}, 10000, True),
+    [({}, 5000, False), ({"commit_limit": 20000, "follow_renames": "true"}, 20000, True),
      ({"commit_limit": "abc"}, 5000, False)],
 )  # fmt: skip
 def test_workspace_add_reads_the_primary_config_like_update(cfg, limit, renames):

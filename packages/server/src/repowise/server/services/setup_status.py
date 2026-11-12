@@ -210,6 +210,7 @@ def _assemble(
 
 async def _index_section(session: AsyncSession, repo: Repository) -> dict[str, Any]:
     from repowise.core.git_head import read_head_commit
+    from repowise.core.index_freshness import index_state, indexed_commit_missing
     from repowise.core.persistence.crud import index_synced_at
     from repowise.core.workspace.update import resolve_indexed_commit
 
@@ -225,8 +226,12 @@ async def _index_section(session: AsyncSession, repo: Repository) -> dict[str, A
     indexed = resolve_indexed_commit(Path(repo.local_path), repo.head_commit).sha
     live = read_head_commit(repo.local_path)
     synced_at = index_synced_at(repo)
+    state = index_state(file_count, indexed, live)
     return {
-        "state": _index_state(file_count, indexed, live),
+        "state": state,
+        # Asked only when behind, so an up-to-date index never spawns git.
+        "indexed_commit_missing": state == "behind"
+        and indexed_commit_missing(repo.local_path, indexed, live),
         "indexed_commit": indexed,
         "live_head": live,
         "indexed_at": synced_at.isoformat() if synced_at else None,
@@ -234,15 +239,6 @@ async def _index_section(session: AsyncSession, repo: Repository) -> dict[str, A
         "parse_error_count": len(error_files),
         "parse_error_files": error_files[:_PARSE_ERROR_FILES_LIMIT],
     }
-
-
-def _index_state(file_count: int, indexed: str | None, live: str | None) -> str:
-    """``incomplete`` without files or a resolvable commit; ``behind`` when HEAD moved."""
-    if not file_count or not indexed:
-        return "incomplete"
-    if live and live != indexed:
-        return "behind"
-    return "up_to_date"
 
 
 async def _coverage_ingested_at(session: AsyncSession, repo_id: str) -> tuple[bool, str | None]:

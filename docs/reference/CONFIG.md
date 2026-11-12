@@ -39,11 +39,14 @@ registry in `repowise.core.settings`, so each lists every key or variable
 its block reads. Where an environment variable sets a key, the `Env var`
 column names it and says whether it or the file wins.
 
-> **Limited validation.** The file loads as a plain YAML dict, so unknown or
-> misspelled keys are silently ignored. Exceptions: they stop
-> `repowise security check` in the `security:` block; `max_tokens` must be a
-> positive integer when documentation is generated; `repowise doctor` validates
-> the `distill:` block. Check spelling and indentation first.
+> **Checking the file.** Commands read an unknown or misspelled key as nothing
+> and most bad values as the default. `repowise doctor` checks every key in
+> this file and every variable in these tables against the registry: a value
+> repowise cannot use fails with the form it accepts and the
+> `repowise config set` or `reset` command that fixes it, an unknown key warns
+> with the closest real key, and a variable that decides against the file is
+> named. `repowise doctor --repair` resets bad file values to their defaults
+> (outside `decisions:` and the provider selection, which take the row's command).
 
 ```yaml
 provider: anthropic
@@ -80,12 +83,13 @@ mcp: {tools: ["+get_execution_flows", "-get_dead_code"]}
 | `embedder` | unset |  | Which embedding service powers semantic search: openai, gemini, ollama, openrouter, edenai, a plugin's, or mock for none. Unset: the first embedder whose API key is present, then the embedder in ~/.repowise/config.yaml, then mock. | `REPOWISE_EMBEDDER` (wins over the file) |
 | `embedding_model` | unset |  | The embedding model id. Unset uses the embedder's default. | `REPOWISE_EMBEDDING_MODEL` (wins over the file) |
 | `exclude_patterns` | `[]` |  | Extra paths to skip, as gitignore patterns. |  |
-| `commit_limit` | `5000` | 1-10000 | How many of the newest commits are analysed. Above 10000 reads as 10000. |  |
+| `commit_limit` | `5000` | >= 1 | How many of the newest commits are analysed. |  |
 | `follow_renames` | `false` |  | Follow files across renames in git history. |  |
 | `sql_dialect` | unset |  | SQL dialect for parsing .sql files (a sqlglot name such as postgres). |  |
 | `forges.hosts` | `{}` |  | Which forge a self-hosted git host is: host to github, gitlab, azure, bitbucket or generic. |  |
 | `editor_setup` | `true` |  | Let update keep agent and editor files current. init --no-editor-setup writes false, which leaves them alone. |  |
 | `changes.outcome_fix_days` | `30` | 1-365 | Days after a change in which fix commits to its files are counted. |  |
+| `managed_checkout` | `false` |  | This checkout is a clone the server owns: before each server sync it fetches the tracked branch and fast-forwards to it. Leave off for a working tree you edit. |  |
 <!-- END GENERATED settings:config-yaml -->
 
 More on [`commit_limit`](#commit_limit), [`reasoning`](#reasoning),
@@ -95,7 +99,9 @@ More on [`commit_limit`](#commit_limit), [`reasoning`](#reasoning),
 [Exclude patterns](#exclude-patterns), `embedder` in
 [Embeddings](#embeddings-for-semantic-search), `forges.hosts` in
 [GIT_HOSTS.md](../start/GIT_HOSTS.md#self-managed-hosts), and
-`changes.outcome_fix_days` under [`repowise changes`](CLI_REFERENCE.md#repowise-changes).
+`changes.outcome_fix_days` under [`repowise changes`](CLI_REFERENCE.md#repowise-changes),
+and `managed_checkout` in
+[AUTO_SYNC.md](../scale/AUTO_SYNC.md#7-server-owned-clones).
 
 Blocks, each with its own section: [`generation_context`](#grounded-generation-context),
 [`distill`](#the-distill-block), [`hooks`](#the-hooks-block), [`mcp`](#the-mcp-block),
@@ -113,7 +119,8 @@ run and are not stored here; `--include-submodules` is recorded in `state.json`
 
 ### `commit_limit`
 
-- Sets how far back churn, co-change, the commit list and change records see.
+- Sets how far back churn, co-change, the commit list and change records
+  (newest 10,000 at most) see.
 - The first `repowise update` after upgrading re-reads history once, with no
   model calls.
 - A value written here is kept; below the default, `update` says so once.
@@ -1438,6 +1445,11 @@ Each variable sets its [`hooks:`](#the-hooks-block) key for one session.
 | `REPOWISE_NO_OPEN` | off | `1`, `on`, `true`, `yes` | Do not open a browser when repowise serve starts. |
 | `REPOWISE_DB_URL` | unset |  | Database to use instead of the repo's SQLite file, for example Postgres. |
 | `REPOWISE_DATABASE_URL` | unset |  | Older name for REPOWISE_DB_URL, read when that is unset. |
+| `REPOWISE_POSTGRES_KEEPALIVE` | off | `1`, `on`, `true`, `yes` | Send server-side TCP keepalive settings and a command timeout on asyncpg connections. Leave off behind a pooler that rejects startup parameters. |
+| `REPOWISE_POSTGRES_KEEPALIVES_IDLE` | `60` | >= 1 | Seconds idle before the server's first keepalive probe, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_KEEPALIVES_INTERVAL` | `15` | >= 1 | Seconds between keepalive probes, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_KEEPALIVES_COUNT` | `4` | >= 1 | Unanswered keepalive probes before the server drops the connection, when REPOWISE_POSTGRES_KEEPALIVE is on. |
+| `REPOWISE_POSTGRES_COMMAND_TIMEOUT` | `300` | >= 1 | Seconds one database command may run, when REPOWISE_POSTGRES_KEEPALIVE is on. |
 | `REPOWISE_CORS_ORIGINS` | unset |  | Comma-separated web origins allowed to call the API from a browser. Unset allows any origin without credentials. |
 | `REPOWISE_PUBLIC_URL` | unset |  | Public https address of the MCP server behind a proxy. |
 | `REPOWISE_TOKENS_FILE` | `~/.repowise/tokens.yaml` |  | File of scoped access tokens for the server. |
@@ -1487,6 +1499,17 @@ rewrite-hook offer), like `init --no-editor-setup`
 ([CLI_REFERENCE.md](CLI_REFERENCE.md#repowise-init-path)). Use it for CI,
 sandboxes and benchmark runs. Project files (`.repowise/mcp.json`,
 `CLAUDE.md`, Codex config) are still written.
+
+### CI gates
+
+<!-- BEGIN GENERATED settings:env-health (python scripts/gen_config_docs.py) -->
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `REPOWISE_GITLAB_TOKEN` | unset | GitLab access token (api scope) that posts the CI summary as a merge-request note. |
+<!-- END GENERATED settings:env-health -->
+
+`REPOWISE_GITLAB_TOKEN` is read by `repowise ci-summary --gitlab-note`; set it
+as a masked CI/CD variable ([CI.md](../start/CI.md#gitlab)).
 
 ### BLAS thread pool
 
@@ -1558,6 +1581,50 @@ repowise init
 ```
 
 `REPOWISE_DATABASE_URL` is a still-honored alias. Alembic manages the schema.
+
+### Keepalive and command timeout (opt-in)
+
+For a direct PostgreSQL connection using asyncpg, enable session keepalive
+probes and a bounded wait for commands:
+
+```bash
+export REPOWISE_POSTGRES_KEEPALIVE=1
+# Optional overrides (seconds, except COUNT):
+export REPOWISE_POSTGRES_KEEPALIVES_IDLE=60
+export REPOWISE_POSTGRES_KEEPALIVES_INTERVAL=15
+export REPOWISE_POSTGRES_KEEPALIVES_COUNT=4
+export REPOWISE_POSTGRES_COMMAND_TIMEOUT=300
+```
+
+| Variable | Default when enabled | Meaning |
+|----------|----------------------|---------|
+| `REPOWISE_POSTGRES_KEEPALIVE` | Off unless set to `1`, `true`, `yes`, or `on` (case-insensitive) | Enables all four settings below |
+| `REPOWISE_POSTGRES_KEEPALIVES_IDLE` | `60` | Seconds of inactivity before the server's first TCP keepalive probe |
+| `REPOWISE_POSTGRES_KEEPALIVES_INTERVAL` | `15` | Seconds between subsequent probes |
+| `REPOWISE_POSTGRES_KEEPALIVES_COUNT` | `4` | Unanswered probes before the server considers the peer dead |
+| `REPOWISE_POSTGRES_COMMAND_TIMEOUT` | `300` | asyncpg's per-command timeout in seconds; raise it for legitimate long-running statements or bulk writes |
+
+Values must be positive integers; invalid values raise an error naming the
+variable when the engine is created. They are read for each new engine. With
+the switch off (including `0` or `false`), all four overrides are ignored and
+the existing behavior is preserved: server keepalive defaults and no added
+command timeout. SQLite and explicitly selected drivers other than asyncpg
+ignore these variables.
+
+The `tcp_keepalives_*` values are sent in asyncpg `server_settings` as startup
+parameters. **Leave this disabled for PgBouncer or hosted poolers unless the
+pooler supports these parameters** (for example, via PgBouncer's
+`ignore_startup_parameters`). A pooler may reject them, and ignoring them does
+not apply them to the backend; configure backend keepalive separately in that
+case. Repowise does not auto-detect poolers or retry without the parameters.
+
+The defaults let the server detect a dead TCP peer in roughly two minutes
+(`60 + 15 × 4` seconds, subject to OS support). They configure the **server's**
+probes, not the client's socket; a tunnel's peer may only be the tunnel
+endpoint, so SSH keepalive must be configured separately. The command timeout
+bounds an active command, not an idle session, and does not guarantee recovery
+of an interrupted transaction. `pool_pre_ping` still checks connections at
+checkout.
 
 ## Workspace config (`.repowise-workspace.yaml`)
 

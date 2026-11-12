@@ -34,12 +34,14 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
+from ..formats.server_entry import ServerSpec
 from ..types import (
     Capability,
     DoctorReport,
     DoctorStatus,
     FileAction,
     FileWrite,
+    HostedSupport,
     InstallMethod,
     InstallOptions,
     Registration,
@@ -81,6 +83,18 @@ METHODS = (
     ),
 )
 
+#: The hosted entry is written at Claude Code's *local* scope: under this repo's
+#: key in ``~/.claude.json`` ``projects``, the file ``claude mcp add --scope
+#: local`` writes. The hosted URL names one repo, so a user-scope entry would
+#: serve it in every project, and ``.mcp.json`` is shared with the team. The
+#: install still runs at user scope, because that is the file it edits.
+HOSTED = HostedSupport(
+    scope=Scope.USER,
+    next_step=(
+        'Restart Claude Code in this repo, run /mcp, select "{name}" and '
+        "authenticate in the browser."
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -135,15 +149,23 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
     file's own formatting stay byte-identical. Re-rendering the whole document
     from a dict would reformat pre-existing entries (issue #1603).
     """
+    from repowise.cli.editor_integrations.claude_config import _stored_repowise_entry
     from repowise.cli.mcp_config import generate_mcp_config
 
     from ..formats.json_merge import (
         merge_json_object_member,
         write_json_config,
     )
+    from ..formats.server_entry import RENAME_HINT, is_remote_entry
 
     config_path = project_mcp_config_path(repo_path)
     new_entry = generate_mcp_config(repo_path)["mcpServers"]["repowise"]
+
+    stored = _stored_repowise_entry(config_path)
+    if stored is not None and is_remote_entry(stored, local_type="stdio"):
+        # See ``formats.server_entry``: merging ``command`` and ``args`` into a
+        # remote entry leaves one that is neither.
+        return FileWrite(path=config_path, action=FileAction.KEPT, reason=RENAME_HINT)
 
     if config_path.exists():
         # Surgical, minimal-edit write. ``KEPT`` means the file's shape is one we
@@ -169,6 +191,87 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
         )
 
     return FileWrite(path=config_path, action=action)
+
+
+def _project_key(projects: object, repo_path: Path) -> str:
+    """The key Claude Code files *repo_path* under in ``~/.claude.json`` ``projects``.
+
+    The key Claude Code already uses when it has opened this repo, compared as
+    paths (keys have been written with either slash on Windows). Otherwise the
+    forward-slash absolute path, the spelling current Claude Code writes.
+    """
+    from repowise.cli._helpers.paths import _same_path
+
+    if isinstance(projects, dict):
+        for key in projects:
+            if isinstance(key, str) and _same_path(Path(key), repo_path):
+                return key
+    return repo_path.absolute().as_posix()
+
+
+def _local_server_loaded(repo_path: Path) -> bool:
+    """Whether Claude Code loads a local repowise server in *repo_path* already.
+
+    The plugin, or a ``repowise`` entry that launches a command at user scope
+    or in ``.mcp.json``. A hosted entry beside any of them takes the
+    ``repowise-hosted`` name, so the two never shadow each other.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _stored_repowise_entry,
+        claude_code_plugin_installed,
+    )
+
+    from ..formats.server_entry import is_remote_entry
+
+    if claude_code_plugin_installed():
+        return True
+    for path in (user_mcp_config_path(), project_mcp_config_path(repo_path)):
+        stored = _stored_repowise_entry(path)
+        if stored is not None and not is_remote_entry(stored, local_type="stdio"):
+            return True
+    return False
+
+
+def local_scope_servers(repo_path: Path) -> tuple[str, dict]:
+    """``(project key, servers)`` of this repo's local scope in ``~/.claude.json``.
+
+    Raises like :func:`~..formats.json_merge.load_json_object` on a file that
+    is not strict JSON. ``servers`` is ``{}`` when there are none.
+    """
+    from repowise.cli.mcp_config import load_existing_config
+
+    config_path = user_mcp_config_path()
+    existing = load_existing_config(config_path) if config_path.exists() else {}
+    projects = existing.get("projects")
+    key = _project_key(projects, repo_path)
+    project = projects.get(key) if isinstance(projects, dict) else None
+    servers = project.get("mcpServers") if isinstance(project, dict) else None
+    return key, servers if isinstance(servers, dict) else {}
+
+
+def write_local_scope_server(repo_path: Path, spec: ServerSpec) -> tuple[str, FileWrite]:
+    """Merge *spec* into this repo's local-scope servers in ``~/.claude.json``.
+
+    A minimal edit, the same one the user-scope entry gets: Claude Code owns
+    this file and rewrites it often, so only our one member moves. Raises like
+    :func:`~..formats.json_merge.load_json_object` on a file that is not strict
+    JSON; ``KEPT`` when a key on the path is not an object.
+    """
+    from ..formats.json_merge import merge_json_object_member
+
+    config_path = user_mcp_config_path()
+    key, servers = local_scope_servers(repo_path)
+    name = spec.name_in(
+        servers, local_type="stdio", local_elsewhere=_local_server_loaded(repo_path)
+    )
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    action = merge_json_object_member(
+        config_path, ("projects", key, "mcpServers"), name, spec.entry
+    )
+    reason = spec.repointed_from(servers.get(name))
+    if action is FileAction.KEPT:
+        reason = "a key on the projects path is not an object"
+    return name, FileWrite(path=config_path, action=action, reason=reason)
 
 
 def _remove_project_mcp_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
@@ -453,6 +556,7 @@ class ClaudeCodeTarget:
     capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
+    hosted = HOSTED
 
     def supports_scope(self, scope: Scope) -> bool:
         return True
@@ -493,6 +597,17 @@ class ClaudeCodeTarget:
             register_with_claude_desktop,
         )
 
+        hosted_url = options.hosted_url if isinstance(options, InstallOptions) else None
+        if hosted_url:
+            from ..formats.server_entry import install_hosted
+
+            if repo_path is None:
+                raise ValueError("the hosted entry needs a repo_path")
+            return install_hosted(
+                user_mcp_config_path(),
+                lambda spec: write_local_scope_server(repo_path, spec),
+                {"type": "http", "url": hosted_url},
+            )
         result = WriteResult()
         retarget = isinstance(options, InstallOptions) and options.retarget
         if scope is Scope.PROJECT:

@@ -42,9 +42,10 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     ),
     # Agent-surface preferences. init records `hooks` and `editor_files` after
     # it fingerprints the config, so leaving them in "other" turned the first
-    # update after every init into a full rebuild.
+    # update after every init into a full rebuild. `managed_checkout` says how
+    # the server keeps the checkout current, not what the index holds.
     "state_only": frozenset(
-        {"distill", "editor_files", "editor_setup", "events", "hooks", "mcp"}
+        {"distill", "editor_files", "editor_setup", "events", "hooks", "managed_checkout", "mcp"}
     ),
 }
 

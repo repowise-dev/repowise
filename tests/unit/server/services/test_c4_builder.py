@@ -432,6 +432,36 @@ async def test_container_view_and_dependencies_agree_without_tests(async_session
 
 
 @pytest.mark.asyncio
+async def test_edges_are_read_between_files_only(async_session):
+    """Symbol edges are most of the table and never reach a box, so they are not read."""
+    from repowise.server.services.c4_builder.relations import load_edges
+
+    repo = await _seed_monorepo(async_session)
+    before = await c4_builder.build_l2(async_session, repo.id)
+    symbol = "packages/web/lib/api.ts::fetchModel"
+    await batch_upsert_graph_nodes(
+        async_session,
+        repo.id,
+        [{"node_id": symbol, "node_type": "symbol", "language": "typescript", "symbol_count": 0}],
+    )
+    await batch_upsert_graph_edges(
+        async_session,
+        repo.id,
+        [
+            {"source_node_id": "packages/web/lib/api.ts", "target_node_id": symbol, "edge_type": "defines"},
+            {"source_node_id": symbol, "target_node_id": "packages/core/persistence/models.py", "edge_type": "calls"},
+        ],
+    )
+    await async_session.commit()
+
+    edges = await load_edges(async_session, repo.id)
+    assert all(symbol not in (src, tgt) for src, tgt, _ in edges)
+    assert ("packages/core/ingestion/parser.py", "external:fastapi", "imports") in edges
+    after = await c4_builder.build_l2(async_session, repo.id)
+    assert after.relations == before.relations
+
+
+@pytest.mark.asyncio
 async def test_container_dependencies_honour_exclusions(async_session):
     import pathspec
 

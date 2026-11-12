@@ -56,6 +56,7 @@ def call_walk(
     symbol_seeds: Mapping[str, Collection[str]] | None = None,
     avoid: Collection[str] = frozenset(),
     fan_in_cap: int | None = None,
+    groups: Mapping[str, Collection[str]] | None = None,
 ) -> Walk[dict[str, dict[str, ReachDistance]]]:
     """Tests that can execute into each seed file, walking call edges backwards.
 
@@ -78,9 +79,13 @@ def call_walk(
 
     With *fan_in_cap*, a node with more callers than that carries nothing
     further: reach through a dispatcher every test calls says nothing.
+
+    *groups* (:func:`_seed_nodes`) lets a seed stand for a set of files.
+    Ceiling: *avoid* keeps only seeds named for the file itself, so a group's
+    label carries nothing through an avoided file.
     """
     # node -> seed -> call hops from the node to the seed.
-    origins = yield from _call_origins(seeds, symbol_seeds)
+    origins = yield from _call_origins(seeds, symbol_seeds, groups)
     if not origins:
         return {}
 
@@ -121,7 +126,9 @@ def call_walk(
 
 
 def _call_origins(
-    seeds: list[str], symbol_seeds: Mapping[str, Collection[str]] | None
+    seeds: list[str],
+    symbol_seeds: Mapping[str, Collection[str]] | None,
+    groups: Mapping[str, Collection[str]] | None = None,
 ) -> Walk[dict[str, dict[str, int]]]:
     """The symbols each seed enters the call walk at, each at distance 0 from its seed."""
     origins: dict[str, dict[str, int]] = {}
@@ -133,11 +140,29 @@ def _call_origins(
     for seed, symbol_ids in seeded.items():
         for symbol in symbol_ids:
             origins.setdefault(symbol, {})[seed] = 0
-    unseeded = tuple(seed for seed in seeds if seed not in seeded)
-    if unseeded:
-        for seed, symbol in (yield Need("declared", unseeded)):
-            origins.setdefault(symbol, {})[seed] = 0
+    files = _seed_nodes([seed for seed in seeds if seed not in seeded], groups)
+    if files:
+        for file, symbol in (yield Need("declared", tuple(files))):
+            for seed in files[file]:
+                origins.setdefault(symbol, {})[seed] = 0
     return origins
+
+
+def _seed_nodes(
+    seeds: list[str], groups: Mapping[str, Collection[str]] | None
+) -> dict[str, set[str]]:
+    """``{graph node: the seeds it carries}``.
+
+    A seed is its own node unless *groups* names it: then it is a label for
+    those files, walked as one unit and answered once for all of them. A walk
+    cost grows with seeds per node, so a package's thousand files walked as
+    one label cost one seed, not a thousand.
+    """
+    nodes: dict[str, set[str]] = {}
+    for seed in seeds:
+        for node in (groups or {}).get(seed, (seed,)):
+            nodes.setdefault(node, set()).add(seed)
+    return nodes
 
 
 def _record_test_hit(
@@ -174,17 +199,21 @@ def _carry_closer(
 
 
 def import_walk(
-    seeds: list[str], test_files: Collection[str], max_depth: int
+    seeds: list[str],
+    test_files: Collection[str],
+    max_depth: int,
+    groups: Mapping[str, Collection[str]] | None = None,
 ) -> Walk[tuple[dict[str, set[str]], dict[str, dict[str, set[str]]]]]:
     """Tests that import each seed file, directly or within *max_depth* hops.
 
     Also ``{seed: {test: the files it imports on a route to the seed}}``.
+    *groups* lets a seed stand for a set of files (:func:`_seed_nodes`).
     """
-    origins: dict[str, set[str]] = {s: {s} for s in seeds}
+    origins = _seed_nodes(seeds, groups)
     # (test, file it imports) -> seeds carried in: one set union per edge, not
     # a dict write per seed; split per seed once the walk ends.
     reached: dict[tuple[str, str], set[str]] = {}
-    frontier = list(seeds)
+    frontier = list(origins)
 
     for _ in range(max_depth):
         if not frontier:
@@ -501,6 +530,7 @@ def tier_walk(
     helpers: bool = False,
     hubs: Collection[str] = frozenset(),
     rank: bool = True,
+    groups: Mapping[str, Collection[str]] | None = None,
 ) -> Walk[dict[str, ReachedBy]]:
     """The call walk, the import walk for what it left, then (*helpers*) the helper and package hops.
 
@@ -511,6 +541,13 @@ def tier_walk(
     With *hubs*, a call-tier test is tagged ``transitive`` when it reaches the
     target only through a hub (:func:`transitive_tests`). A listing passes
     them; a selection does not, since a tagged test still runs the target.
+
+    *groups* names targets that are labels for a set of files, each walked as
+    one unit by the call and import walks (:func:`_seed_nodes`). Like any
+    target, a label one of its files' calls answers skips the import tier; a
+    caller wanting every importer too runs the import walk itself
+    (``test_collection._tier_picks``). Ceiling: *hubs* and *helpers* still
+    treat a label as a file.
     """
     seeds = sorted({t for t in targets if t})
     if not seeds or not test_files:
@@ -519,7 +556,7 @@ def tier_walk(
     edited = frozenset(c.split("::", 1)[0] for c in seeds)
     if call_depth >= 1:
         found = yield from call_walk(
-            seeds, test_files, call_depth, symbol_seeds=symbol_seeds, avoid=avoid
+            seeds, test_files, call_depth, symbol_seeds=symbol_seeds, avoid=avoid, groups=groups
         )
         tagged: dict[str, set[str]] = {}
         if hubs:
@@ -539,7 +576,7 @@ def tier_walk(
             )
     unanswered = [seed for seed in seeds if seed not in out]
     if unanswered and import_depth >= 1:
-        found, entries = yield from import_walk(unanswered, test_files, import_depth)
+        found, entries = yield from import_walk(unanswered, test_files, import_depth, groups)
         for seed, tests in found.items():
             file = seed.split("::", 1)[0]
             by_test = {t: frozenset(via) for t, via in entries[seed].items()}

@@ -267,9 +267,9 @@ def _check_folder_coverage(
 )
 @click.option(
     "--commit-limit",
-    type=click.IntRange(1, 10000),
+    type=click.IntRange(min=1),
     default=None,
-    help="Max commits to analyze per file and for co-change detection (default: 5000, max: 10000). Saved to config.",
+    help="Newest commits to analyze for file history and co-change (default: 5000). Set it above the repo's commit count to read the full history. Saved to config.",
 )
 @click.option(
     "--follow-renames/--no-follow-renames",

@@ -236,14 +236,16 @@ async def search_codebase(
     ignored: list[dict[str, Any]] = []
     query = _query_from_pattern(query, pattern, ignored)
     if not query.strip():
-        from repowise.server.mcp_server._savings.interaction import note_error_reason
+        from repowise.server.mcp_server._savings.interaction import error_reply
 
-        note_error_reason("invalid_args")
-        return {
-            "results": [],
-            "error": "search_codebase requires `query` (or its alias `pattern`).",
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "results": [],
+                "error": "search_codebase requires `query` (or its alias `pattern`).",
+                "_meta": _build_meta(),
+            },
+        )
     kind, mode = _resolve_kind_and_mode(kind, mode, ignored)
     begin_leg_record()
     # One fan-out state for the whole call: a repo that fails one stage is
@@ -259,7 +261,7 @@ async def search_codebase(
             query, limit, page_type, kind, symbol_kind, repo, resolved_mode, grep_hint, names, fed
         )
         _pkg._lead_candidates(structured, issue, limit)
-        await attach_line_hits(structured, query, resolved_mode, names, repo)
+        await attach_line_hits(structured, query, resolved_mode, names, repo, fed)
         attach_ignored_arguments(structured, ignored)
         return _flag_degraded_legs(_drop_echoed_candidates(structured))
 
@@ -272,6 +274,7 @@ async def search_codebase(
                 federated["grep_hint"] = grep_hint
             else:
                 federated["hint"] = _NO_HITS_RECOVERY_HINT
+        await attach_line_hits(federated, query, resolved_mode, names, repo, fed)
         attach_ignored_arguments(federated, ignored)
         return _flag_degraded_legs(_drop_echoed_candidates(federated))
 

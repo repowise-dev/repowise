@@ -549,6 +549,7 @@ def _read_and_parse_misses(
         _skipped_source_line,
         _split_cached,
         drop_skipped_documents,
+        write_skipped_files_report,
     )
 
     with timed(timings, "rebuild.read"):
@@ -561,6 +562,8 @@ def _read_and_parse_misses(
         log(f"[yellow]{_skipped_source_line(record).strip()}[/yellow]")
     if read_only:
         parse_cache = None
+    else:
+        write_skipped_files_report(Path(repo_path), stats)
     merged = _parse_misses(cached_hits, to_parse, parse_cache, timings, log)
     return parse_cache, file_bytes, merged, to_parse
 

@@ -10,12 +10,21 @@ _s = factory(AREA)
 _e = factory(AREA, scope="env")
 
 SETTINGS: tuple[Setting, ...] = (
+    _s(
+        "managed_checkout",
+        "bool",
+        False,
+        "This checkout is a clone the server owns: before each server sync it "
+        "fetches the tracked branch and fast-forwards to it. Leave off for a "
+        "working tree you edit.",
+    ),
     _e(
         "REPOWISE_API_KEY",
         "str",
         None,
         "Shared secret that protects the API and the MCP HTTP server; needed for "
         "requests from other machines.",
+        secret=True,
     ),
     _e(
         "REPOWISE_HOST",
@@ -43,12 +52,55 @@ SETTINGS: tuple[Setting, ...] = (
         "str",
         None,
         "Database to use instead of the repo's SQLite file, for example Postgres.",
+        secret=True,
     ),
     _e(
         "REPOWISE_DATABASE_URL",
         "str",
         None,
         "Older name for REPOWISE_DB_URL, read when that is unset.",
+        secret=True,
+    ),
+    _e(
+        "REPOWISE_POSTGRES_KEEPALIVE",
+        "bool",
+        False,
+        "Send server-side TCP keepalive settings and a command timeout on asyncpg "
+        "connections. Leave off behind a pooler that rejects startup parameters.",
+    ),
+    _e(
+        "REPOWISE_POSTGRES_KEEPALIVES_IDLE",
+        "int",
+        60,
+        "Seconds idle before the server's first keepalive probe, when "
+        "REPOWISE_POSTGRES_KEEPALIVE is on.",
+        minimum=1,
+        on_invalid="error",
+    ),
+    _e(
+        "REPOWISE_POSTGRES_KEEPALIVES_INTERVAL",
+        "int",
+        15,
+        "Seconds between keepalive probes, when REPOWISE_POSTGRES_KEEPALIVE is on.",
+        minimum=1,
+        on_invalid="error",
+    ),
+    _e(
+        "REPOWISE_POSTGRES_KEEPALIVES_COUNT",
+        "int",
+        4,
+        "Unanswered keepalive probes before the server drops the connection, when "
+        "REPOWISE_POSTGRES_KEEPALIVE is on.",
+        minimum=1,
+        on_invalid="error",
+    ),
+    _e(
+        "REPOWISE_POSTGRES_COMMAND_TIMEOUT",
+        "int",
+        300,
+        "Seconds one database command may run, when REPOWISE_POSTGRES_KEEPALIVE is on.",
+        minimum=1,
+        on_invalid="error",
     ),
     _e(
         "REPOWISE_CORS_ORIGINS",
@@ -77,9 +129,9 @@ SETTINGS: tuple[Setting, ...] = (
         "~/.repowise/tokens.yaml",
         "File of scoped access tokens for the server.",
     ),
-    _e("REPOWISE_GITHUB_WEBHOOK_SECRET", "str", "", "Secret that verifies GitHub webhooks."),
-    _e("REPOWISE_GITLAB_WEBHOOK_TOKEN", "str", "", "Token that verifies GitLab webhooks."),
-    _e("REPOWISE_GITEA_WEBHOOK_SECRET", "str", "", "Secret that verifies Gitea webhooks."),
+    _e("REPOWISE_GITHUB_WEBHOOK_SECRET", "str", "", "Secret that verifies GitHub webhooks.", secret=True),
+    _e("REPOWISE_GITLAB_WEBHOOK_TOKEN", "str", "", "Token that verifies GitLab webhooks.", secret=True),
+    _e("REPOWISE_GITEA_WEBHOOK_SECRET", "str", "", "Secret that verifies Gitea webhooks.", secret=True),
     _e(
         "REPOWISE_PLUGINS",
         "list",
