@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDown, GitBranch, GitCommitHorizontal, Pencil } from "lucide-react";
+import { ChevronDown, GitBranch, GitCommitHorizontal, GitPullRequest, Pencil } from "lucide-react";
 import type { ChangeCandidate, ChangeCandidateKind, ChangeCandidatesResponse } from "@repowise-dev/types/blast-radius";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
