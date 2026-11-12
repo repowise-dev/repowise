@@ -662,13 +662,6 @@ class HealthAnalyzer:
             and scores_language(pf.file_info.language)
         ]
 
-    def _walk_or_empty(self, pf: Any, vocab: AssertVocabulary) -> FileComplexity:
-        try:
-            return self._walk(pf, vocab)
-        except Exception as exc:
-            log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
-            return FileComplexity(functions=[], classes=[])
-
     def _walk_files(
         self,
         targets: list[Any],
@@ -679,17 +672,37 @@ class HealthAnalyzer:
     ) -> list[tuple[Any, FileComplexity]]:
         """Walk every target before any biomarker runs, so the repo-wide
         percentiles are computed once over the whole walked set. *partial*
-        (a changed-files pass) keeps the cached walks of the files it skipped."""
+        (a changed-files pass) keeps the cached walks of the files it skipped.
+
+        An update walks here, and after a walker change its cache misses
+        everything once: those walks go to the spawn pool as in
+        :meth:`_walk_files_async`, the rest run one at a time.
+        """
         self._load_walk_cache()
-        walked: list[tuple[Any, FileComplexity]] = []
-        for pf in targets:
-            walked.append((pf, self._walk_or_empty(pf, vocab)))
+
+        def tick(pf: Any) -> None:
             # Walk tick — the phase total counts each file twice (walk +
             # evaluate).
             if on_step:
                 on_step(pf.file_info.path)
+
+        requests = [_walk_request_or_empty(self, pf, vocab) for pf in targets]
+        results: list[Any] = [PENDING] * len(targets)
+        pending: list[int] = []
+        for i, (pf, request) in enumerate(zip(targets, requests, strict=True)):
+            if isinstance(request, FileComplexity):
+                results[i] = request
+                tick(pf)
+            else:
+                pending.append(i)
+        if len(pending) >= _POOL_MIN_JOBS:
+            self._walk_in_pool(targets, requests, pending, results, tick)
+        for i in pending:
+            if results[i] is PENDING:
+                results[i] = self._finish_walk(targets[i], requests[i])
+                tick(targets[i])
         self._save_walk_cache(keep_unused=partial)
-        return walked
+        return list(zip(targets, results, strict=True))
 
     async def _walk_files_async(
         self,
