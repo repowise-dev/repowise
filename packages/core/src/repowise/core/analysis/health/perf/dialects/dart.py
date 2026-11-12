@@ -22,9 +22,11 @@ Markers (precision-first, matching the walker's shared shapes):
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from ..loop_facts import LoopSource
+from .iterables import IterableSources
 
 if TYPE_CHECKING:
     from tree_sitter import Node
@@ -71,7 +73,7 @@ _LITERAL_KINDS: frozenset[str] = frozenset(
 )
 
 
-class DartPerfDialect(BasePerfDialect):
+class DartPerfDialect(IterableSources):
     language = "dart"
     markers = frozenset(
         {
@@ -206,6 +208,67 @@ class DartPerfDialect(BasePerfDialect):
         if parts is None:
             return None
         return self._dotted_path(parts.child_by_field_name("value"))
+
+    def loop_source(self, node: Node) -> LoopSource | None:
+        if node.type == "for_statement":
+            parts = next((c for c in node.children if c.type == "for_loop_parts"), None)
+            if parts is None:
+                return None
+            expr = parts.child_by_field_name("value") or parts.child_by_field_name("condition")
+            return self._read(expr.text or b"", node) if expr is not None else None
+        if node.type in ("while_statement", "do_statement"):
+            cond = node.child_by_field_name("condition")
+            return self._read(cond.text or b"", node) if cond is not None else None
+        return None
+
+    def _read(self, raw: bytes, loop: Node) -> LoopSource:
+        text = raw.decode("utf-8", "replace").strip()
+        m = re.search(r"(?:<=|>=|<|>)\s*(.+)$", text, re.S)
+        if m:
+            text = m.group(1).strip()
+        m = re.search(r"(\w+)\.(next|Read|ReadAsync|moveNext)\s*\(", text)
+        if m:
+            src = self._resolve(m.group(1), loop)
+            return src if src.magnitude == "grows_with_data" else LoopSource()
+        if re.search(r"\b(rawQuery|rawInsert|rawUpdate|rawDelete|query|execute|executeQuery|ExecuteReader|ExecuteReaderAsync|findAll|find|get|post|put|delete|patch)\b", text):
+            if "LIMIT" in text.upper():
+                return LoopSource("unknown", "query")
+            if re.search(r"WHERE\s+id\s*=\s*\?", text, re.I) and "UNION" not in text.upper():
+                return LoopSource("bounded", "caller_key")
+            return LoopSource("grows_with_data", "query")
+        if "listSync" in text:
+            return LoopSource("grows_with_data" if re.search(r"recursive\s*:\s*true", text) else "unknown", "listing")
+        m = re.search(r"(\w+)\.(take|limit)\s*\(", text)
+        if m:
+            return LoopSource("bounded", self._resolve(m.group(1), loop).iterates)
+        if re.search(r"List\.generate\s*\(\s*\d", text):
+            return LoopSource("bounded", "constant")
+        if re.search(r"\b[A-Z]\w*\.values\b", text):
+            return LoopSource("bounded", "constant")
+        if text.startswith("["):
+            return LoopSource("bounded", "constant") if "..." not in text else LoopSource()
+        m = re.search(r"(\w+)\.(length|size|count)(?:\(\))?$", text)
+        if m:
+            return self._resolve(m.group(1), loop)
+        if re.fullmatch(r"\d+", text):
+            return LoopSource("bounded", "constant")
+        if re.fullmatch(r"[A-Za-z_]\w*", text):
+            return self._resolve(text, loop)
+        return LoopSource()
+
+    def _resolve(self, name: str, loop: Node) -> LoopSource:
+        fn = loop
+        while fn is not None and fn.type != "function_body":
+            fn = fn.parent
+        if fn is None:
+            return LoopSource()
+        parent = fn.parent
+        sig = " ".join((c.text or b"").decode("utf-8", "replace") for c in parent.children if c.type in ("function_signature", "method_signature")) if parent is not None else ""
+        if re.search(rf"\b{re.escape(name)}\b", sig):
+            return LoopSource("unknown", "parameter")
+        before = (fn.text or b"").decode("utf-8", "replace")[: max(0, loop.start_byte - fn.start_byte)]
+        found = re.findall(rf"(?:var|final|const|late\s+)?\s*{re.escape(name)}\s*=\s*([^;]+);", before, re.S)
+        return self._read(found[-1].encode(), loop) if found else LoopSource()
 
     # -- extra markers ---------------------------------------------------------
 
