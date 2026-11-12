@@ -399,16 +399,21 @@ editor_files:
 | `cursor_rules` | `true` | Write the Cursor rules file. |
 | `kiro_steering` | `true` | Write the Kiro steering file. |
 | `vscode_mcp` | `true` | Write the VS Code MCP entry. |
-| `sections` | `[architecture, decisions, entry_points, health, hotspots, how_to_work, key_modules]` | Sections of the generated agent block. +name or -name adjusts the default; plain names replace it. Extra: code_health, fix_first, commands, how_to_work_full, tools. |
+| `sections` | `[decisions, how_to_work]` | Sections of the generated agent block. +name or -name adjusts the default; plain names replace it. Extra: architecture, key_modules, entry_points, hotspots, health, code_health, fix_first, commands, how_to_work_full, tools. |
 <!-- END GENERATED settings:editor_files -->
 
 - `false` on a file key stops Repowise writing that file.
-- Default sections: `architecture`, `key_modules`, `entry_points`,
-  `hotspots`, `health` (score and worst file), `decisions` (top three titles),
-  `how_to_work` (which task goes to Grep and which to a Repowise call).
-- Opt-in: `code_health` (all health signals, replaces `health`), `fix_first`,
-  `commands` (build, test and lint from manifests), `how_to_work_full`,
-  `tools` (the MCP tool table).
+- Every block leads with one line telling the agent to call a Repowise tool
+  first for any question about the codebase.
+- Default sections: `how_to_work` (one line per moment: rename, edit, finish,
+  noisy commands, settings) and `decisions` (whether decisions govern files,
+  plus up to five pinned titles). The default block stays within about 250
+  tokens; a test holds it there.
+- Opt-in: `architecture`, `key_modules`, `entry_points`, `hotspots`, `health`
+  (score and worst file), `code_health` (all health signals, replaces
+  `health`), `fix_first`, `commands` (build, test and lint from manifests),
+  `how_to_work_full`, `tools` (the MCP tool table). For example
+  `sections: [+key_modules, +hotspots]`.
 
 ## The `decisions:` block
 
