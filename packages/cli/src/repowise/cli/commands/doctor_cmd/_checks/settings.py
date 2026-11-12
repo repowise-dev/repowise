@@ -16,6 +16,8 @@ from collections.abc import Mapping
 from difflib import get_close_matches
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.settings.views import requirement
+
 from .._types import DoctorCheck, _check
 from .context import CheckContext
 
@@ -83,7 +85,7 @@ def _file_row(setting: Setting, raw: Any, problem: str) -> tuple[DoctorCheck, st
     key = setting.key
     detail = (
         f"{key}: {_shown(raw)} in {_FILE} is not valid: {_reason(setting, problem)}. "
-        f"Accepts {setting.accepts}. Run 'repowise config set {key} <value>' or "
+        f"Accepts {requirement(setting)}. Run 'repowise config set {key} <value>' or "
         f"'repowise config reset {key}'"
     )
     return _row(key, False, detail, fix=f"repowise config reset {key}"), key
@@ -92,7 +94,7 @@ def _file_row(setting: Setting, raw: Any, problem: str) -> tuple[DoctorCheck, st
 def _env_row(setting: Setting, name: str, raw: str, problem: str) -> DoctorCheck:
     detail = (
         f"{name}={_shown(raw)} in the environment is not valid: {_reason(setting, problem)}. "
-        f"Accepts {setting.accepts}. Unset {name} or set it to a value it accepts"
+        f"Accepts {requirement(setting)}. Unset {name} or set it to a value it accepts"
     )
     return _row(name, False, detail)
 

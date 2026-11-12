@@ -107,6 +107,16 @@ def test_get_reports_the_env_source(repo, monkeypatch):
     assert (out["value"], out["source"]) == (True, "env")
 
 
+def test_a_set_credential_is_listed_but_never_printed(repo, monkeypatch):
+    monkeypatch.setenv("REPOWISE_GITLAB_TOKEN", "glpat-not-a-real-token")
+    out = _json(repo, "get", "REPOWISE_GITLAB_TOKEN")
+    assert (out["value"], out["source"], out["changed"]) == ("(set, hidden)", "env", True)
+    for args in (("list", "--changed"), ("get", "REPOWISE_GITLAB_TOKEN"), ("explain", "REPOWISE_GITLAB_TOKEN")):
+        assert "glpat-not-a-real-token" not in _run(repo, *args, "--format", "json")[1]
+        assert "glpat-not-a-real-token" not in _run(repo, *args)[1]
+    assert _json(repo, "get", "REPOWISE_API_KEY")["value"] is None
+
+
 def test_unknown_key_is_refused_with_a_suggestion(repo):
     out = _json(repo, "get", "commit_limt")
     assert out["_exit"] == 1 and out["error"] == "unknown_setting"

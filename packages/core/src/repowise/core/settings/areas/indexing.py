@@ -147,6 +147,7 @@ SETTINGS: tuple[Setting, ...] = (
         None,
         "Fixed hex key that signs the local cache, for CI.",
         internal=True,
+        secret=True,
     ),
     _e(
         "REPOWISE_CACHE_KEY_PATH",

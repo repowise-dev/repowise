@@ -24,6 +24,7 @@ SETTINGS: tuple[Setting, ...] = (
         None,
         "Shared secret that protects the API and the MCP HTTP server; needed for "
         "requests from other machines.",
+        secret=True,
     ),
     _e(
         "REPOWISE_HOST",
@@ -51,12 +52,14 @@ SETTINGS: tuple[Setting, ...] = (
         "str",
         None,
         "Database to use instead of the repo's SQLite file, for example Postgres.",
+        secret=True,
     ),
     _e(
         "REPOWISE_DATABASE_URL",
         "str",
         None,
         "Older name for REPOWISE_DB_URL, read when that is unset.",
+        secret=True,
     ),
     _e(
         "REPOWISE_POSTGRES_KEEPALIVE",
@@ -126,9 +129,9 @@ SETTINGS: tuple[Setting, ...] = (
         "~/.repowise/tokens.yaml",
         "File of scoped access tokens for the server.",
     ),
-    _e("REPOWISE_GITHUB_WEBHOOK_SECRET", "str", "", "Secret that verifies GitHub webhooks."),
-    _e("REPOWISE_GITLAB_WEBHOOK_TOKEN", "str", "", "Token that verifies GitLab webhooks."),
-    _e("REPOWISE_GITEA_WEBHOOK_SECRET", "str", "", "Secret that verifies Gitea webhooks."),
+    _e("REPOWISE_GITHUB_WEBHOOK_SECRET", "str", "", "Secret that verifies GitHub webhooks.", secret=True),
+    _e("REPOWISE_GITLAB_WEBHOOK_TOKEN", "str", "", "Token that verifies GitLab webhooks.", secret=True),
+    _e("REPOWISE_GITEA_WEBHOOK_SECRET", "str", "", "Secret that verifies Gitea webhooks.", secret=True),
     _e(
         "REPOWISE_PLUGINS",
         "list",

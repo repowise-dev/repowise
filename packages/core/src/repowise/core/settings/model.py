@@ -161,6 +161,9 @@ class Setting:
     #: Test, debug or plumbing knobs: registered so nothing is unaccounted
     #: for, hidden from user listings.
     internal: bool = False
+    #: A credential: listings and the settings API say it is set, never
+    #: what it is.
+    secret: bool = False
     reload: Reload = "immediate"
     on_invalid: OnInvalid = "default"
     #: The value an unusable one reads as, when ``on_invalid="fallback"``.
@@ -193,22 +196,6 @@ class Setting:
         """The file holding this key, ``None`` for an environment-only setting."""
         return self.file or _SCOPE_FILES[self.scope]
 
-    @property
-    def accepts(self) -> str:
-        """What a value must be, in plain words (``a whole number, at least 1``)."""
-        if self.choices:
-            lead = "one of" if self.type == "str" else "any of"
-            return f"{lead} {', '.join(self.choices)}"
-        if self.type in ("int", "float"):
-            kind = "a whole number" if self.type == "int" else "a number"
-            bounds = _bounds(self)
-            return f"{kind}, {bounds}" if bounds else kind
-        return {
-            "bool": "true or false",
-            "list": "a list: a,b or [a, b]",
-            "mapping": "a mapping: {key: value}",
-        }.get(self.type, "text")
-
     def to_dict(self) -> dict[str, Any]:
         """A JSON-ready description, for listings, docs and the settings API."""
         return {
@@ -232,14 +219,6 @@ class Setting:
         }
 
 
-def _bounds(s: Setting) -> str:
-    low = None
-    if s.minimum is not None:
-        low = f"more than {s.minimum:g}" if s.exclusive_minimum else f"at least {s.minimum:g}"
-    high = None if s.maximum is None else f"at most {s.maximum:g}"
-    return " and ".join(b for b in (low, high) if b)
-
-
 def _contradiction(s: Setting) -> str | None:
     """Why *s* contradicts itself, or ``None``."""
     if s.choices and s.type not in ("str", "list"):
@@ -253,6 +232,9 @@ def _contradiction(s: Setting) -> str | None:
         return "a <placeholder> key and members come together"
     if s.scope == "env" and not _keyed_by_env(s):
         return "an env-scoped setting is keyed by its variable"
+    if s.secret and s.scope != "env":
+        # Listings hide its value, so an editable one would save the mask back.
+        return "a secret is read from the environment only"
     return None
 
 
