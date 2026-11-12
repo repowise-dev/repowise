@@ -197,7 +197,7 @@ export function ChangePicker({
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" aria-hidden />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(26rem,calc(100vw-2rem))] space-y-2 p-2">
+      <PopoverContent align="start" aria-label="Changes to review" className="w-[min(26rem,calc(100vw-2rem))] space-y-2 p-2">
         {data ? (
           <>
             <Segmented label="Kind of change" value={activeKind} options={kindOptions(data)} onChange={setKind} />
