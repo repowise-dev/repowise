@@ -34,10 +34,11 @@ from repowise.cli.ui.mode_names import (
     pages,
     scope_line,
 )
-from repowise.cli.ui.result_panels import keyless_upgrade_note
+from repowise.cli.ui.subscription import upgrade_route
 from repowise.core.decision_lanes import lanes_label, pending_decision_lanes
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.index_scope import (
+    answers_upgrade_line,
     fast_to_full_command,
     model_command,
     resolve_index_scope,
@@ -357,6 +358,16 @@ def _mapping_report(repo_path: Path) -> dict[str, Any]:
             )
 
     return report
+
+
+def _answers_line(repo_path: Path, scope: dict[str, Any]) -> str | None:
+    """The shared upgrade line for an index no model wrote prose for, else None.
+
+    Probes for a signed-in agent CLI only when there is something to upgrade.
+    """
+    if answers_upgrade_line(scope) is None:
+        return None
+    return answers_upgrade_line(scope, upgrade_route(repo_path))
 
 
 def _query_page_count(repo_path: Path) -> int:
@@ -1052,6 +1063,9 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "index_scope": scope,
                 "upgrade_command": upgrade_command(scope),
                 "model_command": model_command(scope),
+                # The line MCP responses carry: the signed-in CLI on a paid
+                # plan when there is one, else a key or a local model.
+                "upgrade_line": _answers_line(repo_path, scope),
                 "decision_lanes_pending": list(pending_lanes),
                 "rescore_pending": rescore,
                 "suggestions": [s.to_dict() for s in suggested_for(repo_path)],
@@ -1151,10 +1165,11 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     # name the upgrade commands here too, since "Full upgrade  pending" above
     # names no command on its own (#3105). Mirrors the init closing note.
     if scope["content_provenance"] == "template":
-        note = keyless_upgrade_note(
-            scope["search"]["semantic"] == "available", scope["search"]["next_command"]
-        )
-        console.print(f"[dim]{note}[/dim]")
+        note = _answers_line(repo_path, scope) or ""
+        if scope["search"]["semantic"] != "available":
+            reindex = scope["search"]["next_command"] or "repowise reindex"
+            note += f"; {reindex} adds semantic search"
+        console.print(f"[dim]{note}.[/dim]")
     elif upgrade_command(scope):
         console.print(
             f"[dim]Index only: no documentation yet. {upgrade_command(scope)} builds it from "

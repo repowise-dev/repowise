@@ -92,15 +92,19 @@ def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
     from repowise.core.providers.llm.registry import provider_available_for_repo
 
     llm_available = provider_available_for_repo(repo_path)
-    llm_detail = (
-        "Resolves for this repository"
-        if llm_available
-        else "None configured — prose degrades to a structural wiki; set a key or pass --provider"
-    )
+    llm_detail = "Resolves for this repository" if llm_available else _no_provider_detail(repo_path)
     # Keyless operation is supported, so this is informational rather than a
     # failing health check.  The detail tells users what init will actually do.
     checks.append(_check("LLM provider", True, llm_detail, check_id="llm-provider"))
     return checks
+
+
+def _no_provider_detail(repo_path: _DoctorPath) -> str:
+    """The shared upgrade line, naming a signed-in agent CLI on a paid plan when there is one."""
+    from repowise.cli.ui.subscription import upgrade_route
+    from repowise.core.index_scope import load_index_scope, upgrade_line
+
+    return f"None configured: {upgrade_line(load_index_scope(repo_path), upgrade_route(repo_path))}"
 
 
 def _hosted_account_check() -> DoctorCheck:

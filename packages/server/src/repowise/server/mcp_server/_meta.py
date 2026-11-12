@@ -19,8 +19,10 @@ Rules of thumb baked into the hint generators:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,13 +32,17 @@ from repowise.core.git_head import read_head_commit, same_path
 from repowise.core.index_scope import (
     CANONICAL_INDEX_SCOPE_PROJECTION,
     INDEX_SCOPE_ENV,
+    FreeRoute,
     answers_upgrade_line,
     compact_index_scope,
     index_scope_fingerprint,
     load_index_scope,
+    upgrade_line,
 )
 from repowise.server.mcp_server import _checkout, _code_drift
 from repowise.server.mcp_server._rounding import round_float
+
+_log = logging.getLogger(__name__)
 
 # 2: index_scope carries the compact projection on routine responses. The key
 # and its version field are unchanged, so a consumer reading the old shape has
@@ -1031,27 +1037,105 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
-#: For a keyless server over an index whose prose a model already wrote.
-_KEY_ONLY_NOTE = (
-    "no model is configured, so answers are not synthesized; set a provider "
-    "key (or a provider in .repowise/config.yaml) and restart the MCP server"
-)
+#: How long a response waits for the agent-CLI probe it started. Past it the
+#: line names the fallback route, and a later response names what was found.
+_ROUTE_WAIT_S = 2.0
+
+# The signed-in agent CLI a keyless line names, probed once per served path in
+# a daemon thread (the probe is a subprocess), and the unwritten page count that
+# sizes its minutes, per repository. Both hold for the process: the line itself
+# says to restart once a model is set up.
+_route_lock = threading.Lock()
+_route_probes: dict[str, threading.Thread] = {}
+_routes: dict[str, FreeRoute | None] = {}
+_unwritten_pages: dict[str, int] = {}
+#: Served paths whose overview already named the upgrade this process.
+_overview_upgrade_named: set[str] = set()
 
 
-def prose_upgrade_meta(local_path: str | None) -> dict[str, Any]:
-    """``keyless_note`` naming the upgrade command, on an index no model wrote prose for."""
-    line = answers_upgrade_line(read_index_scope(local_path))
-    return {"keyless_note": line} if line else {}
+def _detect_route(local_path: str | None) -> FreeRoute | None:
+    from repowise.core.providers.llm.subscription import detect_free_route
+
+    return detect_free_route(local_path)
 
 
-def keyless_note_meta(local_path: str | None) -> dict[str, Any]:
-    """What a key would add, on every ``get_answer`` that degrades with
-    ``no-llm-provider`` (#3105).
+def _probe_route(key: str) -> None:
+    try:
+        _routes[key] = _detect_route(key or None)
+    except Exception:
+        _log.debug("repowise MCP: agent CLI probe failed", exc_info=True)
+        _routes[key] = None
+
+
+def _probed_route(local_path: str | None, wait: float) -> FreeRoute | None:
+    """The route for *local_path*, starting its one probe and waiting up to *wait* s."""
+    key = local_path or ""
+    with _route_lock:
+        probe = _route_probes.get(key)
+        if probe is None:
+            probe = threading.Thread(
+                target=_probe_route, args=(key,), name="repowise-route-probe", daemon=True
+            )
+            _route_probes[key] = probe
+            probe.start()
+    probe.join(wait)
+    return _routes.get(key)
+
+
+async def _upgrade_route(
+    local_path: str | None, session_factory: Any = None, repo_id: str | None = None
+) -> FreeRoute | None:
+    """The free route for this index, timed by its unwritten pages when they can be counted."""
+    import asyncio
+
+    route = await asyncio.to_thread(_probed_route, local_path, _ROUTE_WAIT_S)
+    if route is None or session_factory is None or not repo_id:
+        return route
+    calls = _unwritten_pages.get(repo_id)
+    if calls is None:
+        from repowise.core.generation.scope import unwritten_model_page_count
+        from repowise.core.persistence import get_session
+
+        try:
+            async with get_session(session_factory) as session:
+                calls = await unwritten_model_page_count(session, repo_id)
+        except Exception:
+            _log.debug("repowise MCP: unwritten page count failed", exc_info=True)
+            return route
+        _unwritten_pages[repo_id] = calls
+    from repowise.core.providers.llm.subscription import route_minutes
+
+    return route_minutes(route, calls)
+
+
+async def prose_upgrade_meta(
+    local_path: str | None, *, session_factory: Any = None, repo_id: str | None = None
+) -> dict[str, Any]:
+    """``keyless_note`` naming the upgrade, once per process, on an index no model wrote prose for.
+
+    The orientation call is made once per session, so repeating the line on a
+    second overview would charge for a fact the agent already has.
+    """
+    scope = read_index_scope(local_path)
+    key = local_path or ""
+    if answers_upgrade_line(scope) is None or key in _overview_upgrade_named:
+        return {}
+    _overview_upgrade_named.add(key)
+    route = await _upgrade_route(local_path, session_factory, repo_id)
+    return {"keyless_note": answers_upgrade_line(scope, route)}
+
+
+async def keyless_note_meta(
+    local_path: str | None, *, session_factory: Any = None, repo_id: str | None = None
+) -> dict[str, Any]:
+    """What a model would add, on a ``get_answer`` that degrades with ``no-llm-provider``.
 
     Not once per process: an agent that starts a conversation on a server
-    another conversation already used would never learn how to upgrade.
+    another conversation already used would never learn how to upgrade. The
+    caller sends it only when the reply is weak (low confidence or no body).
     """
-    return prose_upgrade_meta(local_path) or {"keyless_note": _KEY_ONLY_NOTE}
+    route = await _upgrade_route(local_path, session_factory, repo_id)
+    return {"keyless_note": upgrade_line(read_index_scope(local_path), route)}
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
