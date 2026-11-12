@@ -4293,6 +4293,97 @@ export interface SetApiKeyRequest {
   repo_id?: string | null;
 }
 
+export interface SettingAlsoMoved {
+  key: string;
+  before: SettingState;
+  after: SettingState;
+}
+
+export interface SettingArea {
+  area: string;
+  settings: SettingView[];
+}
+
+/** What one write did, as ``repowise config set --format json`` reports it. */
+export interface SettingChangeResponse {
+  action: "set" | "reset";
+  key: string;
+  changed: boolean;
+  before: SettingState;
+  after: SettingState;
+  also: SettingAlsoMoved[];
+  effect: string;
+  undo: string[];
+  env_override?: string | null;
+}
+
+/** The environment variable that also sets a setting. */
+export interface SettingEnvVar {
+  name: string;
+  wins: boolean;
+  prefix: boolean;
+}
+
+/** Where one setting stands. */
+export interface SettingState {
+  value?: unknown;
+  source: string;
+  problem?: string | null;
+  locked?: boolean;
+  default?: unknown;
+  changed: boolean;
+}
+
+/** A value that fits this repository better than the current one. */
+export interface SettingSuggestion {
+  key: string;
+  current_value?: unknown;
+  suggested_value?: unknown;
+  reason: string;
+  impact?: string | null;
+  benefit?: string | null;
+  command: string;
+}
+
+/** Set one setting to ``value``, or ``reset`` it to its default. */
+export interface SettingUpdate {
+  key: string;
+  value?: unknown;
+  reset?: boolean;
+}
+
+/** One setting: what it is and where it stands. */
+export interface SettingView {
+  value?: unknown;
+  source: string;
+  problem?: string | null;
+  locked?: boolean;
+  default?: unknown;
+  changed: boolean;
+  key: string;
+  type: "bool" | "int" | "float" | "str" | "list" | "mapping";
+  default_note?: string | null;
+  description: string;
+  area: string;
+  scope: "repo" | "user" | "env";
+  file?: string | null;
+  choices?: string[];
+  minimum?: number | null;
+  maximum?: number | null;
+  exclusive_minimum?: boolean;
+  env?: SettingEnvVar | null;
+  internal?: boolean;
+  reload: "immediate" | "update" | "reindex" | "restart";
+  accepts: string;
+  applies: string;
+  writable: boolean;
+}
+
+export interface SettingsResponse {
+  areas: SettingArea[];
+  suggestions?: SettingSuggestion[];
+}
+
 export interface SetupAgent {
   id: string;
   display_name: string;

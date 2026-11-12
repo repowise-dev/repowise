@@ -47,6 +47,7 @@ STABLE_TAGS = frozenset(
         "repos",
         "search",
         "security",
+        "settings",
         "symbols",
         "webhooks",
         "workspace",
