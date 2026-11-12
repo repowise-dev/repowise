@@ -28,9 +28,7 @@ from repowise.core import git_refs
 from repowise.core.analysis.git_cli import _git, checkout_relative
 from repowise.core.persistence.models import GitCommit, GitCommitFile
 
-#: ``pr`` is never listed here (a local checkout knows no pull requests); a
-#: host that does lists them with ``number``, ``base_sha`` and ``head_sha``.
-ChangeKind = Literal["working_tree", "branch", "commit", "pull_request"]
+ChangeKind = Literal["working_tree", "branch", "commit"]
 
 WORKING_TREE_ID = "working-tree"
 #: Listed commits carry the full sha; a prefix could name two commits at once.
@@ -59,10 +57,6 @@ class ChangeCandidate:
     #: For a branch: whether it exists on the remote (a local-only branch is
     #: often scratch work).
     pushed: bool | None = None
-    #: For a pull request: its number.
-    number: int | None = None
-    #: For a pull request: the base commit it is compared against.
-    base_sha: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
