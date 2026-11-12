@@ -439,13 +439,26 @@ function ReviewBody({
 
 function AnalyzingNote({ name, files }: { name: string; files: number | null }) {
   return (
-    <p className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-secondary)]" role="status">
+    <p className="flex min-w-0 items-center gap-2 text-xs text-[var(--color-text-secondary)]">
       <Spinner size="xs" />
       <span className="min-w-0 truncate">
         Reading what depends on {name}
         {files != null ? ` (${count(files, "file")})` : ""}...
       </span>
     </p>
+  );
+}
+
+/**
+ * One short announcement per pick: the reading note, then "Review ready."; the
+ * review itself is read on demand, not announced. Out of the flow unless it
+ * shows the note, so it never adds a gap.
+ */
+function PickStatus({ reading, files, ready }: { reading: string; files: number | null; ready: boolean }) {
+  return (
+    <div role="status" className={reading ? undefined : "sr-only"}>
+      {reading ? <AnalyzingNote name={reading} files={files} /> : ready ? "Review ready." : null}
+    </div>
   );
 }
 
@@ -695,10 +708,10 @@ function ResultPane({
 }) {
   const { analysis, error, loading, retry } = state;
   return (
-    <section className="min-w-0 space-y-6" aria-live="polite">
+    <section className="min-w-0 space-y-6">
+      <PickStatus reading={loading ? pickedName : ""} files={pickedFiles} ready={Boolean(analysis && !error)} />
       {empty}
       {error && <AnalysisFailed error={error} onRetry={retry} />}
-      {loading && pickedName && <AnalyzingNote name={pickedName} files={pickedFiles} />}
       {loading && !analysis && <ReviewSkeleton />}
       {analysis && (
         <div className={loading ? "space-y-6 opacity-60 transition-opacity" : "space-y-6"}>

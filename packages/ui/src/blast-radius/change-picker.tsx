@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronDown, GitBranch, GitCommitHorizontal, GitPullRequest, Pencil } from "lucide-react";
+import { ChevronDown, GitBranch, GitCommitHorizontal, Pencil } from "lucide-react";
 import type { ChangeCandidate, ChangeCandidateKind, ChangeCandidatesResponse } from "@repowise-dev/types/blast-radius";
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
@@ -204,7 +204,7 @@ export function ChangePicker({
           <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" aria-hidden />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(26rem,calc(100vw-2rem))] space-y-2 p-2">
+      <PopoverContent align="start" aria-label="Changes to review" className="w-[min(26rem,calc(100vw-2rem))] space-y-2 p-2">
         {data ? (
           <>
             <Segmented label="Kind of change" value={activeKind} options={kindOptions(data)} onChange={setKind} />

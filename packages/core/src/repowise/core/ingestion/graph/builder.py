@@ -155,6 +155,9 @@ class GraphBuilder(
         self._head_commit: str | None = head_commit
         # kind -> BetweennessScoring, read by persistence to stamp each node.
         self._betweenness_scoring: dict[str, Any] = {}
+        # Set by an update that re-scores every file: communities are detected
+        # afresh instead of reusing a partition the graph has drifted from.
+        self.fresh_communities: bool = False
 
         import pathspec
 
@@ -216,6 +219,7 @@ class GraphBuilder(
         # than let the first cycle_subgraph() call raise AttributeError.
         self.__dict__.setdefault("_cycle_subgraph_cache", None)
         self.__dict__.setdefault("_centrality_subgraph_cache", None)
+        self.__dict__.setdefault("fresh_communities", False)
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
