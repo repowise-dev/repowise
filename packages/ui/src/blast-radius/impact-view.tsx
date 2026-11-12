@@ -77,6 +77,26 @@ const DEPTHS: { value: number; label: string }[] = [
 
 export { changeIdFromLink, changeLinkParam } from "./change-links";
 
+const UNSET = { title: null, author: null, committed_at: null, ahead: null, files_changed: null, is_current: false };
+
+/** A merge or pull request read off its link, named by the link's prefix until the server answers in the forge's words. */
+function requestFor(id: string, kind: "mr" | "pr", ref: string): ChangeCandidate | undefined {
+  const request = /^(\d+)(?:@([0-9a-f]{40})\.\.\.([0-9a-f]{40}))?$/.exec(ref);
+  if (!request) return undefined;
+  const number = Number(request[1]);
+  return {
+    ...UNSET,
+    id,
+    kind: "change_request",
+    label: `${kind === "mr" ? "Merge request" : "Pull request"} ${number}`,
+    number,
+    change_term: kind === "mr" ? "merge request" : "pull request",
+    base_sha: request[2] ?? null,
+    head_sha: request[3] ?? null,
+    base: null,
+  };
+}
+
 /**
  * The candidate an id names: the listed one, else one read off the id itself,
  * so a linked change no longer in the list (a merged branch, an older commit)
@@ -85,32 +105,15 @@ export { changeIdFromLink, changeLinkParam } from "./change-links";
 export function changeFor(id: string, listed: ChangeCandidate[]): ChangeCandidate | undefined {
   const found = listed.find((c) => c.id === id);
   if (found) return found;
-  const base = { title: null, author: null, committed_at: null, ahead: null, files_changed: null, is_current: false };
-  if (id === "working-tree") return { ...base, id, kind: "working_tree", label: "Uncommitted changes", head_sha: null, base: null };
+  if (id === "working-tree") return { ...UNSET, id, kind: "working_tree", label: "Uncommitted changes", head_sha: null, base: null };
   const [kind, ...rest] = id.split(":");
   const ref = rest.join(":");
   if (kind === "branch") {
     const trunk = listed.find((c) => c.kind === "branch")?.base ?? null;
-    return { ...base, id, kind: "branch", label: ref, head_sha: null, base: trunk };
+    return { ...UNSET, id, kind: "branch", label: ref, head_sha: null, base: trunk };
   }
-  if (kind === "commit") return { ...base, id, kind: "commit", label: ref.slice(0, 8), head_sha: ref, base: null };
-  const request = /^(\d+)(?:@([0-9a-f]{40})\.\.\.([0-9a-f]{40}))?$/.exec(ref);
-  if ((kind === "mr" || kind === "pr") && request) {
-    // Until the server answers with the forge's own words, the link's prefix names it.
-    const term = kind === "mr" ? "merge request" : "pull request";
-    const number = Number(request[1]);
-    return {
-      ...base,
-      id,
-      kind: "change_request",
-      label: `${kind === "mr" ? "Merge request" : "Pull request"} ${number}`,
-      number,
-      change_term: term,
-      base_sha: request[2] ?? null,
-      head_sha: request[3] ?? null,
-      base: null,
-    };
-  }
+  if (kind === "commit") return { ...UNSET, id, kind: "commit", label: ref.slice(0, 8), head_sha: ref, base: null };
+  if (kind === "mr" || kind === "pr") return requestFor(id, kind, ref);
   return undefined;
 }
 
@@ -720,6 +723,23 @@ const EMPTY_WITH_LIST =
 const EMPTY_WITHOUT_LIST =
   "Search or paste the files a change touches to see what depends on them, what usually changes with them, and who should review.";
 
+/**
+ * A merge request opened by number comes back pinned to its commits: the
+ * link takes the pinned id, once, so sharing it shows the same diff later.
+ */
+function usePinnedLink(analysis: Analysis | null, onChangePicked: ((linkParam: string) => void) | undefined) {
+  const onPicked = useRef(onChangePicked);
+  onPicked.current = onChangePicked;
+  const pinned = useRef<string | null>(null);
+  const asked = analysis?.selection.kind === "change" ? analysis.selection.id : null;
+  const resolvedId = analysis?.change?.id ?? null;
+  useEffect(() => {
+    if (!resolvedId || resolvedId === asked || pinned.current === resolvedId) return;
+    pinned.current = resolvedId;
+    onPicked.current?.(changeLinkParam(resolvedId));
+  }, [asked, resolvedId]);
+}
+
 export function ImpactView({
   adapter,
   initialFiles,
@@ -776,18 +796,7 @@ export function ImpactView({
       ? (analyzed?.kind === "change" && analyzed.id === selection.id && resolved) || changeFor(selection.id, listed)
       : undefined;
   const shownChange = analyzed?.kind === "change" ? (resolved ?? changeFor(analyzed.id, listed)) : undefined;
-
-  // A merge request opened by number comes back pinned to its commits: the
-  // link takes the pinned id, so sharing it shows the same diff later.
-  const onPickedRef = useRef(onChangePicked);
-  onPickedRef.current = onChangePicked;
-  const pinned = useRef<string | null>(null);
-  useEffect(() => {
-    if (!resolved || analyzed?.kind !== "change" || resolved.id === analyzed.id) return;
-    if (pinned.current === resolved.id) return;
-    pinned.current = resolved.id;
-    onPickedRef.current?.(changeLinkParam(resolved.id));
-  }, [resolved, analyzed]);
+  usePinnedLink(state.analysis, onChangePicked);
   const filesName = selection?.kind === "files" ? count(selection.files.length, "picked file") : "";
   // Offered only where the host can read both sides of a change (an older server reports a checkout instead).
   const canCheck = changes?.health_check_supported ?? changes?.working_tree_supported ?? false;

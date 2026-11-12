@@ -444,6 +444,28 @@ def change_request_ref(repo_path: str, change_id: str) -> str:
     return template.format(number=int(match.group(2))) if match and template else ""
 
 
+def _request_commits(
+    repo_path: str, match: re.Match[str], name: str, published: str, base: str
+) -> tuple[str, str]:
+    """``(base sha, head sha)``: a pinned id's own pair, else the published head and its fork point."""
+    if match.group(4):
+        base_sha, head_sha = match.group(3), match.group(4)
+        if not (
+            git_refs.commit_exists(repo_path, base_sha)
+            and git_refs.commit_exists(repo_path, head_sha)
+        ):
+            raise UnknownChangeError(f"the commits of {name} are not in this clone")
+        return base_sha, head_sha
+    if not published:
+        raise UnknownChangeError(f"{name} is not in this clone; fetch its ref first")
+    # Ceiling: the default branch stands in for the request's target branch,
+    # which only the forge knows; a request into another branch reads wider.
+    base_sha = git_refs.change_base(repo_path, f"{base}...{published}")
+    if not base_sha:
+        raise UnknownChangeError(f"{name} shares no history with {base}")
+    return base_sha, published
+
+
 def resolve_change_request(repo_path: str, change_id: str) -> ChangeCandidate:
     """The merge or pull request *change_id* names, pinned to its base and head commits.
 
@@ -461,22 +483,7 @@ def resolve_change_request(repo_path: str, change_id: str) -> ChangeCandidate:
     forge, published = _published_head(repo_path, number)
     name = f"{forge.change_term} {forge.format_change_ref(number)}"
     base = git_refs.default_base(repo_path)
-    if match.group(4):
-        base_sha, head_sha = match.group(3), match.group(4)
-        if not (
-            git_refs.commit_exists(repo_path, base_sha)
-            and git_refs.commit_exists(repo_path, head_sha)
-        ):
-            raise UnknownChangeError(f"the commits of {name} are not in this clone")
-    else:
-        head_sha = published
-        if not head_sha:
-            raise UnknownChangeError(f"{name} is not in this clone; fetch its ref first")
-        # Ceiling: the default branch stands in for the request's target branch,
-        # which only the forge knows; a request into another branch reads wider.
-        base_sha = git_refs.change_base(repo_path, f"{base}...{head_sha}")
-        if not base_sha:
-            raise UnknownChangeError(f"{name} shares no history with {base}")
+    base_sha, head_sha = _request_commits(repo_path, match, name, published, base)
     # The subject last: it is the one field that can hold a tab.
     tip = _git(["log", "-1", "--format=%an%x09%cI%x09%s", head_sha], cwd=repo_path, check=False)
     author, when, subject = [*tip.strip().split("\t", 2), "", ""][:3]
