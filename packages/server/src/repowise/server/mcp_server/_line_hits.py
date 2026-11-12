@@ -43,6 +43,7 @@ from repowise.server.mcp_server._edit_sites import (
     _read_lines,
     reference_edit_set,
 )
+from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -531,22 +532,34 @@ def _merge(sets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]
 
 
 async def attach_line_hits(
-    response: dict, query: str, mode: str, names: Container[str] | None, repo: str | None
+    response: dict,
+    query: str,
+    mode: str,
+    names: Container[str] | None,
+    repo: str | None,
+    fed: Federation | None = None,
 ) -> None:
     """Add ``lines``/``complete``/``reasons`` for an identifier or literal query.
 
-    Additive: a failure here leaves the search response as it was.
+    With *fed* (``repo="all"``) every repo is read and each row names its
+    ``repo``; the rows share one cap. Additive: a failure here leaves the
+    search response as it was.
     """
     try:
-        await _attach(response, query, mode, names, repo)
+        await _attach(response, query, mode, names, repo, fed)
     except Exception:
         _log.warning("search_codebase: line hits failed", exc_info=True)
 
 
 async def _attach(
-    response: dict, query: str, mode: str, names: Container[str] | None, repo: str | None
+    response: dict,
+    query: str,
+    mode: str,
+    names: Container[str] | None,
+    repo: str | None,
+    fed: Federation | None,
 ) -> None:
-    if repo == "all":
+    if repo == "all" and fed is None:
         return
     literal = _literal(query)
     if mode == "path" and (
@@ -562,21 +575,10 @@ async def _attach(
         candidates = [literal[0]]
     if not candidates and not literal:
         return
-    ctx = await _resolve_repo_context(repo)
-    spec = _get_exclude_spec(ctx.path)
-    async with get_session(ctx.session_factory) as session:
-        repository = await _get_repo(session)
-        root = Path(served_root(repository, ctx.path))
-        found = await _exact_symbols(session, repository.id, query, candidates) if candidates else []
-        nodes = [n for n in found if not is_excluded(n.file_path, spec)]
-        # Past MAX_SYMBOLS a name is too shared for one edit set per symbol.
-        sets = None if len(nodes) > MAX_SYMBOLS else [
-            await reference_edit_set(session, repository.id, root, n) for n in nodes
-        ]
-    served = await _line_rows(root, nodes, sets, literal, response)
-    if served is None:
+    found = await _served_rows(response, repo, fed, query, candidates, literal)
+    if found is None:
         return
-    rows, reasons = served
+    ctx, (rows, reasons, literal_scan) = found
     mixed = not literal and len(query.split()) > 1
     order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
     # Production before test within each kind group: every kind for a mixed
@@ -586,6 +588,7 @@ async def _attach(
             order[r["kind"]] if mixed else r["kind"] != "definition",
             is_test_related_path(r["path"]),
             order[r["kind"]],
+            r.get("repo") or "",
             r["path"],
             r["line"],
         )
@@ -606,7 +609,7 @@ async def _attach(
         collector = OmissionCollector("search_codebase", repo_root=ctx.path)
         collector.add(f"{query} :: lines not shown", hidden)
         collector.attach(response)
-        by_file = Counter(r["path"] for r in hidden)
+        by_file = Counter(f"{r['repo']}:{r['path']}" if "repo" in r else r["path"] for r in hidden)
         if mixed and len(by_file) > MAX_OMITTED_FILES:
             response["lines_omitted_by_file"] = dict(by_file.most_common(MAX_OMITTED_FILES))
             response["lines_omitted_by_file_total"] = len(by_file)
@@ -616,7 +619,73 @@ async def _attach(
     if reasons:
         response["reasons"] = reasons
     if response["lines"]:
-        _reconcile_symbol_miss(response, literal_scan=not sets)
+        _reconcile_symbol_miss(response, literal_scan=literal_scan)
+
+
+async def _served_rows(
+    response: dict,
+    repo: str | None,
+    fed: Federation | None,
+    query: str,
+    candidates: list[str],
+    literal: tuple[str, bool] | None,
+) -> tuple[Any, tuple[list[dict[str, Any]], list[str], bool]] | None:
+    """``(context, (rows, reasons, literal_scan))`` from *repo*, or from every repo
+    with *fed* (the context is then the first repo's); ``None`` with nothing to read."""
+
+    def one(ctx: Any):
+        return _repo_line_rows(ctx, query, candidates, literal, response)
+
+    if fed is None:
+        ctx = await _resolve_repo_context(repo)
+        served = await one(ctx)
+        return None if served is None else (ctx, served)
+    answered = await fed.run(one)
+    served = _across_repos(answered)
+    if served is None:
+        return None
+    fed.annotate(response, served[0])
+    if response.get("repos_failed"):
+        served[1].append("the repos in repos_failed were not read")
+    return answered[0][0], served
+
+
+async def _repo_line_rows(
+    ctx: Any,
+    query: str,
+    candidates: list[str],
+    literal: tuple[str, bool] | None,
+    response: dict,
+) -> tuple[list[dict[str, Any]], list[str], bool] | None:
+    """One repo's ``(rows, reasons, literal_scan)``; ``literal_scan`` is true when
+    no symbol's edit set gave the rows. ``None`` when there is nothing to read."""
+    spec = _get_exclude_spec(ctx.path)
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        root = Path(served_root(repository, ctx.path))
+        found = await _exact_symbols(session, repository.id, query, candidates) if candidates else []
+        nodes = [n for n in found if not is_excluded(n.file_path, spec)]
+        # Past MAX_SYMBOLS a name is too shared for one edit set per symbol.
+        sets = None if len(nodes) > MAX_SYMBOLS else [
+            await reference_edit_set(session, repository.id, root, n) for n in nodes
+        ]
+    served = await _line_rows(root, nodes, sets, literal, response)
+    return None if served is None else (*served, not sets)
+
+
+def _across_repos(
+    answered: list[tuple[Any, tuple[list[dict[str, Any]], list[str], bool] | None]],
+) -> tuple[list[dict[str, Any]], list[str], bool] | None:
+    """Every repo's rows, each naming its ``repo``; ``None`` when no repo had any to read."""
+    served = [(ctx.alias, s) for ctx, s in answered if s is not None]
+    if not served:
+        return None
+    rows: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for alias, (repo_rows, repo_reasons, _scan) in served:
+        rows += [{"repo": alias, **r} for r in repo_rows]
+        reasons += [r for r in repo_reasons if r not in reasons]
+    return rows, reasons, all(scan for _a, (_r, _rs, scan) in served)
 
 
 async def _line_rows(
