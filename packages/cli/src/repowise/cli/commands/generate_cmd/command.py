@@ -20,6 +20,7 @@ import click
 from rich.markup import escape
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     config_fingerprint,
     console,
@@ -34,6 +35,7 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
+from repowise.cli.platform import telemetry
 from repowise.cli.providers import model_run_embedder
 from repowise.cli.ui import load_dotenv
 from repowise.cli.ui.mode_names import provider_model
@@ -44,7 +46,12 @@ from repowise.core.generation.page_selection import PageSelectionIntent
 from repowise.core.settings.model import flag
 
 from ..decision_lanes import print_lane_estimate
-from .engine import NO_DOCUMENTATION_MESSAGE, has_documentation, run_scoped_generation
+from .engine import (
+    NO_DOCUMENTATION_MESSAGE,
+    has_documentation,
+    record_refusal,
+    run_scoped_generation,
+)
 
 
 def _build_intent(
@@ -147,6 +154,7 @@ def _make_gate(dry_run: bool, embedder: str | None = None):
         if provider is None:
             _print_unpriced_plan(cost_plans, decisions, repo_path)
             console.print("[dim]Dry run, nothing generated.[/dim]")
+            telemetry.add_command_outcome(outcome="dry_run")
             return False
 
         est = None
@@ -175,10 +183,12 @@ def _make_gate(dry_run: bool, embedder: str | None = None):
 
         if dry_run:
             console.print("[dim]Dry run, nothing generated.[/dim]")
+            telemetry.add_command_outcome(outcome="dry_run")
             return False
 
         if est is not None and cost_gate_blocks(est, yes=yes, message="  Generate at this cost?"):
             console.print("[yellow]Aborted.[/yellow] Nothing generated.")
+            record_refusal("declined")
             return False
         return True
 
@@ -263,7 +273,9 @@ def generate_command(
     load_dotenv(repo_path)
     state = load_state(repo_path)
     if not state:
-        raise click.ClickException(f"No index found at {repo_path}. Run `repowise init` first.")
+        raise reasoned_error(
+            f"No index found at {repo_path}. Run `repowise init` first.", reason="no_index"
+        )
 
     cfg = load_config(repo_path)
 
@@ -292,6 +304,7 @@ def generate_command(
     # Checked first: with nothing to write, a missing key is not the reason.
     if not run_async(has_documentation(repo_path)):
         console.print(NO_DOCUMENTATION_MESSAGE)
+        record_refusal("no_documentation")
         return
 
     if dry_run:
@@ -312,6 +325,7 @@ def generate_command(
             provider_name, model, repo_path, reasoning=reasoning, interactive=can_prompt_provider
         )
 
+    _record_provider(provider)
     console.print(f"[bold]repowise generate[/bold] {repo_path}")
     if provider is not None:
         console.print(
@@ -365,6 +379,7 @@ def generate_command(
         return  # nothing generated, dry run, or declined — messaging already printed
 
     _write_state(repo_path, state, provider, outcome, embedder=embedder_name)
+    _record_written(outcome)
 
     _report_outcome(outcome, time.monotonic() - start)
     if embedder_upgraded:
@@ -373,6 +388,35 @@ def generate_command(
         # A scheduled run must be able to tell "every page failed" (no sign-in,
         # a dead key) from success. Partial success keeps 0: its pages are kept.
         raise SystemExit(1)
+
+
+def _record_provider(provider: Any) -> None:
+    """Report the provider id and its kind; the model name is not sent."""
+    from repowise.core.providers.llm.specs import provider_kind
+
+    name = getattr(provider, "provider_name", None)
+    telemetry.add_command_outcome(
+        provider_kind=provider_kind(name), **({"provider": name} if name else {})
+    )
+
+
+def _record_written(outcome: Any) -> None:
+    """Report how the run ended and a bucket of the pages a model wrote."""
+    planned = outcome.plan.generate_ids
+    if not planned:
+        # A decisions-only run writes no pages and still did its work.
+        telemetry.add_command_outcome(outcome="generated", pages_written_bucket="0")
+        return
+    c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
+    if c["failed"] and not c["written"]:
+        result = "failed"
+    elif c["failed"] or c["not_produced"]:
+        result = "partial"
+    else:
+        result = "generated"
+    telemetry.add_command_outcome(
+        outcome=result, pages_written_bucket=telemetry.bucket_count(c["written"])
+    )
 
 
 def _wrote_nothing_and_failed(outcome: Any) -> bool:

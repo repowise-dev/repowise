@@ -55,6 +55,60 @@ logger = logging.getLogger(__name__)
 _META_FLAGS = ("index_behind", "embedder_degraded")
 _RESULT_ENUMS = ("confidence", "retrieval_quality", "grounding", "degraded")
 
+#: Every property an ``mcp_tool_call`` event may carry. Anything else is
+#: dropped before it is recorded, so a new field is a deliberate edit here.
+MCP_TOOL_CALL_FIELDS = frozenset(
+    {
+        "tool",
+        "status",
+        "duration_ms",
+        "client",
+        "error_reason",
+        "error_source",
+        *_RESULT_ENUMS,
+        *_META_FLAGS,
+        "results_bucket",
+        "response_chars",
+        "response_tokens",
+        "semantic_search",
+        "cold_start",
+        "index_mode",
+        "provider_kind",
+        "empty_result",
+        *(f"{stage}_ms" for stage in interaction.STAGES),
+    }
+)
+
+#: Tool calls started in this process; the first one is the cold start.
+_calls_started = 0
+
+
+def _search_empty(result: dict[str, Any]) -> bool:
+    return result.get("results") == [] and not result.get("lines")
+
+
+def _context_empty(result: dict[str, Any]) -> bool:
+    targets = result.get("targets")
+    if not isinstance(targets, dict) or not targets:
+        return False
+    return all(isinstance(card, dict) and card.get("error") for card in targets.values())
+
+
+def _answer_empty(result: dict[str, Any]) -> bool:
+    return not (
+        result.get("answer") or result.get("symbol_bodies") or counterfactual._answer_paths(result)
+    )
+
+
+#: How each tool says it found nothing, for the tools that have a clear rule.
+#: A tool missing here reports no ``empty_result`` rather than a guess.
+_EMPTY_RULES: dict[str, Callable[[dict[str, Any]], bool]] = {
+    "search_codebase": _search_empty,
+    "get_context": _context_empty,
+    "get_answer": _answer_empty,
+    "get_why": counterfactual._why_served_nothing,
+}
+
 
 def _response_size(result: Any) -> tuple[int, int] | None:
     """Serialised size of *result* as ``(chars, tokens)``, or ``None`` if unknown.
@@ -84,6 +138,44 @@ def _semantic_search_state() -> bool | None:
     from repowise.server.mcp_server._meta import semantic_search_state
 
     return semantic_search_state()
+
+
+def _index_mode() -> str | None:
+    """Who wrote the served index's pages: ``none``, ``template``, ``model`` or ``mixed``.
+
+    Read through the scope cache every response already uses, keyed on the
+    state file's mtime, so this costs no parse on the steady path.
+    """
+    from repowise.core.index_scope import load_index_scope
+    from repowise.server.mcp_server import _state
+
+    live = interaction.current()
+    root = (live.repo_root if live is not None else None) or getattr(_state, "_repo_path", None)
+    if not root:
+        return None
+    scope = load_index_scope(root)
+    return scope.get("content_provenance") if scope else None
+
+
+def _call_facts(tool: str, result: Any) -> dict[str, Any]:
+    """What the call in flight noted on its way: provider, stages, error source, emptiness."""
+    facts: dict[str, Any] = {}
+    live = interaction.current()
+    if live is not None:
+        if live.error_source:
+            facts["error_source"] = live.error_source
+        if live.provider_kind:
+            facts["provider_kind"] = live.provider_kind
+        for stage, ms in live.stage_ms.items():
+            facts[f"{stage}_ms"] = ms
+    if not isinstance(result, dict):
+        return facts
+    if result.get("degraded") == "no-llm-provider":
+        facts["provider_kind"] = "none"
+    rule = _EMPTY_RULES.get(tool)
+    if rule is not None and not result.get("error"):
+        facts["empty_result"] = bool(rule(result))
+    return facts
 
 
 def _results_count_bucket(result: Any) -> str | None:
@@ -145,10 +237,14 @@ def _result_flags(result: dict[str, Any]) -> dict[str, Any]:
     return flags
 
 
-def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str, Any]:
+def _telemetry_properties(
+    tool: str, result: Any, duration_ms: int, *, cold_start: bool | None = None
+) -> dict[str, Any]:
     """Build the anonymous ``mcp_tool_call`` properties for *result*.
 
-    Only coarse enums / booleans / bucketed counts / response size, never user-identifying data.
+    Only coarse enums / booleans / bucketed counts / response size / stage
+    timings, never user-identifying data, and only keys in
+    :data:`MCP_TOOL_CALL_FIELDS`.
     """
     is_error = isinstance(result, dict) and bool(result.get("error"))
     props: dict[str, Any] = {
@@ -176,10 +272,16 @@ def _telemetry_properties(tool: str, result: Any, duration_ms: int) -> dict[str,
     semantic_search = _semantic_search_state()
     if semantic_search is not None:
         props["semantic_search"] = semantic_search
-    return props
+    if cold_start is not None:
+        props["cold_start"] = cold_start
+    index_mode = _index_mode()
+    if index_mode is not None:
+        props["index_mode"] = index_mode
+    props.update(_call_facts(tool, result))
+    return {key: value for key, value in props.items() if key in MCP_TOOL_CALL_FIELDS}
 
 
-def _emit_telemetry(tool: str, result: Any, duration_ms: int) -> None:
+def _emit_telemetry(tool: str, result: Any, duration_ms: int, *, cold_start: bool) -> None:
     """Emit one anonymous ``mcp_tool_call`` event. Best-effort, never raises.
 
     This is the field-visibility counterpart to the local savings ledger: it
@@ -189,7 +291,9 @@ def _emit_telemetry(tool: str, result: Any, duration_ms: int) -> None:
     """
     from repowise.core.platform import telemetry
 
-    telemetry.record_event("mcp_tool_call", _telemetry_properties(tool, result, duration_ms))
+    telemetry.record_event(
+        "mcp_tool_call", _telemetry_properties(tool, result, duration_ms, cold_start=cold_start)
+    )
 
 #: ``_meta`` key a tool sets to declare its own counterfactual (see
 #: :func:`declare_replaced`). The wrapper reads it and, on a lean envelope,
@@ -309,6 +413,9 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
     async def _wrapped(*args: Any, **kwargs: Any) -> Any:
         import time
 
+        global _calls_started
+        cold_start = _calls_started == 0
+        _calls_started += 1
         _t0 = time.perf_counter()
         result = await fn(*args, **kwargs)
         duration_ms = int((time.perf_counter() - _t0) * 1000)
@@ -317,7 +424,7 @@ def instrument(fn: Callable[..., Any]) -> Callable[..., Any]:
         except Exception:  # pragma: no cover - defensive; savings never break a tool
             logger.debug("mcp savings instrumentation failed for %s", tool, exc_info=True)
         try:
-            _emit_telemetry(tool, result, duration_ms)
+            _emit_telemetry(tool, result, duration_ms, cold_start=cold_start)
         except Exception:  # pragma: no cover - defensive; telemetry never breaks a tool
             logger.debug("mcp telemetry emit failed for %s", tool, exc_info=True)
         try:
