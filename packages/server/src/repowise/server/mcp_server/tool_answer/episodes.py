@@ -127,8 +127,10 @@ def _prefetch(
     )
     if window:
         head = _live_head(root)
+        # Stops where the attach stops: it emits the first still-true episode.
         for row, _matched in window:
-            _verdict(row, root=root, head=head)
+            if _verdict(row, root=root, head=head) is not None:
+                break
 
 
 def attach_episode_sync(

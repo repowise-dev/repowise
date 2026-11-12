@@ -363,3 +363,28 @@ def test_a_kept_reply_is_dropped_once_the_index_syncs_again(monkeypatch):
     )
 
     assert served is None
+
+
+def test_the_prefetch_stops_at_the_first_still_true_episode(repo, git_calls):
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=str(repo), capture_output=True, text=True, check=True
+    ).stdout.strip()
+    with EpisodeStore(default_store_path(repo)) as store:
+        store.append_tier(
+            tier=TIER_GIT,
+            episodes=[
+                Episode(
+                    tier=TIER_GIT,
+                    kind="code_fix",
+                    subject="t",
+                    body="A shorter subject ranks below the token check.",
+                    evidence=f"commit {head[:9]}",
+                    nodes=("app.py",),
+                    birth_commit=head,
+                )
+            ],
+        )
+
+    _prefetch(question=QUESTION, paths=["app.py"], repo_path=repo, repo_name="demo")
+
+    assert len(git_calls) == 1
