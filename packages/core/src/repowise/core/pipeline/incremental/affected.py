@@ -154,6 +154,20 @@ def _importers(
     }
 
 
+def _imported_names_seen(
+    seed: dict[str, Any], owners: dict[str, str], import_names: Iterable[tuple[str, Collection[str]]]
+) -> set[str]:
+    """The names an edited file's own imports touched, when another file imports it.
+
+    A file nobody imports passes on none of its imports.
+    """
+    names: set[str] = set()
+    for path, touched in import_names:
+        if _importers(seed, owners, [path]):
+            names |= set(touched)
+    return names
+
+
 def _resolve_unchanged_imports(path: str, parsed: Any, ctx: Any) -> list[tuple[str, ...]]:
     """Re-resolve *parsed*'s imports without leaving a trace on it."""
     from repowise.core.ingestion.graph._import_targets import resolve_import_targets
@@ -439,8 +453,10 @@ def expand_scope(
     targets_of = _import_lookup(graph_builder, resolutions)
     rerouted, carried = _rerouted_files(parsed_files, targets_of, set(plan.scope), resolutions)
     scope |= rerouted
-    carried |= _passed_on_names(parsed_files, resolutions, targets_of, plan.module_imports_changed)
-    names = set(plan.names) | carried
+    # What a file passes on through its imports reaches only its importers.
+    passing = [p for p in plan.module_imports_changed if _importers(seed, owners, [p])]
+    carried |= _passed_on_names(parsed_files, resolutions, targets_of, passing)
+    names = set(plan.names) | carried | _imported_names_seen(seed, owners, plan.import_names)
     # A changed default export travels under whatever name a re-export gives
     # it; ``default`` itself is spelled by syntax, not by the code reaching it.
     seeds = names | {"default"} if plan.importers_of else names

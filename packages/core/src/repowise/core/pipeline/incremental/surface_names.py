@@ -46,6 +46,7 @@ class SurfaceKeys:
     include_only: frozenset[str] = frozenset()
     site_names: frozenset[str] = frozenset()
     cross_names: frozenset[str] = frozenset()
+    import_names: tuple[tuple[str, frozenset[str]], ...] = ()
 
 
 def _words(*values: Any) -> Iterator[str]:
@@ -159,8 +160,11 @@ def _is_module_import(fact: tuple) -> bool:
     return fact[0] == "import" and (not fact[2] or "*" in fact[2])
 
 
-def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool, bool]:
-    """``(identifiers, via_importers, module_import_changed)`` for one file's edit.
+def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool, bool, set[str]]:
+    """``(identifiers, via_importers, module_import_changed, import names)`` for one file's edit.
+
+    *import names* are the identifiers only the file's own imports touched:
+    another file sees them only by importing this one (``affected``).
 
     *via_importers*: the file's importers stand in for some names.
     *module_import_changed*: a whole-module import changed, so what the file
@@ -173,6 +177,7 @@ def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool, 
     # which the build checks itself (``include_reach``).
     includes = (after or before).file_info.language in _INCLUDE_LANGUAGES
     names: set[str] = set()
+    import_names: set[str] = set()
     via_importers = False
     module_import_changed = False
     for fact in old ^ new:
@@ -182,9 +187,9 @@ def _edit_names(before: Any | None, after: Any | None) -> tuple[set[str], bool, 
             continue
         module_import_changed = module_import_changed or _is_module_import(fact)
         fact_names, through_importers = _fact_names(fact)
-        names |= fact_names
+        (import_names if fact[0] == "import" else names).update(fact_names)
         via_importers = via_importers or through_importers
-    return names, via_importers, module_import_changed
+    return names, via_importers, module_import_changed, import_names - names
 
 
 def surface_keys(
@@ -202,13 +207,16 @@ def surface_keys(
     stems: set[str] = set()
     importers_of: set[str] = set()
     module_imports_changed: set[str] = set()
+    import_names: dict[str, frozenset[str]] = {}
     for path, (before, after) in surface_edits.items():
-        edit_names, via_importers, module_import_changed = _edit_names(before, after)
+        edit_names, via_importers, module_import_changed, imported = _edit_names(before, after)
+        if imported:
+            import_names[path] = frozenset(imported)
         if (after or before).file_info.language in _INCLUDE_LANGUAGES:
-            namespaces = _namespace_names(before) ^ _namespace_names(after)
-            site_names |= namespaces
-            include_names |= edit_names - namespaces
-            cross_names |= _declared_names(before, after) - namespaces
+            by_site = _site_bound_names(before, after) & edit_names
+            site_names |= by_site
+            include_names |= edit_names - by_site
+            cross_names |= _declared_names(before, after) - by_site
         else:
             names |= edit_names
         if via_importers:
@@ -219,7 +227,8 @@ def surface_keys(
             stems.update(_stem_words(path))
     parses = [*parsed_files, *(before for before, _ in surface_edits.values() if before)]
     names = _with_inherited_members(names, parses)
-    include_names = _with_inherited_members(include_names, parses)
+    # A member of a touched class is reached through the calls naming it.
+    site_names |= _with_inherited_members(include_names, parses) - include_names
     return SurfaceKeys(
         names=frozenset(names | include_names),
         stems=frozenset(stems),
@@ -228,6 +237,7 @@ def surface_keys(
         include_only=frozenset(include_names - names),
         site_names=frozenset(site_names - names - include_names),
         cross_names=frozenset(cross_names - names),
+        import_names=tuple(sorted(import_names.items())),
     )
 
 
@@ -245,17 +255,21 @@ def _declared_names(before: Any | None, after: Any | None) -> set[str]:
     return {entry[0] for entry in entries(before) ^ entries(after)}
 
 
-def _namespace_names(parsed: Any | None) -> set[str]:
-    """The C/C++ namespaces *parsed* opens, which the parse records as module symbols.
+# C/C++ symbols another file reaches only through a parsed site that names
+# them: a call (its target or qualifier) for functions, methods and
+# function-like macros; a namespace is matched as a qualifier or not at all.
+# Types, fields, aliases and object-like macros are also read off source
+# text (receiver typing), so their names reach every C/C++ file spelling them.
+_SITE_BOUND_KINDS = frozenset({"function", "method", "module"})
 
-    No site binds a namespace by its text: a qualifier is matched against a
-    class, so a changed namespace reaches only a file whose parsed sites
-    name it (``affected``).
-    """
-    if parsed is None:
-        return set()
-    others = {sym.name for sym in parsed.symbols if sym.kind != "module"}
-    return {sym.name for sym in parsed.symbols if sym.kind == "module"} - others
+
+def _site_bound_names(before: Any | None, after: Any | None) -> set[str]:
+    """Names whose every symbol on either side of a C/C++ edit is site-bound."""
+    kinds: dict[str, set[str]] = defaultdict(set)
+    for parsed in (before, after):
+        for sym in parsed.symbols if parsed is not None else ():
+            kinds[sym.name].add(str(sym.kind))
+    return {name for name, found in kinds.items() if found <= _SITE_BOUND_KINDS}
 
 
 def path_set_reason(

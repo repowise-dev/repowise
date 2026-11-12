@@ -64,7 +64,8 @@ class PatchPlan:
     touched: a file in another language reaches them only through a parsed
     site that names them (the repo-wide name tiers), not through its text,
     and only when the edit added or removed a symbol of that name
-    (``cross_names``).
+    (``cross_names``). ``import_names`` are, per edited file, the names only
+    its own imports touched, which reach other files only if one imports it.
     ``site_names`` are C/C++
     namespaces an edit opened or closed, which reach only a C/C++ file whose
     parsed sites name them.
@@ -82,6 +83,7 @@ class PatchPlan:
     include_only: frozenset[str] = frozenset()
     site_names: frozenset[str] = frozenset()
     cross_names: frozenset[str] = frozenset()
+    import_names: tuple[tuple[str, frozenset[str]], ...] = ()
 
 
 def is_inert(parsed: Any) -> bool:
@@ -464,4 +466,5 @@ def plan_patch(
         include_only=keys.include_only,
         site_names=keys.site_names,
         cross_names=keys.cross_names,
+        import_names=keys.import_names,
     )

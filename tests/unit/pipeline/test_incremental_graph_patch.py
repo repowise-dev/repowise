@@ -1370,3 +1370,42 @@ def test_a_cpp_name_reaches_another_language_through_the_sites_that_name_it(
     assert "py/run.py" in patched.patch_plan.scope
     assert "py/notes.py" not in patched.patch_plan.scope
     _assert_equals_full(tree, patched, tmp_path / "cross-oracle")
+
+
+def test_a_cpp_function_reaches_the_files_that_call_it_not_those_that_mention_it(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    tree, _ = cpp_indexed
+    _write(tree, {"src/doc.cpp": "// thrice is documented here\nint doc() { return 0; }\n"})
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    _both(
+        _replace("src/widget.h", "  int twice() const;\n", "  int twice() const;\n  int thrice() const;\n"),
+        _replace("src/main.cpp", "w.twice()", "w.thrice()"),
+    )(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "src/main.cpp" in patched.patch_plan.scope
+    assert "src/doc.cpp" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "mention-oracle")
+
+
+def test_imports_of_a_file_nobody_imports_reach_no_other_file(tmp_path: Path) -> None:
+    tree = tmp_path / "py"
+    files = {
+        "pkg/util.py": "def helper():\n    return 1\n",
+        "pkg/other.py": "def helper_two():\n    return helper_two_impl()\n\ndef helper_two_impl():\n    return 2\n",
+        "tests/test_util.py": "def test_one():\n    assert True\n",
+    }
+    _write(tree, files)
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    (tree / "tests/test_util.py").write_text(
+        "from pkg.other import helper_two\n\ndef test_one():\n    assert helper_two() == 2\n"
+    )
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "pkg/other.py" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "py-oracle")
