@@ -251,6 +251,7 @@ async def _incremental_repo_update(
         # Same switch as the CLI update: it also invalidates the seed snapshot
         # before persistence rewrites the graph rows the snapshot mirrors.
         patch_graph=incremental_graph_enabled(),
+        fresh_communities=rescore_health,
         timings=timings,
     )
 

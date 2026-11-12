@@ -1009,6 +1009,7 @@ async def rebuild_graph_and_git(
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
     patch_graph: bool = False,
+    fresh_communities: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -1111,6 +1112,8 @@ async def rebuild_graph_and_git(
 
     # Global metrics must reflect the patched graph; the persistence upsert gate
     # avoids rewriting unchanged rows, but the metric values must still be fresh.
+    # A full re-score detects communities afresh rather than reusing a drifted partition.
+    graph_builder.fresh_communities = fresh_communities
     await _prime_graph_metrics(graph_builder, timings, log)
 
     graph_builder.incremental_graph_decision = _graph_update_decision(
