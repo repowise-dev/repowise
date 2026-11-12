@@ -139,6 +139,71 @@ messaging socket and token, and similar) from the child's environment, so the
 child does not try to report back to the parent session. Auth and backend
 settings such as `CLAUDE_CODE_USE_BEDROCK` pass through unchanged.
 
+### Running on a server
+
+`claude_cli` works on a Linux server under a service account, with no terminal
+and no one at the keyboard: cron, a systemd unit, a CI job or a container.
+Every call sends the prompt on stdin and reads JSON from stdout, so nothing
+waits for input, and `repowise generate --yes` (or any run whose stdin is not
+a terminal) never asks a question.
+
+**Install.** Put the `claude` binary on the service account's `PATH`
+(`npm install -g @anthropic-ai/claude-code`, or the native installer). Give the
+account a writable home directory: the CLI keeps its state there (or in
+`CLAUDE_CONFIG_DIR`, when set).
+
+**Sign in.** Pick one:
+
+| Option | How | When |
+|---|---|---|
+| Long-lived token | On any machine with a browser, run `claude setup-token` and sign in with the Claude account. Put the printed token in the service's environment as `CLAUDE_CODE_OAUTH_TOKEN`, from your secret store. | Servers, containers, CI. Nothing is stored on disk. |
+| Interactive login | Once, as the service account, run `claude auth login` and finish the sign-in in a browser. | A long-lived VM you can reach with a shell. |
+
+Leave `ANTHROPIC_API_KEY` unset in that environment if you mean the
+subscription to pay: with a key present the CLI can use it instead, billed per
+token. Check the setup as the service account before scheduling anything:
+
+```bash
+echo "Reply with OK." | claude -p --max-turns 1     # one tiny model call
+repowise generate --provider claude_cli --dry-run   # the plan, no model calls
+```
+
+**Environment.**
+
+| Variable | What it does |
+|---|---|
+| `CLAUDE_CODE_OAUTH_TOKEN` | The token from `claude setup-token`. |
+| `CLAUDE_CONFIG_DIR` | Where the CLI keeps its state, if not the home directory. |
+| `REPOWISE_PROVIDER=claude_cli` | Picks the provider without `--provider` (or set `provider:` in `.repowise/config.yaml`). |
+| `REPOWISE_CLAUDE_CLI_CONCURRENCY` | CLI processes at once, default 4. Lower it if runs hit the account's limit. |
+
+A scheduled run is then:
+
+```bash
+repowise generate --provider claude_cli --yes </dev/null
+```
+
+**Timeouts.** One page is one CLI process, and a process still running after
+600 seconds is killed. That page, like any failed page, is kept as a stub, the
+rest of the run carries on, and `repowise generate --unwritten` writes only
+what is still missing.
+
+**Failure modes.** None of them hangs; each ends with the reason printed under
+the run's "Not generated" line.
+
+| What is wrong | What you see |
+|---|---|
+| `claude` not on `PATH` | The run stops before any page: "Claude Code CLI not found. Install it with ...". |
+| Not signed in | Each page fails within seconds: "claude -p is not signed in. Run `claude auth login` as this user, or set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`." |
+| Token revoked, expired or mistyped | "claude -p reported failure (401: Failed to authenticate. API Error: 401 OAuth access token is invalid.)" Make a new token with `claude setup-token`. |
+| Account limit reached | Pages fail with the CLI's limit message. Wait, lower `REPOWISE_CLAUDE_CLI_CONCURRENCY`, then run `repowise generate --unwritten`. |
+| A page took too long | "claude -p timed out after 600 seconds." Run `repowise generate --unwritten`. |
+
+The run exits 0 when some pages fail, because the pages it did write are kept.
+A script that must know whether everything was written can read the summary
+line, or simply schedule `repowise generate --unwritten` again: it costs
+nothing when every page is written.
+
 ### Reasoning
 
 Claude Code's `--effort` flag maps directly to `low`, `medium`, `high`, `xhigh`,

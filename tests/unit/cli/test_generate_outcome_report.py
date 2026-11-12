@@ -72,6 +72,20 @@ def test_report_names_each_bucket_the_cost_and_next_steps() -> None:
     assert "1 stale page(s) were not produced this run" in out
 
 
+def test_failed_pages_print_their_reason_once() -> None:
+    reason = "claude -p is not signed in. Run `claude auth login` as this user."
+    out = _render(
+        _outcome(
+            generated_pages=[
+                _page(f"module_page:m{i}", **{STUB_FALLBACK_ERROR: reason}) for i in range(3)
+            ],
+            swept_page_ids=[],
+        )
+    )
+    assert "3 failed (kept as a stub)" in out
+    assert out.count(reason) == 1
+
+
 def test_clean_run_prints_no_leftover_lines() -> None:
     out = _render(
         _outcome(

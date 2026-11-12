@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from rich.markup import escape
 
 from repowise.cli._setup import configure_cli_logging
 from repowise.cli.helpers import (
@@ -443,6 +444,13 @@ def _report_pages(outcome: Any, elapsed: float) -> None:
     rest = [r for r in rest if r]
     if rest:
         console.print("  Not generated: " + ", ".join(rest) + ".")
+    if c["failed"]:
+        # A count alone hides the one fact that fixes it: a provider that is
+        # not signed in fails every page with the same reason.
+        from repowise.cli.commands.upgrade_flow import _stub_fallback_summary
+
+        for reason in _stub_fallback_summary(outcome.generated_pages)[1][:3]:
+            console.print(f"  [dim]· {escape(reason[:200])}[/dim]")
     console.print(f"Cost: [bold]${outcome.cost_usd:.3f}[/bold] ({outcome.tokens:,} tokens).")
 
     if outcome.remaining_template_pages:

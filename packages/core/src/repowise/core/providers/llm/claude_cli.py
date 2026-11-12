@@ -83,6 +83,11 @@ _PARENT_SESSION_VARS = frozenset(
     }
 )
 
+_NOT_SIGNED_IN = (
+    "claude -p is not signed in. Run `claude auth login` as this user, or set "
+    "CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`."
+)
+
 _SUPPORTED_REASONING_MODES: tuple[ReasoningMode, ...] = (
     "auto",
     "low",
@@ -111,10 +116,17 @@ def _payload_failure(payload: dict[str, Any]) -> tuple[str, int | None]:
     status_code = (
         raw_status if isinstance(raw_status, int) and not isinstance(raw_status, bool) else None
     )
-    detail = raw_status or payload.get("subtype") or "unknown error"
+    subtype = payload.get("subtype")
+    # A failed call can still carry subtype "success" (a missing sign-in does),
+    # which reads as a contradiction when quoted.
+    detail = raw_status or (subtype if subtype != "success" else None) or "error"
     result_text = payload.get("result")
     if isinstance(result_text, str) and result_text.strip():
         detail = f"{detail}: {tail(result_text, max_chars=500)}"
+    # The CLI's "Please run /login" names an interactive command, and a server
+    # has no session to type it into.
+    if isinstance(result_text, str) and "/login" in result_text:
+        return _NOT_SIGNED_IN, status_code
     return f"claude -p reported failure ({detail}).", status_code
 
 
