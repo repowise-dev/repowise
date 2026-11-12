@@ -159,17 +159,25 @@ async def _get_repo(session: AsyncSession, repo: str | None = None) -> Repositor
     return await _default_repo(session)
 
 
-async def _default_repo(session: AsyncSession) -> Repository:
-    """The session's workspace repo on a shared store, else the served
-    directory's row, else the only (or first) row."""
+async def _scoped_repo(session: AsyncSession) -> Repository | None:
+    """The repo a shared-store workspace session is scoped to, else None."""
     from repowise.core.workspace.registry import REPOSITORY_ID_INFO_KEY
 
     scoped = session.info.get(REPOSITORY_ID_INFO_KEY)
+    if scoped is None:
+        return None
+    obj = await session.get(Repository, scoped)
+    if obj is None:  # deleted from the store since the context loaded
+        raise LookupError("No repositories found. Run 'repowise init' first.")
+    return obj
+
+
+async def _default_repo(session: AsyncSession) -> Repository:
+    """The session's workspace repo on a shared store, else the served
+    directory's row, else the only (or first) row."""
+    scoped = await _scoped_repo(session)
     if scoped is not None:
-        obj = await session.get(Repository, scoped)
-        if obj is None:  # deleted from the store since the context loaded
-            raise LookupError("No repositories found. Run 'repowise init' first.")
-        return obj
+        return scoped
     served = _state._repo_path
     if served:
         for key in dict.fromkeys((served, str(Path(served).resolve()))):
