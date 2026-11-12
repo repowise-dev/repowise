@@ -29,8 +29,9 @@ _log = logging.getLogger("repowise.mcp.answer")
 
 # A window runs from the definition line to the end of its symbol, at most
 # this many lines: agents read forward from a definition, a median of about 60
-# lines past it.
-WINDOW_MAX_LINES = 80
+# lines past it. Long docstring and comment runs are shortened inside it, so
+# the span is wider than the code lines it shows.
+WINDOW_MAX_LINES = 120
 # Context before an anchor that is not a definition line (a cited line inside a
 # long body): the median agent read starts about 11 lines above it.
 _LEAD_LINES = 11
@@ -57,6 +58,10 @@ _RELEVANCE_FLOOR = 0.45
 # Bytes of serialized source a reply may spend, and the floor it always gets.
 SOURCE_BUDGET_BYTES = 8_600
 SOURCE_MIN_BYTES = 2_500
+# Docstring and comment runs longer than this keep their first lines only.
+_PROSE_RUN = 4
+_PROSE_KEEP = 2
+_PROSE_MARK = "not shown (docstring or comment)"
 # Bytes reserved per gap marker line when budgeting a window.
 _MARKER_BYTES = 90
 # Names a gap marker and the next-inputs list may carry.
@@ -103,6 +108,7 @@ class _FilePlan:
     symbols: list[_Sym]
     windows: list[_Window]
     whole: bool = False
+    prose: list[bool] | None = None
 
 
 def _norm(path: str) -> str:
@@ -283,7 +289,8 @@ def _word_matched(symbols: list[_Sym], question: str) -> list[_Anchor]:
         for s in symbols
         if s.kind in _CODE_KINDS - _CONTAINER_KINDS
     ]
-    best = sorted((x for x in scored if x[0]), key=lambda x: (-x[0], x[1].start))
+    # Ties go to the larger body: a substantive definition over a one-line binding.
+    best = sorted((x for x in scored if x[0]), key=lambda x: (-x[0], x[1].start - x[1].end))
     return [(s.start, s.end, 2) for _, s in best[:_WORD_ANCHORS]]
 
 
@@ -326,6 +333,10 @@ def _window_for(
         # above the anchor; on to the end of the symbol either way.
         start = sym.start if line - sym.start < _LEAD_LINES else line - _LEAD_LINES
         stop = max(end or 0, sym.end)
+        inner = [s.start for s in symbols if s.kind in _CODE_KINDS and start < s.start <= sym.end]
+        if sym.kind in _CONTAINER_KINDS and inner:
+            # A class window is its head; each member it holds is a window of its own.
+            stop = min(inner) - 1
         names = [sym.qualified or sym.name] if start == sym.start else []
     elif end is not None and end >= line:
         start, stop = line, end
@@ -340,10 +351,14 @@ def _merge(windows: list[_Window]) -> list[_Window]:
     """Merge windows that overlap or sit within the merge gap; keep the best rank."""
     merged: list[_Window] = []
     for w in sorted(windows, key=lambda w: (w.start, w.end)):
-        # Overlapping windows always merge; near ones only while the result stays
-        # one window long, so a weak anchor never rides on a strong one's rank.
-        near = merged and w.start <= merged[-1].end + _MERGE_GAP + 1 and (
-            max(merged[-1].end, w.end) - merged[-1].start < WINDOW_MAX_LINES
+        # Overlapping windows always merge; near ones only at the same rank and
+        # while the result stays one window long, so a weak anchor never rides
+        # on a strong one's rank.
+        near = (
+            merged
+            and w.rank == merged[-1].rank
+            and w.start <= merged[-1].end + _MERGE_GAP + 1
+            and max(merged[-1].end, w.end) - merged[-1].start < WINDOW_MAX_LINES
         )
         if merged and (w.start <= merged[-1].end or near):
             last = merged[-1]
@@ -372,8 +387,65 @@ def _rendered_bytes(text: str) -> int:
     return len(json.dumps(text, ensure_ascii=False).encode("utf-8")) - 2
 
 
-def _render_lines(lines: list[str], start: int, end: int) -> str:
-    return "\n".join(f"{n}\t{lines[n - 1]}" for n in range(start, end + 1))
+def _render_lines(
+    lines: list[str], start: int, end: int, prose: list[bool] | None = None
+) -> str:
+    """Lines *start*..*end* numbered like Read.
+
+    With *prose* (a per-line docstring/comment mask), a run of more than
+    :data:`_PROSE_RUN` such lines keeps its first :data:`_PROSE_KEEP` and a
+    marker line stands for the rest: the code is what an answer rests on.
+    """
+    out: list[str] = []
+    n = start
+    while n <= end:
+        if prose is not None and prose[n - 1]:
+            run_end = n
+            while run_end < end and prose[run_end]:
+                run_end += 1
+            if run_end - n + 1 > _PROSE_RUN:
+                out += [f"{k}\t{lines[k - 1]}" for k in range(n, n + _PROSE_KEEP)]
+                out.append(f"... lines {n + _PROSE_KEEP}-{run_end} {_PROSE_MARK}")
+                n = run_end + 1
+                continue
+        out.append(f"{n}\t{lines[n - 1]}")
+        n += 1
+    return "\n".join(out)
+
+
+_HASH_COMMENT_SUFFIXES = (".py", ".pyi", ".rb", ".sh", ".bash", ".pl", ".r", ".yaml", ".yml", ".toml")
+_COMMENT_LEADS = ("//", "/*", "* ", "*/", "--")
+_DOCSTRING_RE = re.compile("^[rRbBuU]{0,2}(\"{3}|'{3})")
+
+
+def _prose_mask(path: str, lines: list[str]) -> list[bool]:
+    """Which lines are comment or docstring text, by a line-level reading.
+
+    Comment lines by their lead (``#`` only where it starts a comment, never a
+    C preprocessor line); Python docstrings by their triple quote, through the
+    line that closes it. Code that only looks like prose is left as code.
+    """
+    hash_comments = path.lower().endswith(_HASH_COMMENT_SUFFIXES)
+    python = path.lower().endswith((".py", ".pyi"))
+    mask = [False] * len(lines)
+    quote: str | None = None
+    for i, raw in enumerate(lines):
+        text = raw.strip()
+        if quote is not None:
+            mask[i] = True
+            if quote in text:
+                quote = None
+            continue
+        if python and (m := _DOCSTRING_RE.match(text)):
+            mask[i] = True
+            delim = m.group(1)
+            if text.count(delim) == 1:
+                quote = delim
+            continue
+        mask[i] = text.startswith(_COMMENT_LEADS) or text == "*" or (
+            hash_comments and text.startswith("#")
+        )
+    return mask
 
 
 def _gap_marker(symbols: list[_Sym], lo: int, hi: int) -> tuple[str, list[str]]:
@@ -414,25 +486,24 @@ class _Served:
     held: list[str] = field(default_factory=list)
 
 
-def _fit(lines: list[str], w: _Window, room: int, *, first: bool) -> tuple[_Window | None, int]:
+def _fit(plan: _FilePlan, w: _Window, room: int, *, first: bool) -> tuple[_Window | None, int]:
     """*w* whole, or cut at a whole line, within *room* bytes; ``(None, 0)`` when too little fits.
 
     A window after a file's first may bring a gap marker line, so it pays for one.
     """
-    cost = _rendered_bytes(_render_lines(lines, w.start, w.end)) + 1
-    cost += 0 if first else _MARKER_BYTES
-    if cost <= room:
-        return w, cost
-    left, end = room - (0 if first else _MARKER_BYTES), w.start - 1
-    while end < w.end:
-        c = _rendered_bytes(f"{end + 1}\t{lines[end]}") + 1
-        if c > left:
-            break
-        left -= c
-        end += 1
+    extra = 1 + (0 if first else _MARKER_BYTES)
+
+    def cost(end: int) -> int:
+        return _rendered_bytes(_render_lines(plan.lines, w.start, end, plan.prose)) + extra
+
+    if cost(w.end) <= room:
+        return w, cost(w.end)
+    end = w.end - 1
+    while end - w.start + 1 >= _MIN_CUT_LINES and cost(end) > room:
+        end -= 1
     if end - w.start + 1 < _MIN_CUT_LINES:
         return None, 0
-    return _Window(w.start, end, w.rank, w.names), room - left
+    return _Window(w.start, end, w.rank, w.names), cost(end)
 
 
 def _render_file(plan: _FilePlan, chosen: list[_Window]) -> _Served:
@@ -449,7 +520,7 @@ def _render_file(plan: _FilePlan, chosen: list[_Window]) -> _Served:
             marker, names = _gap_marker(plan.symbols, prev_end + 1, w.start - 1)
             parts.append(marker)
             skipped += names
-        parts.append(_render_lines(lines, w.start, w.end))
+        parts.append(_render_lines(lines, w.start, w.end, plan.prose))
         prev_end = w.end
     ranges = [(w.start, w.end) for w in chosen]
     return _Served(
@@ -492,7 +563,7 @@ def _short_qualified(qualified: str | None, name: str, parent: str | None) -> st
 
 def plan_files(
     raw: dict[str, Any], question: str, question_ids: set[str], root: Path,
-    symbols: dict[str, list[_Sym]], files: list[str],
+    symbols: dict[str, list[_Sym]], files: list[str], *, words: bool = True,
 ) -> tuple[list[_FilePlan], list[str]]:
     """Read each file live and lay out its windows; also the files left out as changed."""
     plans: list[_FilePlan] = []
@@ -507,7 +578,8 @@ def plan_files(
         if not lines:
             continue
         syms = symbols.get(path, [])
-        anchors = _anchors(raw, path, question_ids, syms) + _word_matched(syms, question)
+        anchors = _anchors(raw, path, question_ids, syms)
+        anchors += _word_matched(syms, question) if words else []
         anchors = anchors or _fallback_anchor(syms, question)
         if not anchors:
             anchors = [(1, None, 7)]
@@ -516,7 +588,7 @@ def plan_files(
             plans.append(_FilePlan(path, lines, [], [], whole=True))
             drifted.append(path)
             continue
-        plans.append(_FilePlan(path, lines, syms, windows))
+        plans.append(_FilePlan(path, lines, syms, windows, prose=_prose_mask(path, lines)))
     return plans, drifted
 
 
@@ -532,7 +604,7 @@ class _Allocation:
         self.taken: set[int] = set()  # ids of planned windows served, whole or cut
 
     def take(self, plan: _FilePlan, w: _Window, cap: int) -> None:
-        got, cost = _fit(plan.lines, w, min(self.left, cap), first=not self.chosen[plan.path])
+        got, cost = _fit(plan, w, min(self.left, cap), first=not self.chosen[plan.path])
         if got is not None:
             self.chosen[plan.path].append(got)
             self.taken.add(id(w))
@@ -618,6 +690,8 @@ def delivered_line(
         "Source below is the live file text, numbered like Read; the lines sent need "
         "no second read: " + "; ".join(parts) + "."
     )
+    if any(_PROSE_MARK in s.code for s in served):
+        text += f" Docstring and comment runs over {_PROSE_RUN} lines keep their first {_PROSE_KEEP}."
     omitted = [p for p in drifted if p not in {s.path for s in served}]
     if omitted:
         text += f" Changed since the index and too long to send whole: {', '.join(omitted)}."
@@ -682,7 +756,10 @@ async def plan_source(
         symbols = {}
     ranked = _rerank(pool, question, symbols)
     admitted = files if files is not None else _admit(leading, ranked, scores)
-    plans, drifted = plan_files(raw, question, question_ids, root, symbols, admitted)
+    # A continuation asks for exact names only; question words would add others.
+    plans, drifted = plan_files(
+        raw, question, question_ids, root, symbols, admitted, words=files is None
+    )
     if not plans:
         return None
     planned = {plan.path for plan in plans}

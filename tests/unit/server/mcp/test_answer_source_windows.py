@@ -174,3 +174,15 @@ def test_named_definitions_that_do_not_fit_are_listed(tmp_path):
     text, names = delivered_line(served, not_shown, drifted)
     assert "not sent: save_rows" in text
     assert "pkg/mod.py::save_rows" in names
+
+
+def test_long_docstrings_and_comments_keep_their_first_lines():
+    from repowise.server.mcp_server.tool_answer.windows import _prose_mask, _render_lines
+
+    lines = ["def f():", '    """Doc line one.', *["    more prose"] * 8, '    """', "    # a", "    return 1"]
+    code = _render_lines(lines, 1, len(lines), _prose_mask("m.py", lines))
+    assert "2\t" in code and "3\t" in code and "4\t" not in code
+    assert "... lines 4-12 not shown (docstring or comment)" in code
+    assert code.endswith("13\t    return 1")
+    # A C preprocessor line is code, not a comment.
+    assert _prose_mask("m.c", ["#include <stdio.h>"]) == [False]
