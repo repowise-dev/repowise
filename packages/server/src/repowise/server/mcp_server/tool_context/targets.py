@@ -486,8 +486,9 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
     if card.wants("full_doc"):
         await _symbol_documentation(card, sym, sym_page, docs)
     await _symbol_used_by(card, sym, docs)
+    # Opt in: get_symbol carries them by default; the card stays its default size.
     sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
-    if sym_node_id:
+    if card.wants("facts") and sym_node_id:
         docs.update(await symbol_card_facts(card.session, card.repo_id, sym_node_id))
     # Candidates
     if len(sym_matches) > 1:

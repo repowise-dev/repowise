@@ -199,7 +199,6 @@ Per target, under `targets`:
 | `did_you_mean` | Symbol miss: up to 5 closest ids, in that file or repo-wide |
 | `cross_repo` | Workspace: `co_changes_with` in other repos, contract `consumers` / `providers` |
 | `*_basis` | Beside an empty `callers`, `callees` or `used_by`: language, resolved call edges, guess share |
-| `facts`, `tests` | Symbol card: see [symbol facts](#symbol-facts) |
 
 Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `dropped_targets` with `recovery` when the budget dropped targets.
 
@@ -222,6 +221,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 | `skeleton` / `skeleton+` | Bodies elided; `skeleton+` keeps all non-function code and elides every body. Both asked renders `skeleton+` |
 | `health`, `doc_drift` | Health scores and biomarkers; documents naming the file |
 | `symbols` | Every symbol of a file |
+| `facts` | Symbol card: `facts` and `tests` in `docs`, as `get_symbol` sends them; see [symbol facts](#symbol-facts) |
 | `changes`, `provenance`, `suspects`, `files` | See below |
 
 `docs` and `freshness` are always on and legal to pass; `freshness` is sent only on drift.
@@ -337,7 +337,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 
 ### Symbol facts
 
-`get_symbol` and the `get_context` symbol card (`docs`) carry these when there is something true to say; an empty store adds nothing, so a missing key never means "none".
+`get_symbol` carries these, and the `get_context` symbol card does with `include=["facts"]`, when there is something true to say; an empty store adds nothing, so a missing key never means "none".
 
 | Field | Meaning |
 |-------|---------|

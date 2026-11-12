@@ -213,7 +213,12 @@ async def test_get_context_symbol_card_carries_the_row(setup_mcp, session, tmp_p
 
     await _seed(session, tmp_path)
 
-    result = await get_context(targets=[TARGET])
+    # Opt in: the default card does not grow.
+    default = (await get_context(targets=[TARGET]))["targets"][TARGET]["docs"]
+    assert "facts" not in default and "tests" not in default
+
+    result = await get_context(targets=[TARGET], include=["facts"])
+    assert "ignored_arguments" not in result
     docs = result["targets"][TARGET]["docs"]
     assert docs["facts"].endswith("4 resolved callers, 2 in tests")
     assert docs["tests"][0] == {"run": DIRECT_TEST}

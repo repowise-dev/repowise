@@ -34,6 +34,8 @@ Optional ``include`` parameter widens the response:
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift
   - include=["symbols"]   → every symbol in a file card, not the ranked top 15
+  - include=["facts"]     → a symbol card's fact row (awaits, assigned fields,
+                            complexity, resolved callers) and direct test links
   - include=["changes"]   → recent Change Records touching a file target
   - include=["suspects"]  → changes merged in the last 14 days ranked against the
                             targets as a symptom, each with the signals that fired
@@ -114,6 +116,7 @@ _INCLUDE_BLOCKS = frozenset(
         "health",
         "doc_drift",
         "symbols",
+        "facts",
         "changes",
         "provenance",
         "suspects",
@@ -156,7 +159,7 @@ async def get_context(
         include: callers | callees | references | skeleton | skeleton+
             | files | symbols (all, not top 15) | decisions | full_doc
             | ownership | last_change | metrics | community | health
-            | doc_drift | changes | provenance | suspects.
+            | doc_drift | changes | provenance | suspects | facts.
         compact: False adds structure, imports, docstrings.
         symptom: issue text or stack trace to rank ``suspects`` on.
         repo: usually omitted.
