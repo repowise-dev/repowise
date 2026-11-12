@@ -103,29 +103,24 @@ def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
 
 
 def _signed_in_cli(repo_path: Path) -> str | None:
-    """A signed-in agent CLI to write with, when nothing else names a provider.
+    """A signed-in agent CLI on a paid plan to write with, when nothing else names a provider.
 
     Only when no flag, config, environment or key resolves one: a key the user
-    already set keeps winning, as it always has. The first CLI worth offering
-    (picker order, Claude Code first) is used and named with how it is billed,
-    so the run says what it will draw on before the cost question.
+    already set keeps winning, as it always has. Only a login billed to a plan
+    quota is picked unasked, so a bare run never starts metered spend on its
+    own; any other login stays one ``--provider`` away. The run says what it
+    draws on before the cost question.
     """
-    from repowise.core.providers.llm.resolve import resolve_llm
+    from repowise.core.providers.llm.subscription import detect_free_route
 
-    if resolve_llm(repo_path).provider is not None:
+    route = detect_free_route(repo_path)
+    if route is None:
         return None
-    from repowise.cli.ui.subscription import logged_in_agent_providers
-    from repowise.core.agents.identity import identity_for_provider
-
-    for name, auth in logged_in_agent_providers().items():
-        agent = identity_for_provider(name)
-        if auth.offer and agent is not None:
-            console.print(
-                f"No provider configured, so this run uses {agent.display_name} "
-                f"({escape(auth.billing)}). Pass [cyan]--provider[/cyan] to choose another."
-            )
-            return name
-    return None
+    console.print(
+        f"No provider configured, so this run {route.uses(timed=False)}. "
+        "Pass [cyan]--provider[/cyan] to choose another."
+    )
+    return route.provider
 
 
 def _key_source(repo_path: Path, provider_name: str) -> str:
@@ -287,7 +282,7 @@ def generate_command(
     page is an error, since those refresh on `repowise update`.
 
     With no provider set, a key it finds is used, else a signed-in Claude
-    Code, Codex or OpenCode; the run names which. The provider is saved to
+    Code on a paid plan; the run names which. The provider is saved to
     .repowise/config.yaml once it has written a page.
 
     Examples:
