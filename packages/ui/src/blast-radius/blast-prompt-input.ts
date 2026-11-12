@@ -32,13 +32,12 @@ export function missingPartners(result: Result): { path: string; partnerOf: stri
 function promptChange(change: ChangeCandidate | undefined): BlastPromptChange {
   if (!change) return { kind: "files", label: "selected files" };
   if (change.kind === "working_tree") return { kind: "working_tree", label: change.label };
-  if (change.kind === "pull_request")
+  if (change.kind === "change_request")
     return {
-      kind: "pull_request",
-      label: change.number != null ? `#${change.number}` : change.label,
-      number: change.number ?? null,
+      kind: "change_request",
+      label: change.label,
+      term: change.change_term ?? "change request",
       title: change.title,
-      base: change.base,
       base_sha: change.base_sha ?? null,
       head_sha: change.head_sha,
     };

@@ -5,8 +5,9 @@ in the checkout, branches ahead of the default branch, and recent indexed
 commits. The first two need a local checkout; the commits come from the index,
 so a server without a checkout still offers them. Every candidate resolves to
 a list of changed paths through :func:`resolve_change_files`, which only
-accepts a branch or commit this module listed, so a client never hands git an
-arbitrary revision.
+accepts a branch or commit this module listed, or a merge or pull request read
+from the ref its forge publishes, so a client never hands git an arbitrary
+revision.
 """
 
 from __future__ import annotations
@@ -26,15 +27,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core import git_refs
 from repowise.core.analysis.git_cli import _git, checkout_relative
+from repowise.core.forges import BaseForge, all_forges, detect_forge, get_forge
 from repowise.core.persistence.models import GitCommit, GitCommitFile
 
-#: ``pr`` is never listed here (a local checkout knows no pull requests); a
-#: host that does lists them with ``number``, ``base_sha`` and ``head_sha``.
-ChangeKind = Literal["working_tree", "branch", "commit", "pull_request"]
+#: A ``change_request`` (a merge or pull request) is never listed: it opens
+#: from a link, through :func:`resolve_change_request`.
+ChangeKind = Literal["working_tree", "branch", "commit", "change_request"]
 
 WORKING_TREE_ID = "working-tree"
 #: Listed commits carry the full sha; a prefix could name two commits at once.
 _SHA = re.compile(r"^[0-9a-f]{40}$")
+#: A merge or pull request by number, ``mr:<n>`` or ``pr:<n>`` on any forge, or
+#: pinned to the two commits it was read at, ``mr:<n>@<base sha>...<head sha>``,
+#: so a shared link keeps naming the same diff after the request moves on.
+_CHANGE_REQUEST = re.compile(
+    r"^(mr|pr):([1-9][0-9]{0,8})(?:@([0-9a-f]{40})\.\.\.([0-9a-f]{40}))?$"
+)
 
 
 @dataclass(frozen=True)
@@ -59,10 +67,12 @@ class ChangeCandidate:
     #: For a branch: whether it exists on the remote (a local-only branch is
     #: often scratch work).
     pushed: bool | None = None
-    #: For a pull request: its number.
+    #: For a change request: its number on the forge.
     number: int | None = None
-    #: For a pull request: the base commit it is compared against.
+    #: For a change request: the commit it is compared against.
     base_sha: str | None = None
+    #: For a change request: what its forge calls one ("merge request", "pull request").
+    change_term: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -406,6 +416,92 @@ def _branch_tip(repo_path: str, name: str) -> str:
     return ""
 
 
+def is_change_request(change_id: str) -> bool:
+    """Whether *change_id* names a merge or pull request, pinned or not."""
+    return bool(_CHANGE_REQUEST.match(change_id))
+
+
+def _published_head(repo_path: str, number: int) -> tuple[BaseForge, str]:
+    """The forge whose published ref holds request *number*, and the head it points at.
+
+    The checkout's own forge is asked first; a self-managed GitLab on a host
+    no setting maps reads as a plain git host, so the other forges' ref shapes
+    are tried after it. ``(the checkout's forge, "")`` when no ref is here.
+    """
+    own = get_forge(detect_forge(repo_path))
+    for forge in (own, *(f for f in all_forges() if f is not own)):
+        if forge.change_head_ref:
+            sha = git_refs.ref_sha(repo_path, forge.change_head_ref.format(number=number))
+            if sha:
+                return forge, sha
+    return own, ""
+
+
+def change_request_ref(repo_path: str, change_id: str) -> str:
+    """The ref the checkout's forge publishes the request's head under; ``""`` for none."""
+    match = _CHANGE_REQUEST.match(change_id)
+    template = get_forge(detect_forge(repo_path)).change_head_ref
+    return template.format(number=int(match.group(2))) if match and template else ""
+
+
+def resolve_change_request(repo_path: str, change_id: str) -> ChangeCandidate:
+    """The merge or pull request *change_id* names, pinned to its base and head commits.
+
+    Read from this clone only. The head is the ref the forge publishes
+    (``refs/merge-requests/<n>/head`` on GitLab, ``refs/pull/<n>/head`` on
+    GitHub) and the base its merge base with the default branch; a pinned id
+    reads its two commits as given. The returned ``id`` is always the pinned
+    form. Raises :class:`UnknownChangeError` when the ref or the commits are
+    not in this clone.
+    """
+    match = _CHANGE_REQUEST.match(change_id)
+    if not match:
+        raise UnknownChangeError(f"unknown change {change_id!r}")
+    prefix, number = match.group(1), int(match.group(2))
+    forge, published = _published_head(repo_path, number)
+    name = f"{forge.change_term} {forge.format_change_ref(number)}"
+    base = git_refs.default_base(repo_path)
+    if match.group(4):
+        base_sha, head_sha = match.group(3), match.group(4)
+        if not (
+            git_refs.commit_exists(repo_path, base_sha)
+            and git_refs.commit_exists(repo_path, head_sha)
+        ):
+            raise UnknownChangeError(f"the commits of {name} are not in this clone")
+    else:
+        head_sha = published
+        if not head_sha:
+            raise UnknownChangeError(f"{name} is not in this clone; fetch its ref first")
+        # Ceiling: the default branch stands in for the request's target branch,
+        # which only the forge knows; a request into another branch reads wider.
+        base_sha = git_refs.change_base(repo_path, f"{base}...{head_sha}")
+        if not base_sha:
+            raise UnknownChangeError(f"{name} shares no history with {base}")
+    # The subject last: it is the one field that can hold a tab.
+    tip = _git(["log", "-1", "--format=%an%x09%cI%x09%s", head_sha], cwd=repo_path, check=False)
+    author, when, subject = [*tip.strip().split("\t", 2), "", ""][:3]
+    return ChangeCandidate(
+        id=f"{prefix}:{number}@{base_sha}...{head_sha}",
+        kind="change_request",
+        label=forge.format_change_ref(number),
+        title=subject or None,
+        author=author or None,
+        committed_at=when or None,
+        head_sha=head_sha,
+        base=base,
+        files_changed=len(_diff_files(repo_path, base_sha, base_sha, head_sha, head_sha)),
+        number=number,
+        base_sha=base_sha,
+        change_term=forge.change_term,
+    )
+
+
+def _change_request_files(repo_path: str, change_id: str) -> list[str]:
+    change = resolve_change_request(repo_path, change_id)
+    base_sha, head_sha = change.base_sha or "", change.head_sha or ""
+    return _relative(repo_path, _diff_files(repo_path, base_sha, base_sha, head_sha, head_sha))
+
+
 async def resolve_change_files(
     session: AsyncSession,
     repo_id: str,
@@ -429,6 +525,11 @@ async def resolve_change_files(
         if not repo_path:
             raise UnknownChangeError("this server has no checkout to read branches from")
         return await asyncio.to_thread(_branch_files, repo_path, ref)
+
+    if is_change_request(change_id):
+        if not repo_path:
+            raise UnknownChangeError("this server has no checkout to read the change from")
+        return await asyncio.to_thread(_change_request_files, repo_path, change_id)
 
     if kind == "commit" and _SHA.match(ref):
         rows = (
@@ -454,7 +555,7 @@ def change_revspec(repo_path: str, change_id: str) -> str | None:
     """The revspec a health check judges for a listed change; ``None`` is the working tree.
 
     A branch is ``<default branch>...<branch>`` (what it would bring), a
-    commit its sha. Validated like :func:`resolve_change_files`, so no client
+    change request ``<base sha>...<head sha>``, a commit its sha. Validated like :func:`resolve_change_files`, so no client
     string reaches git as an option or a range.
     """
     if change_id == WORKING_TREE_ID:
@@ -464,6 +565,9 @@ def change_revspec(repo_path: str, change_id: str) -> str | None:
         if ref not in {b.name for b in git_refs.list_branches(repo_path)}:
             raise UnknownChangeError(f"unknown branch {ref!r}")
         return f"{git_refs.default_base(repo_path)}...{ref}"
+    if is_change_request(change_id):
+        change = resolve_change_request(repo_path, change_id)
+        return f"{change.base_sha}...{change.head_sha}"
     if kind == "commit" and _SHA.match(ref) and git_refs.resolve(repo_path, ref):
         return ref
     raise UnknownChangeError(f"unknown change {change_id!r}")

@@ -205,24 +205,10 @@ class BlastRadiusResponse(BaseModel):
     overall_risk_score_compatibility: RiskCompatibilityField
 
 
-class PrReviewSummary(BaseModel):
-    """What the PR bot stored for a pull request: code health before and after, and new findings.
-
-    A host that runs the bot fills it; a local server never does.
-    """
-
-    health_before: float | None = None
-    health_after: float | None = None
-    #: Findings the pull request introduced.
-    introduced: int | None = None
-    #: The bot's review of the pull request.
-    url: str | None = None
-
-
 class ChangeCandidateModel(BaseModel):
     id: str
-    #: ``pr`` is listed by a host that knows pull requests; a local server never lists one.
-    kind: Literal["working_tree", "branch", "commit", "pull_request"]
+    #: A ``change_request`` (merge or pull request) is never listed; a link opens one.
+    kind: Literal["working_tree", "branch", "commit", "change_request"]
     label: str
     title: str | None = None
     author: str | None = None
@@ -235,12 +221,12 @@ class ChangeCandidateModel(BaseModel):
     #: For a branch: whether it exists on the remote. A local-only branch is
     #: often scratch work, so the picker shows it quieter.
     pushed: bool | None = None
-    #: For a pull request: its number.
+    #: For a change request: its number on the forge.
     number: int | None = None
-    #: For a pull request: the base commit it is compared against.
+    #: For a change request: the commit it is compared against.
     base_sha: str | None = None
-    #: For a pull request: the PR bot's stored health before and after, when a host has one.
-    pr_review: PrReviewSummary | None = None
+    #: For a change request: what its forge calls one ("merge request", "pull request").
+    change_term: str | None = None
 
 
 class ChangeCandidatesResponse(BaseModel):
@@ -339,7 +325,12 @@ class ChangeReview(BaseModel):
 
 
 class ChangeBlastRadiusResponse(BlastRadiusResponse):
+    #: The change analyzed. A merge or pull request asked for by number
+    #: (``mr:<n>``, ``pr:<n>``) comes back pinned to the two commits read
+    #: (``mr:<n>@<base sha>...<head sha>``), so a link built from it never moves.
     change_id: str
+    #: The merge or pull request, as the picker shows one; ``None`` for other kinds.
+    change: ChangeCandidateModel | None = None
     #: The paths analyzed, after the cap below.
     changed_files: list[str]
     #: Every path the change touches, before the cap.

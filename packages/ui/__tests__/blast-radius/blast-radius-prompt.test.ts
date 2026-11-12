@@ -80,15 +80,22 @@ describe("buildBlastRadiusPrompt with a health check", () => {
   });
 });
 
-describe("buildBlastRadiusPrompt for a pull request", () => {
-  it("names the PR and diffs base against head", () => {
+describe("buildBlastRadiusPrompt for a merge request", () => {
+  it("names it in the forge's words and diffs the two commits read", () => {
     const p = buildBlastRadiusPrompt({
       input: {
         ...INPUT,
-        change: { kind: "pull_request", label: "#123", number: 123, title: "Fix the cache", base: "main", head_sha: "b".repeat(40) },
+        change: {
+          kind: "change_request",
+          label: "!7",
+          term: "merge request",
+          title: "Tune the core",
+          base_sha: "a".repeat(40),
+          head_sha: "b".repeat(40),
+        },
       },
     });
-    expect(p).toContain("Pull request #123: Fix the cache");
-    expect(p).toContain(`git diff main...${"b".repeat(40)}`);
+    expect(p).toContain("Merge request !7: Tune the core");
+    expect(p).toContain(`git diff ${"a".repeat(40)}...${"b".repeat(40)}`);
   });
 });

@@ -63,6 +63,8 @@ interface Analysis {
   result: BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
   changedFiles: string[];
   changedTotal?: number;
+  /** A merge or pull request as the server resolved it: the forge's words, pinned to its commits. */
+  change?: ChangeCandidate;
 }
 
 const DEPTHS: { value: number; label: string }[] = [
@@ -92,8 +94,23 @@ export function changeFor(id: string, listed: ChangeCandidate[]): ChangeCandidat
     return { ...base, id, kind: "branch", label: ref, head_sha: null, base: trunk };
   }
   if (kind === "commit") return { ...base, id, kind: "commit", label: ref.slice(0, 8), head_sha: ref, base: null };
-  if (kind === "pr" && /^\d+$/.test(ref))
-    return { ...base, id, kind: "pull_request", label: `#${ref}`, number: Number(ref), head_sha: null, base: null };
+  const request = /^(\d+)(?:@([0-9a-f]{40})\.\.\.([0-9a-f]{40}))?$/.exec(ref);
+  if ((kind === "mr" || kind === "pr") && request) {
+    // Until the server answers with the forge's own words, the link's prefix names it.
+    const term = kind === "mr" ? "merge request" : "pull request";
+    const number = Number(request[1]);
+    return {
+      ...base,
+      id,
+      kind: "change_request",
+      label: `${kind === "mr" ? "Merge request" : "Pull request"} ${number}`,
+      number,
+      change_term: term,
+      base_sha: request[2] ?? null,
+      head_sha: request[3] ?? null,
+      base: null,
+    };
+  }
   return undefined;
 }
 
@@ -440,19 +457,25 @@ function selectionKeyOf(selection: Selection | null): string {
 async function analyzeSelection(adapter: ImpactAdapter, sel: Selection, depth: number): Promise<Analysis> {
   if (sel.kind === "change") {
     const r = await adapter.analyzeChange!({ changeId: sel.id, maxDepth: depth });
-    return { selection: sel, result: r, changedFiles: r.changed_files, changedTotal: r.changed_files_total };
+    return {
+      selection: sel,
+      result: r,
+      changedFiles: r.changed_files,
+      changedTotal: r.changed_files_total,
+      ...(r.change ? { change: r.change } : {}),
+    };
   }
   const r = await adapter.analyze({ changedFiles: sel.files, maxDepth: depth });
   return { selection: sel, result: r, changedFiles: sel.files };
 }
 
-/** Answers kept per page, and how long one for a moving change (work in progress, a branch, a PR) stays good. */
+/** Answers kept per page, and how long one for a moving change (work in progress, a branch, a merge request) stays good. */
 const KEPT_ANALYSES = 20;
 const MOVING_MS = 60_000;
 
-/** A commit or a hand-picked file set never changes under the reader; anything else can. */
+/** A commit, a pinned merge request or a hand-picked file set never changes under the reader; anything else can. */
 function keptIsFresh(sel: Selection, at: number): boolean {
-  if (sel.kind === "files" || sel.id.startsWith("commit:")) return true;
+  if (sel.kind === "files" || sel.id.startsWith("commit:") || /^(mr|pr):\d+@/.test(sel.id)) return true;
   return Date.now() - at < MOVING_MS;
 }
 
@@ -709,7 +732,7 @@ export function ImpactView({
    * the symbol drawer's CTA both link here with the path already chosen.
    */
   initialFiles?: string[];
-  /** A shared link's change (`wip`, a branch, a full sha); files win when both are given. */
+  /** A shared link's change (`wip`, a branch, a full sha, `mr:<n>`); files win when both are given. */
   initialChange?: string | undefined;
   /** Called with the link value when the reader picks a change, so the host can put it in the URL. */
   onChangePicked?: ((linkParam: string) => void) | undefined;
@@ -745,10 +768,26 @@ export function ImpactView({
   }, [changes, selection]);
 
   const listed = changes?.changes ?? [];
-  const picked = selection?.kind === "change" ? changeFor(selection.id, listed) : undefined;
   // The change the numbers on screen belong to, so they never wear a newer pick's name.
   const analyzed = state.analysis?.selection;
-  const shownChange = analyzed?.kind === "change" ? changeFor(analyzed.id, listed) : undefined;
+  const resolved = state.analysis?.change;
+  const picked =
+    selection?.kind === "change"
+      ? (analyzed?.kind === "change" && analyzed.id === selection.id && resolved) || changeFor(selection.id, listed)
+      : undefined;
+  const shownChange = analyzed?.kind === "change" ? (resolved ?? changeFor(analyzed.id, listed)) : undefined;
+
+  // A merge request opened by number comes back pinned to its commits: the
+  // link takes the pinned id, so sharing it shows the same diff later.
+  const onPickedRef = useRef(onChangePicked);
+  onPickedRef.current = onChangePicked;
+  const pinned = useRef<string | null>(null);
+  useEffect(() => {
+    if (!resolved || analyzed?.kind !== "change" || resolved.id === analyzed.id) return;
+    if (pinned.current === resolved.id) return;
+    pinned.current = resolved.id;
+    onPickedRef.current?.(changeLinkParam(resolved.id));
+  }, [resolved, analyzed]);
   const filesName = selection?.kind === "files" ? count(selection.files.length, "picked file") : "";
   // Offered only where the host can read both sides of a change (an older server reports a checkout instead).
   const canCheck = changes?.health_check_supported ?? changes?.working_tree_supported ?? false;
