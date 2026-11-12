@@ -26,7 +26,9 @@ testcontainers = pytest.importorskip(
 @pytest.fixture(scope="module")
 def postgres_container():
     try:
-        with testcontainers.PostgresContainer("postgres:16-alpine") as pg:
+        # Not alpine: musl has no locale collation, and the tie test needs one
+        # that orders "Z.py" after "m0.py", as en_US does.
+        with testcontainers.PostgresContainer("postgres:16") as pg:
             yield pg
     except Exception as exc:  # pragma: no cover - skip when Docker missing
         pytest.skip(f"PostgreSQL container unavailable: {exc}")
@@ -82,8 +84,14 @@ async def test_ranks_code_rows_only_and_ties_by_path(pg_session) -> None:
     # Upper- and lower-case paths: ties rank in code-point order, not locale order.
     code.append({"file_path": "Z.py", "change_entropy": 0.5, "commit_count_90d": 1})
     await upsert_git_metadata_bulk(pg_session, repo.id, code + docs)
+    other = await insert_repo(pg_session, name="other", local_path="/tmp/other")
+    await upsert_git_metadata_bulk(
+        pg_session, other.id, [{"file_path": "o.py", "temporal_hotspot_score": 1.0}]
+    )
 
     assert await recompute_git_percentiles(pg_session, repo.id) == 13
+
+    assert (await _stored(pg_session, other.id))["o.py"].churn_percentile == 0.0
 
     stored = await _stored(pg_session, repo.id)
     # Churn ranks the five code rows alone: Z.py (0, 1 commit) lowest.
@@ -96,6 +104,15 @@ async def test_ranks_code_rows_only_and_ties_by_path(pg_session) -> None:
     assert stored["Z.py"].change_entropy_pct == 0.0
     assert [stored[f"m{i}.py"].change_entropy_pct for i in range(4)] == pytest.approx(
         [0.2, 0.4, 0.6, 0.8]
+    )
+    # Scatter: only the m* rows carry mass, all tied, so by path among four.
+    assert stored["Z.py"].co_change_scatter_pct == 0.0
+    assert [stored[f"m{i}.py"].co_change_scatter_pct for i in range(4)] == pytest.approx(
+        [0.0, 0.25, 0.5, 0.75]
+    )
+    # Defects over the five code rows, ties sharing a rank: 0,1,0,1 and Z at 0.
+    assert [stored[f"m{i}.py"].prior_defect_pct for i in range(4)] == pytest.approx(
+        [0.0, 0.75, 0.0, 0.75]
     )
     for path, row in stored.items():
         if row.history_only:

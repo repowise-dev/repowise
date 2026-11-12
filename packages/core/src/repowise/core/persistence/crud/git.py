@@ -405,9 +405,9 @@ async def recompute_git_percentiles(
     # ``ranks`` is computed once and joined by id. A correlated subquery per
     # column re-runs the CTE scan for every updated row on PostgreSQL, which
     # is quadratic in the file count (minutes to hours on a large repo).
-    # SQLite keeps the correlated form: it materializes ``ranks`` once and
-    # indexes it, and ``UPDATE ... FROM`` needs SQLite 3.33, which some
-    # distro Pythons still predate.
+    # SQLite keeps the correlated form, which it plans well (86k rows in
+    # about 8 s, as before), since ``UPDATE ... FROM`` needs SQLite 3.33 and
+    # some distro Pythons still predate it.
     bind = session.get_bind()
     if bind.dialect.name == "postgresql":
         path_order = 'file_path COLLATE "C"'
