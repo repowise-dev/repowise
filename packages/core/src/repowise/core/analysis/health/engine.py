@@ -80,7 +80,7 @@ from .repo_tests import _path_basenames as _path_basenames
 from .scope import scores_language
 from .scoring import compute_kpis
 from .source_reader import SourceReader, disk_source_reader
-from .sql_complexity import configured_sql_dialect
+from .sql_complexity import configured_sql_dialect, walks_statements
 from .walk_cache import HealthWalkCache
 
 if TYPE_CHECKING:
@@ -914,8 +914,9 @@ class HealthAnalyzer:
         source = self.read_source(path)
         if source is None:
             return FileComplexity(functions=[], classes=[])
-        self._origins[pf.file_info.path] = self._origin(pf, source)
+        origin = self._origins[pf.file_info.path] = self._origin(pf, source)
         sql_dialect = configured_sql_dialect(pf.file_info)
+        sql_statements = language != "sql" or walks_statements(origin)
         key = None
         if self._walk_cache is not None:
             from repowise.core.ingestion import compute_content_hash
@@ -928,6 +929,7 @@ class HealthAnalyzer:
                 compute_content_hash(source),
                 vocab.key,
                 sql_dialect or "",
+                sql_statements=sql_statements,
             )
             cached = self._walk_cache.get(key)
             if cached is not None:
@@ -937,7 +939,7 @@ class HealthAnalyzer:
             # produces routine CCN + the sql_* smell hits instead.
             from .sql_complexity import walk_sql_file
 
-            fcx = walk_sql_file(source, sql_dialect)
+            fcx = walk_sql_file(source, sql_dialect, statements=sql_statements)
         else:
             fcx = walk_file(path, language, source, vocab.names)
         if key is not None and self._walk_cache is not None:
