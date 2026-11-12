@@ -86,6 +86,24 @@ def test_failed_pages_print_their_reason_once() -> None:
     assert out.count(reason) == 1
 
 
+def test_exit_status_fails_only_when_nothing_was_written() -> None:
+    failed = {STUB_FALLBACK_ERROR: "not signed in"}
+    all_failed = _outcome(
+        generated_pages=[_page(f"module_page:m{i}", **failed) for i in range(3)],
+        swept_page_ids=[],
+    )
+    assert command._wrote_nothing_and_failed(all_failed)
+    # Partial success keeps its pages and exits 0.
+    assert not command._wrote_nothing_and_failed(_outcome())
+    # Nothing failed (every page reused, or nothing planned): exit 0.
+    reused = _outcome(
+        generated_pages=[_page("module_page:m0", reused_from_prior_run=True)], swept_page_ids=[]
+    )
+    assert not command._wrote_nothing_and_failed(reused)
+    empty = _outcome(generated_pages=[], plan=SimpleNamespace(generate_ids=set()))
+    assert not command._wrote_nothing_and_failed(empty)
+
+
 def test_clean_run_prints_no_leftover_lines() -> None:
     out = _render(
         _outcome(

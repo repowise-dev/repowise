@@ -369,6 +369,18 @@ def generate_command(
     _report_outcome(outcome, time.monotonic() - start)
     if embedder_upgraded:
         _reembed_after_upgrade(repo_path, embedder_name)
+    if _wrote_nothing_and_failed(outcome):
+        # A scheduled run must be able to tell "every page failed" (no sign-in,
+        # a dead key) from success. Partial success keeps 0: its pages are kept.
+        raise SystemExit(1)
+
+
+def _wrote_nothing_and_failed(outcome: Any) -> bool:
+    planned = outcome.plan.generate_ids
+    if not planned:
+        return False
+    c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
+    return c["failed"] > 0 and c["written"] + c["unchanged"] == 0
 
 
 def _account_for_plan(

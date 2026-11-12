@@ -199,10 +199,11 @@ the run's "Not generated" line.
 | Account limit reached | Pages fail with the CLI's own message. Wait, lower `REPOWISE_CLAUDE_CLI_CONCURRENCY`, then run `repowise generate --unwritten`. |
 | A page took too long | "claude -p timed out after 600 seconds." Run `repowise generate --unwritten`. |
 
-The run exits 0 when some pages fail, because the pages it did write are kept.
-A script that must know whether everything was written can read the summary
-line, or simply schedule `repowise generate --unwritten` again: it costs
-nothing when every page is written.
+The run exits 1 when it wrote no page and at least one planned page failed, so
+a scheduled job notices a missing sign-in or a dead token. It exits 0 when some
+pages fail and others are written (those are kept) and when there is nothing
+to generate. Scheduling `repowise generate --unwritten` again retries the
+failed pages, and costs nothing once every page is written.
 
 ### Reasoning
 
