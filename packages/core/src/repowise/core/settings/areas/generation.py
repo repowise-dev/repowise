@@ -46,6 +46,38 @@ def _suggest_embedder(facts: Any) -> Proposal | None:
     )
 
 
+#: Every file page is suggested once at least this many production files
+#: have none. Below it the automatic ceiling only trims the tail.
+MIN_UNPAGED_PRODUCTION = 500
+#: A file page's average size with its metadata, measured over 1,961 pages
+#: (see ``FILE_PAGE_AUTO_CEILING`` in ``repowise.core.generation.selection``).
+_FILE_PAGE_KB = 8.8
+
+
+def _suggest_max_file_pages(facts: Any) -> Proposal | None:
+    """Every file, when the automatic ceiling left many production files without a page.
+
+    Only for pages written from code: there each page costs no model call.
+    """
+    pages = facts.file_pages
+    unpaged = facts.unpaged_production
+    if facts.values.get("max_file_pages") is not None or facts.content_provenance != "template":
+        return None
+    omitted = pages.get("omitted") or 0
+    if not pages.get("effective_cap") or not omitted or unpaged < MIN_UNPAGED_PRODUCTION:
+        return None
+    size = omitted * _FILE_PAGE_KB / 1024
+    return Proposal(
+        0,
+        f"File pages stopped at {pages['effective_cap']:,} of {pages.get('eligible') or 0:,} "
+        f"eligible files, leaving {unpaged:,} production files without one.",
+        f"The next repowise update writes the other {omitted:,} pages from code, with no "
+        f"model calls, about {size:,.0f} MB. Search and answers can then find those files "
+        "by what they do.",
+        "quality",
+    )
+
+
 SETTINGS: tuple[Setting, ...] = (
     _s(
         "provider",
@@ -135,6 +167,7 @@ SETTINGS: tuple[Setting, ...] = (
         "Most per-file pages to write; 0 means every file. Unset lets the repo size decide.",
         minimum=0,
         parser="repowise.core.settings.parsers:int_like",
+        suggest_when=_suggest_max_file_pages,
     ),
     _s(
         "folder_coverage",

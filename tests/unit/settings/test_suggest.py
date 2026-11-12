@@ -16,12 +16,18 @@ from repowise.cli.main import cli
 from repowise.cli.ui.result_panels import SUGGESTED_STEP, build_contextual_next_steps
 from repowise.core.analysis.decisions.manifest import ManifestDecision, write_manifest
 from repowise.core.settings import all_settings, get
+from repowise.core.settings.areas.generation import MIN_UNPAGED_PRODUCTION
 from repowise.core.settings.areas.hooks import (
     MIN_AGENT_SESSIONS,
     MIN_FORGONE_ITEMS,
     MIN_FORGONE_TOKENS,
 )
-from repowise.core.settings.suggest import RepoFacts, suggestions
+from repowise.core.settings.areas.indexing import (
+    MAX_SUGGESTED_COMMIT_LIMIT,
+    MIN_COPIED_SHARE,
+    MIN_FILES_OUTSIDE_WINDOW,
+)
+from repowise.core.settings.suggest import MIN_COPIED_DIR_FILES, RepoFacts, suggestions
 
 #: The keys ``Suggestion.to_dict`` promises.
 SUGGESTION_KEYS = {
@@ -31,12 +37,15 @@ SUGGESTION_KEYS = {
 
 #: Every key a predicate may suggest; a new one is added here with its tests.
 SUGGESTABLE = {
+    "commit_limit",
     "decisions.mode",
     "embedder",
+    "exclude_patterns",
     "hooks.coverage_reingest",
     "hooks.read_reread",
     "hooks.read_skeleton",
     "hooks.search_digest",
+    "max_file_pages",
 }
 
 _EMBEDDER_ENVS = (
@@ -401,3 +410,201 @@ def test_init_panel_gives_suggestions_one_row_within_the_limit():
     assert SUGGESTED_STEP not in [command for command, _ in steps]
     fast = build_contextual_next_steps(fast_mode=True, suggested=1, dead_unused=4)
     assert [command for command, _ in fast][2] == SUGGESTED_STEP
+
+
+# ---------------------------------------------------------------- large repositories
+
+
+def _window(limit: int = 5000, *, commits: int = 5000, files: int = 30_000, recent: int = 9_000):
+    return {
+        "per_file_limit": limit,
+        "global_commits": commits,
+        "eligible_files": files,
+        "recent_files": recent,
+    }
+
+
+def test_commit_limit_needs_a_full_window_deeper_history_and_files_outside_it():
+    limit = {"commit_limit": 5000}
+    proposal = _suggest("commit_limit", values=limit, git_history=_window(), total_commits=23_412)
+    assert proposal.value == 25_000 and proposal.benefit == "quality"
+    assert "newest 5,000 of 23,412 commits" in proposal.reason
+    assert "21,000 of 30,000 code files" in proposal.reason
+    assert "cover all 23,412 commits" in proposal.impact
+    # The window is not full: the history is shorter than the limit.
+    short = _window(commits=3_000)
+    assert _suggest("commit_limit", values=limit, git_history=short, total_commits=3_000) is None
+    # Nothing past the window.
+    assert _suggest("commit_limit", values=limit, git_history=_window(), total_commits=5000) is None
+    # Most files are in the window, or too few are out of it.
+    most_in = _window(recent=25_000)
+    assert _suggest("commit_limit", values=limit, git_history=most_in, total_commits=23_412) is None
+    few = _window(files=150, recent=150 - MIN_FILES_OUTSIDE_WINDOW + 1)
+    assert _suggest("commit_limit", values=limit, git_history=few, total_commits=23_412) is None
+    # The index was built with another window, or none is stored.
+    other = _window(limit=500, commits=500)
+    assert _suggest("commit_limit", values=limit, git_history=other, total_commits=23_412) is None
+    assert _suggest("commit_limit", values=limit, total_commits=23_412) is None
+
+
+def test_commit_limit_stops_at_the_measured_ceiling():
+    limit = {"commit_limit": 5000}
+    deep = _suggest("commit_limit", values=limit, git_history=_window(), total_commits=900_000)
+    assert deep.value == MAX_SUGGESTED_COMMIT_LIMIT
+    assert f"newest {MAX_SUGGESTED_COMMIT_LIMIT:,} of the 900,000" in deep.impact
+    at_ceiling = {"commit_limit": MAX_SUGGESTED_COMMIT_LIMIT}
+    window = _window(limit=MAX_SUGGESTED_COMMIT_LIMIT, commits=MAX_SUGGESTED_COMMIT_LIMIT)
+    found = _suggest("commit_limit", values=at_ceiling, git_history=window, total_commits=900_000)
+    assert found is None
+
+
+def test_exclude_needs_wholly_copied_directories_that_dominate():
+    dirs = (("third_party", 9_000), ("src/proto/gen", 1_200))
+    proposal = _suggest("exclude_patterns", copied_dirs=dirs, analysed_files=30_000)
+    assert proposal.value == ["third_party/", "src/proto/gen/"]
+    assert "10,200 of the 30,000 files" in proposal.reason
+    assert "third_party/ (9,000)" in proposal.reason
+    assert proposal.command == "repowise config set exclude_patterns third_party/,src/proto/gen/"
+    below = ((("v", int(30_000 * MIN_COPIED_SHARE) - 1)),)
+    assert _suggest("exclude_patterns", copied_dirs=below, analysed_files=30_000) is None
+    assert _suggest("exclude_patterns", analysed_files=30_000) is None
+    # Kept patterns stay, and a directory already excluded is not named again.
+    kept = {"exclude_patterns": ["docs/", "third_party/"]}
+    proposal = _suggest("exclude_patterns", values=kept, copied_dirs=dirs, analysed_files=4_000)
+    assert proposal.value == ["docs/", "third_party/", "src/proto/gen/"]
+
+
+def test_max_file_pages_needs_the_automatic_cap_unpaged_production_and_template_pages():
+    pages = {"configured_cap": None, "effective_cap": 4500, "eligible": 30_000, "omitted": 25_500}
+    enough = {"file_pages": pages, "content_provenance": "template"}
+    proposal = _suggest("max_file_pages", unpaged_production=12_000, **enough)
+    assert proposal.value == 0
+    assert "stopped at 4,500 of 30,000" in proposal.reason
+    assert "12,000 production files" in proposal.reason
+    assert "other 25,500 pages" in proposal.impact and "no model calls" in proposal.impact
+    few = MIN_UNPAGED_PRODUCTION - 1
+    assert _suggest("max_file_pages", unpaged_production=few, **enough) is None
+    model = {**enough, "content_provenance": "model"}
+    assert _suggest("max_file_pages", unpaged_production=12_000, **model) is None
+    chosen = {"max_file_pages": 2000}
+    assert _suggest("max_file_pages", unpaged_production=12_000, values=chosen, **enough) is None
+    uncapped = {"file_pages": {**pages, "effective_cap": None, "omitted": 0}}
+    uncapped["content_provenance"] = "template"
+    assert _suggest("max_file_pages", unpaged_production=12_000, **uncapped) is None
+
+
+def _state(repo: Path, *, coverage: dict | None = None, file_pages: dict | None = None) -> None:
+    scope: dict = {"content_provenance": "template"}
+    if file_pages is not None:
+        scope["file_pages"] = file_pages
+    state = {"docs_mode": "deterministic", "index_scope": scope}
+    if coverage is not None:
+        state["git_history_coverage"] = coverage
+    (repo / ".repowise" / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+def _store(repo: Path, *, total_commits: int | None = None, files=(), pages=()) -> None:
+    """A wiki.db holding the columns the large-repo facts read."""
+    repository = [("INSERT INTO repositories VALUES ('r', ?)", (total_commits,))]
+    _db(
+        repo / ".repowise" / "wiki.db",
+        ("CREATE TABLE repositories (id TEXT, total_commit_count INTEGER)", ()),
+        ("CREATE TABLE health_file_metrics (file_path TEXT, code_origin TEXT)", ()),
+        ("CREATE TABLE wiki_pages (page_type TEXT, target_path TEXT)", ()),
+        *(repository if total_commits else []),
+        *(("INSERT INTO health_file_metrics VALUES (?, ?)", row) for row in files),
+        *(("INSERT INTO wiki_pages VALUES ('file_page', ?)", (p,)) for p in pages),
+    )
+
+
+def test_a_full_window_on_disk_suggests_a_deeper_one(repo):
+    _state(repo, coverage=_window())
+    _store(repo, total_commits=5000)
+    assert suggestions(repo) == []
+    (repo / ".repowise" / "wiki.db").unlink()
+    _store(repo, total_commits=23_412)
+    (found,) = suggestions(repo)
+    assert (found.key, found.current, found.value) == ("commit_limit", 5000, 25_000)
+    assert found.command == "repowise config set commit_limit 25000"
+
+
+def test_a_window_set_by_hand_is_read_as_the_current_limit(repo):
+    _state(repo, coverage=_window(limit=500, commits=500))
+    _store(repo, total_commits=3_901)
+    _config(repo, {"commit_limit": 500})
+    (found,) = suggestions(repo)
+    assert (found.current, found.value) == (500, 5000)
+
+
+def test_copied_directories_on_disk_suggest_excludes(repo):
+    n = MIN_COPIED_DIR_FILES
+    copied = [(f"third_party/lib{i % 3}/f{i}.c", "vendored") for i in range(n * 2)]
+    generated = [(f"src/api/gen/m{i}.py", "generated") for i in range(n)]
+    # A production file beside the generated directory keeps src/api itself.
+    mixed = [("src/api/client.py", "production")]
+    production = [(f"src/core/m{i}.py", "production") for i in range(n * 3)]
+    _store(repo, files=[*copied, *generated, *mixed, *production])
+    (found,) = suggestions(repo)
+    assert found.key == "exclude_patterns"
+    assert found.value == ["third_party/", "src/api/gen/"]
+    assert f"{n * 3:,} of the {n * 6 + 1:,} files" in found.reason
+
+
+def test_copied_files_that_are_not_a_whole_directory_suggest_nothing(repo):
+    n = MIN_COPIED_DIR_FILES
+    rows = [(f"lib/m{i}.c", "vendored" if i % 2 else "production") for i in range(n * 4)]
+    _store(repo, files=rows)
+    assert suggestions(repo) == []
+
+
+def test_unpaged_production_files_on_disk_suggest_every_file_page(repo):
+    n = MIN_UNPAGED_PRODUCTION
+    paths = [f"src/m{i}.py" for i in range(n * 2)]
+    files = [*((p, "production") for p in paths), *((f"tests/t{i}.py", "test") for i in range(n))]
+    pages = {"configured_cap": None, "effective_cap": n, "eligible": n * 3, "omitted": n * 2}
+    _state(repo, file_pages=pages)
+    _store(repo, files=files, pages=paths[: n - 1])
+    (found,) = suggestions(repo)
+    assert (found.key, found.current, found.value) == ("max_file_pages", None, 0)
+    assert f"{n + 1:,} production files" in found.reason
+    (repo / ".repowise" / "wiki.db").unlink()
+    _store(repo, files=files, pages=paths[: n + 1])
+    assert suggestions(repo) == []
+
+
+def test_large_repo_facts_read_the_real_schema(repo):
+    """The SQL behind the large-repo facts runs against the store ``init`` creates."""
+    from repowise.core.settings import suggest
+
+    _empty_index(repo)
+    con = sqlite3.connect(repo / ".repowise" / "wiki.db")
+    try:
+        for sql in (
+            suggest._UNPAGED_PRODUCTION_SQL,
+            suggest._COPIED_COUNT_SQL,
+            suggest._ORIGINS_SQL,
+            "SELECT total_commit_count FROM repositories",
+        ):
+            con.execute(sql).fetchall()
+    finally:
+        con.close()
+    assert suggestions(repo) == []
+
+
+def test_large_repo_facts_stay_cheap(repo):
+    n = 60_000
+    rows = [
+        (f"third_party/l{i % 40}/s{i % 7}/f{i}.c", "vendored")
+        if i % 3 == 0
+        else (f"src/a{i % 50}/b{i % 9}/m{i}.py", "production")
+        for i in range(n)
+    ]
+    pages = {"configured_cap": None, "effective_cap": 4500, "eligible": n, "omitted": n - 4500}
+    _state(repo, coverage=_window(), file_pages=pages)
+    _store(repo, total_commits=40_000, files=rows, pages=[p for p, _ in rows[:4500]])
+    found = {s.key for s in suggestions(repo)}
+    assert found == {"commit_limit", "exclude_patterns", "max_file_pages"}
+    start = time.perf_counter()
+    for _ in range(3):
+        suggestions(repo)
+    assert (time.perf_counter() - start) / 3 < 0.5

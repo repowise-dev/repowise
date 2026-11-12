@@ -174,5 +174,11 @@ repowise init -x 'third_party/' ...          # exclude what you never edit
 repowise init --max-file-pages 2000 ...      # cap file pages, highest importance first
 ```
 
+After the first index, `repowise config list --suggested` reads what it
+stored and names the settings that fit this repository, each with its numbers
+and the command: a deeper `commit_limit` when many files have no commit in the
+window, `exclude_patterns` for directories holding only vendored or generated
+code, and every file page when the automatic cap left production files out.
+
 Related: [WORKSPACES.md](WORKSPACES.md) indexes the monorepo together with its
 smaller sibling repositories behind one MCP server.
