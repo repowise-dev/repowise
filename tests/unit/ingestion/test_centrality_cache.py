@@ -397,7 +397,8 @@ async def test_pagerank_and_betweenness_hash_each_subgraph_once(tmp_path, monkey
     monkeypatch.setattr(_centrality_cache, "subgraph_signature", counting)
     gb = _build(tmp_path, _FILES)
     await gb.compute_metrics_parallel()
-    assert len(calls) == 2  # one file subgraph, one symbol subgraph
+    # The file and symbol subgraphs, plus the symbol communities' input graph.
+    assert len(calls) == 3
 
 
 def test_pagerank_and_betweenness_share_one_cache_file(tmp_path):
@@ -445,3 +446,86 @@ def test_weighted_graphs_are_never_served_cached_pagerank(tmp_path):
     gb2 = GraphBuilder("C:/fake", centrality_cache_dir=tmp_path)
     gb2.symbol_subgraph = lambda: weighted
     assert gb2.symbol_pagerank() == nx.pagerank(weighted)
+
+
+# --- communities -------------------------------------------------------------
+
+
+def _forbid_partition(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("communities must not be detected again")
+
+    monkeypatch.setattr("repowise.core.analysis.communities._partition", _boom)
+
+
+def _symbol_builder(cache_dir, edges, head="c0ffee"):
+    gb = GraphBuilder("C:/fake", centrality_cache_dir=cache_dir, head_commit=head)
+    for u, v in edges:
+        gb._graph.add_node(u, node_type="symbol")
+        gb._graph.add_node(v, node_type="symbol")
+        gb._graph.add_edge(u, v, edge_type="calls")
+    return gb
+
+
+_CHAIN = [(f"s{i:04d}", f"s{i + 1:04d}") for i in range(1499)]
+
+
+def test_unchanged_graph_reuses_both_partitions(tmp_path, monkeypatch):
+    gb1 = _build(tmp_path, _FILES)
+    files, info, symbols = gb1.community_detection(), gb1.community_info(), gb1.symbol_communities()
+
+    _forbid_partition(monkeypatch)
+    gb2 = _build(tmp_path, _FILES)
+    assert gb2.community_detection() == files
+    assert gb2.community_info() == info
+    assert gb2.symbol_communities() == symbols
+
+
+def test_file_partition_input_change_detects_again(tmp_path):
+    from repowise.core.analysis.communities import detect_file_communities
+
+    _build(tmp_path, _FILES).community_detection()
+    other = "def other():\n    return 1\n"
+    gb = _build(tmp_path, [*_FILES, ("other.py", other)])
+    assert gb.community_detection() == detect_file_communities(gb.graph(), repo_name="fake")[0]
+
+
+def test_symbol_partition_is_carried_within_budget_and_detected_past_it(tmp_path, monkeypatch):
+    from repowise.core.analysis.communities import detect_symbol_communities
+    from repowise.core.ingestion.graph import _metrics
+
+    budget = int((1500 + 1499) * _metrics._CHURN_BUDGET_FRACTION)
+    scored = _symbol_builder(tmp_path, _CHAIN).symbol_communities()
+
+    with monkeypatch.context() as m:
+        _forbid_partition(m)
+        near = _symbol_builder(tmp_path, [*_CHAIN, ("s0005", "new")], head="deadbee")
+        carried = near.symbol_communities()
+    assert carried == {**scored, "new": scored["s0005"]}
+
+    far_edges = [*_CHAIN, *((f"s{i:04d}", f"x{i}") for i in range(budget))]
+    far = _symbol_builder(tmp_path, far_edges, head="deadbee")
+    assert far.symbol_communities() == detect_symbol_communities(far._graph)
+
+
+def test_carried_symbols_vote_on_their_links_and_isolates_get_their_own():
+    import networkx as nx
+
+    from repowise.core.analysis.communities import carry_symbol_communities
+
+    g = nx.Graph()
+    g.add_edges_from([("a", "n1"), ("b", "n1"), ("c", "n1")])
+    g.add_node("lone")
+    carried = carry_symbol_communities({"a": 3, "b": 3, "c": 1, "gone": 0}, g)
+    assert carried == {"a": 3, "b": 3, "c": 1, "n1": 3, "lone": 4}
+
+
+def test_a_partition_from_other_code_is_not_reused(tmp_path, monkeypatch):
+    from repowise.core.analysis import communities
+
+    gb1 = _build(tmp_path, _FILES)
+    gb1.community_detection()
+    monkeypatch.setattr(communities, "community_code_fingerprint", lambda: "other")
+    cache = CentralityCache(tmp_path)
+    signature = communities.file_community_signature(gb1.graph(), "fake")
+    assert cache.lookup_communities("file", signature=signature, code="other") is None

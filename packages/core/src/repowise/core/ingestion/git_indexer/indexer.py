@@ -52,6 +52,8 @@ from .blame_graph import BlameGraph
 from .co_change import CoChangeWalk, compute_co_changes_and_entropy
 from .enrich import compute_percentiles
 from .file_history import DECAY_REFRESH_KEYS, _window_anchor, decay_meta, index_file
+from .fix_shape_cache import FixShapeCache
+from .fix_walk_cache import FixWalkCache
 from .function_blame import build_blame_index
 from .prior_defects import FixWalk, PriorDefects, collect_fix_commits, compute_prior_defects
 from .records import (
@@ -615,6 +617,10 @@ class GitIndexer:
             sample.deep_commits,
             sample.history_complete_through_depth,
         )
+
+    def _fix_walk_cache(self, repo: Any) -> FixWalkCache | None:
+        """The fix walk's record cache in the index directory, when there is one."""
+        return FixWalkCache.load(self._window_cache_dir(), repo, writable=not self.read_only)
 
     def _window_cache_dir(self) -> Path | None:
         """Where the commit-window cache lives: the index directory, once it exists.
@@ -1185,6 +1191,7 @@ class GitIndexer:
                 tracked,
                 as_of_ts=self._resolve_as_of_ts(repo),
                 skip_shas=known_shas,
+                walk_cache=self._fix_walk_cache(repo),
             )
             rows, ok = self._build_fix_events(walk)
             self._record_git_episodes(walk)
@@ -1221,7 +1228,19 @@ class GitIndexer:
         try:
             with timed(timings, "git.fix_walk"):
                 try:
-                    fix_walk = collect_fix_commits(repo, indexable_files, as_of_ts=as_of_ts)
+                    # Opens every fix diff (fix events need them) and seeds the
+                    # caches an update reads, so its walk reads only new commits.
+                    shape_cache = FixShapeCache.load(self._window_cache_dir())
+                    shape_cache.shapes = {}
+                    fix_walk = collect_fix_commits(
+                        repo,
+                        indexable_files,
+                        as_of_ts=as_of_ts,
+                        shape_cache=shape_cache,
+                        walk_cache=self._fix_walk_cache(repo),
+                    )
+                    if not self.read_only:
+                        shape_cache.save()
                     prior_defects = compute_prior_defects(
                         repo, indexable_files, as_of_ts=as_of_ts, walk=fix_walk
                     )

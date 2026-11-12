@@ -43,6 +43,7 @@ import threading
 import weakref
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -60,7 +61,7 @@ log = structlog.get_logger(__name__)
 _CACHE_VERSION = 4
 _CACHE_FILENAME = "centrality_cache.pkl"
 
-__all__ = ["BetweennessScoring", "CentralityCache", "subgraph_signature"]
+__all__ = ["BetweennessScoring", "CentralityCache", "CommunityEntry", "subgraph_signature"]
 
 
 def subgraph_signature(graph) -> str:
@@ -109,6 +110,23 @@ class _Entry:
 
 
 @dataclass(frozen=True)
+class CommunityEntry:
+    """One kind's last full community detection, and the input it ran on.
+
+    *code* is the partition code's fingerprint; an entry from other code is never
+    reused. *extra* is whatever else the detection returned (the file kind's
+    community info and algorithm name).
+    """
+
+    code: str
+    signature: str
+    assignment: dict[str, int]
+    edges: frozenset[int]
+    scored_commit: str | None
+    extra: Any = None
+
+
+@dataclass(frozen=True)
 class BetweennessScoring:
     """Cached values, plus what a caller needs to judge their age.
 
@@ -132,6 +150,8 @@ class CentralityCache:
         # kind -> (signature, alpha, values). Exact-signature reuse only: unlike
         # betweenness, PageRank is cheap enough that drift is never worth serving.
         self._pagerank: dict[str, tuple[str, float, dict[str, float]]] = {}
+        # kind -> last full community detection; reused like betweenness.
+        self._communities: dict[str, CommunityEntry] = {}
         self._lock = threading.Lock()
         self._loaded = False
         self._signatures: dict[str, tuple[weakref.ref, str]] = {}
@@ -155,6 +175,7 @@ class CentralityCache:
         self._signature_lock = threading.Lock()
         self.__dict__.setdefault("_signatures", {})
         self.__dict__.setdefault("_pagerank", {})
+        self.__dict__.setdefault("_communities", {})
 
     def signature(self, kind: str, graph) -> str:
         """:func:`subgraph_signature` of *graph*, hashed once per subgraph object.
@@ -182,6 +203,7 @@ class CentralityCache:
             self._entries = payload.get("entries", {})
             # Optional key: files written before PageRank was cached lack it.
             self._pagerank = payload.get("pagerank", {})
+            self._communities = payload.get("communities", {})
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unsigned / unreadable -> recompute
@@ -194,6 +216,7 @@ class CentralityCache:
                 "version": _CACHE_VERSION,
                 "entries": self._entries,
                 "pagerank": self._pagerank,
+                "communities": self._communities,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
@@ -259,5 +282,51 @@ class CentralityCache:
             self._ensure_loaded()
             self._entries[kind] = _Entry(
                 signature, dict(values), _edge_fingerprints(graph), scored_commit
+            )
+            self._save_locked()
+
+    def lookup_communities(
+        self, kind: str, *, signature: str, code: str, graph=None, max_churn: int = 0
+    ) -> tuple[CommunityEntry, int] | None:
+        """*kind*'s last full detection and how far *graph* has drifted from its input.
+
+        An exact *signature* match is churn 0. Otherwise, given the partition
+        input *graph*, the entry is still served while nodes-plus-edges churn
+        stays within *max_churn*, as betweenness is. ``None`` means recompute.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            entry = self._communities.get(kind)
+        if entry is None or entry.code != code:
+            return None
+        if entry.signature == signature:
+            return entry, 0
+        if graph is None or max_churn <= 0:
+            return None
+        nodes = set(graph.nodes())
+        scored = entry.assignment.keys()
+        churn = len(nodes - scored) + len(scored - nodes)
+        churn += len(_edge_fingerprints(graph) ^ entry.edges)
+        if churn > max_churn:
+            return None
+        return entry, churn
+
+    def put_communities(
+        self,
+        kind: str,
+        *,
+        signature: str,
+        code: str,
+        assignment: dict[str, int],
+        graph=None,
+        scored_commit: str | None,
+        extra: Any = None,
+    ) -> None:
+        """Record a full detection for *kind* and persist atomically."""
+        edges = _edge_fingerprints(graph) if graph is not None else frozenset()
+        with self._lock:
+            self._ensure_loaded()
+            self._communities[kind] = CommunityEntry(
+                code, signature, dict(assignment), edges, scored_commit, extra
             )
             self._save_locked()

@@ -330,20 +330,56 @@ class MetricsMixin:
     # ------------------------------------------------------------------
 
     def community_detection(self) -> dict[str, int]:
-        """Assign a community ID to each file node."""
+        """Assign a community ID to each file node.
+
+        With the disk cache attached, a graph whose partition input is unchanged
+        since the last detection reuses its result, which is the same result.
+        """
         if self._community_cache is not None:
             return self._community_cache
 
-        from repowise.core.analysis.communities import detect_file_communities
+        from repowise.core.analysis.communities import (
+            community_code_fingerprint,
+            detect_file_communities,
+            file_community_signature,
+        )
 
         try:
             repo_path = getattr(self, "_repo_path", None)
-            assignment, info, algo = detect_file_communities(
-                self._graph, repo_name=repo_path.name if repo_path else None
-            )
+            repo_name = repo_path.name if repo_path else None
+            cache = getattr(self, "_centrality_cache", None)
+            signature: str | None = None
+            if cache is not None:
+                try:
+                    signature = file_community_signature(self._graph, repo_name)
+                    hit = cache.lookup_communities(
+                        "file", signature=signature, code=community_code_fingerprint()
+                    )
+                except Exception as exc:
+                    log.debug("community_cache_lookup_failed", kind="file", error=str(exc))
+                    signature, hit = None, None
+                if hit is not None:
+                    entry, _ = hit
+                    log.info("communities_reused_from_cache", kind="file", churn=0)
+                    self._community_cache = dict(entry.assignment)
+                    self._community_info_cache, self._community_algo = entry.extra
+                    return self._community_cache
+            assignment, info, algo = detect_file_communities(self._graph, repo_name=repo_name)
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
+            if cache is not None and signature is not None:
+                try:
+                    cache.put_communities(
+                        "file",
+                        signature=signature,
+                        code=community_code_fingerprint(),
+                        assignment=assignment,
+                        scored_commit=self._head_commit,
+                        extra=(info, algo),
+                    )
+                except Exception as exc:
+                    log.debug("community_cache_store_failed", kind="file", error=str(exc))
         except Exception as exc:
             log.warning("community_detection_failed", error=str(exc))
             file_nodes = [
@@ -355,14 +391,69 @@ class MetricsMixin:
         return self._community_cache
 
     def symbol_communities(self) -> dict[str, int]:
-        """Assign a community ID to each symbol node using call/heritage edges."""
+        """Assign a community ID to each symbol node using call/heritage edges.
+
+        With the disk cache attached, the last full detection is reused while
+        the call graph has drifted from its input no further than the churn
+        budget betweenness uses, carried onto the current symbols by
+        :func:`~repowise.core.analysis.communities.carry_symbol_communities`.
+        The reference stays pinned to that detection, so drift accumulates and
+        the first update past the budget detects afresh.
+        """
         if self._symbol_community_cache is not None:
             return self._symbol_community_cache
 
-        from repowise.core.analysis.communities import detect_symbol_communities
+        from repowise.core.analysis.communities import (
+            carry_symbol_communities,
+            community_code_fingerprint,
+            detect_symbol_communities,
+            symbol_community_graph,
+        )
 
         try:
-            self._symbol_community_cache = detect_symbol_communities(self._graph)
+            undirected = symbol_community_graph(self._graph)
+            cache = getattr(self, "_centrality_cache", None)
+            signature: str | None = None
+            if cache is not None:
+                try:
+                    signature = cache.signature("symbol_communities", undirected)
+                    hit = cache.lookup_communities(
+                        "symbol",
+                        signature=signature,
+                        code=community_code_fingerprint(),
+                        graph=undirected,
+                        max_churn=self._churn_budget(undirected),
+                    )
+                except Exception as exc:
+                    log.debug("community_cache_lookup_failed", kind="symbol", error=str(exc))
+                    signature, hit = None, None
+                if hit is not None:
+                    entry, churn = hit
+                    log.info(
+                        "communities_reused_from_cache",
+                        kind="symbol",
+                        churn=churn,
+                        scored_commit=entry.scored_commit,
+                    )
+                    self._symbol_community_cache = (
+                        dict(entry.assignment)
+                        if churn == 0
+                        else carry_symbol_communities(entry.assignment, undirected)
+                    )
+                    return self._symbol_community_cache
+            self._symbol_community_cache = detect_symbol_communities(self._graph, undirected)
+            if cache is not None and signature is not None:
+                try:
+                    cache.put_communities(
+                        "symbol",
+                        signature=signature,
+                        code=community_code_fingerprint(),
+                        assignment=self._symbol_community_cache,
+                        graph=undirected,
+                        scored_commit=self._head_commit,
+                    )
+                except Exception as exc:
+                    log.debug("community_cache_store_failed", kind="symbol", error=str(exc))
         except Exception as exc:
             log.warning("symbol_community_detection_failed", error=str(exc))
             self._symbol_community_cache = {}
