@@ -649,7 +649,9 @@ def _build_update_graph(
     # Everything already held (the seed snapshot, every parse, the walk) lives
     # past the build, yet each full collection the build's allocations
     # trigger walks all of it again: 15 s of a 75 s patch on a 62k-file
-    # repository. Frozen objects are skipped until the build is done.
+    # repository. Frozen objects are skipped until the build is done; a caller
+    # that froze its own keeps them frozen.
+    unfreeze = gc.get_freeze_count() == 0
     gc.freeze()
     try:
         parsed_files, source_map, unparsed = _add_parsed_files(
@@ -700,7 +702,8 @@ def _build_update_graph(
         )
         return parsed_files, source_map, unparsed, reach_refusal
     finally:
-        gc.unfreeze()
+        if unfreeze:
+            gc.unfreeze()
         if timings is not None:
             timings.stop("rebuild.graph")
 
