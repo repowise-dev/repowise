@@ -50,6 +50,10 @@ class TestCompactOverviewContent:
         content = "# repowise: overview\n\nRepowise indexes code.\n\n## Getting Started\n\nRun it."
         assert _compact_overview_content(content) == "# repowise: overview\n\nRepowise indexes code."
 
+    def test_a_bold_opening_sentence_is_prose(self):
+        lead = "# x\n\n**Repowise** indexes code. **Usage:** run it."
+        assert _compact_overview_content(f"{lead}\n\n## More\n\nText.") == lead
+
 
 class TestDedupeTourSteps:
     def test_collapses_consecutive_identical_kind_and_reason(self):

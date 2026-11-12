@@ -53,9 +53,13 @@ def _is_prose_line(line: str) -> bool:
     """Not blank, a heading, a table row, a list item, a quote, a code fence or
     a ``**Field:** value`` line."""
     text = line.strip()
-    if text.startswith("**") and ":**" in text:
+    if _FIELD_LINE_RE.match(text):
         return False
     return bool(text) and not text.startswith(("#", "|", "- ", "* ", "```", ">"))
+
+
+# "**Files:** 128 | ..." opens with a bold label ending in a colon.
+_FIELD_LINE_RE = re.compile(r"\*\*[^*]+:\*\*")
 
 
 def _overview_content(overview_page: Page | None, want_full: bool) -> tuple[str, str | None]:

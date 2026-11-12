@@ -181,6 +181,8 @@ def _not_indexed_overview(exc: LookupError) -> dict[str, Any] | None:
     """
     if _NOT_INDEXED_MARKER not in str(exc) or _state._store_error is not None:
         return None
+    if _state._registry is not None:  # one workspace member; the notice speaks for the server
+        return None
     notice = _shape_not_indexed()
     return {"title": "Not indexed", "content_md": notice.pop("error"), **notice}
 
