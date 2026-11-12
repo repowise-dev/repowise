@@ -42,6 +42,9 @@ _NON_RESOLUTION_EDGES = frozenset({"defines", "has_method", "co_changes"})
 # only by a site's name. Objective-C is not patched: reaching one sends the
 # update to the full build.
 _C_LANGUAGES = frozenset({"c", "cpp", "objectivec"})
+_C_EXTENSIONS = frozenset(
+    {".c", ".h", ".cc", ".cpp", ".cxx", ".c++", ".hh", ".hpp", ".hxx", ".h++", ".inl", ".ipp", ".tcc"}
+)
 
 #: How many ``*`` re-export hops a re-routed import's names are followed through.
 _MAX_STAR_DEPTH = 16
@@ -304,6 +307,12 @@ def _passed_on_names(
     return _star_closure_names(parsed_files, targets_of, reached)
 
 
+def _family(parsed: Any) -> str:
+    """The language whose resolver reads *parsed*'s imports; JS and TS share one."""
+    language = parsed.file_info.language
+    return "typescript" if language == "javascript" else language
+
+
 def _rerouted_files(
     parsed_files: dict[str, Any],
     targets_of: Callable[[str], list[tuple[str, ...]]],
@@ -314,19 +323,30 @@ def _rerouted_files(
 
     A C/C++ include resolves from the file set and the build configuration
     alone, and only ever to a file of its own stem: it reroutes only when a
-    file of that stem was added or removed.
+    file of that stem was added or removed. Another language's import reaches
+    a C/C++ file only by spelling its path or stem, so when only C/C++ files
+    moved, an import that spells none of their stems cannot reroute.
     """
     from repowise.core.ingestion.graph._stem import stem_key
 
     moved = {p for p in parsed_files if p not in resolutions} | {p for p in resolutions if p not in parsed_files}
     moved_stems = {stem_key(p) for p in moved}
+    only_c_moved = bool(moved) and all(PurePosixPath(p).suffix.lower() in _C_EXTENSIONS for p in moved)
+    # An import can also bind differently because a file of its own language
+    # changed what it declares, whatever moved.
+    edited_languages = {_family(parsed_files[p]) for p in edited if p in parsed_files}
     rerouted: set[str] = set()
     names: set[str] = set()
     for path, parsed in parsed_files.items():
         if path in edited or not parsed.imports:
             continue
-        if parsed.file_info.language in ("c", "cpp") and not any(
-            PurePosixPath(imp.module_path).stem.lower() in moved_stems for imp in parsed.imports
+        if parsed.file_info.language in ("c", "cpp"):
+            if not any(PurePosixPath(i.module_path).stem.lower() in moved_stems for i in parsed.imports):
+                continue
+        elif (
+            only_c_moved
+            and _family(parsed) not in edited_languages
+            and not any(stem and stem in i.module_path.lower() for i in parsed.imports for stem in moved_stems)
         ):
             continue
         saved = resolutions[path][1]

@@ -54,6 +54,21 @@ def _fill_node_attrs(node: dict[str, Any], attrs: dict[str, Any], rescoped: bool
             node.setdefault(key, value)
 
 
+# Import edges the build adds after it has read every file's import targets:
+# a seeded one must not reach the targets a full build would not have seen.
+# Ceiling: the scope-scan sibling passes (JVM, .NET, PHP, Swift) share hints
+# with import resolution and still count; upgrade by stamping an edge's pass.
+_LATE_IMPORT_HINTS = frozenset({"header_source_pair", "spec_mirror", "partial_class"})
+
+
+def is_import_target_edge(data: dict[str, Any]) -> bool:
+    """Whether an edge stands in a file's import targets, as resolution reads them."""
+    edge_type = data.get("edge_type")
+    if edge_type == "imports":
+        return data.get("hint_source") not in _LATE_IMPORT_HINTS
+    return edge_type == "type_use" and not data.get("no_scope_widening")
+
+
 class _ScopedGraphHost(Protocol):
     _graph: Any
     _parsed_files: dict[str, Any]
@@ -162,13 +177,7 @@ class ScopedBuildMixin:
             if path in scope:
                 continue
             import_targets[path] = {
-                target
-                for target, data in graph[path].items()
-                if data.get("edge_type") == "imports"
-                or (
-                    data.get("edge_type") == "type_use"
-                    and not data.get("no_scope_widening")
-                )
+                target for target, data in graph[path].items() if is_import_target_edge(data)
             }
 
     def _clear_global_pass_edges(self: _ScopedGraphHost) -> None:

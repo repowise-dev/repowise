@@ -4,8 +4,7 @@ C/C++ resolution reads every file a translation unit reaches through its
 includes, transitively: a declaration pairs with the definition whose file
 includes its header, a class's base must be reachable from it, a bare call may
 land on a free function anywhere in the reach. The file-to-file edges that
-carry this reach (includes, the header/implementation pairs, and the type uses
-the resolver counts as imports) are only known once the patched files are
+carry this reach (includes, and the type uses the resolver counts as imports) are only known once the patched files are
 re-resolved, and a change to one file's reach changes it for every file that
 includes it. So the patch is checked after the build: when an existing file's
 include reach is not the one the last build had, the patch may differ from a
@@ -21,12 +20,13 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 _C_LANGUAGES = frozenset({"c", "cpp"})
-_REACH_EDGES = frozenset({"imports", "type_use"})
 
 
 def _carries_reach(attrs: Mapping[str, Any]) -> bool:
     """An edge the resolver walks as an include (see ``GraphBuilder.build``)."""
-    return attrs.get("edge_type", "imports") in _REACH_EDGES and not attrs.get("no_scope_widening")
+    from repowise.core.ingestion.graph._scoped import is_import_target_edge
+
+    return is_import_target_edge({"edge_type": "imports", **attrs})
 
 
 def _adjacency(edges: Iterable[tuple[str, str, Mapping[str, Any]]]) -> dict[str, set[str]]:

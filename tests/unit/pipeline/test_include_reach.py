@@ -73,3 +73,13 @@ def test_other_languages_are_not_compared() -> None:
 
     parsed = _parsed("a.py", "b.py", "c.py", language="python")
     assert include_reach_refusal(_graph(after), _seed(before), parsed) is None
+
+
+def test_a_pass_that_runs_after_import_resolution_carries_no_reach() -> None:
+    """A full build reads import targets before it pairs headers with sources."""
+    before = [("a.cpp", "b.h", "imports")]
+    graph = _graph(before)
+    graph.add_edge("b.h", "b.cpp", edge_type="imports", hint_source="header_source_pair")
+    graph.add_edge("b.cpp", "c.h", edge_type="imports")
+
+    assert include_reach_refusal(graph, _seed(before), _parsed("a.cpp", "b.h", "b.cpp", "c.h")) is None
