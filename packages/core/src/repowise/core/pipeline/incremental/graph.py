@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 from typing import Any
 
@@ -645,6 +646,11 @@ def _build_update_graph(
     """
     if timings is not None:
         timings.start("rebuild.graph")
+    # Everything already held (the seed snapshot, every parse, the walk) lives
+    # past the build, yet each full collection the build's allocations
+    # trigger walks all of it again: 15 s of a 75 s patch on a 62k-file
+    # repository. Frozen objects are skipped until the build is done.
+    gc.freeze()
     try:
         parsed_files, source_map, unparsed = _add_parsed_files(
             graph_builder, file_bytes, merged, collect_sources
@@ -694,6 +700,7 @@ def _build_update_graph(
         )
         return parsed_files, source_map, unparsed, reach_refusal
     finally:
+        gc.unfreeze()
         if timings is not None:
             timings.stop("rebuild.graph")
 

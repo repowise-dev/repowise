@@ -29,11 +29,18 @@ def _carries_reach(attrs: Mapping[str, Any]) -> bool:
     return is_import_target_edge({"edge_type": "imports", **attrs})
 
 
+# The edge types :func:`_carries_reach` can accept: a cheap first test over
+# the graph's every edge, most of which are calls.
+_REACH_EDGE_TYPES = frozenset({"imports", "type_use", None})
+
+
 def _adjacency(edges: Iterable[tuple[str, str, Mapping[str, Any]]]) -> dict[str, set[str]]:
     """``{node: the nodes it reaches in one step}``."""
     adjacency: dict[str, set[str]] = {}
     for source, target, attrs in edges:
-        if source != target and _carries_reach(attrs):
+        if attrs.get("edge_type") not in _REACH_EDGE_TYPES or source == target:
+            continue
+        if _carries_reach(attrs):
             adjacency.setdefault(source, set()).add(target)
     return adjacency
 
