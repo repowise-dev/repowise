@@ -8,15 +8,43 @@ by a parity test.
 
 from __future__ import annotations
 
+from typing import Any
+
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.reasoning import REASONING_MODES
 from repowise.core.settings.areas._common import factory
-from repowise.core.settings.model import Env, Setting
+from repowise.core.settings.model import Env, Proposal, Setting
 
 AREA = "generation"
 _s = factory(AREA)
 _e = factory(AREA, scope="env")
 _FILE_SETTINGS_WRITER = "repowise.core.repo_config:write_file_setting"
+
+
+def _suggest_embedder(facts: Any) -> Proposal | None:
+    """A real embedder, when docs exist without semantic search and one is set up here."""
+    search = facts.search
+    if search.get("full_text") != "available" or search.get("semantic") != "unavailable":
+        return None
+    if facts.embedder_found is None or facts.values.get("embedder") not in (None, "mock"):
+        return None
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    name, why = facts.embedder_found
+    spec = PROVIDER_SPECS.get(name)
+    spend = (
+        f"Runs on your machine through {name}, no spend."
+        if spec is not None and spec.local
+        else f"One embedding pass over the wiki pages, billed to your {name} key."
+    )
+    return Proposal(
+        name,
+        f"Semantic search is off here, though the {name} embedder is ready: {why}.",
+        f"Search and get_answer match by meaning, not only exact words. {spend}",
+        "quality",
+        command=f"repowise reindex --embedder {name}",
+    )
+
 
 SETTINGS: tuple[Setting, ...] = (
     _s(
@@ -132,6 +160,7 @@ SETTINGS: tuple[Setting, ...] = (
         env=Env("REPOWISE_EMBEDDER", wins=True),
         parser="repowise.core.settings.parsers:folded",
         reload="reindex",
+        suggest_when=_suggest_embedder,
     ),
     _s(
         "embedding_model",

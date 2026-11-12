@@ -12,6 +12,7 @@ from typing import Any
 import click
 from rich.table import Table
 
+from repowise.cli.commands.config_cmd import suggested_for, suggested_line
 from repowise.cli.helpers import (
     CommandTarget,
     console,
@@ -1053,6 +1054,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "model_command": model_command(scope),
                 "decision_lanes_pending": list(pending_lanes),
                 "rescore_pending": rescore,
+                "suggestions": [s.to_dict() for s in suggested_for(repo_path)],
             }
         )
         return
@@ -1189,11 +1191,20 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
             console.print()
         console.print(f"[dim]{_RESCORE_LINES[tuple(rescore)]}[/dim]")
 
-    if incomplete is not None:
-        next_lines = [_incomplete_line(incomplete)]
-    else:
-        next_lines = _next_actions_lines(_load_actions(repo_path))
+    next_lines = _closing_lines(repo_path, incomplete, path)
     if next_lines:
         console.print()
         for line in next_lines:
             console.print(line)
+
+
+def _closing_lines(repo_path: Path, incomplete: dict | None, path: str | None) -> list[str]:
+    """What to do next: resume an unfinished index, or the next actions; then settings."""
+    if incomplete is not None:
+        lines = [_incomplete_line(incomplete)]
+    else:
+        lines = _next_actions_lines(_load_actions(repo_path))
+    settings_line = suggested_line(len(suggested_for(repo_path)), path)
+    if settings_line:
+        lines.append(f"[dim]{settings_line}[/dim]")
+    return lines

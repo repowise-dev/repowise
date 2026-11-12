@@ -133,6 +133,9 @@ TOUR_GLOSS = "a guided tour of all this in your browser"
 #: Prints the agent's pass over the decisions on the busiest files.
 DISCOVER_COMMAND = "repowise decision discover"
 
+#: Lists the settings that fit this repository. Doctor and status name it too.
+SUGGESTED_STEP = "repowise config list --suggested"
+
 #: Rows after ``repowise serve``.
 _MAX_FOLLOW_UPS = 2
 
@@ -163,6 +166,7 @@ def build_contextual_next_steps(
     top_hotspot: str = "",
     discovery_records: int | None = None,
     setup: Any = None,
+    suggested: int = 0,
 ) -> list[tuple[str, str]]:
     """The dashboard, then the two moves that most need making.
 
@@ -177,11 +181,13 @@ def build_contextual_next_steps(
     1. nothing wired an MCP client, so no agent can reach any of this yet
        (``--no-editor-setup``, the CI shape, has no Connected line to say so);
     2. the index is deliberately partial (fast);
-    3. the agent's pass over the decisions on the busiest files: the
+    3. settings that fit this repository better than their defaults
+       (``suggested``, counted by ``repowise config list --suggested``);
+    4. the agent's pass over the decisions on the busiest files: the
        background records to check, or with none (a keyless index mines
        none), the decisions nobody recorded. Left out when the store could not
        be read (``discovery_records`` is None) or nothing is busy;
-    4. the largest concrete finding, or a search row when there is none.
+    5. the largest concrete finding, or a search row when there is none.
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
@@ -193,6 +199,11 @@ def build_contextual_next_steps(
     if fast_mode:
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
+        )
+    if suggested:
+        noun = "setting fits" if suggested == 1 else "settings fit"
+        candidates.append(
+            (SUGGESTED_STEP, f"{suggested} {noun} this repo, each with why and the command")
         )
     candidates.extend(_discover_step(discovery_records, hotspot_count))
     dead = dead_unreachable + dead_unused
