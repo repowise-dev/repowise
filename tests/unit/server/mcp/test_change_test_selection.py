@@ -444,7 +444,7 @@ def test_a_checkout_git_could_not_list_does_not_read_as_no_tests() -> None:
     )
     empty = Checkout([], [], PytestRoots(), lambda _p: None, lambda _p: True)
 
-    selection = select(change, result, TestSelectionConfig(), empty, Plan({}, {}, []))
+    selection = select(change, result, TestSelectionConfig(), empty, Plan({}, {}, [], {}))
 
     assert selection.run_all is True
     assert any("git could not list" in r for r in selection.reasons)

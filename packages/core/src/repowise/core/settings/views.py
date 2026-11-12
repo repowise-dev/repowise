@@ -8,6 +8,7 @@ fields.
 from __future__ import annotations
 
 import json
+import re
 import shlex
 from dataclasses import replace
 from pathlib import Path
@@ -21,6 +22,7 @@ __all__ = [
     "change_report",
     "changed",
     "cli_value",
+    "masked",
     "path_flag",
     "requirement",
     "resolve_many",
@@ -31,6 +33,9 @@ __all__ = [
 
 #: What a set credential's value reads as in listings and the settings API.
 HIDDEN = "(set, hidden)"
+
+#: The ``user:pass@`` of a URL, wherever it sits in a value or a sentence.
+_USERINFO = re.compile(r"\b([a-z][a-z0-9+.-]*://)[^/@\s'\"]+@", re.IGNORECASE)
 
 #: When a change takes effect, in plain words.
 APPLIES = {
@@ -59,10 +64,26 @@ def resolve_many(root: Path | str, settings: tuple[Setting, ...]) -> list[Resolv
 
 
 def _hide_secret(s: Setting, r: Resolved) -> Resolved:
-    """A credential that is set reads as :data:`HIDDEN`, so no listing prints it."""
+    """A credential that is set reads as :data:`HIDDEN`, and a URL's userinfo as ``***``.
+
+    Display only: the stored value is never changed.
+    """
     if s.secret and r.value not in (None, ""):
         return replace(r, value=HIDDEN)
-    return r
+    problem = masked(r.problem) if r.problem else r.problem
+    return replace(r, value=masked(r.value), problem=problem)
+
+
+def masked(value: Any) -> Any:
+    """*value* with any URL's ``user:pass@`` shown as ``***@`` (``https://***@host/v1``).
+
+    Text, or each text item of a list; anything else is returned as it is.
+    """
+    if isinstance(value, str):
+        return _USERINFO.sub(r"\1***@", value)
+    if isinstance(value, list):
+        return [masked(v) for v in value]
+    return value
 
 
 def changed(s: Setting, r: Resolved) -> bool:

@@ -294,8 +294,11 @@ def strip_leading_headings(text: str) -> str:
 class FullTextSearch:
     """Full-text search backed by SQLite FTS5 or PostgreSQL tsvector."""
 
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(self, engine: AsyncEngine, *, repository_id: str | None = None) -> None:
         self._engine = engine
+        # Set on a store several repositories share: search() reads this one's
+        # pages unless a call names another.
+        self._repository_id = repository_id
         self._dialect = engine.dialect.name  # "sqlite" or "postgresql"
         # term → how many pages it matches. "" is the corpus size.
         self._df_cache: OrderedDict[str, int] = OrderedDict()
@@ -702,6 +705,8 @@ class FullTextSearch:
         """
         if not query.strip():
             return []
+        if repository_id is None:
+            repository_id = self._repository_id
 
         if self._dialect == "sqlite":
             return await self._search_sqlite(query, limit, repository_id=repository_id)

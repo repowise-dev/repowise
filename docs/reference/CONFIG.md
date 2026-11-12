@@ -39,11 +39,14 @@ registry in `repowise.core.settings`, so each lists every key or variable
 its block reads. Where an environment variable sets a key, the `Env var`
 column names it and says whether it or the file wins.
 
-> **Limited validation.** The file loads as a plain YAML dict, so unknown or
-> misspelled keys are silently ignored. Exceptions: they stop
-> `repowise security check` in the `security:` block; `max_tokens` must be a
-> positive integer when documentation is generated; `repowise doctor` validates
-> the `distill:` block. Check spelling and indentation first.
+> **Checking the file.** Commands read an unknown or misspelled key as nothing
+> and most bad values as the default. `repowise doctor` checks every key in
+> this file and every variable in these tables against the registry: a value
+> repowise cannot use fails with the form it accepts and the
+> `repowise config set` or `reset` command that fixes it, an unknown key warns
+> with the closest real key, and a variable that decides against the file is
+> named. `repowise doctor --repair` resets bad file values to their defaults
+> (outside `decisions:` and the provider selection, which take the row's command).
 
 ```yaml
 provider: anthropic
