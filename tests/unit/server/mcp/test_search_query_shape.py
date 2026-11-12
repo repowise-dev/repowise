@@ -323,6 +323,8 @@ def test_a_regex_query_compiles_with_its_required_text(query, needle) -> None:
         "user authentication session tokens",
         "(a+)+b",  # backtracks without bound: not run as a regex
         r"([a-z]*)*x",
+        r"(a|aa)+$",
+        r"src\.github\workflows",  # a Windows path, though \. is an escape
     ],
 )
 def test_names_paths_prose_and_runaway_patterns_are_not_regexes(query) -> None:
@@ -331,10 +333,29 @@ def test_names_paths_prose_and_runaway_patterns_are_not_regexes(query) -> None:
     assert query_pattern(query) is None
 
 
-def test_a_regex_anchor_holds_per_line() -> None:
+def test_a_regex_is_searched_one_line_at_a_time() -> None:
+    from repowise.server.mcp_server._line_hits import _regex_lines
     from repowise.server.mcp_server._query_shape import regex_query
 
-    assert regex_query(r"^import os$").findall("x = 1\nimport os\ny = 2") == ["import os"]
+    lines = ["x = 1", "import os", "foo", "bar = 2"]
+    assert _regex_lines(lines, regex_query(r"^import os$"), float("inf")) == ([(2, "import os")], 0)
+    # A class that could match a newline never joins two lines.
+    assert _regex_lines(lines, regex_query(r"foo\s+bar"), float("inf")) == ([], 0)
+
+
+def test_an_over_long_line_is_counted_not_searched() -> None:
+    from repowise.server.mcp_server._line_hits import MAX_REGEX_LINE_CHARS, _regex_lines
+    from repowise.server.mcp_server._query_shape import regex_query
+
+    lines = ["a" * (MAX_REGEX_LINE_CHARS + 1) + " def x(", "def y("]
+    assert _regex_lines(lines, regex_query(r"def \w+\("), float("inf")) == ([(2, "def y(")], 1)
+
+
+def test_every_alternative_is_returned_for_the_caller_to_cap() -> None:
+    from repowise.server.mcp_server._query_shape import _MAX_ALTERNATIVES, alternation_parts
+
+    names = [f"name_{i}" for i in range(_MAX_ALTERNATIVES + 2)]
+    assert alternation_parts("|".join(names)) == names
 
 
 def test_a_regex_with_backslashes_is_not_a_path() -> None:

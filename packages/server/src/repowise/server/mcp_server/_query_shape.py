@@ -242,7 +242,7 @@ def _embedded_identifiers(query: str, names: Container[str] | None = None) -> li
         # Each part of ``a|b`` is a name on its own, never prose.
         return [
             p
-            for p in parts
+            for p in parts[:_MAX_ALTERNATIVES]
             if _WORD_CHAIN_RE.fullmatch(p) and (_looks_like_code_name(p) or _names_symbol(p, names))
         ]
     return [
@@ -484,8 +484,9 @@ def _unescape_literal(part: str) -> str | None:
 
 
 def alternation_parts(query: str) -> list[str] | None:
-    """The literal alternatives of an ``a|b|c`` query (grep's most common
-    shape), at most ``_MAX_ALTERNATIVES``, else ``None``.
+    """The distinct literal alternatives of an ``a|b|c`` query (grep's most
+    common shape), else ``None``. A caller searches at most
+    ``_MAX_ALTERNATIVES`` of them and says so when there were more.
 
     An outer group or ``\\b`` wrapper is dropped; ``\\.`` and ``\\(`` read as
     the character. A part using other regex syntax makes the query a regex.
@@ -500,12 +501,12 @@ def alternation_parts(query: str) -> list[str] | None:
     parts = [_unescape_literal(p.strip()) for p in re.split(r"(?<!\\)\|", q)]
     if len(parts) < 2 or not all(parts):
         return None
-    return list(dict.fromkeys(p for p in parts if p))[:_MAX_ALTERNATIVES]
+    return list(dict.fromkeys(p for p in parts if p))
 
 
 def _nested_repeat(items: Any) -> bool:
-    """Whether a parsed pattern repeats something that itself repeats
-    (``(a+)+``), the shape that backtracks without bound."""
+    """Whether a parsed pattern repeats something that itself repeats or
+    branches (``(a+)+``, ``(a|aa)+``), the shapes that backtrack without bound."""
     from re import _constants as c  # type: ignore[attr-defined]
 
     repeats = (c.MAX_REPEAT, c.MIN_REPEAT, getattr(c, "POSSESSIVE_REPEAT", c.MAX_REPEAT))
@@ -513,7 +514,7 @@ def _nested_repeat(items: Any) -> bool:
     def walk(seq: Any, under_repeat: bool) -> bool:
         for op, av in seq:
             repeat = op in repeats
-            if repeat and under_repeat:
+            if under_repeat and (repeat or op is c.BRANCH):
                 return True
             children = (
                 [av[2]] if repeat else [av[-1]] if op is c.SUBPATTERN else av[1] if op is c.BRANCH else []
@@ -532,17 +533,23 @@ def regex_query(query: str) -> re.Pattern[str] | None:
     one that compiles and cannot backtrack without bound.
     """
     q = query.strip()
-    if not q or "\n" in q or not _REGEX_SYNTAX.search(q):
+    if not q or "\n" in q or not _REGEX_SYNTAX.search(q) or _WINDOWS_PATH.match(q):
         return None
     try:
         from re import _parser  # type: ignore[attr-defined]
 
         if _nested_repeat(_parser.parse(q)):
             return None
-        # Per line, as grep reads it: ``^`` and ``$`` anchor each line.
-        return re.compile(q, re.MULTILINE)
+        # Searched one line at a time, as grep reads it.
+        return re.compile(q)
     except (re.error, ImportError, RecursionError, OverflowError):
         return None
+
+
+# Two or more backslash-separated segments of 2+ characters and no regex-only
+# character: ``src\.github\workflows`` is a Windows path though ``\.`` is an
+# escape; ``\bfoo\b`` is not (its last segment is one letter).
+_WINDOWS_PATH = re.compile(r"^[\w.-]*(?:\\[\w.-]{2,}){2,}$")
 
 
 def required_literal(pattern: re.Pattern[str]) -> str | None:
@@ -561,7 +568,14 @@ def required_literal(pattern: re.Pattern[str]) -> str | None:
     for op, av in _parser.parse(pattern.pattern):
         run = run + chr(av) if op is c.LITERAL else ""
         best = max(best, run, key=len)
-    return best if len(best) >= 3 else None
+    # A line never holds a newline, and a lone surrogate has no bytes to find.
+    if len(best) < 3 or not best.isprintable():
+        return None
+    try:
+        best.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return best
 
 
 def query_pattern(query: str) -> tuple[str, Any] | None:

@@ -974,3 +974,13 @@ def test_a_scan_out_of_time_names_what_it_did_not_read(scan_repo, monkeypatch):
         f"time budget: scanned 0 of {len(_SCAN_TREE)} files;"
         " not scanned: src/ 3, docs/ 2, tests/ 1, README.md 1"
     ]
+
+
+@pytest.mark.asyncio
+async def test_alternatives_past_the_cap_are_named_and_leave_lines_incomplete(tree):
+    parts = ["backend_of"] + [f"absent_{i}" for i in range(_line_hits._MAX_ALTERNATIVES)]
+    out = await search_codebase("|".join(parts))
+
+    cap = _line_hits._MAX_ALTERNATIVES
+    assert out["complete"] is False
+    assert f"only the first {cap} of {len(parts)} alternatives searched" in out["reasons"]

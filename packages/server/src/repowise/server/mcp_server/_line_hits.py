@@ -53,6 +53,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._query_shape import (
+    _MAX_ALTERNATIVES,
     _NL_QUESTION_TOKENS,
     _canonical_symbol_query,
     _identifier_candidates,
@@ -152,6 +153,30 @@ def _matching_lines(text: str, pattern: re.Pattern[str]) -> list[tuple[int, str]
         if len(out) > max(SMALL_SET_LINES, MAX_LINES_PER_FILE):
             break
     return out
+
+
+# A regex query reads each line on its own, as grep does, and skips lines
+# longer than this (minified bundles), where a search can run quadratic.
+MAX_REGEX_LINE_CHARS = 4_000
+
+
+def _regex_lines(
+    lines: Any, pattern: re.Pattern[str], deadline: float
+) -> tuple[list[tuple[int, str]], int] | None:
+    """``(matching lines, long lines skipped)`` from an iterable of text
+    lines; ``None`` when the deadline passes first."""
+    out: list[tuple[int, str]] = []
+    skipped = 0
+    for n, line in enumerate(lines, 1):
+        if n % 2_000 == 0 and time.monotonic() > deadline:
+            return None
+        if len(line) > MAX_REGEX_LINE_CHARS:
+            skipped += 1
+        elif pattern.search(line):
+            out.append((n, line))
+            if len(out) > max(SMALL_SET_LINES, MAX_LINES_PER_FILE):
+                break
+    return out, skipped
 
 
 def _inside(rel: str) -> bool:
@@ -321,7 +346,7 @@ def _scan_listed_regex(root: Path, pattern: re.Pattern[str]) -> tuple[list[dict[
     needle = required_literal(pattern)
     files, reasons = _scan_files(root, needle)
     raw = needle.encode("utf-8") if needle else None
-    rows, scan_reasons = _scan(root, files, pattern, _DECLARATION_LINE, raw)
+    rows, scan_reasons = _scan(root, files, pattern, _DECLARATION_LINE, raw, per_line=True)
     return rows, reasons + scan_reasons
 
 
@@ -415,11 +440,14 @@ def _scan(
     pattern: re.Pattern[str],
     definition: re.Pattern[str],
     raw: bytes | None,
+    *,
+    per_line: bool = False,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Lines of *files* matching *pattern*, definitions first, and why they may
     not be all. *raw* is bytes every match holds, read to skip a file cheaply;
-    ``None`` reads every file's text."""
-    run = _ScanRun(root, pattern, definition, raw)
+    ``None`` reads every file's text. *per_line* searches each line on its own
+    (a regex query), skipping over-long lines."""
+    run = _ScanRun(root, pattern, definition, raw, per_line)
     for i, rel in enumerate(files):
         if i >= MAX_SCAN_FILES:
             run.reasons.append(f"over {MAX_SCAN_FILES} files")
@@ -450,7 +478,12 @@ class _ScanRun:
     """One scan's budget, rows and the tallies its reasons are written from."""
 
     def __init__(
-        self, root: Path, pattern: re.Pattern[str], definition: re.Pattern[str], raw: bytes | None
+        self,
+        root: Path,
+        pattern: re.Pattern[str],
+        definition: re.Pattern[str],
+        raw: bytes | None,
+        per_line: bool = False,
     ) -> None:
         from repowise.core.ingestion.document_extractors import document_extractor_claims
 
@@ -463,7 +496,8 @@ class _ScanRun:
         self.oversized: list[str] = []
         self.unreadable: list[str] = []
         self.scanned = self.per_file_capped = self.overflow = self.defs = 0
-        self.undecodable = self.binary_hits = 0
+        self.undecodable = self.binary_hits = self.long_lines = 0
+        self.per_line = per_line
 
     def read(self, rel: str) -> Any:
         """``(lines, streamed)`` matching in *rel*, ``None`` to skip it, or a stop marker."""
@@ -510,7 +544,18 @@ class _ScanRun:
             if not raw.isascii() and not _is_utf8(data):
                 self.undecodable += 1
             return None
-        return _matching_lines(data.decode("utf-8", errors="replace"), self.pattern), False
+        text = data.decode("utf-8", errors="replace")
+        if self.per_line:
+            return self._lines_each(text.splitlines())
+        return _matching_lines(text, self.pattern), False
+
+    def _lines_each(self, lines: Any, streamed: bool = False) -> Any:
+        """Matching lines searched one at a time, or the time stop marker."""
+        found = _regex_lines(lines, self.pattern, self.deadline)
+        if found is None:
+            return _STOP_TIME
+        self.long_lines += found[1]
+        return found[0], streamed
 
     def _read_large(self, rel: str, fh: Any, size: int) -> Any:
         """:meth:`read` for a file past the whole-read cap: streamed, or skipped."""
@@ -527,6 +572,10 @@ class _ScanRun:
         # size, so only this scan finds what it holds.
         if is_extracted_document(self.root / rel, head, claims=self.claims):
             return None
+        if self.per_line:
+            fh.seek(0)
+            text = (line.decode("utf-8", errors="replace").rstrip("\r\n") for line in fh)
+            return self._lines_each(text, streamed=True)
         streamed = _stream_matching_lines(fh, self.raw, self.pattern, self.deadline)
         return _STOP_TIME if streamed is None else (streamed, True)
 
@@ -572,6 +621,10 @@ class _ScanRun:
             reasons.append(f"{self.undecodable} non-UTF-8 text files not scanned")
         if self.binary_hits:
             reasons.append(f"{self.binary_hits} binary files contain the token")
+        if self.long_lines:
+            reasons.append(
+                f"{self.long_lines} lines over {MAX_REGEX_LINE_CHARS} characters not searched"
+            )
         if per_file_capped:
             reasons.append(f"{_per_file_cap_reason()} {per_file_capped} files")
         return rows, reasons
@@ -745,42 +798,59 @@ async def _attach_pattern(
     lines. ``matched_as`` says which reading was used."""
     kind, value = shape
     if kind == "regex":
-        found = await _served(response, repo, fed, lambda ctx: _repo_regex_rows(ctx, value))
-        if found is None:
-            return
-        ctx, (rows, reasons, _scan_only) = found
-        rows.sort(key=_row_order(False))
-        groups = [_capped_per_file(rows, reasons)]
-        literal_scan = True
+        found = await _regex_groups(response, repo, fed, value)
     else:
-        ctx, rows, groups, reasons, literal_scan = None, [], [], [], True
-        unmatched: list[str] = []
-        for part in value:
-            literal = _literal(part) or (part, False)
-            found = await _served_rows(
-                response, repo, fed, part, [part] if literal[1] else [], literal
-            )
-            part_rows, part_reasons, scan = ([], [], True) if found is None else found[1]
-            ctx = ctx or (found[0] if found else None)
-            part_rows.sort(key=_row_order(False))
-            cut: list[str] = []
-            groups.append(_capped_per_file(part_rows, cut))
-            rows += part_rows
-            reasons += [f"{part}: {r}" for r in part_reasons + cut]
-            literal_scan = literal_scan and scan
-            if not part_rows:
-                unmatched.append(part)
-        if ctx is None:
-            return
-        if unmatched:
-            # Read with ``complete``: true means these parts match nowhere.
-            response["unmatched"] = unmatched
+        found = await _alternation_groups(response, repo, fed, value)
+    if found is None:
+        return
+    ctx, rows, groups, reasons, literal_scan = found
     caps = _fair_caps([len(g) for g in groups], MAX_LINES)
     if any(len(g) > c for g, c in zip(groups, caps, strict=True)):
         reasons.append(OVER_LINES)
     shown = [row for g, c in zip(groups, caps, strict=True) for row in g[:c]]
     response["matched_as"] = kind
     _serve_lines(response, query, ctx, rows, shown, reasons, False, literal_scan)
+
+
+async def _regex_groups(
+    response: dict, repo: str | None, fed: Federation | None, pattern: re.Pattern[str]
+) -> tuple[Any, list[dict[str, Any]], list[list[dict[str, Any]]], list[str], bool] | None:
+    """``(context, rows, [rows to show], reasons, literal_scan)`` for a regex query."""
+    found = await _served(response, repo, fed, lambda ctx: _repo_regex_rows(ctx, pattern))
+    if found is None:
+        return None
+    ctx, (rows, reasons, _scan_only) = found
+    rows.sort(key=_row_order(False))
+    return ctx, rows, [_capped_per_file(rows, reasons)], reasons, True
+
+
+async def _alternation_groups(
+    response: dict, repo: str | None, fed: Federation | None, parts: list[str]
+) -> tuple[Any, list[dict[str, Any]], list[list[dict[str, Any]]], list[str], bool] | None:
+    """As :func:`_regex_groups`, one group per alternative, each read as its own query."""
+    ctx, rows, groups, reasons, literal_scan = None, [], [], [], True
+    unmatched: list[str] = []
+    if len(parts) > _MAX_ALTERNATIVES:
+        reasons.append(f"only the first {_MAX_ALTERNATIVES} of {len(parts)} alternatives searched")
+    for part in parts[:_MAX_ALTERNATIVES]:
+        literal = _literal(part) or (part, False)
+        found = await _served_rows(response, repo, fed, part, [part] if literal[1] else [], literal)
+        part_rows, part_reasons, scan = ([], [], True) if found is None else found[1]
+        ctx = ctx or (found[0] if found else None)
+        part_rows.sort(key=_row_order(False))
+        cut: list[str] = []
+        groups.append(_capped_per_file(part_rows, cut))
+        rows += part_rows
+        reasons += [f"{part}: {r}" for r in part_reasons + cut]
+        literal_scan = literal_scan and scan
+        if not part_rows:
+            unmatched.append(part)
+    if ctx is None:
+        return None
+    if unmatched:
+        # Read with ``complete``: true means these parts match nowhere.
+        response["unmatched"] = unmatched
+    return ctx, rows, groups, reasons, literal_scan
 
 
 def _fair_caps(sizes: list[int], cap: int) -> list[int]:
