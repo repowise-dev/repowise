@@ -526,9 +526,6 @@ def _scan(
     a comment, docstring or sentence carries ``prose``.
     """
     word = _word(name)
-    # Bound under any name by its importers, so no spelling can be scanned for.
-    default_export = re.compile(r"\bexport\s+default\b|\bas\s+default\b")
-    def_path, def_start, def_end = definition
     sites: list[dict[str, Any]] = []
     unreadable: list[str] = []
     stale = 0
@@ -550,45 +547,91 @@ def _scan(
             renamed.add(rel)
         elif python and local:
             python_aliases[rel] = local
-        if rel == def_path and not python:
-            # A CommonJS module's exports can rename on any line, so any use counts.
-            commonjs = any(_CJS_EXPORT.search(t) for t in lines)
-            if commonjs or any(default_export.search(t) and word.search(t) for t in lines):
-                is_default = True
-        # A rename outside an import already marks the file; its spelling is
-        # not listed, since an object key (``{ name: vi.fn() }``) reads the same.
-        spellings = [word] + [_word(a) for a in local]
+        if rel == definition[0] and not python and _default_exported(lines, word):
+            is_default = True
         live = rel in dirty
         graph_calls = set() if live else call_lines.get(rel, set())
-        def_seen = rel != def_path
-        prose = _ProseLines(rel, lines, name)
-        for n, text in enumerate(lines, 1):
-            in_graph = n in graph_calls
-            hits = [m for s in spellings for m in s.finditer(text)]
-            if in_graph and not hits:
-                stale += 1
-                continue
-            if n in imports:
-                hits = _outside_module(text, hits)
-            if not hits:
-                continue
-            if live:
-                in_graph = any(_CALL_AFTER.match(text, m.end()) for m in hits)
-            if not def_seen and def_start <= n <= def_end:
-                kind, def_seen = "definition", True
-            elif n in imports:
-                kind = "import"
-            elif in_graph:
-                kind = "call"
-            else:
-                kind = "reference"
-            site = _site(rel, n, kind, lines)
-            if kind in ("call", "reference") and not word.search(text):
-                site["alias"] = True
-            elif kind == "reference" and prose(n, hits):
-                site["prose"] = True
-            sites.append(site)
+        found, missed = _file_sites(
+            rel, lines, imports, name, local, definition, graph_calls, live
+        )
+        sites += found
+        stale += missed
     return sites, unreadable, stale, renamed, is_default, python_aliases, packages
+
+
+# Bound under any name by its importers, so no spelling can be scanned for.
+_DEFAULT_EXPORT = re.compile(r"\bexport\s+default\b|\bas\s+default\b")
+
+
+def _default_exported(lines: list[str], word: re.Pattern[str]) -> bool:
+    """Whether the definition file hands the name on under any name importers pick."""
+    # A CommonJS module's exports can rename on any line, so any use counts.
+    if any(_CJS_EXPORT.search(t) for t in lines):
+        return True
+    return any(_DEFAULT_EXPORT.search(t) and word.search(t) for t in lines)
+
+
+def _file_sites(
+    rel: str,
+    lines: list[str],
+    imports: set[int],
+    name: str,
+    local: set[str],
+    definition: tuple[str, int, int],
+    graph_calls: set[int],
+    live: bool,
+) -> tuple[list[dict[str, Any]], int]:
+    """``(sites, stale graph call lines)`` of one read file."""
+    word = _word(name)
+    # A rename outside an import already marks the file; its spelling is
+    # not listed, since an object key (``{ name: vi.fn() }``) reads the same.
+    spellings = [word] + [_word(a) for a in local]
+    def_path, def_start, def_end = definition
+    def_seen = rel != def_path
+    prose = _ProseLines(rel, lines, name)
+    sites: list[dict[str, Any]] = []
+    stale = 0
+    for n, text in enumerate(lines, 1):
+        hits = [m for s in spellings for m in s.finditer(text)]
+        if n in graph_calls and not hits:
+            stale += 1
+            continue
+        if n in imports:
+            hits = _outside_module(text, hits)
+        if not hits:
+            continue
+        is_def = not def_seen and def_start <= n <= def_end
+        def_seen = def_seen or is_def
+        kind = _line_kind(is_def, n in imports, _calls_here(text, hits, n, graph_calls, live))
+        site = _site(rel, n, kind, lines)
+        _flag(site, word, text, prose(n, hits) if kind == "reference" else False)
+        sites.append(site)
+    return sites, stale
+
+
+def _calls_here(
+    text: str, hits: list[re.Match[str]], n: int, graph_calls: set[int], live: bool
+) -> bool:
+    """Whether line *n* calls the name: from the text in an edited file, else the graph."""
+    if live:
+        return any(_CALL_AFTER.match(text, m.end()) for m in hits)
+    return n in graph_calls
+
+
+def _line_kind(is_def: bool, is_import: bool, in_graph: bool) -> str:
+    if is_def:
+        return "definition"
+    if is_import:
+        return "import"
+    return "call" if in_graph else "reference"
+
+
+def _flag(site: dict[str, Any], word: re.Pattern[str], text: str, prose: bool) -> None:
+    """Mark a use only an import alias spells, else a mention only in prose."""
+    if site["kind"] in ("call", "reference") and not word.search(text):
+        site["alias"] = True
+    elif prose:
+        site["prose"] = True
 
 
 def _outside_module(text: str, hits: list[re.Match[str]]) -> list[re.Match[str]]:
