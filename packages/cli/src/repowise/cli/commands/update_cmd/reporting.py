@@ -101,7 +101,7 @@ def render_cascade_budget_warning(
     if structural:
         console.print(
             f"  {structural} structural pages (file / cycle) refresh on the next "
-            "[cyan]repowise update[/cyan], no model needed."
+            "[cyan]repowise update[/cyan] that brings a commit, no model needed."
         )
     if model:
         console.print(
