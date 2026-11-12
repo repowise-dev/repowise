@@ -11,6 +11,7 @@ what happens to the pages that summarize a regenerated concept page.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import time
 from pathlib import Path
@@ -379,7 +380,9 @@ def generate_command(
         return  # nothing generated, dry run, or declined — messaging already printed
 
     _write_state(repo_path, state, provider, outcome, embedder=embedder_name)
-    _record_written(outcome)
+    # Telemetry never ends a run whose pages are already saved.
+    with contextlib.suppress(Exception):
+        _record_written(outcome)
 
     _report_outcome(outcome, time.monotonic() - start)
     if embedder_upgraded:
