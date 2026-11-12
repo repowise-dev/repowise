@@ -128,21 +128,21 @@ def _lines(root: Path, path: str, terms: list[str]) -> list[dict]:
     A ticket the question names by its key (``PROJ-12`` for ``PROJ-12.md``)
     serves its opening body lines instead of the lines holding its key: those
     are its key, link and heading, while the opening says what the ticket is.
-    Ceiling: past ``_DOC_LINES_MAX`` lines the opening crowds out the lines
-    another question word holds further down."""
+    The lines another question word holds come first; the opening fills the rest."""
     text = (read_repo_file_text(root, path) or "").splitlines()
     end = _front_matter_end(text)
-    rows: dict[int, dict] = {}
     own = set(_ISSUE_KEY_RE.findall(Path(path).stem))
+    opening = []
     if own & set(terms):
         body = ((n, line) for n, line in enumerate(text[end:], end + 1) if line.strip())
-        for n, line in itertools.islice(body, _DOC_LINES_MAX):
-            rows[n] = _line_row(path, n, line, "match")
-        if rows:  # a ticket with no body still serves the lines naming its key
-            terms = [t for t in terms if t not in own]
-    for term in terms:
+        opening = list(itertools.islice(body, _DOC_LINES_MAX))
+    # A ticket with no body still serves the lines naming its key.
+    rows: dict[int, dict] = {}
+    for term in (t for t in terms if not (opening and t in own)):
         for row in scan_literal(root, [path], term, True)[0]:
             rows.setdefault(row["line"], row)
+    for n, line in opening[: max(_DOC_LINES_MAX - len(rows), 0)]:
+        rows.setdefault(n, _line_row(path, n, line, "match"))
     return [rows[n] for n in sorted(rows, key=lambda n: (n <= end, n))][:_DOC_LINES_MAX]
 
 

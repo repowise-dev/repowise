@@ -252,6 +252,21 @@ async def test_a_ticket_asked_about_by_key_serves_its_opening_not_its_key_lines(
     assert by_path["confluence/guide.md"] == "5: Tracked in PROJ-12."
 
 
+async def test_another_question_word_keeps_its_line_past_a_ticket_opening(tmp_path):
+    body = "# PROJ-12: Deploys stall\n" + "".join(f"Line {i}.\n" for i in range(8))
+    root = _repo(tmp_path / "r", {"jira/PROJ-12.md": body + "Roll back with zanzibarflux.\n"})
+
+    docs = await _find(root, "how does PROJ-12 use zanzibarflux")
+
+    assert docs.hits[0]["excerpt"].splitlines() == [
+        "1: # PROJ-12: Deploys stall",
+        "2: Line 0.",
+        "3: Line 1.",
+        "4: Line 2.",
+        "10: Roll back with zanzibarflux.",
+    ]
+
+
 async def test_a_ticket_with_no_body_still_serves_its_key_lines(tmp_path):
     root = _repo(tmp_path / "r", {"jira/PROJ-12.md": '---\nkey: "PROJ-12"\n---\n\n'})
 
