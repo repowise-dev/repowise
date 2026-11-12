@@ -112,7 +112,7 @@ async def prefetch_verdicts(
         await asyncio.to_thread(
             _prefetch, question=question, paths=paths, repo_path=repo_path, repo_name=repo_name
         )
-    except Exception:  # pragma: no cover - defensive; a disagreement is a bonus
+    except Exception:  # defensive; a disagreement is a bonus
         _log.warning("get_answer episode prefetch failed", exc_info=True)
 
 

@@ -443,6 +443,30 @@ class _StageClock:
         )
 
 
+def _kept_keyless_reply(ask: _Ask, qhash: str) -> dict | None:
+    """The reply kept for this keyless question, unless a model can answer it now."""
+    served = serve_keyless_reply(
+        repository=ask.repository,
+        repo_id=ask.repo_id,
+        qhash=qhash,
+        exclude_spec=ask.exclude_spec,
+        t0=ask.t0,
+    )
+    if served is not None and _resolve_provider_for_answer(getattr(ask.ctx, "path", None)):
+        return None
+    return served
+
+
+async def _prefetch_episodes(ask: _Ask, hits: list[dict], fallback_targets: list[str]) -> None:
+    """Check the episodes scoped to the ranked files, for the attach after synthesis."""
+    await prefetch_verdicts(
+        question=ask.question,
+        paths=[*fallback_targets, *(h["target_path"] for h in hits if h.get("target_path"))],
+        repo_path=getattr(ask.ctx, "path", None),
+        repo_name=getattr(ask.repository, "name", None),
+    )
+
+
 def _empty_question_payload(t0: float) -> dict:
     from repowise.server.mcp_server._savings.interaction import error_reply
 
@@ -845,16 +869,7 @@ async def get_answer(
             t0=t0,
         )
         if served is None:
-            served = serve_keyless_reply(
-                repository=repository,
-                repo_id=ask.repo_id,
-                qhash=qhash,
-                exclude_spec=exclude_spec,
-                t0=t0,
-            )
-            # A model set up since the reply was kept gets to answer.
-            if served is not None and _resolve_provider_for_answer(getattr(ctx, "path", None)):
-                served = None
+            served = _kept_keyless_reply(ask, qhash)
         if served is not None:
             clock.log("cached", "lookup")
             return served
@@ -956,14 +971,7 @@ async def get_answer(
 
     prompt = await _user_prompt(ask, hits, graph_callers, retrieved.other_repo_lines)
     # The episode check's git queries run while the model writes.
-    episode_prefetch = asyncio.ensure_future(
-        prefetch_verdicts(
-            question=question,
-            paths=[*fallback_targets, *(h["target_path"] for h in hits if h.get("target_path"))],
-            repo_path=getattr(ctx, "path", None),
-            repo_name=getattr(repository, "name", None),
-        )
-    )
+    episode_prefetch = asyncio.ensure_future(_prefetch_episodes(ask, hits, fallback_targets))
     clock.mark("prepare")
     # Budgets its own timeout per provider: a remote API needs seconds, a CLI
     # subprocess or local model needs minutes.
