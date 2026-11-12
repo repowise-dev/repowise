@@ -119,12 +119,8 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     # dropped — the response carries an expandable [repowise#<ref>] marker.
     collector = OmissionCollector("get_overview", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
-        try:
-            repository = await _get_repo(session)
-        except LookupError as exc:
-            notice = _not_indexed_overview(exc)
-            if notice is None:
-                raise
+        repository, notice = await _repo_or_notice(session)
+        if notice is not None:
             attach_ignored_arguments(notice, ignored)
             return notice
         result = await _repo_overview(
@@ -163,6 +159,17 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         collector.attach(result)
         attach_ignored_arguments(result, ignored)
         return result
+
+
+async def _repo_or_notice(session: Any) -> tuple[Any, dict[str, Any] | None]:
+    """The served repository, or the not-indexed answer when there is none."""
+    try:
+        return await _get_repo(session), None
+    except LookupError as exc:
+        notice = _not_indexed_overview(exc)
+        if notice is None:
+            raise
+        return None, notice
 
 
 def _not_indexed_overview(exc: LookupError) -> dict[str, Any] | None:
