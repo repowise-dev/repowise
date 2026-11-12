@@ -257,3 +257,22 @@ def test_the_review_names_the_command_that_runs_its_tests(tmp_path) -> None:
     finally:
         asyncio.run(engine.dispose())
     assert named >= 2
+
+
+def test_a_failing_command_lookup_keeps_the_review(tmp_path, monkeypatch) -> None:
+    from repowise.server.routers import blast_radius
+
+    async def _raise(*_a, **_k):
+        raise OSError("manifest unreadable")
+
+    repo = (tmp_path / "repo").resolve()
+    shas = _history(repo)
+    engine, factory = asyncio.run(_index(repo, shas[-1]))
+    monkeypatch.setattr(blast_radius, "run_commands", _raise)
+    try:
+        body = asyncio.run(_web(factory, shas[0]))
+    finally:
+        asyncio.run(engine.dispose())
+    assert body["review"] is not None
+    assert body["review"]["tests"]["tests_to_run"]
+    assert body["review"]["test_commands"] == []

@@ -29,7 +29,18 @@ describe("testsPlan", () => {
       total: 2,
       commands: ["pytest tests/test_a.py tests/test_b.py"],
       measured: false,
+      apart: 0,
+      summary: "2 tests reach the change.",
     });
+  });
+
+  it("counts the tests kept apart, and never says none need to run while they do", () => {
+    const review = makeReview({
+      tests: { tests_to_run: [], total: 0, broadcast_total: 2, import_closure_total: 1, summary: "3 more tests must still run." },
+    });
+    const plan = testsPlan(review);
+    expect(plan).toMatchObject({ kind: "list", tests: [], total: 3, apart: 3 });
+    expect(testsFigure(review, 0)).toEqual({ figure: "3", runAll: false, total: 3 });
   });
 
   it("says run everything, with the reasons, when the selection could not narrow it", () => {
@@ -66,6 +77,10 @@ describe("notMeasured", () => {
       "Change risk and test selection: not measured (The change could not be scored: bad object)",
       "Code health: not checked yet ()",
     ]);
+  });
+
+  it("names a health check that failed as not measured", () => {
+    expect(notMeasured({ review: makeReview(), health: "error", notIndexed: 0 }).map((l) => l.state)).toEqual(["not measured"]);
   });
 
   it("names a hand-picked file set as not scored", () => {

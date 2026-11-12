@@ -272,7 +272,9 @@ function ReviewTests({ plan }: { plan: TestsPlan }) {
     <div className="space-y-2">
       {plan.commands.length > 0 && <TestCommand text={plan.commands.join("\n")} />}
       <p className={NONE}>{plan.measured ? "Chosen by coverage of the changed code." : "Inferred from imports and calls; no coverage data decided them."}</p>
-      <PathList paths={plan.tests} total={plan.total} />
+      {/* The counted-apart tests are not listed by name; the selection's own summary says why they still run. */}
+      {plan.apart > 0 && <p className={NONE}>{plan.summary}</p>}
+      <PathList paths={plan.tests} total={plan.total - plan.apart} />
     </div>
   );
 }
@@ -438,16 +440,20 @@ function Stats({ reach, total, analyzed, tests }: { reach: Reach; total: number;
   );
 }
 
+/** What the copy button copies: the review's selection when there is one, else the blast radius's tests. */
+function copyableTests(result: Result, plan: TestsPlan | null): { commands: string[]; paths: string[] } {
+  // A run-all verdict has nothing narrower to copy.
+  if (plan) return plan.kind === "list" ? { commands: plan.commands, paths: plan.tests } : { commands: [], paths: [] };
+  return {
+    commands: result.test_commands ?? [],
+    paths: (result.test_impact?.recommendations ?? []).map((t) => t.test_file ?? t.test_id),
+  };
+}
+
 /** Copies the test commands, or the test paths when the server gave no command. */
 function CopyTests({ result, plan }: { result: Result; plan: TestsPlan | null }) {
   const [copied, setCopied] = useState(false);
-  // The review's selection wins when there is one; a run-all verdict has nothing narrower to copy.
-  const commands = plan ? (plan.kind === "list" ? plan.commands : []) : (result.test_commands ?? []);
-  const paths = plan
-    ? plan.kind === "list"
-      ? plan.tests
-      : []
-    : (result.test_impact?.recommendations ?? []).map((t) => t.test_file ?? t.test_id);
+  const { commands, paths } = copyableTests(result, plan);
   if (commands.length === 0 && paths.length === 0) return null;
   const text = commands.length > 0 ? commands.join("\n") : [...new Set(paths)].join("\n");
   const label = commands.length > 0 ? "Copy test command" : `Copy ${count(new Set(paths).size, "test path")}`;

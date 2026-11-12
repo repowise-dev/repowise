@@ -45,7 +45,17 @@ export function riskLede(risk: ChangeRiskBlock): RiskLede {
 
 /** How the tests step reads: run a list, run everything, or nothing needs to run. */
 export type TestsPlan =
-  | { kind: "list"; tests: string[]; total: number; commands: string[]; measured: boolean }
+  | {
+      kind: "list";
+      tests: string[];
+      /** Every test to run, the ones counted apart included. */
+      total: number;
+      commands: string[];
+      measured: boolean;
+      /** Tests that still run but are counted apart (kept by a conftest, or reaching the change only through imports). */
+      apart: number;
+      summary: string;
+    }
   | { kind: "run_all"; reasons: string[]; startWith: string[] }
   | { kind: "none"; summary: string };
 
@@ -56,13 +66,17 @@ export function testsPlan(review: ChangeReview): TestsPlan {
   const t = review.tests;
   if (t.run_all || !SELECTED.has(t.status))
     return { kind: "run_all", reasons: t.reasons.filter(Boolean), startWith: t.tests_to_run };
-  if (t.tests_to_run.length === 0) return { kind: "none", summary: t.summary };
+  // Counted apart from `total` by the selection, but they still run.
+  const apart = (t.broadcast_total ?? 0) + (t.import_closure_total ?? 0);
+  if (t.tests_to_run.length === 0 && apart === 0) return { kind: "none", summary: t.summary };
   return {
     kind: "list",
     tests: t.tests_to_run,
-    total: t.total,
+    total: t.total + apart,
     commands: review.test_commands ?? [],
     measured: t.basis === "measured",
+    apart,
+    summary: t.summary,
   };
 }
 
@@ -117,6 +131,7 @@ const HEALTH_LANE: Partial<Record<HealthLane, Lane>> = {
     reason: "the health check reads both sides of the change from a checkout, and this server has none",
   },
   not_run: { key: "health", name: "Code health", state: "not checked yet", reason: null },
+  error: { key: "health", name: "Code health", state: "not measured", reason: "the health check failed; its error is under Health check" },
 };
 
 /**
