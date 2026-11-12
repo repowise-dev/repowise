@@ -31,8 +31,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from .base import BasePerfDialect
+from .iterables import IterableSources, text_of
 from .java import (
+    _JAVA_TYPE_NAME,
     AMBIGUOUS_DB,
     FILES_METHODS,
     FS_CONSTRUCTORS,
@@ -46,6 +47,9 @@ from .java import (
 
 if TYPE_CHECKING:
     from tree_sitter import Node
+
+    from ..loop_facts import SinkProbe
+    from .iterables import Source
 
 # ``scala.io.Source`` factories, split by boundary.
 SOURCE_FS_METHODS: frozenset[str] = frozenset({"fromFile", "fromInputStream", "fromResource"})
@@ -72,6 +76,7 @@ HTTP4S_METHODS: frozenset[str] = frozenset({"expect", "fetch"})
 _AWAIT_METHODS: frozenset[str] = frozenset({"result", "ready"})
 
 _STRING_KINDS: frozenset[str] = frozenset({"string", "interpolated_string_expression"})
+_COLLECTION_FACTORIES = frozenset({"List", "Seq", "Vector", "Set", "Array", "Map"})
 
 
 def _last_type_segment(node: Node) -> str | None:
@@ -87,7 +92,17 @@ def _last_type_segment(node: Node) -> str | None:
     return None
 
 
-class ScalaPerfDialect(BasePerfDialect):
+def _scala_range(value: Node | None) -> tuple[str, Node | None]:
+    """Read a literal-start ``to`` / ``until`` range, or an ordinary iterable."""
+    if value is not None and value.type == "infix_expression":
+        op = text_of(value.child_by_field_name("operator"))
+        start = value.child_by_field_name("left")
+        if op in ("to", "until") and start is not None and start.type == "integer_literal":
+            return "counted", value.child_by_field_name("right")
+    return "each", value
+
+
+class ScalaPerfDialect(IterableSources):
     language = "scala"
     markers = frozenset(
         {
@@ -219,6 +234,119 @@ class ScalaPerfDialect(BasePerfDialect):
         if node.type != "for_expression":
             return None
         return self._dotted_path(self._first_enumerator_iterable(node))
+
+    # -- loop sources ----------------------------------------------------------
+
+    function_kinds = frozenset({"function_definition", "lambda_expression"})
+    int_kinds = frozenset({"integer_literal"})
+    wrapper_kinds = frozenset({"parenthesized_expression"})
+    member_kinds = frozenset({"field_expression"})
+    pass_through = frozenset(
+        {
+            "map", "filter", "flatMap", "toList", "toSeq", "iterator", "view",
+            "keys", "values", "distinct", "sorted", "zipWithIndex",
+        }
+    )
+    caps = frozenset({"take"})
+    size_names = frozenset({"size", "length"})
+    cursor_advances = frozenset({"next", "hasNext"})
+    recursive_listings = frozenset({"walk", "find"})
+    change_kinds = frozenset({"assignment_expression"})
+    grow_methods = frozenset({"append", "addOne", "addAll", "prepend", "put", "update"})
+    conditional_kinds = frozenset(
+        {
+            "if_expression", "match_expression", "case_clause", "try_expression",
+            "catch_clause", "while_expression", "do_while_expression", "for_expression",
+        }
+    )
+
+    def loop_header(self, loop: Node) -> tuple[str, Node | None]:
+        if loop.type in ("while_expression", "do_while_expression"):
+            return "cursor", loop.child_by_field_name("condition")
+        if loop.type != "for_expression":
+            return "each", None
+        enums = next((c for c in loop.named_children if c.type == "enumerators"), None)
+        # A later generator can multiply a fixed first collection by unknown
+        # data. The walker represents the whole comprehension as one loop.
+        if enums is None or sum(c.type == "enumerator" for c in enums.named_children) != 1:
+            return "each", None
+        return _scala_range(self._first_enumerator_iterable(loop))
+
+    def call_parts(self, node: Node) -> tuple[str, Node | None, list[Node]] | None:
+        if node.type == "field_expression":
+            member = self.member_parts(node)
+            return (member[0], member[1], []) if member is not None else None
+        if node.type != "call_expression":
+            return None
+        fn = node.child_by_field_name("function")
+        if fn is not None and fn.type == "generic_function":
+            fn = fn.child_by_field_name("function")
+        args = node.child_by_field_name("arguments")
+        arg_nodes = [c for c in args.named_children if "comment" not in c.type] if args else []
+        member = self.member_parts(fn) if fn is not None else None
+        if member is not None:
+            return member[0], member[1], arg_nodes
+        return (text_of(fn), None, arg_nodes) if fn is not None and fn.type == "identifier" else None
+
+    def member_parts(self, node: Node) -> tuple[str, Node] | None:
+        value = node.child_by_field_name("value") if node.type == "field_expression" else None
+        return (text_of(node.child_by_field_name("field")), value) if value is not None else None
+
+    def special_call(
+        self,
+        call: Node,
+        parts: tuple[str, Node | None, list[Node]],
+        loop: Node,
+        probe: SinkProbe,
+    ) -> Source | None:
+        method, receiver, args = parts
+        if receiver is None and method in _COLLECTION_FACTORIES:
+            return ("constant", "bounded") if args and not any(self._is_spread(a) for a in args) else None
+        owner = text_of(receiver)
+        if method == "values" and not args and _JAVA_TYPE_NAME.fullmatch(owner):
+            return "constant", "bounded"
+        if owner == "Files" and method in ("list", "walk", "find", "newDirectoryStream"):
+            grows = method in self.recursive_listings and self._walks_repo(call, method, loop)
+            return "listing", "grows_with_data" if grows else None
+        return None
+
+    def _is_spread(self, arg: Node) -> bool:
+        arg = self._unwrap(arg)
+        # Scala 2 ``xs: _*`` and Scala 3 ``xs*`` expand an unknown number of entries.
+        if arg.type == "ascription_expression":
+            return any(c.type == "repeated_parameter_type" for c in arg.named_children)
+        return arg.type == "postfix_expression" and text_of(arg.named_children[-1]) == "*"
+
+    def bindings_of(self, node: Node) -> list[tuple[bytes, Node]]:
+        if node.type in ("val_definition", "var_definition"):
+            name, value = node.child_by_field_name("pattern"), node.child_by_field_name("value")
+        elif node.type == "assignment_expression":
+            name, value = node.child_by_field_name("left"), node.child_by_field_name("right")
+        else:
+            return []
+        if name is not None and name.type == "identifier" and name.text and value is not None:
+            return [(name.text, value)]
+        return []
+
+    def mutated_name(self, node: Node) -> bytes | None:
+        if node.type == "infix_expression":
+            op = text_of(node.child_by_field_name("operator"))
+            left = node.child_by_field_name("left")
+            if op in ("+=", "++=") and left is not None and left.type == "identifier":
+                return left.text
+        return super().mutated_name(node)
+
+    def param_names(self, loop: Node) -> set[bytes]:
+        scope = self._scope(loop)
+        if scope is None:
+            return set()
+        return {
+            name.text
+            for params in scope.children_by_field_name("parameters")
+            for param in params.named_children
+            if param.type == "parameter"
+            and (name := param.child_by_field_name("name")) is not None and name.text
+        }
 
     # -- string concat ----------------------------------------------------------
 

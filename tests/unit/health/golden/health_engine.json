@@ -4865,6 +4865,7 @@
           "boundary_kind": "filesystem",
           "cross_function": false,
           "loop_key_unused": true,
+          "loop_iterates": "parameter",
           "loop_line": 16,
           "sink_call": "Source.fromFile",
           "symbol_line": 14,
@@ -4947,6 +4948,7 @@
         "line_start": 34,
         "line_end": 34,
         "details": {
+          "loop_iterates": "parameter",
           "loop_line": 33,
           "symbol_line": 31,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::regexInLoop",
@@ -4966,6 +4968,7 @@
         "line_start": 35,
         "line_end": 35,
         "details": {
+          "loop_iterates": "parameter",
           "loop_line": 33,
           "symbol_line": 31,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::regexInLoop",
@@ -4985,6 +4988,7 @@
         "line_start": 83,
         "line_end": 83,
         "details": {
+          "loop_iterates": "parameter",
           "loop_line": 82,
           "symbol_line": 81,
           "role_owner": "scala/perf_io_in_loop.scala::PerfIoInLoop::locked",
