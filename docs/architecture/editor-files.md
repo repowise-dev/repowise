@@ -147,21 +147,6 @@ Copilot, Kiro, opencode and Hermes receive (`agent_targets/instructions.py`).
 | `tools` | off | `tool_table.py`, the MCP tool table | All tools |
 | `commands` | off | Manifest scan: `package.json` scripts, `Makefile`, `pyproject.toml` | All detected |
 
----------|---------|--------|-----|
-| Header | always | Date and commit; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
-| `architecture` | on | Lead sentence of the `repo_overview` wiki page | 1 sentence |
-| `key_modules` | on | `module_page` pages by PageRank desc | Top 6 |
-| `entry_points` | on | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
-| `hotspots` | on | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
-| `health` | on | Health score, band and worst file | 1 line |
-| `code_health` | off | Every health signal (replaces `health`) | 1 line |
-| `fix_first` | off | The Fix-first queue | Top 3 |
-| `decisions` | on | Accepted active `decision_records`, titles only, by `staleness_score` asc | Top 3 |
-| `how_to_work` | on | Static: task routing (exact names to Grep/Read; flow, callers, risk, why and finishing checks to one Repowise call each), distill, decision capture; a keyless bullet when the index has no model | 10-11 lines |
-| `how_to_work_full` | off | The long protocol (replaces `how_to_work`) | — |
-| `tools` | off | `tool_table.py`, the MCP tool table | All tools |
-| `commands` | off | Manifest scan: `package.json` scripts, `Makefile`, `pyproject.toml` | All detected |
-
 ---
 
 ## 5. Data sources

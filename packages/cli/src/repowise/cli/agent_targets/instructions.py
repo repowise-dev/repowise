@@ -32,8 +32,9 @@ DISTILL_MARKER_END = "<!-- REPOWISE_DISTILL:END -->"
 #: inlined into the section text.
 DISTILL_SECTION_HEADING = "### Output Distillation"
 
-#: Leads with the call-first line: hosts with no generated ``CLAUDE.md``-style
-#: block (Cursor, Copilot, Kiro, opencode, Hermes) get it only from here.
+#: Leads with the call-first line: Cursor, Copilot and Kiro get no generated
+#: agent block, so this is where they read it. An ``AGENTS.md`` carrying both
+#: blocks repeats the one line, which costs less than a per-host variant.
 DISTILL_SECTION = f"""{AGENT_STEER}
 
 {DISTILL_SECTION_HEADING}
