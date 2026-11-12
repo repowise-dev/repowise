@@ -134,7 +134,10 @@ def _review(**tests: Any) -> ChangeReview:
         **tests,
     }
     return ChangeReview.model_construct(
-        revspec="main...feat/parser", risk=risk, tests=ChangeTestsBlock(**block)
+        revspec="main...feat/parser",
+        risk=risk,
+        tests=ChangeTestsBlock(**block),
+        test_commands=["pytest tests/test_core.py"],
     )
 
 
@@ -153,6 +156,7 @@ def test_a_run_all_selection_says_why_and_an_unscored_change_says_why() -> None:
     )
     assert "Run the whole suite:\n- reason 0" in text
     assert "And 3 more reasons." in text
+    assert "- Tests to run: the whole suite" in text
     assert "## Score and tests" in text and text.index("## Score and tests") < text.index("## Look at first")
 
     unscored = render_change_markdown(_response(review_unavailable="This server has no checkout."))

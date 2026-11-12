@@ -164,6 +164,21 @@ def _look_reason(r: ChangeBlastRadiusResponse, reach: _Reach) -> str | None:
     return None
 
 
+#: Test-selection statuses that name tests; any other runs the whole suite (change-review-model.ts).
+_SELECTED = frozenset({"selected", "degraded", "run_all"})
+
+
+def _tests_plan(r: ChangeBlastRadiusResponse) -> tuple[bool, int]:
+    """``(run_all, tests to run)``: the review's selection when there is one, else the blast radius's."""
+    if r.review is None:
+        return False, r.test_impact.recommendations_total
+    t = r.review.tests
+    if t.run_all or t.status not in _SELECTED:
+        return True, 0
+    # Counted apart from ``total`` by the selection, but they still run.
+    return False, t.total + (t.broadcast_total or 0) + (t.import_closure_total or 0)
+
+
 def _verdict(r: ChangeBlastRadiusResponse, reach: _Reach, total: int) -> tuple[str, str, str]:
     """The page's one-line verdict: a word, the fact behind it, and what to do first."""
     untested = sum(m.untested for m in reach.changed)
@@ -176,8 +191,14 @@ def _verdict(r: ChangeBlastRadiusResponse, reach: _Reach, total: int) -> tuple[s
     reason = _look_reason(r, reach)
     if reason:
         return "Look first", reason, "Read the files under Look at first, then run the tests."
-    tests = r.test_impact.recommendations_total
+    run_all, tests = _tests_plan(r)
     word = "Small change" if total <= _SMALL_FILES and len(reach.files) <= _SMALL_REACH else "Contained"
+    if run_all:
+        return (
+            word,
+            f"{plural(total, 'file')} changed, the whole test suite to run.",
+            "Run the whole suite and merge when it passes.",
+        )
     if not tests:
         return word, f"{plural(total, 'file')} changed, no test found to run.", "Nothing here asks for a closer look."
     return (
@@ -210,6 +231,7 @@ def _capped(rows: list[str], limit: int, noun: str) -> list[str]:
 def _head(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     total = r.changed_files_total
     word, reason, next_step = _verdict(r, reach, total)
+    run_all, tests = _tests_plan(r)
     analyzed = len(r.changed_files)
     changed = plural(total, "file")
     if total > analyzed:
@@ -228,7 +250,7 @@ def _head(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
         "",
         f"- Changed: {changed}",
         f"- Source files that depend on it: {files}, {len(reach.direct)} directly",
-        f"- Tests to run: {r.test_impact.recommendations_total}",
+        f"- Tests to run: {'the whole suite' if run_all else tests}",
         f"- {impact}",
     ]
 
@@ -252,10 +274,11 @@ def _score(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     if drivers:
         out.append(f"- Drivers: {', '.join(drivers)}")
     out += ["", tests.summary]
-    if tests.run_all:
-        reasons = [f"- {cell(reason)}" for reason in tests.reasons]
+    if _tests_plan(r)[0]:
+        reasons = [f"- {cell(reason)}" for reason in tests.reasons if reason]
         out += ["", "Run the whole suite:", *_capped(reasons, REASONS_LIMIT, "reasons")]
         return out
+    out += _command(review.test_commands)
     shown = tests.tests_to_run[:TESTS_LIMIT]
     if shown:
         out += ["", *(f"- {code(t)}" for t in shown)]

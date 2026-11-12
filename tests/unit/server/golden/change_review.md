@@ -5,7 +5,7 @@ Next: Add or point to a test for it before merging, then read the files under Lo
 
 - Changed: 3 files
 - Source files that depend on it: 2, 1 directly
-- Tests to run: 2
+- Tests to run: 1
 - Structural impact: moderate, 4.2 of 10 (how far the change reaches; uncalibrated, not a defect probability)
 
 ## Score and tests
@@ -16,6 +16,10 @@ Next: Add or point to a test for it before merging, then read the files under Lo
 - Drivers: Lines added (+0.81), Author experience (-0.12)
 
 1 test file to run, chosen by coverage.
+
+```sh
+pytest tests/test_core.py
+```
 
 - `tests/test_core.py`
 
