@@ -118,8 +118,13 @@ def test_reasons_to_run_still_run_with_pages_planned_at_this_commit(
     assert _woken(run)
 
 
-def test_planning_pages_records_the_commit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("renders", [True, False])
+def test_planning_pages_records_the_commit_only_when_it_can_render(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, renders: bool
+) -> None:
     from repowise.cli.commands.update_cmd import deterministic, stale_targets
+
+    monkeypatch.setattr(command, "can_regenerate_pages", lambda run, opts: renders)
 
     monkeypatch.setattr(deterministic, "load_stale_file_page_ages", lambda path: {})
     monkeypatch.setattr(stale_targets, "stale_flow_pages", lambda run: 0)
@@ -131,4 +136,5 @@ def test_planning_pages_records_the_commit(monkeypatch: pytest.MonkeyPatch, tmp_
     run.graph_builder = SimpleNamespace(graph=lambda: None, pagerank=lambda: {})
     run.detector = SimpleNamespace(get_affected_pages=lambda *a, **k: SimpleNamespace())
     command._plan_pages(SimpleNamespace(cascade_budget=5, verbose=False), run)
-    assert run.state[command.STALE_PAGES_PLANNED_KEY] == "abc123"
+    # Without a model the stale pages wait for an update at this commit that has one.
+    assert run.state.get(command.STALE_PAGES_PLANNED_KEY) == ("abc123" if renders else None)

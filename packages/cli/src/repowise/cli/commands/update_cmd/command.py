@@ -1140,8 +1140,8 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
             )
     if run.stale_pages_planned:
         console.print(
-            f"[dim]{run.stale_pages_planned} stale page(s) past the cascade budget "
-            "refresh with the next commit.[/dim]"
+            f"[dim]{run.stale_pages_planned} stale page(s) the last update at this commit "
+            "left stale refresh with the next commit.[/dim]"
         )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
@@ -1572,7 +1572,10 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
             console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
     run.cascade_budget = cascade_budget
     # What this plan leaves stale waits for the next commit, not the next idle run.
-    run.state[STALE_PAGES_PLANNED_KEY] = run.head
+    # Only when it could render stale pages: one without a model leaves them for
+    # an update at this commit that has one.
+    if can_regenerate_pages(run, opts):
+        run.state[STALE_PAGES_PLANNED_KEY] = run.head
     # The builder's cached pagerank spares a full-graph pass.
     from .deterministic import load_stale_file_page_ages
 
@@ -2340,6 +2343,8 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
         from .persistence import record_repair_marker
 
         record_repair_marker(state, dict(state), docs.failed_steps)
+        # A failed render retries at this commit.
+        state.pop(STALE_PAGES_PLANNED_KEY, None)
         console.print(
             "[yellow]Some data for this commit range was not persisted; "
             "the next update will re-cover it.[/yellow]"
