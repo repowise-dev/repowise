@@ -339,6 +339,8 @@ class MetricsMixin:
         earlier partition and its community info. The reference stays pinned to
         that detection, so drift accumulates and the first update past the
         budget, or one that adds, removes or reclassifies a file, detects afresh.
+        So does any build with ``fresh_communities`` set (an update's full
+        health re-score), which an unchanged input still answers from the cache.
         """
         if self._community_cache is not None:
             return self._community_cache
@@ -367,10 +369,13 @@ class MetricsMixin:
                 except Exception as exc:
                     log.debug("community_cache_lookup_failed", kind="file", error=str(exc))
                     inp, hit = None, None
-                if (
-                    hit is not None
-                    and hit[1] == 0
-                    and hit[2] <= self._churn_budget_for(len(inp.nodes), len(inp.edges))
+                if hit is not None and (
+                    hit[0].signature == inp.signature
+                    or (
+                        not self.fresh_communities
+                        and hit[1] == 0
+                        and hit[2] <= self._churn_budget_for(len(inp.nodes), len(inp.edges))
+                    )
                 ):
                     entry, _, churn = hit
                     log.info(
@@ -418,7 +423,8 @@ class MetricsMixin:
         budget betweenness uses, carried onto the current symbols by
         :func:`~repowise.core.analysis.communities.carry_symbol_communities`.
         The reference stays pinned to that detection, so drift accumulates and
-        the first update past the budget detects afresh.
+        the first update past the budget, or any build with ``fresh_communities``
+        set, detects afresh.
         """
         if self._symbol_community_cache is not None:
             return self._symbol_community_cache
@@ -452,8 +458,12 @@ class MetricsMixin:
                 except Exception as exc:
                     log.debug("community_cache_lookup_failed", kind="symbol", error=str(exc))
                     signature, hit = None, None
-                if hit is not None and hit[1] + hit[2] <= self._churn_budget(undirected):
-                    entry, churn = hit[0], hit[1] + hit[2]
+                drift = hit[1] + hit[2] if hit is not None else 0
+                if hit is not None and (
+                    hit[0].signature == signature
+                    or (not self.fresh_communities and drift <= self._churn_budget(undirected))
+                ):
+                    entry, churn = hit[0], drift
                     log.info(
                         "communities_reused_from_cache",
                         kind="symbol",

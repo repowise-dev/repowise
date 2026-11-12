@@ -1486,6 +1486,8 @@ def _rebuild_index(run: UpdateRun) -> None:
         ),
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
+        # The update that re-scores every file detects communities afresh too.
+        fresh_communities=_full_rescore_this_run(run),
     )
     run.degraded.extend(_unavailable_grammar_entries(run.parsed_files))
     decision = getattr(run.graph_builder, "incremental_graph_decision", None)
@@ -2260,15 +2262,26 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
         )
 
 
+def _full_rescore_this_run(run: UpdateRun) -> bool:
+    """Whether this update re-scores every file: weekly, or forced by a config or parser change."""
+    from .persistence import full_rescore_due
+
+    return bool(
+        run.config.health_changed
+        or run.extraction_changed
+        or full_rescore_due(run.state, run.head_ts)
+    )
+
+
 def _rescore_after_persist(run: UpdateRun) -> None:
     """Re-score every file off this run's graph: weekly, or forced by a config or parser change."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
-    from .persistence import full_rescore_due, run_decay_health_rescore
+    from .persistence import run_decay_health_rescore
 
     health_changed = run.config.health_changed
     rescored = False
-    if health_changed or run.extraction_changed or full_rescore_due(run.state, run.head_ts):
+    if _full_rescore_this_run(run):
         with timed(run.timings, "rescore"):
             rescored = run_decay_health_rescore(
                 run.repo_path,

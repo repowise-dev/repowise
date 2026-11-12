@@ -558,3 +558,20 @@ def test_a_partition_from_other_code_is_not_reused(tmp_path, monkeypatch):
     cache = CentralityCache(tmp_path)
     signature = communities.file_community_input(gb1.graph(), "fake").signature
     assert cache.lookup_communities("file", signature=signature, code="other") is None
+
+
+def test_a_full_rescore_detects_afresh_and_an_unchanged_graph_still_reuses(tmp_path, monkeypatch):
+    from repowise.core.analysis.communities import detect_symbol_communities
+
+    scored = _symbol_builder(tmp_path, _CHAIN).symbol_communities()
+
+    near = _symbol_builder(tmp_path, [*_CHAIN, ("s0005", "new")], head="deadbee")
+    near.fresh_communities = True
+    assert near.symbol_communities() == detect_symbol_communities(near._graph)
+
+    with monkeypatch.context() as m:
+        _forbid_partition(m)
+        same = _symbol_builder(tmp_path, [*_CHAIN, ("s0005", "new")], head="deadbee")
+        same.fresh_communities = True
+        assert same.symbol_communities() == near.symbol_communities()
+    assert scored
