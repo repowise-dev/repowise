@@ -107,7 +107,7 @@ _PHASE_LABELS: dict[str, str] = {
     "external_systems": "Parsing external dependency manifests…",
     "git": "Indexing file history…",
     "git.history": "  ↳ Reading commit history",
-    "git.blame_index": "  ↳ Writing the commit graph blame reads",
+    "git.blame_index": "  ↳ Writing the commit graph for blame",
     "co_change": "Analyzing co-changes…",
     "dead_code": "Detecting dead code…",
     "health": "Scoring code health…",
