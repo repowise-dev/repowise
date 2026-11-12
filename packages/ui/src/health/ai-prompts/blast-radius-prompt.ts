@@ -30,6 +30,8 @@ export interface BlastPromptInput {
   changedTotal?: number | undefined;
   /** The screen's one-line verdict, e.g. "Look first: 2 changed files change often or have weak health." */
   status?: string | undefined;
+  /** The change-risk rank and what drove it, when the change was scored. */
+  risk?: string | undefined;
   /** Source files that import the change; test files that do are counted apart in `tests`. */
   reach: { files: number; modules: number; direct: number; band: string; tests?: number | undefined };
   /** Changed or directly importing files that carry a signal, with the signals in words. */
@@ -40,6 +42,8 @@ export interface BlastPromptInput {
   testsLimited: boolean;
   /** Commands that run the tests above, one per runner. */
   testCommands?: string[] | undefined;
+  /** Why the whole suite is to run, when the test selection could not narrow it. */
+  runAll?: string[] | undefined;
   /** Files history changes alongside these that the change does not touch. */
   missingPartners: { path: string; partnerOf: string }[];
   /** Owners of the changed files (`of` is how many were analyzed); without `of`, owners of affected files. */
@@ -117,6 +121,7 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
     changeLine(i.change),
     `Diff: \`${diffCommand(i.change, i.changedFiles)}\``,
     i.status ? `Screen verdict: ${i.status}` : null,
+    i.risk ? `Change risk: ${i.risk}` : null,
     `Reach: ${formatNumber(i.reach.files)} source file${pluralS(i.reach.files)} in ${i.reach.modules} module${pluralS(i.reach.modules)} import it within the analyzed depth, ${i.reach.direct} directly${
       i.reach.tests ? `; ${formatNumber(i.reach.tests)} test file${pluralS(i.reach.tests)} also import it (tests to run, not reach)` : ""
     }; structural reach ${i.reach.band} (an estimate of spread, not a breakage probability)`,
@@ -150,6 +155,9 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
     : "- None identified.";
   const commands = i.testCommands?.length
     ? ["", "", "Run them with:", "", "```", ...i.testCommands, "```"].join("\n")
+    : "";
+  const runAll = i.runAll
+    ? `\n\nRun the whole test suite: nothing narrower is known to cover this change${i.runAll.length ? ` (${i.runAll.join("; ")})` : ""}.`
     : "";
   const testsNote = i.testsLimited
     ? "\nCoverage evidence is missing, partial or stale here, so this list is a floor, not the full set."
@@ -220,7 +228,7 @@ export function buildBlastRadiusPrompt({ input: i, flavor = "generic", repoName 
     ...risky,
     "## Tests to run",
     "",
-    testsBody + commands + testsNote,
+    testsBody + commands + runAll + testsNote,
     "",
     ...partners,
     ...owners,

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import type { ReactElement } from "react";
 import { ImpactView, changeIdFromLink, changeLinkParam } from "../../src/blast-radius/impact-view.js";
@@ -9,6 +9,7 @@ import type {
   ChangeBlastRadiusResponse,
   ChangeCandidatesResponse,
 } from "@repowise-dev/types/blast-radius";
+import { makeReview } from "./review-fixture.js";
 
 const RESULT: BlastRadiusResponse = {
   structural_impact_score: 0.42,
@@ -102,6 +103,11 @@ function changeResult(files: string[]): ChangeBlastRadiusResponse {
 
 async function openPicker(name: RegExp) {
   fireEvent.click(await screen.findByRole("button", { name }));
+}
+
+/** The reach map is evidence under the verdict, folded until asked for. */
+async function openReach() {
+  fireEvent.click(await screen.findByRole("button", { name: /^Where it reaches/ }));
 }
 
 describe("ImpactView without a change list", () => {
@@ -235,6 +241,7 @@ describe("the step map", () => {
       ],
     }));
     renderView(<ImpactView adapter={makeAdapter({ analyze })} initialFiles={["packages/s/src/core/x.py"]} />);
+    await openReach();
     const weak = await screen.findByRole("button", { name: /^s\/weak, 1 step away: 1 file, 1 with poor health/ });
     expect(weak).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText(/Showing s\/weak, 1 step away/)).toBeInTheDocument();
@@ -410,6 +417,7 @@ describe("drawing interactions", () => {
 
   it("lights a hovered block's path and names it, and links list rows back to the drawing", async () => {
     renderView(<ImpactView adapter={makeAdapter({ analyze: analyze() })} initialFiles={[CORE]} />);
+    await openReach();
     const a = await screen.findByRole("button", { name: /^s\/a, 1 step away/ });
     fireEvent.mouseEnter(a);
     expect(screen.getByRole("tooltip")).toHaveTextContent("s/a");
@@ -427,6 +435,7 @@ describe("drawing interactions", () => {
 
   it("is one tab stop with arrow keys, opens a folded step, and Escape clears", async () => {
     renderView(<ImpactView adapter={makeAdapter({ analyze: analyze() })} initialFiles={[CORE]} />);
+    await openReach();
     await screen.findByRole("button", { name: /^s\/a, 1 step away/ });
     const tabbable = document.querySelectorAll('g[role="button"][tabindex="0"]');
     expect(tabbable).toHaveLength(1);
@@ -448,6 +457,7 @@ describe("drawing interactions", () => {
 
   it("filters the list to a band's files with a removable token", async () => {
     renderView(<ImpactView adapter={makeAdapter({ analyze: analyze() })} initialFiles={[CORE]} />);
+    await openReach();
     await screen.findByRole("button", { name: /^s\/a, 1 step away/ });
     const band = [...document.querySelectorAll("svg path")].find((p) => p.querySelector("title")?.textContent?.startsWith("1 file reached"));
     fireEvent.click(band!);
@@ -467,6 +477,7 @@ describe("drawing interactions", () => {
     }
     vi.stubGlobal("PointerEvent", TouchPointer);
     renderView(<ImpactView adapter={makeAdapter({ analyze: analyze() })} initialFiles={[CORE]} />);
+    await openReach();
     const b = await screen.findByRole("button", { name: /^s\/b, 1 step away/ });
     fireEvent.pointerDown(b, { pointerType: "touch" });
     fireEvent.click(b);
@@ -498,5 +509,49 @@ describe("what the page counts", () => {
     // Whether a dependent is tested is not about this change: no count, section or chip says it.
     expect(screen.queryByText(/Dependent files with no test/)).not.toBeInTheDocument();
     expect(screen.getByText("1 changed file with no test found.")).toBeInTheDocument();
+  });
+});
+
+describe("the change review leads", () => {
+  function reviewed(over: Partial<ChangeBlastRadiusResponse>) {
+    return makeAdapter({
+      listChanges: vi.fn(async () => CHANGES),
+      analyzeChange: vi.fn(async () => ({ ...changeResult(["src/a.ts", "src/b.ts"]), ...over })),
+      checkHealth: vi.fn(),
+    });
+  }
+
+  it("says the rank under the verdict, and runs the review's own tests first with their command", async () => {
+    renderView(<ImpactView adapter={reviewed({ review: makeReview() })} />);
+    expect(await screen.findByText("2 files changed, 2 tests to run.")).toBeInTheDocument();
+    expect(screen.getByText("Riskier than 82% of this repo's recent commits, by size and spread.")).toBeInTheDocument();
+    // The priority is a word beside its dot, never the dot alone.
+    expect(screen.getByText("Elevated")).toBeInTheDocument();
+    expect(screen.getByText("pytest tests/test_a.py tests/test_b.py")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy test command" })).toBeInTheDocument();
+    // A calm change starts with its tests; the importer to look at comes after.
+    const steps = within(screen.getByRole("region", { name: "What to check" }))
+      .getAllByRole("heading", { level: 3 })
+      .map((h) => h.textContent);
+    expect(steps.slice(0, 3)).toEqual(["1Run these tests2", "2Look at first", "3Who to ask"]);
+    // The health check has not run yet, and the page says so.
+    expect(screen.getByText("Code health: not checked yet")).toBeInTheDocument();
+  });
+
+  it("says the whole suite is to run, with the reason, when the selection could not narrow it", async () => {
+    const review = makeReview({ tests: { status: "run_all", run_all: true, reasons: ["conftest.py changed"], tests_to_run: [], total: 0 }, commands: [] });
+    renderView(<ImpactView adapter={reviewed({ review })} />);
+    expect(await screen.findByText("2 files changed, the whole test suite to run.")).toBeInTheDocument();
+    expect(screen.getByText(/Run the whole test suite: nothing narrower/)).toBeInTheDocument();
+    expect(screen.getByText("Test selection: could not narrow it")).toBeInTheDocument();
+    expect(screen.getAllByText("(conftest.py changed)").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Copy test/ })).not.toBeInTheDocument();
+  });
+
+  it("names a review the server could not build as not measured, not as clean", async () => {
+    renderView(<ImpactView adapter={reviewed({ review: null, review_unavailable: "The change could not be scored: no git." })} />);
+    expect(await screen.findByText("Change risk and test selection: not measured")).toBeInTheDocument();
+    expect(screen.getByText("(The change could not be scored: no git)")).toBeInTheDocument();
+    expect(screen.queryByText(/Riskier than/)).not.toBeInTheDocument();
   });
 });

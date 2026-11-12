@@ -16,7 +16,7 @@ from repowise.core.analysis.change_candidates import (
     list_change_candidates,
     resolve_change_files,
 )
-from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer
+from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer, run_commands
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.index_cache import IndexStampCache
@@ -185,7 +185,17 @@ async def _review(
         return None, f"The change could not be scored: {exc}"
     try:
         tests = await scored_change_tests(checkout, factory, revspec, scored, repo=repo_id)
-        return ChangeReview(revspec=revspec, risk=change_risk_payload(scored), tests=tests), None
+        commands: list[str] = []
+        # A run-all verdict has no narrower command to offer.
+        if not tests["run_all"] and tests["tests_to_run"]:
+            async with get_session(factory) as session:
+                commands = await run_commands(
+                    session, repo_id, tests["tests_to_run"], tests["total"]
+                )
+        review = ChangeReview(
+            revspec=revspec, risk=change_risk_payload(scored), tests=tests, test_commands=commands
+        )
+        return review, None
     except Exception as exc:  # a review bug must not take the blast radius with it
         log.warning("change review failed", exc_info=True)
         return None, f"The change review failed unexpectedly: {exc!r}"

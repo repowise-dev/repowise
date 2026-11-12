@@ -256,6 +256,18 @@ async def _test_runs(session: AsyncSession, repo_id: str, tests: list[str]) -> d
     return await asyncio.to_thread(runs_for_tests, Path(root), _MANIFESTS.get(key), tests)
 
 
+async def run_commands(
+    session: AsyncSession, repo_id: str, tests: list[str], total: int | None = None
+) -> list[str]:
+    """The commands that run *tests*, one per runner; *total* counts a capped list's whole."""
+    from repowise.core.analysis.health.refactoring.commands import commands_for_tests
+
+    if not tests:
+        return []
+    runs = await _test_runs(session, repo_id, tests)
+    return commands_for_tests(tests, total=total, runs=runs)
+
+
 class PRBlastRadiusAnalyzer:
     """Compute blast radius for a proposed PR given its changed files."""
 
@@ -613,14 +625,9 @@ class PRBlastRadiusAnalyzer:
 
     async def _test_commands(self, test_impact: dict) -> list[str]:
         """The commands that run the recommended tests, one per runner."""
-        from repowise.core.analysis.health.refactoring.commands import commands_for_tests
-
         tests = [r["test_id"] for r in test_impact.get("recommendations", [])]
-        if not tests:
-            return []
-        runs = await _test_runs(self._session, self._repo_id, tests)
-        return commands_for_tests(
-            tests, total=test_impact.get("recommendations_total"), runs=runs
+        return await run_commands(
+            self._session, self._repo_id, tests, test_impact.get("recommendations_total")
         )
 
     async def _cochange_warnings(
