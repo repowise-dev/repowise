@@ -23,6 +23,7 @@ _INCLUDE_BLOCKS = (
     "skeleton+",
     "doc_drift",
     "symbols",
+    "facts",
     "changes",
     "provenance",
     "suspects",
