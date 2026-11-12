@@ -646,13 +646,14 @@ def _build_update_graph(
     """
     if timings is not None:
         timings.start("rebuild.graph")
-    # Everything already held (the seed snapshot, every parse, the walk) lives
-    # past the build, yet each full collection the build's allocations
-    # trigger walks all of it again: 15 s of a 75 s patch on a 62k-file
-    # repository. Frozen objects are skipped until the build is done; a caller
-    # that froze its own keeps them frozen.
-    unfreeze = gc.get_freeze_count() == 0
-    gc.freeze()
+    # The cyclic collector is off for the build. What it allocates (nodes,
+    # edges, resolver indexes) lives past it, and every full collection its
+    # allocations trigger walks the seed snapshot and every parse again: 13-15 s
+    # of a 60-75 s patch on a 62k-file repository, with no cycle to free.
+    # Ceiling: cyclic garbage made during the build waits for the next
+    # collection after it; reference counting still frees everything else.
+    collecting = gc.isenabled()
+    gc.disable()
     try:
         parsed_files, source_map, unparsed = _add_parsed_files(
             graph_builder, file_bytes, merged, collect_sources
@@ -702,8 +703,8 @@ def _build_update_graph(
         )
         return parsed_files, source_map, unparsed, reach_refusal
     finally:
-        if unfreeze:
-            gc.unfreeze()
+        if collecting:
+            gc.enable()
         if timings is not None:
             timings.stop("rebuild.graph")
 

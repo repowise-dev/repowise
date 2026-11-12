@@ -28,6 +28,7 @@ from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
 from ..models import Import, ParsedFile, Symbol, combine_load_kinds
 from ..resolvers import ResolverContext
+from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.go_workspace import cached_go_index, go_package_files
 from ..resolvers.typescript import detect_platform_files
@@ -648,7 +649,11 @@ class GraphBuilder(
 
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(
-            import_targets, progress=progress, scope=scope_set, registrations=run_global
+            import_targets,
+            progress=progress,
+            scope=scope_set,
+            registrations=run_global,
+            cpp_index=getattr(ctx, CPP_INDEX_KEY, None),
         )
 
         # --- Pascal property -> the read/write methods it runs ---

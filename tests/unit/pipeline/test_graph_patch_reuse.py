@@ -99,8 +99,36 @@ def test_resolver_contexts_share_inputs_until_a_file_is_added(tmp_path: Path) ->
 def test_the_graph_build_leaves_the_collector_as_it_found_it(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text("import b\n\ndef f():\n    return b.g()\n")
     (tmp_path / "b.py").write_text("def g():\n    return 1\n")
-    frozen = gc.get_freeze_count()
 
     build_repo_graph(tmp_path, [], collect_sources=True, read_only=True)
+    assert gc.isenabled()
 
-    assert gc.get_freeze_count() == frozen
+    gc.disable()
+    try:
+        build_repo_graph(tmp_path, [], collect_sources=True, read_only=True)
+        assert not gc.isenabled()
+    finally:
+        gc.enable()
+
+
+def test_the_call_resolver_reuses_the_warmed_cpp_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.ingestion.resolvers import cpp_workspace
+
+    (tmp_path / "CMakeLists.txt").write_text("add_library(core a.cpp b.cpp)\n")
+    (tmp_path / "a.cpp").write_text("int run() { return helper(); }\n")
+    (tmp_path / "b.cpp").write_text("int helper() { return 1; }\n")
+    built = []
+    real = cpp_workspace.build_cpp_workspace_index
+
+    def counting(ctx: object) -> object:
+        built.append(ctx)
+        return real(ctx)
+
+    monkeypatch.setattr(cpp_workspace, "build_cpp_workspace_index", counting)
+
+    graph = build_repo_graph(tmp_path, [], collect_sources=True, read_only=True)[2].graph()
+
+    assert len(built) == 1
+    assert graph.has_edge("a.cpp::run", "b.cpp::helper")
