@@ -604,63 +604,76 @@ async def direct_test_selectors(
     a change far ahead of the index can miss a function that moved (the
     upgrade is mapping lines through the diff since the indexed commit).
     """
-    from sqlalchemy import select
-
     from repowise.core.analysis.function_test_map import decode_tests
     from repowise.core.persistence.database import get_session
-    from repowise.core.persistence.models import FunctionFact, WikiSymbol
     from repowise.server.mcp_server._helpers import _get_repo
 
     lines = {path: diff.new_lines for path, diff in change.files.items() if diff.new_lines}
     if not lines:
         return []
-    runs = set(selection.test_files)
     try:
         async with get_session(session_factory) as session:
             repo_id = (await _get_repo(session, repo)).id
-            spans = await session.execute(
-                select(
-                    WikiSymbol.file_path,
-                    WikiSymbol.start_line,
-                    WikiSymbol.end_line,
-                    WikiSymbol.symbol_id,
-                )
-                .where(
-                    WikiSymbol.repository_id == repo_id,
-                    WikiSymbol.file_path.in_(sorted(lines)),
-                )
-                .order_by(WikiSymbol.file_path, WikiSymbol.start_line)
-            )
-            edited = list(
-                dict.fromkeys(
-                    symbol_id
-                    for path, start, end, symbol_id in spans.all()
-                    if any(start <= line <= end for line in lines[path])
-                )
-            )
-            facts: dict[str, str | None] = {}
-            for i in range(0, len(edited), 500):
-                rows = await session.execute(
-                    select(FunctionFact.symbol_id, FunctionFact.tests_json).where(
-                        FunctionFact.repository_id == repo_id,
-                        FunctionFact.symbol_id.in_(edited[i : i + 500]),
-                    )
-                )
-                facts.update(rows.all())
+            links = await _edited_function_links(session, repo_id, lines)
     except Exception as exc:  # the selection beside it stands without these
         _log.debug("direct_test_selectors_failed", error=f"{type(exc).__name__}: {exc}")
         return []
+    runs = set(selection.test_files)
     selectors = (
         t.selector
-        for symbol_id in edited
-        for t in decode_tests(facts.get(symbol_id)) or ()
+        for tests_json in links
+        for t in decode_tests(tests_json) or ()
         if t.hops == 1 and (selection.run_all or t.selector.split("::", 1)[0] in runs)
     )
-    ordered = list(dict.fromkeys(selectors))
-    # One per test file first, so a short head spans the files that test the edit.
-    firsts = {t.split("::", 1)[0]: t for t in reversed(ordered)}
-    lead = [t for t in ordered if firsts[t.split("::", 1)[0]] == t]
-    return [*lead, *(t for t in ordered if t not in set(lead))]
+    return _file_first(list(dict.fromkeys(selectors)))
+
+
+async def _edited_function_links(
+    session: Any, repo_id: str, lines: dict[str, set[int]]
+) -> list[str | None]:
+    """The stored ``tests_json`` of each indexed symbol whose span holds a
+    changed line, in file and line order."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import FunctionFact, WikiSymbol
+
+    spans = await session.execute(
+        select(WikiSymbol.file_path, WikiSymbol.start_line, WikiSymbol.end_line, WikiSymbol.symbol_id)
+        .where(WikiSymbol.repository_id == repo_id, WikiSymbol.file_path.in_(sorted(lines)))
+        .order_by(WikiSymbol.file_path, WikiSymbol.start_line)
+    )
+    edited = list(
+        dict.fromkeys(
+            symbol_id
+            for path, start, end, symbol_id in spans.all()
+            if any(start <= line <= end for line in lines[path])
+        )
+    )
+    facts: dict[str, str | None] = {}
+    # Batched to stay under SQLite's bound-parameter limit.
+    for i in range(0, len(edited), 500):
+        rows = await session.execute(
+            select(FunctionFact.symbol_id, FunctionFact.tests_json).where(
+                FunctionFact.repository_id == repo_id,
+                FunctionFact.symbol_id.in_(edited[i : i + 500]),
+            )
+        )
+        facts.update(rows.all())
+    return [facts[sid] for sid in edited if sid in facts]
+
+
+def _file_first(selectors: list[str]) -> list[str]:
+    """One selector per test file first, so a short head spans the files that
+    test the edit; then the rest, each in their own order."""
+    seen: set[str] = set()
+    lead: list[str] = []
+    for test in selectors:
+        path = test.split("::", 1)[0]
+        if path not in seen:
+            seen.add(path)
+            lead.append(test)
+    chosen = set(lead)
+    return [*lead, *(t for t in selectors if t not in chosen)]
 
 
 def degraded_block(exc: Exception) -> dict[str, Any]:
