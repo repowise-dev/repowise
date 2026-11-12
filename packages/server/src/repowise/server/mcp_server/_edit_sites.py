@@ -569,9 +569,7 @@ def _scan(
                 stale += 1
                 continue
             if n in imports:
-                # The module an import names is not the symbol: ``from pkg.name import x``.
-                spans = [m.span(m.lastindex or 0) for m in _IMPORT_SOURCE.finditer(text)]
-                hits = [h for h in hits if not any(a <= h.start() < b for a, b in spans)]
+                hits = _outside_module(text, hits)
             if not hits:
                 continue
             if live:
@@ -591,6 +589,13 @@ def _scan(
                 site["prose"] = True
             sites.append(site)
     return sites, unreadable, stale, renamed, is_default, python_aliases, packages
+
+
+def _outside_module(text: str, hits: list[re.Match[str]]) -> list[re.Match[str]]:
+    """*hits* on an import line, less those inside the module it names: in
+    ``from pkg.name import x`` the module is not the symbol."""
+    spans = [m.span(m.lastindex or 0) for m in _IMPORT_SOURCE.finditer(text)]
+    return [h for h in hits if not any(a <= h.start() < b for a, b in spans)]
 
 
 def _aliases_leave(rel: str, lines: list[str], aliases: set[str], imports: set[int]) -> bool:
