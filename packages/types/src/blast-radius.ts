@@ -10,6 +10,9 @@ import type {
   RiskCompatibilityField,
   RiskScalarSemantics,
 } from "./risk-semantics.js";
+import type { ChangeReview } from "./generated/http.js";
+
+export type { ChangeReview, ChangeRiskBlock, ChangeTestsBlock } from "./generated/http.js";
 
 export interface DirectRiskEntry {
   path: string;
@@ -261,6 +264,12 @@ export interface ChangeBlastRadiusResponse extends BlastRadiusResponse {
   changed_files: string[];
   /** Every path the change touches, before the cap. */
   changed_files_total: number;
+  /**
+   * The change's score and tests, as `repowise risk` and `get_change_risk`
+   * give them; null when git could not be read here (`review_unavailable` says why).
+   */
+  review?: ChangeReview | null;
+  review_unavailable?: string | null;
 }
 
 /** One row the health gate weighed: a health finding or a diff-risk rule. */

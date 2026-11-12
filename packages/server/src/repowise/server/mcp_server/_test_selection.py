@@ -17,11 +17,16 @@ import subprocess
 import threading
 from collections import OrderedDict
 from dataclasses import astuple, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from repowise.core.analysis.test_selection import Selection, selected_by_change
 from repowise.server.mcp_server._budget import OmissionCollector
+
+_log = structlog.get_logger(__name__)
 
 #: Run-all reasons carried on the wire; the rest go to the omission store.
 _REASONS_LIMIT = 3
@@ -70,10 +75,13 @@ class SelectionUnavailableError(Exception):
 
 
 async def select_change_tests(
-    repo_path: Any, session_factory: Any, change: Any
+    repo_path: Any, session_factory: Any, change: Any, repo: str | None = None
 ) -> tuple[dict[str, Any], Selection, Any]:
     """``(collection result, selection in run order, checkout)`` for *change*, or
     :class:`SelectionUnavailableError`.
+
+    *repo* names the indexed repository (path, id or name) when the store
+    holds several; omitted, the served one.
 
     The checkout read (``git ls-files`` plus pytest's conftests and configs)
     and every git call run off the event loop. A call for the change already
@@ -88,7 +96,7 @@ async def select_change_tests(
     except (RepoConfigError, ValueError) as exc:
         raise SelectionUnavailableError("config_invalid", f"tests config is invalid: {exc}") from exc
     key = str(Path(repo_path).resolve())
-    done_key = await _done_key(key, session_factory, change, config)
+    done_key = await _done_key(key, session_factory, change, config, repo)
     if done_key is not None and done_key in _DONE:
         _DONE.move_to_end(done_key)
         return _DONE[done_key]
@@ -98,7 +106,7 @@ async def select_change_tests(
         key,
         change,
         deadline,
-        lambda cancel: _select(repo_path, session_factory, change, config, cancel),
+        lambda cancel: _select(repo_path, session_factory, change, config, cancel, repo),
     )
     # asyncio.wait never cancels the task: one caller leaving keeps it for the rest.
     flight.waiters += 1
@@ -116,14 +124,18 @@ async def select_change_tests(
         )
     selected = flight.task.result()
     # A checkout edited while the selection read it is not cached under the old stamp.
-    if done_key is not None and done_key == await _done_key(key, session_factory, change, config):
+    if done_key is not None and done_key == await _done_key(
+        key, session_factory, change, config, repo
+    ):
         _DONE[done_key] = selected
         while len(_DONE) > _DONE_CAPACITY:
             _DONE.popitem(last=False)
     return selected
 
 
-async def _done_key(key: str, session_factory: Any, change: Any, config: Any) -> tuple | None:
+async def _done_key(
+    key: str, session_factory: Any, change: Any, config: Any, repo: str | None
+) -> tuple | None:
     """The cache identity of this selection, or ``None`` when it cannot be cached."""
     from repowise.core.persistence.database import get_session
     from repowise.server.mcp_server._helpers import _get_repo
@@ -133,7 +145,7 @@ async def _done_key(key: str, session_factory: Any, change: Any, config: Any) ->
         return None
     try:
         async with get_session(session_factory) as session:
-            index = index_state_key(await _get_repo(session))
+            index = index_state_key(await _get_repo(session, repo))
     except Exception:
         return None
     # A committed head pins what the selection reads; without one it reads the
@@ -229,7 +241,12 @@ def _release(key: str, flight: _Flight) -> None:
 
 
 async def _select(
-    repo_path: Any, session_factory: Any, change: Any, config: Any, cancel: threading.Event
+    repo_path: Any,
+    session_factory: Any,
+    change: Any,
+    config: Any,
+    cancel: threading.Event,
+    repo: str | None,
 ) -> tuple:
     """Run the selection on a worker thread with its own event loop.
 
@@ -240,9 +257,9 @@ async def _select(
     store uses) moves off the loop.
     """
     if not _loop_agnostic(session_factory):
-        return await _select_here(repo_path, session_factory, change, config, cancel)
+        return await _select_here(repo_path, session_factory, change, config, cancel, repo)
     return await asyncio.to_thread(
-        asyncio.run, _select_here(repo_path, session_factory, change, config, cancel)
+        asyncio.run, _select_here(repo_path, session_factory, change, config, cancel, repo)
     )
 
 
@@ -254,7 +271,12 @@ def _loop_agnostic(session_factory: Any) -> bool:
 
 
 async def _select_here(
-    repo_path: Any, session_factory: Any, change: Any, config: Any, cancel: threading.Event
+    repo_path: Any,
+    session_factory: Any,
+    change: Any,
+    config: Any,
+    cancel: threading.Event,
+    repo: str | None,
 ) -> tuple:
     from repowise.core.analysis.test_collection import read_checkout, select_for_change
     from repowise.core.analysis.test_ranking import ordered, rank_change
@@ -263,7 +285,7 @@ async def _select_here(
 
     checkout = await asyncio.to_thread(read_checkout, repo_path, change.head)
     async with get_session(session_factory) as session:
-        repository = await _get_repo(session)
+        repository = await _get_repo(session, repo)
         result, selection = await select_for_change(
             session,
             repository.id,
@@ -467,3 +489,115 @@ def _summary(
     if spread:
         return f"{total} test(s) to run for this change{share}{rule}{shown}.{spread}"
     return f"{total} test(s) to run for this change{share}{rule}{shown}; the rest can be skipped."
+
+
+def unselected_block(status: str, summary: str) -> dict[str, Any]:
+    """The tests block where no selection was made: nothing vouches for a subset.
+
+    It says ``run_all`` with the reason, like a selection that cannot vouch for
+    one. ``basis`` is ``none`` and nothing is named, so there is no
+    ``tests_to_run_kind`` or ``map_present``.
+    """
+    return {
+        "status": status,
+        "run_all": True,
+        "reasons": [summary, UNAVAILABLE_REASON],
+        "basis": "none",
+        "tests_to_run": [],
+        "total": 0,
+        "truncated": False,
+        "summary": summary,
+    }
+
+
+async def change_tests_block(
+    repo_path: Any,
+    session_factory: Any,
+    revspec: str | None,
+    collector: OmissionCollector,
+    *,
+    limit: int,
+    label: str,
+    working_tree: bool = False,
+    owned_excludes: tuple[str, ...] = (),
+    detail: bool = True,
+    repo: str | None = None,
+) -> tuple[dict[str, Any], tuple[dict[str, Any], Any] | None]:
+    """The tests a scored change needs: ``get_change_risk``, ``repowise risk`` and
+    the Review page all read them here.
+
+    The change is read whole, every touched path included, so a manifest, a
+    conftest or a test that walks the source tree weighs here as it does in CI;
+    only *owned_excludes*, repowise's own output, leaves it. *working_tree* and
+    *owned_excludes* come from the score
+    (:func:`~repowise.core.analysis.change_risk.score_live_change`), so the
+    tests are for the change it scored. Returns ``(block, (collection result,
+    change))``, or ``(block, None)`` when no selection was made; never raises,
+    so it cannot fail the score beside it.
+    """
+    from repowise.core.analysis.changed_lines import change_set
+
+    if session_factory is None:
+        return unselected_block(
+            "no_index", "No index; run `repowise init` to enable impacted tests."
+        ), None
+    try:
+        change = await asyncio.to_thread(
+            partial(
+                change_set,
+                str(repo_path),
+                None if working_tree else revspec or "HEAD",
+                working_tree=working_tree,
+                exclude_patterns=owned_excludes,
+            )
+        )
+    except Exception:  # git refused the change, or could not run
+        return unselected_block("unknown", "Could not read the change from git."), None
+    try:
+        result, selection, _ = await select_change_tests(repo_path, session_factory, change, repo)
+    except Exception as exc:
+        return degraded_block(exc), None
+    block = selection_block(result, selection, collector, limit=limit, label=label, detail=detail)
+    return block, (result, change)
+
+
+def degraded_block(exc: Exception) -> dict[str, Any]:
+    """The tests block for a selection that raised *exc*."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    if isinstance(exc, SelectionUnavailableError):
+        return unselected_block(exc.status, str(exc))
+    if isinstance(exc, LookupError):
+        return unselected_block("no_index", "No indexed repository; run `repowise init`.")
+    if isinstance(exc, SQLAlchemyError):
+        return unselected_block("unknown", "Could not read the index.")
+    # A selection bug must not take the score with it.
+    _log.warning("impacted_tests_failed", error=f"{type(exc).__name__}: {exc}")
+    return unselected_block("unknown", f"Selecting tests failed ({type(exc).__name__}).")
+
+
+#: Tests the Review page and ``repowise risk --format json`` list for a change;
+#: ``total`` counts them all, and ``get_change_risk`` shows the first ten.
+REVIEW_TESTS_LIMIT = 200
+
+
+async def scored_change_tests(
+    repo_path: Any, session_factory: Any, revspec: str | None, scored: Any, repo: str | None = None
+) -> dict[str, Any]:
+    """:func:`change_tests_block` for the change *scored* (a ``ChangeRiskResult``) holds.
+
+    The Review page and ``repowise risk`` call this beside the score, so their
+    tests are the ones ``get_change_risk`` names for the same change.
+    """
+    block, _ = await change_tests_block(
+        repo_path,
+        session_factory,
+        revspec,
+        OmissionCollector("get_change_risk", repo_root=repo_path),
+        limit=REVIEW_TESTS_LIMIT,
+        label="impacted_tests",
+        working_tree=scored.working_tree,
+        owned_excludes=scored.owned_excludes,
+        repo=repo,
+    )
+    return block

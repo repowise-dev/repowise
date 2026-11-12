@@ -29,6 +29,7 @@ from repowise.server.schemas.blast_radius import (
     ChangeCandidatesResponse,
     ChangeHealthCheckRequest,
     ChangeHealthCheckResponse,
+    ChangeReview,
 )
 
 #: Changed paths analyzed per change. A long-lived branch can touch thousands;
@@ -162,28 +163,63 @@ async def list_blast_radius_changes(
     )
 
 
+async def _review(
+    factory: Any, repo_id: str, checkout: str | None, change_id: str
+) -> tuple[ChangeReview | None, str | None]:
+    """``(review, None)`` for the change, or ``(None, why it has none)``.
+
+    The score is ``score_live_change`` and the tests ``scored_change_tests``,
+    the calls behind ``repowise risk`` and ``get_change_risk``, on the revspec
+    the change names.
+    """
+    from repowise.core.analysis.change_risk import change_risk_payload, score_live_change
+    from repowise.server.mcp_server._test_selection import scored_change_tests
+
+    if checkout is None:
+        return None, "This server has no checkout to read the change from."
+    try:
+        revspec = await asyncio.to_thread(change_revspec, checkout, change_id)
+        scored = await asyncio.to_thread(score_live_change, checkout, revspec)
+    except Exception as exc:  # git could not read the change; the blast radius still stands
+        log.debug("change score failed", exc_info=True)
+        return None, f"The change could not be scored: {exc}"
+    tests = await scored_change_tests(checkout, factory, revspec, scored, repo=repo_id)
+    return ChangeReview(revspec=revspec, risk=change_risk_payload(scored), tests=tests), None
+
+
 @router.post("/{repo_id}/blast-radius/change", response_model=ChangeBlastRadiusResponse)
 @read_route
 async def analyze_change_blast_radius(
     repo_id: str,
     body: ChangeBlastRadiusRequest,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> ChangeBlastRadiusResponse:
     """Blast radius of one listed change, with the per-file signals and
-    reach edges a drawing needs."""
+    reach edges a drawing needs, and its score and tests (``review``)."""
+    checkout = await _checkout(session, repo_id)
     try:
-        files = await resolve_change_files(
-            session, repo_id, await _checkout(session, repo_id), body.change_id
-        )
+        files = await resolve_change_files(session, repo_id, checkout, body.change_id)
     except UnknownChangeError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     analyzed = files[:MAX_CHANGED_FILES]
-    result = await _analyze_cached(session, repo_id, analyzed, body.max_depth)
+    # The review reads git and opens its own sessions, so it runs beside the analysis.
+    reviewing = asyncio.ensure_future(
+        _review(resolve_request_session_factory(request), repo_id, checkout, body.change_id)
+    )
+    try:
+        result = await _analyze_cached(session, repo_id, analyzed, body.max_depth)
+    except BaseException:
+        reviewing.cancel()
+        raise
+    review, unavailable = await reviewing
     return ChangeBlastRadiusResponse(
         **result,
         change_id=body.change_id,
         changed_files=analyzed,
         changed_files_total=len(files),
+        review=review,
+        review_unavailable=unavailable,
     )
 
 
