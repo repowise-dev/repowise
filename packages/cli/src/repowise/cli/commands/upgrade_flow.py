@@ -661,6 +661,7 @@ async def _recompute_full_tier_health(
 
     try:
         from repowise.core.persistence.crud import (
+            recompute_git_percentiles,
             set_repo_function_mod_p80,
             upsert_git_function_blame_bulk,
             upsert_git_metadata_bulk,
@@ -687,6 +688,7 @@ async def _recompute_full_tier_health(
             async with get_session(sf) as session:
                 if git_meta_map:
                     await upsert_git_metadata_bulk(session, repo_id, list(git_meta_map.values()))
+                    await recompute_git_percentiles(session, repo_id)
                 head_sha = get_head_commit(repo_path)
                 await save_full_health_report(
                     session,

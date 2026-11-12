@@ -198,7 +198,7 @@ def test_full_upgrade_matches_standard_init_blame_and_coupling(tmp_path: Path) -
     from repowise.cli.main import cli
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.database import resolve_db_url
-    from repowise.core.persistence.models import GitFunctionBlame, HealthFinding
+    from repowise.core.persistence.models import GitFunctionBlame, GitMetadata, HealthFinding
 
     def _build_history(repo_dir: Path) -> Path:
         repo_dir.mkdir(parents=True)
@@ -206,13 +206,17 @@ def test_full_upgrade_matches_standard_init_blame_and_coupling(tmp_path: Path) -
         subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=str(repo_dir), check=True)
         subprocess.run(["git", "config", "user.name", "T"], cwd=str(repo_dir), check=True)
         for i in range(6):
+            if i == 0:
+                (repo_dir / "c.py").write_text("def func_c(z):\n    return z\n")
             (repo_dir / "a.py").write_text(f"def func_a(x):\n    return x + {i}\n")
             (repo_dir / "b.py").write_text(f"def func_b(y):\n    return y * {i}\n")
             subprocess.run(["git", "add", "."], cwd=str(repo_dir), check=True)
             subprocess.run(["git", "commit", "-m", f"commit {i}"], cwd=str(repo_dir), check=True)
         return repo_dir
 
-    async def _query_blame_and_coupling(repo_dir: Path) -> tuple[int, int]:
+    async def _query_blame_and_coupling(
+        repo_dir: Path,
+    ) -> tuple[int, int, dict[str, float]]:
         engine = create_engine(resolve_db_url(repo_dir))
         try:
             sf = create_session_factory(engine)
@@ -227,7 +231,9 @@ def test_full_upgrade_matches_standard_init_blame_and_coupling(tmp_path: Path) -
                         )
                     )
                 ).all()
-                return blame_count or 0, len(findings)
+                git_rows = (await session.scalars(select(GitMetadata))).all()
+                percentiles = {r.file_path: r.churn_percentile for r in git_rows}
+                return blame_count or 0, len(findings), percentiles
         finally:
             await engine.dispose()
 
@@ -236,14 +242,14 @@ def test_full_upgrade_matches_standard_init_blame_and_coupling(tmp_path: Path) -
     init_res = runner.invoke(cli, ["init", "-y", "--mode", "fast", str(fast_repo)])
     assert init_res.exit_code == 0, init_res.output
 
-    blame_before, hc_before = asyncio.run(_query_blame_and_coupling(fast_repo))
+    blame_before, hc_before, _ = asyncio.run(_query_blame_and_coupling(fast_repo))
     assert blame_before == 0
     assert hc_before == 0
 
     up_res = runner.invoke(cli, ["update", "--full", "-y", str(fast_repo)])
     assert up_res.exit_code == 0, up_res.output
 
-    blame_after, hc_after = asyncio.run(_query_blame_and_coupling(fast_repo))
+    blame_after, hc_after, pct_after = asyncio.run(_query_blame_and_coupling(fast_repo))
 
     std_repo = _build_history(tmp_path / "std_repo")
     std_res = runner.invoke(
@@ -251,9 +257,11 @@ def test_full_upgrade_matches_standard_init_blame_and_coupling(tmp_path: Path) -
     )
     assert std_res.exit_code == 0, std_res.output
 
-    blame_std, hc_std = asyncio.run(_query_blame_and_coupling(std_repo))
+    blame_std, hc_std, pct_std = asyncio.run(_query_blame_and_coupling(std_repo))
 
     assert blame_after > 0
     assert hc_after > 0
     assert blame_after == blame_std
     assert hc_after == hc_std
+    assert pct_after["a.py"] > 0.0
+    assert pct_after == pytest.approx(pct_std)
