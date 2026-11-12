@@ -247,16 +247,24 @@ async def test_importer_with_unknown_names_is_followed_onward(session, repo_id, 
         extra=[
             ("app/hub.py", _DEF, "imports", {"imported_names_json": "[]"}),
             ("app/far.py", "app/hub.py", "imports", {"imported_names_json": '["thing"]'}),
+            ("app/star.py", "app/hub.py", "imports", {"imported_names_json": '["*"]'}),
         ],
     )
     (tmp_path / "app" / "hub.py").write_text("from pkg.catalog import *\n", encoding="utf-8")
     (tmp_path / "app" / "far.py").write_text(
-        "from app.hub import thing, backend_of\n\nthing(backend_of)\n", encoding="utf-8"
+        "from app.hub import thing\n\nthing(backend_of)\n", encoding="utf-8"
+    )
+    (tmp_path / "app" / "star.py").write_text(
+        "from app.hub import *\n\nthing(backend_of)\n", encoding="utf-8"
     )
 
     out = await reference_edit_set(session, repo_id, tmp_path, node)
 
-    assert ("app/far.py", 3, "reference") in _sites(out)
+    # The re-export reaches a file that star-imports the hub. A file that
+    # imports only ``thing`` has no binding of the name: its use is not this
+    # symbol (Python would raise NameError), so it is not listed.
+    assert ("app/star.py", 3, "reference") in _sites(out)
+    assert ("app/far.py", 3, "reference") not in _sites(out)
 
 
 async def _seed_js(session, repo_id: str, tmp_path, files: dict[str, str], names='["pick"]'):
