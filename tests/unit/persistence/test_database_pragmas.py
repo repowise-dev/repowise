@@ -373,7 +373,41 @@ async def test_planner_stats_rerun_only_when_a_table_drifts(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_planner_stats_skip_other_backends() -> None:
+    from typing import Any
+
     from repowise.core.persistence import refresh_planner_stats
+
+    class _Dialect:
+        name = "mysql"
+
+    class _Engine:
+        dialect = _Dialect()
+
+        def begin(self):
+            raise AssertionError("ANALYZE must not run on unsupported backends")
+
+    engine: Any = _Engine()
+    await refresh_planner_stats(engine)
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_postgresql_bare_analyze() -> None:
+    from typing import Any
+
+    from repowise.core.persistence import refresh_planner_stats
+
+    executed = []
+
+    class _Connection:
+        async def execute(self, stmt):
+            executed.append(str(stmt))
+
+    class _BeginContext:
+        async def __aenter__(self):
+            return _Connection()
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
 
     class _Dialect:
         name = "postgresql"
@@ -381,7 +415,141 @@ async def test_planner_stats_skip_other_backends() -> None:
     class _Engine:
         dialect = _Dialect()
 
-        def begin(self):  # pragma: no cover - reaching it is the failure
-            raise AssertionError("ANALYZE must not run off SQLite")
+        def begin(self):
+            return _BeginContext()
 
-    await refresh_planner_stats(_Engine())  # type: ignore[arg-type]
+    engine: Any = _Engine()
+    await refresh_planner_stats(engine)
+    assert executed == ["ANALYZE"]
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_postgresql_specific_tables() -> None:
+    from typing import Any
+
+    from repowise.core.persistence import refresh_planner_stats
+
+    executed = []
+
+    class _Connection:
+        async def execute(self, stmt):
+            executed.append(str(stmt))
+
+    class _BeginContext:
+        async def __aenter__(self):
+            return _Connection()
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    class _Dialect:
+        name = "postgresql"
+
+    class _Engine:
+        dialect = _Dialect()
+
+        def begin(self):
+            return _BeginContext()
+
+    engine: Any = _Engine()
+    await refresh_planner_stats(
+        engine,
+        tables=["graph_nodes", "function_facts"],
+    )
+    assert executed == ['ANALYZE "graph_nodes", "function_facts"']
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_postgresql_quotes_identifiers() -> None:
+    from typing import Any
+
+    from repowise.core.persistence import refresh_planner_stats
+
+    executed = []
+
+    class _Connection:
+        async def execute(self, stmt):
+            executed.append(str(stmt))
+
+    class _BeginContext:
+        async def __aenter__(self):
+            return _Connection()
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    class _Dialect:
+        name = "postgresql"
+
+    class _Engine:
+        dialect = _Dialect()
+
+        def begin(self):
+            return _BeginContext()
+
+    engine: Any = _Engine()
+    await refresh_planner_stats(engine, tables=['user"table'])
+    assert executed == ['ANALYZE "user""table"']
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_postgresql_empty_tables_noop() -> None:
+    from typing import Any
+
+    from repowise.core.persistence import refresh_planner_stats
+
+    class _Connection:
+        async def execute(self, stmt):
+            raise AssertionError("Must not execute when tables list is empty")
+
+    class _BeginContext:
+        async def __aenter__(self):
+            return _Connection()
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    class _Dialect:
+        name = "postgresql"
+
+    class _Engine:
+        dialect = _Dialect()
+
+        def begin(self):
+            return _BeginContext()
+
+    engine: Any = _Engine()
+    await refresh_planner_stats(engine, tables=[])
+
+
+@pytest.mark.asyncio
+async def test_planner_stats_postgresql_swallows_dbapi_error() -> None:
+    from typing import Any
+
+    from sqlalchemy.exc import DBAPIError
+
+    from repowise.core.persistence import refresh_planner_stats
+
+    class _Connection:
+        async def execute(self, stmt):
+            raise DBAPIError("SELECT 1", {}, Exception("read-only or lock timeout"))
+
+    class _BeginContext:
+        async def __aenter__(self):
+            return _Connection()
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    class _Dialect:
+        name = "postgresql"
+
+    class _Engine:
+        dialect = _Dialect()
+
+        def begin(self):
+            return _BeginContext()
+
+    # Must complete cleanly without raising
+    engine: Any = _Engine()
+    await refresh_planner_stats(engine)
