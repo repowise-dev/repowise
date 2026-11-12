@@ -15,7 +15,13 @@ from repowise.server.review_markdown import (
     TESTS_LIMIT,
     render_change_markdown,
 )
-from repowise.server.schemas.blast_radius import ChangeBlastRadiusResponse
+from repowise.server.schemas.blast_radius import (
+    ChangeBlastRadiusResponse,
+    ChangeReview,
+    ChangeRiskBlock,
+    ChangeTestsBlock,
+)
+from repowise.server.schemas.git import RiskDriverResponse
 from tests.unit.server.conftest import create_test_repo
 from tests.unit.server.test_blast_radius_changes import _git_repo
 
@@ -104,12 +110,54 @@ def _response(**over: Any) -> ChangeBlastRadiusResponse:
     return ChangeBlastRadiusResponse.model_validate(body)
 
 
+def _review(**tests: Any) -> ChangeReview:
+    # Only the fields the Markdown reads; the rest of the risk block is the CLI's JSON.
+    risk = ChangeRiskBlock.model_construct(
+        review_priority="high",
+        risk_percentile=91.0,
+        score=6.4,
+        score_measures="how big and spread out the diff is",
+        drivers=[
+            RiskDriverResponse(feature="la", value=420, contribution=0.81, label="Lines added"),
+            RiskDriverResponse(feature="exp", value=3, contribution=-0.12, label="Author experience"),
+        ],
+    )
+    block = {
+        "status": "selected",
+        "run_all": False,
+        "reasons": [],
+        "basis": "measured",
+        "tests_to_run": ["tests/test_core.py"],
+        "total": 1,
+        "truncated": False,
+        "summary": "1 test file to run, chosen by coverage.",
+        **tests,
+    }
+    return ChangeReview.model_construct(
+        revspec="main...feat/parser", risk=risk, tests=ChangeTestsBlock(**block)
+    )
+
+
 def test_renders_the_page_as_markdown_snapshot() -> None:
-    text = render_change_markdown(_response())
+    text = render_change_markdown(_response(review=_review()))
     if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
         _GOLDEN.write_text(text, encoding="utf-8", newline="\n")
         pytest.skip("golden rewritten")
     assert text == _GOLDEN.read_text(encoding="utf-8")
+
+
+def test_a_run_all_selection_says_why_and_an_unscored_change_says_why() -> None:
+    reasons = [f"reason {i}" for i in range(8)]
+    text = render_change_markdown(
+        _response(review=_review(run_all=True, reasons=reasons, tests_to_run=[], total=0, summary="Run everything."))
+    )
+    assert "Run the whole suite:\n- reason 0" in text
+    assert "And 3 more reasons." in text
+    assert "## Score and tests" in text and text.index("## Score and tests") < text.index("## Look at first")
+
+    unscored = render_change_markdown(_response(review_unavailable="This server has no checkout."))
+    assert "## Score and tests\n\nNot scored: This server has no checkout." in unscored
+    assert "## Score and tests" not in render_change_markdown(_response())
 
 
 def test_rendering_is_deterministic() -> None:

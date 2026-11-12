@@ -8,6 +8,17 @@ Next: Add or point to a test for it before merging, then read the files under Lo
 - Tests to run: 2
 - Structural impact: moderate, 4.2 of 10 (how far the change reaches; uncalibrated, not a defect probability)
 
+## Score and tests
+
+- Review priority: high
+- Size and spread: 91st percentile of recent commits (diff size, not a bug predictor)
+- Score: 6.4 of 10 (how big and spread out the diff is)
+- Drivers: Lines added (+0.81), Author experience (-0.12)
+
+1 test file to run, chosen by coverage.
+
+- `tests/test_core.py`
+
 ## Look at first
 
 - `src/core.py` (changed): Needs work health 4.2, changed often

@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from repowise.core.analysis.change_risk.render import size_text
 from repowise.core.analysis.health.grading import BAND_LABEL, band_for, format_score
 from repowise.core.ci.markdown import cell, code, more_line, plural
 from repowise.core.code_origin import path_origin
@@ -34,6 +35,8 @@ DEPENDENTS_LIMIT = 40
 CHANGED_LIMIT = 50
 #: A test command past this is left out whole: a cut command would run the wrong tests.
 COMMAND_LIMIT = 4000
+DRIVERS_LIMIT = 5
+REASONS_LIMIT = 5
 
 # The verdict's thresholds, as on the page (review-status.ts in packages/ui).
 _WIDE_REACH = 200
@@ -230,6 +233,37 @@ def _head(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     ]
 
 
+def _score(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
+    """The change's score and selected tests, as ``repowise risk`` and ``get_change_risk`` give them."""
+    out = ["## Score and tests", ""]
+    review = r.review
+    if review is None:
+        return [*out, f"Not scored: {r.review_unavailable}"] if r.review_unavailable else []
+    risk, tests = review.risk, review.tests
+    out += [
+        f"- Review priority: {risk.review_priority or 'not ranked'}",
+        f"- {size_text(risk.risk_percentile)}",
+        f"- Score: {risk.score:.1f} of 10 ({risk.score_measures})",
+    ]
+    drivers = [
+        f"{d.label} ({'+' if d.contribution >= 0 else ''}{d.contribution:.2f})"
+        for d in risk.drivers[:DRIVERS_LIMIT]
+    ]
+    if drivers:
+        out.append(f"- Drivers: {', '.join(drivers)}")
+    out += ["", tests.summary]
+    if tests.run_all:
+        reasons = [f"- {cell(reason)}" for reason in tests.reasons]
+        out += ["", "Run the whole suite:", *_capped(reasons, REASONS_LIMIT, "reasons")]
+        return out
+    shown = tests.tests_to_run[:TESTS_LIMIT]
+    if shown:
+        out += ["", *(f"- {code(t)}" for t in shown)]
+    if tests.total > len(shown):
+        out += ["", more_line(tests.total - len(shown), "tests").capitalize()]
+    return out
+
+
 def _look_first(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     spots = [(m, True) for m in reach.changed] + [(f.marks, False) for f in reach.direct]
     spots = [s for s in spots if s[0].attention > 0]
@@ -370,6 +404,7 @@ def _changed(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
 
 #: The page's sections in its order. A field the response gains is one more entry.
 _SECTIONS: tuple[Callable[[ChangeBlastRadiusResponse, _Reach], list[str]], ...] = (
+    _score,
     _look_first,
     _tests,
     _owners,
