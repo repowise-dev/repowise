@@ -233,7 +233,8 @@ def _list_suggested(root: Path, area: str | None, path: str | None, fmt: str) ->
         emit_json({"repo": str(root), "suggestions": [s.to_dict() for s in found]})
         return
     if not found:
-        console.print("[dim]Every setting fits this repository as it is.[/dim]")
+        scope = f"in the {area} area " if area else ""
+        console.print(f"[dim]Every setting {scope}fits this repository as it is.[/dim]")
         return
     for s in found:
         command = s.command
