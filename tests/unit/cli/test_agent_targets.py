@@ -57,6 +57,7 @@ def test_registry_exposes_the_shipped_targets() -> None:
         "hermes",
         "copilot",
         "kiro",
+        "windsurf",
     ]
 
 
@@ -138,6 +139,7 @@ def test_tiers_are_derived_from_the_adapters_a_target_names() -> None:
     assert tier_of("hermes") is Tier.GOOD
     assert tier_of("copilot") is Tier.GOOD
     assert tier_of("kiro") is Tier.GOOD
+    assert tier_of("windsurf") is Tier.BASIC
 
 
 def test_a_target_cannot_reach_full_without_a_session_adapter() -> None:

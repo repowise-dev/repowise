@@ -46,8 +46,9 @@ either way.
 | [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Good | Yes | No | No | No | Yes | No | No | No |
 | [GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | Good | Yes | No | No | No | Yes | No | Yes | No |
 | [Kiro](https://kiro.dev/docs/mcp/configuration) | Good | Yes | No | No | No | Yes | No | No | No |
+| [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) | Basic | Yes | No | No | No | No | No | No | No |
 
-Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`, `copilot`, `kiro`.
+Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`, `copilot`, `kiro`, `windsurf`.
 
 ### What Good tier does not include
 
@@ -64,6 +65,12 @@ so noisy commands are rewritten there. Transcript mining is still absent.
 That is a real integration and it is most of the value. It is not the
 same product Full-tier agents get, and breadth that overclaims depth is
 worse than narrower breadth.
+
+### Basic tier
+
+Windsurf sits at Basic. repowise writes
+no instructions file or skills there, so the MCP tools are reachable but
+nothing tells the agent when to use them.
 
 ## Paste-config
 
@@ -84,7 +91,7 @@ the plain `mcpServers` JSON most hosts read and is the right default when
 yours is not listed below.
 Hosts people ask about most, none of which repowise writes config for today:
 
-Cline, Windsurf, Zed, Continue, Gemini CLI, JetBrains AI Assistant, Amp.
+Cline, Zed, Continue, Gemini CLI, JetBrains AI Assistant, Amp.
 
 `print-config` takes one of the target ids above; there is no descriptor to
 name for a host at this tier, which is the point of the tier.

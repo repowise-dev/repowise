@@ -104,26 +104,10 @@ def server_entry(scope: Scope, repo_path: Path | None = None) -> dict:
 
 def write_mcp_config(scope: Scope, repo_path: Path | None = None) -> FileWrite:
     """Merge our entry into ``mcp.json``; raises ``ValueError`` on a bad file."""
-    from ..formats.json_merge import (
-        load_json_object_or_value_error,
-        merge_server_entries,
-        write_json_config,
-    )
-    from ..formats.server_entry import is_remote_entry
+    from ..formats.server_entry import ServerSpec, write_json_servers
 
-    path = mcp_config_path(scope, repo_path)
-    existing = load_json_object_or_value_error(path, path.name) if path.exists() else {}
-    servers = existing.get("mcpServers", {})
-    if not isinstance(servers, dict):
-        raise ValueError(f"{path.name} 'mcpServers' must be a JSON object")
-    servers = dict(servers)
-    stored = servers.get(SERVER_NAME)
-    if isinstance(stored, dict) and is_remote_entry(stored, local_type="stdio"):
-        raise RemoteServerEntryError(f"{path.name} 'repowise' is wired to a remote server")
-    merge_server_entries(servers, {SERVER_NAME: server_entry(scope, repo_path)})
-    existing["mcpServers"] = servers
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return FileWrite(path=path, action=write_json_config(path, existing))
+    spec = ServerSpec(server_entry(scope, repo_path))
+    return write_json_servers(mcp_config_path(scope, repo_path), "mcpServers", spec)[1]
 
 
 def _read(path: Path) -> str | None:
@@ -209,6 +193,8 @@ class KiroTarget:
     capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
+    #: No hosted entry: repowise does not write a remote server for this host.
+    hosted = None
 
     def supports_scope(self, scope: Scope) -> bool:
         return True
