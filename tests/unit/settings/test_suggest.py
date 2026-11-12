@@ -346,6 +346,8 @@ def test_config_list_suggested_json_and_text(repo):
         "config", "list", "--suggested", "--area", "decisions", "--path", path, "--format", "json"
     )
     assert _payload(out)["suggestions"] == []
+    code, out = _invoke("config", "list", "--suggested", "--area", "decisions", "--path", path)
+    assert "Every setting in the decisions area fits this repository" in " ".join(out.split())
 
 
 def test_doctor_and_status_name_the_count_once(repo):
