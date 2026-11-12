@@ -582,20 +582,48 @@ class FileCommunityInput:
     edges: frozenset[int]
 
 
-def file_community_input(graph: nx.DiGraph, repo_name: str | None = None) -> FileCommunityInput:
-    """:class:`FileCommunityInput` of *graph*."""
-    from repowise.core.ingestion.graph._centrality_cache import fingerprints
+def _file_nodes(graph: nx.DiGraph) -> tuple[list[str], dict[str, bool]]:
+    """*graph*'s own file nodes, sorted, and whether each is test or example code.
 
+    External and framework nodes are stored as files but are code we do not
+    own: left in, they join the partition (two files that both import `os` get
+    pulled together through it) and inflate members/size. Sorted: node order
+    seeds the undirected graph's insertion order, and Louvain/Leiden partitions
+    depend on iteration order even when seeded.
+    """
     file_nodes = sorted(
         n for n, d in graph.nodes(data=True)
         if d.get("node_type", "file") == "file" and not is_external(n)
     )
-    file_set = frozenset(file_nodes)
-    node_items = [
-        f"{n}\0{_is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])}"
-        f"\0{graph.nodes[n].get('language')}"
+    non_core = {
+        n: _is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])
         for n in file_nodes
-    ]
+    }
+    return file_nodes, non_core
+
+
+def _production_edges(graph: nx.DiGraph, production: Any) -> list[tuple[str, str]]:
+    """The links the partition runs on: dependency edges between two of *production*.
+
+    Sorted: edge insertion order shifts the partition (co-change edges arrive
+    in git-indexer thread-completion order).
+    """
+    return sorted(
+        (u, v)
+        for u, v, d in graph.edges(data=True)
+        if d.get("edge_type", "imports") in _FILE_COMMUNITY_EDGE_TYPES
+        and u in production
+        and v in production
+    )
+
+
+def file_community_input(graph: nx.DiGraph, repo_name: str | None = None) -> FileCommunityInput:
+    """:class:`FileCommunityInput` of *graph*."""
+    from repowise.core.ingestion.graph._centrality_cache import fingerprints
+
+    file_nodes, non_core = _file_nodes(graph)
+    file_set = frozenset(file_nodes)
+    node_items = [f"{n}\0{non_core[n]}\0{graph.nodes[n].get('language')}" for n in file_nodes]
     edge_items = sorted(
         f"{u}\0{v}\0{d.get('edge_type', '<absent>')}"
         for u, v, d in graph.edges(data=True)
@@ -608,6 +636,42 @@ def file_community_input(graph: nx.DiGraph, repo_name: str | None = None) -> Fil
     return FileCommunityInput(
         digest.hexdigest(), fingerprints(node_items), fingerprints(edge_items)
     )
+
+
+def production_community_input(graph: nx.DiGraph) -> FileCommunityInput:
+    """What the production partition reads: the production files and the links between them.
+
+    Test and example files are placed after the partition and never shape it,
+    so adding, removing or relinking one leaves this unchanged.
+    """
+    from repowise.core.ingestion.graph._centrality_cache import fingerprints
+
+    file_nodes, non_core = _file_nodes(graph)
+    production = [n for n in file_nodes if not non_core[n]]
+    edge_items = [f"{u}\0{v}" for u, v in _production_edges(graph, frozenset(production))]
+    digest = hashlib.sha256(community_code_fingerprint().encode())
+    for item in (*production, "\1", *edge_items):
+        digest.update(item.encode("utf-8", "replace"))
+        digest.update(b"\n")
+    return FileCommunityInput(
+        digest.hexdigest(), fingerprints(production), fingerprints(edge_items)
+    )
+
+
+@dataclass(frozen=True)
+class ProductionPartition:
+    """The half of a file detection that test and example files never change.
+
+    *assignment* is each production file's community and *algorithm* the
+    partitioner that made it. *labels* names each production community before
+    duplicate names are told apart; it is drawn from production members only,
+    with *generic* as the segments no label may use.
+    """
+
+    assignment: dict[str, int]
+    labels: dict[int, str]
+    generic: frozenset[str]
+    algorithm: str
 
 
 def detect_file_communities(
@@ -625,18 +689,26 @@ def detect_file_communities(
         - communities_info: {community_id: CommunityInfo}
         - algorithm_used: "leiden" or "louvain"
     """
-    # Extract file nodes. External and framework nodes are stored as files but
-    # are code we do not own: left in, they join the partition (two files that
-    # both import `os` get pulled together through it) and inflate members/size.
-    # Sorted: node order seeds the undirected graph's insertion order, and
-    # Louvain/Leiden partitions depend on iteration order even when seeded.
-    file_nodes = sorted(
-        n for n, d in graph.nodes(data=True)
-        if d.get("node_type", "file") == "file" and not is_external(n)
-    )
+    return place_file_communities(graph, repo_name)[:3]
 
+
+def place_file_communities(
+    graph: nx.DiGraph,
+    repo_name: str | None = None,
+    production: ProductionPartition | None = None,
+) -> tuple[dict[str, int], dict[int, CommunityInfo], str, ProductionPartition]:
+    """:func:`detect_file_communities` on top of a *production* partition, when given.
+
+    Test and example files are placed and every community's info is built as
+    detection does; only the production partition, and the labels it names,
+    are taken from *production*. It must cover exactly *graph*'s production
+    files, else it is set aside and detected afresh. Also returns the
+    production partition the result stands on: *production* itself when it
+    was used, else the one detected here.
+    """
+    file_nodes, non_core = _file_nodes(graph)
     if not file_nodes:
-        return {}, {}, "none"
+        return {}, {}, "none", ProductionPartition({}, {}, frozenset(), "none")
 
     # Separate test and example files from production files. Both are clustered
     # separately then assigned to the community of a production file they link
@@ -647,63 +719,20 @@ def detect_file_communities(
     # the whole system, so left in the partition they merge otherwise-distinct
     # subsystems into one community and name it after the demo. They keep their
     # nodes and their assignment, so nothing becomes unreachable.
-    non_core = {
-        n: _is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])
-        for n in file_nodes
-    }
     prod_nodes = [n for n in file_nodes if not non_core[n]]
     test_nodes = [n for n in file_nodes if non_core[n]]
+    if production is not None and production.assignment.keys() != set(prod_nodes):
+        production = None
 
     # Build undirected subgraph from production files + relevant edges
     undirected = nx.Graph()
     undirected.add_nodes_from(prod_nodes)
+    undirected.add_edges_from(_production_edges(graph, undirected))
 
-    # Sorted for the same reason: edge insertion order shifts the partition
-    # (co-change edges arrive in git-indexer thread-completion order).
-    community_edges = sorted(
-        (u, v)
-        for u, v, d in graph.edges(data=True)
-        if d.get("edge_type", "imports") in _FILE_COMMUNITY_EDGE_TYPES
-        and u in undirected
-        and v in undirected
-    )
-    undirected.add_edges_from(community_edges)
-
-    # Separate isolates
-    isolates = [n for n in undirected.nodes() if undirected.degree(n) == 0]
-    connected = [n for n in undirected.nodes() if undirected.degree(n) > 0]
-
-    raw_communities: dict[int, list[str]] = {}
-    algorithm = "none"
-
-    if connected:
-        connected_subgraph = undirected.subgraph(connected)
-        partition, algorithm = _partition(connected_subgraph)
-
-        for node, cid in partition.items():
-            raw_communities.setdefault(cid, []).append(node)
-
-    # Each isolate gets its own community
-    next_cid = max(raw_communities.keys(), default=-1) + 1
-    for node in isolates:
-        raw_communities[next_cid] = [node]
-        next_cid += 1
-
-    # Split oversized communities
-    split_lists = _split_oversized(undirected, raw_communities)
-
-    # Re-index by size descending. The rank becomes the community id, which
-    # becomes a module page's target_path, so it has to be a total order:
-    # size alone leaves same-size communities in partition-iteration order,
-    # and Leiden (tried before Louvain) returns a partition dict ordered by
-    # its own internals rather than by the node list we sorted above.
-    split_lists.sort(key=lambda members: (-len(members), min(members)))
-
-    # Build production file assignment
-    prod_assignment: dict[str, int] = {}
-    for cid, members in enumerate(split_lists):
-        for node in members:
-            prod_assignment[node] = cid
+    if production is None:
+        prod_assignment, algorithm = _partition_production(undirected)
+    else:
+        prod_assignment, algorithm = production.assignment, production.algorithm
 
     # Assign test files to their most-related production community
     test_assignment = _assign_tests_to_communities(test_nodes, prod_assignment, graph)
@@ -735,18 +764,27 @@ def detect_file_communities(
         stem = repo_name.rsplit("/", 1)[-1].lower()
         generic |= {stem, stem.replace("-", "_"), stem.replace("_", "-")}
     extra_generic = frozenset(generic)
+    # A production community's label reads only its production members, so a
+    # held one stands while the segments it was drawn without are the same.
+    known_labels = (
+        production.labels if production is not None and production.generic == extra_generic else {}
+    )
 
     # Labels and conductance come from the production members: tests were kept
     # out of the partition so they would not shape a community, and they must
     # not name it either. The non-core catch-all is labelled from what it has.
     label_members: dict[int, list[str]] = {}
+    production_labels: dict[int, str] = {}
     for cid, members in community_members.items():
         sorted_members = sorted(members)
         prod_members = [m for m in sorted_members if not non_core[m]]
         label_members[cid] = prod_members or sorted_members
+        label = known_labels.get(cid) or _heuristic_label(label_members[cid], cid, extra_generic)
+        if prod_members:
+            production_labels[cid] = label
         communities_info[cid] = CommunityInfo(
             community_id=cid,
-            label=_heuristic_label(label_members[cid], cid, extra_generic),
+            label=label,
             members=sorted_members,
             size=len(sorted_members),
             cohesion=_cohesion_score(full_undirected, sorted_members),
@@ -765,9 +803,53 @@ def detect_file_communities(
         test_files=len(test_nodes),
         communities=len(communities_info),
         algorithm=algorithm,
+        production_reused=production is not None,
     )
 
-    return file_assignment, communities_info, algorithm
+    if production is None:
+        production = ProductionPartition(
+            prod_assignment, production_labels, extra_generic, algorithm
+        )
+    return file_assignment, communities_info, algorithm, production
+
+
+def _partition_production(undirected: nx.Graph) -> tuple[dict[str, int], str]:
+    """``({production file: community}, algorithm)`` over the production link graph."""
+    # Separate isolates
+    isolates = [n for n in undirected.nodes() if undirected.degree(n) == 0]
+    connected = [n for n in undirected.nodes() if undirected.degree(n) > 0]
+
+    raw_communities: dict[int, list[str]] = {}
+    algorithm = "none"
+
+    if connected:
+        connected_subgraph = undirected.subgraph(connected)
+        partition, algorithm = _partition(connected_subgraph)
+
+        for node, cid in partition.items():
+            raw_communities.setdefault(cid, []).append(node)
+
+    # Each isolate gets its own community
+    next_cid = max(raw_communities.keys(), default=-1) + 1
+    for node in isolates:
+        raw_communities[next_cid] = [node]
+        next_cid += 1
+
+    # Split oversized communities
+    split_lists = _split_oversized(undirected, raw_communities)
+
+    # Re-index by size descending. The rank becomes the community id, which
+    # becomes a module page's target_path, so it has to be a total order:
+    # size alone leaves same-size communities in partition-iteration order,
+    # and Leiden (tried before Louvain) returns a partition dict ordered by
+    # its own internals rather than by the node list we sorted above.
+    split_lists.sort(key=lambda members: (-len(members), min(members)))
+
+    prod_assignment: dict[str, int] = {}
+    for cid, members in enumerate(split_lists):
+        for node in members:
+            prod_assignment[node] = cid
+    return prod_assignment, algorithm
 
 
 def file_community_labels(graph_builder: Any) -> dict[str, str]:

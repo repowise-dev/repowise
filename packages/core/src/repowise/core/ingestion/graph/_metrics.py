@@ -360,13 +360,22 @@ class MetricsMixin:
         budget, or one that adds, removes or reclassifies a file, detects afresh.
         So does any build with ``fresh_communities`` set (an update's full
         health re-score), which an unchanged input still answers from the cache.
+
+        Test and example files never shape the production partition, so when
+        the file set changed by them alone the last production partition is
+        held to the same rule against the production files and their links,
+        and only the placing of test and example files and the community info
+        is redone. On an unchanged production input that equals a fresh
+        detection, and becomes the new reference.
         """
         if self._community_cache is not None:
             return self._community_cache
 
         from repowise.core.analysis.communities import (
-            detect_file_communities,
+            ProductionPartition,
             file_community_input,
+            place_file_communities,
+            production_community_input,
         )
 
         try:
@@ -381,12 +390,31 @@ class MetricsMixin:
                 self._community_cache = dict(reuse[0].assignment)
                 self._community_info_cache, self._community_algo = extra
                 return self._community_cache
-            assignment, info, algo = detect_file_communities(self._graph, repo_name=repo_name)
+            held = None
+            prod_key = key and self._community_key(
+                "file_production", lambda: production_community_input(self._graph)
+            )
+            prod_reuse = prod_key and self._reusable_communities(
+                "file_production",
+                prod_key,
+                self._churn_budget_for(len(prod_key.nodes), len(prod_key.edges)),
+                False,
+            )
+            if prod_reuse and isinstance(prod_reuse[0].extra, ProductionPartition):
+                held = prod_reuse[0].extra
+            assignment, info, algo, production = place_file_communities(
+                self._graph, repo_name=repo_name, production=held
+            )
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
-            if key:
+            detected = production is not held
+            if key and (detected or prod_reuse[1] == 0):
                 self._store_communities("file", key, assignment, extra=(info, algo))
+            if prod_key and detected:
+                self._store_communities(
+                    "file_production", prod_key, production.assignment, extra=production
+                )
         except Exception as exc:
             log.warning("community_detection_failed", error=str(exc))
             file_nodes = [

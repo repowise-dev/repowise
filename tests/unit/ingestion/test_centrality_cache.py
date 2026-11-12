@@ -519,6 +519,110 @@ def test_file_partition_is_kept_within_budget_and_detected_past_it(tmp_path, mon
     assert far.community_detection() == detect_file_communities(far._graph, repo_name="fake")[0]
 
 
+def _clustered_builder(cache_dir, *, tests=(), extra_prod=(), head="c0ffee"):
+    """Twelve production clusters of six files, plus *tests* (path, linked prod file)."""
+    gb = GraphBuilder("C:/fake", centrality_cache_dir=cache_dir, head_commit=head)
+
+    def add(path, is_test):
+        gb._graph.add_node(path, node_type="file", language="python", is_test=is_test)
+
+    for c in range(12):
+        members = [f"pkg{c:02d}/m{i}.py" for i in range(6)]
+        for m in members:
+            add(m, False)
+        for i, u in enumerate(members):
+            for v in members[i + 1 :]:
+                gb._graph.add_edge(u, v, edge_type="imports")
+        if c:
+            gb._graph.add_edge(members[0], f"pkg{c - 1:02d}/m0.py", edge_type="imports")
+    for path in extra_prod:
+        add(path, False)
+    for path, linked in tests:
+        add(path, True)
+        gb._graph.add_edge(path, linked, edge_type="imports")
+    return gb
+
+
+_TESTS = [("tests/test_a.py", "pkg00/m1.py"), ("tests/test_b.py", "pkg03/m2.py")]
+
+
+def _count_partitions(monkeypatch):
+    from repowise.core.analysis import communities
+
+    calls = []
+    real = communities._partition
+    monkeypatch.setattr(communities, "_partition", lambda *a, **k: calls.append(1) or real(*a, **k))
+    return calls
+
+
+def test_test_files_added_or_removed_reuse_the_production_partition(tmp_path, monkeypatch):
+    from repowise.core.analysis.communities import detect_file_communities
+
+    _clustered_builder(tmp_path, tests=_TESTS).community_detection()
+    changed = [_TESTS[0], ("tests/test_new.py", "pkg07/m4.py"), ("examples/demo.py", "pkg09/m0.py")]
+
+    with monkeypatch.context() as m:
+        _forbid_partition(m)
+        gb = _clustered_builder(tmp_path, tests=changed, head="deadbee")
+        assignment, info = gb.community_detection(), gb.community_info()
+
+    fresh, fresh_info, _ = detect_file_communities(gb._graph, repo_name="fake")
+    assert assignment == fresh
+    assert info == fresh_info
+    assert assignment["tests/test_new.py"] == fresh["pkg07/m4.py"]
+
+    # That result is a full detection's, so it answers the same input again.
+    with monkeypatch.context() as m:
+        _forbid_partition(m)
+        again = _clustered_builder(tmp_path, tests=changed, head="deadbee")
+        assert again.community_detection() == fresh
+
+
+def test_a_production_file_change_detects_file_communities_again(tmp_path, monkeypatch):
+    from repowise.core.analysis.communities import detect_file_communities
+
+    _clustered_builder(tmp_path, tests=_TESTS).community_detection()
+    calls = _count_partitions(monkeypatch)
+
+    added = _clustered_builder(tmp_path, tests=_TESTS, extra_prod=["pkg05/new.py"], head="deadbee")
+    assert added.community_detection() == detect_file_communities(added._graph, "fake")[0]
+    assert calls
+
+
+def _chain_with_tests(cache_dir, tests, extra_edges=(), head="c0ffee"):
+    gb = _file_builder(cache_dir, [*_LONG_CHAIN, *extra_edges], head=head)
+    for path, linked in tests:
+        gb._graph.add_node(path, node_type="file", language="python", is_test=True)
+        gb._graph.add_edge(path, linked, edge_type="imports")
+    return gb
+
+
+_LONG_CHAIN = [(f"f{i:04d}.py", f"f{i + 1:04d}.py") for i in range(1499)]
+
+
+def test_a_test_file_with_production_drift_holds_the_partition_until_a_full_rescore(
+    tmp_path, monkeypatch
+):
+    from repowise.core.analysis.communities import detect_file_communities
+
+    scored = _chain_with_tests(tmp_path, [("tests/t0.py", "f0003.py")]).community_detection()
+    tests = [("tests/t0.py", "f0003.py"), ("tests/t1.py", "f0900.py")]
+    link = [("f0000.py", "f0700.py")]
+
+    with monkeypatch.context() as m:
+        _forbid_partition(m)
+        held = _chain_with_tests(tmp_path, tests, link, head="deadbee").community_detection()
+    production = {p: c for p, c in scored.items() if not p.startswith("tests/")}
+    assert {p: held[p] for p in production} == production
+    assert held["tests/t1.py"] == production["f0900.py"]
+
+    calls = _count_partitions(monkeypatch)
+    rescore = _chain_with_tests(tmp_path, tests, link, head="deadbee")
+    rescore.fresh_communities = True
+    assert rescore.community_detection() == detect_file_communities(rescore._graph, "fake")[0]
+    assert calls
+
+
 def test_symbol_partition_is_carried_within_budget_and_detected_past_it(tmp_path, monkeypatch):
     from repowise.core.analysis.communities import detect_symbol_communities
     from repowise.core.ingestion.graph import _metrics
