@@ -175,6 +175,23 @@ def release_update_lock(repo_path: Path) -> None:
     _release_lock_at(update_lock_path(repo_path))
 
 
+@contextlib.contextmanager
+def holding_update_lock(repo_path: Path) -> Iterator[bool]:
+    """Yield whether this process holds the repo's update lock for the block.
+
+    A free lock is taken and released on exit; one this process already holds
+    is kept. ``False`` when another live run owns it, so work that is only safe
+    for the lock owner (closing that run's job rows) is left to the owner.
+    """
+    owner = try_acquire_update_lock(repo_path, None)
+    acquired = owner is None
+    try:
+        yield owner is None or owner.get("pid") == os.getpid()
+    finally:
+        if acquired:
+            release_update_lock(repo_path)
+
+
 def release_workspace_lock(workspace_root: Path) -> None:
     """Remove the workspace-level update lock. Safe to call if it doesn't exist."""
     _release_lock_at(workspace_update_lock_path(workspace_root))
@@ -256,6 +273,43 @@ def lock_age_seconds(payload: dict[str, Any] | None) -> float | None:
     return max(0.0, time.time() - started)
 
 
+def lock_is_suspect(age: float | None) -> bool:
+    """Whether a live owner has held a lock past :data:`UPDATE_LOCK_SUSPECT_AFTER_SECONDS`."""
+    return age is not None and age > UPDATE_LOCK_SUSPECT_AFTER_SECONDS
+
+
+def stuck_lock_advice(pid: object, log: str = ".repowise/.update.log") -> str:
+    """Where to look once :func:`lock_is_suspect`; a Rich caller passes *log* marked up."""
+    return (
+        "That is longer than an update normally takes. If "
+        f"{log} has not been written to in that time, pid {pid} is stuck and can be "
+        "stopped; this repo will update on the next run."
+    )
+
+
+def describe_stuck_lock(payload: dict[str, Any] | None) -> str | None:
+    """One line for a live update lock held past the suspect age, else ``None``.
+
+    ``doctor`` and ``status`` print it as is; ``update`` prints the same advice
+    after its own "already running" line.
+    """
+    age = lock_age_seconds(payload)
+    if payload is None or not lock_is_suspect(age):
+        return None
+    pid = payload.get("pid")
+    target = (payload.get("target_commit") or "")[:8]
+    owner = f"pid {pid}, target {target}" if target else f"pid {pid}"
+    return (
+        f"An update ({owner}) has held the lock {format_lock_age(age)}. "
+        f"{stuck_lock_advice(pid)}"
+    )
+
+
+def stuck_update_line(repo_path: Path) -> str | None:
+    """:func:`describe_stuck_lock` for this repo's update lock."""
+    return describe_stuck_lock(read_update_lock(repo_path))
+
+
 def format_lock_age(age: float | None) -> str:
     """Human phrasing for how long a lock has been held.
 
@@ -298,6 +352,12 @@ def init_in_progress(repo_path: Path) -> Iterator[None]:
 def read_init_lock(repo_path: Path) -> dict[str, Any] | None:
     """The running ``init``'s lock payload, or ``None`` when no live one holds it."""
     return _read_lock_at(_init_lock_path(repo_path))
+
+
+def holds_init_lock(repo_path: Path) -> bool:
+    """True when this process is the ``init`` that holds the repo's init lock."""
+    payload = read_init_lock(repo_path)
+    return payload is not None and payload.get("pid") == os.getpid()
 
 
 def _commit_health_lock_path(repo_path: Path) -> Path:

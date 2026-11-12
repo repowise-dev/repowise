@@ -408,6 +408,7 @@ def test_claude_plugin_skills_have_metadata() -> None:
         "codebase-exploration",
         "dead-code-cleanup",
         "pre-modification",
+        "settings",
     }
 
     for path in skill_paths:

@@ -45,6 +45,9 @@ class SetupIndex(BaseModel):
     state: Literal["up_to_date", "behind", "incomplete"]
     indexed_commit: str | None = None
     live_head: str | None = None
+    #: ``behind`` because the indexed commit was rebased or reset away: plain
+    #: ``repowise update`` refuses it, so the page offers ``--since`` instead.
+    indexed_commit_missing: bool = False
     indexed_at: str | None = None
     file_count: int = 0
     #: Files whose parse reported errors, so some symbols may be missing.

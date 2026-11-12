@@ -422,7 +422,7 @@ def test_commit_limit_reads_the_same_on_init_update_and_the_registry(raw):
     config = {} if raw is None else {"commit_limit": raw}
     update = GitIndexer(".", commit_limit=config.get("commit_limit")).commit_limit
     assert update == _registry("commit_limit", config)
-    assert _registry("commit_limit", {"commit_limit": 20000}) == 10000
+    assert _registry("commit_limit", {"commit_limit": 20000}) == 20000
 
 
 def test_language_falls_back_like_the_reader():

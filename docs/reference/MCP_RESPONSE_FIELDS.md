@@ -221,6 +221,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 | `skeleton` / `skeleton+` | Bodies elided; `skeleton+` keeps all non-function code and elides every body. Both asked renders `skeleton+` |
 | `health`, `doc_drift` | Health scores and biomarkers; documents naming the file |
 | `symbols` | Every symbol of a file |
+| `facts` | Symbol card: `facts` and `tests` in `docs`, as `get_symbol` sends them; see [symbol facts](#symbol-facts) |
 | `changes`, `provenance`, `suspects`, `files` | See below |
 
 `docs` and `freshness` are always on and legal to pass; `freshness` is sent only on drift.
@@ -327,11 +328,21 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | `ambiguous`, `candidates` | Several matches (overloads, re-exports, conditional definitions); every body returned, none chosen |
 | `callee_bodies` | `depth` 2 or 3: each callee's `depth`, source, `verified`; each once, at its shallowest depth |
 | `not_rendered` | Bodies past the budget, each with a `fetch_with` range read |
-| `outlined`, `members`, `members_total` | Container too large to serve whole |
+| `facts`, `tests` | Function and symbol facts; see [symbol facts](#symbol-facts) |
+| `outlined`, `members`, `more_members`, `members_total` | A class or other container, served as its members |
 | fallback lines | On a miss, closest matches from a live grep |
 | `source`, `created_at`, `original_tokens`, `lines_total` | Omission ref: where the stored content came from (`lines_total` only when the query matched nothing) |
 
-`outlined: true` puts the header in `source` and `members` (each `symbol_id`, signature, lines; `members_total` when capped) in place of the body, with no `_meta.complete`.
+`outlined: true` puts the header in `source` and `members` (each `name`, `signature`, `lines`, docstring `summary`; `kind` when not a method; `symbol_id` when it is not the container's id plus `::<name>`) in place of the body, with no `_meta.complete`. Past a budget the rest are named with their first line in `more_members`; `members_total` counts any beyond that. A container whose body is no larger than its outline is served whole.
+
+### Symbol facts
+
+`get_symbol` carries these, and the `get_context` symbol card does with `include=["facts"]`, when there is something true to say; an empty store adds nothing, so a missing key never means "none".
+
+| Field | Meaning |
+|-------|---------|
+| `facts` | One line: `awaits`, `generator`, `assigns fields a, b`, `complexity N` (cyclomatic), and `N resolved callers, M in tests`, counted over the call edges whose resolution measured reliable (same file, scoped import, `self`, typed receiver, module alias, return type); test callers are judged by the file's code origin |
+| `tests` | Up to 3 tests that run the function: `run` is the selector to pass a test runner (a pytest node id, or a JS/TS test file). A test that calls it directly comes first; one that reaches it through one function carries that function in `via`. Tests further out are not listed |
 
 ---
 

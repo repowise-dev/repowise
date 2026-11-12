@@ -403,18 +403,20 @@ class _Ask:
 
 
 def _empty_question_payload(t0: float) -> dict:
-    from repowise.server.mcp_server._savings.interaction import note_error_reason
+    from repowise.server.mcp_server._savings.interaction import error_reply
 
-    note_error_reason("invalid_args")
-    return {
-        "answer": "",
-        "citations": [],
-        "confidence": "low",
-        "fallback_targets": [],
-        "retrieval": [],
-        "error": "question is required",
-        "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
-    }
+    return error_reply(
+        "invalid_args",
+        {
+            "answer": "",
+            "citations": [],
+            "confidence": "low",
+            "fallback_targets": [],
+            "retrieval": [],
+            "error": "question is required",
+            "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+        },
+    )
 
 
 async def _data_shape_answer(question: str, ctx, repository, t0: float) -> dict | None:

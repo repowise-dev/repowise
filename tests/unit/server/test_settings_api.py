@@ -50,7 +50,7 @@ async def test_get_lists_user_facing_settings_by_area(client: AsyncClient):
     assert limit["writable"] is True
     assert limit["type"] == "int"
     assert limit["minimum"] == 1
-    assert limit["accepts"] == "a whole number, at least 1 and at most 10000"
+    assert limit["accepts"] == "a whole number, at least 1"
     assert limit["applies"]
 
 

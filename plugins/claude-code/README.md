@@ -75,6 +75,7 @@ Claude uses these when relevant — no slash command needed:
 - **Code health** — answers quality / complexity / "what to refactor" via `get_health`.
 - **Architectural decisions** — queries `get_why` for the *why* before architectural changes.
 - **Dead-code cleanup** — uses `get_dead_code`, conservatively, during cleanup.
+- **Settings** — lists, explains and (after asking you) changes Repowise settings with `repowise config`.
 
 ### MCP tools (10 flagship + `list_repos`)
 

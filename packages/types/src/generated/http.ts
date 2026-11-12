@@ -4435,6 +4435,7 @@ export interface SetupIndex {
   state: "up_to_date" | "behind" | "incomplete";
   indexed_commit?: string | null;
   live_head?: string | null;
+  indexed_commit_missing?: boolean;
   indexed_at?: string | null;
   file_count?: number;
   parse_error_count?: number;

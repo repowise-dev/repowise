@@ -16,7 +16,7 @@ import hashlib
 import os
 import sqlite3
 import warnings
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -262,6 +262,40 @@ def has_db_store(repo_path: str | Path | None = None) -> bool:
     return (Path(repo_path) / ".repowise" / "wiki.db").is_file()
 
 
+def _postgres_positive_int(env_name: str, default: int) -> int:
+    """Reject invalid opt-in settings before opening a database connection."""
+    raw = os.environ.get(env_name, str(default))
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{env_name} must be a positive integer") from None
+    if value <= 0:
+        raise ValueError(f"{env_name} must be a positive integer")
+    return value
+
+
+def _postgres_connect_args() -> dict[str, Any]:
+    """Opt in to asyncpg timeouts and server-side TCP keepalive probes.
+
+    Poolers may reject these startup parameters, so send none by default.
+    This does not configure keepalive on the client's socket.
+    """
+    if os.environ.get("REPOWISE_POSTGRES_KEEPALIVE", "").strip().lower() not in {
+        "1", "true", "yes", "on",
+    }:
+        return {}
+    return {
+        "server_settings": {
+            "tcp_keepalives_idle": str(_postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_IDLE", 60)),
+            "tcp_keepalives_interval": str(
+                _postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_INTERVAL", 15)
+            ),
+            "tcp_keepalives_count": str(_postgres_positive_int("REPOWISE_POSTGRES_KEEPALIVES_COUNT", 4)),
+        },
+        "command_timeout": _postgres_positive_int("REPOWISE_POSTGRES_COMMAND_TIMEOUT", 300),
+    }
+
+
 def create_engine(
     url: str | None = None,
     *,
@@ -273,6 +307,10 @@ def create_engine(
     short_lived: bool = True,
 ) -> AsyncEngine:
     """Create an AsyncEngine for the given database URL.
+
+    For asyncpg, ``REPOWISE_POSTGRES_KEEPALIVE=1`` enables server-side TCP
+    keepalive probes and a command timeout. See ``docs/reference/CONFIG.md``
+    for defaults, environment overrides, and pooler compatibility.
 
     Args:
         url:             Raw or async-prefixed database URL.  Defaults to SQLite.
@@ -331,6 +369,8 @@ def create_engine(
         # a short-lived engine's footprint at exactly one connection instead
         # of up to 15 (pool_size=5 + max_overflow=10) sitting idle.
         kwargs["pool_pre_ping"] = True
+        if db_url.startswith("postgresql+asyncpg://"):
+            kwargs["connect_args"] = _postgres_connect_args()
         if short_lived:
             kwargs["poolclass"] = NullPool
 
@@ -732,6 +772,25 @@ async def _sqlite_stamp_state(conn: Any) -> tuple[int, int]:
     return int(user_version or 0), int(cookie or 0)
 
 
+#: PostgreSQL advisory lock key held while a transaction creates core tables or indexes.
+_PG_SCHEMA_LOCK_KEY = 0x7277_7363_6865_6D61  # "rwschema"
+
+
+async def hold_schema_lock(conn: Any) -> None:
+    """On PostgreSQL, serialize schema DDL across processes until *conn*'s transaction ends.
+
+    ``CREATE TABLE`` checks for the table first, so two processes opening one
+    empty database at once (a server and a worker starting together) both see
+    it missing and the second fails on ``pg_type_typname_nsp_index``. Holding
+    this lock makes the second wait, then find the tables the first committed.
+    SQLite needs nothing: its writer lock already serializes DDL.
+    """
+    if conn.dialect.name == "postgresql":
+        await conn.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"), {"key": _PG_SCHEMA_LOCK_KEY}
+        )
+
+
 async def init_db(engine: AsyncEngine) -> None:
     """Create all SQLAlchemy tables and the FTS index for the given engine.
 
@@ -765,6 +824,7 @@ async def init_db(engine: AsyncEngine) -> None:
                 # The stamp covers every registered revision, so none is pending here.
                 storage_migrations.settled(conn)
                 return
+        await hold_schema_lock(conn)
         await conn.run_sync(Base.metadata.create_all)
         # Raises when the walk is incomplete, so a partial reconcile is never stamped.
         await conn.run_sync(_reconcile_schema)
@@ -846,27 +906,67 @@ def _planner_stats_stale(conn: Any) -> bool:
     return False
 
 
-async def refresh_planner_stats(engine: AsyncEngine) -> None:
-    """Refresh SQLite's planner statistics at the end of a write to the index.
+def _quote_identifier(name: str) -> str:
+    """Quote an SQL identifier for safe inclusion in statements."""
+    escaped = name.replace('"', '""')
+    return f'"{escaped}"'
 
-    Without ``sqlite_stat1`` the planner guesses, and on a large store it picks
-    a wide covering index over the selective one (a full edge-table scan in
-    place of an index lookup). A full ``ANALYZE``, not a sampled one: every
-    index leads with ``repository_id``, which a sample (``analysis_limit``, and
-    ``PRAGMA optimize`` since SQLite 3.46) reads as selective, so the planner
-    keeps the wrong index. It runs only when the statistics are missing or a
-    table's size has drifted, since a full pass reads the whole store. Other
-    backends keep their own statistics. A failure costs only a slower plan, so
-    it never fails the write.
-    """
-    if engine.dialect.name != "sqlite":
-        return
+
+async def _refresh_sqlite_planner_stats(engine: AsyncEngine) -> None:
     try:
         async with engine.begin() as conn:
             if await conn.run_sync(_planner_stats_stale):
                 await conn.execute(text("ANALYZE"))
     except DBAPIError as exc:  # a locked or read-only store
         log.warning("sqlite.analyze_failed", error=str(exc))
+
+
+async def _refresh_postgres_planner_stats(
+    engine: AsyncEngine, tables: Sequence[str] | None
+) -> None:
+    try:
+        async with engine.begin() as conn:
+            if tables is not None:
+                table_list = [t for t in tables if t]
+                if not table_list:
+                    return
+                quoted = ", ".join(_quote_identifier(t) for t in table_list)
+                await conn.execute(text(f"ANALYZE {quoted}"))
+            else:
+                await conn.execute(text("ANALYZE"))
+    except DBAPIError as exc:
+        log.warning("postgresql.analyze_failed", error=str(exc))
+
+
+async def refresh_planner_stats(
+    engine: AsyncEngine,
+    tables: Sequence[str] | None = None,
+) -> None:
+    """Refresh database planner statistics at the end of a write to the index.
+
+    Without statistics the planner guesses, and on a large store it picks
+    a wide covering index over the selective one (a full edge-table scan in
+    place of an index lookup).
+
+    For SQLite: a full ``ANALYZE``, not a sampled one: every index leads with
+    ``repository_id``, which a sample (``analysis_limit``, and ``PRAGMA optimize``
+    since SQLite 3.46) reads as selective, so the planner keeps the wrong index.
+    It runs only when the statistics are missing or a table's size has drifted,
+    since a full pass reads the whole store.
+
+    For PostgreSQL: autovacuum keeps statistics over time, but across a bulk load
+    (e.g. init or update) autovacuum has not yet analyzed the newly inserted rows,
+    leaving the planner with pre-load or empty statistics. Executing ``ANALYZE``
+    refreshes planner statistics immediately. If specific tables are provided,
+    only those tables are analyzed; otherwise a full ``ANALYZE`` is executed.
+
+    Other backends keep their own statistics. A failure costs only a slower
+    plan, so it never fails the write.
+    """
+    if engine.dialect.name == "sqlite":
+        await _refresh_sqlite_planner_stats(engine)
+    elif engine.dialect.name == "postgresql":
+        await _refresh_postgres_planner_stats(engine, tables)
 
 
 async def schema_behind(engine: AsyncEngine) -> bool:

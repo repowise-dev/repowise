@@ -158,7 +158,7 @@ A triage card per file, module or symbol: summary, symbols with signatures, hots
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
 | `targets` | list[string] | required | Paths, module paths, `"path::Symbol"`, `"component:<name>"`, `"change:<id>"`, `"package:<name>"` |
-| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `changes`, `provenance`, `suspects`, `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
+| `include` | list[string] | none | `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`, `community`, `decisions`, `skeleton`, `skeleton+`, `health`, `doc_drift`, `symbols`, `facts`, `changes`, `provenance`, `suspects`, `files` ([what each adds](../reference/MCP_RESPONSE_FIELDS.md#context-opt-in-blocks)) |
 | `compact` | bool | `true` | `false` adds the structure block, imports and docstrings |
 | `symptom` | string | none | Issue text, error or stack trace for `suspects` to rank against instead of path words |
 | `repo` | string | default repo | `"all"` returns an error |
@@ -194,7 +194,7 @@ Verified, line-numbered source for one symbol, a live line range, or an omission
 | `query` | string | none | Omission refs: keep lines matching this regex or substring. Read as `symbol_id` when none is given |
 | `repo` | string | default repo | `"all"` not supported |
 
-**Returns** `source` (about 600 lines max), bounds, `kind`, `truncated`, `candidates`, `callee_bodies`, `outlined` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_symbol)).
+**Returns** `source` (about 600 lines max), bounds, `kind`, `facts`, `tests`, `truncated`, `candidates`, `callee_bodies`; a class comes back `outlined`, as its member signatures ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_symbol)).
 
 ```
 get_symbol(symbol_id="src/auth/service.py::login", depth=2)

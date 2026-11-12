@@ -2943,6 +2943,7 @@
         "detailUpToDate": "{files} files indexed at {commit}.",
         "detailIncomplete": "There's no complete index for this repository yet.",
         "detailBehind": "Indexed at {indexed}. HEAD has moved on to {live}.",
+        "detailMissing": "Indexed at {indexed}, a commit this history no longer has (rebased or reset), so pass a commit the index covers with --since.",
         "detailSkipped": "{count, plural, one {# file could not be parsed, so its symbols are missing from the graph.} other {# files could not be parsed, so their symbols are missing from the graph.}}"
       },
       "agent": {

@@ -41,7 +41,7 @@ from repowise.core.persistence.models import (
 from repowise.server.mcp_server._budget import cap_collection
 from repowise.server.mcp_server._changes import file_changes, file_provenance, load_file_meta
 from repowise.server.mcp_server._directory import _git_rows_under
-from repowise.server.mcp_server._edit_sites import reference_edit_set
+from repowise.server.mcp_server._edit_sites import edit_set_block
 from repowise.server.mcp_server._helpers import _decision_body
 from repowise.server.mcp_server._meta import served_root, uncommitted_targets
 from repowise.server.mcp_server._references import path_identity
@@ -654,7 +654,8 @@ async def _call_graph_section(card: CardState) -> None:
 
 async def _references_section(card: CardState) -> None:
     """Reference edit set: every live site naming the symbol."""
-    if not card.wants("references"):
+    prose = card.wants("references+")
+    if not (prose or card.wants("references")):
         return
     resolved = card.resolved
     ref_node = resolved.graph_symbol
@@ -674,8 +675,8 @@ async def _references_section(card: CardState) -> None:
         )
     root = served_root(card.query.repository, card.query.repo_root)
     if ref_node is not None and root:
-        card.data["references"] = await reference_edit_set(
-            card.session, card.repo_id, root, ref_node, card.query.collector, wider=True
+        card.data["references"] = await edit_set_block(
+            card.session, card.repo_id, root, ref_node, card.query.collector, prose=prose
         )
     else:
         card.data["references_note"] = "references require a symbol target in the graph"

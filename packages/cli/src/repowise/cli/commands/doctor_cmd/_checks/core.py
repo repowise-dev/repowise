@@ -1,4 +1,4 @@
-"""Checks 1-4b: git, ``.repowise/``, hooks, database, state.json, store format."""
+"""Checks 1-4b: git, ``.repowise/``, hooks, database, state.json, freshness, store format."""
 
 from __future__ import annotations
 
@@ -239,6 +239,56 @@ def _state_row(ctx: CheckContext) -> DoctorCheck:
     )
 
 
+def _index_freshness_row(repo_path: _DoctorPath, state: dict) -> DoctorCheck | None:
+    """Whether the index still describes HEAD, as the web Setup page judges it.
+
+    HEAD is read from the ref files, so a quick run spawns nothing while the
+    two agree; git is asked only once they differ, to tell a commit HEAD moved
+    past from one this history no longer has (a rebase, a reset, another
+    clone's state.json). ``None`` without both commits: the git and state.json
+    rows already cover those.
+    """
+    from repowise.core.git_head import read_head_commit
+    from repowise.core.index_freshness import commit_state, indexed_commit_missing
+
+    name, check_id = "Index freshness", "index-freshness"
+    indexed = state.get("last_sync_commit")
+    live = read_head_commit(repo_path)
+    if not indexed or not live:
+        return None
+    if commit_state(indexed, live) == "up_to_date":
+        return _check(name, True, f"indexed at HEAD ({live[:8]})", check_id=check_id)
+    if indexed_commit_missing(repo_path, indexed, live):
+        return _check(
+            name,
+            True,
+            f"last_sync_commit {indexed[:8]} is not in this repository's history, so "
+            "'repowise update' has no base to diff from; pass a commit the index "
+            "covers with --since",
+            check_id=check_id,
+            warn=True,
+            fix="repowise update --since <ref>",
+        )
+    return _check(
+        name,
+        True,
+        f"indexed at {indexed[:8]}; HEAD has moved on to {live[:8]}",
+        check_id=check_id,
+        warn=True,
+        fix="repowise update",
+    )
+
+
+def _update_lock_row(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """A live update holding the lock past the suspect age, worded as ``update`` words it."""
+    from repowise.core.update_lock import stuck_update_line
+
+    detail = stuck_update_line(repo_path)
+    if detail is None:
+        return None
+    return _check("Update lock", True, detail, check_id="update-lock", warn=True)
+
+
 def _store_format_row(repo_path: _DoctorPath) -> DoctorCheck:
     """Does this store predate a capability the current build offers?
 
@@ -347,6 +397,12 @@ def core_checks(ctx: CheckContext) -> list[DoctorCheck]:
     checks.extend(_database_rows(ctx))
     checks.append(_state_row(ctx))
     if ctx.state_ok:
+        freshness = _index_freshness_row(ctx.repo_path, ctx.state)
+        if freshness is not None:
+            checks.append(freshness)
         checks.append(_store_format_row(ctx.repo_path))
+    stuck = _update_lock_row(ctx.repo_path)
+    if stuck is not None:
+        checks.append(stuck)
     checks.extend(_runtime_grammar_rows(ctx.repo_path))
     return checks
