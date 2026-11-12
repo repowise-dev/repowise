@@ -15,7 +15,7 @@ snapshot. The structural graph stays available for traversal.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 import networkx as nx
 import structlog
@@ -70,6 +70,25 @@ def _exact_symbol_betweenness(g: nx.DiGraph) -> dict[str, float]:
     for node, score in raw.items():
         values[node] = score * scale
     return values
+
+
+class _CommunityKey(NamedTuple):
+    """A partition input's signature, plus node and edge fingerprints to count drift."""
+
+    signature: str
+    nodes: frozenset[int]
+    edges: frozenset[int]
+
+
+def _symbol_community_input(builder: Any, undirected: nx.Graph) -> _CommunityKey:
+    """The symbol partition input's :class:`_CommunityKey`."""
+    from ._centrality_cache import fingerprints
+
+    return _CommunityKey(
+        signature=builder._centrality_cache.signature("symbol_communities", undirected),
+        nodes=fingerprints(undirected.nodes()),
+        edges=fingerprints(f"{u}\0{v}" for u, v in undirected.edges()),
+    )
 
 
 class MetricsMixin:
@@ -346,7 +365,6 @@ class MetricsMixin:
             return self._community_cache
 
         from repowise.core.analysis.communities import (
-            community_code_fingerprint,
             detect_file_communities,
             file_community_input,
         )
@@ -354,57 +372,20 @@ class MetricsMixin:
         try:
             repo_path = getattr(self, "_repo_path", None)
             repo_name = repo_path.name if repo_path else None
-            cache = getattr(self, "_centrality_cache", None)
-            inp = None
-            if cache is not None:
-                try:
-                    inp = file_community_input(self._graph, repo_name)
-                    hit = cache.lookup_communities(
-                        "file",
-                        signature=inp.signature,
-                        code=community_code_fingerprint(),
-                        nodes=inp.nodes,
-                        edges=inp.edges,
-                    )
-                except Exception as exc:
-                    log.debug("community_cache_lookup_failed", kind="file", error=str(exc))
-                    inp, hit = None, None
-                if hit is not None and (
-                    hit[0].signature == inp.signature
-                    or (
-                        not self.fresh_communities
-                        and hit[1] == 0
-                        and hit[2] <= self._churn_budget_for(len(inp.nodes), len(inp.edges))
-                    )
-                ):
-                    entry, _, churn = hit
-                    log.info(
-                        "communities_reused_from_cache",
-                        kind="file",
-                        churn=churn,
-                        scored_commit=entry.scored_commit,
-                    )
-                    self._community_cache = dict(entry.assignment)
-                    self._community_info_cache, self._community_algo = entry.extra
-                    return self._community_cache
+            key = self._community_key("file", lambda: file_community_input(self._graph, repo_name))
+            reuse = key and self._reusable_communities(
+                "file", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
+            )
+            if reuse:
+                self._community_cache = dict(reuse[0].assignment)
+                self._community_info_cache, self._community_algo = reuse[0].extra
+                return self._community_cache
             assignment, info, algo = detect_file_communities(self._graph, repo_name=repo_name)
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
-            if cache is not None and inp is not None:
-                try:
-                    cache.put_communities(
-                        "file",
-                        signature=inp.signature,
-                        code=community_code_fingerprint(),
-                        assignment=assignment,
-                        nodes=inp.nodes,
-                        edges=inp.edges,
-                        scored_commit=self._head_commit,
-                        extra=(info, algo),
-                    )
-                except Exception as exc:
-                    log.debug("community_cache_store_failed", kind="file", error=str(exc))
+            if key:
+                self._store_communities("file", key, assignment, extra=(info, algo))
         except Exception as exc:
             log.warning("community_detection_failed", error=str(exc))
             file_nodes = [
@@ -431,69 +412,100 @@ class MetricsMixin:
 
         from repowise.core.analysis.communities import (
             carry_symbol_communities,
-            community_code_fingerprint,
             detect_symbol_communities,
             symbol_community_graph,
         )
 
         try:
             undirected = symbol_community_graph(self._graph)
-            cache = getattr(self, "_centrality_cache", None)
-            signature: str | None = None
-            nodes = edges = frozenset()
-            if cache is not None:
-                try:
-                    from ._centrality_cache import fingerprints
-
-                    signature = cache.signature("symbol_communities", undirected)
-                    nodes = fingerprints(undirected.nodes())
-                    edges = fingerprints(f"{u}\0{v}" for u, v in undirected.edges())
-                    hit = cache.lookup_communities(
-                        "symbol",
-                        signature=signature,
-                        code=community_code_fingerprint(),
-                        nodes=nodes,
-                        edges=edges,
-                    )
-                except Exception as exc:
-                    log.debug("community_cache_lookup_failed", kind="symbol", error=str(exc))
-                    signature, hit = None, None
-                drift = hit[1] + hit[2] if hit is not None else 0
-                if hit is not None and (
-                    hit[0].signature == signature
-                    or (not self.fresh_communities and drift <= self._churn_budget(undirected))
-                ):
-                    entry, churn = hit[0], drift
-                    log.info(
-                        "communities_reused_from_cache",
-                        kind="symbol",
-                        churn=churn,
-                        scored_commit=entry.scored_commit,
-                    )
-                    self._symbol_community_cache = (
-                        dict(entry.assignment)
-                        if churn == 0
-                        else carry_symbol_communities(entry.assignment, undirected)
-                    )
-                    return self._symbol_community_cache
+            key = self._community_key("symbol", lambda: _symbol_community_input(self, undirected))
+            reuse = key and self._reusable_communities(
+                "symbol", key, self._churn_budget(undirected), True
+            )
+            if reuse:
+                entry, churn = reuse
+                self._symbol_community_cache = (
+                    dict(entry.assignment)
+                    if churn == 0
+                    else carry_symbol_communities(entry.assignment, undirected)
+                )
+                return self._symbol_community_cache
             self._symbol_community_cache = detect_symbol_communities(self._graph, undirected)
-            if cache is not None and signature is not None:
-                try:
-                    cache.put_communities(
-                        "symbol",
-                        signature=signature,
-                        code=community_code_fingerprint(),
-                        assignment=self._symbol_community_cache,
-                        nodes=nodes,
-                        edges=edges,
-                        scored_commit=self._head_commit,
-                    )
-                except Exception as exc:
-                    log.debug("community_cache_store_failed", kind="symbol", error=str(exc))
+            if key:
+                self._store_communities("symbol", key, self._symbol_community_cache)
         except Exception as exc:
             log.warning("symbol_community_detection_failed", error=str(exc))
             self._symbol_community_cache = {}
         return self._symbol_community_cache
+
+    def _community_key(self, kind: str, build: Callable[[], Any]) -> Any | None:
+        """*build*'s partition-input key, or ``None`` without a cache or when it fails."""
+        if getattr(self, "_centrality_cache", None) is None:
+            return None
+        try:
+            return build()
+        except Exception as exc:
+            log.debug("community_cache_key_failed", kind=kind, error=str(exc))
+            return None
+
+    def _reusable_communities(
+        self, kind: str, key: Any, budget: int, new_nodes_ok: bool
+    ) -> tuple[Any, int] | None:
+        """``(entry, churn)`` of the stored detection this input may reuse, else ``None``.
+
+        An unchanged input always may. A drifted one may while its churn stays
+        within *budget*, no ``fresh_communities`` is asked for, and (unless
+        *new_nodes_ok*) its node set is the one detected.
+        """
+        from repowise.core.analysis.communities import community_code_fingerprint
+
+        try:
+            hit = self._centrality_cache.lookup_communities(
+                kind,
+                signature=key.signature,
+                code=community_code_fingerprint(),
+                nodes=key.nodes,
+                edges=key.edges,
+            )
+        except Exception as exc:
+            log.debug("community_cache_lookup_failed", kind=kind, error=str(exc))
+            return None
+        if hit is None:
+            return None
+        entry, node_churn, edge_churn = hit
+        churn = node_churn + edge_churn
+        drifted_ok = (
+            not self.fresh_communities and churn <= budget and (new_nodes_ok or node_churn == 0)
+        )
+        if entry.signature != key.signature and not drifted_ok:
+            return None
+        log.info(
+            "communities_reused_from_cache",
+            kind=kind,
+            churn=churn,
+            scored_commit=entry.scored_commit,
+        )
+        return entry, churn
+
+    def _store_communities(
+        self, kind: str, key: Any, assignment: dict[str, int], extra: Any = None
+    ) -> None:
+        """Pin a full detection as *kind*'s reference; best-effort like every cache write."""
+        from repowise.core.analysis.communities import community_code_fingerprint
+
+        try:
+            self._centrality_cache.put_communities(
+                kind,
+                signature=key.signature,
+                code=community_code_fingerprint(),
+                assignment=assignment,
+                nodes=key.nodes,
+                edges=key.edges,
+                scored_commit=self._head_commit,
+                extra=extra,
+            )
+        except Exception as exc:
+            log.debug("community_cache_store_failed", kind=kind, error=str(exc))
 
     def community_info(self) -> dict[int, Any]:
         """Return metadata for each file-level community."""
