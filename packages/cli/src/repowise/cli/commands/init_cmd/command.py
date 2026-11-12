@@ -24,7 +24,11 @@ from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
-from repowise.core.update_lock import init_in_progress
+from repowise.core.update_lock import (
+    init_in_progress,
+    release_update_lock,
+    try_acquire_update_lock,
+)
 
 from ._agent_summary import init_output
 from ._exit import exit_interrupted
@@ -562,7 +566,19 @@ def _run_init(opts: InitOptions) -> None:
         suggest_workspace(repo_path)
 
     with init_in_progress(repo_path):
-        _run_single_repo(opts, repo_path, start)
+        # HOLD BOTH LOCKS (#5512): the init marker alone is not mutual exclusion,
+        # because `update` learns of it only in `_acquire_update_lock` — a run
+        # that already holds the update lock keeps writing the same store. Taking
+        # the update lock too is what makes the marker mean something.
+        if try_acquire_update_lock(repo_path, None) is not None:
+            raise click.ClickException(
+                "Another `repowise update` is already running on this repo. "
+                "Run `repowise init` again when it finishes."
+            )
+        try:
+            _run_single_repo(opts, repo_path, start)
+        finally:
+            release_update_lock(repo_path)
 
 
 def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:

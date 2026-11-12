@@ -1245,8 +1245,26 @@ def _tombstone_missing_stale_pages(run: UpdateRun) -> None:
 
 
 def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
-    """Take the single-flight lock, or leave HEAD pending for the update holding it."""
+    """Take the single-flight lock, or leave HEAD pending for the writer holding it."""
     repo_path, head = run.repo_path, run.head
+    # A running `init` indexes the same store without taking the update lock
+    # (#5512), so its marker is contention in its own right: taking the lock
+    # here would not stop this run writing the store an init is writing.
+    # Defer with the same pending HEAD a held lock leaves, so the next pass
+    # picks this run up once the init has finished.
+    from repowise.core.update_lock import read_init_lock
+
+    init_owner = read_init_lock(repo_path)
+    if init_owner is not None:
+        from repowise.cli.platform import telemetry
+
+        write_update_pending(repo_path, head)
+        console.print(
+            "[yellow]A `repowise init` is running on this repo; "
+            "deferring this update until it finishes.[/yellow]"
+        )
+        telemetry.add_command_outcome(outcome="deferred")
+        return _emit_done(run, UpdateOutcome.DEFERRED)
     existing_lock = try_acquire_update_lock(repo_path, head)
     if existing_lock is not None:
         _report_lock_held(run, existing_lock)
