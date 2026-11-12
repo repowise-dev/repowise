@@ -66,11 +66,11 @@ def test_walks_in_spawn_workers_match_walks_in_threads(tmp_path: Path, monkeypat
         return real_run(fn, items, workers, results, **kwargs)
 
     monkeypatch.setattr(engine_mod, "run_with_deadline", spying_run)
-    monkeypatch.setattr(engine_mod, "_WALK_POOL_MIN_FILES", 10_000)
+    monkeypatch.setattr(engine_mod, "_POOL_MIN_JOBS", 10_000)
     in_threads = _report(tmp_path, parsed)
     assert used_pool == []
 
-    monkeypatch.setattr(engine_mod, "_WALK_POOL_MIN_FILES", 1)
+    monkeypatch.setattr(engine_mod, "_POOL_MIN_JOBS", 1)
     in_pool = _report(tmp_path, parsed)
     assert used_pool == [len(parsed)]
     assert in_pool == in_threads
@@ -80,14 +80,14 @@ def test_walks_in_spawn_workers_match_walks_in_threads(tmp_path: Path, monkeypat
 
 def test_a_pool_that_cannot_start_falls_back_to_threads(tmp_path: Path, monkeypatch) -> None:
     parsed = _repo(tmp_path)
-    monkeypatch.setattr(engine_mod, "_WALK_POOL_MIN_FILES", 10_000)
+    monkeypatch.setattr(engine_mod, "_POOL_MIN_JOBS", 10_000)
     in_threads = _report(tmp_path, parsed)
 
     def broken_pool(*_args, **_kwargs):
         raise OSError("cannot spawn")
 
     monkeypatch.setattr(engine_mod, "run_with_deadline", broken_pool)
-    monkeypatch.setattr(engine_mod, "_WALK_POOL_MIN_FILES", 1)
+    monkeypatch.setattr(engine_mod, "_POOL_MIN_JOBS", 1)
     assert _report(tmp_path, parsed) == in_threads
 
 
@@ -110,7 +110,7 @@ def test_a_walk_that_fails_in_a_worker_is_empty_and_never_cached(tmp_path: Path,
             on_done(j, results[j])
 
     monkeypatch.setattr(engine_mod, "run_with_deadline", crashing_pool)
-    monkeypatch.setattr(engine_mod, "_WALK_POOL_MIN_FILES", 1)
+    monkeypatch.setattr(engine_mod, "_POOL_MIN_JOBS", 1)
     (tmp_path / ".repowise").mkdir()
     analyzer = engine_mod.HealthAnalyzer(
         nx.DiGraph(),

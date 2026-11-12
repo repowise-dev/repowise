@@ -54,7 +54,7 @@ from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .duplication.detector import clone_ranges, clones_against_index, union_line_count
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
-from .file_evaluator import FileEvaluator, _read_source_lines, _RunConfig
+from .file_evaluator import FileEvaluator, _read_source_lines, _RunConfig, run_extract_method_job
 from .file_evaluator import _mark_deepest_block as _mark_deepest_block
 from .file_evaluator import _mark_function_facts as _mark_function_facts
 from .file_evaluator import walked_functions as walked_functions
@@ -254,10 +254,10 @@ def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | No
         return None
 
 
-# Below this many walks the cache did not serve, threads walk them: starting
-# spawn workers costs seconds, which a changed-files pass of a few files never
-# repays.
-_WALK_POOL_MIN_FILES = 200
+# Below this many jobs (walks the cache did not serve, files for Extract
+# Method) they run in this process: starting spawn workers costs seconds, which
+# a changed-files pass of a few files never repays.
+_POOL_MIN_JOBS = 200
 
 
 @dataclass(frozen=True)
@@ -730,7 +730,7 @@ class HealthAnalyzer:
                 tick(pf)
             else:
                 pending.append(i)
-        if len(pending) >= _WALK_POOL_MIN_FILES:
+        if len(pending) >= _POOL_MIN_JOBS:
             await asyncio.to_thread(self._walk_in_pool, targets, requests, pending, results, tick)
         async def _finish(i: int) -> None:
             async with semaphore:
@@ -891,13 +891,25 @@ class HealthAnalyzer:
         walked: list[tuple[Any, FileComplexity]],
         on_step: Any | None,
     ) -> tuple[list[HealthFileMetricData], list[HealthFindingData], list[RefactoringSuggestion]]:
-        metrics: list[HealthFileMetricData] = []
-        findings: list[HealthFindingData] = []
-        suggestions: list[RefactoringSuggestion] = []
+        """Score every walked file, then its refactorings.
+
+        Extract Method's dataflow is most of a large repo's scoring time and
+        holds the GIL, so the files it reads run in spawn workers between the
+        two passes; a file without a worker result runs it here, as before.
+        """
+        assessed = []
         for pf, fcx in walked:
             # Side effect: stamp each matched symbol's complexity_estimate.
             self._populate_symbol_complexity(pf, fcx.functions)
-            file_metric, file_findings, file_suggestions = evaluator.evaluate(pf, fcx)
+            assessed.append((pf, fcx, *evaluator.assess(pf, fcx)))
+        extract_method = self._extract_methods_in_pool(evaluator, assessed)
+        metrics: list[HealthFileMetricData] = []
+        findings: list[HealthFindingData] = []
+        suggestions: list[RefactoringSuggestion] = []
+        for i, (pf, fcx, file_metric, file_findings, file_assessed) in enumerate(assessed):
+            file_suggestions = evaluator.suggest(
+                pf, fcx, file_findings, file_assessed, extract_method.get(i)
+            )
             # Every dataflow consumer has read this file by now.
             evaluator.dataflow_cache.release(pf.file_info.abs_path)
             metrics.append(file_metric)
@@ -906,6 +918,50 @@ class HealthAnalyzer:
             if on_step:
                 on_step(pf.file_info.path)
         return metrics, findings, suggestions
+
+    def _extract_methods_in_pool(
+        self, evaluator: FileEvaluator, assessed: list[tuple[Any, ...]]
+    ) -> dict[int, list[RefactoringSuggestion]]:
+        """Extract Method's suggestions per file index, for the files run in workers.
+
+        Each finding takes back the details the worker's copy ended with. A
+        file whose job failed, or a pool that cannot start, leaves the file to
+        :meth:`FileEvaluator.suggest`'s own in-process run.
+        """
+        jobs = {
+            i: job
+            for i, (pf, _fcx, _metric, file_findings, _a) in enumerate(assessed)
+            if (job := evaluator.extract_method_job(pf, file_findings)) is not None
+        }
+        if len(jobs) < _POOL_MIN_JOBS:
+            return {}
+        order = list(jobs)
+        out: dict[int, list[RefactoringSuggestion]] = {}
+
+        def done(j: int, result: Any) -> None:
+            i = order[j]
+            if isinstance(result, BaseException):
+                log.debug("extract_method_job_failed", path=jobs[i].file_path, error=str(result))
+                return
+            file_suggestions, details = result
+            for finding, finding_details in zip(assessed[i][3], details, strict=True):
+                finding.details = finding_details
+            out[i] = file_suggestions
+
+        from repowise.core.pipeline.phases.ingestion import parse_pool_workers
+
+        try:
+            run_with_deadline(
+                run_extract_method_job,
+                [jobs[i] for i in order],
+                parse_pool_workers(len(order)),
+                [PENDING] * len(order),
+                timeout=None,
+                on_done=done,
+            )
+        except Exception as exc:
+            log.warning("extract_method_pool_unavailable", error=str(exc))
+        return out
 
     def _kpis(
         self, metrics: list[HealthFileMetricData], findings: list[HealthFindingData]
