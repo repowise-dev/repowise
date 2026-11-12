@@ -753,11 +753,27 @@ async def _stored_edges_into(
 
 
 def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
-    """Whether every traversed file parsed and every synthetic-edge pass ran."""
+    """Whether the graph holds every row the store does for the files it covers.
+
+    Short when a synthetic-edge pass failed, or when a traversed file that
+    failed to parse had graph rows before: its symbols are missing, so every
+    caller's edge into it reads as gone. A file that has never parsed had no
+    rows to lose, as the last persisted graph (``previous_seed_edges``) shows;
+    without that snapshot any unparsed file counts as short.
+    """
     if not getattr(graph_builder, "synthetic_edges_complete", True):
         return False
     traversed = getattr(graph_builder, "traversed_file_paths", None) or set()
-    return not (set(traversed) - {pf.file_info.path for pf in parsed_files})
+    unparsed = set(traversed) - {pf.file_info.path for pf in parsed_files}
+    if not unparsed:
+        return True
+    previous = getattr(graph_builder, "previous_seed_edges", None)
+    if previous is None:
+        return False
+    return not any(
+        node_id in unparsed or attrs.get("file_path") in unparsed
+        for node_id, attrs in previous["nodes"]
+    )
 
 
 async def _prune_vanished_symbol_nodes(
