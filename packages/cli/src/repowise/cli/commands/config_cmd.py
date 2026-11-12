@@ -182,7 +182,7 @@ def suggested_line(count: int, path: str | None = None) -> str | None:
     from repowise.cli.ui.result_panels import SUGGESTED_STEP
 
     noun = "option fits" if count == 1 else "options fit"
-    return f"{count} {noun} this repo: {SUGGESTED_STEP}{_path_flag(path)}"
+    return f"{count} {noun} this repo: {SUGGESTED_STEP}{path_flag(path)}"
 
 
 def suggested_for(root: Path) -> list[Any]:
@@ -214,7 +214,7 @@ def _list_suggested(root: Path, area: str | None, path: str | None, fmt: str) ->
     for s in found:
         command = s.command
         if command.startswith("repowise config set "):
-            command += _path_flag(path)
+            command += path_flag(path)
         console.print(
             f"\n[bold]{s.key}[/bold]: {escape(_text(s.current))} -> {escape(_text(s.value))}"
         )
