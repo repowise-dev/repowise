@@ -1,4 +1,4 @@
-"""A large class is served as an outline of its members, not its whole body."""
+"""A class is served as an outline of its members, not its whole body."""
 
 from __future__ import annotations
 
@@ -137,17 +137,21 @@ async def test_large_class_is_outlined_with_member_ids(setup_mcp, big_repo, sess
 
     members = result["members"]
     assert len(members) == _METHODS + 1
+    assert "more_members" not in result
     first = members[0]
-    assert first["symbol_id"] == "pkg/big.py::Big::method_000"
-    assert (first["start_line"], first["end_line"]) == spans[0][1:]
+    # The id is the class id plus the name, as the note says, so it is not repeated.
+    assert first["name"] == "method_000"
+    assert "symbol_id" not in first and "kind" not in first
+    assert first["lines"] == "{}-{}".format(*spans[0][1:])
     assert first["signature"] == "def method_000(self, value: int) -> int"
     assert first["summary"] == "Return value shifted by 000."
     assert result["note"].startswith(f"Body (1-{big_end}) outlined")
+    assert "get_symbol('pkg/big.py::Big::<name>')" in result["note"]
     assert f"lines 1-{big_end}" in result["note"]
     assert len(str(result)) < len(source) // 2
 
     # The member id is ready for a follow-up call that serves its whole body.
-    method = await get_symbol(first["symbol_id"])
+    method = await get_symbol("pkg/big.py::Big::method_000")
     assert "outlined" not in method
     assert "return value" in method["source"]
     assert method["_meta"]["complete"]
@@ -177,12 +181,10 @@ async def test_nested_and_unverified_members_stay_in_their_own_class(
 
     result = await get_symbol("pkg/big.py::Big")
 
-    by_id = {m["symbol_id"]: m for m in result["members"]}
-    assert by_id["pkg/big.py::Big::Inner"]["kind"] == "class"
-    assert by_id["pkg/big.py::Big::ghost_inside"]["bounds"] == "approximate"
-    assert "pkg/big.py::Big::Inner::deep" not in by_id
-    assert "pkg/big.py::Outer::Big::stray" not in by_id
-    assert "pkg/big.py::Outer::Big::ghost_outside" not in by_id
+    by_name = {m["name"]: m for m in result["members"]}
+    assert by_name["Inner"]["kind"] == "class"
+    assert by_name["ghost_inside"]["bounds"] == "approximate"
+    assert {"deep", "stray", "ghost_outside"}.isdisjoint(by_name)
 
 
 @pytest.mark.asyncio
@@ -196,9 +198,9 @@ async def test_overload_rows_sharing_an_id_are_listed_once(setup_mcp, big_repo, 
 
     result = await get_symbol("pkg/big.py::Big")
 
-    ids = [m["symbol_id"] for m in result["members"]]
-    assert ids.count("pkg/big.py::Big::method_000") == 1
-    assert len(ids) == len(set(ids)) == _METHODS + 1
+    names = [m["name"] for m in result["members"]]
+    assert names.count("method_000") == 1
+    assert len(names) == len(set(names)) == _METHODS + 1
 
 
 @pytest.mark.asyncio
@@ -223,8 +225,8 @@ async def test_drifted_members_are_relocated_with_one_parse(
     result = await get_symbol("pkg/big.py::Big")
 
     assert result["outlined"] is True
-    methods = [m for m in result["members"] if m["kind"] == "method"]
-    assert [(m["start_line"], m["end_line"]) for m in methods] == [s[1:] for s in live_spans]
+    methods = [m for m in result["members"] if "kind" not in m]
+    assert [m["lines"] for m in methods] == ["{}-{}".format(*s[1:]) for s in live_spans]
     assert len(calls) == 1
 
 
@@ -239,12 +241,24 @@ async def test_small_class_and_function_keep_full_source(setup_mcp, big_repo, se
     assert "return 1" in small["source"]
     assert small["_meta"]["complete"]
 
-    # A function past the outline size still serves its body, as before.
+    # A function, however large, still serves its body.
     function = await get_symbol("pkg/big.py::big_function")
     assert "outlined" not in function
     assert "members" not in function
     assert "return value" in function["source"]
-    assert len(function["source"]) > tool_symbol._OUTLINE_MIN_CHARS
+
+
+@pytest.mark.asyncio
+async def test_a_class_of_a_few_methods_is_outlined_too(setup_mcp, big_repo, session):
+    from repowise.server.mcp_server import get_symbol
+
+    _source, spans, _ = await _setup(big_repo, session, methods=3)
+
+    result = await get_symbol("pkg/big.py::Big")
+
+    assert result["outlined"] is True
+    assert [m["name"] for m in result["members"]][:3] == [s[0] for s in spans]
+    assert "value = value" not in result["source"]
 
 
 @pytest.mark.asyncio
@@ -260,9 +274,12 @@ async def test_very_large_class_caps_members_under_the_budget(setup_mcp, big_rep
     assert result["outlined"] is True
     assert result["members_total"] == 251
     listed = len(result["members"])
-    assert 0 < listed < 251
-    assert f"{251 - listed} more members are not listed" in result["note"]
-    assert f"after line {result['members'][-1]['end_line']}" in result["note"]
+    named = result["more_members"].split(", ")
+    assert 0 < listed < listed + len(named) < 251
+    # Past the full rows, members are named with their first line.
+    assert named[0].startswith("method_") and named[0].split(" ")[1].isdigit()
+    assert f"{251 - listed - len(named)} more members are not listed" in result["note"]
+    assert f"after line {named[-1].split(' ')[1]}" in result["note"]
     assert len(json.dumps(result)) <= DEFAULT_RESPONSE_CHARS
 
 
@@ -283,14 +300,11 @@ async def test_outline_skips_callee_bodies(setup_mcp, big_repo, session, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_context_lines_never_tip_a_class_into_an_outline(
-    setup_mcp, big_repo, session, monkeypatch
-):
+async def test_context_lines_never_tip_a_class_into_an_outline(setup_mcp, big_repo, session):
     from repowise.server.mcp_server import get_symbol
 
     await _setup(big_repo, session)
     bare = await get_symbol("pkg/big.py::Small")
-    monkeypatch.setattr(tool_symbol, "_OUTLINE_MIN_CHARS", len(bare["source"]))
 
     widened = await get_symbol("pkg/big.py::Small", context_lines=20)
 

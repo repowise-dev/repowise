@@ -194,7 +194,7 @@ Verified, line-numbered source for one symbol, a live line range, or an omission
 | `query` | string | none | Omission refs: keep lines matching this regex or substring. Read as `symbol_id` when none is given |
 | `repo` | string | default repo | `"all"` not supported |
 
-**Returns** `source` (about 600 lines max), bounds, `kind`, `truncated`, `candidates`, `callee_bodies`, `outlined` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_symbol)).
+**Returns** `source` (about 600 lines max), bounds, `kind`, `facts`, `tests`, `truncated`, `candidates`, `callee_bodies`; a class comes back `outlined`, as its member signatures ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_symbol)).
 
 ```
 get_symbol(symbol_id="src/auth/service.py::login", depth=2)

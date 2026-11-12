@@ -43,6 +43,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._references import path_identity, symbol_identity
+from repowise.server.mcp_server._symbol_facts import shows_call_origin, symbol_card_facts
 from repowise.server.mcp_server._symbol_lookup import spotlight_owners
 from repowise.server.mcp_server.tool_context.enrichment import _MIN_CALL_CONFIDENCE
 from repowise.server.mcp_server.tool_context.files import files_section
@@ -485,6 +486,9 @@ async def _symbol_docs(card: CardState, docs: dict[str, Any]) -> None:
     if card.wants("full_doc"):
         await _symbol_documentation(card, sym, sym_page, docs)
     await _symbol_used_by(card, sym, docs)
+    sym_node_id = getattr(sym, "symbol_id", None) or getattr(sym, "node_id", None)
+    if sym_node_id:
+        docs.update(await symbol_card_facts(card.session, card.repo_id, sym_node_id))
     # Candidates
     if len(sym_matches) > 1:
         docs["candidates"] = filter_dicts_by_key(
@@ -592,7 +596,12 @@ async def _symbol_user_files(
     row per file, unlike symbol-grained ``callers``.
     """
     res = await card.session.execute(
-        select(GraphEdge.source_node_id, GraphNode.file_path, GraphEdge.confidence)
+        select(
+            GraphEdge.source_node_id,
+            GraphNode.file_path,
+            GraphEdge.confidence,
+            GraphEdge.resolution_origin,
+        )
         .outerjoin(
             GraphNode,
             (GraphNode.repository_id == GraphEdge.repository_id)
@@ -612,7 +621,9 @@ async def _symbol_user_files(
     # by the confidence floor include=["callers"] serves (a recursive call is
     # not a user), so an empty list can say so.
     same_file_users: set[str] = set()
-    for source_node_id, file_path, confidence in res.all():
+    for source_node_id, file_path, confidence, origin in res.all():
+        if not shows_call_origin(origin, sym.file_path):
+            continue
         path = file_path or source_node_id.split("::", 1)[0]
         user_files.add(path)
         if (
