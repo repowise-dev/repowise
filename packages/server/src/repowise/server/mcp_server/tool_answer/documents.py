@@ -170,6 +170,8 @@ async def _find(
     other: list[dict] = []
     for alias, path in ranked[:_DOC_HITS_MAX]:
         lines = await asyncio.to_thread(_lines, at[alias], path, by_doc[(alias, path)])
+        if not lines:
+            continue  # git grep and the scan disagree on a word edge: no evidence to serve
         if alias is None:
             hits.append(_hit(path, lines))
         else:

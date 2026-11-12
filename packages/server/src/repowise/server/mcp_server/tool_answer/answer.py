@@ -918,7 +918,9 @@ async def get_answer(
     await _cache_and_stamp(
         payload,
         ask,
-        write_cache=bool(answer_text) and not cache_disabled,
+        # Another repo's documents change without this repo's commit moving,
+        # and the cache only watches this repo's head.
+        write_cache=bool(answer_text) and not cache_disabled and not retrieved.other_repo_lines,
         cut_off=answer_cut_off(answer_text, stop_reason),
         qhash=qhash,
         provider=provider,
