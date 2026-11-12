@@ -547,7 +547,7 @@ Why the code is shaped this way (decisions, rationale, git archaeology); run bef
 
 ```bash
 repowise why "why the retry cap?" --target src/api/client.py
-repowise why src/api/auth.py                     # governing decisions + origin story
+repowise why src/api/auth.py                     # governing decisions (--full adds the origin story)
 repowise why                                     # decision health dashboard
 ```
 
@@ -918,7 +918,7 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 |------|--------------|---------|
 | `--file <path>` | One file in depth (relative path). | |
 | `--module <prefix>` | Files under this path prefix. | all |
-| `--scope` | `all` or `production`: files every figure covers (`production` scores lower with no defect: tests score higher). | `all` |
+| `--scope` | `all` or `production`: files every figure covers (`production` leaves out tests, tooling, build, vendored, generated and docs example files, which tend to score higher, so it scores lower with no defect). | `all` |
 | `--counts` | `everything` or `code_shape` (drops the git-derived half, which rises as a file is worked on: is the code itself improving?). | `everything` |
 | `--refactoring-targets` | Stored queue: per file, graph-aware plans (Extract Class / Helper / Method, Move Method, Split File) as ordered steps, Break Cycle advisory; MCP and web UI order. Needs `repowise init`; [REFACTORING.md](../layers/REFACTORING.md). | off |
 | `--recompute` | Analyze the working tree in-process (slow on large repos; needed without an index); see notes. | off |
@@ -937,8 +937,8 @@ coverage gradient, function/ownership/churn/change-entropy organizational risk, 
 - **Default**: reads, never writes, what `init` / `update` stored (MCP and web UI rows, with `repowise coverage add`
   coverage). `repowise status`: `Health: 7.4 (avg) · 6.2 (hotspots) · 2.1 (worst: <path>)`.
 - **Preview languages**: a dim line per layer and language, e.g. `Refactoring on Java: preview, measured 22% precision
-  on 55 judged plans from 2 Java repos, 2026-10-15` (`repowise dead-code` too). Previews: health on C++; refactoring,
-  performance, dead code on Java, C#, C, C++ (dead code also Kotlin, Swift); none held back.
+  on 55 judged plans from 2 Java repos, 2026-10-15` (`repowise dead-code` too). Previews: refactoring, performance,
+  dead code on Java, C#, C, C++ (dead code also Kotlin, Swift); none held back.
 
 #### `repowise health check [REVSPEC]`
 
@@ -981,33 +981,48 @@ code file, internal error.
 
 ### `repowise decision`
 
-Manage architectural decision records.
+Record, read and govern architectural decisions. A decision an agent records
+comes into force when the commit it cites lands on the default branch; mined
+records are background until someone puts them in force.
 
 ```bash
 repowise decision list
 repowise decision show ID
 repowise decision add                   # interactive
-repowise decision add --title T --decision D  # no prompts, lands proposed
-repowise decision add --agent SLUG --title T --decision D --rationale R --affects PATH  # an agent's own record
-repowise decision candidates            # awaiting review; these govern nothing
-repowise decision confirm ID...         # accept: this makes them govern
+repowise decision add --title T --decision D  # no prompts, lands as background
+repowise decision add --agent SLUG --decision D --rationale R --affects PATH  # an agent's own record
+repowise decision candidates            # the background records; these govern nothing
+repowise decision discover              # a prompt for your agent: check the background records on the busiest files
+repowise decision discover --agreements # a prompt that moves working agreements into CLAUDE.md
+repowise decision confirm ID...         # put in force
 repowise decision reaffirm ID...        # renew an accepted decision after re-reading it
+repowise decision pin ID...             # hold a decision in force as law: agents ask before replacing it
+repowise decision unpin ID...           # it stays in force; agents may replace it again
 repowise decision dismiss ID...         # tombstone (sticky; never re-proposed)
-repowise decision merge ID INTO_ID      # fold into an accepted decision (--agent signs)
-repowise decision dedupe                # fold duplicate candidates (dry run unless --apply)
+repowise decision merge ID INTO_ID      # fold into a decision in force (--agent signs)
+repowise decision dedupe                # fold duplicate background records (dry run unless --apply)
 repowise decision split ID              # flag as bundling two choices; never splits it
 repowise decision deprecate ID          # optionally naming its successor
 repowise decision health
-repowise decision status                # what capture did and cost
-repowise decision export                # accepted decisions to .repowise/decisions.yaml
+repowise decision status                # what capture did and cost, and what came into force this week
+repowise decision export                # decisions in force to .repowise/decisions.yaml
 repowise decision import                # reconcile the store to that file
+repowise decision push                  # decisions recorded here, to this repo on repowise.dev
+repowise decision pull                  # decisions in force there that this store lacks
 repowise decision migrate               # classify pre-split rows (dry run unless --apply)
-repowise decision config show                   # resolved capture policy
+repowise decision config show                   # resolved policy
+repowise decision config mode off|read-only|full  # the one switch for the layer (full)
 repowise decision config preset NAME            # default | off | local_only | balanced | full
 repowise decision config discovery              # broad discovery call budget
 repowise decision config agent-acceptance --on|--off  # may an agent grant authority? (on)
+repowise decision config approval --on|--off          # new decisions wait for a person (off)
 repowise decision config capture-prompt --on|--off    # agent records what it committed (on);
                                                       # --on installs the shell hook
+repowise decision config upkeep-prompt --on|--off     # after a commit, settle the decisions
+                                                      # its files are under (off)
+repowise decision config session-start --on|--off     # decisions at session start (off)
+repowise decision config update-mining --on|--off     # update mines new history with a model (off)
+repowise decision config sync --on|--off              # push and pull during update (off)
 repowise decision source list                   # source registry and state
 repowise decision source set SRC --on|--off     # switch one source
 repowise decision source set SRC --llm|--no-llm # switch only its model stage
@@ -1020,7 +1035,7 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--title` | Short title. | |
+| `--title` | Short title. With `--agent`, defaults to the decision's opening words. | |
 | `--decision` | What was chosen. | |
 | `--context` | What forced it. | |
 | `--rationale` | Why. | |
@@ -1033,34 +1048,36 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--agent` | Record as this agent's (source `agent`, e.g. `claude_code`); acceptance then needs evidence. | |
 | `--session` | The agent session recording it. Needs `--agent`. | |
 
-- `--title` plus `--decision`: no prompts, prints the new id. Any flag, or `--format json`, without both is refused.
-- Flag-driven records land `proposed`, interactive `active`; promote with `repowise decision confirm <id>`.
+- `--title` plus `--decision` (or `--decision` with `--agent`): no prompts, prints the new id. Any flag, or `--format json`, without them is refused.
+- Flag-driven records land as background (`proposed`), interactive ones in force (`active`); `repowise decision confirm <id>` puts one in force. An `--agent` record citing `--evidence-commit` comes into force when that commit lands on the default branch (merge, squash or rebase), unless `config approval` is on or the mode is not `full`.
 
 **`candidates`**
 
 | Flag | What it does | Default |
 |------|--------------|---------|
 | `--state` | `open`, `accepted`, `merged`, `needs_split`, `dismissed`, `all`. | `open` |
-| `--lane` | Extraction lane: `pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`. Not the Decisions page review lanes. | all lanes |
+| `--lane` | Extraction source: `pr`, `session`, `session_discovery`, `comment`, `git_archaeology`, `adr`, `inline_marker`, `conventions`, `cli`. Not the Decisions page sections. | all lanes |
 | `--limit` | Max listed. | `30` |
 
-**`confirm`, `reaffirm`, `dismiss`, `deprecate`, `merge`, `split`**
+**`confirm`, `reaffirm`, `pin`, `unpin`, `dismiss`, `deprecate`, `merge`, `split`**
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--reason TEXT` | `confirm`: rationale, or why a constraint needs none; corrects the record. `reaffirm`: why it still holds. `dismiss`, `deprecate`: why. `split`: what the two choices are. | |
+| `--reason TEXT` | `confirm`: rationale, or why a constraint needs none; corrects the record. `reaffirm`: why it still holds. `pin`, `unpin`, `dismiss`, `deprecate`: why. `split`: what the two choices are. | |
 | `--scope PATH` | `confirm`: file or module governed. Repeatable; replaces the proposed scope. | proposed scope |
 | `--evidence REF` | `confirm`, `reaffirm`: commit, file or link. Repeatable. | |
 | `--as NAME` | `confirm`: accepter other than git identity. | git identity |
 | `--superseded-by ID` | `deprecate`: lineage edge to the replacement; deprecated id keeps resolving. | |
+| `--force` | `dismiss`, `deprecate`: retire a pinned decision. A person's flag: refused with `--agent`. | off |
 | `--agent SLUG` | Sign as an agent (e.g. `claude_code`). Granting is refused only under `agent-acceptance --off`. | |
 | `--session ID` | Signing agent session. | |
 | `--yes` / `-y` | `dismiss`: skip the prompt (as does `--format json`). | off |
 | `--preview` | Not `split`: report each id's outcome, write nothing. | off |
 
-- `confirm` accepts candidates; on an already accepted decision it refuses and points at `reaffirm`. `reaffirm` refuses a candidate.
-- `merge` needs an accepted target: confirm the target first, or merge the other way.
-- A dismissed or deprecated candidate records its signer on its review row.
+- `confirm` puts a background record in force; on a decision already in force it refuses and points at `reaffirm`. `reaffirm` refuses a background record.
+- `merge` needs a target in force: confirm the target first, or merge the other way.
+- `pin` takes only a decision in force. A pinned decision is refused to `dismiss`, `deprecate` and `deprecate --superseded-by` from an agent, which is told to ask a person; a person passes `--force`, or unpins it first. Pinning never changes who the decision reads as accepted by.
+- A dismissed or deprecated background record records its signer on its review row.
 - With `--format json`, every verb but `split` returns `{action, preview, results, succeeded, failed}`, even for one id.
 
 **`dedupe`, `migrate`, `export`, `import`**
@@ -1074,6 +1091,17 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 | `--dry-run` | `import`: write nothing. | off |
 
 - `migrate` and `import` first delete the inert supersede pointers an older version left, and list each one as `stale`. `migrate` also lists each pointer it leaves `unplaced`, which resolves to nothing. With `--format json`, both return the repairs as `repaired`; only `migrate` also returns `unplaced`.
+- Once `.repowise/decisions.yaml` exists, `update` rewrites it as `export` would when the store changes, and leaves it alone when it holds edits the store has not read. `update` never creates it.
+
+**`push`** / **`pull`**
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--dry-run` | `push`: list each record and its payload; nothing sent, no sign-in. | off |
+
+- Both need `decisions.sync` on, `repowise login`, and a GitHub `origin`; otherwise they refuse with the reason.
+- `push` sends decisions in force whose source is `agent` or `session`, each once, with its evidence references and one verbatim quote. Per record: `created`, `duplicate`, `refused` with the reason, `skipped`, or `not_sent`. Exit 1 when any record was refused or not sent.
+- `pull` takes decisions recorded on repowise.dev, not ones its index found. Reports `received`, `updated`, `retired`, `unchanged`, `skipped`. A server without the route reports that nothing is available.
 
 **`list`**
 
@@ -1092,34 +1120,38 @@ Every subcommand takes `--format` (`table` default, or `json`) and an optional `
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--dry-run` | `config preset`, `config discovery`, `source set`, `llm`: print the change, write nothing. | off |
+| `--dry-run` | Every `config` subcommand but `show`, `source set`, `llm`: print the change, write nothing. | off |
 | `--format` | `json` returns the full source registry. | `table` |
 | `--max-sessions` | `config discovery`: session deltas one broad call reads (1-24). | `12` |
 | `--max-input-tokens` | `config discovery`: input-token ceiling per broad call (2000-60000). | `30000` |
 
 - `config discovery` without budget flags prints the resolved policy. Broad discovery is the `session_discovery` source: off in `default`, on in `balanced` and `full`.
+- `config mode` sets the layer's one switch and resets the finer switches to that mode's defaults. `full` records and shows decisions; `read-only` shows what the repository holds and records nothing (no mining, no capture prompt, no agent putting a decision in force, `push` refused, `pull` allowed); `off` shows and records nothing, and `get_why` answers only that decisions are off. A finer switch set afterwards wins, except under `off`. See [CONFIG.md](CONFIG.md#mode).
+- `config preset` keeps the mode and every switch; it changes which sources `init` mines.
 
-**Acceptance.** Only `confirm` promotes to `active`; extraction, recurrence across sessions and confidence stop at `proposed`.
+**Putting in force.** A decision is in force once it has an acceptance: `confirm`, an agent's record whose commit landed on the default branch, a committed ADR marked accepted, or `import`. Extraction, recurrence across sessions and confidence stop at background (`proposed`).
 
 - `confirm` needs a reason, a scope and an evidence reference (flags supply what is missing), else refuses. JSON refusal: `{"error": "acceptance_refused", "blockers": [...]}`, exit 1 (not a crash).
 - `candidates` lists first what the contract would accept at the last index; `Acceptable` reads `yes` or `confirm`'s blockers (JSON: `blockers`).
-- `list --status` filters a status column kept for pre-split readers, not "what governs"; `candidates` is the
-  authoritative unaccepted list. The Decisions page shows five lanes over the acceptance join.
+- `list --status` filters a status column kept for older readers, not what is in force; `candidates` is the
+  authoritative background list. The Decisions page shows In force, Recent, Background and History over the acceptance join.
 - `confirm` and `dismiss` take many ids, each applied independently: a refused id commits the rest and exits 1. `--preview` runs the contract, then rolls back.
 - JSON: one id emits `{"id", "status", "action"}`; several, or `--preview`, emit `action`, `preview`, `succeeded`,
   `failed` and `results[]` (`given`, `id`, `title`, `ok`, then `action` / `status` or `error` / `blockers`, e.g. `"no
   scope: name the files or modules it governs"`).
 
-**`status`.** Policy, preset; per source: state, why no call, what it captured and when; five review lanes, backlog
-acceptable today versus blocked, its age; staging queues; decision-extraction model spend. No run ledger: spend is
-all-time with the last call named; a queue the store predates reads absent, not zero.
+**`status`.** Mode, policy, preset; per source: state, why no call, what it captured and when; the In force count
+and the other sections, the pinned count, backlog acceptable today versus blocked, its age; staging queues; decision-extraction model spend; and
+**recent**: the decisions put in force in the last 7 days, newest first, each with who put it in force (an agent, or a
+person) and the commit it landed in (the table shows 10, `--format json` lists them all under `recent.decisions`). No
+run ledger: spend is all-time with the last call named; a queue the store predates reads absent, not zero.
 
 ```
 repowise decision status
 
   Decision capture
 
-    Capture on  ·  LLM extraction on  ·  preset default
+    Mode full  ·  Decision capture on  ·  LLM extraction on  ·  preset default
 
   Source             Status               Records  Accepted  Last seen   Why
   inline_marker      enabled              4        2         2026-08-31  Runs with model structuring.
@@ -2108,6 +2140,12 @@ repowise doctor --workspace --repair
   `fail`), a `detail` and a `fix`: the exact command that resolves it, or `null`. Match on `id`; names can change.
   A `warn` never changes the exit code. With `--workspace`, ids repeat once per repo and `name` starts with the
   repo's alias.
+- **Index data** (`index-data`, also under `--quick`) warns when the index is incomplete or the next `repowise update`
+  would redo stored work: git history written by older rules, health or security results from an older analyzer or
+  scanner, pages from an older page renderer, or empty git, graph, symbol or health tables. The detail names each
+  problem and the row's fix is one command: `repowise init` when any table set is empty (an update at an unchanged
+  HEAD does not refill them), `repowise update` when model-written pages need re-rendering, otherwise
+  `repowise update --index-only` (no model calls).
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.

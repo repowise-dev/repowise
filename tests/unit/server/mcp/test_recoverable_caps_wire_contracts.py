@@ -816,7 +816,8 @@ async def test_why_health_and_targets_only_modes_are_bounded_and_recoverable(
     # Nobody accepted the seeded records, so the card's populated lane is the
     # candidate one and the rules lane is empty.
     assert context["candidate_decisions_total"] >= 9
-    assert context["candidate_decisions_emitted"] == 8
+    # Without include=["history"] a card serves two background records.
+    assert context["candidate_decisions_emitted"] == 2
     recovered = await _recover_one(targets_only, "sealed-why-8")
     assert "sealed-why-8" in recovered
     assert '"evidence_refs"' in recovered
@@ -907,7 +908,7 @@ async def test_why_fallback_archaeology_and_rationale_wire_recover_annotated_tai
         ],
     )
 
-    result = await tool_middleware(get_why)("src/sealed/fallback.py")
+    result = await tool_middleware(get_why)("src/sealed/fallback.py", include=["history"])
     _assert_wire(result, "mode", DEFAULT_RESPONSE_CHARS)
     assert result["git_archaeology"]["file_commits_total"] == 13
     assert result["git_archaeology"]["cross_references_total"] == 13

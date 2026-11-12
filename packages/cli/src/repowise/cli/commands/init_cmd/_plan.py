@@ -65,7 +65,7 @@ def _embedders(run: InitRun) -> tuple[str, str]:
     from repowise.cli.providers import resolve_embedder, template_run_embedder
     from repowise.cli.providers.embedders import embedder_was_requested
 
-    resolved = resolve_embedder(run.opts.embedder_name)
+    resolved = resolve_embedder(run.opts.embedder_name, repo_path=run.repo_path)
     requested = embedder_was_requested(
         run.opts.embedder_name, load_config(run.repo_path).get("embedder")
     )
@@ -109,14 +109,11 @@ def _state(run: InitRun, base: PlanState, answers: _Answers) -> PlanState:
 
 def _commit_limit(run: InitRun) -> int:
     """The commit cap the run will use: flag, then config.yaml, then the default."""
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
 
-    limit = (
-        run.opts.commit_limit
-        or load_config(run.repo_path).get("commit_limit")
-        or _DEFAULT_COMMIT_LIMIT
-    )
-    return max(1, min(int(limit), 10000))
+    if run.opts.commit_limit is not None:
+        return run.opts.commit_limit
+    return clamp_commit_limit(load_config(run.repo_path).get("commit_limit"))
 
 
 def _shape(run: InitRun, scan: Any) -> RunShape:

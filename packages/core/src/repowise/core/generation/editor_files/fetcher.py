@@ -60,8 +60,14 @@ from .tech_stack import detect_build_commands, detect_tech_stack
 _MAX_MODULES = 6
 _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
-_MAX_DECISIONS = 3
+#: Pinned decisions are the only ones listed by name; the rest are a pointer.
+_MAX_PINNED_DECISIONS = 5
 _MAX_FIX_FIRST = 3
+
+
+def _pinned(records: list, pinned_ids: set[str]) -> list:
+    """The records a person pinned as law, in the order given."""
+    return [r for r in records if r.id in pinned_ids]
 
 
 def _signed_by(signature) -> str:
@@ -118,6 +124,12 @@ class EditorFileDataFetcher:
         stored_commit = ((repo.head_commit or "")[:7]) if repo else ""
         # The date likewise is the index's sync time, never the render time.
         synced_at = crud.index_synced_at(repo)
+        from repowise.core.analysis.decisions.policy_store import layer_mode
+
+        mode = layer_mode(self._repo_path)
+        decisions_in_force, pinned = (
+            await self._get_decisions() if "decisions" in s and mode != "off" else (False, [])
+        )
 
         return EditorFileData(
             repo_name=repo_name,
@@ -130,7 +142,9 @@ class EditorFileDataFetcher:
             entry_points=await self._get_entry_points() if "entry_points" in s else [],
             tech_stack=detect_tech_stack(self._repo_path),
             hotspots=await self._get_hotspots() if "hotspots" in s else [],
-            decisions=await self._get_decisions() if "decisions" in s else [],
+            decisions=pinned,
+            decisions_in_force=decisions_in_force,
+            record_decisions=mode == "full",
             build_commands=detect_build_commands(self._repo_path) if "commands" in s else {},
             avg_confidence=await self._get_avg_confidence(),
             code_health=(
@@ -326,51 +340,60 @@ class EditorFileDataFetcher:
             )
         return hotspots
 
-    async def _get_decisions(self) -> list[DecisionSummary]:
-        """Accepted decision records, least-stale first.
+    async def _get_decisions(self) -> tuple[bool, list[DecisionSummary]]:
+        """Whether any decision is in force here, and the pinned ones by name.
 
-        An agent reads this block as instructions, so it is the surface where
-        the candidate/decision distinction matters most: acceptance, not a
-        status string a recurrence check wrote, is what earns a line here.
+        These files are read into every session, so the block is a one-line
+        pointer to where decisions are served (the edit-time notice and
+        ``get_why``) plus the few a person pinned as law. Acceptance, not a
+        status string a recurrence check wrote, is what counts as in force.
 
-        It is also where an agent can read back its own acceptance as the
-        team's rule, so a line a person did not sign says so.
+        A pinned line a person did not sign says so, because an agent reads
+        this block as the team's rules.
+
+        Working agreements are left out: they are rules about how the work is
+        done, which belong in the agent's own instruction files, not here.
         """
+        from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND
         from repowise.core.exclusion import build_exclude_spec, decision_is_excluded
         from repowise.core.persistence.crud.authority import (
             accepted_predicate,
             decision_signatures,
+            pinned_decision_ids,
         )
 
+        pinned_ids = await pinned_decision_ids(self._session, self._repo_id)
         result = await self._session.execute(
             select(DecisionRecord)
             .where(
                 DecisionRecord.repository_id == self._repo_id,
                 DecisionRecord.status == "active",
+                func.coalesce(DecisionRecord.kind, "") != AGREEMENT_KIND,
                 accepted_predicate(),
             )
-            .order_by(DecisionRecord.staleness_score.asc())
+            # Pinned first, so the window below always holds them.
+            .order_by(
+                DecisionRecord.id.in_(pinned_ids).desc(), DecisionRecord.staleness_score.asc()
+            )
             # Over-fetch: records anchored entirely in excluded paths (vendored
             # venvs mined before exclude rules changed) are dropped below.
-            .limit(_MAX_DECISIONS * 3)
+            .limit(_MAX_PINNED_DECISIONS * 3)
         )
         exclude_spec = build_exclude_spec(self._repo_path)
-        records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)][
-            :_MAX_DECISIONS
-        ]
-        signatures = await decision_signatures(self._session, self._repo_id, records)
-        summaries: list[DecisionSummary] = []
-        for rec in records:
-            summaries.append(
-                DecisionSummary(
-                    title=rec.title,
-                    status=rec.status,
-                    rationale=_truncate_at_word(rec.rationale or "", 100),
-                    decision=_truncate_at_word(rec.decision or "", 120),
-                    signed_by=_signed_by(signatures.get(rec.id)),
-                )
+        records = [r for r in result.scalars().all() if not decision_is_excluded(r, exclude_spec)]
+        pinned = _pinned(records, pinned_ids)[:_MAX_PINNED_DECISIONS]
+        signatures = await decision_signatures(self._session, self._repo_id, pinned)
+        summaries = [
+            DecisionSummary(
+                title=rec.title,
+                status=rec.status,
+                rationale=_truncate_at_word(rec.rationale or "", 100),
+                decision=_truncate_at_word(rec.decision or "", 120),
+                signed_by=_signed_by(signatures.get(rec.id)),
             )
-        return summaries
+            for rec in pinned
+        ]
+        return bool(records), summaries
 
     async def _get_avg_confidence(self) -> float:
         """Average confidence score across all wiki pages for this repo."""

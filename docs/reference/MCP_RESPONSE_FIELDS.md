@@ -567,7 +567,7 @@ Groups changed files over index edges, co-change pairs and (for a range) shared 
 - Commit rows under `git_archaeology` and `origin_story.key_commits` inherit the block's `provenance`.
 - Read the lane, not `status`: `status: "active"` can lack acceptance. Only `repowise decision confirm` or a committed ADR marked accepted accepts.
 - `candidates` and `history` shed first under budget, so an absent lane may mean a tight budget.
-- The dashboard (no arguments): stale decisions, conflicts, ungoverned hotspots, `retired_decisions`, `unscoped_decisions`, five rows each, sizes in `counts`.
+- The dashboard (no arguments): stale decisions, conflicts, ungoverned hotspots, `retired_decisions`, `unscoped_decisions`, five rows each, sizes in `counts`. A stale row adds `commits_since`, the commits touching the files it governs since its anchor (its date, the commit that landed its evidence, or its latest reviewed acceptance, whichever is latest), and `moved_files`, the listed files no longer at that path. Each key is absent when git cannot answer.
 
 ---
 
@@ -655,14 +655,14 @@ One ranked queue across refactoring, performance and code-shape work, the same o
 - **Metric row:** `score` (defect, headline), `maintainability_score`, `performance_score`, `weighted_deficit` = (8 - score) x NLOC, `is_test`, `has_test_file`, `primary_biomarker`, `total_deduction`, `structure_deduction`, `history_deduction`, `withheld_deduction`, `history: "short"` (under 5 commits, so most history markers cannot fire).
 - Score = 10 minus structure and history deductions, floored at 1.0; history is 0.0 under `counts="code_shape"`. Deficit and gap fields share score points x NLOC and compare only with each other.
 - `primary_biomarker` prefers a discrete finding over `coverage_gradient`. `details.actions` (agent prompt, silencing rule) appear only with `finding_id=...`.
-- Each finding has a `dimension`. `advisory` findings (`assertion_free_test`, `mock_saturated_test`, `hidden_coupling`, `brain_method`, `untested_complexity`) never deduct and need `include=["advisory"]`. `mode: "targets"` is not split by test.
+- Each finding has a `dimension`. `advisory` findings (`assertion_free_test`, `mock_saturated_test`, `hidden_coupling`, `brain_method`, `repeated_nesting`, `low_cohesion`, `untested_complexity`, the `apex_*` markers, `cobol_unstructured_flow`, and a marker in a language where it does not score, such as `dry_violation` outside TypeScript or `error_handling` outside Python) never deduct and need `include=["advisory"]`. `mode: "targets"` is not split by test.
 
 ### Held-back findings
 
 - **Provisional types:** only with `include=["unverified"]`, marked `verification: "unverified"`.
 - **Withheld types:** never listed but still deduct; rows show `withheld_deduction` and `_meta.withheld` names type, count and reason.
 - **Language gates:** per layer and language, gated, preview or ungated (no row), in `finding_registry.py`. Gated rows are stored, addressable by id, counted in `_meta.gated`, listed with `include=["unverified"]`. Preview rows are served; `_meta.preview` gives `{layer: {language: note}}` with the measurement (e.g. `preview, measured 22% precision on 55 judged plans from 2 Java repos, 2026-10-15`).
-- Nothing is gated. Health is ungated on Java, C#, C and preview on C++; refactoring, performance and dead code are preview on Java, C#, C, C++ (dead code also Kotlin, Swift).
+- Nothing is gated. Health is ungated on Java, C#, C and C++; refactoring, performance and dead code are preview on Java, C#, C, C++ (dead code also Kotlin, Swift).
 - **Vendored and generated files:** findings held back in every language (changed upstream or by a generator), counted in `_meta.gated.health` under `vendored` and `generated`; `_meta.gated.reasons` explains once when nothing is listed. Scores, KPIs and worst-file order still count them.
 - **History markers** (ownership, churn, change entropy, co-change, other git kinds): on tests, held back under `test_history` (code-shape findings still list); elsewhere, held from finding lists under `history`, though they order hotspots and Fix first and `get_risk` lists them.
 - **`findings_hidden`** (targeted mode): one line beside `findings` when a file or row hold kept findings off it, with their count by hold and the points they still deduct. Absent when nothing is held.

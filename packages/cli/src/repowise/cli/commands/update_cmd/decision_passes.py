@@ -2,6 +2,13 @@
 
 Each is best-effort and shares one ``decisions`` timing row; a failure lands in
 the run's degraded list instead of failing the update.
+
+Mining new history, structuring inline markers and judging evolution call a
+model only when ``decisions.update_mining`` is on: init reads the history once,
+and an update keeps the store current without one. The session lanes, off by
+default, are switched on by their own sources and keep their own gates. A source's
+mining pointer does not advance while that is off, so switching it on later
+mines the missed range, bounded by each miner's own cap.
 """
 
 from __future__ import annotations
@@ -31,17 +38,24 @@ def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> 
     from repowise.core.analysis.decisions.policy import resolve_policy
 
     policy = resolve_policy(run.cfg).policy
+    # The provider every model-backed decision pass on this run may use.
+    provider = docs.provider if policy.update_llm else None
 
     # A history-window change re-runs git archaeology; its failure must fail the
-    # run, or the new fingerprint would suppress the only retry.
-    if run.config.git_changed and policy.source_enabled("git_archaeology"):
-        _rerun_git_archaeology(run, docs, policy)
+    # run, or the new fingerprint would suppress the only retry. Model-only, so
+    # with no provider there is nothing to re-run.
+    if (
+        run.config.git_changed
+        and provider is not None
+        and policy.llm_allowed("git_archaeology")
+    ):
+        _rerun_git_archaeology(run, docs, policy, provider)
 
     with timed(run.timings, "decisions.history"):
-        _mine_new_history(opts, run, docs, policy)
+        _mine_new_history(opts, run, docs, policy, provider)
 
     run.timings.start("decisions.rescan")
-    _rescan_inline_markers(opts, run, docs, policy)
+    _rescan_inline_markers(opts, run, docs, policy, provider)
     run.timings.stop("decisions.rescan")
 
     run.timings.start("decisions.sessions")
@@ -59,18 +73,18 @@ def run_decision_passes(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> 
 
     # Before generation: evolved decisions queue their governed pages for this run.
     run.timings.start("decisions.evolution")
-    _evolve_decisions(opts, run, docs)
+    _evolve_decisions(opts, run, docs, provider)
     run.timings.stop("decisions.evolution")
     run.timings.stop("decisions")
 
 
-def _rerun_git_archaeology(run: UpdateRun, docs: DocsPass, policy: Any) -> None:
+def _rerun_git_archaeology(run: UpdateRun, docs: DocsPass, policy: Any, provider: Any) -> None:
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
         history_extractor = DecisionExtractor(
             repo_path=run.repo_path,
-            provider=docs.provider,
+            provider=provider,
             graph=run.graph_builder.graph(),
             git_meta_map=run.git_meta_map,
             parsed_files=run.parsed_files,
@@ -88,6 +102,7 @@ def _rerun_git_archaeology(run: UpdateRun, docs: DocsPass, policy: Any) -> None:
             raise RuntimeError(details)
         mining_state.record_success(getattr(run, "state", None), "git_archaeology", run.head)
         docs.new_decision_markers.extend(history_report.decisions)
+        docs.git_history_remined = True
     except Exception as exc:
         raise RuntimeError(
             "Configuration-triggered Git decision extraction failed; the previous "
@@ -95,9 +110,9 @@ def _rerun_git_archaeology(run: UpdateRun, docs: DocsPass, policy: Any) -> None:
         ) from exc
 
 
-def _history_sources(run: UpdateRun, docs: DocsPass, policy: Any) -> set[str]:
+def _history_sources(run: UpdateRun, provider: Any, policy: Any) -> set[str]:
     """The history sources this update may mine; empty when there is nothing to do."""
-    if docs.provider is None or not run.git_meta_map or not run.base_ref:
+    if provider is None or not run.git_meta_map or not run.base_ref:
         return set()
     sources = {key for key in _HISTORY_SOURCES if policy.llm_allowed(key)}
     if run.config.git_changed:
@@ -106,7 +121,9 @@ def _history_sources(run: UpdateRun, docs: DocsPass, policy: Any) -> set[str]:
     return sources
 
 
-def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any) -> None:
+def _mine_new_history(
+    opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any, provider: Any
+) -> None:
     """Mine the PR bodies and commit messages each source still owes.
 
     A source starts at its own last successful commit (see
@@ -120,7 +137,7 @@ def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, polic
     a source the policy keeps off the model, or a run with no provider, mines
     nothing. PR bodies that already produced a record are skipped by the miner.
     """
-    sources = _history_sources(run, docs, policy)
+    sources = _history_sources(run, provider, policy)
     if not sources:
         return
     try:
@@ -149,7 +166,7 @@ def _mine_new_history(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, polic
                 continue
             extractor = DecisionExtractor(
                 repo_path=run.repo_path,
-                provider=docs.provider,
+                provider=provider,
                 graph=run.graph_builder.graph(),
                 git_meta_map=git_meta,
                 policy=policy,
@@ -264,17 +281,18 @@ def _git_meta_for_range(run: UpdateRun, base: str, commits: set[str]) -> dict | 
 
 
 def _rescan_inline_markers(
-    opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any
+    opts: UpdateOptions, run: UpdateRun, docs: DocsPass, policy: Any, provider: Any
 ) -> None:
     try:
         from repowise.core.analysis.decision_extractor import DecisionExtractor
 
         changed_paths = [fd.path for fd in run.file_diffs if fd.status in ("added", "modified")]
         # Reads uncommitted files on purpose: a marker is source text, not history.
+        # With no provider the markers are still read, just not restructured.
         if changed_paths and policy.source_enabled("inline_marker"):
             extractor = DecisionExtractor(
                 repo_path=run.repo_path,
-                provider=docs.provider,
+                provider=provider,
                 graph=run.graph_builder.graph(),
                 git_meta_map=run.git_meta_map,
                 policy=policy,
@@ -307,7 +325,7 @@ def _run_session_passes(
     # Second: the mining pass is what fills discovery's queue.
     _discover_session_decisions(opts, run, docs, policy, indexed_files)
     _apply_injection_feedback(opts, run, policy)
-    _classify_hook_efficacy(opts, run, policy)
+    _classify_hook_efficacy(opts, run)
 
 
 def _mine_session_decisions(
@@ -405,24 +423,35 @@ async def _injection_feedback(repo_path: Path, apply_injection_feedback) -> dict
     return res
 
 
-def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun, policy: Any) -> None:
-    """Classify hook firings by what the agent did next (reads transcripts)."""
-    # The session lane is the privacy boundary for reading transcripts, so this
-    # fails closed; `repowise hook backfill` fills the columns on demand.
-    try:
-        from repowise.core.sessions.efficacy import ingest_transcript_efficacy
+def _classify_hook_efficacy(opts: UpdateOptions, run: UpdateRun) -> None:
+    """Classify hook firings by what the agent did next (reads transcripts).
 
-        if policy.source_enabled("session"):
-            classified = ingest_transcript_efficacy(
-                run.repo_path, since=time.time() - _EFFICACY_LOOKBACK_SECONDS
-            )
+    ``hooks.measure`` is the privacy boundary for reading transcripts on
+    update, off by default, so this fails closed; ``repowise hook backfill``
+    fills the columns on demand either way. When on, it runs only while the
+    ledger holds a recent firing still waiting to be judged.
+    """
+    try:
+        from repowise.cli.commands.augment_cmd._shared import hook_flag_enabled
+        from repowise.core.sessions.efficacy import (
+            has_unsettled_firings,
+            ingest_transcript_efficacy,
+        )
+
+        if not hook_flag_enabled(run.repo_path, "measure"):
+            return
+        since = time.time() - _EFFICACY_LOOKBACK_SECONDS
+        if has_unsettled_firings(run.repo_path, since=since):
+            classified = ingest_transcript_efficacy(run.repo_path, since=since)
             if opts.verbose and classified:
                 console.print(f"Hook firings classified: [green]{sum(classified.values())}[/green]")
     except Exception as exc:
         _skipped(opts, run, "Hook efficacy", "Hook efficacy classification skipped", exc)
 
 
-def _evolve_decisions(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
+def _evolve_decisions(opts: UpdateOptions, run: UpdateRun, docs: DocsPass, provider: Any) -> None:
+    # With no provider evolution still queues the governed pages a change
+    # touched for regeneration; it only skips the judge that changes status.
     try:
         evo = _run_decision_evolution(
             run.repo_path,
@@ -430,7 +459,7 @@ def _evolve_decisions(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> No
             run.git_meta_map,
             base_ref=run.base_ref,
             head=run.head,
-            provider=docs.provider,
+            provider=provider,
             cost_tracker=docs.cost_tracker,
             max_concurrency=docs.config.max_concurrency,
         )

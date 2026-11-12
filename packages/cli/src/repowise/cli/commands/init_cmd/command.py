@@ -88,7 +88,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         repo_names=split_repo_names(opts.repos),
         exclude_patterns=list(opts.exclude),
         commit_limit=opts.commit_limit,
-        follow_renames=opts.follow_renames,
+        follow_renames=bool(opts.follow_renames),
         no_claude_md=opts.no_claude_md,
         agents_md=opts.agents_md,
         codex_setup=opts.codex_setup,
@@ -267,14 +267,13 @@ def _check_folder_coverage(
 )
 @click.option(
     "--commit-limit",
-    type=int,
+    type=click.IntRange(1, 10000),
     default=None,
     help="Max commits to analyze per file and for co-change detection (default: 5000, max: 10000). Saved to config.",
 )
 @click.option(
-    "--follow-renames",
-    is_flag=True,
-    default=False,
+    "--follow-renames/--no-follow-renames",
+    default=None,
     help="Use git log --follow to track files across renames (slower but more accurate history). Saved to config.",
 )
 @click.option(

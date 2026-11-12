@@ -178,8 +178,8 @@ def show_completion(
         dead_unreachable=dead_unreachable,
         dead_unused=dead_unused,
         hotspot_count=_hotspots(result),
-        decision_count=stood_out.decision_candidates or 0,
         top_hotspot=top_hotspot,
+        discovery_records=stood_out.discovery_records,
         setup=setup,
     )
     console.print()
@@ -224,7 +224,7 @@ def _stood_out(result: Any, repo_path: Path, hotspot: tuple[str, int] | None) ->
         **_dead_finding(result),
         hotspot_file=path,
         hotspot_commits=commits,
-        decision_candidates=_decision_candidates(repo_path),
+        **_decision_counts(repo_path),
     )
 
 
@@ -264,30 +264,42 @@ def _dead_finding(result: Any) -> dict[str, Any]:
     }
 
 
-def _decision_candidates(repo_path: Path) -> int | None:
-    """The decision layer's own candidate count from the store; None when it cannot be read."""
+def _decision_counts(repo_path: Path) -> dict[str, int]:
+    """The background record count, and how many the discovery pass would check.
+
+    Empty when the store cannot be read: the row and the step are left out,
+    never shown as 0. Empty too with ``decisions.mode: off``; ``read_only``
+    keeps the row and drops the step, which would put records in force.
+    """
     from sqlalchemy.exc import SQLAlchemyError
 
     from repowise.cli.helpers import run_async
+    from repowise.core.analysis.decisions.policy_store import layer_mode
 
+    mode = layer_mode(repo_path)
+    if mode == "off":
+        return {}
     try:
-        return run_async(_count_candidates(repo_path))
+        counts = run_async(_count_decisions(repo_path))
+        if mode != "full":
+            counts.pop("discovery_records", None)
+        return counts
     except (SQLAlchemyError, OSError):
-        # A missing or unreadable store: the row is left out, never shown as 0.
-        return None
+        return {}
     except Exception:
         # Anything else is a bug in the count. Logged, and the row is still
         # left out so the finish panel never fails on it.
         logger.exception("decision_candidate_count_failed", repo=str(repo_path))
-        return None
+        return {}
 
 
-async def _count_candidates(repo_path: Path) -> int | None:
+async def _count_decisions(repo_path: Path) -> dict[str, int]:
     from sqlalchemy import select
 
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud.authority import count_decisions_by_lane
+    from repowise.core.persistence.crud.decision_discovery import discovery_records
     from repowise.core.persistence.models import Repository
 
     engine = create_engine(get_db_url_for_repo(repo_path))
@@ -299,8 +311,13 @@ async def _count_candidates(repo_path: Path) -> int | None:
                 )
             ).scalar_one_or_none()
             if repo_id is None:
-                return None
-            return (await count_decisions_by_lane(session, repo_id))["candidates"]
+                return {}
+            return {
+                "decision_candidates": (await count_decisions_by_lane(session, repo_id))[
+                    "candidates"
+                ],
+                "discovery_records": len(await discovery_records(session, repo_id)),
+            }
     finally:
         await engine.dispose()
 

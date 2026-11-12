@@ -1539,6 +1539,20 @@ export interface DeadCodeSummaryResponse {
   gated?: Record<string, unknown>;
 }
 
+/**
+ * A decision prompt for the reader's agent, as ``repowise decision discover`` prints it.
+ *
+ * ``kind`` is the prompt served: ``discover`` asked with no background
+ * records to check comes back as ``add``. ``text`` is empty only for
+ * ``agreements`` with none stored, and then a surface offers nothing.
+ */
+export interface DecisionAgentPromptResponse {
+  kind: "discover" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
+  text: string;
+  ids: string[];
+  count: number;
+}
+
 /** A link from a decision to a governed file or module. */
 export interface DecisionCodeEdge {
   decision_id: string;
@@ -1637,7 +1651,7 @@ export interface DecisionGraphResponse {
   code_edges: DecisionCodeEdge[];
 }
 
-/** Governance rollup: what is stale, awaiting review, and ungoverned. */
+/** Governance rollup: what is stale, what is background, and what is ungoverned. */
 export interface DecisionHealthResponse {
   summary?: Record<string, number>;
   stale_decisions?: DecisionRecordResponse[];
@@ -1660,6 +1674,9 @@ export interface DecisionLaneCountsResponse {
   history: number;
   governing: number;
   total: number;
+  in_force?: number | null;
+  pinned?: number | null;
+  recent?: number | null;
 }
 
 /** One node in a decision lineage chain (root → … → current). */
@@ -1674,6 +1691,21 @@ export interface DecisionLineageEntry {
 /** The supersedes/refines chain, root first. */
 export interface DecisionLineageResponse {
   lineage?: DecisionLineageEntry[];
+}
+
+/** POST body for /decisions/{id}/pin and /unpin. Both fields optional. */
+export interface DecisionPinUpdate {
+  reason?: string | null;
+}
+
+/** How a decision came into force, for the ``recent`` lane's rows. */
+export interface DecisionRecentInfo {
+  at: string;
+  signer: string;
+  signer_kind: string;
+  signer_session?: string;
+  commit?: string;
+  landed_on?: string;
 }
 
 export interface DecisionRecordResponse {
@@ -1710,7 +1742,11 @@ export interface DecisionRecordResponse {
   accepter_kind?: string | null;
   accepter_session?: string | null;
   blockers?: string[] | null;
+  pinned?: boolean | null;
+  recent?: DecisionRecentInfo | null;
   decision_text_missing?: boolean;
+  delivered_count?: number | null;
+  last_delivered_at?: string | null;
 }
 
 /** The resolved decision capture policy for one repository. */

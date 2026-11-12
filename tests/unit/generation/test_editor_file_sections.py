@@ -102,6 +102,7 @@ def _full_data(**kw) -> EditorFileData:
         "decisions": [
             DecisionSummary(title=f"Rule {i}", status="active", rationale="because") for i in range(4)
         ],
+        "decisions_in_force": True,
         "build_commands": {"test": "pytest"},
         "code_health": CodeHealthBlock(
             hotspot_health=6.0,
@@ -122,7 +123,7 @@ _HEADINGS = {
     "entry_points": "### Entry points",
     "hotspots": "### Files that need care",
     "health": "### Code health",
-    "decisions": "### Standing decisions",
+    "decisions": "### Decisions",
     "how_to_work": "### How to work in this repo",
     "tools": "### Tools",
     "commands": "### Commands",
@@ -149,8 +150,8 @@ def test_the_default_is_lean(gen):
     assert "### Commands" not in lean
     assert "Fix first" not in lean
     assert "hotspot health" not in lean
-    # Decision titles only, at most three.
-    assert "- Rule 2\n" in lean and "Rule 3" not in lean
+    # Pinned decisions by title only.
+    assert "- Rule 3\n" in lean
     assert "because" not in lean
 
 
@@ -201,8 +202,8 @@ def test_hotspot_rows_carry_a_date_not_an_age(gen):
 
 
 def test_zero_accepted_decisions_and_no_health_drop_their_sections(gen):
-    rendered = gen.render(_full_data(decisions=[], code_health=None))
-    assert "### Standing decisions" not in rendered
+    rendered = gen.render(_full_data(decisions=[], decisions_in_force=False, code_health=None))
+    assert "### Decisions" not in rendered
     assert "### Code health" not in rendered
     assert "\n\n\n" not in rendered
 
@@ -257,15 +258,43 @@ def test_the_shared_body_differs_only_in_tool_names_and_the_read_note(sections):
     ) == agents
 
 
-def test_the_short_confirm_command_supplies_evidence(gen):
-    # `decision add` records no evidence, so a bare confirm of that candidate is
-    # refused with "no evidence reference"; the copied command must carry it.
+def test_the_short_block_says_when_an_agent_record_governs(gen):
+    # An agent's own record comes into force when its commit merges, so the
+    # short block names that and sends no agent to confirm its own record.
     lean = gen.render(_full_data())
-    assert "`repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`" in lean
+    assert "it comes into force when that commit merges" in lean
+    assert "Mined records are background" in lean
+    assert "decision confirm" not in lean
+
+
+def test_the_full_block_keeps_the_promote_command(gen):
+    # Putting a background record in force stays documented where there is room.
+    full = gen.render(_full_data(sections=frozenset({"how_to_work_full"})))
+    assert "`repowise decision confirm <id> --agent <your slug>`" in full
 
 
 def test_the_record_command_carries_its_commit(gen):
-    # An agent's own record is accepted only with an evidence reference, so the
-    # copied add command names the commit and the same agent can then accept it.
+    # An agent's own record comes into force only through its commit, so the
+    # copied add command names that commit.
     lean = gen.render(_full_data())
     assert "--affects <path> --evidence-commit <sha>`" in lean
+
+
+def test_with_nothing_pinned_the_decisions_block_is_one_pointer_line(gen):
+    rendered = gen.render(_full_data(decisions=[]))
+    block = rendered.split("### Decisions\n", 1)[1].split("\n\n", 1)[0]
+    assert block.strip() == (
+        'Recorded decisions govern some files: `get_why(targets=["<file>"])` '
+        "before changing how one works."
+    )
+
+
+def test_read_only_drops_the_record_a_decision_line(gen):
+    for sections in (None, ALL_SECTIONS):
+        kw = {"sections": sections} if sections else {}
+        full = gen.render(_full_data(**kw))
+        read_only = gen.render(_full_data(record_decisions=False, **kw))
+        assert "repowise decision add" in full
+        assert "repowise decision add" not in read_only
+        assert "### Decisions" in read_only
+        assert len(read_only) < len(full)

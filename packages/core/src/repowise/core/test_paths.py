@@ -253,6 +253,8 @@ class _Conventions:
     dir_suffixes: tuple[str, ...]
     unambiguous_dir_suffixes: tuple[str, ...]
     lang_dir_tokens: dict[str, frozenset[str]]
+    #: The same tokens keyed by file extension, for a caller with no language.
+    ext_dir_tokens: dict[str, frozenset[str]]
     manifest_names: frozenset[str]
     js_family_exts: frozenset[str]
 
@@ -298,6 +300,11 @@ def _conventions() -> _Conventions:
             if s.lstrip(".").lower() not in _AMBIGUOUS_TEST_DIR_TOKENS
         ),
         lang_dir_tokens=REGISTRY.test_dir_tokens_by_language(),
+        ext_dir_tokens={
+            ext: tokens
+            for lang, tokens in REGISTRY.test_dir_tokens_by_language().items()
+            for ext in REGISTRY.extensions_for((lang,))
+        },
         manifest_names=REGISTRY.package_manifest_filenames(),
         js_family_exts=REGISTRY.extensions_for(TS_JS_LANGUAGES),
     )
@@ -440,7 +447,14 @@ def _has_test_segment(
     segments: list[str], original: list[str], filename: str, language: str | None
 ) -> bool:
     """Whether one directory's own name says it holds tests."""
-    lang_tokens = _conventions().lang_dir_tokens.get((language or "").lower(), frozenset())
+    rules = _conventions()
+    # A path-only caller (``path_origin``) has no language: the extension
+    # names it, so ``t/smoke/tasks.py`` reads as tests there as at ingestion.
+    lang_tokens = (
+        rules.lang_dir_tokens.get(language.lower(), frozenset())
+        if language
+        else rules.ext_dir_tokens.get(PurePosixPath(filename.lower()).suffix, frozenset())
+    )
     # ``spec/`` needs corroboration from somewhere: the language declaring the
     # token, a test- or support-shaped filename, or a scaffolding dir beneath it
     # (``spec/support/helper.rb`` is RSpec whatever the filename says, and

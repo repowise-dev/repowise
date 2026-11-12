@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import StaticPool
 
 from repowise.core.analysis.decisions.lifecycle import AGREEMENT_KIND
+from repowise.core.generation.editor_files import fetcher as fetcher_mod
 from repowise.core.generation.editor_files.fetcher import EditorFileDataFetcher
 from repowise.core.persistence.crud import upsert_repository
 from repowise.core.persistence.database import init_db
@@ -376,7 +377,26 @@ async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
     assert data.hotspots[0].last_fix_date is None
 
 
-async def test_fetch_active_decisions_only(session, repo, tmp_path):
+@pytest.fixture
+def pin_everything(monkeypatch):
+    """Read every record in force as pinned."""
+    monkeypatch.setattr(fetcher_mod, "_pinned", lambda records, _ids: records)
+
+
+async def test_decisions_in_force_earn_the_pointer_and_list_none_by_name(
+    session, repo, tmp_path
+):
+    """The block is a pointer plus pinned decisions, and nothing is pinned today."""
+    await _add_decision(session, repo.id, "Use JWT", status="active")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.decisions_in_force is True
+    assert data.decisions == []
+
+
+async def test_fetch_active_decisions_only(session, repo, tmp_path, pin_everything):
     await _add_decision(session, repo.id, "Use JWT", status="active")
     await _add_decision(session, repo.id, "Old choice", status="deprecated")
     await session.commit()
@@ -404,9 +424,10 @@ async def test_a_candidate_never_reaches_the_generated_block(session, repo, tmp_
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert [d.title for d in data.decisions] == []
+    assert data.decisions_in_force is False
 
 
-async def test_a_person_signed_line_carries_no_mark(session, repo, tmp_path):
+async def test_a_person_signed_line_carries_no_mark(session, repo, tmp_path, pin_everything):
     """The ordinary case, and the one that must stay free.
 
     These files are read into every session, so the signature costs tokens
@@ -420,7 +441,7 @@ async def test_a_person_signed_line_carries_no_mark(session, repo, tmp_path):
     assert [d.signed_by for d in data.decisions] == [""]
 
 
-async def test_an_agent_signed_line_says_a_person_did_not(session, repo, tmp_path):
+async def test_an_agent_signed_line_says_a_person_did_not(session, repo, tmp_path, pin_everything):
     """Otherwise an agent reads its own acceptance back as a standing rule."""
     await _add_decision(
         session,
@@ -438,7 +459,7 @@ async def test_an_agent_signed_line_says_a_person_did_not(session, repo, tmp_pat
     assert "claude_code" in mark and "not a person" in mark
 
 
-async def test_the_mark_reaches_both_generated_files(session, repo, tmp_path):
+async def test_the_mark_reaches_both_generated_files(session, repo, tmp_path, pin_everything):
     """The template carries it, not only the summary."""
     from repowise.core.generation.editor_files import AgentsMdGenerator, ClaudeMdGenerator
 
@@ -457,15 +478,13 @@ async def test_the_mark_reaches_both_generated_files(session, repo, tmp_path):
         assert "not a person" in gen.render_full(tmp_path, data), type(gen).__name__
 
 
-async def test_an_accepted_agreement_reaches_the_generated_block(session, repo, tmp_path):
-    """A working agreement rides the instructions file unchanged.
-
-    The query filters on ``status = 'active'`` and acceptance and nothing else,
-    and since the entity split an agreement can be both: its acceptance row
-    records the repository as its scope. The exclusion sweep keeps a record
-    with no affected files rather than dropping it, so nothing here has to know
-    about the noun. Pinned because that is a claim about the delivery half, not
-    an accident of this query's current shape.
+async def test_an_accepted_agreement_stays_out_of_the_generated_block(
+    session, repo, tmp_path, pin_everything
+):
+    """A working agreement is a rule about how the work is done, not a choice
+    about the code, so the generated block leaves it out even when accepted
+    and pinned. It stays stored. An accepted architectural decision beside it
+    is the control: the query still runs and still delivers.
     """
     agreement = DecisionRecord(
         repository_id=repo.id,
@@ -479,16 +498,30 @@ async def test_an_accepted_agreement_reaches_the_generated_block(session, repo, 
         evidence_file="agreement",
         staleness_score=0.0,
     )
-    session.add(agreement)
+    control = DecisionRecord(
+        repository_id=repo.id,
+        title="Keep the store local",
+        status="active",
+        rationale="no network on the hook path",
+        decision="the store is a local SQLite file",
+        source="cli",
+        affected_files_json='["src/store.py"]',
+        evidence_file="control",
+        staleness_score=0.0,
+    )
+    session.add_all([agreement, control])
     await session.flush()
     from repowise.core.persistence.crud.authority import accept_decision
 
     await accept_decision(session, agreement, accepter="tester")
+    await accept_decision(session, control, accepter="tester")
     await session.commit()
 
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
-    assert "Never use em dashes" in [d.title for d in data.decisions]
+    titles = [d.title for d in data.decisions]
+    assert "Keep the store local" in titles
+    assert "Never use em dashes" not in titles
 
 
 async def test_fetch_avg_confidence(session, repo, tmp_path):
@@ -665,16 +698,18 @@ def _write_config(root: Path, text: str) -> None:
     (root / ".repowise" / "config.yaml").write_text(text, encoding="utf-8")
 
 
-async def test_the_lean_default_skips_commands_and_caps_decisions(session, repo, tmp_path):
+async def test_the_lean_default_skips_commands_and_caps_decisions(
+    session, repo, tmp_path, pin_everything
+):
     (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}', encoding="utf-8")
-    for i in range(5):
+    for i in range(7):
         await _add_decision(session, repo.id, f"Decision {i}")
     await session.commit()
 
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert data.build_commands == {}
-    assert len(data.decisions) == 3
+    assert len(data.decisions) == 5
     assert "commands" not in data.sections
 
 
@@ -698,6 +733,7 @@ async def test_a_section_left_out_is_never_queried(session, repo, tmp_path):
     data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=["tools"]).fetch()
 
     assert data.hotspots == [] and data.decisions == [] and data.code_health is None
+    assert data.decisions_in_force is False
 
 
 async def test_the_default_health_line_skips_the_detail_queries(session, repo, tmp_path):
@@ -774,3 +810,33 @@ async def test_model_written_module_keeps_its_opening_sentence(session, repo, tm
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert data.key_modules[0].purpose == "billing covers 6 python files, exposing 5 public symbols"
+
+
+@pytest.mark.parametrize(
+    ("mode", "pointer", "record"),
+    [("'off'", False, False), ("read_only", True, False), ("full", True, True)],
+)
+async def test_the_mode_decides_the_pointer_and_the_record_line(
+    session, repo, tmp_path, mode, pointer, record
+):
+    await _add_decision(session, repo.id, "Use JWT", status="active")
+    await session.commit()
+    _write_config(tmp_path, f"decisions:\n  mode: {mode}\n")
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert data.decisions_in_force is pointer
+    assert data.record_decisions is record
+
+
+async def test_a_pinned_decision_is_listed_by_name(session, repo, tmp_path):
+    from repowise.core.persistence.crud.authority import set_pinned
+
+    await _add_decision(session, repo.id, "Use JWT", status="active")
+    pinned = await _add_decision(session, repo.id, "Keep sqlite", status="active")
+    await set_pinned(session, pinned, True, accepter="Raghav", kind="person", reason="law")
+    await session.commit()
+
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+
+    assert [d.title for d in data.decisions] == ["Keep sqlite"]

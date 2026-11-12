@@ -10,7 +10,19 @@ policy, lifecycle, provenance), `packages/core/src/repowise/core/sessions/`
 
 ## Source registry
 
-`policy.py` defines one `SourceSpec` per source: whether it has a deterministic
+`policy.py` resolves `decisions.mode` first. `_MODE_DEFAULTS` is the one table
+of the defaults each mode gives the finer switches (`agent_acceptance`,
+`capture_prompt`, `require_approval`, `sync`, `session_start`,
+`upkeep_prompt`); a key stated in the config wins over its row, and
+`to_config_block` writes only keys that differ from the mode's row. Derived
+gates read the mode, not the stored keys: `captures` (mode `full` and
+`enabled`) gates every machine source, update mining and landing acceptance;
+`delivers` (mode not `off`) gates every hook line, the MCP decision surfaces
+and the generated agent-file block; `sends` (`sync` and `captures`) gates
+`push`. Read surfaces call `policy_store.layer_mode(path)`, which reads an
+unreadable config as `full`.
+
+It also defines one `SourceSpec` per source: whether it has a deterministic
 stage, whether it has a model stage, its authority (`machine` or `human`) and
 whether it ships on. One resolved policy backs the CLI, the REST API and the
 index pipeline, so `repowise decision config show` prints what the next `init`
@@ -189,26 +201,60 @@ decisions:
 
 ## Review state and lanes
 
-Candidates carry a review row (`open`, `accepted`, `merged`, `needs_split`,
-`dismissed`) with the raising lane, extractor version, bundling flag, whether
+Background records carry a review row (`open`, `accepted`, `merged`, `needs_split`,
+`dismissed`) with the source that raised it, extractor version, bundling flag, whether
 any scope is named, and a priority equal to the acceptance check's verdict at
 the last index. Re-extraction refreshes signals but never review state.
-The five dashboard lanes are a join onto the acceptance log, not a filter on
-status, so `GET /api/repos/{id}/decisions?lane=...` and `/decisions/lane-counts`
+The dashboard sections (In force, Recent, Background, History) are a join onto
+the acceptance log, not a filter on status, so `GET /api/repos/{id}/decisions?lane=...` and `/decisions/lane-counts`
 differ from `/decisions/counts`.
 
 `decision status` keeps no run log: it derives its figures from records,
 review rows, staging queues and `decision_extraction` cost rows, so spend is
 all-time and a queue a store predates is reported absent.
 
+## Coming into force on merge
+
+`merge_accept.accept_landed_decisions` runs on `update`. For each record an
+agent recorded with evidence commits and no acceptance yet, it asks git
+whether those commits reached the default branch (`landing.py`: an ancestor
+of it, or a squash or rebased copy matched by subject and changed files) and
+were not reverted there since, then signs the
+acceptance as that agent with the landing commit as evidence. It grants
+nothing with `require_approval` on or outside mode `full`; the records wait.
+
 ## Hook delivery
 
-`augment_cmd/decision_inject.py`: session start scores records against the
-session's likely working set (dirty and staged files, branch changes, the
-previous session's edits, branch-name tokens) expanded one hop through imports
-and co-change partners, multiplies relevance by confidence and freshness,
-and injects under `_TOKEN_CAP = 400`, with candidates in a separate section
-under `_CANDIDATE_TOKEN_CAP = 120`. Edit-time notices go through
-`decision_node_links`, once per session per decision. Injected ids are recorded
-in the sessions sidecar so the next `update` can tell whether guidance was
-followed; that verdict does not change staleness.
+`augment_cmd/decision_inject.py`:
+
+- Edit time: a decision in force governs the files its scope names and every
+  file under a directory it names, read through `decision_node_links` (file
+  and directory links only; derived module links do not govern). Up to
+  `_MAX_EDIT_DECISIONS_PER_FILE = 3` per file, each once a session, and
+  `_MAX_EDIT_NOTICES = 6` a session.
+- Session start (off unless `decisions.session_start`): scores records against
+  the session's likely working set (dirty and staged files, branch changes,
+  the previous session's edits, branch-name tokens) expanded one hop through
+  imports and co-change partners, multiplies relevance by confidence and
+  freshness, and injects under `_TOKEN_CAP = 400`, with labelled background
+  records in a separate section under `_CANDIDATE_TOKEN_CAP = 103`.
+
+`augment_cmd/decision_capture.py` fires on a fresh `git commit` in the shell:
+the capture prompt (two or more decision signals in the message, once a
+session, never for a commit a record already cites) and, with
+`upkeep_prompt`, the decisions in force over the commit's files (at most
+three, each once a session).
+
+Every delivered line is recorded in the sessions sidecar
+(`core/sessions/deliveries.py` counts them per decision for `decision list`
+and `show`); with `hooks.measure` on, `update` reads the transcripts locally
+to settle whether the agent acted on each. That verdict does not change
+staleness.
+
+## Generated agent files
+
+`generation/editor_files/fetcher.py` gives `CLAUDE.md` and `AGENTS.md` one
+pointer line to `get_why` when any decision is in force, plus up to five
+pinned decisions by title (pinned first in the query window). Mode `off`
+drops the block; any mode but `full` drops the line that tells the agent how
+to record a decision.

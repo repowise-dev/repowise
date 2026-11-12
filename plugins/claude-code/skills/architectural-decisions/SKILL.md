@@ -11,61 +11,99 @@ user-invocable: false
 
 # Architectural Decisions with Repowise
 
-Repowise captures architectural decisions — the *why* behind how code is built.
+Repowise keeps the decisions behind this code next to the files they govern.
+You record a decision when you make one; it comes into force when your commit
+merges to the default branch; after that, an agent editing those files is told
+about it in one line. People pin the decisions that are law and veto the wrong
+ones; you maintain the rest.
 
-`get_why` has four modes — pick by what you pass:
+`get_why` picks its mode from what you pass:
 
-1. `get_why(query="why is auth using JWT?")` — keyword + semantic decision search.
-2. `get_why(query="src/auth/service.py")` — decisions governing that file, plus
-   its origin story and an alignment score (does the file still follow its own ADRs?).
-3. `get_why(query="why was caching added?", targets=["src/auth/cache.py"])` —
-   target-anchored search; decisions touching the targets get boosted.
-4. `get_why()` — the decision-health dashboard.
+1. `get_why(query="why is auth using JWT?")`: decision search.
+2. `get_why(targets=["src/auth/service.py"])`: the decisions in force over that
+   file first, then at most two labelled background records.
+   `include=["history"]` adds the origin story, alignment and withdrawn records.
+3. `get_why(query="why was caching added?", targets=["src/auth/cache.py"])`:
+   search anchored on the targets.
+4. `get_why()`: the decision-health dashboard.
 
-Decisions are mined from five sources (ADR files, PR and squash-commit bodies,
-inline markers, git archaeology, and centrality-bounded code comments). Each
-rationale traces to a verbatim source span, stamped exact / fuzzy / unverified.
-When no decision exists for a path, `get_why` falls back to git archaeology so
-the call is never empty.
+Records mined from history (ADR files, pull request bodies, inline markers,
+commits, comments) are background: `get_why` serves them when asked, labelled
+as not in force. When no decision covers a path, `get_why` falls back to git
+history. If it answers that decisions are off for this repository, do not
+record or settle any.
 
-## When the user asks "why is X built this way?"
+## Before an architectural change
 
-Call `get_why(query="X")`.
+1. Call `get_why(targets=["<the files you are changing>"])`.
+2. If a decision in force covers them, follow it, or tell the user before you
+   diverge. A pinned decision is law: never retire or replace it yourself; ask
+   the user.
+3. If none does, proceed.
 
-## When about to make an architectural change
+## Recording a decision you made
 
-1. Call `get_why(query="the specific area you're changing")` to find existing decisions that govern that area.
-2. If decisions are found, present them to the user before proceeding — they may not want to contradict an existing architectural choice.
-3. If no decisions are found, proceed but note that no recorded decision governs this area.
+When you weighed options and picked one, record it once it is committed:
 
-## When called with no specific query
+`repowise decision add --agent <your slug> --decision "..." --rationale "<why, and what you rejected>" --affects <path> --evidence-commit <sha>`
 
-Call `get_why()` with no arguments to get the decision-health dashboard:
-- Stale decisions that may no longer apply
-- Proposed decisions awaiting confirmation
-- Ungoverned hotspots (high-churn files with no recorded decisions)
+It comes into force when that commit merges, so recording on a branch is safe.
+Record choices about the code only; working rules ("always run the linter")
+belong in CLAUDE.md or AGENTS.md.
 
-The same signals surface in the CLI via `repowise decision health` /
-`/repowise:decision`, and you can query *why* mid-task with `repowise why` /
-`/repowise:why` (the `get_why` adapter). `repowise decision candidates --format json`
-lists proposed decisions with what each still needs;
-`repowise decision confirm <id> --agent <your slug> --evidence <commit|file>`
-accepts one (see `/repowise:decision`).
+When you open a pull request, you may also list the decisions in its
+description. The review bot on repowise.dev reads this block and puts each
+entry in force when the pull request merges; without the bot it is plain
+text, and the command above is all a local repository needs.
 
-## When a file has decision markers
+```
+<!-- repowise:decisions -->
+### Decisions
+- Retries live in the HTTP client, not in callers. Why: callers set different
+  timeouts and three of them forgot to retry. Files: app/client.py, app/jobs/
+<!-- /repowise:decisions -->
+```
 
-If you see `# WHY:`, `# DECISION:`, `# TRADEOFF:`, or `# ADR:` comments in code, call `get_context(targets=["that_file.py"])` to see the full decision record with context and affected modules.
+One bullet per decision: the decision (its first sentence is the title, under
+80 characters), then `Why:` and the reason, then `Files:` and 1 to 10
+repository paths, comma-separated, a folder ending in `/`. At most five
+entries; keep both marker lines exactly as shown.
 
-## Recording new decisions
+## Settling a decision your change touches
 
-When you settle an architectural choice yourself (you weighed options and picked one), record it:
+After a commit that changes governed code you may be asked to settle each
+decision it names. Run one command per decision:
 
-`repowise decision add --agent <your slug> --title "..." --decision "..." --rationale "<why, and what you rejected>" --affects <path>`
+- still holds: `repowise decision reaffirm <id> --agent <your slug>`
+- your change replaced it: record the new one, then `repowise decision deprecate <id> --superseded-by <new id> --agent <your slug>`
+- your change knowingly breaks it: `repowise decision deprecate <id> --reason '<why>' --agent <your slug>`
 
-Add `--evidence-commit <sha>` once it is committed. The record lands as a candidate: it never governs until accepted, so recording is safe.
+A pinned decision refuses the last two from an agent; ask the user.
 
-## Reviewing candidates
+## Checking the background records after an index
 
-You may review and accept candidates yourself. `repowise decision candidates --format json` lists each with its `blockers`. Accept one with `repowise decision confirm <id> --agent <your slug>`, adding `--reason`, `--scope <path>`, `--evidence <commit|file|link>` or `--decision` for whatever a blocker names. Dismiss a wrong one with `repowise decision dismiss <id> --agent <your slug> --reason ... --yes`, fold a duplicate with `repowise decision merge <id> <into-id> --agent <your slug>` (the target must already be accepted; confirm it first), and retire one with `repowise decision deprecate <id> --agent <your slug> --reason ...`. When an accepted decision is `needs_review` and still holds, renew it with `repowise decision reaffirm <id> --agent <your slug>`; `confirm` is for candidates only. With `--format json` every review command returns `results[]`, even for one id. Your acceptances are recorded as yours, never a person's. If the repository turned agent acceptance off, the confirm is refused; leave it for a person and mention it.
+When the user asks you to check the decisions, run `repowise decision discover`
+and do what it prints. It names the background records on the busiest
+production files, at most 20. Keep a record only if an agent editing that code
+could do the wrong thing without it; dismiss bug-fix notes and implementation
+details. On a repository with no background records it asks you to record the
+decisions behind the busiest files instead.
+
+Put one in force with `repowise decision confirm <id> --agent <your slug>`,
+adding `--reason`, `--scope <path>`, `--evidence <commit|file|link>` or
+`--decision` for whatever a blocker names. Dismiss a wrong one with
+`repowise decision dismiss <id> --agent <your slug> --reason ... --yes`, and
+fold a duplicate with `repowise decision merge <id> <into-id> --agent <your slug>`
+(the target must already be in force). When a decision in force is
+`needs_review` and still holds, renew it with `repowise decision reaffirm <id>
+--agent <your slug>`. With `--format json` every review command returns
+`results[]`, even for one id. Your signatures are recorded as yours, never a
+person's. If the repository turned agent acceptance off or is read-only, the
+confirm is refused; leave it for a person and mention it.
+
+When the user asks you to pin, unpin or veto a decision, run
+`repowise decision pin <id>`, `unpin <id>` or `dismiss <id>` with
+`--agent <your slug>`; to edit one, `add` it again with the same title. See
+`/repowise:decision`.
 
 If the user states a decision, offer to record it the same way without `--agent`.

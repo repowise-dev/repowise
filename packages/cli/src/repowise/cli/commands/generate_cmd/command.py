@@ -40,6 +40,7 @@ from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.decision_lanes import set_pending_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.page_selection import PageSelectionIntent
+from repowise.core.settings.model import flag
 
 from ..decision_lanes import print_lane_estimate
 from .engine import NO_DOCUMENTATION_MESSAGE, has_documentation, run_scoped_generation
@@ -156,7 +157,9 @@ def _make_gate(dry_run: bool, embedder: str | None = None):
                 provider.model_name,
                 repo_path=repo_path,
                 embedder=embedder,
-                embedding_model=resolve_embedding_model(embedder) if embedder else None,
+                embedding_model=(
+                    resolve_embedding_model(embedder, repo_path=repo_path) if embedder else None
+                ),
             )
         except Exception as exc:
             console.print(f"[yellow]Cost estimate unavailable ({exc}).[/yellow]")
@@ -321,7 +324,7 @@ def generate_command(
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
-        enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+        enable_onboarding=flag(cfg.get("enable_onboarding"), True),
         wiki_style=cfg.get("wiki_style", "comprehensive"),
         # A whole-repo selection, so the file-page cap chosen at init applies
         # here; without it this run would grow the file layer back.
@@ -337,7 +340,7 @@ def generate_command(
     # search as useless as it was before, with nothing in the output saying so.
     # `update --full` has re-resolved here since it was written; `generate`
     # never did. Same rule, same message.
-    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"))
+    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"), repo_path=repo_path)
     console.print(f"Embedder: [cyan]{stated}[/cyan].")
 
     start = time.monotonic()
