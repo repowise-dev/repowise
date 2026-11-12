@@ -444,7 +444,11 @@ def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[
 
 
 def freshness_from_repo(
-    repository: Any | None, targets: list[str] | None = None, root: str | None = None
+    repository: Any | None,
+    targets: list[str] | None = None,
+    root: str | None = None,
+    *,
+    repo_level: bool = False,
 ) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
@@ -466,8 +470,10 @@ def freshness_from_repo(
     "Silence means current" only trains trust if the warning fires only when
     the served content is actually affected — a repo-wide warning after every
     unrelated commit teaches the agent to ignore the field. ``targets=None``
-    (repo-level tools like get_overview) keeps the repo-level warning;
-    ``targets=[]`` means "no file content served" and never warns.
+    (repo-level tools like get_overview) and ``targets=[]`` (no file content
+    served) carry ``index_behind`` and never warn. ``repo_level=True`` asks for
+    the repo-wide verdict instead (HEAD moved with real file changes), for a
+    caller that names which repository of a workspace is behind.
 
     Always-emitted fields:
       * ``index_age_days``  — informational, never a directive
@@ -518,7 +524,7 @@ def freshness_from_repo(
 
     borrowed = _checkout.borrowed_checkout(local_path)
     if borrowed is not None:
-        out.update(_borrowed_freshness(borrowed, indexed_full, targets, local_path))
+        out.update(_borrowed_freshness(borrowed, indexed_full, targets, local_path, repo_level))
         return out
 
     live_full = read_live_head(local_path)
@@ -545,16 +551,19 @@ def freshness_from_repo(
                 # because it holds for repo-level responses too, which are
                 # exactly the ones that previously always warned.
                 pass
-            elif targets is not None and changed is not None:
-                if targets_hit_by_changes(targets, changed):
-                    out["stale_warning"] = _checkout.stale_fact(
-                        indexed_full[:12],
-                        f"a file this response serves differs at HEAD {live_full[:12]}",
-                    )
-            else:
+            elif targets and changed is not None and targets_hit_by_changes(targets, changed):
+                out["stale_warning"] = _checkout.stale_fact(
+                    indexed_full[:12],
+                    f"a file this response serves differs at HEAD {live_full[:12]}",
+                )
+            elif repo_level:
                 # The SHA repeats ``indexed_commit`` on purpose: lean replies
                 # drop that key and keep only this line.
                 out["stale_warning"] = _checkout.stale_fact(indexed_full[:12], "HEAD has moved")
+            # Otherwise ``index_behind`` alone says HEAD moved. A response that
+            # names no file that differs gets no warning: the same "HEAD has
+            # moved" line on every call until the next update is a constant the
+            # agent learns to skip.
         else:
             # Match. No prose, since silence is the signal, but the comparison
             # did run and its answer is "not behind", so say so explicitly.
@@ -590,22 +599,34 @@ def freshness_from_repo(
 
 
 def _borrowed_hit(
-    local_path: str | None, indexed_full: str, head: str, targets: list[str] | None
+    local_path: str | None,
+    indexed_full: str,
+    head: str,
+    targets: list[str] | None,
+    repo_level: bool = False,
 ) -> str | None:
     """``"file"`` when a served file differs between the two commits, ``"repo"``
-    for a repo-level response or an unknown diff, else ``None``."""
+    when *repo_level* asks and they differ (or the diff is unknown), else ``None``.
+
+    Otherwise a response that names no file that differs gets no warning;
+    ``index_behind`` says the commits differ.
+    """
     if head == indexed_full:
         return None
     changed = _changed_files_between(local_path, indexed_full, head) if local_path else None
-    if changed is None or (changed and targets is None):
-        return "repo"
     if changed and targets and targets_hit_by_changes(targets, changed):
         return "file"
+    if repo_level and (changed is None or changed):
+        return "repo"
     return None
 
 
 def _borrowed_freshness(
-    caller: Any, indexed_full: str | None, targets: list[str] | None, local_path: str | None
+    caller: Any,
+    indexed_full: str | None,
+    targets: list[str] | None,
+    local_path: str | None,
+    repo_level: bool = False,
 ) -> dict[str, Any]:
     """Freshness of this index for another checkout of the repo, as a fact.
 
@@ -623,7 +644,7 @@ def _borrowed_freshness(
     hit = None
     if head and indexed_full:
         out["index_behind"] = head != indexed_full
-        hit = _borrowed_hit(local_path, indexed_full, head, targets)
+        hit = _borrowed_hit(local_path, indexed_full, head, targets, repo_level)
     if hit or dirty:
         out["stale_warning"] = _checkout.checkout_fact(
             caller, indexed_full, head, served_file=bool(dirty) or hit == "file"
@@ -650,9 +671,8 @@ def build_meta(
     :func:`freshness_from_repo`.
 
     ``index_scope`` carries the compact projection (the run mode, the
-    provenance, the git tier, one word for whether the index is whole, and a
-    fingerprint identifying the canonical object), and only when that word is
-    not ``complete``. See :func:`build_meta_with_full_scope` for the calls that are
+    provenance, the git tier, and one word for whether the index is whole),
+    and only when that word is not ``complete``. See :func:`build_meta_with_full_scope` for the calls that are
     worth the whole thing.
 
     Stable shape:
