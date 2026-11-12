@@ -183,6 +183,13 @@ async def persist_result(
         await fts.ensure_index()
 
     async with get_session(sf) as session:
+        # Slice 1 (#5338): this function commits one domain at a time instead of
+        # once at the end, so a dropped connection costs the domain in flight
+        # rather than the whole persist. Committing mid-session would normally
+        # expire every loaded row; nothing here re-reads a mutated row from the
+        # database afterwards, so expiry is off rather than re-fetching `repo`
+        # after every boundary.
+        session.expire_on_commit = False
         repo = await upsert_repository(
             session,
             name=result.repo_name,
@@ -205,6 +212,9 @@ async def persist_result(
                 existing = {}
             existing["tech_stack"] = result.tech_stack
             repo.settings_json = _json.dumps(existing)
+        # Commit boundary 1 of 6: the repository row and its settings.
+        with timed(timings, "persist.commit.repository"):
+            await session.commit()
         swept_page_ids: list[str] = []
         if index_done:
             # Health runs after the INDEX checkpoint and mutates the in-memory
@@ -218,8 +228,14 @@ async def persist_result(
                         session, repo.id, getattr(result, "parsed_files", None)
                     )
                 await persist_analysis(result, session, repo.id)
+            # Commit boundary 2 of 6: analysis.
+            with timed(timings, "persist.commit.analysis"):
+                await session.commit()
             with timed(timings, "persist.generation"):
                 await persist_generation(result, session, repo.id)
+            # Commit boundary 3 of 6: generation.
+            with timed(timings, "persist.commit.generation"):
+                await session.commit()
             # persist_generation has already upserted the current pages, so the
             # sweep only retires structurally-keyed pages this run did not
             # reproduce. Without it the incremental-index path (every normal
@@ -248,10 +264,16 @@ async def persist_result(
                     result.parsed_files,
                 ),
             )
+            # Commit boundary 4 of 6: the index write itself.
+            with timed(timings, "persist.commit.index"):
+                await session.commit()
         else:
             swept_page_ids = await persist_pipeline_result(
                 result, session, repo.id, scan_commit_health=False
             )
+            # Commit boundary 4 of 6: the pipeline result (graph, git, files).
+            with timed(timings, "persist.commit.pipeline"):
+                await session.commit()
         persisted_repo_id = repo.id
 
         # Tombstone pages whose file is simply gone. The other tombstone path
@@ -267,6 +289,11 @@ async def persist_result(
             ]
         except Exception as exc:  # one stale page must not fail a whole index
             logger.warning("tombstone_absent_sweep_failed", error=str(exc))
+        # Commit boundary 5 of 6: the tombstone sweep. Its own boundary, because
+        # the pages it retires leave the vector store just below and that delete
+        # must not outlive a rolled-back prune.
+        with timed(timings, "persist.commit.prune"):
+            await session.commit()
 
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.
@@ -289,6 +316,11 @@ async def persist_result(
         job.failed_pages = stub_fallbacks
         job.started_at = now
         job.finished_at = now
+        # Commit boundary 6 of 6: the generation job record. Everything before it
+        # is durable now, so the vector-store delete below cannot leave the SQL
+        # side claiming pages the store no longer has.
+        with timed(timings, "persist.commit.job"):
+            await session.commit()
 
         # Drop swept pages from the vector store *before* the SQL session
         # commits. The vector store is a separate engine/file (pgvector DB,
