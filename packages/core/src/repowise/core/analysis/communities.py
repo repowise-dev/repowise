@@ -582,30 +582,6 @@ class FileCommunityInput:
     edges: frozenset[int]
 
 
-#: :func:`split_file_nodes`' result: sorted file nodes, and whether each is test or example code.
-FileNodes = tuple[list[str], dict[str, bool]]
-
-
-def split_file_nodes(graph: nx.DiGraph) -> FileNodes:
-    """*graph*'s own file nodes, sorted, and whether each is test or example code.
-
-    External and framework nodes are stored as files but are code we do not
-    own: left in, they join the partition (two files that both import `os` get
-    pulled together through it) and inflate members/size. Sorted: node order
-    seeds the undirected graph's insertion order, and Louvain/Leiden partitions
-    depend on iteration order even when seeded.
-    """
-    file_nodes = sorted(
-        n for n, d in graph.nodes(data=True)
-        if d.get("node_type", "file") == "file" and not is_external(n)
-    )
-    non_core = {
-        n: _is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])
-        for n in file_nodes
-    }
-    return file_nodes, non_core
-
-
 def _production_edges(graph: nx.DiGraph, production: list[str]) -> list[tuple[str, str]]:
     """The links the partition runs on: dependency edges between two of *production*.
 
@@ -622,13 +598,52 @@ def _production_edges(graph: nx.DiGraph, production: list[str]) -> list[tuple[st
     )
 
 
+@dataclass
+class FileSplit:
+    """A graph's own file nodes, sorted, and whether each is test or example code.
+
+    External and framework nodes are stored as files but are code we do not
+    own: left in, they join the partition (two files that both import `os` get
+    pulled together through it) and inflate members/size. Sorted: node order
+    seeds the undirected graph's insertion order, and Louvain/Leiden partitions
+    depend on iteration order even when seeded. The production files and their
+    links are worked out once, for whichever reader asks first.
+    """
+
+    graph: nx.DiGraph
+    nodes: list[str]
+    non_core: dict[str, bool]
+
+    @functools.cached_property
+    def production(self) -> list[str]:
+        return [n for n in self.nodes if not self.non_core[n]]
+
+    @functools.cached_property
+    def production_edges(self) -> list[tuple[str, str]]:
+        return _production_edges(self.graph, self.production)
+
+
+def split_file_nodes(graph: nx.DiGraph) -> FileSplit:
+    """:class:`FileSplit` of *graph*."""
+    file_nodes = sorted(
+        n for n, d in graph.nodes(data=True)
+        if d.get("node_type", "file") == "file" and not is_external(n)
+    )
+    non_core = {
+        n: _is_test_node(n, graph.nodes[n]) or _is_example_node(n, graph.nodes[n])
+        for n in file_nodes
+    }
+    return FileSplit(graph, file_nodes, non_core)
+
+
 def file_community_input(
-    graph: nx.DiGraph, repo_name: str | None = None, files: FileNodes | None = None
+    graph: nx.DiGraph, repo_name: str | None = None, files: FileSplit | None = None
 ) -> FileCommunityInput:
     """:class:`FileCommunityInput` of *graph*; *files* is its :func:`split_file_nodes`."""
     from repowise.core.ingestion.graph._centrality_cache import fingerprints
 
-    file_nodes, non_core = files or split_file_nodes(graph)
+    files = files or split_file_nodes(graph)
+    file_nodes, non_core = files.nodes, files.non_core
     file_set = frozenset(file_nodes)
     node_items = [f"{n}\0{non_core[n]}\0{graph.nodes[n].get('language')}" for n in file_nodes]
     edge_items = sorted(
@@ -646,7 +661,7 @@ def file_community_input(
 
 
 def production_community_input(
-    graph: nx.DiGraph, files: FileNodes | None = None
+    graph: nx.DiGraph, files: FileSplit | None = None
 ) -> FileCommunityInput:
     """What the production partition reads: the production files and the links between them.
 
@@ -655,9 +670,9 @@ def production_community_input(
     """
     from repowise.core.ingestion.graph._centrality_cache import fingerprints
 
-    file_nodes, non_core = files or split_file_nodes(graph)
-    production = [n for n in file_nodes if not non_core[n]]
-    edge_items = [f"{u}\0{v}" for u, v in _production_edges(graph, production)]
+    files = files or split_file_nodes(graph)
+    production = files.production
+    edge_items = [f"{u}\0{v}" for u, v in files.production_edges]
     digest = hashlib.sha256(community_code_fingerprint().encode())
     for item in (*production, "\1", *edge_items):
         digest.update(item.encode("utf-8", "replace"))
@@ -705,7 +720,7 @@ def place_file_communities(
     graph: nx.DiGraph,
     repo_name: str | None = None,
     production: ProductionPartition | None = None,
-    files: FileNodes | None = None,
+    files: FileSplit | None = None,
 ) -> tuple[dict[str, int], dict[int, CommunityInfo], str, ProductionPartition]:
     """:func:`detect_file_communities` on top of a *production* partition, when given.
 
@@ -717,7 +732,8 @@ def place_file_communities(
     was used, else the one detected here. *files* is *graph*'s
     :func:`split_file_nodes`, when the caller already has it.
     """
-    file_nodes, non_core = files or split_file_nodes(graph)
+    files = files or split_file_nodes(graph)
+    file_nodes, non_core = files.nodes, files.non_core
     if not file_nodes:
         return {}, {}, "none", ProductionPartition({}, {}, frozenset(), "none")
 
@@ -730,7 +746,7 @@ def place_file_communities(
     # the whole system, so left in the partition they merge otherwise-distinct
     # subsystems into one community and name it after the demo. They keep their
     # nodes and their assignment, so nothing becomes unreachable.
-    prod_nodes = [n for n in file_nodes if not non_core[n]]
+    prod_nodes = files.production
     test_nodes = [n for n in file_nodes if non_core[n]]
     if production is not None and production.assignment.keys() != set(prod_nodes):
         production = None
@@ -738,7 +754,7 @@ def place_file_communities(
     # Build undirected subgraph from production files + relevant edges
     undirected = nx.Graph()
     undirected.add_nodes_from(prod_nodes)
-    undirected.add_edges_from(_production_edges(graph, prod_nodes))
+    undirected.add_edges_from(files.production_edges)
 
     if production is None:
         prod_assignment, algorithm = _partition_production(undirected)

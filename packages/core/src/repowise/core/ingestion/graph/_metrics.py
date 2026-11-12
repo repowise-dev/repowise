@@ -406,13 +406,16 @@ class MetricsMixin:
             # A result on a held partition is not written: the references stay
             # pinned to the last full detection, and writing the cache costs
             # more than placing the test files again.
-            if production is not held:
-                if key:
-                    self._store_communities("file", key, assignment, extra=(info, algo))
+            if production is not held and key:
                 if prod_key:
                     self._store_communities(
-                        "file_production", prod_key, production.assignment, extra=production
+                        "file_production",
+                        prod_key,
+                        production.assignment,
+                        extra=production,
+                        persist=False,
                     )
+                self._store_communities("file", key, assignment, extra=(info, algo))
         except Exception as exc:
             log.warning("community_detection_failed", error=str(exc))
             file_nodes = [
@@ -528,7 +531,12 @@ class MetricsMixin:
         return entry, churn
 
     def _store_communities(
-        self, kind: str, key: Any, assignment: dict[str, int], extra: Any = None
+        self,
+        kind: str,
+        key: Any,
+        assignment: dict[str, int],
+        extra: Any = None,
+        persist: bool = True,
     ) -> None:
         """Pin a full detection as *kind*'s reference; best-effort like every cache write."""
         from repowise.core.analysis.communities import community_code_fingerprint
@@ -543,6 +551,7 @@ class MetricsMixin:
                 edges=key.edges,
                 scored_commit=self._head_commit,
                 extra=extra,
+                persist=persist,
             )
         except Exception as exc:
             log.debug("community_cache_store_failed", kind=kind, error=str(exc))
