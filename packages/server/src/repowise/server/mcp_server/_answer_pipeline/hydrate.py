@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -17,7 +18,21 @@ _log = logging.getLogger("repowise.mcp.answer")
 _PAGERANK_BIAS_MAX = 0.3
 
 
-async def _page_meta_by_id(ctx: Any, page_ids: list[str]) -> dict[str, dict[str, str]]:
+def _parse_section_meta(raw_meta: str | None, m: dict[str, Any]) -> None:
+    if not raw_meta:
+        return
+    try:
+        sec_meta = json.loads(raw_meta)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if isinstance(sec_meta, dict):
+        if "section_id" in sec_meta:
+            m["section_id"] = sec_meta["section_id"]
+        if "heading_trail" in sec_meta:
+            m["heading_trail"] = sec_meta["heading_trail"]
+
+
+async def _page_meta_by_id(ctx: Any, page_ids: list[str]) -> dict[str, dict[str, Any]]:
     """Path, summary, type and freshness of each page id that has a page row."""
     async with get_session(ctx.session_factory) as session:
         res = await session.execute(
@@ -27,20 +42,24 @@ async def _page_meta_by_id(ctx: Any, page_ids: list[str]) -> dict[str, dict[str,
                 Page.summary,
                 Page.page_type,
                 Page.freshness_status,
+                Page.metadata_json,
             ).where(Page.id.in_(page_ids))
         )
-        return {
-            row[0]: {
+        out: dict[str, dict[str, Any]] = {}
+        for row in res.all():
+            m: dict[str, Any] = {
                 "target_path": row[1] or "",
                 "summary": row[2] or "",
                 "page_type": row[3] or "",
                 "freshness": row[4] or "",
             }
-            for row in res.all()
-        }
+            if row[3] == "document_section":
+                _parse_section_meta(row[5], m)
+            out[row[0]] = m
+        return out
 
 
-def _hit_meta(hit: dict, meta_by_id: dict[str, dict[str, str]]) -> dict[str, str] | None:
+def _hit_meta(hit: dict, meta_by_id: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     """The page metadata behind *hit*, or None when there is nothing to cite."""
     meta = meta_by_id.get(hit["page_id"])
     if meta is None and hit.get("page_type") == PAGELESS_FILE:
@@ -49,7 +68,7 @@ def _hit_meta(hit: dict, meta_by_id: dict[str, dict[str, str]]) -> dict[str, str
     return meta
 
 
-def _apply_meta(hit: dict, meta: dict[str, str], scope: str | None) -> bool:
+def _apply_meta(hit: dict, meta: dict[str, Any], scope: str | None) -> bool:
     """Copy *meta* onto *hit*; False when the hit is tombstoned or out of scope."""
     # Tombstoned pages describe deleted or renamed files.
     if meta.get("freshness") == "tombstone":
@@ -61,6 +80,10 @@ def _apply_meta(hit: dict, meta: dict[str, str], scope: str | None) -> bool:
     hit["summary"] = meta.get("summary", "")
     # The page table's type wins; retrievers can carry stale ones.
     hit["page_type"] = meta.get("page_type") or hit.get("page_type", "")
+    if "section_id" in meta:
+        hit["section_id"] = meta["section_id"]
+    if "heading_trail" in meta:
+        hit["heading_trail"] = meta["heading_trail"]
     return True
 
 

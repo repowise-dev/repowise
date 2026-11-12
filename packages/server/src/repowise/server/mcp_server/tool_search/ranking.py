@@ -285,7 +285,11 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
     and dropping it from ``kind="config"`` would be the more surprising answer.
     """
     tp = (target_path or "").lower()
-    if page_type in ("module_page", "symbol_spotlight") or tp.endswith(".md"):
+    if page_type in ("module_page", "symbol_spotlight", "document_section") or tp.endswith(".md"):
+        return "doc"
+    from repowise.core.ingestion.document_extractors import is_extracted_document
+
+    if target_path and is_extracted_document(target_path):
         return "doc"
     if not tp or page_type not in FILE_ROW_TYPES:
         return "doc"
@@ -298,9 +302,9 @@ def _classify_hit_kind(target_path: str, page_type: str) -> str:
     return "implementation"
 
 
-# Every value :func:`_classify_hit_kind` can return; anything else can only ever
-# match nothing, which is why an unknown kind is dropped rather than filtered on.
-_VALID_KINDS = frozenset({"implementation", "test", "config", "doc"})
+# Every value :func:`_classify_hit_kind` can return, plus "code" for code-only search;
+# anything else can only ever match nothing, which is why an unknown kind is dropped.
+_VALID_KINDS = frozenset({"implementation", "test", "config", "doc", "code"})
 
 
 def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
@@ -311,8 +315,61 @@ def _filter_by_kind(output: list[dict], kind: str | None) -> list[dict]:
     """
     if not kind:
         return output
+    if kind == "code":
+        return [
+            item
+            for item in output
+            if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) != "doc"
+        ]
+    if kind in ("doc", "documents"):
+        return [
+            item
+            for item in output
+            if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == "doc"
+        ]
     return [
         item
         for item in output
         if _classify_hit_kind(item.get("target_path", ""), item.get("page_type", "")) == kind
     ]
+
+
+_MAX_DOC_HITS = 2
+
+
+def _is_doc_file_hit(target_path: str, page_type: str) -> bool:
+    return _classify_hit_kind(target_path, page_type) == "doc"
+
+
+def _cap_and_order_document_hits(
+    output: list[dict], kind: str | None, limit: int
+) -> tuple[list[dict], list[dict]]:
+    """Ensure document sections never push code results down and are capped when code is present.
+
+    Returns (window_hits, full_ranked_pool).
+    """
+    if kind in ("doc", "documents"):
+        return output, list(output)
+
+    has_code = any(
+        _classify_hit_kind(item.get("target_path", "") or item.get("path", ""), item.get("page_type", "")) != "doc"
+        for item in output
+    )
+
+    if not has_code:
+        return output, list(output)
+
+    non_sections: list[dict] = []
+    doc_sections: list[dict] = []
+
+    for item in output:
+        if item.get("page_type") == "document_section":
+            doc_sections.append(item)
+        else:
+            non_sections.append(item)
+
+    top_doc_sections = doc_sections[:_MAX_DOC_HITS]
+    window = non_sections + top_doc_sections
+    ranked = non_sections + doc_sections
+
+    return window, ranked

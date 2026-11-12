@@ -41,7 +41,7 @@ def _is_readable_path(target: str) -> bool:
     extension. An agent handed one in ``fallback_targets`` will try to Read it
     and dead-end, so keep only path-shaped entries.
     """
-    t = (target or "").strip()
+    t = (target or "").strip().split("#", 1)[0]
     if not t:
         return False
     if "/" in t or "\\" in t:

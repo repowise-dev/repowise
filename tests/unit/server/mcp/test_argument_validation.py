@@ -201,7 +201,7 @@ class TestSearchKind:
 
         entry = _entry(result, "kind")
         assert entry["values"] == ["tests"]
-        assert entry["valid"] == ["config", "doc", "implementation", "test"]
+        assert entry["valid"] == ["code", "config", "doc", "implementation", "test"]
 
     @pytest.mark.asyncio
     async def test_known_kind_adds_nothing(self, setup_mcp):

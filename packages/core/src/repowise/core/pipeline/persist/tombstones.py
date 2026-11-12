@@ -148,6 +148,20 @@ async def mark_tombstone_pages(
                 continue
             page_ids[page.id] = (path, successors_by_path.get(path, []))
             pages.append(page)
+
+        doc_res = await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.page_type == "document_section",
+                Page.target_path.in_(chunk),
+            )
+        )
+        for page in doc_res.scalars():
+            path = page.target_path or ""
+            if path not in successors_by_path:
+                continue
+            page_ids[page.id] = (path, successors_by_path.get(path, []))
+            pages.append(page)
     marked: list[str] = []
     for page in pages:
         _, successors = page_ids[page.id]

@@ -68,6 +68,7 @@ class IncrementalPersist(PersistRun):
     deselected_page_ids: list[str] = field(default_factory=list)
     fts_cleanup_ids: set[str] = field(default_factory=set)
     vector_cleanup_ids: set[str] = field(default_factory=set)
+    new_doc_pages: list[Any] = field(default_factory=list)
 
 
 # --- Steps inside the session -------------------------------------------------
@@ -467,6 +468,22 @@ def _has_git_input(ctx: IncrementalPersist) -> bool:
     return bool(ctx.git_meta_map or ctx.git_decay_map or ctx.full_git_summary is not None)
 
 
+async def persist_document_sections(ctx: IncrementalPersist) -> None:
+    from repowise.core.ingestion.document_sections import sync_document_sections_sql
+
+    new_doc_pages, obsolete_ids = await sync_document_sections_sql(
+        ctx.session,
+        ctx.repo_id,
+        ctx.repo_path,
+        ctx.parsed_files,
+        ctx.source_map,
+        changed_paths=ctx.changed_paths or None,
+    )
+    ctx.fts_cleanup_ids.update(obsolete_ids)
+    ctx.vector_cleanup_ids.update(obsolete_ids)
+    ctx.new_doc_pages = new_doc_pages
+
+
 # Range-scoped steps are the ones a later run cannot heal on its own; the
 # membership test is in persist_incremental_index's docstring.
 INCREMENTAL_STEPS: tuple[Step, ...] = (
@@ -528,6 +545,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Decision purge", purge_retired_decisions),
     # Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    Step("Document sections persist", persist_document_sections, guarded=False),
     Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step(
         "Deferred page staleness",
@@ -596,6 +614,43 @@ def _needs_vector_store(ctx: IncrementalPersist) -> bool:
     return bool(ctx.vector_cleanup_ids) and ctx.vector_store is None
 
 
+async def index_doc_sections_fts(ctx: IncrementalPersist) -> None:
+    from repowise.core.persistence.search import FullTextSearch
+
+    fts = FullTextSearch(ctx.engine)
+    with timed(ctx.timings, "persist.fts"):
+        await fts.ensure_index()
+        await fts.index_many(
+            [
+                (p.id, p.title, p.content, p.summary, p.target_path, p.digest)
+                for p in ctx.new_doc_pages
+            ]
+        )
+
+
+async def embed_doc_sections_vector(ctx: IncrementalPersist) -> None:
+    if ctx.vector_store is None:
+        return
+    from repowise.core.persistence.vector_store import embed_item
+
+    doc_items = [
+        embed_item(
+            p.id,
+            title=p.title,
+            page_type=p.page_type,
+            target_path=p.target_path,
+            summary=p.summary,
+            content=p.content,
+            digest=p.digest,
+        )
+        for p in ctx.new_doc_pages
+    ]
+    doc_items = [it for it in doc_items if it is not None]
+    if doc_items:
+        with timed(ctx.timings, "persist.vectors"):
+            await ctx.vector_store.embed_batch(doc_items)
+
+
 def _record_debt(kind: str) -> Callable[[IncrementalPersist], None]:
     """Keep the ids a failed cleanup could not remove, for the next run to retry."""
 
@@ -623,6 +678,11 @@ CLEANUP_STEPS: tuple[Step, ...] = (
         on_error=_record_debt("fts"),
     ),
     Step(
+        "Document sections full-text index",
+        index_doc_sections_fts,
+        when=lambda ctx: bool(ctx.new_doc_pages),
+    ),
+    Step(
         "Tombstone vector-store open",
         open_vector_store,
         when=lambda ctx: _needs_vector_store(ctx) and _lance_dir(ctx).exists(),
@@ -640,6 +700,11 @@ CLEANUP_STEPS: tuple[Step, ...] = (
         delete_vector_rows,
         when=lambda ctx: bool(ctx.vector_cleanup_ids) and ctx.vector_store is not None,
         on_error=_record_debt("vectors"),
+    ),
+    Step(
+        "Document sections vector embedding",
+        embed_doc_sections_vector,
+        when=lambda ctx: bool(ctx.new_doc_pages) and ctx.vector_store is not None,
     ),
 )
 

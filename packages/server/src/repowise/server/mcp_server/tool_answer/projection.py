@@ -48,7 +48,7 @@ def _path(row: Any) -> str | None:
 def _nav_path(row: Any) -> str | None:
     """Comparable file path for navigation rows and symbol-qualified evidence."""
     path = row["file"] if isinstance(row, dict) and row.get("file") else _path(row)
-    return path.split("::", 1)[0] if isinstance(path, str) else None
+    return path.split("::", 1)[0].split("#", 1)[0] if isinstance(path, str) else None
 
 
 def _text(row: Any, *keys: str) -> str:

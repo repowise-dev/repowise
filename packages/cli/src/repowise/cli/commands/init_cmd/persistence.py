@@ -254,6 +254,18 @@ async def persist_result(
             )
         persisted_repo_id = repo.id
 
+        # Document sections synchronization
+        from repowise.core.ingestion.document_sections import sync_document_sections_sql
+
+        new_doc_pages, obsolete_doc_ids = await sync_document_sections_sql(
+            session,
+            repo.id,
+            repo_path,
+            getattr(result, "parsed_files", None),
+            getattr(result, "source_map", None),
+        )
+        swept_page_ids = [*swept_page_ids, *obsolete_doc_ids]
+
         # Tombstone pages whose file is simply gone. The other tombstone path
         # reads a diff, and an init compares nothing, so until here a page
         # written before its file was deleted stayed ``fresh`` through every
@@ -296,10 +308,27 @@ async def persist_result(
         # and the delete is idempotent. Keeping the SQL commit last as the
         # durable source of truth means an interrupted run self-heals: the
         # vector embedding is already gone, the SQL rows follow on commit.
-        if swept_page_ids:
-            store = getattr(result, "vector_store", None)
-            if store is not None:
-                await store.delete_many(swept_page_ids)
+        store = getattr(result, "vector_store", None)
+        if swept_page_ids and store is not None:
+            await store.delete_many(swept_page_ids)
+        if new_doc_pages and store is not None:
+            from repowise.core.persistence.vector_store import embed_item
+
+            doc_items = [
+                embed_item(
+                    p.id,
+                    title=p.title,
+                    page_type=p.page_type,
+                    target_path=p.target_path,
+                    summary=p.summary,
+                    content=p.content,
+                    digest=p.digest,
+                )
+                for p in new_doc_pages
+            ]
+            doc_items = [it for it in doc_items if it is not None]
+            if doc_items:
+                await store.embed_batch(doc_items)
 
     # FTS deletes/indexing run outside the session: the FTS index lives in the
     # *same* SQLite file as the session, so touching it while the session still
@@ -307,10 +336,20 @@ async def persist_result(
     # therefore stay here (it cannot move ahead of the SQL commit like the
     # vector delete can); it is idempotent and narrow (orphan FTS rows only).
     with timed(timings, "persist.fts"):
+        if fts is None and (result.generated_pages or new_doc_pages or swept_page_ids):
+            fts = FullTextSearch(engine)
+            await fts.ensure_index()
         if fts is not None and swept_page_ids:
             await fts.delete_many(swept_page_ids)
         if fts is not None and result.generated_pages:
             await fts.index_pages(result.generated_pages)
+        if fts is not None and new_doc_pages:
+            await fts.index_many(
+                [
+                    (p.id, p.title, p.content, p.summary, p.target_path, p.digest)
+                    for p in new_doc_pages
+                ]
+            )
         await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
 
     # After commit, so the scan never holds the write lock; the rest drains in the background.
