@@ -462,7 +462,7 @@ def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | Non
     prose came from, how much git there is, and whether the index is whole.
     The version, projection name and fingerprint stay on the whole object: they
     are the same on every response of a session, and an agent acts on none of
-    them. The call that returns it
+    them. The call that returns the whole object
     (``get_overview(include=["scope"])``) is documented, not repeated on every
     response: agents did not follow it. Everything else is a diagnostic, and a diagnostic that rides on every
     response is a tax, not a disclosure.

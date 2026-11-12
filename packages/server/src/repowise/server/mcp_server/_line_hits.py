@@ -634,7 +634,11 @@ def _drop_sweep_advice(response: dict) -> None:
     response.pop("grep_hint", None)
     note = response.get("note")
     if isinstance(note, str) and EXHAUSTIVE_SWEEP_HINT in note:
-        response["note"] = note.replace(EXHAUSTIVE_SWEEP_HINT, "").strip()
+        rest = note.replace(EXHAUSTIVE_SWEEP_HINT, "").strip()
+        if rest:
+            response["note"] = rest
+        else:
+            del response["note"]
 
 
 async def _served_rows(
