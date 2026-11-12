@@ -162,13 +162,28 @@ def _answer_files(payload: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(files))
 
 
-def _served(payload: dict[str, Any]) -> set[tuple[str, str]]:
-    """``(path, name)`` of each body served whole; a cut body still needs its call."""
-    return {
+def _served(payload: dict[str, Any], rows: list = ()) -> set[tuple[str, str]]:
+    """``(path, name)`` of each body served whole; a cut body still needs its call.
+
+    A definition whose line range sits inside a served source window counts too.
+    """
+    served = {
         (b.get("path"), b.get("name"))
         for b in payload.get("symbol_bodies") or []
         if isinstance(b, dict) and not b.get("truncated") and "continuation" not in b
     }
+    shown: dict[str, set[int]] = {}
+    for window in payload.get("source") or []:
+        if isinstance(window, dict) and isinstance(window.get("code"), str):
+            shown[window.get("path")] = {
+                int(m) for m in re.findall(r"^(\d+)\t", window["code"], re.M)
+            }
+    for row in rows:
+        lines = shown.get(row.file_path)
+        span = range(row.start_line, (row.end_line or row.start_line) + 1)
+        if lines and all(n in lines for n in span):
+            served.add((row.file_path, row.name))
+    return served
 
 
 def _file_reader(root: Any) -> Reader:
@@ -225,5 +240,5 @@ async def attach_pointers(
     except Exception:  # pointers are a convenience; never fail the answer over one
         _log.debug("get_answer: locate pointers skipped", exc_info=True)
         return
-    if calls := helper_calls(answer, rows, _served(payload)):
+    if calls := helper_calls(answer, rows, _served(payload, rows)):
         payload["next_actions"] = chain_first(calls, question) if chain else calls

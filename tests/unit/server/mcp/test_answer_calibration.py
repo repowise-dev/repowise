@@ -662,7 +662,7 @@ async def test_hedged_but_named_body_served_holds_medium(setup_mcp, monkeypatch,
         "The provided excerpts do not include the full body of min_count_policy.",
     )
 
-    result = await get_answer("How does min_count_policy work?")
+    result = await get_answer("How does min_count_policy work?", include=["evidence"])
     assert result["confidence"] == "medium"
     assert result["grounding"] == "symbol_body"
     [b] = result["symbol_bodies"]
@@ -1104,7 +1104,7 @@ async def test_small_union_still_answers_by_union(setup_mcp, monkeypatch, tmp_pa
 
     # A naming/lookup question ("what are the definitions") is exactly what the
     # union-of-bodies reply is for; it must still short-circuit.
-    result = await get_answer("What are the definitions of render_widget in this repo?")
+    result = await get_answer("What are the definitions of render_widget in this repo?", include=["evidence"])
     assert result.get("grounding") == "exact_symbol"
     assert len(result["symbol_bodies"]) == 3
 
@@ -1176,7 +1176,7 @@ async def test_hedged_answer_surfaces_code_rationale(setup_mcp, monkeypatch, tmp
     )
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
 
-    result = await get_answer("What is the default value of min_count_policy?")
+    result = await get_answer("What is the default value of min_count_policy?", include=["evidence"])
     assert result["confidence"] == "low"
     assert "code_rationale" in result
     assert any("retry budget" in r["comment"] for r in result["code_rationale"])
@@ -1224,7 +1224,7 @@ async def test_non_dominant_answer_surfaces_code_rationale(setup_mcp, monkeypatc
     )
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
 
-    result = await get_answer("why do uploads chunk at 8mb")
+    result = await get_answer("why do uploads chunk at 8mb", include=["evidence"])
     assert result["confidence"] == "medium"  # non-dominant ceiling
     assert result["answer"], "non-dominant retrieval now carries synthesized prose"
     assert "best_guesses" in result  # ambiguous-retrieval evidence folded in
@@ -1283,16 +1283,19 @@ async def test_non_dominant_best_guesses_carry_candidate_excerpts(setup_mcp, mon
     result = await get_answer("why do uploads chunk at 8mb")
     assert result["confidence"] == "medium"  # non-dominant ceiling
     assert result["answer"]
-    top = result["best_guesses"][0]
+    # The default serves the top file's live lines in place of the rows.
+    assert result["source"][0]["path"] == "pkg/alpha/one.py"
+    assert "1\tCHUNK = 8" in result["source"][0]["code"]
+    assert "retrieval" not in result and "best_guesses" not in result
+
+    evidence = await get_answer("why do uploads chunk at 8mb", include=["evidence"])
+    top = evidence["best_guesses"][0]
     assert top["file"] == "pkg/alpha/one.py"
     assert top["why_relevant"]
-    # The content is in the response exactly once. The medium projection keeps
-    # the actionable best_guess and drops the duplicate retrieval row.
     assert top["excerpt"].startswith("Page content for pkg/alpha/one.py")
-    assert "retrieval" not in result
     # The reply names the ambiguity and points at best_guesses to verify.
-    assert "best_guesses" in result["note"]
-    assert "ambiguous" in result["note"]
+    assert "best_guesses" in evidence["note"]
+    assert "ambiguous" in evidence["note"]
 
 
 # ---------------------------------------------------------------------------
@@ -1392,7 +1395,7 @@ async def test_frame_gated_answer_surfaces_code_rationale(setup_mcp, monkeypatch
     )
     monkeypatch.setattr(mcp_mod, "_repo_path", str(tmp_path))
 
-    result = await get_answer("why is the caller list limited the way it is")
+    result = await get_answer("why is the caller list limited the way it is", include=["evidence"])
     assert result["confidence"] == "medium"
     assert "code_rationale" in result
     assert any("floods the synthesis context" in r["comment"] for r in result["code_rationale"])

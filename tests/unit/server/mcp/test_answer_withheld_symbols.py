@@ -334,7 +334,7 @@ async def test_truncated_body_exposes_what_it_withheld(setup_mcp, monkeypatch, t
     _patch_pipeline(monkeypatch, answer_mod, symbol=_TRUNCATED_CLASS)
     _patch_provider(monkeypatch, answer_mod, "Store.write delegates to a helper.")
 
-    result = await get_answer("How does Store.write handle ids?")
+    result = await get_answer("How does Store.write handle ids?", include=["evidence"])
     bodies = result.get("symbol_bodies") or []
     truncated = [b for b in bodies if b.get("truncated")]
     assert truncated, "expected a truncated body in this fixture"
@@ -480,7 +480,7 @@ class TestUnionPathTruncation:
         _patch_pipeline(monkeypatch, answer_mod, symbol=_TRUNCATED_CLASS)
         _patch_union(monkeypatch, answer_mod)
 
-        result = await get_answer("where is Store defined?")
+        result = await get_answer("where is Store defined?", include=["evidence"])
         assert result.get("grounding") == "exact_symbol", (
             f"this test only means something on the union path; got {result!r}"
         )
@@ -528,7 +528,7 @@ class TestUnionPathTruncation:
             "class Store:\n    def go(self):\n        return 1\n\n", encoding="utf-8"
         )
 
-        result = await get_answer("where is Store defined?")
+        result = await get_answer("where is Store defined?", include=["evidence"])
         assert result.get("grounding") == "exact_symbol"
         assert not any(b.get("truncated") for b in result["symbol_bodies"])
         assert result["confidence"] == "high"

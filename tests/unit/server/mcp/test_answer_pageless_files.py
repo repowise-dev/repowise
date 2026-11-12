@@ -77,11 +77,13 @@ async def test_keyless_answer_leads_with_the_file(pageless_mcp, monkeypatch, que
 
     _keyless(monkeypatch)
     result = await get_answer(question)
-    lead = result["best_guesses"][0]
-    assert lead["file"] == path
-    assert result["candidate_files"][0] == path
+    lead = result["source"][0]
+    assert lead["path"] == path
     # Its evidence is the matched code, never invented page prose.
-    assert lead["functions"][0]["line"] == 12
+    assert "\n12\t" in f"\n{lead['code']}"
+    evidence = await get_answer(question, include=["evidence"])
+    assert evidence["best_guesses"][0]["file"] == path
+    assert evidence["candidate_files"][0] == path
 
 
 @pytest.mark.asyncio
@@ -159,12 +161,12 @@ async def test_pageless_files_leave_the_pages_alone(pageless_mcp, monkeypatch, q
 
     _keyless(monkeypatch)
     with_rows = await _paged_pool(question, pageless_mcp)
-    with_answer = await get_answer(question)
+    with_answer = await get_answer(question, include=["evidence"])
     assert any(p in _PAGELESS_PATHS for p in _ranked(with_answer))
 
     _pages_only(monkeypatch)
     without = await _paged_pool(question, pageless_mcp)
-    without_answer = await get_answer(question)
+    without_answer = await get_answer(question, include=["evidence"])
 
     # Same pages, same order, same hybrid ranks and scores.
     assert len(with_rows) > 2

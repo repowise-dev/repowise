@@ -958,9 +958,10 @@ async def get_answer(
 ) -> dict:
     """Answer a how, where, or why question in one evidence-grounded call.
 
-    High confidence may be used directly; medium and low lead with the
-    evidence to verify. ``candidate_files`` ranks files worth opening that
-    the citations do not name.
+    ``source`` is the live code the answer rests on, numbered like Read;
+    ``delivered`` says which lines were sent and the exact names to pass
+    back as the next question for more. ``candidate_files`` ranks files
+    with no window.
 
     Args:
         question: One question about one subject. Split "where is X and
@@ -968,8 +969,8 @@ async def get_answer(
             multi-part task.
         scope: repository-relative path prefix.
         repo: usually omitted.
-        include: ``["evidence"]`` expanded evidence; ``["diagnostics"]``
-            adds ``retrieval_quality``.
+        include: ``["evidence"]`` the ranked evidence rows in place of
+            ``source``; ``["diagnostics"]`` adds ``retrieval_quality``.
     """
     return await _projected_get_answer(
         question=question,

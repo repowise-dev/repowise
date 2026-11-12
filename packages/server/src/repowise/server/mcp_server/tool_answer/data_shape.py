@@ -95,7 +95,16 @@ def _is_data_shape_question(question: str, question_ids: set[str]) -> bool:
     """
     if not question or not question_ids:
         return False
+    # "What is the risk of changing how X stores its keys" asks about a change,
+    # not for the field set; the shape noun is only the thing being changed.
+    if _CHANGE_CUE.search(question):
+        return False
     return any(_clause_carries_shape_cue(c) for c in _interrogative_clauses(question))
+
+
+_CHANGE_CUE = re.compile(
+    r"\b(?:risks? of|risky|impact of|blast radius|would break|breaks? if|changing|refactor\w*)\b", re.I
+)
 
 
 def _clause_carries_shape_cue(clause: str) -> bool:

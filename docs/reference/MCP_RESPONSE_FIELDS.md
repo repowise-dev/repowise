@@ -154,15 +154,17 @@ In workspace mode, `get_context`, `get_symbol`, `get_risk` and `get_health` serv
 | `answer`, `citations` | The answer, with file and symbol citations |
 | `confidence` | `high`, `medium` or `low`: the one trust signal. Cite `high` directly |
 | `retrieval_quality` | With `include=["diagnostics"]`: `high`, `partial` or `weak`, rating retrieval alone |
-| `symbol_bodies` | Live bodies of symbols the answer names. Read before calling `get_symbol` |
-| `retrieval` | Evidence rows: one text (`excerpt` where served, else `summary`) and key symbols; shrinks as confidence rises |
+| `source` | Live code the answer rests on, as `{path, code}` with `code` numbered like Read (`<line>	<text>`); a marker line names the definitions a gap skips |
+| `delivered` | What `source` holds, computed from the render: lines sent per file, definitions cut and where, named definitions not sent, ranked files with no room, and `path::Name` inputs that return more |
+| `symbol_bodies` | With `include=["evidence"]`: live bodies of symbols the answer names |
+| `retrieval` | With `include=["evidence"]`: evidence rows, one text (`excerpt` where served, else `summary`) and key symbols |
 | `candidate_files` | Ranked paths not already in `citations`: up to 3 at `high`, else 5. Navigation, not evidence |
 | `candidates` | With `include=["evidence"]`: the top 5 files as `{path, lines?, defines?}` |
-| `best_guesses`, `fallback_targets` | On low confidence: where to look, each with a reason |
-| `episodes` | Dated facts about this checkout; `still_true` says how current |
+| `best_guesses`, `fallback_targets` | With `include=["evidence"]`: where to look, each with a reason |
+| `episodes` | With `include=["evidence"]`: dated facts about this checkout; `still_true` says how current |
 | `degraded` | Synthesis could not run (no provider, or the call failed) |
 | `grounding` | No-synthesis answers: `exact_symbol` or `extracted` |
-| `note`, `next_action_hint` | How the answer was built; on weak retrieval, which `best_guesses` row to start from |
+| `note`, `next_action_hint` | With `include=["evidence"]`, or when no source could be read: how the answer was built and where to start |
 | `next_actions` | Up to 3 `get_symbol('<id>')` calls for functions the answer names whose bodies it does not serve; with a `flow_path`, the first is `get_symbol('<id>', depth=2)`, which also returns the bodies it calls |
 
 Notes:
@@ -170,11 +172,13 @@ Notes:
 - **`answer`:** a quoted code block found in a cited file carries that file's line range in its citation (`(src/compose.ts:50-60)`).
 - **`confidence`:** `high` is content-grounded on a top hit covering the question, or states the value on the verified definition line of a constant the question names, wherever that line ranked. A why-answer whose mechanism is absent from the source drops to `medium`.
 - **`retrieval_quality`:** `weak` when the top hit leaves out most of the question.
-- **`candidate_files`:** served at every confidence; absent when retrieval resolved no file.
+- **`source`:** a window opens at a definition the answer cites or the question names (or one whose name carries the question's words) and runs to the end of the symbol, at most 80 lines. Named definitions come first, then one short window per further ranked file, then the rest of the lead file. The reply stays near 8.6 KB whatever the question pulls in. A file whose indexed definitions moved since the index is sent whole when it fits, else listed as changed.
+- **Continuation:** a question made only of exact names (`path::Name`, `Owner.member`, an identifier) returns their source from the index, with no retrieval or synthesis, when each name has exactly one definition.
+- **`candidate_files`:** served at every confidence; ranked files that got no window lead it; absent when retrieval resolved no file.
 - **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; `include=["evidence"]` restores it.
 - **`degraded`:** built from retrieval and mined rationale with no LLM; `confidence` is `medium` on a dominant covering top hit, else `low`, never `high`. With `weak` retrieval too, the reply is `best_guesses`, `candidate_files` and one guidance line, with no `citations`.
 - **`grounding`:** `exact_symbol` serves the bodies of an exactly named symbol; `extracted` quotes a live source line verbatim.
-- **Evidence by grade** (`include=["evidence"]` skips this): `high` keeps one quote, plus one body when not already grounded; `medium` one body, two quotes, top two rows; `low` two bodies, top three rows.
+- **Evidence by grade** (when no source could be read; `include=["evidence"]` skips this): `high` keeps one quote, plus one body when not already grounded; `medium` one body, two quotes, top two rows; `low` two bodies, top three rows.
 - **Retrieval** fuses full-text and vector search over wiki pages with the symbol index (keyed on the question's content words) by reciprocal rank. The symbol leg reaches private helpers a page's symbol table omits.
 
 ---
