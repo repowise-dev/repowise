@@ -538,7 +538,8 @@ def _clustered_builder(cache_dir, *, tests=(), extra_prod=(), head="c0ffee"):
     for path in extra_prod:
         add(path, False)
     for path, linked in tests:
-        add(path, True)
+        # Example code carries no test flag; its path alone keeps it out.
+        add(path, not path.startswith("examples/"))
         gb._graph.add_edge(path, linked, edge_type="imports")
     return gb
 
