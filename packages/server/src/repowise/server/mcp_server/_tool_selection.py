@@ -9,7 +9,9 @@ The registry attaches *every* tool to the FastMCP instance the first time a
 caller asks for the full surface (``mcp_server.ensure_full_surface``).
 :func:`apply_tool_selection` then trims that set once, at boot, by removing the
 deselected tools from the FastMCP tool manager, so raw MCP clients see the
-surface as it stood when the server started. Chat calls
+surface as it stood when the server started. Each MCP session then sees that
+set narrowed to its client's default profile (:func:`session_tool_names`) when
+the configuration names no profile; tools outside it stay callable. Chat calls
 :func:`selected_tool_entries` instead, which re-resolves on every turn. There
 is no per-call cost and tool schemas are untouched.
 """
@@ -17,13 +19,22 @@ is no per-call cost and tool schemas are untouched.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+from repowise.core.agents.identity import UNKNOWN_AGENT
 from repowise.core.registry import ToolEntry, mcp_tool_registry
-from repowise.core.registry.tool_selection import ALL, AvailabilityFacts, resolve_enabled_tools
+from repowise.core.registry.tool_selection import (
+    ALL,
+    PROFILES,
+    AvailabilityFacts,
+    normalize_override,
+    resolve_enabled_tools,
+    split_profile,
+)
 
 _log = logging.getLogger("repowise.mcp")
 
@@ -34,6 +45,9 @@ _log = logging.getLogger("repowise.mcp")
 # removal, not re-registration).
 _full_surface: dict[str, Any] | None = None
 _selected_surface: tuple[bool, frozenset[str]] | None = None
+# The inputs the boot selection resolved from, so each session can resolve its
+# client's default from the same override, mode and facts.
+_boot_inputs: tuple[bool, str | Sequence[str] | None, AvailabilityFacts] | None = None
 
 
 def _ensure_registered() -> None:
@@ -123,14 +137,16 @@ def apply_tool_selection(
         override = _read_config_override(repo_path)
 
     is_workspace = _is_workspace(repo_path)
+    facts = _availability_facts(repo_path)
     enabled = resolve_enabled_tools(
         mcp_tool_registry.entries(),
         is_workspace=is_workspace,
         override=override,
-        facts=_availability_facts(repo_path),
+        facts=facts,
     )
-    global _selected_surface
+    global _selected_surface, _boot_inputs
     _selected_surface = (is_workspace, frozenset(enabled))
+    _boot_inputs = (is_workspace, override, facts)
 
     manager = getattr(mcp, "_tool_manager", None)
     registered = getattr(manager, "_tools", None)
@@ -155,6 +171,41 @@ def apply_tool_selection(
             registered[name] = source[name]
 
     return enabled
+
+
+def session_tool_names(client: str) -> frozenset[str] | None:
+    """The tools one MCP session lists, for the agent slug of its client.
+
+    The boot selection resolves with no client, which is the standard profile
+    and a superset of every client default, so a session's set is that
+    resolution redone for its client and kept inside what boot registered.
+    ``None`` before any boot selection (nothing to narrow).
+    """
+    if _boot_inputs is None or _selected_surface is None:
+        return None
+    is_workspace, override, facts = _boot_inputs
+    names = resolve_enabled_tools(
+        mcp_tool_registry.entries(),
+        is_workspace=is_workspace,
+        override=override,
+        facts=facts,
+        client=client,
+    )
+    return frozenset(names) & _selected_surface[1]
+
+
+def every_client_lists(names: Iterable[str]) -> bool:
+    """Whether no client's default profile leaves out any of *names*.
+
+    Only a tool boot registered but a client's default narrows away counts: a
+    tool the configuration itself removed (a profile, a list, ``-name``) was
+    chosen, so there is nothing to tell an agent. Judged for a client with the
+    smallest default (any name other than a schema-deferring host's).
+    """
+    listed = session_tool_names(UNKNOWN_AGENT)
+    if listed is None or _selected_surface is None:
+        return True
+    return not (set(names) & _selected_surface[1]) - listed
 
 
 def selected_tool_names(*, is_workspace: bool) -> set[str]:
@@ -269,20 +320,42 @@ def describe_tool_surface(repo_path: str | None) -> dict[str, Any]:
             "default": row["name"] in default_surface,
             "eligible": row["name"] in eligible,
             "enabled": row["name"] in enabled,
+            "schema_tokens": schema_tokens(row["name"]),
         }
         for row in rows
     ]
     return {
         "is_workspace": is_workspace,
         "override": list(override) if isinstance(override, (list, tuple)) else override,
+        "profile": split_profile(normalize_override(override))[0],
+        "profiles": {name: sorted(resolve(name)) for name in PROFILES},
         "tools": tools,
     }
+
+
+def schema_tokens(name: str) -> int:
+    """About how many tokens a client that loads schemas up front pays for *name*.
+
+    The compact JSON of what ``tools/list`` sends for it, at four characters a
+    token: an estimate for comparing tools, not a tokenizer count.
+    """
+    tool = (_full_surface or {}).get(name)
+    if tool is None:
+        return 0
+    listed = {
+        "name": tool.name,
+        "description": tool.description,
+        "inputSchema": tool.parameters,
+        "outputSchema": tool.output_schema,
+    }
+    return len(json.dumps(listed, separators=(",", ":"))) // 4
 
 
 def set_tool_override(repo_path: str, tools: str | list[str] | None) -> None:
     """Persist the ``mcp.tools`` override into ``.repowise/config.yaml``.
 
-    A falsy/empty ``tools`` clears the override (the repo falls back to the
+    A running server keeps the surface it started with; the change applies
+    when it next starts. A falsy/empty ``tools`` clears the override (the repo falls back to the
     default surface); the ``mcp`` block is removed when it becomes empty so the
     file stays clean. Other config keys are preserved.
     """
