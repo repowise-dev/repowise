@@ -12,6 +12,7 @@ arbitrary revision.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import threading
 import time
@@ -27,6 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core import git_refs
 from repowise.core.analysis.git_cli import _git, checkout_relative
 from repowise.core.persistence.models import GitCommit, GitCommitFile
+
+log = logging.getLogger(__name__)
 
 ChangeKind = Literal["working_tree", "branch", "commit"]
 
@@ -235,9 +238,14 @@ def _branch_diffs(
 #: a reader flips between changes far more often than branches move. Keyed by
 #: what moves when a branch does (HEAD, packed refs, the last fetch), with a
 #: short lifetime for the moves that leave those alone, such as a commit made
-#: on another worktree's branch.
+#: on another worktree's branch. Past that lifetime the kept listing is still
+#: served while one background read replaces it, so only a refs move makes a
+#: reader wait for git.
 _BRANCH_TTL_SECONDS = 30.0
 _BRANCHES: dict[str, tuple[tuple[Any, ...], float, list[ChangeCandidate]]] = {}
+#: The background read running per checkout, at most one each.
+_REFRESHING: dict[str, threading.Thread] = {}
+_REFRESH_LOCK = threading.Lock()
 
 
 def _refs_state(repo_path: str) -> tuple[Any, ...]:
@@ -256,14 +264,43 @@ def _refs_state(repo_path: str) -> tuple[Any, ...]:
 def _cached_branches(
     repo_path: str, base: str, current: str | None, max_branches: int
 ) -> list[ChangeCandidate]:
-    """:func:`_list_branches`, reused while the refs state holds and the entry is young."""
+    """:func:`_list_branches`, reused while the refs state holds.
+
+    An entry past its lifetime is served as it is while a background read
+    replaces it; a refs move is read before answering.
+    """
     state = (_refs_state(repo_path), base, current, max_branches)
     hit = _BRANCHES.get(repo_path)
-    if hit and hit[0] == state and time.monotonic() - hit[1] < _BRANCH_TTL_SECONDS:
+    if hit and hit[0] == state:
+        if time.monotonic() - hit[1] >= _BRANCH_TTL_SECONDS:
+            _refresh_branches(repo_path, state)
         return hit[2]
     branches = _list_branches(repo_path, base, current, max_branches)
     _BRANCHES[repo_path] = (state, time.monotonic(), branches)
     return branches
+
+
+def _refresh_branches(repo_path: str, state: tuple[Any, ...]) -> None:
+    """Re-read *repo_path*'s branches on a daemon thread, unless a read is already running."""
+    _, base, current, max_branches = state
+
+    def read() -> None:
+        try:
+            branches = _list_branches(repo_path, base, current, max_branches)
+            _BRANCHES[repo_path] = (state, time.monotonic(), branches)
+        except Exception:  # git failed: the kept listing stays, and the next call tries again
+            log.debug("branch listing refresh failed", exc_info=True)
+        finally:
+            with _REFRESH_LOCK:
+                _REFRESHING.pop(repo_path, None)
+
+    with _REFRESH_LOCK:
+        if repo_path in _REFRESHING:
+            return
+        thread = _REFRESHING[repo_path] = threading.Thread(
+            target=read, name="repowise-branch-refresh", daemon=True
+        )
+    thread.start()
 
 
 def clear_branch_cache() -> None:

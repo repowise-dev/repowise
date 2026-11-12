@@ -534,3 +534,42 @@ async def test_review_is_kept_per_change_until_its_commits_move(client, tmp_path
     for _ in range(2):
         await client.post(url, json={"change_id": "working-tree"})
     assert reviews[2:] == ["working-tree"] * 2
+
+
+def test_a_stale_branch_listing_is_served_while_one_read_replaces_it(tmp_path, monkeypatch):
+    from repowise.core.analysis import change_candidates as cc
+
+    repo = str(_git_repo(tmp_path))
+    cc.clear_branch_cache()
+    reads: list[int] = []
+    real = cc._list_branches
+    gate = __import__("threading").Event()
+
+    def slow(*args):
+        reads.append(1)
+        if len(reads) > 1:
+            gate.wait(10)
+        return real(*args)
+
+    monkeypatch.setattr(cc, "_list_branches", slow)
+    first = cc._cached_branches(repo, "main", "main", 12)
+    monkeypatch.setattr(cc, "_BRANCH_TTL_SECONDS", 0.0)
+
+    # Stale: the kept listing comes back at once, and only one read starts.
+    assert cc._cached_branches(repo, "main", "main", 12) == first
+    assert cc._cached_branches(repo, "main", "main", 12) == first
+    running = cc._REFRESHING[repo]
+    gate.set()
+    running.join(10)
+    assert len(reads) == 2
+
+    # A failed read keeps the listing.
+    def broken(*_args):
+        raise RuntimeError("git failed")
+
+    monkeypatch.setattr(cc, "_list_branches", broken)
+    assert cc._cached_branches(repo, "main", "main", 12) == first
+    cc._REFRESHING.get(repo, running).join(10)
+    assert cc._cached_branches(repo, "main", "main", 12) == first
+    cc._REFRESHING.get(repo, running).join(10)
+    cc.clear_branch_cache()
