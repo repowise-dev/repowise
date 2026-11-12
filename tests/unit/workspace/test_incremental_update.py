@@ -302,6 +302,46 @@ def test_incremental_threads_persisted_state_flags(tmp_path, forbid_full_pipelin
     assert captured["git_tier"] == "essential"
     assert captured["include_submodules"] is True
     assert captured["include_nested_repos"] is True
+    assert captured["rescore_due"] is True
+    assert result.rescore_due is True
+
+
+@pytest.mark.parametrize("rescore_flag", [True, False])
+def test_workspace_incremental_preserves_rescore_due_decision(
+    tmp_path, forbid_full_pipeline, monkeypatch, rescore_flag
+):
+    """The workspace incremental update path preserves and propagates rescore_due."""
+    import repowise.core.pipeline.incremental as incremental_mod
+
+    repo = _make_git_repo(tmp_path)
+    base = get_head_commit(repo)
+    _mark_indexed(repo, base)
+    _add_commit(repo, "b.py")
+
+    captured: dict = {}
+
+    class FakeGraphBuilder:
+        _rescore_due = rescore_flag
+
+    async def _fake_rebuild(repo_path, file_diffs, cfg, exclude_patterns, **kwargs):
+        captured.update(kwargs)
+        return [], {}, FakeGraphBuilder(), None, 0, {}
+
+    def _fake_analysis(*args, **kwargs):
+        return None, None
+
+    async def _fake_persist(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(incremental_mod, "rebuild_graph_and_git", _fake_rebuild)
+    monkeypatch.setattr(incremental_mod, "run_partial_analysis", _fake_analysis)
+    monkeypatch.setattr(incremental_mod, "persist_incremental_index", _fake_persist)
+
+    result = asyncio.run(update_single_repo_index(repo, rescore_due=rescore_flag))
+
+    assert result.updated is True
+    assert captured["rescore_due"] is rescore_flag
+    assert result.rescore_due is rescore_flag
 
 
 def test_incremental_merges_repo_settings_excludes(tmp_path, forbid_full_pipeline, monkeypatch):

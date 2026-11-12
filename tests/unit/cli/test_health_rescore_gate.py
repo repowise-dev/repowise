@@ -11,6 +11,7 @@ import pytest
 
 from repowise.cli.commands.update_cmd.persistence import (
     _full_rescore_interval_days,
+    full_metrics_rescore_due,
     full_rescore_due,
     health_analyzer_changed,
 )
@@ -108,6 +109,52 @@ class TestFullRescoreDue:
         if stamp is not None:
             state["last_full_rescore_at"] = stamp
         assert full_rescore_due(state, 1_000_000.0) is True
+
+
+class TestFullMetricsRescoreDue:
+    """The cadence gate deciding when `repowise update` re-scores metrics (#5283)."""
+
+    def test_no_git_is_not_due(self):
+        state = {"last_full_metrics_rescore_at": 1_000_000.0}
+        assert full_metrics_rescore_due(state, None) is False
+
+    def test_missing_or_unusable_stamp_is_due(self):
+        assert full_metrics_rescore_due({}, 1_000_000.0) is True
+        assert full_metrics_rescore_due({"last_full_metrics_rescore_at": "invalid"}, 1_000_000.0) is True
+
+    def test_fresh_stamp_is_not_due(self):
+        head_ts = 1_000_000.0
+        state = {"last_full_metrics_rescore_at": head_ts}
+        assert full_metrics_rescore_due(state, head_ts) is False
+
+    def test_stale_stamp_is_due(self):
+        head_ts = 1_000_000.0
+        state = {"last_full_metrics_rescore_at": head_ts - (8 * 86400.0)}
+        assert full_metrics_rescore_due(state, head_ts) is True
+
+
+class TestMetricsRescoreDue:
+    """metrics_rescore_due triggers on rebuilds as well as cadence (#5283)."""
+
+    def test_rebuild_triggers_force_rescore(self):
+        from repowise.cli.commands.update_cmd.persistence import metrics_rescore_due
+
+        head_ts = 1_000_000.0
+        state = {"last_full_metrics_rescore_at": head_ts}  # Not due by time
+        assert metrics_rescore_due(state, head_ts, extraction_changed=True) is True
+        assert metrics_rescore_due(state, head_ts, traversal_changed=True) is True
+        assert metrics_rescore_due(state, head_ts, full_generation=True) is True
+        assert metrics_rescore_due(state, head_ts, wiki_rebuild=True) is True
+
+    def test_cadence_governs_when_no_rebuild_trigger(self):
+        from repowise.cli.commands.update_cmd.persistence import metrics_rescore_due
+
+        head_ts = 1_000_000.0
+        fresh_state = {"last_full_metrics_rescore_at": head_ts}
+        assert metrics_rescore_due(fresh_state, head_ts) is False
+
+        stale_state = {"last_full_metrics_rescore_at": head_ts - (8 * 86400.0)}
+        assert metrics_rescore_due(stale_state, head_ts) is True
 
 
 class TestInitStampsTheCadence:
@@ -250,3 +297,27 @@ class TestFullRescoreIntervalWarningOnce:
         monkeypatch.setenv("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "7")
         assert _full_rescore_interval_days() == 7.0
         assert len(printed) == 1
+
+
+class TestResolveLastFullMetricsRescore:
+    """_resolve_last_full_metrics_rescore only stamps when rescore_due is True (#5283)."""
+
+    def test_stamps_when_rescore_due(self) -> None:
+        from repowise.cli.commands.update_cmd.persistence import _resolve_last_full_metrics_rescore
+
+        head_ts = 1_000_000.0
+        state = {"last_full_metrics_rescore_at": 500_000.0}
+        assert _resolve_last_full_metrics_rescore(state, head_ts, rescore_due=True) == head_ts
+
+    def test_does_not_stamp_when_rescore_not_due(self) -> None:
+        from repowise.cli.commands.update_cmd.persistence import _resolve_last_full_metrics_rescore
+
+        head_ts = 1_000_000.0
+        state = {"last_full_metrics_rescore_at": 500_000.0}
+        assert _resolve_last_full_metrics_rescore(state, head_ts, rescore_due=False) == 500_000.0
+
+    def test_no_git_does_not_stamp(self) -> None:
+        from repowise.cli.commands.update_cmd.persistence import _resolve_last_full_metrics_rescore
+
+        state = {"last_full_metrics_rescore_at": 500_000.0}
+        assert _resolve_last_full_metrics_rescore(state, None, rescore_due=True) == 500_000.0

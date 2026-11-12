@@ -46,7 +46,12 @@ def test_rebuild_index_records_graph_decision_in_run_state(monkeypatch, tmp_path
         base_ref="abc",
         full_generation=False,
         wiki_rebuild=False,
-        config=SimpleNamespace(git_changed=False, health_changed=False, generation_changed=False),
+        config=SimpleNamespace(
+            git_changed=False,
+            health_changed=False,
+            generation_changed=False,
+            traversal_changed=False,
+        ),
         renderer_changed=False,
         analyzer_changed=False,
         extraction_changed=False,
