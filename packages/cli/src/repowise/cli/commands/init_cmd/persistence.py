@@ -212,7 +212,7 @@ async def persist_result(
                 existing = {}
             existing["tech_stack"] = result.tech_stack
             repo.settings_json = _json.dumps(existing)
-        # Commit boundary 1 of 6: the repository row and its settings.
+        # Commit boundary 1 of 5: the repository row and its settings.
         with timed(timings, "persist.commit.repository"):
             await session.commit()
         swept_page_ids: list[str] = []
@@ -228,7 +228,7 @@ async def persist_result(
                         session, repo.id, getattr(result, "parsed_files", None)
                     )
                 await persist_analysis(result, session, repo.id)
-            # Commit boundary 2 of 6: analysis.
+            # Commit boundary 2 of 5: analysis.
             with timed(timings, "persist.commit.analysis"):
                 await session.commit()
             with timed(timings, "persist.generation"):
@@ -272,7 +272,7 @@ async def persist_result(
         store = getattr(result, "vector_store", None)
         if store is not None and swept_page_ids:
             await store.delete_many(swept_page_ids)
-        # Commit boundary 3 of 6: generation and its structural sweep (or the
+        # Commit boundary 3 of 5: generation and its structural sweep (or the
         # pipeline result), together with the vector deletions that retire them.
         with timed(timings, "persist.commit.generation"):
             await session.commit()
@@ -295,7 +295,7 @@ async def persist_result(
         # committed tombstone pointing at an embedding nothing will delete.
         if store is not None and tombstoned:
             await store.delete_many(tombstoned)
-        # Commit boundary 4 of 6: the tombstone sweep.
+        # Commit boundary 4 of 5: the tombstone sweep.
         with timed(timings, "persist.commit.prune"):
             await session.commit()
 
@@ -320,7 +320,7 @@ async def persist_result(
         job.failed_pages = stub_fallbacks
         job.started_at = now
         job.finished_at = now
-        # Commit boundary 5 of 6: the generation job record.
+        # Commit boundary 5 of 5: the generation job record.
         with timed(timings, "persist.commit.job"):
             await session.commit()
 
