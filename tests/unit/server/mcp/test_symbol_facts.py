@@ -128,7 +128,8 @@ async def _seed(session, tmp_path) -> str:
             early_exits=0,
             ccn=3,
             tests_json=json.dumps(
-                [[DIRECT_TEST, 1], [CHAIN_TEST, 2], [LOST_TEST, 2], [FAR_TEST, 3]]
+                # The chainless two-hop test comes first: it must not take the slot.
+                [[DIRECT_TEST, 1], [LOST_TEST, 2], [LOST_TEST + "_b", 2], [CHAIN_TEST, 2], [FAR_TEST, 3]]
             ),
         )
     )

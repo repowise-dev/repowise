@@ -210,15 +210,19 @@ async def _test_links(
 
     mapped = decode_tests(fact.tests_json if fact is not None else None) or ()
     direct = [t for t in mapped if t.hops == 1]
-    two_hop = [t for t in mapped if t.hops == 2][: max(0, MAX_TEST_LINKS - len(direct))]
     links = [{"run": t.selector} for t in direct[:MAX_TEST_LINKS]]
+    if len(links) == MAX_TEST_LINKS:
+        return links
+    # Every two-hop test is looked up, so one with no chain found never takes
+    # the slot of a later one that has it. At most k=5 are stored.
+    two_hop = [t for t in mapped if t.hops == 2]
     via = await _via_symbols(session, repo_id, symbol_id, two_hop)
     links += [
         {"run": t.selector, "via": _short_via(via[t.selector], t.selector, symbol_id)}
         for t in two_hop
         if t.selector in via
     ]
-    return links
+    return links[:MAX_TEST_LINKS]
 
 
 def _short_via(via: str, selector: str, symbol_id: str) -> str:
