@@ -1008,10 +1008,26 @@ def test_pages_beside_definition_lines_are_dropped():
         "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
         "note": f"No indexed symbol is named 'go'. Any page here is {NOT_THE_NAMED_SYMBOL}.",
     }
-    _line_hits._drop_pages_beside_definitions(response)
+    _line_hits._drop_pages_beside_definitions(response, every_page=False)
     assert response["results"] == [named]
     assert response["pages_omitted"] == 1
     assert response["note"] == "No indexed symbol is named 'go'."
+
+
+def test_an_identifier_query_drops_every_page_beside_definition_lines():
+    named = {"type": "symbol", "path": "pkg/a.py", "name": "run"}
+    page = {"type": "page", "page_type": "file_page", "path": "pkg/b.py"}
+    response = {
+        "results": [named, page],
+        "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=True)
+    assert response["results"] == [named]
+    assert response["pages_omitted"] == 1
+    # A multi-word question keeps the pages that rank its files.
+    response = {"results": [named, page], "lines": response["lines"]}
+    _line_hits._drop_pages_beside_definitions(response, every_page=False)
+    assert response["results"] == [named, page]
 
 
 def test_pages_stay_when_lines_hold_no_definition():
@@ -1022,6 +1038,18 @@ def test_pages_stay_when_lines_hold_no_definition():
         "results": [page],
         "lines": [{"path": "pkg/a.py", "line": 9, "kind": "call", "text": "run()"}],
     }
-    _line_hits._drop_pages_beside_definitions(response)
+    _line_hits._drop_pages_beside_definitions(response, every_page=True)
     assert response["results"] == [page]
     assert "pages_omitted" not in response
+
+
+def test_a_group_drops_its_tests_only_beside_shipped_code():
+    shipped = {"path": "pkg/a.py", "line": 1, "kind": "definition", "text": "def run():"}
+    test_row = {"path": "tests/test_a.py", "line": 4, "kind": "call", "text": "run()"}
+    only_tests = [{"path": "tests/test_b.py", "line": 2, "kind": "call", "text": "go()"}]
+    reasons: list[str] = []
+
+    groups = _line_hits._without_tests_beside_shipped([[shipped, test_row], only_tests], reasons)
+
+    assert groups == [[shipped], only_tests]
+    assert reasons == ["1 lines in tests not shown beside shipped code: lines_omitted counts them"]

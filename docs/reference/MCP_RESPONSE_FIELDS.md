@@ -378,7 +378,8 @@ Row notes:
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
 - Past 3 plain `reference` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
 - A multi-word query caps `lines` at 15 (definitions, calls, imports).
-- When `lines` holds a definition, result pages labelled `related, not the named symbol` are dropped and counted in `pages_omitted`.
+- When `lines` holds a definition, result pages are dropped and counted in `pages_omitted`: every page for an identifier, alternation or regex query, only pages labelled `related, not the named symbol` for a multi-word question. Symbol rows stay.
+- An alternation or regex group with a line in shipped code leaves out its test lines, after the shared cap; `lines_omitted` counts them.
 
 Ranking:
 

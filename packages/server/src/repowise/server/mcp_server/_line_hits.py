@@ -786,16 +786,19 @@ def _serve_lines(
         response["reasons"] = reasons
     else:
         _drop_sweep_advice(response)
-    _drop_pages_beside_definitions(response)
+    _drop_pages_beside_definitions(response, every_page=not mixed)
     if shown:
         _reconcile_symbol_miss(response, literal_scan=literal_scan)
 
 
-def _drop_pages_beside_definitions(response: dict) -> None:
-    """Drop result pages labelled as not the named symbol once ``lines`` holds a definition.
+def _drop_pages_beside_definitions(response: dict, *, every_page: bool) -> None:
+    """Drop result pages once ``lines`` holds a definition; ``pages_omitted`` counts them.
 
-    The definition rows answer where the names live; pages that only mention
-    them are prose the caller does not follow. ``pages_omitted`` counts them.
+    The definition rows answer where the names live, and pages around them are
+    prose the caller does not follow. For an identifier, alternation or regex
+    query (*every_page*) every page goes and symbol rows stay; for a
+    multi-word question, whose pages rank the files it asks about, only the
+    pages labelled as not the named symbol go.
     """
     if not any(row["kind"] == "definition" for row in response["lines"]):
         return
@@ -804,7 +807,10 @@ def _drop_pages_beside_definitions(response: dict) -> None:
         return
     kept = [
         r for r in results
-        if not (isinstance(r, dict) and r.get("relation") == NOT_THE_NAMED_SYMBOL)
+        if not (
+            isinstance(r, dict)
+            and (r.get("type") == "page" if every_page else r.get("relation") == NOT_THE_NAMED_SYMBOL)
+        )
     ]
     if len(kept) < len(results):
         response["pages_omitted"] = len(results) - len(kept)
@@ -853,7 +859,14 @@ async def _attach_pattern(
     caps = _fair_caps([len(g) for g in groups], MAX_LINES)
     if any(len(g) > c for g, c in zip(groups, caps, strict=True)):
         reasons.append(OVER_LINES)
-    shown = [row for g, c in zip(groups, caps, strict=True) for row in g[:c]]
+    # Tests leave each group's share after the caps, so no row takes their place.
+    shown = [
+        row
+        for g in _without_tests_beside_shipped(
+            [g[:c] for g, c in zip(groups, caps, strict=True)], reasons
+        )
+        for row in g
+    ]
     response["matched_as"] = kind
     _serve_lines(response, query, ctx, rows, shown, reasons, False, literal_scan)
 
@@ -897,6 +910,29 @@ async def _alternation_groups(
         # Read with ``complete``: true means these parts match nowhere.
         response["unmatched"] = unmatched
     return ctx, rows, groups, reasons, literal_scan
+
+
+def _without_tests_beside_shipped(
+    groups: list[list[dict[str, Any]]], reasons: list[str]
+) -> list[list[dict[str, Any]]]:
+    """Each group without its test rows when it has a row in shipped code.
+
+    A grep-shaped query names code to read; its tests are counted in
+    ``lines_omitted`` and kept under ``_meta.omitted``. A group found only in
+    tests keeps them.
+    """
+    out: list[list[dict[str, Any]]] = []
+    cut = 0
+    for group in groups:
+        ranks = [ship_rank(r["path"]) for r in group]
+        if 0 in ranks:
+            kept = [r for r, rank in zip(group, ranks, strict=True) if rank != 2]
+            cut += len(group) - len(kept)
+            group = kept
+        out.append(group)
+    if cut:
+        reasons.append(f"{cut} lines in tests not shown beside shipped code: lines_omitted counts them")
+    return out
 
 
 def _fair_caps(sizes: list[int], cap: int) -> list[int]:
