@@ -173,7 +173,7 @@ def _call_pattern(names: tuple[str, ...] | set[str]) -> re.Pattern[str] | None:
         return None
     alt = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
     return re.compile(
-        r"(?<![\w.$])(?:" + alt + r")\s*(?:\.\s*[\w$]+\s*)*\(|new\s+(?:" + alt + r")(?![\w$])"
+        r"(?<![\w.$])(?:" + alt + r")\s*(?:\.\s*[\w$]+\s*)*\(|\bnew\s+(?:" + alt + r")(?![\w$])"
     )
 
 
