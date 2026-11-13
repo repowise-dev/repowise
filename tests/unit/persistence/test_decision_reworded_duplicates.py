@@ -18,8 +18,9 @@ from repowise.core.persistence.crud import bulk_upsert_decisions
 from repowise.core.persistence.crud.authority import resolve_decision_id
 from repowise.core.persistence.crud.decision_lane_fold import same_decision_text
 from repowise.core.persistence.crud.decisions import derive_decision_id
-from repowise.core.persistence.decision_id_migration import FOLD_REASON, apply_id_migration
+from repowise.core.persistence.decision_id_migration import apply_id_migration
 from repowise.core.persistence.models import (
+    MERGED_REASON,
     DecisionAlias,
     DecisionCandidateMeta,
     DecisionEvidence,
@@ -350,7 +351,7 @@ async def test_stored_rewordings_fold_into_the_accepted_one(async_session):
     ).scalar_one() == 3
     for gone in (oldest_id, newer_id):
         alias = await async_session.get(DecisionAlias, gone)
-        assert alias is not None and alias.reason == FOLD_REASON
+        assert alias is not None and alias.reason == MERGED_REASON
         assert await resolve_decision_id(async_session, gone) == chosen.id
 
     # Idempotent.

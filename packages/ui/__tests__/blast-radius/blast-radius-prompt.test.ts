@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import { buildBlastRadiusPrompt, type BlastPromptInput } from "../../src/health/ai-prompts/blast-radius-prompt.js";
+import { blastPromptInput } from "../../src/blast-radius/blast-prompt-input.js";
+import { readReach } from "../../src/blast-radius/blast-map-model.js";
+import { makeReview } from "./review-fixture.js";
 
 const INPUT: BlastPromptInput = {
   change: { kind: "branch", label: "feat/x", base: "origin/main", head_sha: "a".repeat(40) },
@@ -80,15 +84,56 @@ describe("buildBlastRadiusPrompt with a health check", () => {
   });
 });
 
-describe("buildBlastRadiusPrompt for a pull request", () => {
-  it("names the PR and diffs base against head", () => {
+describe("buildBlastRadiusPrompt for a merge request", () => {
+  it("names it in the forge's words and diffs the two commits read", () => {
     const p = buildBlastRadiusPrompt({
       input: {
         ...INPUT,
-        change: { kind: "pull_request", label: "#123", number: 123, title: "Fix the cache", base: "main", head_sha: "b".repeat(40) },
+        change: {
+          kind: "change_request",
+          label: "!7",
+          term: "merge request",
+          title: "Tune the core",
+          base_sha: "a".repeat(40),
+          head_sha: "b".repeat(40),
+        },
       },
     });
-    expect(p).toContain("Pull request #123: Fix the cache");
-    expect(p).toContain(`git diff main...${"b".repeat(40)}`);
+    expect(p).toContain("Merge request !7: Tune the core");
+    expect(p).toContain(`git diff ${"a".repeat(40)}...${"b".repeat(40)}`);
+  });
+});
+
+describe("the review prompt for a scored change", () => {
+  const result: BlastRadiusResponse = {
+    structural_impact_score: 1,
+    structural_impact_band: "localized",
+    structural_impact_scale: {} as BlastRadiusResponse["structural_impact_scale"],
+    overall_risk_score: 1,
+    overall_risk_score_compatibility: {} as BlastRadiusResponse["overall_risk_score_compatibility"],
+    direct_risks: [],
+    transitive_affected: [],
+    cochange_warnings: [],
+    recommended_reviewers: [],
+    test_gaps: [],
+    test_commands: ["pytest tests/test_blast.py"],
+  };
+  const status = { tone: "calm", word: "Small change", reason: "1 file changed.", next: "" } as const;
+  const prompt = (review: ReturnType<typeof makeReview>) =>
+    buildBlastRadiusPrompt({
+      input: blastPromptInput(result, readReach(result, ["src/a.py"]), status, ["src/a.py"], undefined, undefined, undefined, review),
+    });
+
+  it("carries the rank and the review's tests, not the blast radius's", () => {
+    const p = prompt(makeReview());
+    expect(p).toContain("Change risk: Riskier than 82% of this repo's recent commits, by size and spread. Mostly 400 lines added and 6 files touched.");
+    expect(p).toContain("`tests/test_a.py`");
+    expect(p).toContain("pytest tests/test_a.py tests/test_b.py");
+    expect(p).not.toContain("tests/test_blast.py");
+  });
+
+  it("says to run the whole suite, with why, when the selection could not narrow it", () => {
+    const p = prompt(makeReview({ tests: { status: "run_all", run_all: true, reasons: ["conftest.py changed"], tests_to_run: [] }, commands: [] }));
+    expect(p).toContain("Run the whole test suite: nothing narrower is known to cover this change (conftest.py changed).");
   });
 });

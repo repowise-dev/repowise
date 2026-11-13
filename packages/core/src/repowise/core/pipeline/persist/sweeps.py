@@ -510,6 +510,7 @@ async def sweep_superseded_generated_pages(
     session: Any,
     repo_id: str,
     generated_pages: list[Any] | None,
+    existing_files: Collection[str] | None = None,
 ) -> list[str]:
     """Retire structurally-keyed rows whose coverage a scoped run just took over.
 
@@ -533,6 +534,11 @@ async def sweep_superseded_generated_pages(
     elsewhere. A page that failed to generate keeps files no produced page
     claims, so it survives — which matters, because deleting a page because its
     generation errored would be a worse bug than the one this fixes.
+
+    When the caller passes *existing_files*, a row's members are narrowed to the
+    files that still exist before the test: no produced page can ever claim a
+    deleted file, so counting one would keep the row stale for good. A row none
+    of whose members survive proves nothing and is left alone.
 
     Returns the swept page ids so the caller can drop them from FTS after the
     session closes.
@@ -562,6 +568,7 @@ async def sweep_superseded_generated_pages(
         covered.setdefault(page_type, set()).update(files)
         coverage.setdefault(page_type, {})[page.page_id] = files
 
+    alive = None if existing_files is None else set(existing_files)
     swept: list[str] = []
     for page_type, current in produced_ids.items():
         union = covered.get(page_type) or set()
@@ -589,6 +596,8 @@ async def sweep_superseded_generated_pages(
                 continue
             members = metadata.get("file_paths") or metadata.get("files") or []
             members = {m for m in members if isinstance(m, str)}
+            if alive is not None:
+                members &= alive
             # No recorded membership means no proof of supersession. Those rows
             # are the pre-membership ones (backlog B20) and they are left for a
             # full index to retire.

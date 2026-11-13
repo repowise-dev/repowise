@@ -830,12 +830,15 @@ class TestSymbolSearch:
         assert not any(r["name"] == "login" for r in result["results"])
 
     @pytest.mark.asyncio
-    async def test_no_match_falls_back_to_grep_hint(self, setup_mcp):
+    async def test_a_complete_empty_scan_sends_no_one_to_grep(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 
         result = await search_codebase("NonexistentSymbol", mode="symbol")
         assert result["results"] == []
-        assert "grep_hint" in result
+        # The live-file scan already found every literal match: none.
+        assert result["lines"] == [] and result["complete"] is True
+        assert "grep_hint" not in result
+        assert "Grep" not in result.get("note", "")
 
     @pytest.mark.asyncio
     async def test_excluded_symbol_dropped(self, setup_mcp, monkeypatch):
@@ -1153,6 +1156,35 @@ class TestIdentifierGrepHint:
 
         result = await search_codebase("authentication flow for the service")
         assert "grep_hint" not in result
+
+
+class TestEmptyConceptRecoveryHint:
+    @pytest.mark.asyncio
+    async def test_empty_concept_query_carries_recovery_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
+
+        result = await search_codebase("zzqx flurbo wibble", mode="concept")
+        assert result["results"] == []
+        assert result["hint"] == NO_HITS_RECOVERY_HINT
+        assert "grep_hint" not in result
+
+    @pytest.mark.asyncio
+    async def test_empty_federated_concept_query_carries_recovery_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+        from repowise.server.mcp_server._meta import NO_HITS_RECOVERY_HINT
+
+        result = await search_codebase("zzqx flurbo wibble", mode="concept", repo="all")
+        assert result["results"] == []
+        assert result["hint"] == NO_HITS_RECOVERY_HINT
+
+    @pytest.mark.asyncio
+    async def test_concept_query_with_hits_has_no_hint(self, setup_mcp):
+        from repowise.server.mcp_server import search_codebase
+
+        result = await search_codebase("authentication flow for the service", mode="concept")
+        if result["results"]:
+            assert "hint" not in result
 
 
 class TestExactMatchSignal:

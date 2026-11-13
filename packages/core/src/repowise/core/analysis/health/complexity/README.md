@@ -145,8 +145,12 @@ Consumed by `low_cohesion` and `god_class`.
 One `FunctionComplexity` per function/method symbol detected. Caller maps
 back to ingestion `Symbol` objects by overlapping line ranges. A function or
 method defined inside another function has its own entry, listed before the
-entries of the file's own level; a lambda has none and counts toward the
-function that holds it.
+entries of the file's own level. So does a JS/TS arrow function with a block
+body bound to a name (a variable, an assignment, an object property;
+`ast_utils.is_named_block_lambda`); any other lambda has none and counts
+toward the function that holds it. A function's `nloc` leaves out the rows
+only its nested entries cover (`CodeLineIndex.unit_rows`); a row it shares
+with one of them stays its own.
 
 ## Extension points
 

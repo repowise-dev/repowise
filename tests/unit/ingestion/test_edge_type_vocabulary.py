@@ -255,6 +255,7 @@ def test_edge_type_map_covers_the_vocabulary() -> None:
     from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
 
     # Temporal edges are excluded on purpose; see the comment on _EDGE_TYPE_MAP.
+    # `documents` is exported as its own relation, so only temporal is left out.
     expected = EDGE_TYPE_VALUES - TEMPORAL_EDGE_TYPES
     assert not (expected - _EDGE_TYPE_MAP.keys()), (
         "edge type(s) silently dropped from the knowledge-graph export: "
@@ -267,6 +268,19 @@ def test_edge_type_map_covers_the_vocabulary() -> None:
         "a temporal edge reached the dependency export — that is how a co-change"
         " partner starts looking like an import"
     )
+
+
+def test_non_code_edges_stay_out_of_code_views() -> None:
+    """No code view may hold a history or prose edge."""
+    from repowise.core.ingestion import models as m
+
+    for code_view in (
+        m.FILE_DEPENDENCY_EDGE_TYPES,
+        m.SYMBOL_USE_EDGE_TYPES,
+        m.EXECUTION_EDGE_TYPES,
+        m.REACHABILITY_USE_EDGE_TYPES,
+    ):
+        assert not (code_view & m.NON_CODE_EDGE_TYPES)
 
 
 def _alias_targets() -> dict[str, tuple[str, set[str]]]:

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, load_state, run_async
+from repowise.cli.providers import flush_cost_tracker, run_cost_tracker
 from repowise.cli.ui import progress_steps
 
 from ._options import InitRun
@@ -106,6 +107,7 @@ async def _index_with_resume(
             include_submodules=opts.include_submodules,
             generate_docs=False,
             llm_client=llm_client,
+            cost_tracker=run.cost_tracker,
             vector_store=vector_store,
             concurrency=opts.concurrency,
             test_run=opts.test_run,
@@ -140,6 +142,9 @@ def index_repository(run: InitRun) -> None:
     run.total_phases = 3 if opts.run_mode == "fast" else 4
     # None on a dry run: analysis would call it before generation's dry-run exit.
     llm_client = decision_llm_client(run)
+    run.cost_tracker = run_cost_tracker(
+        run.repo_path, llm_client, no_cost_tracking=opts.no_cost_tracking
+    )
 
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.pipeline.modes import OrchestratorMode
@@ -188,6 +193,10 @@ def index_repository(run: InitRun) -> None:
 
             exit_interrupted()
 
+    # Persist the mining spend now: generation may never run (fast mode, a
+    # declined cost gate), and it flushes only what it adds after this.
+    if run.cost_tracker is not None:
+        flush_cost_tracker(run.cost_tracker)
     run.result = result
     run.recorder = callback
     run.run_warnings = list(steps.warnings)

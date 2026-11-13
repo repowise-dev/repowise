@@ -71,6 +71,7 @@ def _print_structural_plan(
         skip_tests,
         skip_infra,
         kg_modules=kg_modules,
+        git_meta_map=result.git_meta_map,
     )
 
     table = Table(title="Generation Plan (dry run)", border_style=BRAND)
@@ -263,6 +264,7 @@ def _run_generation_phase(
     warnings: list[str] | None = None,
     reuse_prior_pages: bool = True,
     folder_coverage_rules: tuple[str, ...] = (),
+    cost_tracker: Any | None = None,
 ) -> tuple[bool, bool]:
     """Run the LLM generation phase for a single-repo init.
 
@@ -348,6 +350,7 @@ def _run_generation_phase(
         timings=timings,
         warnings=warnings,
         total_phases=total_phases,
+        cost_tracker=cost_tracker,
     )
     return False, False
 
@@ -401,6 +404,7 @@ def _generate_with_model(run: InitRun) -> bool:
         # ``--force`` regenerates every page: the reuse gate is off, so
         # nothing is carried over from the prior run (issue #1089).
         reuse_prior_pages=not opts.force,
+        cost_tracker=run.cost_tracker,
     )
     if gen_stop:
         return True

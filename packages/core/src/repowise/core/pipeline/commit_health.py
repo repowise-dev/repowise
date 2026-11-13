@@ -18,9 +18,17 @@ the scan is minutes of CPU at worst, and holding SQLite's write lock that long
 blocks every other writer (the post-commit hook's next update, MCP writes). It
 also scans the newest commits in the store rather than only the ones it just
 captured, so a commit an earlier update's budget did not reach is picked up by
-a later one instead of staying "not analysed" until a full index. It spends
-only :data:`UPDATE_BUDGET_SECONDS` inline; the rest of the window drains in a
-detached process once the update has returned (:mod:`.commit_health_drain`).
+a later one instead of staying "not analysed" until a full index.
+
+Every commit a scan reaches ends with a delta row or a marker
+(``git_commit_health_scans``), so "pending" is the commits in the window with
+neither: once a backlog has drained, the commits the update itself captured.
+The update spends :data:`UPDATE_BUDGET_SECONDS` inline under a strict budget,
+passing over a commit whose estimated cost no longer fits; one no inline
+budget fits is marked ``deferred`` for a full-budget scan. The rest drains in
+a detached process once the update has returned (:mod:`.commit_health_drain`).
+Nothing depends on that process finishing: each run writes what it scanned,
+and the next run, inline or drained, resumes from the rows and markers.
 """
 
 from __future__ import annotations
@@ -94,28 +102,69 @@ def recent_shas(commit_rows: list[dict] | None) -> list[str]:
 
 
 async def _pending_shas(
-    session: Any, repo_id: str, repo_path: str, shas: list[str], limit: int
-) -> list[str]:
-    """The shas no current-analyzer row covers yet, newest first, capped."""
-    from repowise.core.analysis.change_health.commit_scan import current_fingerprint
-    from repowise.core.persistence.crud import get_scanned_commit_shas
+    session: Any,
+    repo_id: str,
+    repo_path: str,
+    shas: list[str],
+    limit: int,
+    *,
+    strict: bool = False,
+) -> tuple[list[str], bool]:
+    """The shas no current-analyzer row or marker covers yet, newest first, capped,
+    and whether any of *shas* waits on a ``deferred`` marker.
 
-    done = await get_scanned_commit_shas(
-        session, repo_id, **current_fingerprint(repo_path)
-    )
-    return [sha for sha in shas if sha not in done][:limit]
+    A ``deferred`` marker counts as covered only for a *strict* scan: that
+    commit is waiting for a scan with a full budget, which the caller hands
+    it to whenever one is waiting.
+    """
+    from repowise.core.analysis.change_health.commit_scan import DEFERRED, current_fingerprint
+    from repowise.core.persistence.crud import get_commit_health_marks, get_scanned_commit_shas
+
+    fingerprint = current_fingerprint(repo_path)
+    done = await get_scanned_commit_shas(session, repo_id, **fingerprint)
+    marks = await get_commit_health_marks(session, repo_id, **fingerprint)
+    deferred = {sha for sha, outcome in marks.items() if outcome == DEFERRED}
+    done.update(sha for sha in marks if strict or sha not in deferred)
+    pending = [sha for sha in shas if sha not in done][:limit]
+    return pending, any(sha in deferred for sha in shas)
 
 
-async def _scan(repo_path: str, pending: list[str], budget: float) -> Any:
+async def _scan(repo_path: str, pending: list[str], budget: float, *, strict: bool = False) -> Any:
     from repowise.core.analysis.change_health.commit_scan import scan_commits
 
-    scan = await asyncio.to_thread(scan_commits, repo_path, pending, budget_seconds=budget)
+    scan = await asyncio.to_thread(
+        scan_commits, repo_path, pending, budget_seconds=budget, strict=strict
+    )
     if scan.exhausted_budget:
-        logger.info("commit_health_budget_exhausted", scanned=scan.scanned, budget=budget)
+        logger.info(
+            "commit_health_budget_exhausted",
+            scanned=scan.scanned,
+            deferred=scan.deferred,
+            budget=budget,
+        )
     return scan
 
 
-_STAT_KEYS = ("candidates", "scanned", "skipped", "stored", "findings", "exhausted", "deferred")
+async def _store(session: Any, repo_id: str, scan: Any) -> None:
+    """Write a scan's rows and markers; nothing when it has neither."""
+    from repowise.core.persistence.crud import upsert_commit_health_bulk
+
+    if scan.delta_rows or scan.mark_rows:
+        await upsert_commit_health_bulk(
+            session, repo_id, scan.delta_rows, scan.finding_rows, scan.mark_rows
+        )
+
+
+_STAT_KEYS = (
+    "candidates",
+    "scanned",
+    "skipped",
+    "stored",
+    "marked",
+    "findings",
+    "exhausted",
+    "deferred",
+)
 
 
 def _nothing() -> dict[str, int]:
@@ -129,6 +178,7 @@ def _stats(pending: list[str], scan: Any) -> dict[str, int]:
         "scanned": scan.scanned,
         "skipped": scan.skipped,
         "stored": len(scan.delta_rows),
+        "marked": len(scan.mark_rows),
         "findings": len(scan.finding_rows),
         "exhausted": int(scan.exhausted_budget),
     }
@@ -137,11 +187,8 @@ def _stats(pending: list[str], scan: Any) -> dict[str, int]:
 async def _scan_and_store(
     session: Any, repo_id: str, repo_path: str, pending: list[str], budget: float
 ) -> dict[str, int]:
-    from repowise.core.persistence.crud import upsert_commit_health_bulk
-
     scan = await _scan(repo_path, pending, budget)
-    if scan.delta_rows:
-        await upsert_commit_health_bulk(session, repo_id, scan.delta_rows, scan.finding_rows)
+    await _store(session, repo_id, scan)
     return _stats(pending, scan)
 
 
@@ -173,7 +220,7 @@ async def refresh_commit_health(
         return nothing
     try:
         async with session.begin_nested():
-            pending = await _pending_shas(session, repo_id, repo_path, shas, limit)
+            pending, _waiting = await _pending_shas(session, repo_id, repo_path, shas, limit)
             if not pending:
                 return nothing
             return await _scan_and_store(
@@ -189,7 +236,7 @@ async def refresh_commit_health(
 
 
 async def scan_window(
-    session_factory: Any, repo_id: str, repo_path: str, budget: float
+    session_factory: Any, repo_id: str, repo_path: str, budget: float, *, strict: bool = False
 ) -> dict[str, int]:
     """Scan the store's newest unscanned commits for *budget* seconds, then write the rows.
 
@@ -198,24 +245,33 @@ async def scan_window(
     for the scan. The window is the newest :data:`DEFAULT_COMMIT_LIMIT` commits
     in the store, the same window a full index seeds, newest first: the commits
     a reader opens first are covered first, and a backlog older than the window
-    is not chased. The caller holds the commit-health lock.
+    is not chased. *strict* is :func:`scan_commits`'s. The caller holds the
+    commit-health lock.
     """
     from repowise.core.persistence import get_session
-    from repowise.core.persistence.crud import get_git_commits, upsert_commit_health_bulk
+    from repowise.core.persistence.crud import get_git_commits
 
     limit = commit_limit()
     async with get_session(session_factory) as session:
         window = [
             row.sha for row in await get_git_commits(session, repo_id, limit=limit, sort="date")
         ]
-        pending = await _pending_shas(session, repo_id, repo_path, window, limit) if window else []
-    if not pending:
-        return _nothing()
-    scan = await _scan(repo_path, pending, budget)
-    if scan.delta_rows:
-        async with get_session(session_factory) as session:
-            await upsert_commit_health_bulk(session, repo_id, scan.delta_rows, scan.finding_rows)
-    return _stats(pending, scan)
+        pending, waiting = (
+            await _pending_shas(session, repo_id, repo_path, window, limit, strict=strict)
+            if window
+            else ([], False)
+        )
+    stats = _nothing()
+    if pending:
+        scan = await _scan(repo_path, pending, budget, strict=strict)
+        if scan.delta_rows or scan.mark_rows:
+            async with get_session(session_factory) as session:
+                await _store(session, repo_id, scan)
+        stats = _stats(pending, scan)
+    # A deferred commit only a full budget fits: report work left, so a drain
+    # is started again even when nothing else is pending.
+    stats["exhausted"] = int(stats["exhausted"] or (strict and waiting))
+    return stats
 
 
 async def refresh_commit_health_after_update(
@@ -231,7 +287,10 @@ async def refresh_commit_health_after_update(
     Spends *budget* (default :data:`UPDATE_BUDGET_SECONDS`) inline. With
     *background*, what the budget leaves is handed to a detached drain that
     starts once this run releases its locks; a caller with no store left
-    afterwards (a throwaway database) passes a full budget instead. When a
+    afterwards (a throwaway database) passes a full budget instead. The
+    default budget is strict when a drain can take the commits it passes
+    over; with background drains off it is the only scan, so it keeps
+    reaching large commits. When a
     drain already holds the scan lock the inline scan is skipped: the drain
     re-reads the window each round, and *background* queues one more behind it.
 
@@ -244,6 +303,9 @@ async def refresh_commit_health_after_update(
 
     if commit_limit() <= 0 or _is_fast_index(repo_path):
         return _nothing()
+    from .commit_health_drain import background_enabled
+
+    strict = budget is None and background and background_enabled()
     stats = _nothing()
     if try_acquire_commit_health_lock(Path(repo_path)) is not None:
         stats["deferred"] = 1
@@ -254,6 +316,7 @@ async def refresh_commit_health_after_update(
                 repo_id,
                 repo_path,
                 budget_seconds(UPDATE_BUDGET_SECONDS) if budget is None else budget,
+                strict=strict,
             )
         except Exception as exc:
             logger.debug("commit_health_refresh_failed", error=str(exc))

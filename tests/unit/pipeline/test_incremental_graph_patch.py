@@ -109,7 +109,12 @@ def _seed_rows(graph_builder: Any) -> dict[str, list]:
 
     index_dir = Path(graph_builder._repo_path) / ".repowise"
     index_dir.mkdir(exist_ok=True)
-    save_resolutions(index_dir, graph_builder._parsed_files.values())
+    save_resolutions(
+        index_dir,
+        graph_builder._parsed_files.values(),
+        graph_builder.import_resolutions,
+        graph_builder._source_map,
+    )
     graph = graph_builder.graph()
     return {
         "nodes": [(node, dict(attrs)) for node, attrs in graph.nodes(data=True)],
@@ -302,7 +307,7 @@ def test_detected_unparsed_config_change_forces_full_rebuild(
     )[2]
 
     assert not patched.patch_plan.eligible
-    assert "unparsed files" in (patched.patch_plan.reason or "")
+    assert "pom.xml" in (patched.patch_plan.reason or "")
     _assert_equals_full(tree, patched, tmp_path)
 
 
@@ -345,7 +350,7 @@ def test_resolution_cache_is_written_only_when_requested(tmp_path: Path) -> None
                     )
                 },
             ),
-            "new file",
+            "file added",
             id="added-file",
         ),
         pytest.param(
@@ -805,3 +810,602 @@ def test_registration_edge_survives_a_registrar_body_patch(tmp_path: Path) -> No
     assert patched.patch_plan.scope == (registrar_path,)
     assert has_registration_edge(patched)
     _assert_equals_full(tree, patched, tmp_path / "registrars-oracle")
+
+
+# Documentation is the one kind of file a patch may add, remove or edit outside
+# PATCHABLE_LANGUAGES: it gives the graph only its own file node. Every case
+# below, accepted or refused, must leave the same graph as a full rebuild.
+_DOCS_TREE = {
+    "util.py": "def helper():\n    return 1\n",
+    "main.py": "from util import helper\n\ndef run():\n    return helper() + orphan()\n",
+    "web/view.ts": (
+        "import { fmt } from './fmt';\n"
+        "import guide from './guide.md';\n"
+        "import { later } from './later';\n"
+        "export function view() { return fmt(guide) + later(); }\n"
+    ),
+    "web/fmt.ts": "export function fmt(s: string) { return s; }\n",
+    "web/guide.md": "# Guide\n",
+    "web/tsconfig.json": '{"compilerOptions": {"baseUrl": ".", "paths": {"@w/*": ["./*"]}}}\n',
+    "README.md": "# Demo\n\nRun `main.py`.\n",
+    "docs/notes.md": "# Notes\n",
+    "docs/intro.mdx": "import { fmt } from '../web/fmt'\n\n# Intro\n",
+    "docs/README.md": "# Docs\n",
+    # Two source files under the ``index`` stem: a bucket of two answers no
+    # import-free lookup, so an ``index.md`` may join it.
+    "web/index.ts": "export { fmt } from './fmt';\n",
+    "lib/index.js": "export const one = 1;\n",
+    # ``Shape`` and ``Kind`` are used with no import: the type-reference pass
+    # takes the only file of that stem. ``shape`` holds one file, ``kind`` two.
+    "web/shape.ts": "export interface Shape { w: number }\n",
+    "web/draw.ts": "export function draw(s: Shape) { return s.w; }\n",
+    "web/kind.ts": "export interface Kind { k: string }\n",
+    "web/pick.ts": "export function pick(k: Kind) { return k.k; }\n",
+    "docs/kind.md": "# Kind\n",
+}
+
+
+def _edit(rel: str, text: str) -> Any:
+    return lambda t: (t / rel).write_text(text)
+
+
+def _remove(rel: str) -> Any:
+    return lambda t: (t / rel).unlink()
+
+
+def _add(rel: str, text: str) -> Any:
+    return lambda t: _write(t, {rel: text})
+
+
+def _both(*edits: Any) -> Any:
+    def apply(t: Path) -> None:
+        for edit in edits:
+            edit(t)
+
+    return apply
+
+
+@pytest.fixture
+def docs_indexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
+    tree = tmp_path / "docs-repo"
+    _write(tree, _DOCS_TREE)
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    return tree, _seed_rows(first)
+
+
+@pytest.mark.parametrize(
+    ("edit", "scope", "removed"),
+    [
+        pytest.param(_edit("README.md", "# Demo\n\nRewritten.\n"), ("README.md",), (), id="edit-md"),
+        pytest.param(_add("CHANGELOG.md", "# 1.0\n"), ("CHANGELOG.md",), (), id="add-md"),
+        pytest.param(_remove("docs/notes.md"), (), ("docs/notes.md",), id="remove-md"),
+        pytest.param(
+            _both(_remove("docs/notes.md"), _add("docs/archive/notes-2026.md", "# Notes\n")),
+            ("docs/archive/notes-2026.md",),
+            ("docs/notes.md",),
+            id="rename-md",
+        ),
+        pytest.param(
+            _both(
+                _add("CHANGELOG.md", "# 1.0\n"),
+                _edit("web/fmt.ts", "export function fmt(s: string) { return s + ''; }\n"),
+            ),
+            ("CHANGELOG.md", "web/fmt.ts"),
+            (),
+            id="add-md-with-body-edit",
+        ),
+        # Code imports it, but an edit keeps the path and its (empty) surface.
+        pytest.param(_edit("web/guide.md", "# Guide\n\nMore.\n"), ("web/guide.md",), (), id="edit-imported-md"),
+        # Directory-index docs that share a stem only with prose or with 2+ sources.
+        pytest.param(_add("web/README.md", "# Web\n"), ("web/README.md",), (), id="add-readme-beside-readmes"),
+        pytest.param(_remove("docs/README.md"), (), ("docs/README.md",), id="remove-one-of-two-readmes"),
+        pytest.param(_remove("README.md"), (), ("README.md",), id="remove-root-readme"),
+        pytest.param(_add("docs/index.md", "# Home\n"), ("docs/index.md",), (), id="add-index-md-beside-sources"),
+    ],
+)
+def test_documentation_changes_are_patched_and_equal_a_full_rebuild(
+    docs_indexed: tuple[Path, dict[str, list]],
+    tmp_path: Path,
+    edit: Any,
+    scope: tuple[str, ...],
+    removed: tuple[str, ...],
+) -> None:
+    tree, seed = docs_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == scope
+    assert patched.patch_plan.removed == removed
+    for path in removed:
+        assert path not in patched.graph()
+        assert f"{path}::__module__" not in patched.graph()
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        pytest.param(_remove("web/guide.md"), "web/guide.md: an import may resolve to it", id="removed-md-imported-by-code"),
+        pytest.param(_add("docs/later.md", "# Later\n"), "docs/later.md: an import may resolve to it", id="added-md-named-by-import"),
+        # Same stem as fmt.ts: stem-map lookups would see two candidates.
+        pytest.param(_add("docs/fmt.md", "# fmt\n"), "docs/fmt.md: changes what its import stem resolves to", id="added-md-stem-collision"),
+        # The only ``shape`` file stops being the only one: draw.ts loses its type edge.
+        pytest.param(_add("docs/shape.md", "# Shape\n"), "docs/shape.md: changes what its import stem resolves to", id="added-md-hides-type-target"),
+        # kind.ts becomes the only ``kind`` file: pick.ts gains a type edge.
+        pytest.param(_remove("docs/kind.md"), "docs/kind.md: changes what its import stem resolves to", id="removed-md-reveals-type-target"),
+        pytest.param(
+            _edit("web/tsconfig.json", '{"compilerOptions": {"baseUrl": "."}}\n'),
+            "json edits are not patched",
+            id="tsconfig-edit",
+        ),
+        pytest.param(_add("web/package.json", '{"name": "web"}\n'), "web/package.json: file added", id="manifest-added"),
+        # The TypeScript warmup reads .mdx imports from disk.
+        pytest.param(
+            _edit("docs/intro.mdx", "import { fmt } from '../web/view'\n\n# Intro\n"),
+            "markdown edits are not patched",
+            id="mdx-edit",
+        ),
+        pytest.param(_add("docs/more.mdx", "# More\n"), "docs/more.mdx: file added", id="mdx-added"),
+    ],
+)
+def test_changes_that_can_reach_other_files_fall_back(
+    docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reason: str
+) -> None:
+    tree, seed = docs_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert not patched.patch_plan.eligible
+    assert reason in (patched.patch_plan.reason or "")
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("edit", "reached"),
+    [
+        # main.py calls orphan() by bare name: a new definer gives it a call edge.
+        pytest.param(_add("orphan.py", "def orphan():\n    return 2\n"), "main.py", id="new-definer-of-bare-call"),
+        # view.ts imports './later', unresolved until this file exists.
+        pytest.param(_add("web/later.ts", "export const later = () => 1;\n"), "web/view.ts", id="new-import-target"),
+        pytest.param(_remove("util.py"), "main.py", id="removed-import-target"),
+    ],
+)
+def test_source_adds_and_removes_re_resolve_the_files_they_reach(
+    docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reached: str
+) -> None:
+    tree, seed = docs_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.refresh
+    assert reached in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_new_definer_of_a_bare_call_changes_an_unchanged_files_edges(
+    docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """Why an added source file widens the scope: it rewires a file it never touched."""
+    tree, seed = docs_indexed
+    before = {(u, v) for u, v, *_ in _edges(_patched(tree, seed)) if u.startswith("main.py")}
+    _write(tree, {"orphan.py": "def orphan():\n    return 2\n"})
+
+    full = _full(tree, tmp_path / "full")
+
+    after = {(u, v) for u, v, *_ in _edges(full) if u.startswith("main.py")}
+    assert after - before, "the fixture must show an unchanged file gaining an edge"
+
+
+@pytest.mark.parametrize(
+    ("edit", "edge", "present_after"),
+    [
+        pytest.param(_add("docs/shape.md", "# Shape\n"), ("web/draw.ts", "web/shape.ts"), False, id="hide"),
+        pytest.param(_remove("docs/kind.md"), ("web/pick.ts", "web/kind.ts"), True, id="reveal"),
+    ],
+)
+def test_a_doc_can_change_an_unchanged_files_type_edge(
+    docs_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, edge: tuple, present_after: bool
+) -> None:
+    """Why a doc that changes a one-file stem bucket must fall back."""
+    tree, seed = docs_indexed
+    assert (edge in {(u, v) for u, v, _ in seed["edges"]}) is not present_after
+    edit(tree)
+
+    full = _full(tree, tmp_path / "full")
+
+    assert (edge in {(u, v) for u, v, *_ in _edges(full)}) is present_after
+
+
+def test_doc_displacing_a_stem_lookup_the_import_does_not_spell_falls_back(tmp_path: Path) -> None:
+    """Ruby looks ``require 'foo-bar'`` up as ``foo_bar``: no import text names the doc."""
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "app/main.rb": "require 'foo-bar'\n\ndef run\n  FooBar.go\nend\n",
+            "lib/a/foo_bar.rb": "class FooBar\n  def self.go; 1; end\nend\n",
+            "lib/b/foo_bar.rb": "class FooBar2\n  def self.go; 2; end\nend\n",
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    # Fewer path parts: the root doc becomes the stem's best candidate.
+    _write(tree, {"foo_bar.md": "# Foo bar\n"})
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.reason == "foo_bar.md: changes what its import stem resolves to"
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_unparsed_previously_indexed_file_is_not_treated_as_removed(
+    docs_indexed: tuple[Path, dict[str, list]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.pipeline.incremental import graph as graph_mod
+
+    tree, seed = docs_indexed
+    (tree / "docs/notes.md").write_text("# Notes\n\nEdited.\n")
+    real = graph_mod._parse_misses
+
+    def drop_notes(cached_hits, to_parse, *args, **kwargs):
+        merged = real(cached_hits, to_parse, *args, **kwargs)
+        for idx, (fi, _src), _hash in to_parse:
+            if fi.path == "docs/notes.md":
+                merged.pop(idx, None)
+        return merged
+
+    monkeypatch.setattr(graph_mod, "_parse_misses", drop_notes)
+
+    patched = _patched(tree, seed)
+
+    assert not patched.patch_plan.eligible
+    assert patched.patch_plan.reason == "docs/notes.md: could not be parsed"
+
+
+@pytest.mark.parametrize(
+    ("edit", "doc"),
+    [
+        # Shares its stem only with prose, so the stem rule alone would patch.
+        pytest.param(_remove("pkg/README.md"), "pkg/README.md", id="remove-named-readme"),
+        # A unique stem the import never spells (``#notes``).
+        pytest.param(_add("pkg/CHANGES.md", "# Changes\n"), "pkg/CHANGES.md", id="add-named-doc"),
+    ],
+)
+def test_doc_a_manifest_names_falls_back(tmp_path: Path, edit: Any, doc: str) -> None:
+    """package.json maps ``#docs`` and ``#notes`` onto docs no import's text spells."""
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "README.md": "# Root\n",
+            "pkg/package.json": (
+                '{"name": "pkg", "imports": {"#docs": "./README.md", "#notes": "./CHANGES.md"}}\n'
+            ),
+            "pkg/README.md": "# Pkg\n",
+            "pkg/a.ts": "import docs from '#docs';\nimport notes from '#notes';\nexport const a = docs + notes;\n",
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    assert ("pkg/a.ts", "pkg/README.md") in {(u, v) for u, v, _ in seed["edges"]}
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.reason == f"{doc}: a manifest names it"
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+
+
+# C and C++: headers, out-of-line method definitions that calls resolve onto,
+# header/implementation pairs (``util.c`` does not include ``util.h``), a
+# function-like macro, a registration marker the warmup reads from source, and
+# the facts the resolver reads from another file's text (a pure virtual, a
+# class template's parameters, an alias).
+_CPP_TREE = {
+    "src/base.h": "#pragma once\nnamespace acme {\nusing Count = int;\n}\n",
+    "src/widget.h": (
+        "#pragma once\n"
+        '#include "base.h"\n'
+        "namespace acme {\n"
+        "class Base { public: virtual int size() const; };\n"
+        "class Widget : public Base {\n"
+        "public:\n"
+        "  int size() const override;\n"
+        "  int twice() const;\n"
+        "};\n"
+        "inline int helper(int x) { return x + 1; }\n"
+        "#define SQUARE(x) ((x) * (x))\n"
+        "}\n"
+    ),
+    "src/widget.cpp": (
+        '#include "widget.h"\n'
+        "namespace acme {\n"
+        "int Base::size() const { return 0; }\n"
+        "int Widget::size() const { return helper(1); }\n"
+        "int Widget::twice() const { return size() * 2; }\n"
+        "}\n"
+    ),
+    "src/main.cpp": (
+        '#include "widget.h"\n'
+        '#include "shape.h"\n'
+        "int run() {\n"
+        "  acme::Widget w;\n"
+        "  return w.twice() + SQUARE(2);\n"
+        "}\n"
+        "int measure(const Shape& s) { return s.area(); }\n"
+    ),
+    "src/shape.h": (
+        "#pragma once\n"
+        "class Shape { public: virtual int area() const = 0; };\n"
+        "template <typename T>\n"
+        "class Box : public T {\n"
+        "public:\n"
+        "  int area() const { return 1; }\n"
+        "};\n"
+    ),
+    "src/util.h": "int c_util(int a);\nint c_other(int a);\n",
+    "src/util.c": (
+        "int c_util(int a) { return a; }\n"
+        "int c_other(int a) { return a + 1; }\n"
+    ),
+    "src/cmain.c": '#include "util.h"\nint c_main(void) { return c_util(1); }\n',
+    "src/plugin.cpp": (
+        '#include "widget.h"\n'
+        "// PYBIND11_MODULE registers this file at load time.\n"
+        "int plugin() { return acme::helper(2); }\n"
+    ),
+}
+
+
+@pytest.fixture
+def cpp_indexed(tmp_path: Path) -> tuple[Path, dict[str, list]]:
+    tree = tmp_path / "cpp"
+    _write(tree, _CPP_TREE)
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    return tree, _seed_rows(first)
+
+
+def _replace(rel: str, old: str, new: str) -> Any:
+    def apply(t: Path) -> None:
+        text = _CPP_TREE[rel]
+        assert old in text
+        (t / rel).write_text(text.replace(old, new))
+
+    return apply
+
+
+@pytest.mark.parametrize(
+    ("edit", "scope"),
+    [
+        pytest.param(
+            _replace("src/widget.cpp", "return size() * 2;", "return size() * 2 + helper(3);"),
+            ("src/widget.cpp",),
+            id="cpp-method-body",
+        ),
+        pytest.param(
+            _replace("src/main.cpp", "w.twice() + SQUARE(2)", "w.size() + SQUARE(2)"),
+            ("src/main.cpp",),
+            id="cpp-call-retargeted",
+        ),
+        pytest.param(
+            _replace("src/widget.h", "return x + 1;", "return x + 2;"),
+            ("src/widget.h",),
+            id="header-inline-body",
+        ),
+        pytest.param(
+            _replace("src/widget.h", "((x) * (x))", "((x) * (x) * 1)"),
+            ("src/widget.h",),
+            id="header-macro-body",
+        ),
+        pytest.param(
+            _replace("src/util.c", "return a;", "return c_other(a);"),
+            ("src/util.c",),
+            id="c-body-with-header-pair",
+        ),
+        pytest.param(
+            _replace("src/plugin.cpp", "// PYBIND11_MODULE registers", "// Registers"),
+            ("src/plugin.cpp",),
+            id="registration-marker-removed",
+        ),
+        pytest.param(
+            _both(
+                _replace("src/widget.cpp", "return helper(1);", "return helper(2);"),
+                _replace("src/util.c", "return a + 1;", "return a + 2;"),
+            ),
+            ("src/util.c", "src/widget.cpp"),
+            id="c-and-cpp-bodies",
+        ),
+    ],
+)
+def test_cpp_body_edits_are_patched_and_equal_a_full_rebuild(
+    cpp_indexed: tuple[Path, dict[str, list]],
+    tmp_path: Path,
+    edit: Any,
+    scope: tuple[str, ...],
+) -> None:
+    tree, seed = cpp_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert not patched.patch_plan.refresh
+    assert patched.patch_plan.scope == scope
+    _assert_equals_full(tree, patched, tmp_path / "cpp-oracle")
+
+
+def test_cpp_header_pair_edges_survive_a_patch_of_either_side(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """The pair edges come from paths, not resolution: a patch must keep both."""
+    tree, seed = cpp_indexed
+    pairs = {("src/util.c", "src/util.h"), ("src/util.h", "src/util.c")}
+    assert pairs <= {(u, v) for u, v, _ in seed["edges"]}
+    _replace("src/util.c", "return a;", "return a * 2;")(tree)
+    (tree / "src/util.h").write_text(_CPP_TREE["src/util.h"] + "/* declarations */\n")
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert pairs <= {(u, v) for u, v in patched.graph().edges()}
+    _assert_equals_full(tree, patched, tmp_path / "pairs-oracle")
+
+
+@pytest.mark.parametrize(
+    ("edit", "reached"),
+    [
+        pytest.param(
+            _both(
+                _replace("src/widget.h", "  int twice() const;\n", "  int twice() const;\n  int thrice() const;\n"),
+                _replace("src/main.cpp", "w.twice()", "w.thrice()"),
+            ),
+            "src/main.cpp",
+            id="header-declaration-added",
+        ),
+        pytest.param(
+            _replace("src/widget.cpp", "int Widget::twice() const", "long Widget::twice() const"),
+            "src/main.cpp",
+            id="definition-signature-changed",
+        ),
+        # main.cpp already reaches base.h through widget.h: its reach is unchanged.
+        pytest.param(
+            _replace("src/main.cpp", '#include "shape.h"\n', '#include "shape.h"\n#include "base.h"\n'),
+            "src/main.cpp",
+            id="include-of-a-reached-header",
+        ),
+        pytest.param(
+            _add("src/extra.cpp", "int extra() { return c_util(2); }\n"), "src/extra.cpp", id="cpp-file-added"
+        ),
+        # Facts the parse does not record, read off the header's text.
+        pytest.param(
+            _replace("src/shape.h", "area() const = 0;", "area() const;"),
+            "src/main.cpp",
+            id="pure-virtual-dropped",
+        ),
+        pytest.param(
+            _replace("src/shape.h", "template <typename T>\nclass Box : public T", "template <typename U>\nclass Box : public U"),
+            "src/shape.h",
+            id="template-parameter-renamed",
+        ),
+        pytest.param(
+            _replace("src/base.h", "using Count = int;", "using Count = long;"),
+            "src/base.h",
+            id="alias-target-changed",
+        ),
+        # util.h loses its pair edge to util.c, whose definitions go by name.
+        pytest.param(_remove("src/util.c"), "src/cmain.c", id="c-file-removed"),
+    ],
+)
+def test_cpp_edits_other_files_see_re_resolve_the_files_they_reach(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reached: str
+) -> None:
+    tree, seed = cpp_indexed
+    edit(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.refresh
+    assert reached in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "cpp-oracle")
+
+
+@pytest.mark.parametrize(
+    ("edit", "reason"),
+    [
+        # Every file that includes widget.h now reaches util.h and util.c.
+        pytest.param(
+            _replace("src/widget.h", '#include "base.h"\n', '#include "base.h"\n#include "util.h"\n'),
+            "src/widget.h: the files its includes reach changed",
+            id="header-include-added",
+        ),
+        pytest.param(
+            _replace("src/widget.h", '#include "base.h"\n', ""),
+            "src/widget.h: the files its includes reach changed",
+            id="header-include-removed",
+        ),
+    ],
+)
+def test_cpp_edits_that_move_include_reach_fall_back(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path, edit: Any, reason: str
+) -> None:
+    tree, seed = cpp_indexed
+    edit(tree)
+    timings = PhaseTimings()
+
+    patched = build_repo_graph(
+        tree, [], collect_sources=True, seed_edges=seed, patch_requested=True, timings=timings
+    )[2]
+
+    assert not patched.patch_plan.eligible
+    assert patched.patch_plan.reason == reason
+    assert {"rebuild.graph.patch", "rebuild.graph.full"} <= set(timings.totals)
+    _assert_equals_full(tree, patched, tmp_path / "cpp-oracle")
+
+
+def test_a_cpp_name_reaches_another_language_through_the_sites_that_name_it(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """A second ``twice`` makes the Python call's repo-wide unique match ambiguous."""
+    tree, _ = cpp_indexed
+    _write(
+        tree,
+        {
+            "py/tools.py": "def twice_py():\n    return 2\n",
+            "py/run.py": "def go():\n    return twice_py()\n",
+            "py/notes.py": "# twice_py is documented here\nVALUE = 1\n",
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    (tree / "src/extra.cpp").write_text("int twice_py() { return 3; }\n")
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "py/run.py" in patched.patch_plan.scope
+    assert "py/notes.py" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "cross-oracle")
+
+
+def test_a_cpp_function_reaches_the_files_that_call_it_not_those_that_mention_it(
+    cpp_indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    tree, _ = cpp_indexed
+    _write(tree, {"src/doc.cpp": "// thrice is documented here\nint doc() { return 0; }\n"})
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    _both(
+        _replace("src/widget.h", "  int twice() const;\n", "  int twice() const;\n  int thrice() const;\n"),
+        _replace("src/main.cpp", "w.twice()", "w.thrice()"),
+    )(tree)
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "src/main.cpp" in patched.patch_plan.scope
+    assert "src/doc.cpp" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "mention-oracle")
+
+
+def test_imports_of_a_file_nobody_imports_reach_no_other_file(tmp_path: Path) -> None:
+    tree = tmp_path / "py"
+    files = {
+        "pkg/util.py": "def helper():\n    return 1\n",
+        "pkg/other.py": "def helper_two():\n    return helper_two_impl()\n\ndef helper_two_impl():\n    return 2\n",
+        "tests/test_util.py": "def test_one():\n    assert True\n",
+    }
+    _write(tree, files)
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    (tree / "tests/test_util.py").write_text(
+        "from pkg.other import helper_two\n\ndef test_one():\n    assert helper_two() == 2\n"
+    )
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert "pkg/other.py" not in patched.patch_plan.scope
+    _assert_equals_full(tree, patched, tmp_path / "py-oracle")

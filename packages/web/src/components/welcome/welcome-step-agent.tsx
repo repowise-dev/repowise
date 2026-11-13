@@ -70,7 +70,7 @@ export function WelcomeStepAgent({
   const agents = found.slice(0, AGENTS_SHOWN);
   const more = found.length - agents.length;
   const questions = [
-    t("askRisk"),
+    t("askFlow"),
     hotspotPath ? t("askHotspot", { path: hotspotPath }) : t("askStart"),
   ];
 
@@ -183,6 +183,9 @@ function AgentRow({
                 })
               : t("installedNoFile")}
         </p>
+        {agent.default_profile === "core" && (
+          <p className={`${MOMENT_CAPTION} pl-3.5`}>{t("coreTools")}</p>
+        )}
         {!connected && !writesAllowed && (
           <div className="mt-2 pl-3.5">
             <CommandLine command={command} />

@@ -81,7 +81,7 @@ describe("confirming a decision that only lacks a reason", () => {
     const adapter = makeAdapter();
     renderView(<DecisionDetail decision={prReview()} adapter={adapter} />);
 
-    const confirm = screen.getByRole("button", { name: "Confirm" });
+    const confirm = screen.getByRole("button", { name: "Put in force" });
     expect(confirm).toBeDisabled();
     expect(screen.getByText("Add a reason above to confirm.")).toBeInTheDocument();
 
@@ -109,7 +109,7 @@ describe("confirming a decision with other gaps", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeDisabled();
     expect(screen.queryByLabelText("Why does this hold?")).not.toBeInTheDocument();
     expect(screen.getByText("Before you can confirm:")).toBeInTheDocument();
     expect(screen.getByText(/names no files or modules\. Add them under Governance scope\./)).toBeInTheDocument();
@@ -129,13 +129,13 @@ describe("a refused confirm", () => {
     const adapter = makeAdapter({ patchDecision: vi.fn(async () => Promise.reject(refusal)) });
     renderView(<DecisionDetail decision={prReview({ rationale: "Because." })} adapter={adapter} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Put in force" }));
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("Couldn't accept this decision", expect.anything()),
     );
     expect(screen.getByText(/doesn't point to a commit or file/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeDisabled();
   });
 
   it("never locks Confirm on a refusal it cannot explain", async () => {
@@ -145,12 +145,12 @@ describe("a refused confirm", () => {
     const adapter = makeAdapter({ patchDecision: vi.fn(async () => Promise.reject(refusal)) });
     renderView(<DecisionDetail decision={prReview({ rationale: "Because." })} adapter={adapter} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Put in force" }));
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith("Couldn't update decision: Signer kind is not allowed"),
     );
-    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeEnabled();
   });
 
   it("reads the gaps from either client's error shape", () => {
@@ -305,7 +305,7 @@ describe("the review drawer", () => {
       />,
     );
     const dialog = screen.getByRole("dialog");
-    const accept = within(dialog).getByRole("button", { name: "Accept" });
+    const accept = within(dialog).getByRole("button", { name: "Put in force" });
     expect(accept).toBeDisabled();
 
     fireEvent.change(within(dialog).getByLabelText("Why does this hold?"), {

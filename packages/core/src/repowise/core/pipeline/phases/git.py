@@ -128,6 +128,7 @@ async def _run_git_indexing(
             on_co_change_done=_on_co_change_done,
             on_warning=_on_warning,
             timings=getattr(progress, "table", None),
+            progress=progress,
         )
         git_meta_map = {m["file_path"]: m for m in git_metadata_list}
         # No repository or no tracked files: the early row closes without a

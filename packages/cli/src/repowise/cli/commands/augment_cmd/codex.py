@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._shared import _find_repo_root
+from ._shared import _checkout_root, _find_repo_root
 from .decision_inject import (
     _edit_decision_notice,
     _edit_fix_history_notice,
@@ -34,6 +34,16 @@ _MCP_CONTEXT = (
     "`repowise update` when refreshed context is needed."
 )
 
+#: A worktree reading its main checkout's index: same tools, no update advice,
+#: because updating here would build the worktree an index of its own.
+_MCP_CONTEXT_WORKTREE = (
+    "[repowise] This worktree reads its main checkout's codebase index. "
+    "Use the repowise MCP tools for architecture overview, semantic search, "
+    "implementation context, risk/hotspot checks, decision history, and "
+    "dead-code analysis. Facts about files this branch changed describe the "
+    "main checkout's indexed version."
+)
+
 
 def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> str | None:
     """Return Codex developer context + standing decisions on SessionStart."""
@@ -44,17 +54,19 @@ def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> s
     if repo_path is None:
         return None
 
+    checkout = _checkout_root(Path(cwd), repo_path)
+    context = _MCP_CONTEXT if checkout == repo_path else _MCP_CONTEXT_WORKTREE
     if event == "UserPromptSubmit":
-        return _MCP_CONTEXT
+        return context
 
     # SessionStart: base context + relevance-ranked standing decisions.
     decisions = None
     if not index_locked(repo_path):
         try:
-            decisions = _session_decision_block(repo_path, session_id)
+            decisions = _session_decision_block(repo_path, session_id, checkout)
         except Exception:
             decisions = None
-    return f"{_MCP_CONTEXT}\n{decisions}" if decisions else _MCP_CONTEXT
+    return f"{context}\n{decisions}" if decisions else context
 
 
 def _handle_post_edit_use(
@@ -74,10 +86,18 @@ def _handle_post_edit_use(
     if not state_path.exists():
         return None
 
+    checkout = _checkout_root(Path(cwd), repo_path)
+    # A worktree reading its main checkout's index has nothing to update: the
+    # index describes the main checkout, and `repowise update` here would
+    # build this worktree an index of its own.
     staleness = (
-        "[repowise] Files were edited after the last indexed snapshot. "
-        "Run `repowise update` before relying on refreshed docs, graph context, "
-        "risk checks, or dead-code results."
+        None
+        if checkout != repo_path
+        else (
+            "[repowise] Files were edited after the last indexed snapshot. "
+            "Run `repowise update` before relying on refreshed docs, graph context, "
+            "risk checks, or dead-code results."
+        )
     )
 
     # Governing-decision and bug-history notices, from the same builders Claude
@@ -88,7 +108,7 @@ def _handle_post_edit_use(
         if isinstance(file_path, str) and file_path.strip():
             from repowise.core.fsutils import repo_relative
 
-            rel = repo_relative(file_path, repo_path, resolve=True)
+            rel = repo_relative(file_path, checkout, resolve=True)
             if rel is not None and not index_locked(repo_path):
                 state = _load_session_state(repo_path, session_id)
                 for emit in (
@@ -103,4 +123,4 @@ def _handle_post_edit_use(
                         notices.append(line)
                 _save_session_state(repo_path, state)
 
-    return "\n".join([staleness, *notices]) if notices else staleness
+    return "\n".join(line for line in (staleness, *notices) if line) or None

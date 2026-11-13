@@ -169,7 +169,7 @@ def resolve_docs_provider(run: InitRun) -> None:
     # Re-resolve the embedder so the display and the embed path honor the key
     # the user just pasted, rather than the pre-prompt "mock" fallback.
     run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(
-        run.opts.embedder_name
+        run.opts.embedder_name, repo_path=run.repo_path
     )
     _print_provider_summary(run)
     # Nothing to verify when there is no provider: this run renders from

@@ -301,7 +301,10 @@ def why_command(
     def _factory():
         from repowise.server.mcp_server.tool_why import get_why
 
-        return get_why(query=query, targets=list(targets) or None)
+        # --full is the whole answer, so it asks for the history too.
+        return get_why(
+            query=query, targets=list(targets) or None, include=["history"] if full else None
+        )
 
     payload = _ta.run(repo_path, _factory, "get_why")
 
@@ -422,7 +425,7 @@ def _render(projected: dict) -> None:
 
     for label, key in (
         ("Stale decisions", "stale_decisions"),
-        ("Proposed, awaiting review", "proposed_awaiting_review"),
+        ("Background, not in force", "proposed_awaiting_review"),
         ("Conflicts", "conflicts"),
         ("Retired", "retired_decisions"),
         ("Accepted, naming no file", "unscoped_decisions"),

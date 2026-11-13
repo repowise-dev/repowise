@@ -96,6 +96,7 @@ from .language_data import (
 )
 from .languages.receiver_types import external_type_name, holds_function
 from .models import (
+    TS_JS_LANGUAGES,
     CallReceiver,
     CallSite,
     Import,
@@ -131,9 +132,7 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "ap
 # JS/TS (and the single-file components parsed as TypeScript): a member is only
 # reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
 # class method never means a member of that class, whatever the file declares.
-_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = frozenset(
-    {"javascript", "typescript", "svelte", "vue", "astro"}
-)
+_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = TS_JS_LANGUAGES
 
 # Python, Go and Rust share the shape: a bare ``foo()`` inside a method never
 # means a member either (Python needs ``self.``, Go needs a receiver, Rust
@@ -184,9 +183,7 @@ _NAMED_IMPORT_SCOPE_LANGUAGES = _LEXICAL_BARE_NAME_LANGUAGES | {"rust"}
 # may alias a type, whose members it does reach. C, C++ and Ruby are absent
 # because their "alias" is an included file's stem, which a call can only match
 # by coinciding with a variable's name.
-_MODULE_ONLY_ALIAS_LANGUAGES = frozenset(
-    {"python", "typescript", "javascript", "svelte", "vue", "dart", "go", "rust", "swift"}
-)
+_MODULE_ONLY_ALIAS_LANGUAGES = TS_JS_LANGUAGES | {"python", "dart", "go", "rust", "swift"}
 
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]
@@ -356,6 +353,7 @@ class CallResolver(
         return_type_chain_languages: frozenset[str] | None = None,
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
         csharp_project_usings: dict[str, frozenset[str]] | None = None,
+        cpp_index: Any | None = None,
     ) -> None:
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
@@ -522,6 +520,10 @@ class CallResolver(
         self._parsed_files = parsed_files
 
         self._init_workspace_indexes(repo_path)
+        if cpp_index is not None:
+            # The C/C++ workspace index the build's warmup already made over
+            # these files; without it one is built here on first use.
+            self._cpp_index, self._cpp_index_built = cpp_index, True
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
@@ -1702,6 +1704,15 @@ class CallResolver(
         hit = self._bound_import_call(call, caller_id, binding)
         if hit is not None:
             return hit
+        # A static import names one repo type's member, declared or inherited. When
+        # that type has none, the name tiers below would find a nested type's.
+        if (
+            binding is not None
+            and binding.member_of
+            and binding.source_file
+            and not binding.source_file.startswith(_EXTERNAL_PREFIX)
+        ):
+            return None
         # A Python name imported from outside the repository is that module's,
         # not a same-named repo symbol a later tier would find. Python only:
         # Python resolves a repo's own absolute imports by dotted path, while
@@ -1870,13 +1881,19 @@ class CallResolver(
         binding: NamedBinding | None,
     ) -> ResolvedCall | None:
         """2a: the specific imported name, binding-aware."""
-        published = self._imported_symbol(binding, call.target_name)
+        published = self._imported_symbol(binding, call.target_name, caller_id)
         if published is None:
             return None
         return ResolvedCall(caller_id, published, 0.90, call.line, "import_scoped")
 
-    def _imported_symbol(self, binding: NamedBinding | None, name: str) -> str | None:
-        """The repo symbol an imported *name* binds, one barrel hop followed."""
+    def _imported_symbol(
+        self, binding: NamedBinding | None, name: str, caller_id: str = ""
+    ) -> str | None:
+        """The repo symbol an imported *name* binds, one barrel hop followed.
+
+        *caller_id* keeps a static import from binding the caller to itself; the
+        alias pass has no caller and its bindings never name a member's type.
+        """
         if not (binding and binding.source_file):
             return None
         source_file = binding.source_file
@@ -1885,9 +1902,27 @@ class CallResolver(
         if lookup_name in barrel:
             source_file = barrel[lookup_name]
         if binding.member_of:
-            # A static import names the member's type; a nested type's same-named member is another.
-            return self._published_by(source_file, binding.member_of, lookup_name)
+            return self._static_import_member(
+                source_file, binding.member_of, lookup_name, caller_id
+            )
         return self._published(source_file, lookup_name)
+
+    def _static_import_member(
+        self, source_file: str, owner: str, name: str, caller_id: str
+    ) -> str | None:
+        """The method ``import static owner.name`` binds, or None.
+
+        The named type's own declaration answers first, then the one it
+        inherits. A nested type's same-named member is neither, so a miss here
+        stays a miss instead of falling back to the file's flat symbol table.
+        """
+        owned = self._file_methods.get(source_file, {}).get((owner, name))
+        if owned is not None:
+            return owned
+        for path, (type_id, *_), _ in self._declared_types_named(owner):
+            if path == source_file:
+                return self._ancestor_method(type_id, name, caller_id, class_chain_first=True)
+        return None
 
     def _link_imported_aliases(self) -> None:
         """Redirect a module-level alias of an imported name onto its definition.

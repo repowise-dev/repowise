@@ -95,7 +95,7 @@ const BY_BIOMARKER: Record<string, PlainIssue> = {
     why: "One class owns too many responsibilities to change safely.",
   },
   complex_method: {
-    title: "Too many paths through one function",
+    title: "Many paths through one function",
     why: "Every path is another case to test.",
   },
   large_method: {

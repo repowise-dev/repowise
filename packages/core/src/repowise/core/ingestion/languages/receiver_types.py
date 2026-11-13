@@ -1405,6 +1405,9 @@ def _lambda_end(text: str, index: int) -> int:
     return -1
 
 
+_CS_CONFIGURE_AWAIT = re.compile(r"\s*\.\s*ConfigureAwait\s*\(")
+
+
 def _after_trailing_lambda(text: str, end: int) -> int:
     """*end*, or past a Kotlin trailing lambda that starts on the same line.
 
@@ -1418,11 +1421,26 @@ def _after_trailing_lambda(text: str, end: int) -> int:
     return end
 
 
-def _call_ends_statement(cleaned: str, opened: int, language: str, start: int = 0) -> bool:
+def _after_configure_await(cleaned: str, end: int) -> int:
+    """Index past ``.ConfigureAwait(..)`` in C#, or *end* if not present."""
+    match = _CS_CONFIGURE_AWAIT.match(cleaned, end)
+    if match is not None:
+        ca_end = _call_end(cleaned, match.end())
+        if ca_end >= 0:
+            return ca_end
+    return end
+
+
+def _call_ends_statement(
+    cleaned: str, opened: int, language: str, start: int = 0, awaited: bool = False
+) -> bool:
     """Does the call whose ``(`` ends just before *opened* end its statement?"""
     end = _call_end(cleaned, opened)
-    if end >= 0 and language == "kotlin":
-        end = _after_trailing_lambda(cleaned, end)
+    if end >= 0:
+        if language == "kotlin":
+            end = _after_trailing_lambda(cleaned, end)
+        elif language == "csharp" and awaited:
+            end = _after_configure_await(cleaned, end)
     return _ends_statement(cleaned, end, language, start)
 
 
@@ -1469,7 +1487,9 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
         if language == "rust":
             ends, awaited = _rust_call_ends(cleaned, match.end())
         else:
-            ends = _call_ends_statement(cleaned, match.end(), language, match.start())
+            ends = _call_ends_statement(
+                cleaned, match.end(), language, match.start(), awaited=awaited
+            )
         if not ends:
             continue
         found.append(
@@ -1482,6 +1502,43 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
             )
         )
     return tuple(found)
+
+
+class Destructuring(NamedTuple):
+    """``val (a, b) = source`` at one line: ``names`` by position, ``None`` for ``_``."""
+
+    line: int
+    names: tuple[str | None, ...]
+    source: str
+
+
+# ``val (a, b) = p`` where the right-hand side is one bare name ending the
+# statement. A component with its own type (``val (a: Int, b) = p``) or a
+# generic one is not read, so the list holds names and ``_`` only.
+_KT_DESTRUCTURING = re.compile(
+    r"(?<![\w.])va[lr]\s*\(\s*(?P<names>(?:_|[a-z_]\w*)(?:\s*,\s*(?:_|[a-z_]\w*))*)\s*\)"
+    r"\s*=\s*(?P<source>[A-Za-z_]\w*)(?=[ \t]*(?:[;}]|$))",
+    re.MULTILINE,
+)
+
+
+def scan_destructurings(text: str, language: str) -> tuple[Destructuring, ...]:
+    """Every Kotlin destructuring declaration in *text* that reads one bare name."""
+    if language != "kotlin":
+        return ()
+    cleaned = _without_comments(text, language)
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    return tuple(
+        Destructuring(
+            bisect_right(starts, match.start()),
+            tuple(
+                None if name == "_" else name
+                for name in re.split(r"\s*,\s*", match.group("names"))
+            ),
+            match.group("source"),
+        )
+        for match in _KT_DESTRUCTURING.finditer(cleaned)
+    )
 
 
 def record_type(types: dict[str, str | None], name: str, type_name: str) -> None:

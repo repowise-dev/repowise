@@ -286,7 +286,7 @@
           }
         },
         "health_impact": 1.247,
-        "reason": "parseAccount has cyclomatic complexity 17",
+        "reason": "parseAccount has 17 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_f79a5d5e8f306abe7ab7"
       },
@@ -348,7 +348,7 @@
           }
         },
         "health_impact": 1.247,
-        "reason": "parseWorkspace has cyclomatic complexity 17",
+        "reason": "parseWorkspace has 17 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_d79d97d650bcedab3ec2"
       },
@@ -481,7 +481,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "read_account has cyclomatic complexity 12",
+        "reason": "read_account has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_c58a781745af6691c556"
       },
@@ -504,7 +504,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "close_account has cyclomatic complexity 10",
+        "reason": "close_account has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_8b967d56d3c522a17535"
       },
@@ -527,7 +527,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "read_workspace has cyclomatic complexity 12",
+        "reason": "read_workspace has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_0b6ecfa0a2ac9cd7addc"
       },
@@ -550,7 +550,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "close_workspace has cyclomatic complexity 10",
+        "reason": "close_workspace has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_4934d3ca94e412af4fb3"
       },
@@ -573,7 +573,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "read_project has cyclomatic complexity 12",
+        "reason": "read_project has 12 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_39991e29869edf38f6d2"
       },
@@ -596,7 +596,7 @@
           }
         },
         "health_impact": 0.514,
-        "reason": "close_project has cyclomatic complexity 10",
+        "reason": "close_project has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_ebd7768c22e919caee2c"
       },
@@ -1009,7 +1009,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 10.0,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1085,7 +1085,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 9.02,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1218,7 +1218,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 9.51,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1264,7 +1264,7 @@
       },
       {
         "file_path": "go/perf_io_in_loop.go",
-        "score": 9.86,
+        "score": 10.0,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 56,
@@ -1273,10 +1273,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.86,
-        "maintainability_score": 9.7,
-        "performance_score": 8.0,
-        "structure_deduction": 0.143,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 9.16,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1302,7 +1302,7 @@
       },
       {
         "file_path": "java/Nested.java",
-        "score": 8.41,
+        "score": 8.55,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 23,
@@ -1311,10 +1311,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.41,
-        "maintainability_score": 8.5,
+        "defect_score": 8.55,
+        "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.595,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1332,7 +1332,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 9.58,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1340,7 +1340,7 @@
       },
       {
         "file_path": "javascript/nested.js",
-        "score": 8.41,
+        "score": 8.55,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 20,
@@ -1349,10 +1349,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.41,
-        "maintainability_score": 8.5,
+        "defect_score": 8.55,
+        "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.595,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1644,7 +1644,7 @@
       },
       {
         "file_path": "python/classes.py",
-        "score": 9.66,
+        "score": 10.0,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 34,
@@ -1653,10 +1653,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.66,
-        "maintainability_score": 9.3,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.342,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1702,7 +1702,7 @@
       {
         "file_path": "python/match.py",
         "score": 10.0,
-        "max_ccn": 5,
+        "max_ccn": 4,
         "max_nesting": 1,
         "nloc": 19,
         "has_test_file": false,
@@ -1750,7 +1750,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 9.02,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1845,7 +1845,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 8.67,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1873,7 +1873,7 @@
       {
         "file_path": "rust/flat_match.rs",
         "score": 10.0,
-        "max_ccn": 5,
+        "max_ccn": 4,
         "max_nesting": 2,
         "nloc": 31,
         "has_test_file": false,
@@ -1921,7 +1921,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 8.6,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -1948,7 +1948,7 @@
       },
       {
         "file_path": "scala/classes.scala",
-        "score": 9.66,
+        "score": 10.0,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 50,
@@ -1957,10 +1957,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.66,
-        "maintainability_score": 9.3,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.342,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -1997,7 +1997,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 8.67,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -2157,7 +2157,7 @@
       },
       {
         "file_path": "typescript/classes.ts",
-        "score": 9.66,
+        "score": 10.0,
         "max_ccn": 2,
         "max_nesting": 1,
         "nloc": 37,
@@ -2166,10 +2166,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 9.66,
-        "maintainability_score": 9.3,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
         "performance_score": 10.0,
-        "structure_deduction": 0.342,
+        "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -2195,7 +2195,7 @@
       },
       {
         "file_path": "typescript/nested.ts",
-        "score": 8.41,
+        "score": 8.55,
         "max_ccn": 7,
         "max_nesting": 5,
         "nloc": 21,
@@ -2204,10 +2204,10 @@
         "duplication_pct": null,
         "line_coverage_pct": null,
         "branch_coverage_pct": null,
-        "defect_score": 8.41,
-        "maintainability_score": 8.5,
+        "defect_score": 8.55,
+        "maintainability_score": 8.8,
         "performance_score": 10.0,
-        "structure_deduction": 1.595,
+        "structure_deduction": 1.452,
         "history_deduction": 0.0,
         "is_test": false,
         "code_origin": "production"
@@ -2225,7 +2225,7 @@
         "branch_coverage_pct": null,
         "defect_score": 10.0,
         "maintainability_score": 10.0,
-        "performance_score": 8.0,
+        "performance_score": 10.0,
         "structure_deduction": 0.0,
         "history_deduction": 0.0,
         "is_test": false,
@@ -2936,7 +2936,7 @@
           "ccn": 9,
           "cognitive": 8,
           "nloc": 9,
-          "dispatch_share": 0.0,
+          "dispatch_share": 0.38,
           "symbol_line": 20,
           "deepest_block": {
             "start": 21,
@@ -2944,7 +2944,7 @@
           }
         },
         "health_impact": 0.774,
-        "reason": "manyBranches has cyclomatic complexity 9",
+        "reason": "manyBranches has 9 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_75e1face476206b793af"
       },
@@ -2999,6 +2999,7 @@
           "boundary_kind": "network",
           "cross_function": false,
           "loop_key_unused": true,
+          "loop_iterates": "parameter",
           "loop_line": 9,
           "sink_call": "get",
           "symbol_line": 8,
@@ -3022,6 +3023,7 @@
           "boundary_kind": "filesystem",
           "cross_function": false,
           "loop_key_unused": true,
+          "loop_iterates": "parameter",
           "loop_line": 15,
           "sink_call": "readAsString",
           "symbol_line": 14,
@@ -3045,6 +3047,7 @@
           "boundary_kind": "db",
           "cross_function": false,
           "loop_key_unused": true,
+          "loop_iterates": "parameter",
           "loop_line": 21,
           "sink_call": "rawQuery",
           "symbol_line": 20,
@@ -3065,6 +3068,7 @@
         "line_start": 29,
         "line_end": 29,
         "details": {
+          "loop_iterates": "parameter",
           "loop_line": 28,
           "subject": "s",
           "symbol_line": 26,
@@ -3085,6 +3089,7 @@
         "line_start": 36,
         "line_end": 36,
         "details": {
+          "loop_iterates": "parameter",
           "loop_line": 35,
           "symbol_line": 34,
           "role_owner": "dart/perf_io_in_loop.dart::makeClients",
@@ -3191,10 +3196,10 @@
           "symbol_line": 36,
           "symbol": "deferInLoop"
         },
-        "health_impact": 0.143,
+        "health_impact": 0.0,
         "reason": "error value is checked then ignored, or discarded via the blank identifier",
-        "dimension": "maintainability",
-        "id": "finding_ae2ad6b7dd45e467cae7"
+        "dimension": "advisory",
+        "id": "finding_7814e4814e7ab6773849"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -3444,10 +3449,10 @@
           "symbol_line": 2,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.143,
+        "health_impact": 0.0,
         "reason": "caught exception is swallowed without any handling",
-        "dimension": "maintainability",
-        "id": "finding_45419b3eb06537a00ce0"
+        "dimension": "advisory",
+        "id": "finding_df953bc22aa0cc5d6600"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -3637,10 +3642,10 @@
           "symbol_line": 1,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.143,
+        "health_impact": 0.0,
         "reason": "caught exception is swallowed without any handling",
-        "dimension": "maintainability",
-        "id": "finding_4614b0ce342fb6f1e7f8"
+        "dimension": "advisory",
+        "id": "finding_bd4dfeaf0d4a9003aa29"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -3704,7 +3709,7 @@
           }
         },
         "health_impact": 0.774,
-        "reason": "ManyBranches has cyclomatic complexity 13",
+        "reason": "ManyBranches has 13 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_cdb1bfd5e7f5961c0f48"
       },
@@ -3828,10 +3833,10 @@
           "field_count": 2,
           "symbol_line": 26
         },
-        "health_impact": 0.342,
+        "health_impact": 0.0,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
-        "dimension": "maintainability",
-        "id": "finding_2c342a6d7294a6f43a48"
+        "dimension": "advisory",
+        "id": "finding_9946119bef5614d647ba"
       },
       {
         "biomarker_type": "complex_method",
@@ -3852,7 +3857,7 @@
           }
         },
         "health_impact": 1.247,
-        "reason": "many_branches has cyclomatic complexity 15",
+        "reason": "many_branches has 15 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_0218dfee9ddbbc3acb0c"
       },
@@ -4763,10 +4768,10 @@
           "field_count": 2,
           "symbol_line": 30
         },
-        "health_impact": 0.342,
+        "health_impact": 0.0,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
-        "dimension": "maintainability",
-        "id": "finding_37149d90e97e94d08056"
+        "dimension": "advisory",
+        "id": "finding_ea7c5e4277fe11036aa2"
       },
       {
         "biomarker_type": "nested_complexity",
@@ -4810,7 +4815,7 @@
           }
         },
         "health_impact": 0.774,
-        "reason": "manyBranches has cyclomatic complexity 9",
+        "reason": "manyBranches has 9 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_35278d63e4c3bf59be37"
       },
@@ -5037,7 +5042,7 @@
           }
         },
         "health_impact": 0.774,
-        "reason": "process has cyclomatic complexity 10",
+        "reason": "process has 10 independent paths (cyclomatic complexity)",
         "dimension": "defect",
         "id": "finding_d2fe951005c971f897c1"
       },
@@ -5118,10 +5123,10 @@
           "field_count": 2,
           "symbol_line": 28
         },
-        "health_impact": 0.342,
+        "health_impact": 0.0,
         "reason": "Splintered has low cohesion (LCOM4=2): its 5 methods split into 2 groups that share no fields or calls",
-        "dimension": "maintainability",
-        "id": "finding_71eaf8ee511ffe4dce0d"
+        "dimension": "advisory",
+        "id": "finding_02abe3197e7e71eb3779"
       },
       {
         "biomarker_type": "untested_complexity",
@@ -5218,10 +5223,10 @@
           "symbol_line": 1,
           "symbol": "deeplyNested"
         },
-        "health_impact": 0.143,
+        "health_impact": 0.0,
         "reason": "caught exception is swallowed without any handling",
-        "dimension": "maintainability",
-        "id": "finding_a35ce27fd3a48728b788"
+        "dimension": "advisory",
+        "id": "finding_96f5405e20c8f13d3fc3"
       },
       {
         "biomarker_type": "io_in_loop",
@@ -5295,21 +5300,21 @@
     ],
     "kpis": {
       "hotspot_health": null,
-      "average_health": 9.65,
+      "average_health": 9.67,
       "worst_performer_path": "scala/nested.scala",
       "worst_performer_score": 7.77,
       "worst_test_path": "apex/HealthMarkersTest.cls",
       "worst_test_score": 10.0,
       "file_count": 71,
-      "maintainability_average": 9.67,
+      "maintainability_average": 9.72,
       "maintainability_hotspot": null,
-      "performance_average": 9.48,
+      "performance_average": 9.8,
       "performance_hotspot": null,
-      "structure_average": 0.35,
+      "structure_average": 0.33,
       "history_average": 0.0,
       "structure_hotspot": null,
       "history_hotspot": null,
-      "production_average": 9.64,
+      "production_average": 9.66,
       "production_file_count": 69,
       "unanalysed_file_count": 4,
       "analysed_share": 0.9467
