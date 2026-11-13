@@ -269,6 +269,58 @@ def list_accounts():
 '''
 
 
+CURL_SOURCE = """<?php
+
+class CatalogueClient
+{
+    public function fetch(string $sku, string $id): void
+    {
+        $ch = curl_init('http://catalogue:8080/api/products/' . $sku);
+        curl_exec($ch);
+
+        $ch2 = curl_init();
+        curl_setopt($ch2, CURLOPT_URL, 'http://catalogue:8080/api/ratings/' . $id);
+        curl_exec($ch2);
+    }
+}
+"""
+
+GUZZLE_BASE_URI_SOURCE = """<?php
+
+use GuzzleHttp\\Client;
+
+class OrderServiceClient
+{
+    public function run(string $id): void
+    {
+        $client = new Client(['base_uri' => 'http://ratings:8080']);
+        $client->post('orders');
+        $client->request('GET', 'items/' . $id);
+    }
+}
+"""
+
+
+class TestPhpClientsCurlAndBaseUri:
+    def test_curl_calls(self):
+        contracts = PhpClientsDialect().extract(_ctx(CURL_SOURCE))
+        assert [c.contract_id for c in contracts] == [
+            "http::GET::/api/products/{param}",
+            "http::GET::/api/ratings/{param}",
+        ]
+        assert all(c.meta["client"] == "curl" for c in contracts)
+        assert all(c.origin == ContractOrigin.CLIENT_CALL for c in contracts)
+
+    def test_guzzle_base_uri_instance(self):
+        contracts = PhpClientsDialect().extract(_ctx(GUZZLE_BASE_URI_SOURCE))
+        assert set(c.contract_id for c in contracts) == {
+            "http::POST::/orders",
+            "http::GET::/items/{param}",
+        }
+        assert all(c.meta["client"] == "guzzle" for c in contracts)
+        assert all(c.origin == ContractOrigin.INSTANCE_BASE for c in contracts)
+
+
 class TestPhpClientsCrossRepoLink:
     def test_a_php_call_links_to_a_python_route(self):
         provider_extractor = HttpExtractor()
