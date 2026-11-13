@@ -87,3 +87,18 @@ def test_a_comparison_past_the_child_limit_runs_in_its_thread(make_repo, monkeyp
     finally:
         for _ in held:
             child._CHILD_SLOTS.release()
+
+
+def test_a_change_past_the_ceiling_answers_without_a_child(make_repo, monkeypatch):
+    from repowise.core.analysis.change_health import service
+
+    repo = _wide_change(make_repo, CHILD_MIN_FILES + 1)
+
+    def _no_child(*_a):
+        raise AssertionError("shipped an over-ceiling change to a child")
+
+    monkeypatch.setattr(child, "_run_child", _no_child)
+    monkeypatch.setattr(service, "MAX_CHANGED_FILES", CHILD_MIN_FILES)
+
+    delta = _compare(ChildProcessDeltaService, repo)
+    assert delta.status == "too_large"
