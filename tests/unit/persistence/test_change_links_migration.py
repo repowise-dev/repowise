@@ -18,7 +18,7 @@ from tests.unit.persistence.test_wiki_pages_content_hash_migration import _alemb
 def test_upgrade_creates_and_backfills_the_link_tables(tmp_path: Path, warm_start: bool) -> None:
     path = tmp_path / "wiki.db"
     config = _alembic_config(path)
-    command.upgrade(config, "0122")
+    command.upgrade(config, "0123")
     with sqlite3.connect(path) as db:
         db.execute("insert into repositories (id, name, local_path) values ('r', 'r', '/x')")
         db.execute(
@@ -40,11 +40,11 @@ def test_upgrade_creates_and_backfills_the_link_tables(tmp_path: Path, warm_star
 
         asyncio.run(warm())
 
-    command.upgrade(config, "0123")
+    command.upgrade(config, "0124")
 
     with sqlite3.connect(path) as db:
         assert db.execute("select sha from change_commits order by sha").fetchall() == [("a",), ("b",)]
         assert db.execute("select file_path from change_files").fetchall() == [("x.py",)]
-    command.downgrade(config, "0122")
+    command.downgrade(config, "0123")
     with sqlite3.connect(path) as db:
         assert db.execute("pragma table_info(change_commits)").fetchall() == []

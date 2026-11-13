@@ -4,8 +4,8 @@ The delta and hotspot filters join a change to its commits' stored deltas and
 to the hotspot flags in SQL, rather than binding every matching change id.
 Existing changes are linked here from their stored JSON.
 
-Revision ID: 0123
-Revises: 0122
+Revision ID: 0124
+Revises: 0123
 Create Date: 2026-11-12
 """
 
@@ -18,8 +18,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0123"
-down_revision: str | None = "0122"
+revision: str = "0124"
+down_revision: str | None = "0123"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
