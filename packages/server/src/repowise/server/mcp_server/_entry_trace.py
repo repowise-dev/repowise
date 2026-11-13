@@ -430,6 +430,21 @@ def _picked(
     return [node for _line, node in sorted(sorted(steps, key=rank)[:_PATH_FANOUT])]
 
 
+def _shipped_steps(
+    calls: list[tuple[int, str]], starts: dict[str, int], seen: set[str], exclude_spec: Any
+) -> list[tuple[int, str]]:
+    """The calls into indexed, shipped code (``code_origin``) not yet in the path."""
+    from repowise.core.code_origin import path_origin
+
+    return [
+        (line, t)
+        for line, t in calls
+        if t in starts and t not in seen
+        and path_origin(node_to_file(t)) == "production"
+        and not is_excluded(node_to_file(t), exclude_spec)
+    ]
+
+
 async def call_path(
     session: Any, repo_id: str, root: str, exclude_spec: Any = None, *,
     upstream: bool = False, question: str = "",
@@ -437,12 +452,10 @@ async def call_path(
     """Hops out of *root* (or into it, *upstream*) over walkable call edges, one row each.
 
     A row reads ``caller file:call line -> callee file:definition line``. Only
-    hops through shipped code are kept (``code_origin``), so tests, tools and
-    libraries do not take the rows a chain needs. Each level keeps the
-    heaviest neighbours, the ones with calls of their own, and walks on from those.
+    hops through shipped code are kept, so tests, tools and libraries do not
+    take the rows a chain needs. Each level keeps the neighbours the
+    question's words name, then the heaviest, and walks on from the heaviest.
     """
-    from repowise.core.code_origin import path_origin
-
     words = _question_words(question) if question else {}
     rows: list[str] = []
     seen = {root}
@@ -454,29 +467,17 @@ async def call_path(
         fanout = await _fanout(session, repo_id, list(starts))
         walked: list[str] = []
         for src in frontier:
-            steps = [
-                (line, t)
-                for line, t in calls.get(src, [])
-                if t in starts and t not in seen
-                and path_origin(node_to_file(t)) == "production"
-                and not is_excluded(node_to_file(t), exclude_spec)
-            ]
+            steps = _shipped_steps(calls.get(src, []), starts, seen, exclude_spec)
             line_of = {t: line for line, t in steps}
             for target in _picked(steps, fanout, words):
-                if target in seen:
-                    continue
                 seen.add(target)
-                rows.append(
-                    _hop_row(target, line_of[target], src, starts.get(src, 0))
-                    if upstream
-                    else _hop_row(src, line_of[target], target, starts[target])
-                )
                 walked.append(target)
-                if len(rows) >= _PATH_MAX_ROWS:
-                    return rows
-        frontier = sorted(
-            (t for t in walked if fanout.get(t)), key=lambda t: -fanout[t]
-        )[:_PATH_EXPAND]
+                ends = (target, src) if upstream else (src, target)
+                rows.append(_hop_row(ends[0], line_of[target], ends[1], starts.get(ends[1], 0)))
+        if len(rows) >= _PATH_MAX_ROWS:
+            return rows[:_PATH_MAX_ROWS]
+        frontier = sorted((t for t in walked if fanout.get(t)), key=lambda t: -fanout[t])
+        frontier = frontier[:_PATH_EXPAND]
         if not frontier:
             break
     return rows
