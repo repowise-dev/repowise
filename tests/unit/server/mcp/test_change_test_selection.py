@@ -601,7 +601,7 @@ def test_a_lagging_index_that_fills_most_of_the_suite_reads_degraded(tmp_path, g
     assert "why" not in block and "basis_by_file" not in block
     if gap:
         assert block["status"] == "degraded" and block["run_all"] is False
-        assert "so 15 of 20 test files were selected; run the whole suite" in block["summary"]
+        assert "so 15 of 20 test files were selected, listed likeliest to fail first; run the whole" in block["summary"]
         # Most of the suite under a run-everything verdict: no tail is stored.
         assert collector.empty
     else:
@@ -646,7 +646,9 @@ def test_the_broadcast_and_import_closure_are_counted_apart_from_the_headline(tm
     assert block["total"] == 1
     assert block["broadcast_total"] == 3 and block["import_closure_total"] == 1
     assert block["tests_to_run"] == ["tests/test_0.py"]
-    assert block["summary"].startswith("1 test(s) to run for this change (1 of 20 test files).")
+    assert block["summary"].startswith(
+        "1 test(s) to run for this change (1 of 20 test files), listed likeliest to fail first."
+    )
     assert "3 more test(s) must still run because a conftest" in block["summary"]
     assert "1 more test(s) must still run because they import the change" in block["summary"]
     # The tests counted apart are stored for recovery, not dropped.
