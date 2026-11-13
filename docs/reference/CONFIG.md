@@ -1413,7 +1413,7 @@ faster.
 <!-- END GENERATED settings:env-mcp -->
 
 `REPOWISE_ANSWER_TIMEOUT_S` defaults to 60s for remote API providers, 120s
-for `ollama` and `litellm`, and 180s for agent CLI providers (`claude_cli`,
+for `ollama` and `litellm`, and 50s for agent CLI providers (`claude_cli`,
 `codex_cli`, `copilot_cli`, `opencode`). Raise it for a slow model, lower it to
 fail fast. Your MCP client's own tool timeout sits underneath: a higher value
 yields a client error instead of Repowise's "synthesis exceeded its budget".
