@@ -65,8 +65,8 @@ def estimate_cost(
 
     for plan in plans:
         inp, out = _tokens_per_page(plan.page_type, telemetry=telemetry)
-        total_input += inp * plan.count
-        total_output += out * plan.count
+        total_input += inp * plan.model_count
+        total_output += out * plan.model_count
 
     # An unpriced model is estimated as free; the CLI gate has always done so.
     input_rate, output_rate = lookup_cost(model_name) or (0.0, 0.0)
