@@ -6,11 +6,14 @@ import asyncio
 import contextlib
 import os
 import weakref
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
+from mcp import types as mcp_types
 from mcp.server.fastmcp import FastMCP
+from mcp.server.lowlevel import server as _lowlevel
+from mcp.server.session import ServerSession
 from mcp.server.transport_security import TransportSecuritySettings
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -885,27 +888,15 @@ _WORKSPACE_TOOL_LINES = {
 }
 
 
-#: Tools the instructions name that a client's default profile may leave out.
-_NAMED_TOOLS = ("get_risk", "get_change_risk")
-
-#: Said when some client is not listed a served tool in :data:`_NAMED_TOOLS`. A
-#: host only calls listed tools, so this is how an agent learns to turn them on.
-_OFF_LINE = "{names} not listed? `repowise config set mcp.tools standard`, then restart the server."
-
-
 def _instructions(
     enabled: Iterable[str] | None = None,
     repo_line: str | None = None,
-    *,
-    all_listed: bool = True,
 ) -> str:
     """The server instructions, naming a tool only when it is served.
 
     *enabled* is the surface the server serves; ``None`` (before any
     selection) names every core tool but no workspace tool.
     *repo_line* says what get_why holds for the served repository.
-    *all_listed* is false when some client's default profile leaves out a tool
-    in :data:`_NAMED_TOOLS`, which adds the line saying how to turn it on.
     """
     served = set(enabled) if enabled is not None else set(_TOOL_LINES) | set(_CHECK_CLAUSES)
     lines = ["repowise indexes this repository's code graph, git history and decisions."]
@@ -914,9 +905,6 @@ def _instructions(
     if clauses:
         lines.append(f"- {', '.join(clauses)}.")
     lines.append(_NO_INDEX_LINE)
-    off = [name for name in _NAMED_TOOLS if name in served]
-    if not all_listed and off:
-        lines.append(_OFF_LINE.format(names=" or ".join(off)))
     if repo_line and "get_why" in served:
         lines.append(repo_line)
     workspace = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in served]
@@ -930,6 +918,69 @@ mcp = _RepowiseMCP(
     instructions=_instructions(),
     lifespan=_lifespan,
 )
+
+#: The instructions one session's client reads, by its agent slug. Set with
+#: the boot selection; None (no selection yet) sends the boot text to all.
+_client_instructions: Callable[[str], str] | None = None
+
+
+def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set[str]:
+    """Trim *mcp* to the selected surface and set the instructions it sends.
+
+    The boot text names the boot surface. A session's own text names only the
+    tools its client is listed (:func:`session_tool_names`), so a client given
+    the core profile is not told to call a tool it never sees.
+    """
+    global _client_instructions
+    from repowise.server.mcp_server._tool_selection import (
+        apply_tool_selection,
+        session_tool_names,
+    )
+
+    enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
+    repo_line = decisions_line(repo_path)
+    mcp._mcp_server.instructions = _instructions(enabled, repo_line)
+
+    def for_client(client: str) -> str:
+        listed = session_tool_names(client)
+        return _instructions(enabled if listed is None else listed, repo_line)
+
+    _client_instructions = for_client
+    return enabled
+
+
+class _ClientSession(ServerSession):
+    """A session that answers ``initialize`` with its own client's instructions.
+
+    The initialize reply carries the instructions and is the first moment the
+    server knows the client, so the text is chosen there. Other servers in the
+    process, and this one before any selection, keep the SDK's behaviour.
+    """
+
+    async def _received_request(self, responder: Any) -> None:
+        request = responder.request.root
+        if (
+            isinstance(request, mcp_types.InitializeRequest)
+            and _client_instructions is not None
+            and self._init_options.server_name == mcp.name
+        ):
+            from repowise.core.agents.identity import resolve_client_identity
+
+            # This leans on SDK internals; if they move, the boot text goes out
+            # rather than the handshake failing.
+            try:
+                client = resolve_client_identity(request.params.clientInfo.name)
+                self._init_options = self._init_options.model_copy(
+                    update={"instructions": _client_instructions(client)}
+                )
+            except Exception:
+                _log.warning("repowise MCP: sending the boot instructions", exc_info=True)
+        await super()._received_request(responder)
+
+
+# The low-level server builds each session from this module name; there is no
+# session-class hook. Read at session creation, so every transport gets it.
+_lowlevel.ServerSession = _ClientSession
 _share_lifespan(mcp._mcp_server)
 # FastMCP takes no version argument, and without one the handshake's
 # serverInfo.version reports the installed ``mcp`` SDK's version.
@@ -954,19 +1005,11 @@ def create_mcp_server(
     _state._repo_path = repo_path
     _state._force_single_repo = not workspace_mode
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import (
-        apply_tool_selection,
-        every_client_lists,
-    )
 
     # Tool modules import lazily now, so a server has to ask for the full
     # surface before it can advertise (or trim) it.
     ensure_full_surface()
-
-    enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-    mcp._mcp_server.instructions = _instructions(
-        enabled, decisions_line(repo_path), all_listed=every_client_lists(_NAMED_TOOLS)
-    )
+    _select_surface(repo_path, tools)
     return mcp
 
 
@@ -1195,16 +1238,9 @@ def run_mcp(
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
         from repowise.server.mcp_server import ensure_full_surface
-        from repowise.server.mcp_server._tool_selection import (
-            apply_tool_selection,
-            every_client_lists,
-        )
 
         ensure_full_surface()
-        enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-        mcp._mcp_server.instructions = _instructions(
-            enabled, decisions_line(repo_path), all_listed=every_client_lists(_NAMED_TOOLS)
-        )
+        _select_surface(repo_path, tools)
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
 
