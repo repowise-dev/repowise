@@ -443,14 +443,12 @@ _ASSET_DIR_TOKENS = (
 )
 _HEADER_LINES = 20
 _LICENSE_RE = re.compile(
-    r"copyright|\(c\)|©|@license|licen[cs]ed\s+under|released\s+under|\bMIT\b",
+    r"copyright|\(c\)|©|@license|licen[cs]ed\s+(?:under|as)|released\s+under|\bMIT\b",
     re.IGNORECASE,
 )
 # What says the header names a project and its release, rather than an owner:
 # a preserved banner, a license tag, or "<name> v1.2" / "<name>.js 0.10.5".
-_BANNER_RE = re.compile(
-    r"/\*!|@license|@preserve|\b[A-Za-z][\w.\-]*\s+v?\d+\.\d+(?:\.\d+)?\b"
-)
+_BANNER_RE = re.compile(r"/\*!|@license|@preserve|\b[A-Za-z][\w.\-]*\s+v?\d+\.\d+(?:\.\d+)?\b")
 # A license's own version ("Apache License, Version 2.0") is not a release.
 _LICENSE_VERSION_RE = re.compile(
     r"(?:licen[cs]e|\b[al]?gpl|\bmpl|\bepl)\W*(?:v(?:ersion)?\.?\s*)?\d+(?:\.\d+)*"
@@ -465,6 +463,7 @@ _URL_RE = re.compile(r"https?://\S+")
 # header names its owner, not each file.
 _LIBRARY_HEADER_SUFFIXES = (".h", ".hh", ".hpp", ".hxx")
 _ROOT_SCRIPTS_DIR = "scripts"
+_RESOURCE_DIR = "resources"
 _SCRIPT_SUFFIXES = (".js", ".mjs", ".cjs")
 _MIN_SELF_NAME = 4
 # Links into a repository's source tree name a file, not a library's home page.
@@ -472,11 +471,14 @@ _SOURCE_LINK_SEGMENTS = frozenset({"blob", "tree", "src"})
 
 
 def _copied_library_scope(name: str, dirs: list[str], project: str | None) -> str | None:
-    """``"asset"`` under an asset directory, ``"library"`` for a single-file
-    library shape outside one, None where the header rule does not run."""
+    """``"asset"`` under an asset directory, ``"resource"`` for a script under
+    ``resources/``, ``"library"`` for a single-file library shape outside one,
+    or None where the header rule does not run."""
     if any(d in _ASSET_DIR_TOKENS for d in dirs):
         return "asset"
     lowered = name.lower()
+    if _RESOURCE_DIR in dirs and lowered.endswith(_SCRIPT_SUFFIXES):
+        return "resource"
     shaped = lowered.endswith(_LIBRARY_HEADER_SUFFIXES) or (
         dirs[:1] == [_ROOT_SCRIPTS_DIR] and lowered.endswith(_SCRIPT_SUFFIXES)
     )
@@ -512,7 +514,12 @@ def _squash(text: str) -> str:
 
 
 def _third_party_header(
-    name: str, header: str, project: str | None, *, names_file: bool = False
+    name: str,
+    header: str,
+    project: str | None,
+    *,
+    names_file: bool = False,
+    allow_homepage: bool = False,
 ) -> bool:
     """Whether the leading comments carry another project's license banner.
 
@@ -521,7 +528,10 @@ def _third_party_header(
     name *project* when the caller knows it. A repository's own
     ``Copyright (c) 2024 Acme`` header has no release banner, so it stays.
     With *names_file*, the banner must be preserved (``/*!``) or a URL to the
-    file's own home page, and the comments must name the file's stem.
+    file's own home page, and the comments must name the file's stem. With
+    *allow_homepage*, a preserved banner (``/*!``) or a home page URL naming
+    the file's stem satisfies the check without falling back to loose
+    ``_BANNER_RE`` version strings.
     """
     comments = "\n".join(_comment_lines(header))
     stem = _squash(PurePosixPath(name).stem)
@@ -529,12 +539,19 @@ def _third_party_header(
         return False
     if not comments or not _LICENSE_RE.search(comments):
         return False
-    if not _has_banner(header, comments, stem, names_file):
+    if not _has_banner(header, comments, stem, names_file, allow_homepage=allow_homepage):
         return False
     return not (project and _squash(project) in _squash(comments))
 
 
-def _has_banner(header: str, comments: str, stem: str, names_file: bool) -> bool:
+def _has_banner(
+    header: str,
+    comments: str,
+    stem: str,
+    names_file: bool,
+    *,
+    allow_homepage: bool = False,
+) -> bool:
     # The comment prefix is stripped from *comments*, so a preserved ``/*!``
     # opener is read from the raw head.
     if header.lstrip().startswith("/*!"):
@@ -542,6 +559,8 @@ def _has_banner(header: str, comments: str, stem: str, names_file: bool) -> bool
     if names_file:
         # "protocol v1.2" in a first-party header is not a release banner.
         return _homepage_names(stem, comments)
+    if allow_homepage:
+        return len(stem) >= _MIN_SELF_NAME and _homepage_names(stem, comments)
     return bool(_BANNER_RE.search(_LICENSE_VERSION_RE.sub(" ", comments)))
 
 
@@ -743,8 +762,7 @@ def _has_docs_site_config(names: set[str], paired: bool) -> bool:
     if names & _DOCS_SITE_MARKERS:
         return True
     return paired and any(
-        config in names and names & companions
-        for config, companions in _DOCS_SITE_PAIRED_MARKERS
+        config in names and names & companions for config, companions in _DOCS_SITE_PAIRED_MARKERS
     )
 
 
@@ -774,10 +792,9 @@ def _is_docs_example(
     """A docs root or example folder as the first segment, a build tool's example
     target, or a docs folder deeper beside a docs-site generator's config. A
     nested ``app/docs/`` with no such config is the product's own docs route."""
-    if (
-        bool(dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0])))
-        or _is_tool_example(normalized, dirs)
-    ):
+    if bool(
+        dirs and (dirs[0] in _DOCS_ROOT_TOKENS or _is_example_dir(dirs[0]))
+    ) or _is_tool_example(normalized, dirs):
         return True
     if repo_root is None:
         return False
@@ -1006,7 +1023,11 @@ def code_origin(
 def _copied_library(name: str, dirs: list[str], header: str, project: str | None) -> bool:
     scope = _copied_library_scope(name, dirs, project) if header else None
     return scope is not None and _third_party_header(
-        name, header, project, names_file=scope == "library"
+        name,
+        header,
+        project,
+        names_file=scope == "library",
+        allow_homepage=scope == "resource",
     )
 
 
