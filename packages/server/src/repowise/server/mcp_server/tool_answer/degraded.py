@@ -142,9 +142,6 @@ async def _degraded_payload(
     )
     # Inlined bodies are citations in the ordinary sense.
     citations = list(dict.fromkeys(b["path"] for b in symbol_bodies))
-    path_from, hops = await _call_path_from_named(
-        reason, question, question_ids or set(), symbol_bodies, ctx, repository, exclude_spec
-    )
 
     summary = _degraded_summary(reason, symbol_bodies if served_named_body else [], len(hits))
 
@@ -221,8 +218,6 @@ async def _degraded_payload(
             f"Start from {best_guesses[0]['file']} — it ranked highest, and "
             "best_guesses says why each candidate is in the running."
         )
-    if hops:
-        _serve_call_path(payload, path_from, hops)
     payload["_meta"] = {
         **_build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
@@ -230,7 +225,7 @@ async def _degraded_payload(
                 confidence,
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
-                has_bodies=served_named_body and not hops,
+                has_bodies=served_named_body,
             ),
             repository=repository,
             targets=[*citations, *fallback_targets],
@@ -239,7 +234,7 @@ async def _degraded_payload(
     }
     # The upgrade line rides on the weak keyless replies only: a body or a
     # medium grade already gives the agent something to act on.
-    if reason == "no-llm-provider" and (confidence == "low" or not payload.get("symbol_bodies")):
+    if reason == "no-llm-provider" and (confidence == "low" or not symbol_bodies):
         payload["_meta"].update(
             await _keyless_note_meta(
                 served_root(repository),
@@ -247,7 +242,42 @@ async def _degraded_payload(
                 repo_id=getattr(repository, "id", None),
             )
         )
+    await _attach_call_path(
+        payload, question, question_ids or set(), symbol_bodies, ctx, repository, exclude_spec
+    )
     return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
+
+
+async def _attach_call_path(
+    payload: dict, question: str, question_ids: set[str], symbol_bodies: list[dict],
+    ctx, repository, exclude_spec,
+) -> None:
+    """Swap the named body for the call path when the question asks how a call travels.
+
+    The trust hint is re-read without bodies, and the upgrade line a body
+    held back is added, so ``_meta`` describes the reply served.
+    """
+    body, hops = await _call_path_from_named(
+        payload["degraded"], question, question_ids, symbol_bodies, ctx, repository, exclude_spec
+    )
+    if not hops:
+        return
+    _serve_call_path(payload, body, hops)
+    meta = payload["_meta"]
+    meta["hint"] = _answer_hint(
+        payload["confidence"],
+        degraded=payload["degraded"],
+        retrieval_quality=payload.get("retrieval_quality"),
+        has_bodies=False,
+    )
+    if "keyless_note" not in meta:
+        meta.update(
+            await _keyless_note_meta(
+                served_root(repository),
+                session_factory=getattr(ctx, "session_factory", None),
+                repo_id=getattr(repository, "id", None),
+            )
+        )
 
 
 def _named_body(symbol_bodies: list[dict], question_ids: set[str]) -> dict | None:
