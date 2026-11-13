@@ -3944,3 +3944,49 @@ def test_scala_implicit_parameter_is_carried_by_a_span_that_calls():
     plain = _SCALA_PROCESS.replace("total += v", "total += load(v)")
     spans = find_extractions(_first("scala", plain), get_language_map("scala"))
     assert spans and all("ec" not in e.params for e in spans)
+
+
+_JAVA_ARM_EXIT = """
+class Demo {
+    int f(List<Integer> xs, int best) {
+        for (int x : xs) {
+            if (x > 5) {
+                best = x;
+            }
+            if (best > 100) {
+                System.out.println(best);
+            }
+            switch (x) {
+                case 0:
+                    {jump}
+                default:
+                    break;
+            }
+            best = 0;
+        }
+        return best;
+    }
+}
+"""
+
+
+@pytest.mark.parametrize("jump", ["continue;", "break outer;"])
+def test_java_switch_arm_jump_leaves_loop(jump):
+    # ``continue`` or labelled ``break`` in a switch arm leave the loop with
+    # ``best`` as the span left it, skipping ``best = 0``. A helper taking
+    # ``best`` must hand it back, or the write is lost on that path.
+    src = _JAVA_ARM_EXIT.replace("{jump}", jump)
+    fn = _first("java", src)
+    lmap = get_language_map("java")
+    from repowise.core.analysis.health.dataflow import get_defuse_dialect
+
+    extractions = find_extractions(
+        fn, lmap, get_defuse_dialect("java").receiver(fn.fn_node, lmap)
+    )
+    start = next(
+        i
+        for i, ln in enumerate(textwrap.dedent(src).splitlines(), 1)
+        if "if (x > 5)" in ln
+    )
+    offered = [e for e in extractions if e.start_line == start]
+    assert all("best" in e.returns for e in offered if "best" in e.params)
