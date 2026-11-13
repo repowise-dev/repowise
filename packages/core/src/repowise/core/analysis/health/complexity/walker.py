@@ -63,7 +63,12 @@ from .class_analysis import _collect_classes
 from .cobol import walk_cobol
 from .cyclomatic import _walk_function_body
 from .deprecation import is_deprecated
-from .dispatch import dispatch_points, dispatch_share, exit_guard_repeats
+from .dispatch import (
+    copy_guard_repeats,
+    dispatch_points,
+    dispatch_share,
+    exit_guard_repeats,
+)
 from .file_scan import scan_file
 from .gating import is_gated_off, module_false_constants
 from .languages import get_language_map
@@ -192,7 +197,9 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
-    markup = markup_rows(tree.root_node, grammar_tag, source, scan.literals)
+    markup = markup_rows(
+        tree.root_node, grammar_tag, source, scan.literals, scan.arms, scan.chains
+    )
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
     fn_nodes = _collect_function_nodes(tree.root_node, lmap)
@@ -260,6 +267,7 @@ def walk_file(
             dispatch_share=dispatch_share(dispatch.points, ccn),
             dispatch_arm=dispatch.arm,
             exit_guards=exit_guard_repeats(body, lmap),
+            copy_guards=copy_guard_repeats(body, lmap),
             terminal_share=terminal,
             deprecated=is_deprecated(fn_node, body, name, lmap, source),
             gated_off=body is not fn_node and is_gated_off(body, flags),

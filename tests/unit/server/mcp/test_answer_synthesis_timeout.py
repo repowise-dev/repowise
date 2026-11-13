@@ -187,10 +187,10 @@ def test_every_builtin_provider_has_a_deliberate_budget():
         "mock": 60.0,
         "ollama": 120.0,
         "litellm": 120.0,
-        "codex_cli": 180.0,
-        "claude_cli": 180.0,
-        "opencode": 180.0,
-        "copilot_cli": 180.0,
+        "codex_cli": 50.0,
+        "claude_cli": 50.0,
+        "opencode": 50.0,
+        "copilot_cli": 50.0,
     }
     assert set(expected) == set(_BUILTIN_PROVIDERS), (
         "a provider was added or removed; decide its interactive budget here"

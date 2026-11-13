@@ -1255,8 +1255,11 @@ class GitFunctionBlame(Base):
 
 
 class DecisionRecord(Base):
-    """An architectural decision record captured from inline markers, git
-    archaeology, README mining, or manual CLI entry."""
+    """A decision record: recorded by an agent or a person, read from an ADR,
+    or mined from inline markers, commits, pull request bodies and comments.
+
+    Mined records are background until someone puts them in force; authority
+    lives in :class:`DecisionAcceptance`, never in ``status``."""
 
     __tablename__ = "decision_records"
     __table_args__ = (
@@ -1417,10 +1420,9 @@ class DecisionEdge(Base):
     - ``conflicts_with`` — two *active* decisions that contradict; neither
       clearly supersedes the other (a governance smell surfaced in health).
 
-    Edges accrete (propose-don't-clobber): a detected supersession always
-    records the edge; the older decision's status is only auto-flipped to
-    ``superseded`` above a high confidence threshold, leaving everything else a
-    reviewable proposal.
+    An edge exists because someone named it, as ``decision deprecate
+    --superseded-by`` does. Nothing infers one from text similarity
+    (``SEMANTIC_SUPERSESSION_ENABLED`` is off).
     """
 
     __tablename__ = "decision_edges"
@@ -2196,11 +2198,12 @@ class PerformanceOpportunity(QueueVerdict, Base):
     # ``available`` | ``no_safe_plan`` | ``not_persisted``, decided once by the
     # writer that also decides whether a plan row exists.
     plan_state: Mapped[str] = mapped_column(String(16), nullable=False, default="no_safe_plan")
-    # ``proven`` | ``unproven`` (``worth.cost_proof``): whether anything measured
-    # that the cost grows. A store written before the column reads ``proven``
-    # until its next analysis, as it was served then.
+    # ``eligibility.QUEUE_PROOFS`` (``proven`` | ``unproven`` |
+    # ``background_unproven``): whether anything measured that the cost grows.
+    # A store written before the column reads ``proven`` until its next
+    # analysis, as it was served then.
     cost_proof: Mapped[str] = mapped_column(
-        String(16), nullable=False, default="proven", server_default="proven"
+        String(32), nullable=False, default="proven", server_default="proven"
     )
     # ``execution_roles.ExecutionRole`` of the hottest member's loop owner, so
     # the queue can leave out startup, CLI, tooling and test loops in SQL.

@@ -137,6 +137,7 @@ def test_the_published_target_ids_are_exactly_what_users_already_type() -> None:
         "hermes",
         "copilot",
         "kiro",
+        "windsurf",
     ]
 
 
@@ -201,7 +202,7 @@ def test_announced_names_resolve_through_punctuation_and_case(
 
 
 @pytest.mark.parametrize(
-    "announced", [None, "", "   ", "!!!", "Windsurf", "Untrusted Client!" * 20]
+    "announced", [None, "", "   ", "!!!", "Zed", "Untrusted Client!" * 20]
 )
 def test_absent_or_unrecognised_names_resolve_to_unknown(announced: str | None) -> None:
     assert resolve_client_identity(announced) == UNKNOWN_AGENT
@@ -267,6 +268,7 @@ def test_the_shipped_registry_is_the_integrated_agents() -> None:
         "hermes",
         "copilot",
         "kiro",
+        "windsurf",
     ]
 
 

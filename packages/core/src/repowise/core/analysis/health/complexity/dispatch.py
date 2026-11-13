@@ -13,9 +13,13 @@ outside its one dispatch plus those of its heaviest arm, and its nesting less
 the levels the dispatch opens. A per-case handler is flagged when the code
 around the dispatch, or one of its arms, is complex on its own.
 
-Separately, a run of error guards (Go ``if err != nil { return err }``, C
-``if (rc) goto cleanup;``, shell ``cmd || die``) counts once in
-:func:`judged_ccn`; when both cuts apply, the smaller reading wins.
+Separately, a run of early-exit guards counts once in :func:`judged_ccn`:
+error guards (Go ``if err != nil { return err }``, C ``if (rc) goto
+cleanup;``, shell ``cmd || die``) and, where the language map opts in, three
+or more back-to-back precondition checks (``if (!buf) return -1;``, Ruby
+``return x if done``, Swift ``guard ok else { return }``). So does a run of
+guarded copies (``if (m.containsKey(k)) o.f = m.get(k);``). When both cuts
+apply, the smaller reading wins.
 
 The share is the decision points inside that one branch, arms and everything
 nested in them, over the function's decision points (CCN minus the entry
@@ -46,6 +50,8 @@ from .cyclomatic import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from tree_sitter import Node
 
     from .languages import LanguageNodeMap
@@ -528,13 +534,352 @@ def _exits_failing(node: Node, command: Node, name: Node) -> bool:
     return any(c.type == "||" for c in node.children)
 
 
+# Exits that ``return_kinds`` and friends do not name: Ruby ``return`` /
+# ``next`` / ``break`` / ``redo`` and Swift's ``return`` / ``throw`` / ``break``
+# / ``continue``, which the CFG maps leave out.
+_EXIT_KINDS = frozenset({"return", "next", "break", "redo", "control_transfer_statement"})
+_RAISE_NAMES = frozenset({b"raise", b"fail"})
+# Wrappers around a guard body's statements: Ruby ``then``, Swift
+# ``statements``, and the statement around a PHP ``throw`` expression.
+_BODY_WRAPPER_KINDS = frozenset({"then", "statements", "expression_statement"})
+# A plain guard may say why before it leaves (``setError(...); return``); a
+# longer body is a branch of its own.
+_GUARD_MAX_STATEMENTS = 2
+
+
+def _guard_statements(node: Node, lmap: LanguageNodeMap) -> list[Node]:
+    """The statements a plain guard runs, wrappers taken off."""
+    body = node.child_by_field_name("consequence") or node.child_by_field_name("body")
+    if body is None:  # Swift: the ``statements`` after the condition.
+        body = next((c for c in node.named_children if c.type == "statements"), None)
+    wrappers = lmap.block_kinds | _BODY_WRAPPER_KINDS
+    pending = [body] if body is not None else []
+    out: list[Node] = []
+    while pending:
+        stmt = pending.pop(0)
+        if stmt.type not in wrappers:
+            out.append(stmt)
+            continue
+        pending[:0] = [c for c in stmt.named_children if "comment" not in c.type]
+    return out
+
+
+def _leaves(stmt: Node, lmap: LanguageNodeMap) -> bool:
+    """A ``return`` / ``raise`` / ``throw`` / ``break`` / ``continue`` / ``next``."""
+    exits = lmap.return_kinds | lmap.raise_kinds | lmap.break_kinds | lmap.continue_kinds
+    if stmt.type in exits or stmt.type in _EXIT_KINDS:
+        # C# ``yield return x`` hands out a value and carries on.
+        return not (stmt.text or b"").startswith(b"yield return")
+    # Ruby ``raise Error, "..."`` is a call; a bare ``raise`` is an identifier.
+    if stmt.type == "call" and stmt.child_by_field_name("receiver") is None:
+        stmt = stmt.child_by_field_name("method") or stmt
+    return stmt.type == "identifier" and stmt.text in _RAISE_NAMES
+
+
+def _is_plain_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """One condition, no ``else``, a body that leaves: ``if (!buf) return -1;``.
+
+    A Swift ``guard`` always has its ``else``: that is its body. Several
+    conditions (Swift ``guard a, b``) are not one.
+    """
+    if node.type not in lmap.plain_guard_kinds or node.child_by_field_name("alternative"):
+        return False
+    if node.type != "guard_statement" and any(c.type in _ELSE_KINDS for c in node.children):
+        return False
+    if any(c.type == "," for c in node.children):
+        return False
+    body = _guard_statements(node, lmap)
+    return 0 < len(body) <= _GUARD_MAX_STATEMENTS and _leaves(body[-1], lmap)
+
+
 def _is_exit_guard(node: Node, lmap: LanguageNodeMap) -> bool:
     """A one-point early exit that hands an error up, with nothing branching inside."""
     return (_is_exit_if(node, lmap) or _is_shell_exit(node)) and _points([node], lmap) == 1
 
 
-def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
-    """Error guards among *children* past the first of their run.
+def _is_any_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An error guard, or a one-point precondition check that leaves."""
+    return _is_exit_guard(node, lmap) or (
+        _is_plain_guard(node, lmap) and _points([node], lmap) == 1
+    )
+
+
+def _consecutive_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
+    """Guards past the first of each back-to-back run of three or more.
+
+    Only comments may sit between them. A plain guard after a statement checks
+    what that statement did, so it starts a run of its own; two in a row are
+    one decision and an exit, not a list.
+    """
+    repeats = 0
+    run = 0
+    for child in [*children, None]:
+        if child is not None and "comment" in child.type:
+            continue
+        if child is not None and _is_any_guard(child, lmap):
+            run += 1
+            continue
+        repeats += run - 1 if run >= _MIN_ARMS else 0
+        run = 0
+    return repeats
+
+
+# A guarded copy: ``if (m.containsKey(k)) o.f = m.get(k);`` or
+# ``if (x.F != null) o.F = x.F;``. One short statement that uses the value its
+# condition tested. A run of them maps fields across, one step, not one
+# decision per field.
+# Go and F# write an assignment as a statement of its own, Rust a block's last
+# expression without the ``;``, F# a call as a bare application.
+_ASSIGNMENT_KINDS = frozenset(
+    {"assignment", "assignment_expression", "assignment_statement", "mutate_expression"}
+)
+_COPY_STATEMENT_KINDS = _ASSIGNMENT_KINDS | {
+    "expression_statement",
+    "call_expression",
+    "application_expression",
+}
+# A statement wrapped over more lines is doing more than one copy (a builder
+# call, a map literal), so it is a decision of its own.
+_MAX_COPY_LINES = 2
+# A name or field tested for truth: Go ``if config.DryRun``, F# ``if x.LoadUserProfile``.
+_ACCESS_KINDS = frozenset(
+    {
+        "identifier",
+        "selector_expression",
+        "attribute",
+        "field_expression",
+        "field_access",
+        "member_access_expression",
+        "member_expression",
+        "long_identifier_or_op",
+    }
+)
+_CONJUNCTIONS = frozenset({b"&&", b"and"})
+_WORD_RE = re.compile(r"\w+")
+_PLAIN_ASSIGN = frozenset({b"=", b"<-"})
+_EQUALITY = frozenset({b"==", b"===", b"is"})
+
+
+def _call_values(call: Node) -> list[Node]:
+    """A one-argument call's argument, else a no-argument call's receiver:
+    ``m.containsKey(k)`` tests ``k``, ``x.isPresent()`` tests ``x``.
+
+    A call with more arguments (``lua_isstring(L, -1)``) shares a handle with
+    whatever it guards, so it names no single tested value.
+    """
+    if call.type == "application_expression":
+        # F# ``isNull x.Domain``: function, then its one argument.
+        return call.named_children[1:] if len(call.named_children) == 2 else []
+    _, receiver, args = _call_parts(call)
+    if len(args) == 1:
+        # C# wraps each argument in an ``argument`` node.
+        arg = args[0]
+        return [arg.named_children[0] if arg.type == "argument" and arg.named_children else arg]
+    return [receiver] if not args and receiver is not None else []
+
+
+def _fsharp_not_operand(node: Node) -> Node | None:
+    """The operand of F# ``not (isNull x)``, else ``None``.
+
+    A negated test in other languages (``if (!ok(x)) fail(x)``) handles an
+    absent value; it is no setter.
+    """
+    named = node.named_children
+    if node.type == "application_expression" and len(named) == 2 and named[0].text == b"not":
+        return named[1]
+    return None
+
+
+def _is_null(node: Node) -> bool:
+    kind = node.type.lower()
+    return any(m in kind for m in ("null", "nil", "none"))
+
+
+def _compared_values(comparison: Node) -> list[Node]:
+    """``x != null`` tests ``x``; Python ``"k" in opts`` tests ``opts``.
+
+    A bound (``if (start < 0) start = 0``) is arithmetic, not presence.
+    """
+    sides = comparison.named_children
+    if len(sides) != 2:
+        return []
+    if any(c.type == "in" for c in comparison.children):
+        return [sides[1]]
+    return [s for s in sides if not _is_null(s)] if sum(map(_is_null, sides)) == 1 else []
+
+
+def _bound_names(let: Node) -> list[Node]:
+    """Rust ``if let Some(v) = opt`` tests what it binds, ``v``.
+
+    ``if let Err(e) = f()`` handles a failure; it tests no optional value.
+    """
+    pattern = let.child_by_field_name("pattern")
+    if pattern is None or pattern.type != "tuple_struct_pattern":
+        return []
+    names = pattern.named_children
+    if not names or names[0].text != b"Some":
+        return []
+    return [n for n in names[1:] if n.type == "identifier"]
+
+
+def _tested_values(condition: Node | None, lmap: LanguageNodeMap) -> list[Node]:
+    """What a presence test tests: a one-argument call's argument (a
+    no-argument call's receiver), the non-null side of a null comparison, a
+    let-binding's names, or a bare field tested for truth (``if cfg.DryRun``).
+    Anything else tests nothing here."""
+    condition = _unwrap(condition)
+    if condition is not None and condition.type == "paren_expression":
+        # F# parenthesises without a wrapper of its own.
+        return _tested_values(condition.named_children[0], lmap) if condition.named_children else []
+    if condition is None:
+        return []
+    negated = _fsharp_not_operand(condition)
+    if negated is not None:
+        return _tested_values(negated, lmap)
+    if condition.type in lmap.call_kinds:
+        return _call_values(condition)
+    if condition.type in _COMPARISON_KINDS:
+        return _compared_values(condition)
+    if condition.type == "let_condition":
+        return _bound_names(condition)
+    return [condition] if condition.type in _ACCESS_KINDS else []
+
+
+def _presence_tests(condition: Node | None, lmap: LanguageNodeMap) -> list[list[Node]]:
+    """The values each presence test in *condition* tests, one list per test.
+
+    ``a.getX() == null && b.getX() != null`` is two tests. Empty when any part
+    of the condition is something else (an ``||``, a bound, a computation).
+    """
+    condition = _unwrap(condition)
+    if condition is None:
+        return []
+    if _is_boolean_operator(condition, lmap):
+        if not any(c.text in _CONJUNCTIONS for c in condition.children if not c.is_named):
+            return []
+        sides = condition.named_children
+        left, right = (_presence_tests(s, lmap) for s in (sides[0], sides[-1]))
+        return left + right if left and right and len(sides) == 2 else []
+    values = _tested_values(condition, lmap)
+    return [values] if values else []
+
+
+def _reads(statement: Node, value: Node) -> bool:
+    """Whether *statement* reads an expression spelled like *value*.
+
+    One the statement starts with is its target (``prev.next = next``, a
+    null-guarded write through ``prev``), not the value being copied.
+    """
+    stack = [statement]
+    while stack:
+        cur = stack.pop()
+        if (
+            cur.type == value.type
+            and cur.text == value.text
+            and cur.start_byte != statement.start_byte
+        ):
+            return True
+        stack.extend(cur.named_children)
+    return False
+
+
+def _plain_target(statement: Node) -> Node | None:
+    """The target of a plain ``=`` / ``<-`` assignment, ``None`` for anything
+    else (a call, a compound ``|=`` that transforms the value)."""
+    if statement.type == "expression_statement" and statement.named_child_count == 1:
+        statement = statement.named_children[0]
+    if statement.type not in _ASSIGNMENT_KINDS or not statement.named_children:
+        return None
+    plain = any(c.text in _PLAIN_ASSIGN for c in statement.children if not c.is_named)
+    return statement.named_children[0] if plain else None
+
+
+def _sets_mirror(target: Node | None, value: Node) -> bool:
+    """Whether *target* is another object's field named like *value*:
+    ``if config.DryRun { tx.DryRun = true }``."""
+    if target is None or _name(target) == _name(value):
+        return False
+    names = _WORD_RE.findall((target.text or b"").decode("utf-8", "replace"))
+    tested = _WORD_RE.findall((value.text or b"").decode("utf-8", "replace"))
+    return bool(names and tested) and names[-1] == tested[-1]
+
+
+def _is_fill(condition: Node | None, target: str | None) -> bool:
+    """Whether *condition* has ``target == null`` / ``target is None`` among
+    its ``&&`` operands: the test before filling in a default."""
+    stack = [condition]
+    while stack:
+        node = _unwrap(stack.pop())
+        if node is None:
+            continue
+        tokens = [c.text for c in node.children if not c.is_named]
+        if any(t in _CONJUNCTIONS for t in tokens):
+            stack.extend(node.named_children)
+        elif any(t in _EQUALITY for t in tokens) and target in map(_name, node.named_children):
+            return True
+    return False
+
+
+def _lone_if(node: Node, lmap: LanguageNodeMap) -> Node | None:
+    """*node* as an ``if`` with no ``else``, through Rust's statement wrapper."""
+    if node.type == "expression_statement" and node.named_child_count == 1:
+        node = node.named_children[0]
+    if node.type not in lmap.if_kinds:
+        return None
+    if node.child_by_field_name("alternative") or node.child_by_field_name("else"):
+        return None
+    return node
+
+
+def _copy_statement(node: Node, lmap: LanguageNodeMap) -> Node | None:
+    """An ``if``'s body when it is one short statement (F# names it ``then``)."""
+    branch = node.child_by_field_name("consequence") or node.child_by_field_name("then")
+    body = _statements(branch, lmap)
+    if len(body) != 1 or body[0].type not in _COPY_STATEMENT_KINDS:
+        return None
+    inner = body[0].named_children[0] if body[0].named_child_count == 1 else body[0]
+    if inner.type in lmap.return_kinds | lmap.break_kinds | lmap.continue_kinds:
+        # Rust wraps ``return Err(e);`` in an expression statement.
+        return None
+    if body[0].end_point[0] - body[0].start_point[0] >= _MAX_COPY_LINES:
+        return None
+    return body[0]
+
+
+def _guard_parts(node: Node, lmap: LanguageNodeMap) -> tuple[Node, Node, list[Node]] | None:
+    """``(condition, statement, tested values)`` of an ``if`` with no ``else``,
+    one short statement and nothing but presence tests in its condition."""
+    found = _lone_if(node, lmap)
+    statement = _copy_statement(found, lmap) if found is not None else None
+    if found is None or statement is None:
+        return None
+    condition = found.child_by_field_name("condition") or found.child_by_field_name("guard")
+    tests = _presence_tests(condition, lmap)
+    if not tests or len(tests) != _points([found], lmap):
+        return None
+    # A literal (``-1``, ``"k"``) is no value of its own to copy.
+    return condition, statement, [v for test in tests for v in test if _name(v)]
+
+
+def _is_copy_guard(node: Node, lmap: LanguageNodeMap) -> bool:
+    """An ``if`` with no ``else`` whose condition only tests presence and whose
+    one statement copies a tested value, or sets the field it is named after."""
+    parts = _guard_parts(node, lmap)
+    if parts is None:
+        return False
+    condition, statement, values = parts
+    target = _plain_target(statement)
+    if target is not None and _name(target) in set(map(_name, values)):
+        # ``if x is None: x = {}`` fills a default; ``if flag: flag = False``
+        # or ``if z: z = z + 1`` decides what the value becomes.
+        return _is_fill(condition, _name(target))
+    return any(_reads(statement, v) or _sets_mirror(target, v) for v in values)
+
+
+def _repeated_guards(
+    children: list[Node], lmap: LanguageNodeMap, is_guard: Callable[[Node, LanguageNodeMap], bool]
+) -> int:
+    """Decision points of the guards among *children* past the first of their run.
 
     Statements without a decision point (``x, err := f()``) may sit between
     the guards of one run; anything that branches, jumps or is a label ends it.
@@ -543,8 +888,9 @@ def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
     repeats = 0
     in_run = False
     for child in children:
-        if _is_exit_guard(child, lmap):
-            repeats += in_run
+        if is_guard(child, lmap):
+            # A guarded fill tests two values (``a == null && b != null``).
+            repeats += _points([child], lmap) if in_run else 0
             in_run = True
         elif child.type in breaks or _points([child], lmap) > 0:
             in_run = False
@@ -552,13 +898,47 @@ def _repeated_guards(children: list[Node], lmap: LanguageNodeMap) -> int:
 
 
 def exit_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
-    """Decision points of error guards that repeat one already counted in their run."""
+    """Decision points of guards that repeat one already counted in their run.
+
+    Per sibling list, the error-guard reading or the back-to-back reading,
+    whichever is larger: both can cover the same guards.
+    """
+    return _guard_repeats(body, lmap, _is_exit_guard, back_to_back=True)
+
+
+def copy_guard_repeats(body: Node, lmap: LanguageNodeMap) -> int:
+    """Decision points of guarded copies that repeat one already counted in their run."""
+    return _guard_repeats(body, lmap, _is_copy_guard)
+
+
+def _run_children(node: Node) -> list[Node]:
+    """*node*'s named children, with F#'s right-nested ``sequential_expression``
+    spliced flat so the statements of one body read as siblings."""
+    children: list[Node] = []
+    for child in node.named_children:
+        if child.type == "sequential_expression":
+            children.extend(_run_children(child))
+        else:
+            children.append(child)
+    return children
+
+
+def _guard_repeats(
+    body: Node,
+    lmap: LanguageNodeMap,
+    is_guard: Callable[[Node, LanguageNodeMap], bool],
+    *,
+    back_to_back: bool = False,
+) -> int:
     lambda_kinds = lmap.lambda_kinds
     total = 0
     stack: list[Node] = [body]
     while stack:
-        children = [c for c in stack.pop().children if c.is_named]
-        total += _repeated_guards(children, lmap)
+        children = _run_children(stack.pop())
+        repeats = _repeated_guards(children, lmap, is_guard)
+        if back_to_back:
+            repeats = max(repeats, _consecutive_guards(children, lmap))
+        total += repeats
         stack.extend(
             c
             for c in children
@@ -580,11 +960,11 @@ def judged_ccn(fn: FunctionComplexity) -> int:
     outside the dispatch plus its heaviest arm's: a switch of one-line cases
     reads as the code around it, one with a tangled arm as that arm.
 
-    A run of error guards counts once either way. The two cuts can cover the
-    same guards (three ``if err != nil`` in a row are a dispatch on ``err``
-    too), so the smaller reading wins rather than both applying.
+    A run of early-exit guards, or of guarded copies, counts once either way.
+    The cuts can cover the same guards (three ``if err != nil`` in a row are a
+    dispatch on ``err`` too), so the smaller reading wins rather than both applying.
     """
-    unguarded = fn.ccn - fn.exit_guards
+    unguarded = fn.ccn - fn.exit_guards - fn.copy_guards
     if fn.dispatch_share < DISPATCH_SHARE:
         return unguarded
     return min(unguarded, fn.ccn - round(fn.dispatch_share * (fn.ccn - 1)) + fn.dispatch_arm)
@@ -592,9 +972,14 @@ def judged_ccn(fn: FunctionComplexity) -> int:
 
 def judged_leaves_out(fn: FunctionComplexity) -> str:
     """What :func:`judged_ccn` did not count, for a finding's text."""
-    if fn.dispatch_share >= DISPATCH_SHARE and judged_ccn(fn) < fn.ccn - fn.exit_guards:
+    unguarded = fn.ccn - fn.exit_guards - fn.copy_guards
+    if fn.dispatch_share >= DISPATCH_SHARE and judged_ccn(fn) < unguarded:
         return "every arm of its dispatch"
-    return "every repeated error guard"
+    if fn.copy_guards and fn.exit_guards:
+        return "every repeated early-exit guard and guarded copy"
+    if fn.copy_guards:
+        return "every repeated guarded copy"
+    return "every repeated early-exit guard"
 
 
 def judged_nesting(fn: FunctionComplexity) -> int:

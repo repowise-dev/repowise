@@ -11,14 +11,17 @@ what happens to the pages that summarize a regenerated concept page.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
 import click
+from rich.markup import escape
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.errors import reasoned_error
 from repowise.cli.helpers import (
     config_fingerprint,
     console,
@@ -33,6 +36,7 @@ from repowise.cli.helpers import (
     save_config_partial,
     save_state,
 )
+from repowise.cli.platform import telemetry
 from repowise.cli.providers import model_run_embedder
 from repowise.cli.ui import load_dotenv
 from repowise.cli.ui.mode_names import provider_model
@@ -40,9 +44,15 @@ from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.decision_lanes import set_pending_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.page_selection import PageSelectionIntent
+from repowise.core.settings.model import flag
 
 from ..decision_lanes import print_lane_estimate
-from .engine import NO_DOCUMENTATION_MESSAGE, has_documentation, run_scoped_generation
+from .engine import (
+    NO_DOCUMENTATION_MESSAGE,
+    has_documentation,
+    record_refusal,
+    run_scoped_generation,
+)
 
 
 def _build_intent(
@@ -100,6 +110,37 @@ def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
         )
 
 
+def _signed_in_cli(repo_path: Path) -> str | None:
+    """A signed-in agent CLI on a paid plan to write with, when nothing else names a provider.
+
+    Only when no flag, config, environment or key resolves one: a key the user
+    already set keeps winning, as it always has. Only a login billed to a plan
+    quota is picked unasked, so a bare run never starts metered spend on its
+    own; any other login stays one ``--provider`` away. The run says what it
+    draws on before the cost question.
+    """
+    from repowise.core.providers.llm.subscription import detect_free_route
+
+    route = detect_free_route(repo_path)
+    if route is None:
+        return None
+    console.print(
+        f"No provider configured, so this run {route.uses(timed=False)}. "
+        "Pass [cyan]--provider[/cyan] to choose another."
+    )
+    return route.provider
+
+
+def _key_source(repo_path: Path, provider_name: str) -> str:
+    """`` (key from env:ANTHROPIC_API_KEY)`` when the provider was picked by its key alone."""
+    from repowise.core.providers.llm.resolve import resolve_api_key, resolve_llm
+
+    if resolve_llm(repo_path).provider_source != "autodetect":
+        return ""
+    _key, source = resolve_api_key(provider_name, repo_path)
+    return f" (key from {escape(source)})" if source else ""
+
+
 def _dry_run_provider(
     provider_name: str | None, model: str | None, repo_path: Path, reasoning: str | None
 ) -> Any | None:
@@ -145,6 +186,7 @@ def _make_gate(dry_run: bool, embedder: str | None = None):
         if provider is None:
             _print_unpriced_plan(cost_plans, decisions, repo_path)
             console.print("[dim]Dry run, nothing generated.[/dim]")
+            telemetry.add_command_outcome(outcome="dry_run")
             return False
 
         est = None
@@ -156,7 +198,9 @@ def _make_gate(dry_run: bool, embedder: str | None = None):
                 provider.model_name,
                 repo_path=repo_path,
                 embedder=embedder,
-                embedding_model=resolve_embedding_model(embedder) if embedder else None,
+                embedding_model=(
+                    resolve_embedding_model(embedder, repo_path=repo_path) if embedder else None
+                ),
             )
         except Exception as exc:
             console.print(f"[yellow]Cost estimate unavailable ({exc}).[/yellow]")
@@ -171,10 +215,12 @@ def _make_gate(dry_run: bool, embedder: str | None = None):
 
         if dry_run:
             console.print("[dim]Dry run, nothing generated.[/dim]")
+            telemetry.add_command_outcome(outcome="dry_run")
             return False
 
         if est is not None and cost_gate_blocks(est, yes=yes, message="  Generate at this cost?"):
             console.print("[yellow]Aborted.[/yellow] Nothing generated.")
+            record_refusal("declined")
             return False
         return True
 
@@ -246,6 +292,10 @@ def generate_command(
     writes; naming a structural (file / symbol / api / infra / cycle / layer)
     page is an error, since those refresh on `repowise update`.
 
+    With no provider set, a key it finds is used, else a signed-in Claude
+    Code on a paid plan; the run names which. The provider is saved to
+    .repowise/config.yaml once it has written a page.
+
     Examples:
       repowise generate                 # write the unwritten concept pages
       repowise generate --unwritten     # same, explicitly
@@ -259,7 +309,9 @@ def generate_command(
     load_dotenv(repo_path)
     state = load_state(repo_path)
     if not state:
-        raise click.ClickException(f"No index found at {repo_path}. Run `repowise init` first.")
+        raise reasoned_error(
+            f"No index found at {repo_path}. Run `repowise init` first.", reason="no_index"
+        )
 
     cfg = load_config(repo_path)
 
@@ -288,7 +340,12 @@ def generate_command(
     # Checked first: with nothing to write, a missing key is not the reason.
     if not run_async(has_documentation(repo_path)):
         console.print(NO_DOCUMENTATION_MESSAGE)
+        record_refusal("no_documentation")
         return
+
+    explicit_provider = provider_name is not None
+    if provider_name is None:
+        provider_name = _signed_in_cli(repo_path)
 
     if dry_run:
         provider = _dry_run_provider(provider_name, model, repo_path, reasoning)
@@ -308,10 +365,13 @@ def generate_command(
             provider_name, model, repo_path, reasoning=reasoning, interactive=can_prompt_provider
         )
 
+    _record_provider(provider)
     console.print(f"[bold]repowise generate[/bold] {repo_path}")
     if provider is not None:
+        source = "" if explicit_provider else _key_source(repo_path, provider.provider_name)
         console.print(
-            f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}[/cyan]"
+            f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}"
+            f"[/cyan]{source}"
         )
 
     from repowise.core.generation import GenerationConfig
@@ -321,7 +381,7 @@ def generate_command(
         max_concurrency=concurrency,
         language=cfg.get("language", "en"),
         reasoning=resolve_reasoning(reasoning, cfg),
-        enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+        enable_onboarding=flag(cfg.get("enable_onboarding"), True),
         wiki_style=cfg.get("wiki_style", "comprehensive"),
         # A whole-repo selection, so the file-page cap chosen at init applies
         # here; without it this run would grow the file layer back.
@@ -337,7 +397,7 @@ def generate_command(
     # search as useless as it was before, with nothing in the output saying so.
     # `update --full` has re-resolved here since it was written; `generate`
     # never did. Same rule, same message.
-    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"))
+    embedder_name, stated, embedder_upgraded = model_run_embedder(cfg.get("embedder"), repo_path=repo_path)
     console.print(f"Embedder: [cyan]{stated}[/cyan].")
 
     start = time.monotonic()
@@ -361,10 +421,60 @@ def generate_command(
         return  # nothing generated, dry run, or declined — messaging already printed
 
     _write_state(repo_path, state, provider, outcome, embedder=embedder_name)
+    # Telemetry never ends a run whose pages are already saved.
+    with contextlib.suppress(Exception):
+        _record_written(outcome)
 
     _report_outcome(outcome, time.monotonic() - start)
     if embedder_upgraded:
         _reembed_after_upgrade(repo_path, embedder_name)
+    if _wrote_nothing_and_failed(outcome):
+        # A scheduled run must be able to tell "every page failed" (no sign-in,
+        # a dead key) from success. Partial success keeps 0: its pages are kept.
+        raise SystemExit(1)
+
+
+def _record_provider(provider: Any) -> None:
+    """Report the provider id and its kind; the model name is not sent."""
+    from repowise.core.providers.llm.specs import provider_kind
+
+    name = getattr(provider, "provider_name", None)
+    telemetry.add_command_outcome(
+        provider_kind=provider_kind(name), **({"provider": name} if name else {})
+    )
+
+
+def _record_written(outcome: Any) -> None:
+    """Report how the run ended and a bucket of the pages a model wrote."""
+    planned = outcome.plan.generate_ids
+    if not planned:
+        # A decisions-only run writes no pages and still did its work.
+        telemetry.add_command_outcome(outcome="generated", pages_written_bucket="0")
+        return
+    c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
+    if c["failed"] and not c["written"]:
+        result = "failed"
+    elif c["failed"] or c["not_produced"]:
+        result = "partial"
+    else:
+        result = "generated"
+    telemetry.add_command_outcome(
+        outcome=result, pages_written_bucket=telemetry.bucket_count(c["written"])
+    )
+
+
+def _wrote_nothing_and_failed(outcome: Any) -> bool:
+    planned = outcome.plan.generate_ids
+    if not planned:
+        return False
+    c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
+    # A reused page is not written: a dead sign-in on a rerun still fails.
+    return c["failed"] > 0 and c["written"] == 0
+
+
+def _model_wrote_a_page(outcome: Any) -> bool:
+    """Whether a model wrote any page this run; a reused or failed page is not one."""
+    return _account_for_plan(set(), outcome.generated_pages, [])["written"] > 0
 
 
 def _account_for_plan(
@@ -440,6 +550,13 @@ def _report_pages(outcome: Any, elapsed: float) -> None:
     rest = [r for r in rest if r]
     if rest:
         console.print("  Not generated: " + ", ".join(rest) + ".")
+    if c["failed"]:
+        # A count alone hides the one fact that fixes it: a provider that is
+        # not signed in fails every page with the same reason.
+        from repowise.cli.commands.upgrade_flow import _stub_fallback_summary
+
+        for reason in _stub_fallback_summary(outcome.generated_pages)[1][:3]:
+            console.print(f"  [dim]· {escape(reason[:200])}[/dim]")
     console.print(f"Cost: [bold]${outcome.cost_usd:.3f}[/bold] ({outcome.tokens:,} tokens).")
 
     if outcome.remaining_template_pages:
@@ -522,16 +639,19 @@ def _write_state(
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name
     all_written = outcome.remaining_template_pages == 0
-    if all_written and resolve_docs_mode(state) != "llm":
+    flipped = all_written and resolve_docs_mode(state) != "llm"
+    if flipped:
         state.update(docs_mode_state_fields("llm"))
-        cfg = load_config(repo_path)
-        if not cfg.get("provider"):
-            save_config_partial(
-                repo_path,
-                provider=provider.provider_name,
-                model=provider.model_name,
-            )
-            state["config_fingerprint"] = config_fingerprint(repo_path)
+    # Saved whenever this provider wrote a page, not only once every page is
+    # written: a partial run otherwise leaves its prose on disk and the MCP
+    # server, which reads config.yaml, answering without a model.
+    if not load_config(repo_path).get("provider") and (flipped or _model_wrote_a_page(outcome)):
+        save_config_partial(
+            repo_path,
+            provider=provider.provider_name,
+            model=provider.model_name,
+        )
+        state["config_fingerprint"] = config_fingerprint(repo_path)
     provider_block = {
         "name": provider.provider_name,
         "model": provider.model_name,

@@ -2,6 +2,7 @@
 frontmatter: |
     description: Read one symbol's body with live-verified line bounds (path::Name, live range, or distill omission ref).
     allowed-tools: Bash(repowise symbol:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Symbol

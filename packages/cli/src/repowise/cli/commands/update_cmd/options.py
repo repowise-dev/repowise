@@ -124,6 +124,9 @@ class DocsPass:
     session_decisions: list = field(default_factory=list)
     # Decision records touched by evolution, surfaced in the completion panel.
     decisions_evolved: int = 0
+    # Git archaeology was re-mined in full for a history-window change, so its
+    # earlier mined records may be replaced and the persist must not fail.
+    git_history_remined: bool = False
     decision_vector_store: Any = None
     prior_pages: dict = field(default_factory=dict)
     generated_pages: list = field(default_factory=list)

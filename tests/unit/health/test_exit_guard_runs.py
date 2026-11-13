@@ -165,9 +165,13 @@ def test_shell_or_die_run_counts_once() -> None:
 
 
 def test_finding_text_names_the_cut_that_applied() -> None:
-    guards = SimpleNamespace(ccn=12, exit_guards=4, dispatch_share=0.0, dispatch_arm=0)
-    dispatch = SimpleNamespace(ccn=12, exit_guards=0, dispatch_share=1.0, dispatch_arm=0)
-    assert judged_leaves_out(guards) == "every repeated error guard"
+    guards = SimpleNamespace(
+        ccn=12, exit_guards=4, copy_guards=0, dispatch_share=0.0, dispatch_arm=0
+    )
+    dispatch = SimpleNamespace(
+        ccn=12, exit_guards=0, copy_guards=0, dispatch_share=1.0, dispatch_arm=0
+    )
+    assert judged_leaves_out(guards) == "every repeated early-exit guard"
     assert judged_leaves_out(dispatch) == "every arm of its dispatch"
 
 

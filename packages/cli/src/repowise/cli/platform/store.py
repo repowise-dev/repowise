@@ -44,3 +44,16 @@ def update(**changes: Any) -> dict[str, Any]:
     state.update(changes)
     save(state)
     return state
+
+
+def write_setting(root: Any, key: str, value: Any) -> None:
+    """Write one ``platform.json`` setting; ``None`` removes it. *root* is unused.
+
+    The settings-registry writer for this machine's switches (telemetry, tips).
+    """
+    state = load()
+    if value is None:
+        state.pop(key, None)
+    else:
+        state[key] = value
+    save(state)

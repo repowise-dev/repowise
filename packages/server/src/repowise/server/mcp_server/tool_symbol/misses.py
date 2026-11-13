@@ -276,45 +276,53 @@ async def _not_found_response(
         live = _live_grep_response(ctx, repository, symbol_id, exclude_spec, t0, owners)
         if live is not None:
             return live
-    from repowise.server.mcp_server._savings.interaction import note_error_reason
+    from repowise.server.mcp_server._savings.interaction import error_reply
 
     # Every reply below is a miss.
-    note_error_reason("not_found")
     if file_path := _bare_file_path(ctx, symbol_id, exclude_spec):
-        return {
-            "symbol_id": symbol_id,
-            "error": (
-                f"'{file_path}' is a file, not a symbol. Whole file: "
-                f'get_context(targets=["{file_path}"], include=["skeleton"]). '
-                f'Lines: get_symbol("{file_path}:1-120").'
-            ),
-            "_meta": _build_meta(timing_ms=_elapsed_ms(t0), repository=repository),
-        }
+        return error_reply(
+            "not_found",
+            {
+                "symbol_id": symbol_id,
+                "error": (
+                    f"'{file_path}' is a file, not a symbol. Whole file: "
+                    f'get_context(targets=["{file_path}"], include=["skeleton"]). '
+                    f'Lines: get_symbol("{file_path}:1-120").'
+                ),
+                "_meta": _build_meta(timing_ms=_elapsed_ms(t0), repository=repository),
+            },
+        )
     async with get_session(ctx.session_factory) as session:
         suggestions = await _symbol_suggestions(session, repository.id, symbol_id, exclude_spec)
     if suggestions:
-        return {
+        return error_reply(
+            "not_found",
+            {
+                "symbol_id": symbol_id,
+                "error": (
+                    f"Symbol not found: {symbol_id!r}. A symbol with this name "
+                    "exists at the path(s) below — retry with one of these "
+                    "exact symbol_ids."
+                ),
+                "suggestions": suggestions,
+                "_meta": _build_meta(
+                    timing_ms=_elapsed_ms(t0),
+                    repository=repository,
+                ),
+            },
+        )
+    return error_reply(
+        "not_found",
+        {
             "symbol_id": symbol_id,
             "error": (
-                f"Symbol not found: {symbol_id!r}. A symbol with this name "
-                "exists at the path(s) below — retry with one of these "
-                "exact symbol_ids."
+                f"Symbol not found: {symbol_id!r}. Use get_context to list "
+                "available symbols in the file, then try again with the "
+                "exact symbol_id from that response."
             ),
-            "suggestions": suggestions,
             "_meta": _build_meta(
                 timing_ms=_elapsed_ms(t0),
                 repository=repository,
             ),
-        }
-    return {
-        "symbol_id": symbol_id,
-        "error": (
-            f"Symbol not found: {symbol_id!r}. Use get_context to list "
-            "available symbols in the file, then try again with the "
-            "exact symbol_id from that response."
-        ),
-        "_meta": _build_meta(
-            timing_ms=_elapsed_ms(t0),
-            repository=repository,
-        ),
-    }
+        },
+    )

@@ -474,6 +474,7 @@ async def update_decision_status(
     accepter: str = "",
     kind: str = "person",
     reason: str = "",
+    force: bool = False,
 ) -> DecisionRecord | None:
     """Move a decision record between statuses, recording authority changes.
 
@@ -486,7 +487,8 @@ async def update_decision_status(
     *reason* is the accepter's why, for an acceptance of a record that states
     none. Raises ValueError for an invalid status, and AcceptanceRefusedError
     (a ValueError) naming each gap for an acceptance the record cannot
-    support. Returns None if not found.
+    support. Returns None if not found. *force* lets a person retire a pinned
+    decision; see ``record_acceptance``.
     """
     if status not in _VALID_DECISION_STATUSES:
         raise ValueError(
@@ -524,6 +526,7 @@ async def update_decision_status(
             currency="superseded" if status == "superseded" else "dismissed",
             accepter=accepter or "unrecorded",
             kind=kind,
+            force=force,
         )
 
     rec.status = status

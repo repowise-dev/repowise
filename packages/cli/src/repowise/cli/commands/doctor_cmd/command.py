@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from pathlib import Path
 
 import click
 
@@ -28,6 +29,27 @@ def _check_repair_flags(fmt: str, quick: bool) -> None:
         )
     if quick:
         raise click.UsageError("--repair needs the store checks that --quick skips.")
+
+
+def _doctor_repo(repo_path: Path, path: str | None, *, repair: bool, fmt: str, quick: bool) -> None:
+    """One repository's checks, then the settings that fit it; exits 1 on a failed check."""
+    from repowise.cli.commands.config_cmd import suggested_for, suggested_line
+
+    all_ok, checks = _run_repo_checks(repo_path, repair, fmt=fmt, quick=quick)
+    suggested = suggested_for(repo_path)
+    if fmt != "table":
+        payload = {
+            "ok": all_ok,
+            "checks": [c._asdict() for c in checks],
+            "suggestions": [s.to_dict() for s in suggested],
+        }
+        click.echo(json.dumps(payload, indent=2))
+    else:
+        line = suggested_line(len(suggested), path)
+        if line:
+            console.print(f"[dim]{line}[/dim]")
+    if not all_ok:
+        raise SystemExit(1)
 
 
 @click.command("doctor")
@@ -95,12 +117,7 @@ def doctor_command(
 
         if not target.is_workspace:
             assert target.repo_path is not None
-            all_ok, checks = _run_repo_checks(target.repo_path, repair, fmt=fmt, quick=quick)
-            if fmt != "table":
-                payload = {"ok": all_ok, "checks": [c._asdict() for c in checks]}
-                click.echo(json.dumps(payload, indent=2))
-            if not all_ok:
-                raise SystemExit(1)
+            _doctor_repo(target.repo_path, path, repair=repair, fmt=fmt, quick=quick)
             return
 
         # Workspace mode — iterate over every entry, run workspace-level

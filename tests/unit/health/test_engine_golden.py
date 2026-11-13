@@ -9,10 +9,13 @@ with ``REPOWISE_REWRITE_GOLDEN=1`` only for an intended behaviour change.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import os
 from pathlib import Path
+
+import pytest
 
 from repowise.core.analysis.health import HealthAnalyzer
 from repowise.core.analysis.health.finding_identity import finding_public_id
@@ -38,7 +41,7 @@ def _copy_lf(src: Path, dst: Path) -> None:
             target.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
 
 
-def _analyze(root: Path) -> dict:
+def _analyze(root: Path, *, in_workers: bool = False) -> dict:
     # Unlike the refactoring loader, a parse failure fails the run: a file
     # skipped on one machine only would make the golden platform-dependent.
     parser = ASTParser()
@@ -49,9 +52,10 @@ def _analyze(root: Path) -> dict:
         builder.add_file(pf)
         parsed.append(pf)
     builder.build()
-    report = HealthAnalyzer(
+    analyzer = HealthAnalyzer(
         builder.graph(), git_meta_map={}, parsed_files=parsed, repo_root=root
-    ).analyze(None)
+    )
+    report = asyncio.run(analyzer.analyze_async(None)) if in_workers else analyzer.analyze(None)
     findings = []
     for f in report.findings:
         row = dataclasses.asdict(f)
@@ -88,16 +92,34 @@ def _analyze(root: Path) -> dict:
     return json.loads(text)
 
 
-def test_health_engine_matches_golden(tmp_path: Path) -> None:
+@pytest.mark.parametrize("in_workers", [False, True], ids=["in_process", "in_workers"])
+def test_health_engine_matches_golden(tmp_path: Path, monkeypatch, in_workers: bool) -> None:
+    # In workers: every walk and every Extract Method file runs in the spawn
+    # pool, which must reproduce the in-process golden exactly.
+    from repowise.core.analysis.health import engine
+
+    pooled: dict[str, int] = {}
+    if in_workers:
+        monkeypatch.setattr(engine, "_POOL_MIN_JOBS", 1)
+        real_run = engine.run_with_deadline
+
+        def counting_run(fn, items, workers, results, **kwargs):
+            real_run(fn, items, workers, results, **kwargs)
+            assert not any(isinstance(r, BaseException) for r in results)
+            pooled[fn.__name__] = pooled.get(fn.__name__, 0) + len(items)
+
+        monkeypatch.setattr(engine, "run_with_deadline", counting_run)
     actual = {}
     for name, src in CORPORA.items():
         root = tmp_path / name.replace("/", "_")
         _copy_lf(src, root)
-        actual[name] = _analyze(root)
-    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1":
+        actual[name] = _analyze(root, in_workers=in_workers)
+    if os.environ.get("REPOWISE_REWRITE_GOLDEN") == "1" and not in_workers:
         GOLDEN.parent.mkdir(exist_ok=True)
         GOLDEN.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
     for name in CORPORA:
         assert actual[name] == expected[name], name
     assert actual.keys() == expected.keys()
+    if in_workers:
+        assert pooled.get("run_walk_job") and pooled.get("run_extract_method_job")

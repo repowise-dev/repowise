@@ -6,7 +6,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from repowise.server.schemas.git import (
+    ChangeFeaturesResponse,
+    FixHistoryResponse,
+    RiskDriverResponse,
+)
 from repowise.server.schemas.risk_semantics import (
+    RiskAuthority,
     RiskCompatibilityField,
     RiskScalarSemantics,
 )
@@ -72,6 +78,8 @@ class TestRecommendation(BaseModel):
     basis: Literal["measured", "inferred"]
     bases: list[Literal["measured", "inferred"]]
     source_files: list[str]
+    #: Every changed file this test reaches, where ``source_files`` names the first few.
+    source_files_total: int | None = None
     evidence: list[TestImpactEvidence]
     #: A measured row whose test file is gone or changed since the coverage run.
     stale: bool = False
@@ -199,24 +207,10 @@ class BlastRadiusResponse(BaseModel):
     overall_risk_score_compatibility: RiskCompatibilityField
 
 
-class PrReviewSummary(BaseModel):
-    """What the PR bot stored for a pull request: code health before and after, and new findings.
-
-    A host that runs the bot fills it; a local server never does.
-    """
-
-    health_before: float | None = None
-    health_after: float | None = None
-    #: Findings the pull request introduced.
-    introduced: int | None = None
-    #: The bot's review of the pull request.
-    url: str | None = None
-
-
 class ChangeCandidateModel(BaseModel):
     id: str
-    #: ``pr`` is listed by a host that knows pull requests; a local server never lists one.
-    kind: Literal["working_tree", "branch", "commit", "pull_request"]
+    #: A ``change_request`` (merge or pull request) is never listed; a link opens one.
+    kind: Literal["working_tree", "branch", "commit", "change_request"]
     label: str
     title: str | None = None
     author: str | None = None
@@ -229,12 +223,12 @@ class ChangeCandidateModel(BaseModel):
     #: For a branch: whether it exists on the remote. A local-only branch is
     #: often scratch work, so the picker shows it quieter.
     pushed: bool | None = None
-    #: For a pull request: its number.
+    #: For a change request: its number on the forge.
     number: int | None = None
-    #: For a pull request: the base commit it is compared against.
+    #: For a change request: the commit it is compared against.
     base_sha: str | None = None
-    #: For a pull request: the PR bot's stored health before and after, when a host has one.
-    pr_review: PrReviewSummary | None = None
+    #: For a change request: what its forge calls one ("merge request", "pull request").
+    change_term: str | None = None
 
 
 class ChangeCandidatesResponse(BaseModel):
@@ -250,18 +244,143 @@ class ChangeCandidatesResponse(BaseModel):
     health_check_supported: bool = False
 
 
+#: Reached files per page of ``transitive_affected`` when a request names no ``limit``.
+CHANGE_PAGE_SIZE = 500
+#: The most one page may hold: enough to draw the map of a wide change.
+CHANGE_PAGE_MAX = 5000
+
+
 class ChangeBlastRadiusRequest(BaseModel):
     #: An ``id`` from ``GET /blast-radius/changes``.
     change_id: str = Field(min_length=1, max_length=300)
     max_depth: int = Field(default=3, ge=1, le=10)
+    #: Also return ``via`` on each reached file, for drawing the map.
+    with_graph: bool = False
+    #: The page of ``transitive_affected``: rows ``offset`` to ``offset + limit``.
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=CHANGE_PAGE_SIZE, ge=1, le=CHANGE_PAGE_MAX)
+
+
+class ReachSummary(BaseModel):
+    """Counts over every file a change reaches, not only the page sent."""
+
+    #: Source files the change reaches; tests are counted apart.
+    files: int
+    #: Test files that import the change at any depth.
+    tests: int
+    #: Source files one import away.
+    direct: int
+    #: Modules the reached source files sit in.
+    modules: int
+    max_depth: int
+    #: Changed files something imports directly.
+    imported: list[str]
+
+
+class ChangeRiskBlock(BaseModel):
+    """``repowise risk <revspec> --format json`` for the change, field for field.
+
+    ``fix_history`` says how often the touched files needed fixes;
+    ``risk_percentile`` ranks the diff's size and spread against the
+    repository's recent commits (``score`` is the 0-10 model score it ranks).
+    Neither is a probability that the change breaks something.
+    """
+
+    ref: str
+    #: True when the uncommitted work was scored rather than a commit.
+    working_tree: bool
+    fix_history: FixHistoryResponse
+    risk_authority: RiskAuthority
+    score: float
+    score_measures: str
+    score_unit: str
+    risk_percentile: float | None
+    review_priority: str | None
+    classification: str | None
+    #: Absolute model-score band, only when there was no baseline to rank against.
+    fallback_band: str | None
+    baseline_sample_size: int
+    exclude_patterns: list[str]
+    is_fix: bool
+    features: ChangeFeaturesResponse
+    drivers: list[RiskDriverResponse]
+
+
+class ChangeTestsBlock(BaseModel):
+    """The tests the change needs: ``get_change_risk``'s ``impacted_tests``, longer.
+
+    ``run_all`` true means run the whole suite, for ``reasons``; false with an
+    empty ``tests_to_run`` means no test needs to run. ``status`` is
+    ``selected``, ``run_all``, ``degraded`` (the index lags the checkout and the
+    list holds most of the suite), or why no selection was made (``no_index``,
+    ``unknown``, ``timeout``, ``busy``, ``config_invalid``).
+    """
+
+    status: str
+    run_all: bool
+    reasons: list[str]
+    reasons_total: int | None = None
+    #: ``measured`` (coverage decided), ``inferred`` (the graph or a rule), ``none``.
+    basis: str
+    map_present: bool | None = None
+    #: In run order, up to 200; ``total`` counts them all.
+    tests_to_run: list[str]
+    #: ``test_id`` when coverage node ids are listed, ``test_file`` otherwise.
+    tests_to_run_kind: str | None = None
+    total: int
+    truncated: bool
+    always_run_total: int | None = None
+    #: Tests that still run but are counted apart from ``total``: kept by a
+    #: conftest on a route, or reaching the change only through imports.
+    broadcast_total: int | None = None
+    import_closure_total: int | None = None
+    summary: str
+    #: Per listed test file, what put it in.
+    why: dict[str, str] | None = None
+    #: Per changed file (first ten), the evidence that decided it.
+    basis_by_file: dict[str, str] | None = None
+    basis_by_file_total: int | None = None
+
+
+class ChangeReview(BaseModel):
+    """The change's score and tests, from the functions ``repowise risk`` and
+    ``get_change_risk`` use, so all three give the same answer."""
+
+    #: What was scored: a commit sha, ``<base>...<branch>``, or ``None`` for
+    #: the uncommitted work.
+    revspec: str | None
+    risk: ChangeRiskBlock
+    tests: ChangeTestsBlock
+    #: Commands that run ``tests.tests_to_run``, one per runner; empty when the
+    #: verdict is to run the whole suite or no runner is known for them.
+    test_commands: list[str] = Field(default_factory=list)
 
 
 class ChangeBlastRadiusResponse(BlastRadiusResponse):
+    #: The change analyzed. A merge or pull request asked for by number
+    #: (``mr:<n>``, ``pr:<n>``) comes back pinned to the two commits read
+    #: (``mr:<n>@<base sha>...<head sha>``), so a link built from it never moves.
     change_id: str
+    #: The merge or pull request, as the picker shows one; ``None`` for other kinds.
+    change: ChangeCandidateModel | None = None
     #: The paths analyzed, after the cap below.
     changed_files: list[str]
     #: Every path the change touches, before the cap.
     changed_files_total: int
+    #: Every reached file. ``transitive_affected`` holds one page of them, and
+    #: ``affected_signals`` and ``test_gaps`` cover the changed files and that page.
+    transitive_total: int = 0
+    #: The ``offset`` of the next page; ``None`` on the last.
+    next_offset: int | None = None
+    reach_summary: ReachSummary | None = None
+    #: Files that usually change with a changed one and are left out, all of
+    #: them; ``cochange_warnings`` lists the strongest pairs.
+    missing_partners_total: int | None = None
+    #: The score and tests; ``None`` when the change could not be read from
+    #: git here, with ``review_unavailable`` saying why. The blast radius
+    #: above is the evidence behind it.
+    review: ChangeReview | None = None
+    review_unavailable: str | None = None
 
 
 class ChangeHealthCheckRequest(BaseModel):

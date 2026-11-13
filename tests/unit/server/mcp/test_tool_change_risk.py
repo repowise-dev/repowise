@@ -305,7 +305,9 @@ async def test_impacted_tests_degrade_on_an_unreadable_index(
 
     change = changed_lines.ChangeSet({}, set(), "HEAD", None, None)
     monkeypatch.setattr(changed_lines, "change_set", lambda *_a, **_k: change)
-    monkeypatch.setattr(tool, "select_change_tests", _raise)
+    from repowise.server.mcp_server import _test_selection
+
+    monkeypatch.setattr(_test_selection, "select_change_tests", _raise)
     block = await tool._impacted_tests_block(
         SimpleNamespace(session_factory=factory, path=str(tmp_path)),
         {"a.py": {1}},
