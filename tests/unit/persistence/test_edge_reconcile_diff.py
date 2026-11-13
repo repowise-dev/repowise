@@ -41,6 +41,9 @@ _STORED = [
     _edge("c.py", "b.py"),  # not owned
     _edge("b.py", "a.py", imported_names_json=json.dumps(["x"])),  # into a.py, not owned
     _edge("c.py::reg", "a.py::f", "references", hint_source=REGISTRATION_HINT, confidence=0.8),
+    # The same decorator on b.py, and a call of its own: c.py owns these, not a.py.
+    _edge("c.py::reg", "b.py::g", "references", hint_source=REGISTRATION_HINT, confidence=0.8),
+    _edge("c.py::reg", "b.py", "calls"),
 ]
 
 _FRESH = [
@@ -95,7 +98,12 @@ async def _legacy_reconcile(session, repo_id: str, paths: list[str], edges: list
                 )
             )
         ).scalars()
-    ) | {e["source_node_id"] for e in edges}
+    ) | {
+        node
+        for e in edges
+        for node in (e["source_node_id"], e["target_node_id"])
+        if node.split("::", 1)[0] in paths
+    }
     await session.execute(
         delete(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
@@ -131,6 +139,37 @@ async def test_diff_reconcile_matches_delete_then_insert(async_session, monkeypa
     assert ("a.py", "c.py", "imports") not in keys
     assert ("a.py::gone", "c.py", "calls") not in keys
     assert ("a.py", "external:os", "imports") in keys
+    assert ("b.py", "a.py", "imports") in keys
+    assert ("c.py::reg", "b.py::g", "references") in keys
+    assert ("c.py::reg", "b.py", "calls") in keys
+
+
+async def test_reconciling_one_decorated_file_keeps_the_decorator_edges_into_others(
+    async_session,
+):
+    repo_id = await _seed(async_session, "registrar")
+
+    await reconcile_edges_for_files(async_session, repo_id, ["a.py"], _FRESH)
+    await async_session.commit()
+
+    keys = {r[:3] for r in await _rows(async_session, repo_id)}
+    assert ("c.py::reg", "a.py::f", "references") in keys
+    # The decorator's file was not reconciled, so its other rows stand.
+    assert ("c.py::reg", "b.py::g", "references") in keys
+    assert ("c.py::reg", "b.py", "calls") in keys
+
+
+async def test_reconciling_the_decorator_keeps_its_targets_own_edges(async_session):
+    repo_id = await _seed(async_session, "decorator")
+    fresh = [e for e in _STORED if e["source_node_id"] == "c.py::reg" or e["source_node_id"] == "c.py"]
+
+    await reconcile_edges_for_files(async_session, repo_id, ["c.py"], fresh)
+    await async_session.commit()
+
+    keys = {r[:3] for r in await _rows(async_session, repo_id)}
+    # a.py and b.py were not reconciled: their own rows stand.
+    assert ("a.py::f", "b.py::g", "calls") in keys
+    assert ("a.py", "b.py", "imports") in keys
     assert ("b.py", "a.py", "imports") in keys
 
 

@@ -289,9 +289,18 @@ async def reconcile_edges_for_files(
             .all()
         )
         source_ids.update(rows)
-    # Union in the fresh edges' own sources so a brand-new node's edges are still
-    # rewritten cleanly even if the node-row read above raced its insert.
-    source_ids.update(e.get("source_node_id", "") for e in edges)
+    # Union in the fresh edges' ends in these files so a brand-new node's edges
+    # are still rewritten cleanly even if the node-row read above raced its
+    # insert. Only ends these files own: a target-owned edge has one end in
+    # another file, and owning that node would make every edge out of it stale
+    # here (reconciling a decorated file would delete the decorator's edges into
+    # its other targets; reconciling the decorator, the targets' own edges).
+    scope = set(scoped)
+    for e in edges:
+        ends = [e.get("source_node_id")]
+        if e.get("hint_source") in TARGET_OWNED_HINTS:
+            ends.append(e.get("target_node_id"))
+        source_ids.update(n for n in ends if n and n.split("::", 1)[0] in scope)
     source_ids.discard("")
     if not source_ids:
         return 0
