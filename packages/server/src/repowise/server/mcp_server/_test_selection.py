@@ -562,6 +562,19 @@ def unselected_block(status: str, summary: str) -> dict[str, Any]:
     }
 
 
+def changed_file_count(change: Any) -> int:
+    """Files *change* touches, deletions included."""
+    return len(change.files) + len(change.deleted)
+
+
+def too_large_block(count: int, max_files: int) -> dict[str, Any]:
+    """The tests block for a change too wide to select from: run every test."""
+    return unselected_block(
+        "too_large",
+        f"{count} changed files exceeds the {max_files}-file ceiling for selecting tests.",
+    )
+
+
 async def change_tests_block(
     repo_path: Any,
     session_factory: Any,
@@ -575,6 +588,7 @@ async def change_tests_block(
     detail: bool = True,
     repo: str | None = None,
     agent: bool = False,
+    max_files: int | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], Any] | None]:
     """The tests a scored change needs: ``get_change_risk``, ``repowise risk`` and
     the Review page all read them here.
@@ -586,7 +600,8 @@ async def change_tests_block(
     (:func:`~repowise.core.analysis.change_risk.score_live_change`), so the
     tests are for the change it scored. *agent* shapes the listed head for an
     agent (:func:`agent_head`); the Review page and ``repowise risk`` keep the
-    run list, which they turn into the command. Returns ``(block, (collection result,
+    run list, which they turn into the command. A change of more than
+    *max_files* files answers "run every test" without selecting. Returns ``(block, (collection result,
     change))``, or ``(block, None)`` when no selection was made; never raises,
     so it cannot fail the score beside it.
     """
@@ -608,6 +623,8 @@ async def change_tests_block(
         )
     except Exception:  # git refused the change, or could not run
         return unselected_block("unknown", "Could not read the change from git."), None
+    if max_files is not None and (count := changed_file_count(change)) > max_files:
+        return too_large_block(count, max_files), None
     try:
         result, selection, _ = await select_change_tests(repo_path, session_factory, change, repo)
     except Exception as exc:

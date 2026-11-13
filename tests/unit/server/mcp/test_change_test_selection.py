@@ -243,6 +243,43 @@ async def test_change_risk_selects_tests_once_while_it_scores(
 
 
 @pytest.mark.asyncio
+async def test_a_change_past_the_ceiling_runs_every_test_without_selecting(
+    tmp_path, monkeypatch
+) -> None:
+    """Past the ceiling the answer is "run every test" at once.
+
+    Selecting from a change that wide spent the whole selection budget, and
+    held the interpreter against the rest of the reply, before saying the same.
+    """
+    from repowise.core.analysis.change_health import service
+    from repowise.server.mcp_server import _test_selection
+
+    repo, base = _repo(tmp_path, _STATUS)
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "tests/test_status.py": "x = 1\n"},
+        "fix: status",
+    )
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        [("tests/test_status.py", "src/status.py", "imports")],
+    )
+
+    async def _no_selection(*_a, **_k):
+        raise AssertionError("selected tests for a change past the ceiling")
+
+    monkeypatch.setattr(_test_selection, "_select_here", _no_selection)
+    monkeypatch.setattr(service, "MAX_CHANGED_FILES", 1)
+
+    it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
+
+    assert it["status"] == "too_large"
+    assert it["run_all"] is True
+    assert "2 changed files exceeds the 1-file ceiling" in it["summary"]
+
+
+@pytest.mark.asyncio
 async def test_a_conftest_change_runs_every_test_under_it(tmp_path, monkeypatch) -> None:
     files = {
         "tests/conftest.py": "import pytest\n",
