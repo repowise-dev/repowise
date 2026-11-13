@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.registry import mcp_tool_registry
-from repowise.core.registry.tool_selection import LEAN_TOOLS
+from repowise.core.registry.tool_selection import CORE_TOOLS, LEAN_TOOLS
 
 DOC = Path(__file__).parents[4] / "docs" / "agent" / "MCP_TOOLS.md"
 
@@ -91,3 +91,12 @@ def test_lean_profile_paragraph_names_the_lean_tools(doc_text: str):
     missing = {name for name in LEAN_TOOLS if f"`{name}`" not in paragraph}
     assert not missing, f"lean tools missing from the profile paragraph: {missing}"
     assert "`list_repos`" in paragraph
+
+
+def test_core_profile_paragraph_names_the_core_tools(doc_text: str):
+    m = re.search(r"\*\*The `core` profile\*\*.*?(?=\n\n)", doc_text, flags=re.DOTALL)
+    assert m, "MCP_TOOLS.md core-profile paragraph not found"
+    paragraph = m.group(0)
+    named = set(re.findall(r"`([a-z_]+)`", paragraph))
+    assert named - {"core"} == CORE_TOOLS | {"list_repos"}, named
+

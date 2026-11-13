@@ -199,7 +199,8 @@ export interface ChangedOwner {
   files: number;
 }
 
-export type ChangeCandidateKind = "working_tree" | "branch" | "commit";
+/** A `change_request` (a merge or pull request) is never listed; a link opens one. */
+export type ChangeCandidateKind = "working_tree" | "branch" | "commit" | "change_request";
 
 /** One change a reviewer can pick. `id` is what the analysis call takes back. */
 export interface ChangeCandidate {
@@ -219,6 +220,12 @@ export interface ChangeCandidate {
   is_current: boolean;
   /** For a branch: whether it exists on the remote; local-only is often scratch work. */
   pushed?: boolean | null;
+  /** For a change request: its number on the forge. */
+  number?: number | null;
+  /** For a change request: the commit it is compared against. */
+  base_sha?: string | null;
+  /** For a change request: what its forge calls one ("merge request", "pull request"). */
+  change_term?: string | null;
 }
 
 export interface ChangeCandidatesResponse {
@@ -240,7 +247,14 @@ export interface ChangeBlastRadiusRequest {
 }
 
 export interface ChangeBlastRadiusResponse extends BlastRadiusResponse {
+  /**
+   * The change analyzed. A merge or pull request asked for by number
+   * (`mr:<n>`, `pr:<n>`) comes back pinned to its two commits
+   * (`mr:<n>@<base sha>...<head sha>`), so a link built from it never moves.
+   */
   change_id: string;
+  /** The merge or pull request, as the picker shows one; null for other kinds. */
+  change?: ChangeCandidate | null;
   /** The paths analyzed, after the server's cap. */
   changed_files: string[];
   /** Every path the change touches, before the cap. */

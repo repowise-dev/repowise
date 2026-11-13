@@ -7,9 +7,11 @@ import logging
 from repowise.core.registry import ToolEntry
 from repowise.core.registry.tool_selection import (
     AvailabilityFacts,
+    default_profile,
     is_available,
     normalize_override,
     resolve_enabled_tools,
+    split_profile,
 )
 
 
@@ -97,6 +99,59 @@ def test_lean_profile_single_repo():
 def test_lean_profile_workspace_adds_list_repos():
     enabled = resolve_enabled_tools(CATALOG, is_workspace=True, override="LEAN")
     assert enabled == {"get_answer", "get_context", "list_repos"}
+
+
+# A catalog with a default tool outside the core profile, for profile rules.
+WIDE = [
+    *CATALOG,
+    ToolEntry(_fn("get_why"), "get_why"),
+    ToolEntry(_fn("get_health"), "get_health"),
+]
+
+
+def test_no_override_is_core_for_up_front_clients_and_standard_otherwise():
+    standard = {"get_answer", "get_context", "get_why", "get_health"}
+    core = {"get_answer", "get_context", "get_why"}
+    assert resolve_enabled_tools(WIDE, is_workspace=False) == standard
+    assert resolve_enabled_tools(WIDE, is_workspace=False, client="claude_code") == standard
+    for client in ("cursor", "codex", "unknown"):
+        assert resolve_enabled_tools(WIDE, is_workspace=False, client=client) == core
+    assert default_profile(None) == "standard" and default_profile("cursor") == "core"
+
+
+def test_core_profile_adds_list_repos_in_workspace():
+    enabled = resolve_enabled_tools(WIDE, is_workspace=True, override="core", client="claude_code")
+    assert enabled == {"get_answer", "get_context", "get_why", "list_repos"}
+
+
+def test_a_profile_wins_over_the_client_default():
+    for client in (None, "claude_code", "cursor"):
+        assert resolve_enabled_tools(
+            WIDE, is_workspace=False, override="standard", client=client
+        ) == {"get_answer", "get_context", "get_why", "get_health"}
+
+
+def test_profile_then_deltas():
+    enabled = resolve_enabled_tools(
+        WIDE, is_workspace=False, override=["core", "+get_dependency_path", "-get_why"]
+    )
+    assert enabled == {"get_answer", "get_context", "get_dependency_path"}
+    # One config list item may hold the whole selection; a bare name after a
+    # profile reads as +name.
+    assert resolve_enabled_tools(
+        WIDE, is_workspace=False, override=["core get_health"]
+    ) == {"get_answer", "get_context", "get_why", "get_health"}
+
+
+def test_deltas_alone_adjust_the_client_default():
+    enabled = resolve_enabled_tools(WIDE, is_workspace=False, override="+get_health", client="cursor")
+    assert enabled == {"get_answer", "get_context", "get_why", "get_health"}
+
+
+def test_split_profile():
+    assert split_profile(None) == (None, [])
+    assert split_profile(["Core", "+x"]) == ("core", ["+x"])
+    assert split_profile(["get_answer"]) == (None, ["get_answer"])
 
 
 def test_workspace_only_named_explicitly_is_dropped_single_repo():

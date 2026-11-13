@@ -61,11 +61,18 @@ def logged_in_agent_providers() -> dict[str, CliAuth]:
 
     Each status check is a short subprocess, so they run side by side.
     """
+    from repowise.cli.platform import telemetry
+
     with ThreadPoolExecutor(max_workers=len(AGENT_PROVIDERS) or 1) as pool:
         auths = list(pool.map(agent_cli_auth, AGENT_PROVIDERS))
-    return {
+    found = {
         name: auth for name, auth in zip(AGENT_PROVIDERS, auths, strict=True) if auth is not None
     }
+    # Noted where the probe already runs, so no command spawns one for telemetry.
+    telemetry.add_command_outcome(
+        subscription_cli_detected=any(auth.offer for auth in found.values())
+    )
+    return found
 
 
 def ready_agent_providers() -> tuple[str, ...]:

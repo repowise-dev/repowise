@@ -830,12 +830,15 @@ class TestSymbolSearch:
         assert not any(r["name"] == "login" for r in result["results"])
 
     @pytest.mark.asyncio
-    async def test_no_match_falls_back_to_grep_hint(self, setup_mcp):
+    async def test_a_complete_empty_scan_sends_no_one_to_grep(self, setup_mcp):
         from repowise.server.mcp_server import search_codebase
 
         result = await search_codebase("NonexistentSymbol", mode="symbol")
         assert result["results"] == []
-        assert "grep_hint" in result
+        # The live-file scan already found every literal match: none.
+        assert result["lines"] == [] and result["complete"] is True
+        assert "grep_hint" not in result
+        assert "Grep" not in result.get("note", "")
 
     @pytest.mark.asyncio
     async def test_excluded_symbol_dropped(self, setup_mcp, monkeypatch):
