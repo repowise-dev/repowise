@@ -191,6 +191,8 @@ def _head_commit(root: Path) -> str | None:
             capture_output=True,
             stdin=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (subprocess.TimeoutExpired, OSError):

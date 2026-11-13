@@ -27,6 +27,8 @@ def _read_head_sha(repo_path: Path) -> str | None:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except Exception:

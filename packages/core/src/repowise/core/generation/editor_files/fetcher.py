@@ -651,6 +651,8 @@ def _get_head_short_sha(repo_path: Path) -> str:
             cwd=repo_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         return result.stdout.strip() if result.returncode == 0 else ""

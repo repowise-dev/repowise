@@ -25,6 +25,8 @@ def _git(repo_path: Path, *args: str) -> subprocess.CompletedProcess[str] | None
             cwd=repo_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError):

@@ -217,6 +217,8 @@ def _git_head(repo_path: Path) -> str | None:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             stdin=subprocess.DEVNULL,
         )
@@ -238,6 +240,8 @@ def _changed_file_count(repo_path: Path, indexed: str, live: str) -> int | None:
             cwd=str(repo_path),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             stdin=subprocess.DEVNULL,
         )

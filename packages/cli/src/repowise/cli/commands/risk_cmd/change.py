@@ -95,6 +95,8 @@ def _verify_revision(subject: _Subject) -> None:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except subprocess.CalledProcessError:
         # --quiet suppresses the message; ask git again for the human one.
@@ -103,6 +105,8 @@ def _verify_revision(subject: _Subject) -> None:
             cwd=subject.repo_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if probe.returncode == 0:
             detail = f"{revspec!r} does not name a commit"
