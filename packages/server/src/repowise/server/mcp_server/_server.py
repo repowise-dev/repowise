@@ -809,11 +809,14 @@ class _RepowiseMCP(FastMCP):
         return resolve_client_identity(getattr(info, "name", None))
 
     async def list_tools(self):  # type: ignore[override]
-        tools = await super().list_tools()
+        from repowise.server.mcp_server._tool_selection import (
+            mark_always_loaded,
+            session_tool_names,
+        )
+
+        tools = mark_always_loaded(await super().list_tools())
         client = self._client_slug()
         if client is not None:
-            from repowise.server.mcp_server._tool_selection import session_tool_names
-
             names = session_tool_names(client)
             if names is not None:
                 tools = [t for t in tools if t.name in names]
