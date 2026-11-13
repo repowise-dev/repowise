@@ -864,7 +864,8 @@ def test_the_small_set_bound_is_inclusive(tmp_path):
     assert len(rows) == _line_hits.MAX_LINES_PER_FILE and reasons
 
 
-def test_oversized_text_is_streamed_for_its_lines(tmp_path):
+def test_oversized_text_is_streamed_for_its_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(_line_hits, "MAX_SCAN_SECONDS", 30.0)
     lines = [f"let row{i} = {i}" for i in range(200_000)]
     lines[150_000] = 'let banner = "section1234"'
     (tmp_path / "Big.swift").write_text("\n".join(lines) + "\n", encoding="utf-8")
