@@ -34,6 +34,24 @@ def network_switches_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_signed_in_agent_cli(monkeypatch):
+    """Keep the upgrade line off the developer's own signed-in agent CLIs.
+
+    ``status``, ``doctor`` and the MCP keyless line probe for one; a test that
+    wants a route patches ``agent_cli_auth`` in the core module itself. The MCP
+    server's per-process probe and overview caches start empty per test.
+    """
+    from repowise.server.mcp_server import _meta
+
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.subscription.agent_cli_auth", lambda _name: None
+    )
+    for name in ("_route_probes", "_routes", "_unwritten_pages"):
+        monkeypatch.setattr(_meta, name, {})
+    monkeypatch.setattr(_meta, "_overview_upgrade_named", set())
+
+
+@pytest.fixture(autouse=True)
 def fresh_test_map_cache():
     """In-memory stores reuse one URL and seed graph rows without moving the
     index stamp, so the process-wide index-state caches start empty per test."""

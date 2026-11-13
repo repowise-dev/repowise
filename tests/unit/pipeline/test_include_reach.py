@@ -83,3 +83,25 @@ def test_a_pass_that_runs_after_import_resolution_carries_no_reach() -> None:
     graph.add_edge("b.cpp", "c.h", edge_type="imports")
 
     assert include_reach_refusal(graph, _seed(before), _parsed("a.cpp", "b.h", "b.cpp", "c.h")) is None
+
+
+def test_an_edge_with_no_type_carries_reach_as_an_import() -> None:
+    before = [("a.cpp", "b.h", "imports")]
+    graph = _graph(before)
+    graph.add_edge("b.h", "c.h")
+
+    reason = include_reach_refusal(graph, _seed(before), _parsed("a.cpp", "b.h", "c.h"))
+
+    assert reason == "b.h: the files its includes reach changed"
+
+
+def test_every_import_target_edge_type_carries_reach() -> None:
+    from repowise.core.ingestion.graph._scoped import IMPORT_TARGET_EDGE_TYPES
+
+    for edge_type in IMPORT_TARGET_EDGE_TYPES:
+        before = [("a.cpp", "b.h", "imports")]
+        after = [*before, ("b.h", "c.h", edge_type)]
+
+        reason = include_reach_refusal(_graph(after), _seed(before), _parsed("a.cpp", "b.h", "c.h"))
+
+        assert reason == "b.h: the files its includes reach changed", edge_type
