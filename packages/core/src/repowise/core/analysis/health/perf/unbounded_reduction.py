@@ -29,6 +29,7 @@ from .reduction_idioms import (
     reduction_key,
     walk,
 )
+from .scan_cache import PerfScanCache, scan_cached
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -101,12 +102,14 @@ class _FileScan:
 def collect_unbounded_reductions(
     walked: Iterable[tuple[Any, FileComplexity]],
     read_source: SourceReader | None = None,
+    *,
+    cache: PerfScanCache | None = None,
 ) -> None:
     """Append hits to each file's ``perf_hits``; one file failing skips only it."""
     reader = read_source or _disk_read
     for pf, fcx in walked:
         try:
-            fcx.perf_hits.extend(_file_hits(pf, reader))
+            fcx.perf_hits.extend(_file_hits(pf, reader, cache))
         except Exception as exc:
             log.debug("unbounded_reduction_failed", path=pf.file_info.abs_path, error=str(exc))
 
@@ -118,18 +121,28 @@ def _disk_read(abs_path: str) -> bytes | None:
         return None
 
 
-def _file_hits(pf: Any, read_source: SourceReader) -> list[PerfHit]:
+def _file_hits(
+    pf: Any, read_source: SourceReader, cache: PerfScanCache | None
+) -> list[PerfHit]:
     language = pf.file_info.language
     dialect = PERF_DIALECTS.get(language)
     bound_methods = dialect.unbounded_read_bound_methods() if dialect else frozenset()
-    source = read_source(pf.file_info.abs_path) if bound_methods else None
-    if dialect is None or source is None:
+    if dialect is None or not bound_methods:
         return []
+    return scan_cached(
+        pf, read_source, lambda source: _scan_hits(pf, source, dialect, bound_methods), cache
+    ) or []
+
+
+def _scan_hits(
+    pf: Any, source: bytes, dialect: BasePerfDialect, bound_methods: frozenset[str]
+) -> list[PerfHit] | None:
     from ..dataflow.parsing import parse_source  # deferred: dataflow imports perf
 
+    language = pf.file_info.language
     parsed = parse_source(pf.file_info.abs_path, language, source)
     if parsed is None:
-        return []
+        return None
     root, lmap = parsed
     named = [(fn, _find_function_entry_name(fn, lmap)) for fn in _collect_function_nodes(root, lmap)]
     scan = _FileScan(

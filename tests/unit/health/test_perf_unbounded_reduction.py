@@ -16,7 +16,9 @@ from pathlib import Path
 import pytest
 
 from repowise.core.analysis.health.complexity import FileComplexity
+from repowise.core.analysis.health.perf.scan_cache import PerfScanCache
 from repowise.core.analysis.health.perf.unbounded_reduction import collect_unbounded_reductions
+from repowise.core.ingestion.models import compute_content_hash
 
 _KIND = "unbounded_read_reduced_in_memory"
 
@@ -40,6 +42,7 @@ class _FileInfo:
 @dataclass
 class _ParsedFile:
     file_info: _FileInfo
+    content_hash: str = ""
 
 
 def _hits(tmp_path: Path, name: str, src: str) -> list:
@@ -53,6 +56,83 @@ def _hits(tmp_path: Path, name: str, src: str) -> list:
 
 
 # -- positive ----------------------------------------------------------------
+
+
+def test_cached_reductions_skip_source_reads_and_recompute_an_edit(tmp_path: Path):
+    source = b'''\
+def latest(session):
+    rows = session.execute(select(Build)).scalars().all()
+    seen = set()
+    for row in rows:
+        if row.repo_id in seen:
+            continue
+        seen.add(row.repo_id)
+'''
+    reads = []
+
+    def run(src):
+        cache = PerfScanCache(tmp_path, "unbounded_reduction")
+        cache.load()
+        pf = _ParsedFile(_FileInfo("a.py", str(tmp_path / "a.py"), "python"), compute_content_hash(src))
+        fcx = FileComplexity(functions=[], classes=[])
+
+        def read(path):
+            reads.append(path)
+            return src
+
+        collect_unbounded_reductions([(pf, fcx)], read, cache=cache)
+        cache.save()
+        return fcx.perf_hits
+
+    first = run(source)
+    assert len(first) == 1
+    reads.clear()
+    assert run(source) == first
+    assert reads == []
+    bounded = source.replace(b"select(Build)", b"select(Build).limit(10)")
+    assert run(bounded) == []
+    assert len(reads) == 1
+    reads.clear()
+    assert run(bounded) == []
+    assert reads == []  # A successful scan with no hits is cached too.
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "parse_failed"])
+def test_failed_reduction_scan_is_retried(tmp_path: Path, monkeypatch, failure):
+    from repowise.core.analysis.health.dataflow import parsing
+
+    source = b"def f():\n    return 1\n"
+    pf = _ParsedFile(_FileInfo("a.py", str(tmp_path / "a.py"), "python"), compute_content_hash(source))
+    cache = PerfScanCache(tmp_path, "unbounded_reduction")
+    original = parsing.parse_source
+    reads = []
+
+    def read(path):
+        reads.append(path)
+        return source
+
+    with monkeypatch.context() as patch:
+        if failure == "parse_failed":
+            patch.setattr(parsing, "parse_source", lambda *args: None)
+        collect_unbounded_reductions(
+            [(pf, FileComplexity(functions=[], classes=[]))],
+            (lambda _path: None) if failure == "unreadable" else read,
+            cache=cache,
+        )
+    cache.save()
+    cache.load()
+    reads.clear()
+    calls = []
+
+    def parse(*args):
+        calls.append(args[0])
+        return original(*args)
+
+    monkeypatch.setattr(parsing, "parse_source", parse)
+    collect_unbounded_reductions(
+        [(pf, FileComplexity(functions=[], classes=[]))], read, cache=cache
+    )
+    assert len(reads) == len(calls) == 1
 
 
 def test_same_function_supabase_setdefault(tmp_path: Path):

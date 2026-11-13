@@ -422,7 +422,8 @@ class HealthAnalyzer:
         self._execution_graph_cache: CallGraphIndex | None = None
         self.test_index = RepoTestIndex(self.graph, self.parsed_files, self._execution_graph)
         self.perf_stage = CrossFunctionPerfStage(
-            self.graph, self._execution_graph, self._origins, self.parsed_files, self.read_source
+            self.graph, self._execution_graph, self._origins, self.parsed_files, self.read_source,
+            cache_dir=duplication_cache_dir,
         )
 
     def file_dependents(self) -> dict[str, int]:
