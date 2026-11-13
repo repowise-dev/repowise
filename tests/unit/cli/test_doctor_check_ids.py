@@ -43,6 +43,7 @@ PINNED_IDS = {
     "llm-provider",
     "mcp-responds",
     "omission-store",
+    "oversize-sources",
     "post-commit-hook",
     "provider-config",
     "providers",
