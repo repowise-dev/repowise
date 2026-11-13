@@ -135,9 +135,12 @@ class Item:
 
 _FRONTMATTER = re.compile(r"\A---\n(.*?\n)---\n+", re.S)
 _TOKEN = re.compile(r"\{\{cmd:([a-z0-9-]+)\}\}")
-#: A trailing newline goes with each marker, so a block on lines of its own
-#: leaves no blank line behind for the host that drops it.
-HOST_BLOCK = re.compile(r"\{\{only:([a-z-]+)\}\}\n?(.*?)\{\{end\}\}\n?", re.S)
+#: A block on lines of its own takes the newline after each marker with it, so
+#: the host that drops it gets no blank line. An inline ``{{end}}`` keeps the
+#: newline after it, or the lines either side would join.
+HOST_BLOCK = re.compile(
+    r"\{\{only:([a-z-]+)\}\}\n?(.*?)\{\{end\}\}(?:(?<=\n\{\{end\}\})\n)?", re.S
+)
 _KEY_LINE = re.compile(r"\A([A-Za-z][A-Za-z0-9_-]*):")
 
 

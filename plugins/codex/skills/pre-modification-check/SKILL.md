@@ -10,7 +10,7 @@ Before modifying files in a Repowise-indexed codebase, assess the impact.
 ## Before editing a file
 
 Run `repowise risk --target path/to/file.py --format json`. Per file it returns
-`hotspot_score`, `trend`, `risk_type`, `impact_surface` (top 3),
+`hotspot_score`, `trend`, `risk_type`,
 `dependents_count`, `co_change_partners`, `primary_owner`,
 `test_gap`, and `security_signals`. Read it for:
 - **Bug-fix history** (`defect_profile`) — present only on files with counted
@@ -20,7 +20,7 @@ Run `repowise risk --target path/to/file.py --format json`. Per file it returns
   keeps getting fixed is the strongest single signal that the next edit breaks
   something; lead with it.
 - **Hotspot status** (`hotspot_score`, `trend`) — high-churn × complex? Extra care needed.
-- **Dependents** (`dependents_count`, `impact_surface`) — how wide is the blast radius?
+- **Dependents** (`dependents_count`) — how wide is the blast radius?
 - **Co-change partners** — files that change together with this one (often without an import link); you may need to update them too.
 - **Ownership / bus factor** — who owns it, and whether a single author maintains it.
 - **Test gap & security signals** — flag untested or security-sensitive files before touching them.

@@ -133,10 +133,15 @@ def _item(body: str):
 
 def test_a_host_block_reaches_its_own_host_only() -> None:
     hosts = {host.id: host for host in GEN.HOSTS}
-    item = _item("a\n{{only:codex}}\nb\n{{end}}\nc {{only:claude-code}}d{{end}}e\n")
-    assert GEN.render(item, hosts["codex"], frontmatter_keys=None).endswith("\n\na\nb\nc e\n")
+    item = _item(
+        "a\n{{only:codex}}\nb\n{{end}}\nc {{only:claude-code}}d{{end}}e {{only:codex}}f{{end}}\ng\n"
+    )
+    assert GEN.render(item, hosts["codex"], frontmatter_keys=None).endswith(
+        "\n\na\nb\nc e f\ng\n"
+    )
+    # An inline block that ends a line keeps the line break for the host that drops it.
     assert GEN.render(item, hosts["claude-code"], frontmatter_keys=None).endswith(
-        "\n\na\nc de\n"
+        "\n\na\nc de \ng\n"
     )
 
 
