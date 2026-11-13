@@ -82,6 +82,7 @@ def _run_level() -> tuple[list[GeneratedPage], _RecordingJobSystem, _RecordingSt
             return _page("module_page:lost", stub_error="upstream 529 overloaded")
 
         run = SimpleNamespace(
+            render_budget=None,
             semaphore=asyncio.Semaphore(4),
             job_system=jobs,
             job_id="job-1",
@@ -148,6 +149,7 @@ def test_the_streaming_sink_receives_the_sanitized_page() -> None:
             return page
 
         run = SimpleNamespace(
+            render_budget=None,
             semaphore=asyncio.Semaphore(1),
             job_system=None,
             job_id=None,
