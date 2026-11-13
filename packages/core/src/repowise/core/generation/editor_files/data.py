@@ -171,11 +171,6 @@ class EditorFileData:
         return AGENT_STEER
 
     @property
-    def steer(self) -> str:
-        """The call-first line the block leads with, whatever sections are on."""
-        return AGENT_STEER
-
-    @property
     def keyless(self) -> bool:
         """Whether the index was built with no model: template prose, no semantic search."""
         scope = self.index_scope
