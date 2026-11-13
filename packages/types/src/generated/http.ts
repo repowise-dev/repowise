@@ -3653,6 +3653,13 @@ export interface PlanRiskResponse {
   ref?: string | null;
 }
 
+/** A signed-in agent CLI on a paid plan: a model with no new spend. */
+export interface PlanRoute {
+  provider: string;
+  cli_name: string;
+  minutes?: number | null;
+}
+
 /**
  * What the map is counting.
  *
@@ -3709,6 +3716,7 @@ export interface ProviderStatusResponse {
   providers?: ProviderEntry[];
   flag_only_providers?: string[];
   embedders?: EmbedderEntry[];
+  plan_route?: PlanRoute | null;
 }
 
 /**
@@ -4473,6 +4481,7 @@ export interface SetupAgent {
   config_files?: Record<string, string[]>;
   first_call_at?: string | null;
   last_call_at?: string | null;
+  default_profile?: string;
 }
 
 /** Every call to this repo's index, whichever agent made it. */

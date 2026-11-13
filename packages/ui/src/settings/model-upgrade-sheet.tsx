@@ -30,6 +30,8 @@ export interface ModelUpgradeSheetLabels {
   pages: (count: number) => string;
   counting: string;
   signedInNote: (name: string) => string;
+  /** A sign-in on a paid plan; `minutes` is null when the run is uncounted. */
+  planNote: (name: string, minutes: number | null) => string;
   costNote: (cost: string) => string;
   pricing: string;
   keyNote: string;
@@ -58,6 +60,10 @@ export const DEFAULT_MODEL_UPGRADE_SHEET_LABELS: ModelUpgradeSheetLabels = {
   pages: (count) => `${count} ${count === 1 ? "page" : "pages"} to write`,
   counting: "Counting pages",
   signedInNote: (name) => `Uses your ${name} sign-in.`,
+  planNote: (name, minutes) =>
+    `Uses your ${name} sign-in and plan quota${
+      minutes ? `, about ${minutes} ${minutes === 1 ? "minute" : "minutes"}` : ""
+    }.`,
   costNote: (cost) => `About ${cost} with this key, shown before anything runs.`,
   pricing: "Pricing with this key",
   keyNote: "The price shows before anything runs.",
@@ -75,6 +81,14 @@ export interface ModelUpgradeEstimate {
   loading: boolean;
 }
 
+/** A signed-in agent CLI that reports a paid plan, as the host detected it. */
+export interface ModelUpgradePlanRoute {
+  /** The provider id of the source it applies to. */
+  providerId: string;
+  /** About how long the run takes on it; null when uncounted. */
+  minutes: number | null;
+}
+
 export interface ModelUpgradeSheetProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -89,6 +103,9 @@ export interface ModelUpgradeSheetProps {
   /** Saves a pasted key; reject to keep the draft. */
   onAddKey: (providerId: string, apiKey: string) => Promise<void> | void;
   estimate: ModelUpgradeEstimate;
+  /** The sign-in billed to a paid plan, when one is found. Only that source
+   *  names the plan quota and the time; any other sign-in keeps the plain note. */
+  planRoute?: ModelUpgradePlanRoute | null;
   onWrite: () => void;
   writing?: boolean;
   /** Where the hosted row links to (opens in a new tab). */
@@ -125,7 +142,12 @@ export function ModelUpgradeSheet({
       >
         <SheetHeading labels={labels} />
         <SourceList {...props} labels={labels} />
-        <EstimateBlock selected={selected} estimate={props.estimate} labels={labels} />
+        <EstimateBlock
+          selected={selected}
+          estimate={props.estimate}
+          planRoute={props.planRoute ?? null}
+          labels={labels}
+        />
         <button
           type="button"
           onClick={props.onWrite}
@@ -341,11 +363,14 @@ function PasteKey({
 function estimateNote(
   selected: ModelSource | undefined,
   estimate: ModelUpgradeEstimate,
+  planRoute: ModelUpgradePlanRoute | null,
   labels: ModelUpgradeSheetLabels,
 ): string | null {
   switch (selected?.kind) {
     case "cli":
-      return labels.signedInNote(selected.name);
+      return planRoute && planRoute.providerId === selected.providerId
+        ? labels.planNote(selected.name, planRoute.minutes)
+        : labels.signedInNote(selected.name);
     case "key":
       if (estimate.costText) return labels.costNote(estimate.costText);
       return estimate.loading ? labels.pricing : labels.keyNote;
@@ -361,13 +386,15 @@ function estimateNote(
 function EstimateBlock({
   selected,
   estimate,
+  planRoute,
   labels,
 }: {
   selected: ModelSource | undefined;
   estimate: ModelUpgradeEstimate;
+  planRoute: ModelUpgradePlanRoute | null;
   labels: ModelUpgradeSheetLabels;
 }) {
-  const note = estimateNote(selected, estimate, labels);
+  const note = estimateNote(selected, estimate, planRoute, labels);
   const count =
     estimate.pages != null ? labels.pages(estimate.pages) : estimate.loading ? labels.counting : null;
   return (

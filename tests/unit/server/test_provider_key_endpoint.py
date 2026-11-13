@@ -252,3 +252,44 @@ async def test_detect_query_reports_signed_in_agent_clis(client: AsyncClient, mo
     assert by_id(plain)["codex_cli"] is None
     assert by_id(detected)["codex_cli"] == "signed_in"
     assert by_id(detected)["claude_cli"] is None
+
+
+@pytest.mark.asyncio
+async def test_detect_names_the_plan_route_timed_by_generate(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.generation import scope
+    from repowise.core.index_scope import FreeRoute
+    from repowise.core.providers.llm import subscription
+
+    repo = await create_test_repo(client)
+    seen: list[str] = []
+
+    def route(path):
+        seen.append(str(path))
+        return FreeRoute(provider="claude_cli", cli_name="Claude Code")
+
+    async def calls(session, repo_id, repo_path):
+        return 300
+
+    monkeypatch.setattr(subscription, "detect_free_route", route)
+    monkeypatch.setattr(subscription, "process_limit", lambda name: 5)
+    monkeypatch.setattr(scope, "generate_model_calls", calls)
+
+    body = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert body["plan_route"] == {"provider": "claude_cli", "cli_name": "Claude Code", "minutes": 60}
+    assert seen == [repo["local_path"]]
+
+    # Only the detect call probes, and only for a repo.
+    assert (await client.get(f"/api/providers?repo_id={repo['id']}")).json()["plan_route"] is None
+    assert (await client.get("/api/providers?detect=true")).json()["plan_route"] is None
+    assert len(seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_detect_names_no_plan_route_without_a_paid_plan(client: AsyncClient, monkeypatch) -> None:
+    from repowise.core.providers.llm import subscription
+
+    repo = await create_test_repo(client)
+    monkeypatch.setattr(subscription, "detect_free_route", lambda path: None)
+
+    body = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert body["plan_route"] is None
