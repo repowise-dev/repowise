@@ -108,3 +108,24 @@ def test_a_cycle_does_not_hang():
     a.__cause__ = b
     b.__cause__ = a
     assert _is_connection_loss(a) is False
+
+
+def test_an_implicit_context_does_not_make_a_bug_retryable():
+    """The bot's catch on #5648: `__context__` is set automatically.
+
+    Python sets `__context__` on any exception raised inside an `except` block.
+    A plain bug thrown by an update_fn while a driver error is being handled
+    therefore inherits that driver error as its context — and following the
+    context makes the bug look like a dropped connection. Only an explicit
+    `raise ... from` (``__cause__``) or SQLAlchemy's ``orig`` may be followed.
+    """
+    try:
+        try:
+            raise ConnectionDoesNotExistError("connection was closed")
+        except ConnectionDoesNotExistError:
+            # No `from`: this is an implicit context, not a deliberate chain.
+            raise TypeError("update_fn blew up")  # noqa: B904  (the implicit context is the point)
+    except TypeError as exc:
+        assert isinstance(exc.__context__, ConnectionDoesNotExistError)
+        assert exc.__cause__ is None
+        assert _is_connection_loss(exc) is False

@@ -84,7 +84,14 @@ def _is_connection_loss(exc: BaseException) -> bool:
         seen.add(id(current))
         if any(cls.__name__ in _CONNECTION_LOSS_ERRORS for cls in type(current).__mro__):
             return True
-        for attr in ("orig", "__cause__", "__context__"):
+        # ``orig`` is SQLAlchemy's wrapper for the driver error and ``__cause__``
+        # is an explicit ``raise ... from``. ``__context__`` is deliberately not
+        # followed: Python sets it implicitly for any exception raised inside an
+        # ``except`` block, so a bug thrown from an update_fn while handling a
+        # driver error would inherit that error as its context and look like a
+        # dropped connection — the transient-looking failure this exists to
+        # refuse.
+        for attr in ("orig", "__cause__"):
             nested = getattr(current, attr, None)
             if isinstance(nested, BaseException):
                 pending.append(nested)
