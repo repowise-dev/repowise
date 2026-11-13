@@ -165,33 +165,20 @@ def test_a_keyless_server_never_imports_or_opens_lancedb(tmp_path, no_lancedb_op
     assert build_meta(timing_ms=1.0)["embedder_degraded"] is False
 
 
-def test_a_keyless_server_loads_numpy_before_any_tool_body(monkeypatch):
-    """Keyless tool bodies reach numpy (networkx centrality) on a worker thread.
-
-    On Windows that first import, made mid-call, never returned. The warmup
-    every handler waits on loads it instead, and still skips lancedb.
+def test_stdio_loads_numpy_before_the_transport_reads_stdin(monkeypatch):
+    """On Windows numpy's first load never returns while a stdin read is
+    pending, and the transport keeps one pending all session, so a tool that
+    first imported numpy mid-call hung. It is loaded before the transport runs.
     """
-    imported = []
-    real_to_thread = asyncio.to_thread
+    from repowise.server.mcp_server import _stdio_logging, _watchdog
 
-    async def _to_thread(fn, *args, **kwargs):
-        if fn is __import__:
-            imported.append(args[0])
-        return await real_to_thread(fn, *args, **kwargs)
-
-    monkeypatch.setattr(asyncio, "to_thread", _to_thread)
-    monkeypatch.setattr(_server, "_configured_embedder_name", lambda: "mock")
-
-    async def _go():
-        _state._lancedb_ready = asyncio.Event()
-        try:
-            await _server._warm_lancedb()
-            assert _state._lancedb_ready.is_set()
-        finally:
-            _state._lancedb_ready = None
-
-    asyncio.run(_go())
-    assert imported == ["numpy"]
+    order = []
+    monkeypatch.setattr(_stdio_logging, "route_logging_to_stderr", lambda: None)
+    monkeypatch.setattr(_watchdog, "start_parent_watchdog", lambda: None)
+    monkeypatch.setattr(_server, "_load_native_libraries", lambda: order.append("numpy"))
+    monkeypatch.setattr(_server.mcp, "run", lambda transport: order.append(transport))
+    _server._run_stdio_transport()
+    assert order == ["numpy", "stdio"]
 
 
 def test_the_workspace_registry_skips_a_keyless_store(tmp_path, no_lancedb_open):

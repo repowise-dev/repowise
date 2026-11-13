@@ -18,6 +18,7 @@ Rules of thumb baked into the hint generators:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -1061,6 +1062,10 @@ def _release_meta() -> dict[str, Any]:
 #: it the line names the fallback route; a later ``get_answer`` names what was
 #: found (the overview names its line once, whatever it held then).
 _ROUTE_WAIT_S = 2.0
+#: How long a response waits for the count of calls ``generate`` makes. Past
+#: it the line names the route without minutes; the count keeps running and a
+#: later response uses it. Seconds on a large repo (keploy, 12,881 nodes: 2.6 s).
+_CALLS_WAIT_S = 5.0
 
 # The signed-in agent CLI a keyless line names, probed once per served path in
 # a daemon thread (the probe is a subprocess), and the model calls ``generate``
@@ -1070,6 +1075,7 @@ _route_lock = threading.Lock()
 _route_probes: dict[str, threading.Thread] = {}
 _routes: dict[str, FreeRoute | None] = {}
 _generate_calls: dict[str, int] = {}
+_generate_counts: dict[str, asyncio.Task[int | None]] = {}
 #: Served paths whose overview already named the upgrade this process.
 _overview_upgrade_named: set[str] = set()
 
@@ -1111,30 +1117,56 @@ async def _upgrade_route(
     local_path: str | None, session_factory: Any = None, repo_id: str | None = None
 ) -> FreeRoute | None:
     """The free route for this index, timed by the calls ``generate`` makes when they can be counted."""
-    import asyncio
-
     route = await asyncio.to_thread(_probed_route, local_path, _ROUTE_WAIT_S)
     # The lanes are read from the checkout's state.json: no path, no minutes.
     if route is None or session_factory is None or not repo_id or not local_path:
         return route
-    calls = _generate_calls.get(repo_id)
+    calls = await _generate_call_count(session_factory, repo_id, local_path)
     if calls is None:
-        from repowise.core.generation.scope import generate_model_calls
-        from repowise.core.persistence import get_session
-
-        try:
-            # Ceiling: pending decision lanes load the stored graph once per
-            # process, seconds on a very large repo; caching the planned count
-            # in state.json at index time is the upgrade if that shows up.
-            async with get_session(session_factory) as session:
-                calls = await generate_model_calls(session, repo_id, local_path)
-        except Exception:
-            _log.debug("repowise MCP: generate call count failed", exc_info=True)
-            return route
-        _generate_calls[repo_id] = calls
+        return route
     from repowise.core.providers.llm.subscription import route_minutes
 
     return route_minutes(route, calls)
+
+
+async def _count_generate_calls(session_factory: Any, repo_id: str, local_path: str) -> int | None:
+    from repowise.core.generation.scope import generate_model_calls
+    from repowise.core.persistence import get_session
+
+    try:
+        # Ceiling: pending decision lanes load the stored graph once per
+        # process, seconds on a very large repo; caching the planned count in
+        # state.json at index time is the upgrade if that shows up.
+        async with get_session(session_factory) as session:
+            calls = await generate_model_calls(session, repo_id, local_path)
+    except Exception:
+        _log.debug("repowise MCP: generate call count failed", exc_info=True)
+        _generate_counts.pop(repo_id, None)  # the next response tries again
+        return None
+    _generate_calls[repo_id] = calls
+    return calls
+
+
+async def _generate_call_count(session_factory: Any, repo_id: str, local_path: str) -> int | None:
+    """The calls ``generate`` makes for *repo_id*, or None past :data:`_CALLS_WAIT_S`.
+
+    The line is best effort and must never hold a reply: the count plans
+    decision lanes on a worker thread, which can be slow or, as the Windows
+    numpy load showed, never return. One count runs per repo, shielded, so a
+    reply that stops waiting leaves it running for the next one.
+    """
+    calls = _generate_calls.get(repo_id)
+    if calls is not None:
+        return calls
+    task = _generate_counts.get(repo_id)
+    if task is None or task.get_loop() is not asyncio.get_running_loop():
+        task = asyncio.ensure_future(_count_generate_calls(session_factory, repo_id, local_path))
+        _generate_counts[repo_id] = task
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), _CALLS_WAIT_S)
+    except TimeoutError:
+        _log.debug("repowise MCP: generate call count still running; line sent without minutes")
+        return None
 
 
 async def prose_upgrade_meta(

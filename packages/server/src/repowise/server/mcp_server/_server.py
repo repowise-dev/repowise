@@ -420,15 +420,10 @@ async def _warm_lancedb() -> None:
     ``_failure_shield``), so the two never overlap.
 
     A keyless embedder never runs the vector leg, so nothing reads LanceDB and
-    only numpy is imported here. Tool bodies still reach it (graph centrality
-    through networkx, on a worker thread), and on Windows numpy's first import
-    from a worker thread in the middle of a tool call never returned: the
-    keyless get_overview and get_answer hung on it. Loaded here, it is loaded
-    before any handler body runs.
+    the import is skipped: no tool call waits on it.
     """
     try:
         if _is_keyless_name(_configured_embedder_name()):
-            await asyncio.to_thread(__import__, "numpy")
             return
         await asyncio.to_thread(__import__, "lancedb")
     except ImportError:
@@ -1121,6 +1116,24 @@ def _run_network_transport(transport: str, host: str, port: int) -> None:
     mcp.run(transport=transport)
 
 
+def _load_native_libraries() -> None:
+    """Load numpy before the stdio transport starts reading stdin.
+
+    On Windows, loading numpy's OpenBLAS DLL while a read is pending on the
+    stdin pipe never returns: its start-up waits behind the read, the read
+    waits for the client, the client waits for the reply. The SDK keeps a read
+    pending all session, and tools first import numpy mid-call (networkx
+    pagerank, lancedb), so that call hung. Any thread hangs; only loading it
+    before a read is pending avoids it. numpy alone covers what tools load
+    (pagerank, scipy.sparse, pyarrow, lancedb) in about 0.15 s. scipy's own
+    Fortran modules (``scipy.linalg``, ``scipy.stats``) hang too; a tool that
+    starts importing one adds it here.
+    """
+    # A broken install fails in the tool that needs it, not at startup.
+    with contextlib.suppress(ImportError):
+        import numpy  # noqa: F401
+
+
 def _run_stdio_transport() -> int:
     """Run the stdio transport; returns how many stray stdout writes it saw."""
     # stdout is the JSON-RPC channel on stdio, so every log line written there
@@ -1136,6 +1149,7 @@ def _run_stdio_transport() -> int:
     from repowise.server.mcp_server._watchdog import start_parent_watchdog
 
     start_parent_watchdog()
+    _load_native_libraries()
     # The SDK writes frames through stdout's buffer, so anything arriving at
     # the text layer is a stray print. The guard moves it to stderr, counts it,
     # and the count is what names the session protocol_corrupted.

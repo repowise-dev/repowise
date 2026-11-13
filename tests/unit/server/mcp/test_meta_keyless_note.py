@@ -7,6 +7,7 @@ back to a provider key or a local model otherwise.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -189,3 +190,36 @@ def test_only_the_first_response_waits_for_the_probe(monkeypatch) -> None:
     assert _meta._probed_route("slow", 0.05) is None
     assert joined == []
     release.set()
+
+
+async def test_a_slow_generate_count_never_holds_the_reply(tmp_path, monkeypatch) -> None:
+    """The count plans decision lanes on a worker thread, which once never
+    returned (a Windows DLL load). The line goes out without minutes past the
+    wait, and the count that kept running times a later reply."""
+    import asyncio
+
+    from repowise.core.generation import scope
+
+    release = asyncio.Event()
+    started: list[str] = []
+
+    async def _slow_count(_session, repo_id, _path):
+        started.append(repo_id)
+        await release.wait()
+        return 17
+
+    monkeypatch.setattr(_meta, "_CALLS_WAIT_S", 0.05)
+    monkeypatch.setattr(_meta, "_detect_route", lambda _p: FreeRoute("claude_cli", "Claude Code"))
+    monkeypatch.setattr(scope, "generate_model_calls", _slow_count)
+    monkeypatch.setattr("repowise.core.persistence.get_session", lambda _f: contextlib.nullcontext())
+    repo = str(tmp_path)
+
+    first = await asyncio.wait_for(_meta._upgrade_route(repo, object(), "r1"), 2)
+    assert first == FreeRoute("claude_cli", "Claude Code")
+    second = await asyncio.wait_for(_meta._upgrade_route(repo, object(), "r1"), 2)
+    assert second == first and started == ["r1"]
+
+    release.set()
+    await _meta._generate_counts["r1"]
+    timed = await _meta._upgrade_route(repo, object(), "r1")
+    assert timed == subscription.route_minutes(first, 17) and started == ["r1"]
