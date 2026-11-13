@@ -47,6 +47,57 @@ from repowise.core.repo_config import config_dependency_fingerprints
 logger = structlog.get_logger(__name__)
 
 
+#: Seconds to wait before each retry. Two attempts total, so one entry.
+_RETRY_BACKOFF_S: tuple[float, ...] = (1.0,)
+
+#: Driver exceptions that mean "the connection went away", matched by class name
+#: so this module does not import asyncpg (an optional dependency) to name them.
+#: Anything not in here — IntegrityError, DataError, ProgrammingError, a bug in
+#: an ``update_fn`` — is never retried: those are defects, and a retry only
+#: moves the failure to a second stack trace.
+_CONNECTION_LOSS_ERRORS: frozenset[str] = frozenset(
+    {
+        "ConnectionDoesNotExistError",
+        "ConnectionFailureError",
+        "ConnectionTimeoutError",
+        "AdminShutdownError",
+        "CannotConnectNowError",
+        "TooManyConnectionsError",
+    }
+)
+
+
+def _is_connection_loss(exc: BaseException) -> bool:
+    """Whether *exc* is the database going away rather than the work being wrong.
+
+    SQLAlchemy wraps driver errors, so the wrapped ``orig`` is checked too — a
+    bare ``OperationalError`` from a statement bug would otherwise look
+    retryable. The check is deliberately name-based: the driver is optional, and
+    importing it to write an ``isinstance`` would make this a hard dependency.
+    """
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if any(cls.__name__ in _CONNECTION_LOSS_ERRORS for cls in type(current).__mro__):
+            return True
+        # ``orig`` is SQLAlchemy's wrapper for the driver error and ``__cause__``
+        # is an explicit ``raise ... from``. ``__context__`` is deliberately not
+        # followed: Python sets it implicitly for any exception raised inside an
+        # ``except`` block, so a bug thrown from an update_fn while handling a
+        # driver error would inherit that error as its context and look like a
+        # dropped connection — the transient-looking failure this exists to
+        # refuse.
+        for attr in ("orig", "__cause__"):
+            nested = getattr(current, attr, None)
+            if isinstance(nested, BaseException):
+                pending.append(nested)
+    return False
+
+
 async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any, Any]:
     """Create the repo row + a ResumeController bound to a fresh engine.
 
@@ -182,7 +233,7 @@ async def persist_result(
         fts = FullTextSearch(engine)
         await fts.ensure_index()
 
-    async with get_session(sf) as session:
+    async def _persist_all(session: Any) -> list[str]:
         # Slice 1 (#5338): this function commits one domain at a time instead of
         # once at the end, so a dropped connection costs the domain in flight
         # rather than the whole persist. Committing mid-session would normally
@@ -327,7 +378,34 @@ async def persist_result(
         # Nothing is deleted from the vector store here: each batch of retired
         # pages was deleted immediately before the commit that made its SQL side
         # durable, which is the ordering the invariant needs. Deleting after the
+        # Nothing is deleted from the vector store here: each batch of retired
+        # pages was deleted immediately before the commit that made its SQL side
+        # durable, which is the ordering the invariant needs. Deleting after the
         # commits would leave a committed row whose embedding outlives it.
+        return swept_page_ids, persisted_repo_id
+
+    # Slice 2 (#5338): a dropped connection is retried on a fresh session
+    # instead of failing the run. The replay is cheap because slice 1 leaves
+    # every completed domain committed and every write an upsert, so a second
+    # pass re-applies them idempotently and finishes the one that died.
+    swept_page_ids: list[str] = []
+    persisted_repo_id: Any = None
+    for attempt in (1, 2):
+        try:
+            async with get_session(sf) as session:
+                swept_page_ids, persisted_repo_id = await _persist_all(session)
+            break
+        except BaseException as exc:
+            if attempt == 2 or not _is_connection_loss(exc):
+                raise
+            logger.warning("persist_connection_lost", attempt=attempt, error=str(exc))
+            print(
+                f"The database connection was lost during persist "
+                f"({type(exc).__name__}); retrying on a fresh connection."
+            )
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(_RETRY_BACKOFF_S[attempt - 1])
 
     # FTS deletes/indexing run outside the session: the FTS index lives in the
     # *same* SQLite file as the session, so touching it while the session still
