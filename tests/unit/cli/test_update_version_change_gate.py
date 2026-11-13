@@ -281,3 +281,36 @@ def test_stale_scanner_rescans_when_the_config_fingerprint_also_moved(
     assert rescanned == [1]
     assert load_state(repo)["security_scanner_version"] == SECURITY_SCANNER_VERSION
     _assert_config_recorded(repo)
+
+
+def _config_edit_run(**flags):
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.update_cmd.options import UpdateRun
+    from repowise.core.pipeline import PhaseTimings
+
+    run = UpdateRun(start=0.0, timings=PhaseTimings(), defer_docs=flags.pop("defer_docs", False))
+    run.config = SimpleNamespace(changed=True, git_changed=False, generation_changed=False)
+    for name, value in flags.items():
+        setattr(run, name, value)
+    return run
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "analyzer_changed",
+        "extraction_changed",
+        "renderer_changed",
+        "wiki_rebuild",
+        "history_stale",
+        "refresh_git",
+    ],
+)
+def test_a_moved_stamp_keeps_a_config_edit_off_the_config_only_path(flag) -> None:
+    assert upd_cmd._config_change_only(_config_edit_run())
+    assert not upd_cmd._config_change_only(_config_edit_run(**{flag: True}))
+
+
+def test_deferred_docs_leave_a_renderer_change_to_a_later_run() -> None:
+    assert upd_cmd._config_change_only(_config_edit_run(renderer_changed=True, defer_docs=True))

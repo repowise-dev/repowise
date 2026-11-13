@@ -113,16 +113,17 @@ class UpdateRun:
         return bool(config and config.generation_changed) or self.wiki_rebuild
 
 
-def rework_pending(run: UpdateRun) -> bool:
+def rework_pending(run: UpdateRun, *, defer_renderer: bool = False) -> bool:
     """Whether a moved version stamp or a forced re-read owes work no commit explains.
 
     The one list every shortcut checks (nothing to do, config only, working
     tree only, dead code reuse); a new recompute stamp joins here once.
+    ``defer_renderer`` leaves a renderer change to a later run.
     """
     return bool(
         run.analyzer_changed
         or run.extraction_changed
-        or run.renderer_changed
+        or (run.renderer_changed and not defer_renderer)
         or run.wiki_rebuild
         or run.history_stale
         or run.refresh_git

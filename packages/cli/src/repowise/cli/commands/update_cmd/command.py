@@ -1429,10 +1429,15 @@ def _config_change_only(run: UpdateRun) -> bool:
 
     A moved version stamp (analyzer, parser, renderer, history) needs the full
     path, which also records the new config; this one would only record it.
+    ``--defer-docs`` leaves a renderer change to the "up to date" path, as the
+    staleness gate does.
     """
     config = run.config
     return config.changed and not (
-        run.file_diffs or config.git_changed or run.full_generation or rework_pending(run)
+        run.file_diffs
+        or config.git_changed
+        or run.full_generation
+        or rework_pending(run, defer_renderer=run.defer_docs)
     )
 
 
