@@ -367,6 +367,19 @@ async def test_execute_job_writes_fulltext_rows_to_repository_index(session_fact
     assert refresh_fts.await_args.args[0] is repo_fts
 
 
+def test_job_fts_skips_the_primary_index_for_a_member_without_its_own():
+    """A member DB whose FTS failed to open must not write into the primary's index."""
+    from repowise.server.job_executor import _resolve_job_fts
+
+    primary = MagicMock(name="primary_fts")
+    spec = SimpleNamespace(repo_id="member")
+    member_state = SimpleNamespace(fts=primary, workspace_fts={}, workspace_sessions={"member": object()})
+    single_state = SimpleNamespace(fts=primary)
+
+    assert _resolve_job_fts(member_state, spec) is None
+    assert _resolve_job_fts(single_state, spec) is primary
+
+
 @pytest.mark.asyncio
 async def test_incremental_page_regen_passes_repo_path(tmp_path):
     """Incremental regen must forward repo_path to generate_all.

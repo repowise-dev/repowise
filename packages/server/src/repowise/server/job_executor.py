@@ -531,9 +531,15 @@ async def _start_job(session_factory: Any, job_id: str) -> _JobSpec | None:
 def _resolve_job_fts(app_state: Any, spec: _JobSpec) -> Any:
     """The repository's own fulltext index, where search reads it.
 
-    A repository without a registered index (single-repo serve) uses the primary one."""
+    A repository without a registered index (single-repo serve) uses the primary one.
+    A member with its own database whose index failed to open gets ``None``
+    (no fulltext writes), not the primary's index, which holds other pages."""
     repo_fts = (getattr(app_state, "workspace_fts", None) or {}).get(spec.repo_id)
-    return repo_fts if repo_fts is not None else app_state.fts
+    if repo_fts is not None:
+        return repo_fts
+    if spec.repo_id in (getattr(app_state, "workspace_sessions", None) or {}):
+        return None
+    return app_state.fts
 
 
 async def _resolve_job_vector_store(app_state: Any, spec: _JobSpec) -> Any:
