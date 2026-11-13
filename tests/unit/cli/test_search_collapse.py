@@ -223,7 +223,7 @@ def _spy_run(payload, calls: list):
     otherwise invisible until the command runs against a real repo.
     """
 
-    def _run(repo_path, factory, tool_name):
+    def _run(repo_path, factory, tool_name, **_kwargs):
         coro = factory()
         calls.append((repo_path, coro.cr_code.co_qualname, tool_name))
         coro.close()
@@ -391,7 +391,7 @@ def test_search_reaches_the_tool_with_the_mapped_mode(monkeypatch, repo, request
     """
     seen: dict = {}
 
-    def _run(repo_path, factory, tool_name):
+    def _run(repo_path, factory, tool_name, **_kwargs):
         coro = factory()
         seen.update(coro.cr_frame.f_locals)
         coro.close()

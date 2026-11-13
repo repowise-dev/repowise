@@ -132,6 +132,7 @@ def run(
     tool_name: str,
     *,
     workspace_root: Path | None = None,
+    reads_vectors: bool | None = None,
 ) -> dict:
     """Await one tool coroutine with this repo's resources published.
 
@@ -151,7 +152,13 @@ def run(
     from repowise.cli.tool_bridge import call_tool
 
     with silence_logs_for_machine_output():
-        return call_tool(repo_path, factory, tool_name, workspace_root=workspace_root)
+        return call_tool(
+            repo_path,
+            factory,
+            tool_name,
+            workspace_root=workspace_root,
+            reads_vectors=reads_vectors,
+        )
 
 
 #: MCP tool name -> the CLI command that now does the same thing.

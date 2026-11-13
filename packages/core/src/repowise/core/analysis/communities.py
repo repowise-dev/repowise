@@ -15,9 +15,8 @@ import inspect
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import networkx as nx
 import structlog
 
 from repowise.core.analysis._leiden import leiden_partition
@@ -30,6 +29,10 @@ from repowise.core.ingestion.models import (
 )
 from repowise.core.support_paths import is_example_path
 from repowise.core.test_paths import is_test_related_path
+
+# networkx costs ~0.35 s to import; readers of ``has_community`` never build a graph.
+if TYPE_CHECKING:
+    import networkx as nx
 
 log = structlog.get_logger(__name__)
 
@@ -129,6 +132,7 @@ def _directory_fallback(nodes: list[str]) -> dict[str, int]:
 
 def _canonical(graph: nx.Graph) -> nx.Graph:
     """*graph* rebuilt with nodes, and each edge's endpoints, in sorted order."""
+    import networkx as nx
     ordered = nx.Graph()
     ordered.add_nodes_from(sorted(graph.nodes()))
     ordered.add_edges_from(
@@ -161,6 +165,8 @@ def _partition(graph: nx.Graph) -> tuple[dict, str]:
 
     # Fallback: networkx Louvain
     try:
+        import networkx as nx
+
         kwargs: dict = {"seed": 42, "threshold": 1e-4}
         if "max_level" in inspect.signature(nx.community.louvain_communities).parameters:
             kwargs["max_level"] = 10
@@ -559,6 +565,7 @@ def community_code_fingerprint() -> str:
     # kg_curation holds the label vocabulary the community info is named with.
     for module_file in (__file__, _leiden.__file__, kg_curation.__file__):
         digest.update(Path(module_file).read_bytes())
+    import networkx as nx
     digest.update(nx.__version__.encode())
     try:
         digest.update(version("graspologic-native").encode())
@@ -752,6 +759,7 @@ def place_file_communities(
         production = None
 
     # Build undirected subgraph from production files + relevant edges
+    import networkx as nx
     undirected = nx.Graph()
     undirected.add_nodes_from(prod_nodes)
     undirected.add_edges_from(files.production_edges)
@@ -824,6 +832,7 @@ def _community_info(
 
     communities_info: dict[int, CommunityInfo] = {}
     # Also build an undirected graph including test edges for cohesion scoring
+    import networkx as nx
     full_undirected = nx.Graph()
     full_undirected.add_nodes_from(file_nodes)
     for u, v, d in graph.edges(file_nodes, data=True):
@@ -940,6 +949,7 @@ def symbol_community_graph(graph: nx.DiGraph) -> nx.Graph:
         if d.get("node_type") == "symbol"
     )
     symbol_set = frozenset(symbol_nodes)
+    import networkx as nx
     undirected = nx.Graph()
     undirected.add_nodes_from(symbol_nodes)
     undirected.add_edges_from(
