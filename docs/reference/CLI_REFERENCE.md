@@ -252,7 +252,7 @@ repowise update --full                 # leave nothing stale (fast index: upgrad
 | `--docs` / `--no-docs` | This run: `--docs` LLM-regenerates changed pages (even if indexed without docs); `--no-docs` = `--index-only`. | `docs_mode` in `.repowise/state.json` (from `init`) |
 | `--index-only` | Skip model regeneration; template wikis still render. In a workspace, applies to every stale repo. | off |
 | `--defer-docs` | With `--index-only` or `--no-docs`, persist facts and mark affected docs stale without rendering or embedding. Single repo only. | off |
-| `--render-budget N` | Render at most N stale template pages, with changed sources first. Requires a template wiki and `--index-only` or `--no-docs`; single repo only. | unlimited |
+| `--render-budget N` | Render at most N stale pages built from code, with changed sources first. Requires documentation built from code and `--index-only` or `--no-docs`; single repo only. | unlimited |
 | `--refresh-git` | Re-read Git history at the current tier and commit cap, even at an unchanged HEAD. Requires `--index-only --defer-docs`; single repo only; not with `--full`. | off |
 | `--working-tree` | Also index staged, unstaged, untracked work; see notes. | off |
 | `--full` | Leave nothing stale: catch a full index up, or upgrade a fast one (below). One repo at a time (`--repo <alias>` in a workspace). | off |
