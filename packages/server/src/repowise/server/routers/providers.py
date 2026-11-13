@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -86,6 +87,44 @@ async def get_providers(request: Request, repo_id: str | None = None, detect: bo
 # while the repo has no model, and the first page ``generate`` writes saves the
 # provider, which ends the route, so a count cannot outlive what it sized.
 _generate_calls: dict[str, int] = {}
+# Only the first request waits for a count; later requests reuse its work.
+_CALLS_WAIT_S = 5.0
+_COUNT_CEILING_S = 60.0
+_generate_counts: dict[str, asyncio.Task[int | None]] = {}
+
+
+async def _count_generate_calls(factory: Any, repo_id: str, repo_path: str) -> int | None:
+    from repowise.core.generation.scope import generate_model_calls
+
+    try:
+        async with get_session(factory) as session:
+            calls = await asyncio.wait_for(
+                generate_model_calls(session, repo_id, repo_path), _COUNT_CEILING_S
+            )
+    except TimeoutError:
+        # Close the session and retain the completed task, so a stuck count is not retried.
+        logger.debug("providers: generate call count gave up after %ss", _COUNT_CEILING_S)
+        return None
+    except Exception:
+        logger.debug("providers: could not count generate's calls for %s", repo_id, exc_info=True)
+        _generate_counts.pop(repo_id, None)
+        return None
+    _generate_calls[repo_id] = calls
+    return calls
+
+
+async def _generate_call_count(factory: Any, repo_id: str, repo_path: str) -> int | None:
+    task = _generate_counts.get(repo_id)
+    if task is None or task.cancelled() or task.get_loop() is not asyncio.get_running_loop():
+        task = asyncio.ensure_future(_count_generate_calls(factory, repo_id, repo_path))
+        _generate_counts[repo_id] = task
+    elif not task.done():
+        return None
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), _CALLS_WAIT_S)
+    except TimeoutError:
+        logger.debug("providers: generate call count still running; route sent without minutes")
+        return None
 
 
 async def _plan_route(
@@ -98,7 +137,6 @@ async def _plan_route(
     """
     if not repo_id or not repo_path:
         return None
-    from repowise.core.generation.scope import generate_model_calls
     from repowise.core.providers.llm.subscription import detect_free_route, route_minutes
 
     try:
@@ -113,10 +151,9 @@ async def _plan_route(
         calls = _generate_calls.get(repo_id)
         if calls is None:
             factory = resolve_session_factory(request.app.state, repo_id)
-            async with get_session(factory) as session:
-                calls = await generate_model_calls(session, repo_id, repo_path)
-            _generate_calls[repo_id] = calls
-        route = route_minutes(route, calls)
+            calls = await _generate_call_count(factory, repo_id, repo_path)
+        if calls is not None:
+            route = route_minutes(route, calls)
     except Exception:
         logger.debug("providers: could not count generate's calls for %s", repo_id, exc_info=True)
     return {"provider": route.provider, "cli_name": route.cli_name, "minutes": route.minutes}
