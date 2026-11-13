@@ -985,6 +985,8 @@ async def _add_dynamic_hints(
                 dotnet_index=graph_builder.dotnet_index,
                 file_paths=hint_paths,
                 source_map=source_map,
+                # The graph's cache directory: none on a read-only run.
+                cache_dir=getattr(graph_builder, "_cache_dir", None),
             ),
         )
         graph_builder.add_dynamic_edges(dynamic_edges)
