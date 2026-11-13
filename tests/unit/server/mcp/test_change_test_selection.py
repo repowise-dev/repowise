@@ -266,10 +266,17 @@ async def test_a_change_past_the_ceiling_runs_every_test_without_selecting(
         [("tests/test_status.py", "src/status.py", "imports")],
     )
 
-    async def _no_selection(*_a, **_k):
-        raise AssertionError("selected tests for a change past the ceiling")
+    started: list[str] = []
+    real = _test_selection.select_change_tests
 
-    monkeypatch.setattr(_test_selection, "_select_here", _no_selection)
+    async def _recording(*args, **kwargs):
+        started.append(args[2].label)
+        return await real(*args, **kwargs)
+
+    # The head start reads it off the tool package, the tests block off its module.
+    tool_pkg = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    monkeypatch.setattr(tool_pkg, "select_change_tests", _recording)
+    monkeypatch.setattr(_test_selection, "select_change_tests", _recording)
     monkeypatch.setattr(service, "MAX_CHANGED_FILES", 1)
 
     it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
@@ -277,6 +284,29 @@ async def test_a_change_past_the_ceiling_runs_every_test_without_selecting(
     assert it["status"] == "too_large"
     assert it["run_all"] is True
     assert "2 changed files exceeds the 1-file ceiling" in it["summary"]
+    assert started == []
+
+
+@pytest.mark.asyncio
+async def test_a_change_at_the_ceiling_is_still_selected_from(tmp_path, monkeypatch) -> None:
+    from repowise.core.analysis.change_health import service
+
+    repo, base = _repo(tmp_path, _STATUS)
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "tests/test_status.py": "x = 1\n"},
+        "fix: status",
+    )
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        [("tests/test_status.py", "src/status.py", "imports")],
+    )
+    monkeypatch.setattr(service, "MAX_CHANGED_FILES", 2)
+
+    it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
+
+    assert it["status"] != "too_large"
 
 
 @pytest.mark.asyncio
