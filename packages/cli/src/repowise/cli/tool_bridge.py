@@ -55,7 +55,7 @@ async def _acall_tool(
     from repowise.server.mcp_server._failure_shield import _shape_exception
 
     # Not via ``chat_tools``: that module imports the HTTP auth stack.
-    from repowise.server.mcp_server._state import init_tool_state
+    from repowise.server.mcp_server._state import init_tool_state, publish_served_repo_id
 
     engine = None
     store = None
@@ -98,6 +98,9 @@ async def _acall_tool(
                 decision_store=store,
                 repo_path=str(repo_path),
             )
+            # Live reads (lines, references) follow this checkout, not the
+            # path a copied or moved index was built at, as through MCP.
+            await publish_served_repo_id(session_factory)
         return _budgeted(tool_name, await factory())
     except Exception as exc:
         return _shape_exception(tool_name, exc, long_running=False)
