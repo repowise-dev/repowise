@@ -861,7 +861,7 @@ repowise impacted-tests main...HEAD --format args --runner pytest --prioritize
 |------|--------------|---------|
 | `--path` | Repo path. | cwd / workspace primary |
 | `--staged` | Staged changes (`git diff --cached`). | on with no range outside CI (in CI: the pull request's change) |
-| `--format` | `table`, `json` (report + selection), `list` (an id per line), `args` (runner arguments or `:all`; reasons on stderr). | `table` |
+| `--format` | `table`, `json` (report + selection), `list` (an id per line; none, with the reason on stderr, when every test must run), `args` (runner arguments or `:all`; reasons on stderr). | `table` |
 | `--runner` | For `args`: `auto` (`files` when mixed), `pytest` (node ids or files), `go` (package dirs), `jest` (files; use `--runTestsByPath`), `files`. | `auto` |
 | `--explain` | Test file or node id: why (not) selected (changed file, evidence, import route, or rule), run-order place; JSON `explain`. | |
 | `--prioritize` | With `args`, `list`, `json`: whole suite, selected first; skips nothing; orders full runs. | off |
