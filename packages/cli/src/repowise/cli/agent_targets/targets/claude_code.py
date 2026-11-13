@@ -390,10 +390,6 @@ def _plugin_installs(repo_path: Path | None = None) -> list[dict]:
     loads nothing, so it has no installs. With *repo_path*, an install pinned
     to a project (its ``projectPath``) counts only for that project.
     """
-    import click
-
-    from repowise.cli.mcp_config import load_existing_config
-
     manifest = plugin_manifest_path()
     if not manifest.exists():
         return []
@@ -407,17 +403,26 @@ def _plugin_installs(repo_path: Path | None = None) -> list[dict]:
     installs = plugins.get(PLUGIN_KEY)
     if not isinstance(installs, list):
         return []
-    try:
-        enabled = load_existing_config(settings_path()).get("enabledPlugins")
-    except click.ClickException:  # absent or unreadable settings: no opt-out
-        enabled = None
-    if isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False:
+    if _plugin_turned_off():
         return []
     return [
         entry
         for entry in installs
         if isinstance(entry, dict) and (repo_path is None or _install_serves(entry, repo_path))
     ]
+
+
+def _plugin_turned_off() -> bool:
+    """Whether settings.json sets the plugin to false in ``enabledPlugins``."""
+    import click
+
+    from repowise.cli.mcp_config import load_existing_config
+
+    try:
+        enabled = load_existing_config(settings_path()).get("enabledPlugins")
+    except click.ClickException:  # absent or unreadable settings: no opt-out
+        return False
+    return isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False
 
 
 def _install_serves(entry: dict, repo_path: Path) -> bool:
