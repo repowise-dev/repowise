@@ -1062,9 +1062,9 @@ def _release_meta() -> dict[str, Any]:
 #: it the line names the fallback route; a later ``get_answer`` names what was
 #: found (the overview names its line once, whatever it held then).
 _ROUTE_WAIT_S = 2.0
-#: How long a response waits for the count of calls ``generate`` makes. Past
-#: it the line names the route without minutes; the count keeps running and a
-#: later response uses it. Seconds on a large repo (keploy, 12,881 nodes: 2.6 s).
+#: How long the response that starts the count of calls ``generate`` makes
+#: waits for it. Past it the line names the route without minutes; the count
+#: keeps running and a later response uses it. About 2.6 s on a 12,881-node repo.
 _CALLS_WAIT_S = 5.0
 
 # The signed-in agent CLI a keyless line names, probed once per served path in
@@ -1153,15 +1153,18 @@ async def _generate_call_count(session_factory: Any, repo_id: str, local_path: s
     The line is best effort and must never hold a reply: the count plans
     decision lanes on a worker thread, which can be slow or, as the Windows
     numpy load showed, never return. One count runs per repo, shielded, so a
-    reply that stops waiting leaves it running for the next one.
+    reply that stops waiting leaves it running for the next one. As with the
+    route probe, only the reply that started it waits.
     """
     calls = _generate_calls.get(repo_id)
     if calls is not None:
         return calls
     task = _generate_counts.get(repo_id)
-    if task is None or task.get_loop() is not asyncio.get_running_loop():
+    if task is None or task.cancelled() or task.get_loop() is not asyncio.get_running_loop():
         task = asyncio.ensure_future(_count_generate_calls(session_factory, repo_id, local_path))
         _generate_counts[repo_id] = task
+    elif not task.done():
+        return None
     try:
         return await asyncio.wait_for(asyncio.shield(task), _CALLS_WAIT_S)
     except TimeoutError:

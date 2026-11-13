@@ -1129,6 +1129,9 @@ def _load_native_libraries() -> None:
     Fortran modules (``scipy.linalg``, ``scipy.stats``) hang too; a tool that
     starts importing one adds it here.
     """
+    from repowise.core.blas_threads import limit_blas_threads
+
+    limit_blas_threads()  # before numpy, even when run_mcp is reached without the CLI
     # A broken install fails in the tool that needs it, not at startup.
     with contextlib.suppress(ImportError):
         import numpy  # noqa: F401

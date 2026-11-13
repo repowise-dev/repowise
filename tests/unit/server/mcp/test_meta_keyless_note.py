@@ -216,6 +216,8 @@ async def test_a_slow_generate_count_never_holds_the_reply(tmp_path, monkeypatch
 
     first = await asyncio.wait_for(_meta._upgrade_route(repo, object(), "r1"), 2)
     assert first == FreeRoute("claude_cli", "Claude Code")
+    # Only the reply that started the count waits for it.
+    monkeypatch.setattr(_meta, "_CALLS_WAIT_S", 30)
     second = await asyncio.wait_for(_meta._upgrade_route(repo, object(), "r1"), 2)
     assert second == first and started == ["r1"]
 
