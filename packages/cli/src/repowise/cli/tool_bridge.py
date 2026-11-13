@@ -43,8 +43,11 @@ async def _acall_tool(
     factory: Callable[[], Awaitable[dict]],
     tool_name: str,
     workspace_root: Path | None = None,
+    reads_vectors: bool | None = None,
 ) -> dict:
     """Wire tool state for *repo_path*, await ``factory()``, then tear down."""
+    if reads_vectors is None:
+        reads_vectors = tool_name in _VECTOR_TOOLS
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from repowise.cli.helpers import get_db_url_for_repo, reconcile_schema_best_effort
@@ -84,7 +87,7 @@ async def _acall_tool(
                 engine, expire_on_commit=False, class_=AsyncSession
             )
             store = await _open_vector_store(repo_path)
-            if tool_name in _VECTOR_TOOLS:
+            if reads_vectors:
                 store = await _connect_or_degrade(store)
             init_tool_state(
                 session_factory,
@@ -279,6 +282,7 @@ def call_tool(
     tool_name: str,
     *,
     workspace_root: Path | None = None,
+    reads_vectors: bool | None = None,
 ) -> dict:
     """Run one MCP tool coroutine against *repo_path* and return its dict.
 
@@ -293,8 +297,12 @@ def call_tool(
     *workspace_root* serves the tool with that workspace, defaulting to
     *repo_path*, as the MCP server would, so a tool that reads across members
     sees them all.
+
+    *reads_vectors* overrides whether the call opens the vector store up front,
+    which by default follows *tool_name*: a ``search_codebase`` call in symbol
+    or path mode never reads it, and opening it costs about two seconds.
     """
-    return run_async(_acall_tool(repo_path, factory, tool_name, workspace_root))
+    return run_async(_acall_tool(repo_path, factory, tool_name, workspace_root, reads_vectors))
 
 
 __all__ = ["call_tool"]
