@@ -136,7 +136,7 @@ def test_no_cli_is_probed_with_the_network_off(monkeypatch, tmp_path, var):
         "repowise.core.agents.identity.AgentIdentity.which", lambda self: self.executable
     )
     monkeypatch.setattr(
-        "repowise.cli.ui.subscription.subprocess.run",
+        "repowise.core.providers.llm.subscription.subprocess.run",
         lambda *a, **k: pytest.fail("probed an agent CLI"),
     )
     monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)

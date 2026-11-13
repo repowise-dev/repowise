@@ -20,8 +20,8 @@ from repowise.core.generation.page_selection import PageSelectionIntent
 from repowise.core.generation.scope import (
     ScopePlan,
     build_cost_plans,
-    load_page_records,
     resolve_scope,
+    unwritten_model_page_count,
 )
 
 # The page types a model writes. Everything else is structural and refreshes on
@@ -334,19 +334,7 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
                 )
             ).scalar_one()
         )
-        stub_rows = (
-            await session.execute(
-                sa_select(Page).where(
-                    Page.repository_id == repo_id,
-                    Page.provider_name == "template",
-                    Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
-                )
-            )
-        ).scalars()
-        # The planner's own predicate, so a ``model_free`` page (written by a
-        # deterministic subkind) is not reported as unwritten when ``generate
-        # --unwritten`` would never select it.
-        stubs = sum(1 for record in load_page_records(list(stub_rows)) if record.is_template)
+        stubs = await unwritten_model_page_count(session, repo_id)
         stale_ids = set(
             (
                 await session.execute(

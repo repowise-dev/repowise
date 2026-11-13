@@ -155,7 +155,13 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
                 **_build_meta(repository=repository),
             }
         # The orientation call is where a no-prose index says how to upgrade.
-        result["_meta"].update(prose_upgrade_meta(served_root(repository, ctx.path)))
+        result["_meta"].update(
+            await prose_upgrade_meta(
+                served_root(repository, ctx.path),
+                session_factory=ctx.session_factory,
+                repo_id=getattr(repository, "id", None),
+            )
+        )
         collector.attach(result)
         attach_ignored_arguments(result, ignored)
         return result
