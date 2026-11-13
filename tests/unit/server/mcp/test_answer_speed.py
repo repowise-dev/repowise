@@ -1,15 +1,17 @@
 """What get_answer skips on a repeat, and what it runs while the model writes.
 
 A keyless reply is kept for the process, so asking again does not re-run
-retrieval; the episode check's git queries start before synthesis, so the
-attach after it does not wait on them again.
+retrieval; the episode check's git queries start before synthesis, and the
+attach after it reads their verdicts, waiting only on the queries it needs.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import subprocess
+import threading
 import time
 from types import SimpleNamespace
 
@@ -18,6 +20,7 @@ import pytest
 from repowise.core.precedent.store import TIER_GIT, Episode, EpisodeStore, default_store_path
 from repowise.server.mcp_server.tool_answer import cache
 from repowise.server.mcp_server.tool_answer.episodes import (
+    CallVerdicts,
     _prefetch,
     attach_episode,
     attach_episode_sync,
@@ -239,8 +242,10 @@ def _answer() -> dict:
     }
 
 
-def _attach(payload: dict, repo) -> dict:
-    attach_episode_sync(payload, question=QUESTION, repo_path=repo, repo_name="demo")
+def _attach(payload: dict, repo, verdicts: CallVerdicts | None = None) -> dict:
+    attach_episode_sync(
+        payload, question=QUESTION, repo_path=repo, repo_name="demo", verdicts=verdicts
+    )
     return payload
 
 
@@ -292,18 +297,99 @@ def test_a_repeated_answer_asks_git_once_until_head_moves(repo, git_calls):
 
 
 @pytest.mark.asyncio
-async def test_a_high_confidence_answer_does_not_wait_for_the_prefetch(repo):
-    never: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+async def test_a_high_confidence_answer_asks_git_nothing(repo, git_calls):
     payload = {**_answer(), "confidence": "high"}
+
+    await attach_episode(
+        payload, question=QUESTION, repo_path=repo, repo_name="demo", verdicts=CallVerdicts()
+    )
+
+    assert "episodes" not in payload
+    assert git_calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_attach_does_not_wait_for_a_prefetch_query_it_does_not_need(repo):
+    verdicts = CallVerdicts()
+    # The prefetch is stuck on another record's query.
+    verdicts._slots[("elsewhere",)] = concurrent.futures.Future()
+    payload = _answer()
 
     await asyncio.wait_for(
         attach_episode(
-            payload, question=QUESTION, repo_path=repo, repo_name="demo", prefetch=never
+            payload, question=QUESTION, repo_path=repo, repo_name="demo", verdicts=verdicts
         ),
         timeout=5,
     )
 
-    assert "episodes" not in payload
+    assert payload["episodes"][0]["scope"] == ["app.py"]
+
+
+def test_a_query_the_prefetch_is_running_is_waited_on_not_asked_again():
+    verdicts = CallVerdicts()
+    started, release = threading.Event(), threading.Event()
+
+    def slow():
+        started.set()
+        release.wait(5)
+        return "nothing changed"
+
+    owner = threading.Thread(target=verdicts.get, args=(("k",), slow))
+    owner.start()
+    started.wait(5)
+    asked_again: list[int] = []
+    waiter_result: list[str | None] = []
+    waiter = threading.Thread(
+        target=lambda: waiter_result.append(
+            verdicts.get(("k",), lambda: asked_again.append(1))
+        )
+    )
+    waiter.start()
+    release.set()
+    owner.join(5)
+    waiter.join(5)
+
+    assert waiter_result == ["nothing changed"]
+    assert asked_again == []
+
+
+def test_a_verdict_is_asked_once_per_call_whatever_it_was():
+    verdicts = CallVerdicts()
+    asked: list[int] = []
+
+    def ask():
+        asked.append(1)
+
+    first = verdicts.get(("k",), ask)
+    again = verdicts.get(("k",), ask)
+
+    assert first is None and again is None
+    assert asked == [1]
+
+
+def test_a_query_git_could_not_answer_is_asked_once_per_call(repo, monkeypatch):
+    from repowise.core.precedent import currency as mod
+
+    real = mod.commits_since
+    answers = iter([None])
+    calls: list[int] = []
+
+    def flaky(*args, **kwargs):
+        calls.append(1)
+        return next(answers, real(*args, **kwargs))
+
+    monkeypatch.setattr(mod, "commits_since", flaky)
+    verdicts = CallVerdicts()
+
+    _prefetch(
+        question=QUESTION, paths=["app.py"], repo_path=repo, repo_name="demo", verdicts=verdicts
+    )
+    same_call = _attach(_answer(), repo, verdicts=verdicts)
+    next_call = _attach(_answer(), repo)
+
+    assert "episodes" not in same_call
+    assert len(calls) == 2, "asked once by the call that failed, again by the next"
+    assert next_call["episodes"][0]["scope"] == ["app.py"]
 
 
 # -- per-stage timings -------------------------------------------------------

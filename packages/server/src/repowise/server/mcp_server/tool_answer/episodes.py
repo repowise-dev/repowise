@@ -18,6 +18,7 @@ so an episode is never frozen into a cache row.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import re
@@ -69,19 +70,17 @@ async def attach_episode(
     question: str,
     repo_path: str | Path | None,
     repo_name: str | None,
-    prefetch: asyncio.Future[None] | None = None,
+    verdicts: CallVerdicts | None = None,
 ) -> None:
     """Append a scoped, still-true episode to *payload*. Never raises.
 
     Async only to keep the SQLite read and the git query off the event loop;
-    all the work happens in :func:`attach_episode_sync`. *prefetch* is a
-    :func:`prefetch_verdicts` started earlier in the call; it is awaited only
-    when the answer can take an episode at all.
+    all the work happens in :func:`attach_episode_sync`. *verdicts* is the
+    memo a :func:`prefetch_verdicts` started earlier in the call fills; the
+    attach waits only for the queries it needs, never for the whole prefetch.
     """
     if not _may_attach(payload, repo_path):
         return
-    if prefetch is not None:
-        await prefetch
     try:
         await asyncio.to_thread(
             attach_episode_sync,
@@ -89,6 +88,7 @@ async def attach_episode(
             question=question,
             repo_path=repo_path,
             repo_name=repo_name,
+            verdicts=verdicts,
         )
     except Exception:  # pragma: no cover - defensive; a disagreement is a bonus
         _log.warning("get_answer episode attach failed", exc_info=True)
@@ -100,24 +100,35 @@ async def prefetch_verdicts(
     paths: list[str],
     repo_path: str | Path | None,
     repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
 ) -> None:
     """Check the episodes scoped to *paths* or the question. Never raises.
 
     Started before synthesis so the git queries run while the model writes:
     each can take about a second on a long history, and the answer's own
     citations mostly fall among the files retrieval already ranked. The
-    verdicts land in the memo the attach reads.
+    verdicts land in *verdicts*, which the attach reads.
     """
     try:
         await asyncio.to_thread(
-            _prefetch, question=question, paths=paths, repo_path=repo_path, repo_name=repo_name
+            _prefetch,
+            question=question,
+            paths=paths,
+            repo_path=repo_path,
+            repo_name=repo_name,
+            verdicts=verdicts,
         )
     except Exception:  # defensive; a disagreement is a bonus
         _log.warning("get_answer episode prefetch failed", exc_info=True)
 
 
 def _prefetch(
-    *, question: str, paths: list[str], repo_path: str | Path | None, repo_name: str | None
+    *,
+    question: str,
+    paths: list[str],
+    repo_path: str | Path | None,
+    repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
 ) -> None:
     if not repo_path:
         return
@@ -129,7 +140,7 @@ def _prefetch(
         head = _live_head(root)
         # Stops where the attach stops: it emits the first still-true episode.
         for row, _matched in window:
-            if _verdict(row, root=root, head=head) is not None:
+            if _verdict(row, root=root, head=head, call=verdicts) is not None:
                 break
 
 
@@ -139,6 +150,7 @@ def attach_episode_sync(
     question: str,
     repo_path: str | Path | None,
     repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
 ) -> None:
     """Synchronous body of :func:`attach_episode`. Never raises."""
     try:
@@ -147,6 +159,7 @@ def attach_episode_sync(
             question=question,
             repo_path=repo_path,
             repo_name=repo_name,
+            verdicts=verdicts,
         )
     except Exception:
         _log.warning("get_answer episode attach failed", exc_info=True)
@@ -199,6 +212,7 @@ def _attach(
     question: str,
     repo_path: str | Path | None,
     repo_name: str | None,
+    verdicts: CallVerdicts | None = None,
 ) -> None:
     if not _may_attach(payload, repo_path):
         return
@@ -220,7 +234,7 @@ def _attach(
     for row, matched in window:
         if emitted >= _MAX_EPISODES:
             break
-        verdict = _verdict(row, root=root, head=head)
+        verdict = _verdict(row, root=root, head=head, call=verdicts)
         if verdict is None:
             continue  # precondition 2 failed outright — say nothing
         if _emit(payload, row, matched=matched, verdict=verdict, repo_root=root):
@@ -326,8 +340,43 @@ def _git_unanswered(sentence: str) -> bool:
     return sentence.endswith((GIT_UNASKED, "not re-checked since"))
 
 
-def _verdict(row: dict, *, root: Path, head: str | None) -> str | None:
-    """:data:`_still_true` for *row*, asked of git once per HEAD."""
+class CallVerdicts:
+    """The verdicts one ``get_answer`` call asked, answered or not.
+
+    Shared by the prefetch and the attach so each query runs once per call:
+    the attach takes over a query the prefetch has not reached, and waits on
+    one it is running. A query git could not answer (often the timeout, on a
+    long history) is reused within the call too; the next call asks again.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._slots: dict[tuple, concurrent.futures.Future] = {}
+
+    def get(self, key: tuple, ask) -> str | None:
+        with self._lock:
+            slot = self._slots.get(key)
+            owner = slot is None
+            if owner:
+                slot = self._slots[key] = concurrent.futures.Future()
+        if not owner:
+            try:
+                return slot.result()
+            except Exception:
+                return ask()
+        try:
+            verdict = ask()
+        except BaseException as exc:
+            slot.set_exception(exc)
+            raise
+        slot.set_result(verdict)
+        return verdict
+
+
+def _verdict(
+    row: dict, *, root: Path, head: str | None, call: CallVerdicts | None = None
+) -> str | None:
+    """:data:`_still_true` for *row*, asked of git once per HEAD (and once per *call*)."""
     if head is None:
         return _still_true(row, root=root)
     key = (str(root), head, row.get("id"), row.get("birth_at"), row.get("last_seen_at"))
@@ -335,6 +384,12 @@ def _verdict(row: dict, *, root: Path, head: str | None) -> str | None:
         if key in _VERDICTS:
             _VERDICTS.move_to_end(key)
             return _VERDICTS[key]
+    if call is not None:
+        return call.get(key, lambda: _ask_verdict(row, root=root, key=key))
+    return _ask_verdict(row, root=root, key=key)
+
+
+def _ask_verdict(row: dict, *, root: Path, key: tuple) -> str | None:
     currency = episode_currency(row, root=root)
     verdict = currency.sentence if currency.current else None
     # A query git could not answer is asked again next time, not pinned.
