@@ -888,28 +888,15 @@ _WORKSPACE_TOOL_LINES = {
 }
 
 
-#: Tools the instructions name that a client's default profile may leave out.
-_NAMED_TOOLS = ("get_risk", "get_change_risk")
-
-#: Said when some client's default is not listed a served tool in
-#: :data:`_NAMED_TOOLS`. Each session's text names only its own listed tools,
-#: so only a client listed them reads this line.
-_OFF_LINE = "{names} not listed? `repowise config set mcp.tools standard`, then restart the server."
-
-
 def _instructions(
     enabled: Iterable[str] | None = None,
     repo_line: str | None = None,
-    *,
-    all_listed: bool = True,
 ) -> str:
     """The server instructions, naming a tool only when it is served.
 
     *enabled* is the surface the server serves; ``None`` (before any
     selection) names every core tool but no workspace tool.
     *repo_line* says what get_why holds for the served repository.
-    *all_listed* is false when some client's default profile leaves out a tool
-    in :data:`_NAMED_TOOLS`, which adds the line saying how to turn it on.
     """
     served = set(enabled) if enabled is not None else set(_TOOL_LINES) | set(_CHECK_CLAUSES)
     lines = ["repowise indexes this repository's code graph, git history and decisions."]
@@ -918,9 +905,6 @@ def _instructions(
     if clauses:
         lines.append(f"- {', '.join(clauses)}.")
     lines.append(_NO_INDEX_LINE)
-    off = [name for name in _NAMED_TOOLS if name in served]
-    if not all_listed and off:
-        lines.append(_OFF_LINE.format(names=" or ".join(off)))
     if repo_line and "get_why" in served:
         lines.append(repo_line)
     workspace = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in served]
@@ -950,20 +934,16 @@ def _select_surface(repo_path: str | None, tools: str | list[str] | None) -> set
     global _client_instructions
     from repowise.server.mcp_server._tool_selection import (
         apply_tool_selection,
-        every_client_lists,
         session_tool_names,
     )
 
     enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
     repo_line = decisions_line(repo_path)
-    all_listed = every_client_lists(_NAMED_TOOLS)
-    mcp._mcp_server.instructions = _instructions(enabled, repo_line, all_listed=all_listed)
+    mcp._mcp_server.instructions = _instructions(enabled, repo_line)
 
     def for_client(client: str) -> str:
         listed = session_tool_names(client)
-        return _instructions(
-            enabled if listed is None else listed, repo_line, all_listed=all_listed
-        )
+        return _instructions(enabled if listed is None else listed, repo_line)
 
     _client_instructions = for_client
     return enabled

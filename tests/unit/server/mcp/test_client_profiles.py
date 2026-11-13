@@ -84,8 +84,8 @@ async def _listed(tmp_path: Any, monkeypatch: Any, client: str | None, tools: An
 async def test_default_is_per_client(tmp_path, monkeypatch, client, expected) -> None:
     listed, instructions = await _listed(tmp_path, monkeypatch, client, None)
     assert listed == expected
-    # Some client is not listed get_risk, so the instructions say how to add it.
-    assert "mcp.tools standard" in instructions
+    # Instructions steer calls to listed tools; they do not carry settings.
+    assert "mcp.tools standard" not in instructions
 
 
 @pytest.mark.asyncio
@@ -105,13 +105,6 @@ async def test_deltas_adjust_each_clients_default(tmp_path, monkeypatch) -> None
     assert cursor == (set(CORE_TOOLS) | {"get_health"}) - {"get_why"}
     claude, _ = await _listed(tmp_path, monkeypatch, "claude-code", "+get_health,-get_why")
     assert claude == _STANDARD - {"get_why"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("tools", ["core", "-get_risk,-get_change_risk", "get_answer,get_why"])
-async def test_no_notice_when_the_setting_itself_leaves_them_out(tmp_path, monkeypatch, tools) -> None:
-    _, instructions = await _listed(tmp_path, monkeypatch, "cursor-vscode", tools)
-    assert "mcp.tools standard" not in instructions
 
 
 
@@ -144,9 +137,8 @@ async def test_claude_code_is_sent_the_boot_text(tmp_path, monkeypatch, tools, w
 @pytest.mark.asyncio
 async def test_a_core_client_is_not_sent_the_standard_checks(tmp_path, monkeypatch) -> None:
     _, boot, sent = await _session(tmp_path, monkeypatch, "cursor-vscode", None)
-    assert "get_risk" in boot and "mcp.tools standard" in boot
+    assert "get_risk" in boot
     assert "get_risk" not in sent and "get_change_risk" not in sent
-    assert "mcp.tools standard" not in sent
     assert "get_why before changing an established pattern" in sent
     assert len(sent) < len(boot)
 

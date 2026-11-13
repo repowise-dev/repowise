@@ -25,7 +25,6 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from repowise.core.agents.identity import UNKNOWN_AGENT
 from repowise.core.registry import ToolEntry, mcp_tool_registry
 from repowise.core.registry.tool_selection import (
     ALL,
@@ -241,20 +240,6 @@ def mark_always_loaded(tools: list[Any]) -> list[Any]:
         else t
         for t in tools
     ]
-
-
-def every_client_lists(names: Iterable[str]) -> bool:
-    """Whether no client's default profile leaves out any of *names*.
-
-    Only a tool boot registered but a client's default narrows away counts: a
-    tool the configuration itself removed (a profile, a list, ``-name``) was
-    chosen, so there is nothing to tell an agent. Judged for a client with the
-    smallest default (any name other than a schema-deferring host's).
-    """
-    listed = session_tool_names(UNKNOWN_AGENT)
-    if listed is None or _selected_surface is None:
-        return True
-    return not (set(names) & _selected_surface[1]) - listed
 
 
 def selected_tool_names(*, is_workspace: bool) -> set[str]:
