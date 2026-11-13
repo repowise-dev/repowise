@@ -53,5 +53,5 @@ pipeline debug logs, `--repo <alias>` / `--no-workspace` in workspace mode.
   `history_drag`, say so: the code shape did not get worse, and no edit to those
   files settles it.
 - A file that is both low-health **and** a churn hotspot is the highest-priority
-  cleanup — cross-reference with `{{cmd:risk}}` or `get_risk`.
+  cleanup — cross-reference with `{{cmd:risk}}` or `repowise risk --target <path>`.
 - If everything scores high, say so plainly rather than inventing concerns.
