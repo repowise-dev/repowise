@@ -392,12 +392,13 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     is_flag=True,
     default=False,
     help=(
-        "Take an Index only (`--mode fast`) repo to a full index: backfill the "
-        "full git history and build the documentation. Works without a key: with "
-        "no model configured the documentation is built from code (no model calls, "
-        "no spend); with one, the model writes it after a cost preview. Reuses the "
-        "persisted graph and resumes from the last completed stage. One repo at a "
-        "time (in a workspace, pass --repo <alias>)."
+        "Leave nothing stale. On a full index: bring the new commits in with no "
+        "cascade cap, refresh every structural page, and have the model rewrite "
+        "every stale page it wrote, after one cost preview. On an Index only "
+        "(`--mode fast`) repo or one documented from code: backfill the full git "
+        "history and build the documentation; with no model configured it is "
+        "built from code (no model calls, no spend). One repo at a time (in a "
+        "workspace, pass --repo <alias>)."
     ),
 )
 @click.option(
@@ -793,7 +794,11 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
 
 
 def _full_upgrade(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
-    """``--full``: upgrade the index in place from the persisted graph."""
+    """``--full``: catch a full index up, or upgrade a lesser one from the persisted graph."""
+    from .catch_up import catch_up, is_full_index
+
+    if is_full_index(run.repo_path):
+        return catch_up(opts, run.repo_path)
     if opts.dry_run:
         _render_full_upgrade_dry_run(
             run.repo_path,
@@ -1117,9 +1122,11 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
                 "[bold]repowise update --index-only[/bold].[/dim]"
             )
         else:
+            from .catch_up import catch_up_command
+
             console.print(
                 f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
-                "[bold]repowise generate --stale[/bold].[/dim]"
+                f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
             )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
@@ -1648,9 +1655,11 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         affected.decay_only = list(dict.fromkeys([*affected.decay_only, *affected.regenerate]))
         split = load_cascade_overflow_split(run.repo_path, affected.regenerate)
         if split and split[0]:
+            from .catch_up import catch_up_command
+
             console.print(
                 f"  {split[0]} pages written by a model are marked stale: run "
-                "[cyan]repowise generate --stale[/cyan] to rewrite them "
+                f"[cyan]{catch_up_command(run.repo_path)}[/cyan] to rewrite them "
                 "(it estimates the cost first)."
             )
 
@@ -1658,6 +1667,7 @@ def _widen_for_full_render(run: UpdateRun) -> None:
 def _report_page_plan(run: UpdateRun) -> None:
     affected = run.affected
     if affected.stale_due_to_budget > 0:
+        from .catch_up import catch_up_command
         from .deterministic import load_cascade_overflow_split
         from .reporting import render_cascade_budget_warning
 
@@ -1667,6 +1677,7 @@ def _report_page_plan(run: UpdateRun) -> None:
             run.cascade_budget,
             affected.stale_due_to_budget,
             load_cascade_overflow_split(run.repo_path, skipped),
+            catch_up_command(run.repo_path),
         )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")

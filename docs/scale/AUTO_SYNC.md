@@ -240,7 +240,7 @@ checkout someone edits.
    (`--cascade-budget N` to override).
 4. Regenerate those pages with the LLM, when the repo was indexed with docs.
    Affected pages beyond the budget are marked stale, not regenerated;
-   `repowise generate --stale` refreshes them when you choose to spend on it.
+   `repowise update --full` refreshes them all, pricing the model's pages first.
 5. In a workspace, re-run the cross-repo analysis.
 6. Save the new `HEAD` as the last synced commit.
 
