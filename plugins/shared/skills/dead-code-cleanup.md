@@ -21,6 +21,7 @@ Repowise detects dead code through graph analysis — no LLM needed, works even 
 
 ## When the user asks about dead/unused code
 
+{{only:claude-code}}
 Call `get_dead_code()` to get findings sorted by confidence tier. Useful parameters:
 - `safe_only=true` — only findings confirmed safe to delete (confidence >= 0.7)
 - `kind="unreachable_file"` — files with no importers
@@ -30,6 +31,20 @@ Call `get_dead_code()` to get findings sorted by confidence tier. Useful paramet
 - `tier="high"` — only high-confidence findings (>= 0.8)
 - `min_confidence=0.7` — raise the floor (default is 0.5) for a release-ready cleanup
 - `group_by="directory"` or `group_by="owner"` — roll up to see where the dead code concentrates and who owns the most of it
+{{end}}
+{{only:codex}}
+Run `repowise dead-code` to get findings sorted by confidence tier. Useful flags:
+- `--safe-only` — only deletion-ready findings (high confidence, no runtime-load risk factors)
+- `--kind unreachable_file` — files with no importers
+- `--kind unused_export` — public symbols nobody uses
+- `--kind zombie_package` — monorepo packages with no consumers
+- `--min-confidence 0.7` — raise the floor for a release-ready cleanup
+- `--format json` — machine output
+
+To roll findings up by directory or owner, the `get_dead_code` MCP tool takes
+`group_by="directory"` or `group_by="owner"`. To list it, add `+get_dead_code`
+to `mcp.tools` in `.repowise/config.yaml` and restart the MCP server.
+{{end}}
 
 ## How to present findings
 
@@ -40,7 +55,12 @@ Call `get_dead_code()` to get findings sorted by confidence tier. Useful paramet
 ## Before deleting anything
 
 1. Confirm with the user. Present the file/symbol name, confidence score, and why Repowise thinks it's dead.
+{{only:claude-code}}
 2. Call `get_risk(targets=["path/to/file"])` to double-check dependents.
+{{end}}
+{{only:codex}}
+2. Run `repowise risk --target path/to/file` to double-check dependents.
+{{end}}
 3. Recently-modified "dead" code is more likely a false positive — flag this if the finding has recent git activity.
 
 ## Safe deletion order

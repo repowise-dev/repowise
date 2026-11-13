@@ -37,6 +37,10 @@ The shared source format, one file per item:
 Bodies may reference a slash command as ``{{cmd:risk}}``; each host renders it in
 its own syntax. Frontmatter is stored verbatim rather than as parsed keys so a
 rendered file reproduces byte for byte, folded scalars and all.
+
+Text only one host should read goes between ``{{only:codex}}`` and ``{{end}}``.
+Codex is listed fewer MCP tools by default than Claude Code, so a step that
+names one of the others has to read differently there.
 """
 
 from __future__ import annotations
@@ -131,6 +135,9 @@ class Item:
 
 _FRONTMATTER = re.compile(r"\A---\n(.*?\n)---\n+", re.S)
 _TOKEN = re.compile(r"\{\{cmd:([a-z0-9-]+)\}\}")
+#: A trailing newline goes with each marker, so a block on lines of its own
+#: leaves no blank line behind for the host that drops it.
+HOST_BLOCK = re.compile(r"\{\{only:([a-z-]+)\}\}\n?(.*?)\{\{end\}\}\n?", re.S)
 _KEY_LINE = re.compile(r"\A([A-Za-z][A-Za-z0-9_-]*):")
 
 
@@ -181,11 +188,22 @@ def select_keys(frontmatter: str, allowed: frozenset[str] | None) -> str:
     return "".join(kept)
 
 
+def _host_block(item: Item, host: Host, match: re.Match[str]) -> str:
+    """The block's text for its own host, nothing for the others.
+
+    An unknown host id raises: a misspelt one would drop the block for every host.
+    """
+    if match.group(1) not in {h.id for h in HOSTS}:
+        raise ValueError(f"{item.source}: {{{{only:{match.group(1)}}}}} names no host")
+    return match.group(2) if match.group(1) == host.id else ""
+
+
 def render(item: Item, host: Host, *, frontmatter_keys: frozenset[str] | None) -> str:
     frontmatter = select_keys(item.frontmatter_for(host), frontmatter_keys)
     if not frontmatter.strip():
         raise ValueError(f"{item.source}: nothing left of the frontmatter for host {host.id!r}")
-    body = _TOKEN.sub(lambda m: host.command_reference.format(id=m.group(1)), item.body)
+    body = HOST_BLOCK.sub(lambda m: _host_block(item, host, m), item.body)
+    body = _TOKEN.sub(lambda m: host.command_reference.format(id=m.group(1)), body)
     return f"---\n{frontmatter}---\n\n{body}"
 
 

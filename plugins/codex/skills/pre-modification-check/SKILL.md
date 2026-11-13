@@ -9,7 +9,7 @@ Before modifying files in a Repowise-indexed codebase, assess the impact.
 
 ## Before editing a file
 
-Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
+Run `repowise risk --target path/to/file.py --format json`. Per file it returns
 `hotspot_score`, `trend`, `risk_type`, `impact_surface` (top 3),
 `dependents_count`, `co_change_partners`, `primary_owner`,
 `test_gap`, and `security_signals`. Read it for:
@@ -27,11 +27,11 @@ Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
 
 ## When modifying multiple files
 
-Batch all targets into one call: `get_risk(targets=["file1.py", "file2.py", "module/"])`.
+Batch all targets into one call: `repowise risk --target file1.py --target file2.py`.
 
 ## When to warn the user
 
-If `get_risk` shows:
+If the risk report shows:
 - A `defect_profile` with `bug_magnet` set — say so plainly: this file has been fixed repeatedly and recently
 - Hotspot score above 90th percentile — mention this is a frequently-changed, high-risk file
 - More than 10 dependents — list the top dependents; API changes here will break consumers
@@ -42,10 +42,10 @@ If `get_risk` shows:
 
 Call `get_context(targets=["file.py"])` first to understand the full context: what uses this file, what decisions govern it, and why it's structured this way. This prevents accidentally violating architectural decisions.
 
-For a heavy refactor, also call `get_health(targets=["file.py"])` — the
+For a heavy refactor, also run `repowise health --file file.py` — the
 marker findings (complexity, deep nesting, low cohesion, duplication) tell
 you *what* to improve while you're in there, and give you a before/after score.
 
 ## Error handling
 
-If `get_risk` returns a tool error, the MCP server may not be running. Proceed with the modification but note that risk assessment was unavailable.
+If `repowise risk --target` fails, the repo may not be indexed. Proceed with the modification but note that risk assessment was unavailable.
