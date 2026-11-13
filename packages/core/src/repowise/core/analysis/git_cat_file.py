@@ -93,14 +93,17 @@ def cat_file_batch(
                                 for line in chk.stdout.splitlines():
                                     f_parts = line.split()
                                     if (
-                                        len(f_parts) >= 3
+                                        len(f_parts) >= 4
                                         and f_parts[0] == "160000"
                                         and (stage is None or f_parts[2] == stage)
+                                        and f_parts[3] == path
                                     ):
                                         is_submodule = True
                                         break
-                        except (OSError, subprocess.SubprocessError):
-                            pass
+                        except (OSError, subprocess.SubprocessError) as exc:
+                            raise ValueError(
+                                f"git index lookup failed for {spec!r}: {exc}"
+                            ) from exc
                 elif ":" in spec:
                     rev, path = spec.split(":", 1)
                     if rev and path:

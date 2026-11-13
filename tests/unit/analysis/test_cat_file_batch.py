@@ -279,5 +279,28 @@ def test_cat_file_batch_staged_submodule_ls_files_error(
         return real_run(cmd, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _mock_run)
-    with pytest.raises(ValueError, match=r"git has no object for ':0:missing_sub'"):
+    with pytest.raises(ValueError, match=r"git index lookup failed for ':0:missing_sub'"):
         cat_file_batch(str(sample_repo), [":0:missing_sub"], on_missing="raise")
+
+
+def test_cat_file_batch_staged_submodule_in_directory_exact_path_match(
+    sample_repo: Path,
+) -> None:
+    """A directory path whose subdirectory contains a submodule must not be treated as a submodule."""
+    missing_sha = "2222222222222222222222222222222222222222"
+    _run_git(
+        sample_repo,
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        f"160000,{missing_sha},lib/nested_sub",
+    )
+
+    # Looking up the nested submodule itself succeeds and resolves as None
+    assert cat_file_batch(str(sample_repo), [":0:lib/nested_sub"], on_missing="raise") == [
+        (":0:lib/nested_sub", None)
+    ]
+
+    # Looking up the parent directory :0:lib must fail closed, not match the submodule under it
+    with pytest.raises(ValueError, match=r"git has no object for ':0:lib'"):
+        cat_file_batch(str(sample_repo), [":0:lib"], on_missing="raise")
