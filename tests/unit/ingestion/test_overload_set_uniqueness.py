@@ -19,8 +19,6 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-import pytest
-
 from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.ingestion.parser import parse_file
@@ -132,6 +130,24 @@ public class FieldCaller
 }
 """
 
+CS_PROPERTY_ONLY = """
+namespace App;
+
+public class PropertyHolder
+{
+    public int Balance { get; set; }
+}
+"""
+
+CS_PROPERTY_CALLER = """
+namespace App;
+
+public class PropertyCaller
+{
+    public int Run() => Balance();
+}
+"""
+
 
 # A getter and its setter are two declarations under one id. That reads as an
 # overload set and is not one: the name is an attribute, not a callable.
@@ -153,9 +169,7 @@ def query(router):
 
 
 class TestOverloadSetIsOneSymbol:
-    def test_an_overload_set_resolves_instead_of_reading_as_ambiguous(
-        self, tmp_path: Path
-    ) -> None:
+    def test_an_overload_set_resolves_instead_of_reading_as_ambiguous(self, tmp_path: Path) -> None:
         parsed = _parse_all(
             tmp_path,
             {
@@ -204,12 +218,6 @@ class TestOverloadSetIsOneSymbol:
             f"the inherited tier must keep this site, not the global rung; edges: {edges}"
         )
 
-    @pytest.mark.xfail(
-        reason="_NON_CALLABLE_KINDS is {'property'} while C# extracts a field "
-        "or property as kind 'variable', so the data-member refusal never "
-        "reaches C#. Pre-existing, and unchanged by this collapse.",
-        strict=True,
-    )
     def test_a_non_callable_symbol_is_still_refused(self, tmp_path: Path) -> None:
         parsed = _parse_all(
             tmp_path,
@@ -223,9 +231,20 @@ class TestOverloadSetIsOneSymbol:
             f"a data member must not be the unique answer; edges: {edges}"
         )
 
-    def test_a_property_getter_and_setter_are_not_an_overload_set(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_csharp_property_symbol_is_refused(self, tmp_path: Path) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "src/PropertyHolder.cs": ("csharp", CS_PROPERTY_ONLY),
+                "src/PropertyCaller.cs": ("csharp", CS_PROPERTY_CALLER),
+            },
+        )
+        edges = _edges(parsed, tmp_path)
+        assert not [e for e in edges if e[0].endswith("::PropertyCaller::Run")], (
+            f"a property must not be the unique answer; edges: {edges}"
+        )
+
+    def test_a_property_getter_and_setter_are_not_an_overload_set(self, tmp_path: Path) -> None:
         """Collapsing made an attribute look like a unique callable."""
         parsed = _parse_all(
             tmp_path,
