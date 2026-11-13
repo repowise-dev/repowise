@@ -232,7 +232,7 @@ async def reconcile_edges_for_files(
     session: AsyncSession,
     repository_id: str,
     source_file_paths: list[str],
-    edges: list[dict],  # fresh edges whose source belongs to those files
+    edges: list[dict],  # fresh edges those files own (see below)
     *,
     keep_edge_types: frozenset[str] = frozenset(),
 ) -> int:
@@ -289,12 +289,9 @@ async def reconcile_edges_for_files(
             .all()
         )
         source_ids.update(rows)
-    # Union in the fresh edges' ends in these files so a brand-new node's edges
-    # are still rewritten cleanly even if the node-row read above raced its
-    # insert. Only ends these files own: a target-owned edge has one end in
-    # another file, and owning that node would make every edge out of it stale
-    # here (reconciling a decorated file would delete the decorator's edges into
-    # its other targets; reconciling the decorator, the targets' own edges).
+    # Union in the fresh edges' ends in these files, so a brand-new node's edges
+    # are rewritten even if the node-row read above raced its insert. Never an
+    # end in another file: every edge out of it would read as stale here.
     scope = set(scoped)
     for e in edges:
         ends = [e.get("source_node_id")]

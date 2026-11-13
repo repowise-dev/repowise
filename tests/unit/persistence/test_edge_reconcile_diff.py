@@ -161,7 +161,7 @@ async def test_reconciling_one_decorated_file_keeps_the_decorator_edges_into_oth
 
 async def test_reconciling_the_decorator_keeps_its_targets_own_edges(async_session):
     repo_id = await _seed(async_session, "decorator")
-    fresh = [e for e in _STORED if e["source_node_id"] == "c.py::reg" or e["source_node_id"] == "c.py"]
+    fresh = [e for e in _STORED if e["source_node_id"] in {"c.py::reg", "c.py"}]
 
     await reconcile_edges_for_files(async_session, repo_id, ["c.py"], fresh)
     await async_session.commit()
@@ -192,3 +192,17 @@ async def test_unchanged_rows_are_not_rewritten(async_session):
     assert ids_after[changed] != ids_before[changed]
     # Two dropped rows plus two rewritten (the call and the registration edge).
     assert removed == 4
+
+async def test_a_node_with_no_row_yet_still_has_its_stale_edges_replaced(async_session):
+    repo_id = await _seed(async_session, "unrowed")
+    await batch_upsert_graph_edges(async_session, repo_id, [_edge("a.py::new", "c.py", "calls")])
+    await async_session.commit()
+
+    await reconcile_edges_for_files(
+        async_session, repo_id, ["a.py"], [*_FRESH, _edge("a.py::new", "b.py", "calls")]
+    )
+    await async_session.commit()
+
+    keys = {r[:3] for r in await _rows(async_session, repo_id)}
+    assert ("a.py::new", "b.py", "calls") in keys
+    assert ("a.py::new", "c.py", "calls") not in keys
