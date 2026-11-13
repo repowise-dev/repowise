@@ -146,3 +146,36 @@ async def test_full_index_rows_match_without_the_graph(tmp_path, monkeypatch) ->
 
     assert _comparable(with_graph) == _comparable(without)
     assert _comparable(with_graph)["a.py"]["blame_lines"]
+
+
+def test_every_indexer_git_call_bounds_its_pack_windows(tmp_path, monkeypatch) -> None:
+    """Git maps a pack in windows it never unmaps by default, so a walk of a
+    large history shows the whole pack as resident; each indexer git call caps it."""
+    import subprocess
+
+    from repowise.core.ingestion.git_indexer import blame_graph
+
+    _build_repo(tmp_path)
+    calls: list[list[str]] = []
+
+    def _record(args, cwd=None, **kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 128, "", "fatal: refused")
+
+    monkeypatch.setattr(blame_graph, "run_git", _record)
+    repo = _repo(tmp_path)
+    try:
+        _build(repo)
+    finally:
+        repo.close()
+    assert calls[0][:4] == ["-c", "core.packedGitLimit=2g", "-c", "core.packedGitWindowSize=256m"]
+
+    indexer = GitIndexer(tmp_path)
+    shared = indexer._get_repo()
+    per_thread, close_all = indexer._thread_repo_pool()
+    try:
+        for git_repo in (shared, per_thread()):
+            assert "core.packedGitLimit=1g" in git_repo.git._persistent_git_options
+    finally:
+        shared.close()
+        close_all()

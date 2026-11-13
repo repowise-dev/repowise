@@ -102,6 +102,11 @@ LanguageTag = Literal[
     "unknown",
 ]
 
+# TypeScript, JavaScript and the single-file components whose script blocks
+# ``sfc_source`` projects into a TS buffer at identical offsets, so every TS/JS
+# code path applies to them verbatim.
+TS_JS_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "svelte", "vue", "astro"})
+
 # ---------------------------------------------------------------------------
 # Extension → language map (used by FileTraverser and ASTParser)
 #
@@ -503,6 +508,8 @@ EdgeType = Literal[
     # that something holds a handle to it, which is enough to make deleting it
     # unsafe.
     "references",
+    # A document links to or names a repository file; source is always a Markdown node.
+    "documents",
 ]
 
 # Runtime mirror of the Literal, for the places that must test membership
@@ -619,6 +626,12 @@ CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
 # look like an import of its own subject.
 TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 
+# Prose pointing at code: a document naming a file says nothing about what the file depends on.
+DOCUMENTATION_EDGE_TYPES: frozenset[str] = frozenset({"documents"})
+
+# Edges that are not code at all: history and prose.
+NON_CODE_EDGE_TYPES: frozenset[str] = TEMPORAL_EDGE_TYPES | DOCUMENTATION_EDGE_TYPES
+
 # Edge types that are *not* code dependencies, and so must be excluded by any
 # consumer answering "what depends on this?" about FILES.
 #
@@ -628,8 +641,8 @@ TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 # ``calls`` / ``extends`` / ``implements``, and nothing points from a symbol
 # back to a file. Drop ``defines`` and a caller can no longer walk from a file
 # to the functions it declares, so anything traversing the graph wants
-# ``TEMPORAL_EDGE_TYPES`` and a ``node_type`` check instead.
-NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | TEMPORAL_EDGE_TYPES
+# ``NON_CODE_EDGE_TYPES`` and a ``node_type`` check instead.
+NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | NON_CODE_EDGE_TYPES
 
 # ---------------------------------------------------------------------------
 # The named views. Ask for the one that matches your question.

@@ -331,19 +331,19 @@ def _changed_file_edges(
         return [], []
 
     graph = graph_builder.graph()
-    owner: dict[str, str | None] = {}
-    for node_id in graph.nodes:
-        data = graph.nodes[node_id]
-        owner[node_id] = (
-            node_id if data.get("node_type", "file") == "file" else data.get("file_path")
-        )
-
-    edges: list[dict] = []
-    for u, v, data in graph.edges(data=True):
-        if owner.get(u) in reconcile or (
-            data.get("hint_source") in TARGET_OWNED_HINTS and owner.get(v) in reconcile
-        ):
-            edges.append(_edge_row(u, v, data))
+    owned = [
+        node for node, path in _edge_owners(graph.nodes(data=True)).items() if path in reconcile
+    ]
+    owned_set = set(owned)
+    # Out-edges of the owned nodes, plus target-owned edges into them from
+    # elsewhere: the same rows as a scan of every edge, at the cost of the
+    # files' own adjacency.
+    edges = [_edge_row(u, v, data) for u, v, data in graph.out_edges(owned, data=True)]
+    edges += [
+        _edge_row(u, v, data)
+        for u, v, data in graph.in_edges(owned, data=True)
+        if u not in owned_set and data.get("hint_source") in TARGET_OWNED_HINTS
+    ]
     return sorted(reconcile), edges
 
 
@@ -447,50 +447,6 @@ async def prune_absent_graph_rows(
     return len(stale_edge_ids), len(stale_node_ids)
 
 
-async def _edges_predate_cohesion(session: Any, repo_id: str, graph_builder: Any) -> bool:
-    """True when ``graph_edges`` was written before edge cohesion was recorded.
-
-    An incremental update rewrites only the changed files' edges, so a store
-    indexed by an older build keeps that build's edges — and its resolution
-    mistakes — on every file that has not happened to change since. The health
-    engine and the server both read a graph rehydrated from those rows, so they
-    would go on reporting cycles the current engine no longer finds.
-
-    The signal is the store's own content rather than a version marker: a
-    routine update deliberately clamps ``store_format_version`` below the first
-    reindex gate, so a version comparison would refire on every run. Here, a
-    repo whose graph now has cohesion edges but whose table has no cohesion
-    ``hint_source`` anywhere is exactly a pre-cohesion store. Rewriting it
-    stamps those rows, so this answers False from then on and the full
-    reconcile happens once.
-    """
-    from sqlalchemy import select
-
-    from repowise.core.ingestion.cohesion import COHESION_HINTS, is_cohesion_edge
-    from repowise.core.persistence.models import GraphEdge
-
-    try:
-        graph = graph_builder.graph()
-    except Exception:
-        return False
-    if not any(is_cohesion_edge(d) for _u, _v, d in graph.edges(data=True)):
-        return False  # nothing to record, so nothing can be missing
-
-    row = (
-        await session.execute(
-            select(GraphEdge.id)
-            .where(
-                GraphEdge.repository_id == repo_id,
-                # Cohesion hints only: other passes (pytest conftest) stamp a
-                # hint too, and one of theirs is not a cohesion stamp.
-                GraphEdge.hint_source.in_(COHESION_HINTS),
-            )
-            .limit(1)
-        )
-    ).first()
-    return row is None
-
-
 async def has_graph_edges(session: Any, repo_id: str) -> bool:
     """Whether this repo already has any ``graph_edges`` row."""
     from sqlalchemy import select
@@ -548,65 +504,299 @@ async def persist_incremental_edges(
     parsed_files: list[Any] | None,
     changed_paths: list[str],
 ) -> None:
-    """Refresh ``graph_edges`` for changed files on an incremental update.
+    """Make ``graph_edges`` match the rebuilt graph on an incremental update.
 
     Sibling of :func:`persist_incremental_symbols`. The full-init path was the
     only one that ever wrote ``graph_edges``; ``repowise update`` rebuilt the
     graph but never repersisted edges, so adjacency froze at the last full
     index. Phase E flow-path answers and any graph expansion read adjacency
-    straight from this table, so they decayed on every incremental update. This
-    delete-then-inserts the changed files' outgoing edges (dropping edges those
-    files no longer have). Scoped to the changed set for cost.
+    straight from this table, so they decayed on every incremental update.
 
-    That scoping is also this function's one structural blind spot: an
-    extraction change (a tree-sitter query edit, an extractor fix) alters the
-    edges of *every* file, but only the git-changed ones get rewritten, so the
-    rest keep the old build's edges until they happen to change. The parse cache
-    self-invalidates on such a change (``parser_fingerprint`` hashes the ``.scm``
-    sources) and the update rebuilds the whole graph in memory anyway, so the
-    correct edges are already computed and only the write is too narrow. Widen
-    it whenever the fingerprint that last wrote the table differs from the
-    running one, then re-stamp. One comparison covers every future extraction
-    change; :func:`_edges_predate_cohesion` is the bespoke predecessor, kept
-    until shipped stores have all been stamped.
+    Files outside *changed_paths* are reconciled too when their edges moved.
+    A file git did not touch still gains or loses edges when what it points at
+    changes: a call resolves to a symbol a new file defines, or stops resolving
+    to one that moved. Those files are found without reading the whole table
+    (:func:`_drifted_files`), so the store work follows the change rather than
+    the repository. An extraction change (``parser_fingerprint``) alters every
+    file's edges at once, so it reconciles every parsed file, once.
+
+    The files outside the change set keep the old scoping when the graph is
+    known to be short: a traversed file failed to parse (its symbols are
+    missing, so every caller's edge into it would read as gone), or the
+    framework or dynamic-hint pass failed (``synthetic_edges_complete``).
+
+    The one difference between the two sets is ``co_changes``. The graph holds
+    every pair only when the history walk completed; otherwise it has the
+    changed files' pairs alone, so the other files' stored pairs are left to
+    :func:`sync_co_change_edges`, which runs only on a complete walk.
     """
     # An empty parse still counts: a repo with no source files has nothing to
-    # widen, and it must be stamped, or a missing stamp re-parses it forever.
+    # reconcile, and it must be stamped, or a missing stamp re-parses it forever.
     if graph_builder is None or parsed_files is None:
         return
     from repowise.core.ingestion.parse_cache import parser_fingerprint
     from repowise.core.persistence.crud import reconcile_edges_for_files
 
-    # Widen the reconcile to the whole parsed set, once. Same code path, so the
-    # delete-then-insert still drops edges a file no longer has — which is what
-    # clears the old build's resolution mistakes, an upsert alone would leave
-    # them behind.
     fingerprint = parser_fingerprint()
     parser_changed = await _stored_edges_parser_fingerprint(session, repo_id) != fingerprint
     if parser_changed:
-        changed_paths = [pf.file_info.path for pf in parsed_files]
-        logger.info("graph_edges_parser_backfill", repo_id=repo_id, files=len(changed_paths))
-    elif await _edges_predate_cohesion(session, repo_id, graph_builder):
-        changed_paths = [pf.file_info.path for pf in parsed_files]
-        logger.info("graph_edges_cohesion_backfill", repo_id=repo_id, files=len(changed_paths))
+        logger.info("graph_edges_parser_backfill", repo_id=repo_id, files=len(parsed_files))
 
     reconcile_paths, edges = _changed_file_edges(graph_builder, parsed_files, changed_paths)
     if reconcile_paths:
         await reconcile_edges_for_files(session, repo_id, reconcile_paths, edges)
-        # Every reconciled file, not only a widen's: a symbol renamed or removed
-        # in a changed file otherwise keeps its node beside the new one.
-        await _prune_vanished_symbol_nodes(session, repo_id, graph_builder, reconcile_paths)
+    other_paths = await _reconcile_unchanged_files(
+        session,
+        repo_id,
+        graph_builder,
+        parsed_files,
+        set(changed_paths or ()),
+        widen=parser_changed,
+    )
+    if reconcile_paths or other_paths:
+        # A symbol renamed or removed otherwise keeps its node beside the new one.
+        await _prune_vanished_symbol_nodes(
+            session, repo_id, graph_builder, [*reconcile_paths, *other_paths]
+        )
+    await _sync_complete_co_changes(session, repo_id, graph_builder)
+    # Only after the reconcile actually ran to completion. Raising here (or in any
+    # caller before the commit) leaves the old stamp, so the next update retries
+    # rather than stranding the files it never reached.
+    # A short graph skipped the files outside the change set, so they still
+    # hold the old parser's edges.
+    if parser_changed and _graph_is_complete(graph_builder, parsed_files):
+        await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
+
+
+async def _sync_complete_co_changes(session: Any, repo_id: str, graph_builder: Any) -> None:
     # Only when the rebuild re-added every pair; a failed or skipped walk leaves
     # the graph without them, and syncing would wipe the stored ones.
     if getattr(graph_builder, "co_change_edges_complete", False):
         from .co_change_edges import sync_co_change_edges
 
         await sync_co_change_edges(session, repo_id, graph_builder)
-    # Only after the widen actually ran to completion. Raising here (or in any
-    # caller before the commit) leaves the old stamp, so the next update retries
-    # rather than stranding the files it never reached.
-    if parser_changed:
-        await stamp_edges_parser_fingerprint(session, repo_id, fingerprint)
+
+
+async def _reconcile_unchanged_files(
+    session: Any,
+    repo_id: str,
+    graph_builder: Any,
+    parsed_files: list[Any],
+    changed: set[str],
+    *,
+    widen: bool,
+) -> list[str]:
+    """Reconcile the parsed files outside *changed* whose edges moved.
+
+    Every one of them when *widen*. Returns the paths reconciled. Nothing when
+    the graph is short (:func:`_graph_is_complete`). Their ``co_changes`` rows
+    are left to the co-change sync.
+    """
+    from repowise.core.persistence.crud import reconcile_edges_for_files
+
+    from .co_change_edges import _CO_CHANGES
+
+    if not _graph_is_complete(graph_builder, parsed_files):
+        return []
+    others = {pf.file_info.path for pf in parsed_files} - changed
+    # Narrowed only against a snapshot of the stored graph. Without one the
+    # rebuilt graph alone cannot show a call that stopped resolving, so every
+    # file is reconciled; the snapshot this run then saves makes the next one
+    # cheap again.
+    if not widen and getattr(graph_builder, "previous_seed_edges", None) is not None:
+        others &= await _drifted_files(session, repo_id, graph_builder, changed)
+    if not others:
+        return []
+    paths, edges = _changed_file_edges(graph_builder, parsed_files, sorted(others))
+    if paths:
+        await reconcile_edges_for_files(
+            session,
+            repo_id,
+            paths,
+            [e for e in edges if e["edge_type"] != _CO_CHANGES],
+            keep_edge_types=frozenset({_CO_CHANGES}),
+        )
+    return paths
+
+
+def _edge_owners(nodes: Any) -> dict[str, str | None]:
+    """``{node_id: owning file}`` over ``(node_id, attrs)`` pairs.
+
+    A file node owns itself, a symbol node its ``file_path``.
+    """
+    return {
+        node_id: node_id if attrs.get("node_type", "file") == "file" else attrs.get("file_path")
+        for node_id, attrs in nodes
+    }
+
+
+# The in-memory edge fields that reach a ``graph_edges`` row (see _edge_row).
+_EDGE_ROW_FIELDS = (
+    "imported_names",
+    "confidence",
+    "hint_source",
+    "resolution_origin",
+    "call_lines",
+    "type_only",
+    "deferred",
+)
+
+
+def _edge_signature(data: dict) -> tuple:
+    return tuple(
+        tuple(value) if isinstance(value, list) else value
+        for value in (data.get(field) for field in _EDGE_ROW_FIELDS)
+    )
+
+
+async def _drifted_files(
+    session: Any, repo_id: str, graph_builder: Any, changed: set[str]
+) -> set[str]:
+    """Files whose stored edges may no longer match the rebuilt graph.
+
+    The owners of every stored row into a changed file (indexed lookups on the
+    changed files' node ids, the old ids included), and of every edge that
+    differs from the last persisted graph (``previous_seed_edges``), which also
+    catches a call that stopped resolving without gaining a target in a
+    changed file. The store is read only for the changed files and the
+    rest is a dictionary diff, so no step reads the whole edge table.
+    """
+    from repowise.core.analysis.execution_graph import file_of_symbol
+    from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+
+    graph = graph_builder.graph()
+    owner = _edge_owners(graph.nodes(data=True))
+    drifted: set[str] = set()
+
+    def mark(source: str, target: str, hint: Any, owners: dict) -> None:
+        drifted.add(owners.get(source) or file_of_symbol(source))
+        if hint in TARGET_OWNED_HINTS:
+            drifted.add(owners.get(target) or file_of_symbol(target))
+
+    previous = graph_builder.previous_seed_edges
+    targets = {node for node, path in owner.items() if path in changed} | changed
+    for source, target, hint in await _stored_edges_into(session, repo_id, targets, changed):
+        mark(source, target, hint, owner)
+
+    added, removed = _snapshot_diff(graph, previous)
+    for u, v, hint in added:
+        mark(u, v, hint, owner)
+    prev_owner = _edge_owners(previous["nodes"])
+    for u, v, hint in removed:
+        mark(u, v, hint, prev_owner)
+    drifted.discard(None)
+    return drifted
+
+
+def _snapshot_diff(
+    graph: Any, previous: dict[str, list]
+) -> tuple[list[tuple[str, str, Any]], list[tuple[str, str, Any]]]:
+    """``(added_or_changed, removed)`` edges of *graph* against *previous*, as
+    ``(source, target, hint_source)``. Co-change pairs are left to their sync."""
+    from .co_change_edges import _CO_CHANGES
+
+    prev_edges = {
+        (u, v, attrs.get("edge_type", "imports")): attrs for u, v, attrs in previous["edges"]
+    }
+    added: list[tuple[str, str, Any]] = []
+    for u, v, data in graph.edges(data=True):
+        if data.get("edge_type") == _CO_CHANGES:
+            continue
+        before = prev_edges.pop((u, v, data.get("edge_type", "imports")), None)
+        # Whole-dict equality first: it is the common case and runs in C.
+        if before is None or (before != data and _edge_signature(before) != _edge_signature(data)):
+            added.append((u, v, data.get("hint_source")))
+    removed = [
+        (u, v, attrs.get("hint_source"))
+        for (u, v, edge_type), attrs in prev_edges.items()
+        if edge_type != _CO_CHANGES
+    ]
+    return added, removed
+
+
+async def _stored_edges_into(
+    session: Any, repo_id: str, targets: set[str], changed: set[str]
+) -> list[tuple[str, str, str | None]]:
+    """``(source, target, hint_source)`` of the stored rows into *targets*.
+
+    Also into every stored node of a changed file, so a symbol the rebuilt
+    graph no longer has still names the callers that pointed at it.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    paths = sorted(changed)
+    ids = set(targets)
+    for i in range(0, len(paths), _PRUNE_CHUNK):
+        ids.update(
+            (
+                await session.execute(
+                    select(GraphNode.node_id).where(
+                        GraphNode.repository_id == repo_id,
+                        GraphNode.file_path.in_(paths[i : i + _PRUNE_CHUNK]),
+                    )
+                )
+            ).scalars()
+        )
+    ordered = sorted(ids)
+    out: list[tuple[str, str, str | None]] = []
+    for i in range(0, len(ordered), _PRUNE_CHUNK):
+        rows = await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.hint_source).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.target_node_id.in_(ordered[i : i + _PRUNE_CHUNK]),
+            )
+        )
+        out.extend(tuple(row) for row in rows)
+    return out
+
+
+def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
+    """Whether the graph holds every row the store does for the files it covers.
+
+    Short when a synthetic-edge pass failed, or when a traversed file that
+    failed to parse had graph rows before that the graph no longer holds: its
+    symbols are missing, so every caller's edge into it reads as gone. The
+    last persisted graph (``previous_seed_edges``) shows which rows a file
+    had. A file that never parsed had none, a bare file node with no edge
+    carries nothing a caller can lose, and rows the update restored
+    (``restore_unparsed_graph_rows``) are not lost; without that snapshot any
+    unparsed file counts as short.
+    """
+    if not getattr(graph_builder, "synthetic_edges_complete", True):
+        return False
+    traversed = getattr(graph_builder, "traversed_file_paths", None) or set()
+    unparsed = set(traversed) - {pf.file_info.path for pf in parsed_files}
+    if not unparsed:
+        return True
+    previous = getattr(graph_builder, "previous_seed_edges", None)
+    if previous is None:
+        return False
+    return not _lost_unparsed_rows(graph_builder.graph(), previous, unparsed)
+
+
+def _lost_unparsed_rows(graph: Any, previous: dict[str, list], unparsed: set[str]) -> bool:
+    """Whether an unparsed file had a symbol or an edge that *graph* no longer holds."""
+    owned = {
+        node_id
+        for node_id, attrs in previous["nodes"]
+        if node_id in unparsed or attrs.get("file_path") in unparsed
+    }
+    if not owned:
+        return False
+    if any(node_id not in graph for node_id in owned - unparsed):
+        return True
+    return any(
+        (source in owned or target in owned)
+        and not _holds_edge(graph, source, target, attrs.get("edge_type", "imports"))
+        for source, target, attrs in previous["edges"]
+    )
+
+
+def _holds_edge(graph: Any, source: str, target: str, edge_type: str) -> bool:
+    data = graph.get_edge_data(source, target)
+    return data is not None and data.get("edge_type", "imports") == edge_type
 
 
 async def _prune_vanished_symbol_nodes(
@@ -652,3 +842,68 @@ async def _prune_vanished_symbol_nodes(
         )
     if stale:
         logger.info("graph_nodes_parser_prune", repo_id=repo_id, nodes=len(stale))
+
+
+async def prune_absent_synthetic_nodes(session: Any, repo_id: str, graph_builder: Any) -> int:
+    """Delete ``external:`` / ``framework:`` rows the rebuilt graph no longer mints.
+
+    These nodes name no file, so the deleted-file prune can never judge them,
+    and :func:`persist_graph_nodes` only upserts: a package the last importer
+    stopped using kept its node and metrics row after every update, though a
+    fresh index has neither. The rebuilt graph is the authority, as it is for
+    :func:`prune_absent_graph_rows` on a full run, and an empty graph is a
+    broken run that prunes nothing. A node a stored edge still starts or ends
+    at is kept: a file that failed to parse keeps its edges, and no update
+    reconciles the edges a ``framework:`` anchor sources.
+
+    Returns the number of nodes deleted.
+    """
+    from sqlalchemy import delete, or_, select
+
+    from repowise.core.persistence.models import GraphEdge, GraphMetric, GraphNode
+
+    graph = graph_builder.graph()
+    if graph.number_of_nodes() == 0:
+        return 0
+    stored: set[str] = set()
+    for model in (GraphNode, GraphMetric):
+        stored.update(
+            (
+                await session.execute(
+                    select(model.node_id)
+                    .where(
+                        model.repository_id == repo_id,
+                        or_(
+                            model.node_id.like("external:%"),
+                            model.node_id.like("framework:%"),
+                        ),
+                    )
+                    .distinct()
+                )
+            ).scalars()
+        )
+    absent = sorted(n for n in stored if n not in graph)
+    gone: list[str] = []
+    for i in range(0, len(absent), _PRUNE_CHUNK):
+        batch = absent[i : i + _PRUNE_CHUNK]
+        linked: set[str] = set()
+        for column in (GraphEdge.target_node_id, GraphEdge.source_node_id):
+            linked.update(
+                (
+                    await session.execute(
+                        select(column).where(
+                            GraphEdge.repository_id == repo_id, column.in_(batch)
+                        )
+                    )
+                ).scalars()
+            )
+        gone.extend(n for n in batch if n not in linked)
+    for i in range(0, len(gone), _PRUNE_CHUNK):
+        batch = gone[i : i + _PRUNE_CHUNK]
+        for model in (GraphNode, GraphMetric):
+            await session.execute(
+                delete(model).where(model.repository_id == repo_id, model.node_id.in_(batch))
+            )
+    if gone:
+        logger.info("graph_synthetic_nodes_pruned", repo_id=repo_id, nodes=len(gone))
+    return len(gone)

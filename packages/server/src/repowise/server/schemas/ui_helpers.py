@@ -105,12 +105,27 @@ class ActiveProviderSelection(BaseModel):
     embedder: str | None = None
 
 
+class PlanRoute(BaseModel):
+    """A signed-in agent CLI on a paid plan: a model with no new spend."""
+
+    #: The provider id that runs on it.
+    provider: str
+    #: What the user calls the CLI, e.g. ``Claude Code``.
+    cli_name: str
+    #: About how long ``repowise generate`` takes on it; ``None`` when uncounted.
+    minutes: int | None = None
+
+
 class ProviderStatusResponse(BaseModel):
     active: ActiveProviderSelection
     providers: list[ProviderEntry] = []
     #: Registerable providers the catalog leaves out (picker_rank ``None``).
     flag_only_providers: list[str] = []
     embedders: list[EmbedderEntry] = []
+    #: With ``?detect=true`` and a repo: the plan-billed sign-in the repo can
+    #: add a model with, as the keyless upgrade line names it. ``None`` when a
+    #: provider already resolves or no signed-in CLI reports a paid plan.
+    plan_route: PlanRoute | None = None
 
 
 class ProviderModelEntry(BaseModel):

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.serving import ServedFinding, serve_findings
 from repowise.core.attribution import attribution_enabled
-from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES, NON_CODE_EDGE_TYPES
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -55,14 +55,14 @@ async def ego_graph(
     except ImportError:
         raise HTTPException(status_code=501, detail="networkx not available") from None
 
-    # Temporal edges are excluded from the traversal for the reason
+    # Temporal and documentation edges are excluded for the reason
     # `get_dependency_path` gives: a co-change edge is history, not a
     # reference, so it makes an unrelated file a 1-hop neighbour. Containment
     # stays — it is the only bridge from the file layer to the symbol layer.
     edge_result = await session.execute(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+            GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
         )
     )
     edges = edge_result.scalars().all()
@@ -156,7 +156,7 @@ async def entry_points_graph(
     edge_result = await session.execute(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+            GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
         )
     )
     edges = edge_result.scalars().all()
@@ -279,12 +279,14 @@ async def dead_code_graph(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.source_node_id.in_(list(dead_node_ids)),
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
     in_edge_result = await session.execute(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.target_node_id.in_(list(dead_node_ids)),
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
     all_edges = list(out_edge_result.scalars().all()) + list(in_edge_result.scalars().all())
@@ -382,6 +384,7 @@ async def hot_files_graph(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.source_node_id.in_(list(hot_node_ids)),
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
     out_edges = out_edge_result.scalars().all()

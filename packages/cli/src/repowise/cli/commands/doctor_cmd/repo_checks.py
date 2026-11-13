@@ -15,7 +15,6 @@ from ._checks.context import CheckContext
 from ._checks.core import (
     _attribution_notes_check,
     _autosync_hook_check,
-    _events_config_check,
     _page_count,
     _repowise_dir_check,
     core_checks,
@@ -57,7 +56,6 @@ __all__ = [
     "_claude_registration_check",
     "_decision_vector_ids",
     "_distill_checks",
-    "_events_config_check",
     "_is_stub_fallback_row",
     "_mcp_responds_check",
     "_page_count",
@@ -116,5 +114,5 @@ def _run_repo_checks(
 
     render_checks(ctx, checks, all_ok)
     if repair:
-        run_repair(ctx)
+        run_repair(ctx, repo_ok=all_ok)
     return all_ok, checks

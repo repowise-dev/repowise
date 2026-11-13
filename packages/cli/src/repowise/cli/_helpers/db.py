@@ -147,16 +147,25 @@ async def reconcile_schema_best_effort(db_url: str) -> None:
     Never CREATES a store. ``init_db`` on a fresh path would materialise a
     42-table file, so a read command run in a repo that was never indexed would
     leave a database behind where the user expects "not indexed yet".
+
+    A plugin storage revision that failed or changed after it applied is a
+    defect in the plugin, not a store this command cannot write, so that error
+    still reaches the caller.
     """
     from repowise.core.persistence import create_engine, init_db
+    from repowise.core.registry.storage_migrations import StorageMigrationError
 
     if _missing_sqlite_file(db_url):
         return
 
     engine = create_engine(db_url, busy_timeout_ms=_RECONCILE_BUSY_TIMEOUT_MS)
     try:
-        with contextlib.suppress(Exception):
+        try:
             await init_db(engine)
+        except StorageMigrationError:
+            raise
+        except Exception:
+            pass
     finally:
         with contextlib.suppress(Exception):
             await engine.dispose()

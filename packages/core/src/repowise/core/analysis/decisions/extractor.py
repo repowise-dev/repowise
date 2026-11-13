@@ -650,7 +650,7 @@ class DecisionExtractor:
             prompt = COMMENT_ARCHAEOLOGY_PROMPT.format(comments_block=comments_block)
             # Not caught: _run_batches counts a failed batch.
             response = await provider.generate(
-                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
+                _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
             extracted = parse_decisions_reply(response)
             for d in extracted:
@@ -719,7 +719,10 @@ class DecisionExtractor:
         """
         if self._graph is None:
             return []
-        scores = _centrality_scores(self._graph)
+        from repowise.core.ingestion.graph._metrics import without_non_code_edges
+
+        # A README linking to every file, or a co-change partner, is not a dependency vote.
+        scores = _centrality_scores(without_non_code_edges(self._graph))
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         out: list[str] = []
         for node, _score in ranked:
@@ -921,10 +924,14 @@ class DecisionExtractor:
         """Get 1-hop graph neighbors for a file."""
         if self._graph is None:
             return []
+        from repowise.core.ingestion.graph._metrics import without_non_code_edges
+
+        # A doc naming the file, or a file that changes with it, is not one the decision affects.
+        graph = without_non_code_edges(self._graph)
         neighbors: set[str] = set()
-        if file_path in self._graph:
-            neighbors.update(self._graph.successors(file_path))
-            neighbors.update(self._graph.predecessors(file_path))
+        if file_path in graph:
+            neighbors.update(graph.successors(file_path))
+            neighbors.update(graph.predecessors(file_path))
         neighbors.discard(file_path)
         return list(neighbors)[:20]  # Cap at 20
 

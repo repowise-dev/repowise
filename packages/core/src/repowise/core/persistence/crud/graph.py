@@ -233,8 +233,13 @@ async def reconcile_edges_for_files(
     repository_id: str,
     source_file_paths: list[str],
     edges: list[dict],  # fresh edges whose source belongs to those files
+    *,
+    keep_edge_types: frozenset[str] = frozenset(),
 ) -> int:
     """Make ``graph_edges`` outgoing from *source_file_paths* match a fresh parse.
+
+    Stored rows of a type in *keep_edge_types* are left as they are, for a
+    caller whose fresh set does not cover that type.
 
     Sibling of :func:`reconcile_symbols_for_files` for the edge table. The
     incremental update path rebuilds the in-memory graph, but only the full-init
@@ -244,11 +249,11 @@ async def reconcile_edges_for_files(
     from this table). This deletes every edge whose source node belongs to one
     of *source_file_paths* — both the file node and its symbol nodes, including
     symbols the change deleted whose node rows the incremental path never prunes
-    — then inserts the fresh set, writing only the rows that differ. Edges *into* a changed file from an unchanged
-    one are owned by that other file and left untouched, the same file-scoping
-    the symbol reconciler uses; a full reindex reconciles those. The exception
-    is an edge whose fact sits at its target (``TARGET_OWNED_HINTS``), which
-    the target's file owns too.
+    — then inserts the fresh set, writing only the rows that differ. Edges *into*
+    one of the files from a file outside the list are owned by that other file
+    and left untouched, the same file-scoping the symbol reconciler uses. The
+    exception is an edge whose fact sits at its target (``TARGET_OWNED_HINTS``),
+    which the target's file owns too.
 
     Returns the number of deleted rows (removed or rewritten).
     """
@@ -291,8 +296,8 @@ async def reconcile_edges_for_files(
     if not source_ids:
         return 0
 
-    # Diff instead of delete-all-then-insert: a parser-change widen reconciles
-    # every file, and nearly all of its rows come back unchanged.
+    # Diff instead of delete-all-then-insert: an update reconciles every file,
+    # and nearly all of its rows come back unchanged.
     stored = await _edge_sync.load_owned_edges(
         session,
         repository_id,
@@ -300,6 +305,8 @@ async def reconcile_edges_for_files(
         frozenset(TARGET_OWNED_HINTS),
         _EDGE_RECONCILE_CHUNK,
     )
+    if keep_edge_types:
+        stored = {key: row for key, row in stored.items() if key[2] not in keep_edge_types}
     stale_ids, inserts = _edge_sync.diff_edges(
         stored,
         [_edge_content_values(e) for e in edges],
@@ -838,6 +845,8 @@ async def get_cross_community_edges(
     Returns a list of ``{"target_community_id": int, "edge_count": int}``.
     Uses a join through ``graph_nodes`` to resolve target community.
     """
+    from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
+
     # Alias for the target node lookup
     target_node = GraphNode.__table__.alias("tn")
     source_node = GraphNode.__table__.alias("sn")
@@ -867,6 +876,8 @@ async def get_cross_community_edges(
             # Only count file-level edges for meaningful community crossing
             source_node.c.node_type == "file",
             target_node.c.node_type == "file",
+            # A doc link or co-change into another community is not coupling to it.
+            GraphEdge.__table__.c.edge_type.not_in(NON_CODE_EDGE_TYPES),
         )
         .group_by(target_node.c.community_id)
         .order_by(func.count().desc())

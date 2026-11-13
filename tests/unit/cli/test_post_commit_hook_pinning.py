@@ -25,7 +25,13 @@ def _fake_install(tmp_path: Path, name: str) -> Path:
     """A ``repowise`` script that records the subcommand it was run with."""
     script = tmp_path / name / "bin" / "repowise"
     script.parent.mkdir(parents=True)
-    script.write_text('#!/bin/sh\necho "$@" > "$PWD/.repowise/ran"\n', encoding="utf-8", newline="\n")
+    # Write then rename: the hook runs this in the background, and a bare
+    # redirect creates the file empty before echo fills it.
+    script.write_text(
+        '#!/bin/sh\necho "$@" > "$PWD/.repowise/ran.tmp" && mv "$PWD/.repowise/ran.tmp" "$PWD/.repowise/ran"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
     script.chmod(0o755)
     return script
 

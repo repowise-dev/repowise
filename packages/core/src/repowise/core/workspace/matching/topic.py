@@ -1,4 +1,4 @@
-"""Topic matching: routing keys, and queues reached through an exchange binding.
+"""Topic matching: routing keys, exchange-bound queues, and names that run over any broker.
 
 A message broker's producer and consumer often name different things. A
 RabbitMQ producer publishes to an *exchange* with a routing key; a consumer
@@ -10,6 +10,11 @@ alone, and the pass here links each consumer of the bound queue to the
 exchange's publishers, or the binding site itself when no consumer of the
 queue was found. The routing check keeps a binding from linking to a publisher
 whose key it would never receive.
+
+Two ends link only when they can be one broker's destination. The same broker
+always can. A Laravel, NestJS or Dapr name runs over a transport configured
+outside the code, so it meets any broker but BullMQ, whose queue is Redis keys
+only BullMQ reads (``_ANY_TRANSPORT``, ``_OWN_KIND_ONLY``).
 """
 
 from __future__ import annotations

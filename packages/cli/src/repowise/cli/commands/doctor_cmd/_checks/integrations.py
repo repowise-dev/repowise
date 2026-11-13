@@ -511,7 +511,9 @@ def _rewrite_hook_row(distill_cfg: object) -> DoctorCheck:
 def _installed_rewrite_detail(installed_names: list[str], distill_cfg: object) -> tuple[str, bool]:
     """``(detail, off_path)`` for a rewrite hook row with the hook installed."""
     commands_cfg = distill_cfg.get("commands") if isinstance(distill_cfg, dict) else {}
-    opted_out = isinstance(commands_cfg, dict) and commands_cfg.get("enabled") is False
+    from repowise.core.settings.model import flag
+
+    opted_out = isinstance(commands_cfg, dict) and not flag(commands_cfg.get("enabled"), True)
     if opted_out:
         return f"installed: {', '.join(installed_names)} (this repo opted out)", False
     off_path = _distill_off_path_note()

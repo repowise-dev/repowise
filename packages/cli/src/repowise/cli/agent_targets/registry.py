@@ -36,6 +36,7 @@ _TARGET_MODULES: dict[str, str] = {
     "hermes": "repowise.cli.agent_targets.targets.hermes:TARGET",
     "copilot": "repowise.cli.agent_targets.targets.copilot:TARGET",
     "kiro": "repowise.cli.agent_targets.targets.kiro:TARGET",
+    "windsurf": "repowise.cli.agent_targets.targets.windsurf:TARGET",
 }
 
 #: Resolved when :meth:`resolve_target_flag` is asked for ``auto`` and nothing

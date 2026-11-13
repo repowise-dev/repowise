@@ -40,6 +40,7 @@ without that mapping count explicit receivers only; (2) flat
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -334,6 +335,8 @@ class LanguageNodeMap:
     # function named like its type, nothing fixes its signatures, and no
     # parameter counts as a scalar, so a typed signature there never fires.
     #   * ``ctor_kinds`` / ``ctor_names`` -- a constructor by node or by name.
+    #     ``ctor_name_pattern`` -- a constructor by naming convention (Go
+    #     ``NewServer``, Rust ``from_parts``), matched against the whole name.
     #   * ``fixed_signature_markers`` -- modifier, annotation, attribute or
     #     decorator words saying the parameter list belongs to another
     #     declaration: an override, a native or generated binding, a
@@ -346,6 +349,10 @@ class LanguageNodeMap:
     #     interface implementation on the member, an enclosing trait impl.
     #   * ``fixed_abi_kinds`` -- an enclosing block whose linkage fixes the
     #     parameter lists inside it (C++ ``extern "C"``).
+    #   * ``supertype_clause_kinds`` -- the clauses of a type declaration
+    #     naming what it extends or implements, for a language that implements
+    #     a requirement with no override keyword. A method a supertype in the
+    #     same file declares too is that supertype's signature.
     #   * ``public_api_modifiers`` / ``public_api_type_kinds`` -- a member
     #     carrying one of these, inside types that all carry one too, is
     #     published API. Only for a language with an assembly-internal level
@@ -355,6 +362,7 @@ class LanguageNodeMap:
     #     word once qualifiers, pointers, nullability and brackets are gone.
     ctor_kinds: frozenset[str] = frozenset()
     ctor_names: frozenset[str] = frozenset()
+    ctor_name_pattern: re.Pattern[str] | None = None
     fixed_signature_markers: frozenset[str] = frozenset()
     bound_param_markers: frozenset[str] = frozenset()
     explicit_impl_kinds: frozenset[str] = frozenset()
@@ -363,6 +371,7 @@ class LanguageNodeMap:
     public_api_modifiers: frozenset[str] = frozenset()
     public_api_type_kinds: frozenset[str] = frozenset()
     scalar_type_names: frozenset[str] = frozenset()
+    supertype_clause_kinds: frozenset[str] = frozenset()
 
     # -- Grammar misreads ----------------------------------------------------
     #   * ``misread_scope`` -- truthy for a ``function_kinds`` node that is
@@ -381,11 +390,27 @@ class LanguageNodeMap:
     # -- Local bindings ------------------------------------------------------
     #   * ``local_value`` -- truthy for a ``function_kinds`` node that binds a
     #     value and not a function (F#: ``let v = ...`` shares its node type
-    #     with ``let f x = ...``). Inside a function such a node is no unit of
-    #     its own, so it gets no entry there. None means every function-kind
-    #     node is a function. Checked only for nodes inside a collected
-    #     function; at module level the node keeps the entry it always had.
+    #     with ``let f x = ...``). Such a node is no unit and no class method,
+    #     at module level, in a type or inside a function. None means every
+    #     function-kind node is a function.
     local_value: Callable[[Node], object] | None = None
+
+    # -- Early-exit guards (``complexity/dispatch.py``) -----------------------
+    #   * ``plain_guard_kinds`` -- conditionals that, with one condition, no
+    #     ``else`` and a body that only leaves (``if (!buf) return -1;``, Ruby
+    #     ``return x if done``, Swift ``guard ok else { return }``), are a
+    #     precondition check. Three or more back to back count once in the
+    #     judged CCN.
+    #     Empty: only error guards count (Go ``if err != nil``, C ``goto``).
+    plain_guard_kinds: frozenset[str] = frozenset()
+
+    # -- Word operators ------------------------------------------------------
+    #   * ``logical_operator`` -- truthy for a node that matched
+    #     ``boolean_operator_kinds`` / ``boolean_operator_text_kinds`` and
+    #     really joins two conditions. A word operator can be something else: a
+    #     ScalaTest matcher or Spark ``Column`` method (``be > 1 and be < 5``),
+    #     Pascal bitwise ``Flags and $FF``. None means every match is logic.
+    logical_operator: Callable[[Node], object] | None = None
 
 
 
@@ -445,6 +470,7 @@ _PY = LanguageNodeMap(
     assignment_kinds=frozenset({"assignment"}),
     augmented_assign_kinds=frozenset({"augmented_assignment"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"block"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset({"raise_statement"}),
@@ -509,6 +535,7 @@ _TS = LanguageNodeMap(
     augmented_assign_kinds=frozenset({"augmented_assignment_expression"}),
     local_decl_kinds=frozenset({"lexical_declaration", "variable_declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"statement_block"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset({"throw_statement"}),
@@ -521,6 +548,7 @@ _TS = LanguageNodeMap(
 _JS = _TS  # identical control-flow nodes; tree-sitter-javascript shares shape.
 
 _GO = LanguageNodeMap(
+    ctor_name_pattern=re.compile(r"New(?:[A-Z]\w*)?"),
     scalar_type_names=frozenset(
         {
             "string", "bool", "byte", "rune", "int", "int8", "int16", "int32", "int64",
@@ -580,7 +608,9 @@ def _no_body_field(node: Node) -> object:
 _JAVA = LanguageNodeMap(
     bodyless=_no_body_field,
     ctor_kinds=frozenset({"constructor_declaration"}),
-    fixed_signature_markers=frozenset({"Override"}),
+    # Dagger ``@Provides`` and Spring ``@Bean``: the container calls the
+    # method and fills every parameter.
+    fixed_signature_markers=frozenset({"Override", "Provides", "Bean"}),
     bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset({"boolean", "byte", "short", "int", "long", "float", "double", "char", "String", "Boolean", "Byte", "Short", "Integer", "Long", "Float", "Double", "Character"}),
     function_kinds=frozenset({"method_declaration", "constructor_declaration"}),
@@ -647,6 +677,7 @@ _JAVA = LanguageNodeMap(
     assignment_kinds=frozenset({"assignment_expression"}),
     local_decl_kinds=frozenset({"local_variable_declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"block"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset({"throw_statement"}),
@@ -713,6 +744,7 @@ _APEX = LanguageNodeMap(
 )
 
 _RUST = LanguageNodeMap(
+    ctor_name_pattern=re.compile(r"new|from_\w+"),
     trait_impl_kinds=frozenset({"impl_item"}),
     scalar_type_names=frozenset(
         {
@@ -794,7 +826,10 @@ _KOTLIN = LanguageNodeMap(
     # ``abstract fun``, an interface ``fun`` and ``external fun`` have no ``function_body``.
     bodyless=lambda node: not any(c.type == "function_body" for c in node.children),
     ctor_kinds=frozenset({"secondary_constructor"}),
-    fixed_signature_markers=frozenset({"override"}),
+    # ``@Provides`` / ``@Bean``: the container fills the parameters.
+    # ``@Composable``: Compose takes UI state as flat parameters by design.
+    # ``@Test``: the runner calls it.
+    fixed_signature_markers=frozenset({"override", "Provides", "Bean", "Composable", "Test"}),
     bound_param_markers=_JVM_BOUND_PARAM_MARKERS,
     scalar_type_names=frozenset(
         {"Int", "Long", "Short", "Byte", "Boolean", "Char", "Float", "Double", "String", "UInt", "ULong"}
@@ -881,16 +916,27 @@ _SWIFT = LanguageNodeMap(
     field_decl_kinds=frozenset({"property_declaration"}),
     identifier_kinds=frozenset({"simple_identifier"}),
     ctor_kinds=frozenset({"init_declaration"}),
-    fixed_signature_markers=frozenset({"override"}),
-    # No ``scalar_type_names``: a Swift ``parameter`` is a child of the function
-    # with no list node around it, which ``typed_param_counts`` does not read
-    # yet, so ``primitive_obsession`` has nothing to count here. No assertion
-    # kinds either: XCTest has no vocabulary row, so the test-quality markers
-    # do not read Swift.
+    # ``@objc`` exposes the method to Objective-C selectors and protocols,
+    # which own its parameter list.
+    fixed_signature_markers=frozenset({"override", "objc"}),
+    supertype_clause_kinds=frozenset({"inheritance_specifier"}),
+    scalar_type_names=frozenset(
+        {
+            "Int", "Int8", "Int16", "Int32", "Int64", "UInt", "UInt8", "UInt16", "UInt32",
+            "UInt64", "Float", "Double", "CGFloat", "Bool", "String", "Substring", "Character",
+            # C types as Swift imports them.
+            "CInt", "CUnsignedInt", "CLong", "CUnsignedLong", "CShort", "CChar", "CBool",
+            "CFloat", "CDouble",
+        }
+    ),
+    # No assertion kinds: XCTest has no vocabulary row, so the test-quality
+    # markers do not read Swift.
     call_kinds=frozenset({"call_expression"}),
+    plain_guard_kinds=frozenset({"if_statement", "guard_statement"}),
 )
 
 _DART = LanguageNodeMap(
+    fixed_signature_markers=frozenset({"override"}),
     scalar_type_names=frozenset({"int", "double", "num", "bool", "String"}),
     # Dart splits a function into a ``function_signature`` node whose body is
     # a SIBLING ``function_body`` node (members wrap the signature in
@@ -995,6 +1041,7 @@ _CPP = LanguageNodeMap(
     assignment_kinds=frozenset({"assignment_expression"}),
     local_decl_kinds=frozenset({"declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"compound_statement"}),
     # ``co_return`` / ``co_yield`` leave a coroutine like ``return`` / ``yield``.
     return_kinds=frozenset({"return_statement", "co_return_statement"}),
@@ -1029,6 +1076,7 @@ _C = LanguageNodeMap(
     assignment_kinds=frozenset({"assignment_expression"}),
     local_decl_kinds=frozenset({"declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"compound_statement"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset(),
@@ -1116,6 +1164,7 @@ _CSHARP = LanguageNodeMap(
         {"local_declaration_statement", "using_statement", "variable_declaration"}
     ),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"block"}),
     return_kinds=frozenset({"return_statement", "yield_statement"}),
     raise_kinds=frozenset({"throw_statement"}),
@@ -1124,6 +1173,12 @@ _CSHARP = LanguageNodeMap(
     scoped_resource_decl_kinds=frozenset({"local_declaration_statement"}),
     scoped_resource_decl_tokens=frozenset({"using"}),
 )
+
+
+def _scala_symbolic_logic(node: Node) -> bool:
+    """``a && b`` / ``a || b``, not a DSL's infix ``and`` / ``or``."""
+    operator = node.child_by_field_name("operator")
+    return operator is not None and operator.text in (b"&&", b"||")
 
 
 _SCALA = LanguageNodeMap(
@@ -1163,17 +1218,18 @@ _SCALA = LanguageNodeMap(
     case_kinds=frozenset({"case_clause"}),
     boolean_operator_kinds=frozenset(),
     # ``&&`` / ``||`` are ``operator_identifier`` tokens inside a generic
-    # ``infix_expression``, the text sniff. The sniffer also matches ``and`` /
-    # ``or`` operator text (ScalaTest matcher DSL combinators), which are
-    # genuine boolean combinators when used infix, so the shared behavior is
-    # acceptable here.
+    # ``infix_expression``, the text sniff. Infix ``and`` / ``or`` is never
+    # one: ``Boolean`` has no such methods, so they are a DSL's (ScalaTest
+    # ``be > 1 and be < 5``, Spark ``col("a") > 1 and col("b") < 2``).
     boolean_operator_text_kinds=frozenset({"infix_expression"}),
+    logical_operator=_scala_symbolic_logic,
     # ``object`` (singletons / companions), ``trait``, and Scala 3 ``enum``
     # bodies all group methods the same way a class body does; case classes
     # are plain ``class_definition``s.
     class_kinds=frozenset(
         {"class_definition", "object_definition", "trait_definition", "enum_definition"}
     ),
+    supertype_clause_kinds=frozenset({"extends_clause"}),
     # Self-type aliases (``self =>``) are skipped: bare and aliased implicit
     # receivers degrade to the LCOM4 "no signal" valve, same documented limit
     # as Kotlin.
@@ -1224,6 +1280,7 @@ _SCALA = LanguageNodeMap(
 
 
 _RUBY = LanguageNodeMap(
+    ctor_names=frozenset({"initialize"}),
     # NB (grammar-wide): tree-sitter-ruby names keyword tokens after their
     # parent node (an ``if`` node contains an unnamed ``if`` token of type
     # ``"if"``); the walkers' ``is_named`` guards keep those tokens from
@@ -1283,6 +1340,7 @@ _RUBY = LanguageNodeMap(
     # ``subshell`` is a backtick command — its own node type, mapped so the
     # perf dialect can classify it as a subprocess sink.
     call_kinds=frozenset({"call", "subshell"}),
+    plain_guard_kinds=frozenset({"if", "unless", "if_modifier", "unless_modifier"}),
     # Ruby has no async syntax; ``blocking_sync_in_async`` is n/a.
 )
 
@@ -1312,6 +1370,56 @@ _SHELL = LanguageNodeMap(
     boolean_operator_text_kinds=frozenset({"list"}),
     # No classes, no assertions, no perf/dataflow dialect for shell.
 )
+
+
+# Pascal operators that only take numbers; a comparison is integer-typed
+# when its other side is one.
+_PASCAL_ARITHMETIC = frozenset({"kAdd", "kSub", "kMul", "kDiv", "kFdiv", "kMod", "kShl", "kShr"})
+_PASCAL_BITWISE = frozenset({"kAnd", "kOr", "kXor"})
+_PASCAL_COMPARISON = frozenset({"kEq", "kNeq", "kLt", "kLte", "kGt", "kGte"})
+
+
+def _pascal_unparen(node: Node | None) -> Node | None:
+    while node is not None and node.type == "exprParens" and node.named_children:
+        node = node.named_children[0]
+    return node
+
+
+def _pascal_operator(node: Node) -> str:
+    operator = node.child_by_field_name("operator")
+    return operator.type if operator is not None else ""
+
+
+def _pascal_integer(node: Node | None) -> bool:
+    """A number, arithmetic, or a bitwise ``and`` / ``or`` / ``xor`` over one."""
+    node = _pascal_unparen(node)
+    if node is None:
+        return False
+    if node.type == "literalNumber":
+        return True
+    if node.type != "exprBinary":
+        return False
+    operator = _pascal_operator(node)
+    if operator in _PASCAL_ARITHMETIC:
+        return True
+    return operator in _PASCAL_BITWISE and any(
+        _pascal_integer(node.child_by_field_name(side)) for side in ("lhs", "rhs")
+    )
+
+
+def _pascal_not_bitwise(node: Node) -> bool:
+    """``A and B`` on conditions, not ``Flags and $FF`` or ``(F and M) <> 0``."""
+    expr = node.parent
+    if expr is None or _pascal_integer(expr):
+        return False
+    outer = expr.parent
+    while outer is not None and outer.type == "exprParens":
+        outer = outer.parent
+    if outer is None or outer.type != "exprBinary":
+        return True
+    if _pascal_operator(outer) not in _PASCAL_COMPARISON:
+        return True
+    return not any(_pascal_integer(outer.child_by_field_name(side)) for side in ("lhs", "rhs"))
 
 
 _PASCAL = LanguageNodeMap(
@@ -1351,6 +1459,8 @@ _PASCAL = LanguageNodeMap(
     # not generic operator text inside a binary node, so no text-sniffing
     # set is needed here (unlike the C-family languages above).
     boolean_operator_kinds=frozenset({"kAnd", "kOr"}),
+    # ... unless the operands are integers: ``Flags and $FF`` masks bits.
+    logical_operator=_pascal_not_bitwise,
     # DUnit's ``Check`` / ``CheckEquals`` / ``Fail`` family are ordinary calls
     # named in ``asserts/lexicon.py``'s Pascal row (broad tier); DUnitX's
     # ``Assert.AreEqual`` / ``Assert.IsTrue`` / ... need no row at all -- the
@@ -1464,6 +1574,9 @@ _FSHARP = LanguageNodeMap(
     switch_kinds=frozenset({"match_expression"}),
     case_kinds=frozenset({"rules"}),
     boolean_operator_kinds=frozenset(),
+    # ``a && b`` is an ``infix_expression`` whose ``infix_op`` child carries the
+    # operator text, the same sniff as Scala.
+    boolean_operator_text_kinds=frozenset({"infix_expression"}),
     class_kinds=frozenset({"anon_type_defn", "record_type_defn", "union_type_defn", "enum_type_defn"}),
     self_identifiers=frozenset(),
     member_access_kinds=frozenset(),
@@ -1511,6 +1624,14 @@ _OBJC = LanguageNodeMap(
 
 
 _PHP = LanguageNodeMap(
+    ctor_names=frozenset({"__construct"}),
+    # ``?string`` and ``int|string`` read as their members. PHP type names
+    # are case-insensitive; ``String`` and ``INT`` are the spellings seen.
+    scalar_type_names=frozenset(
+        spelling
+        for name in ("int", "float", "string", "bool", "true", "false")
+        for spelling in (name, name.capitalize(), name.upper())
+    ),
     bodyless=_no_body_field,
     function_kinds=frozenset({"function_definition", "method_declaration"}),
     lambda_kinds=frozenset({"anonymous_function", "arrow_function"}),
@@ -1527,6 +1648,7 @@ _PHP = LanguageNodeMap(
     class_kinds=frozenset(
         {"class_declaration", "trait_declaration", "interface_declaration", "enum_declaration"}
     ),
+    supertype_clause_kinds=frozenset({"base_clause", "class_interface_clause"}),
     self_identifiers=frozenset({"$this"}),
     member_access_kinds=frozenset(
         {"member_access_expression", "member_call_expression", "nullsafe_member_access_expression"}
@@ -1546,6 +1668,7 @@ _PHP = LanguageNodeMap(
     augmented_assign_kinds=frozenset({"augmented_assignment_expression"}),
     local_decl_kinds=frozenset({"function_static_declaration", "static_variable_declaration"}),
     if_kinds=frozenset({"if_statement"}),
+    plain_guard_kinds=frozenset({"if_statement"}),
     block_kinds=frozenset({"compound_statement"}),
     return_kinds=frozenset({"return_statement"}),
     raise_kinds=frozenset({"throw_expression", "throw_statement"}),

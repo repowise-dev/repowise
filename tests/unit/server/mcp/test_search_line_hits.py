@@ -229,8 +229,12 @@ def test_fuzzy_results_beside_literal_lines_keep_a_short_label():
 async def test_a_name_with_no_symbol_and_no_lines_keeps_its_miss_advice(tree):
     out = await search_codebase("disconnect", mode="symbol")
 
-    assert "lines" not in out or out["lines"] == []
-    assert "grep_hint" in out
+    assert out["lines"] == [] and out["complete"] is True
+    # The miss is still named; the scan listed every literal match (none), so
+    # there is nothing left to sweep with Grep.
+    assert "'disconnect'" in out["note"]
+    assert "grep_hint" not in out
+    assert "Grep" not in out["note"]
 
 
 @pytest.mark.asyncio
@@ -477,9 +481,10 @@ async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, se
         ("tests/test_widget.py", 1, "import"),
         *(("tests/test_widget.py", n, "reference") for n in range(2, 2 + cap)),
     ]
-    assert out["lines_omitted_by_file"] == {"tests/test_widget.py": 20 - cap}
+    assert out["lines_omitted"] == 20 - cap
+    assert "lines_omitted_by_file" not in out
     assert out["complete"] is False
-    assert any("lines_omitted_by_file" in r for r in out["reasons"])
+    assert any("lines_omitted counts them" in r for r in out["reasons"])
     assert out["_meta"]["omitted"]["refs"]
 
 
@@ -535,9 +540,7 @@ async def test_mock_heavy_typescript_test_sorts_after_the_real_user(tree, sessio
     assert ("web/b.ts", 2, "reference") in _rows(out)
     assert paths.index("web/b.ts") < paths.index("web/a.test.ts")
     assert paths.count("web/a.test.ts") == 1 + _edit_sites.MAX_REFERENCES_PER_FILE
-    assert out["lines_omitted_by_file"] == {
-        "web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE
-    }
+    assert out["lines_omitted"] == 30 - _edit_sites.MAX_REFERENCES_PER_FILE
     assert out["complete"] is False
 
 
@@ -602,21 +605,19 @@ def _recording_collector(monkeypatch):
 
 
 def _assert_mixed_bound(out, hidden, n_files):
-    cap, top = _line_hits.MAX_LINES_MIXED, _line_hits.MAX_OMITTED_FILES
-    assert len(out["lines"]) == cap
+    assert len(out["lines"]) == _line_hits.MAX_LINES_MIXED
     assert out["complete"] is False
     assert _line_hits.OVER_LINES_MIXED in out["reasons"]
     assert out["_meta"]["omitted"]["refs"]
-    by_file = out["lines_omitted_by_file"]
-    assert len(by_file) == top
     ranks = [_line_hits._MIXED_KIND_ORDER[r["kind"]] for r in out["lines"]]
     assert ranks == sorted(ranks)
-    assert out["lines_omitted_by_file_total"] == n_files
-    assert list(by_file.values()) == sorted(by_file.values(), reverse=True)
+    # A count, not a per-file map; the rows themselves are in the omission chunk.
+    assert out["lines_omitted"] == len(hidden)
+    assert "lines_omitted_by_file" not in out
+    assert len({r["path"] for r in hidden}) == n_files
     # Everything not shown is in the omission chunk, nothing twice.
     shown = {(r["path"], r["line"]) for r in out["lines"]}
     assert not shown & {(r["path"], r["line"]) for r in hidden}
-    assert all(by_file[p] == sum(r["path"] == p for r in hidden) for p in by_file)
 
 
 @pytest.mark.asyncio
@@ -670,15 +671,14 @@ async def test_mixed_typescript_query_bounds_lines_and_omitted_files(
 
 
 @pytest.mark.asyncio
-async def test_single_name_keeps_the_full_cap_and_every_omitted_file(tree, session, setup_mcp):
+async def test_single_name_keeps_the_full_cap_and_counts_the_omitted(tree, session, setup_mcp):
     await _mocking_tests(tree, session, setup_mcp, "pkg/catalog.py", "backend_of", "py", "python")
 
     out = await search_codebase("backend_of", mode="symbol")
 
     cap = _edit_sites.MAX_REFERENCES_PER_FILE
     assert len(out["lines"]) == 3 + 8 * (1 + cap)
-    assert len(out["lines_omitted_by_file"]) == 8
-    assert "lines_omitted_by_file_total" not in out
+    assert out["lines_omitted"] == 8 * (6 - cap)
     assert not any(r == _line_hits.OVER_LINES_MIXED for r in out["reasons"])
 
 
@@ -755,7 +755,10 @@ def test_byte_budget_reads_source_before_tests_and_docs(scan_repo, monkeypatch):
     rows, reasons = _line_hits._scan_listed(scan_repo, "retryLimit", True)
 
     assert {r["path"].split("/")[0] for r in rows} == {"src"}
-    assert reasons == [f"over 0 MB: scanned 3 of {len(_SCAN_TREE)} files, source first"]
+    assert reasons == [
+        f"over 0 MB: scanned 3 of {len(_SCAN_TREE)} files, source first;"
+        " not scanned: docs/ 2, tests/ 1, README.md 1"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -859,3 +862,194 @@ def test_the_small_set_bound_is_inclusive(tmp_path):
     assert (len(rows), reasons) == (size, [])
     rows, reasons = _scan(tmp_path, {"a.py": size + 1})
     assert len(rows) == _line_hits.MAX_LINES_PER_FILE and reasons
+
+
+def test_oversized_text_is_streamed_for_its_lines(tmp_path):
+    lines = [f"let row{i} = {i}" for i in range(200_000)]
+    lines[150_000] = 'let banner = "section1234"'
+    (tmp_path / "Big.swift").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert (tmp_path / "Big.swift").stat().st_size > _edit_sites._MAX_FILE_BYTES
+    rows, reasons = _line_hits.scan_literal(tmp_path, ["Big.swift"], "section1234", True)
+    assert rows == [
+        {"path": "Big.swift", "line": 150_001, "kind": "definition", "text": 'let banner = "section1234"'}
+    ]
+    assert reasons == []
+
+
+def test_text_past_the_stream_cap_is_reported_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr(_line_hits, "_MAX_FILE_BYTES", 100)
+    monkeypatch.setattr(_line_hits, "_MAX_STREAM_BYTES", 200)
+    (tmp_path / "big.txt").write_text("x\n" * 150 + "token47\n", encoding="utf-8")
+    rows, reasons = _line_hits.scan_literal(tmp_path, ["big.txt"], "token47", True)
+    assert rows == [] and reasons == ["skipped as too large: big.txt"]
+    _, complete, unread = _line_hits.word_scan(tmp_path, "token47")
+    assert not complete and unread == ["skipped as too large: big.txt"]
+
+
+def test_a_stream_past_the_deadline_stops(tmp_path):
+    import re
+
+    path = tmp_path / "big.txt"
+    path.write_bytes(b"x\n" * 20_000 + b"token47\n")
+    pattern = re.compile("token47")
+    with open(path, "rb") as fh:
+        assert _line_hits._stream_matching_lines(fh, b"token47", pattern, 0.0) is None
+        assert _line_hits._stream_matching_lines(fh, b"token47", pattern, float("inf")) == [
+            (20_001, "token47")
+        ]
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_serves_each_part_as_its_own_group(tree):
+    out = await search_codebase("backend_of|GREETING")
+
+    assert out["matched_as"] == "alternation"
+    # Query order, each group definitions first: the edit set, then the scan.
+    assert _rows(out) == [
+        ("pkg/catalog.py", 4, "definition"),
+        ("app/widget.py", 1, "import"),
+        ("app/widget.py", 6, "call"),
+        ("pkg/catalog.py", 2, "definition"),
+    ]
+    assert out["complete"] is True
+    assert "unmatched" not in out
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_names_the_parts_that_match_nowhere(tree):
+    out = await search_codebase(r"\b(backend_of|nowhere_at_all)\b")
+
+    assert [r[0] for r in _rows(out)] == ["pkg/catalog.py", "app/widget.py", "app/widget.py"]
+    assert out["unmatched"] == ["nowhere_at_all"]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_alternation_of_indexed_names_is_not_reported_missing(tree):
+    out = await search_codebase("AuthService|User", mode="hybrid")
+
+    assert out["exact_match"] is True
+    assert "No indexed symbol" not in out.get("note", "")
+    assert {r.get("name") for r in out["results"] if r.get("type") == "symbol"} >= {
+        "AuthService",
+        "User",
+    }
+
+
+def test_the_line_cap_is_shared_evenly_and_unused_share_passes_on():
+    assert _line_hits._fair_caps([3, 100], 50) == [3, 47]
+    assert _line_hits._fair_caps([100, 100], 50) == [25, 25]
+    assert _line_hits._fair_caps([0, 0], 50) == [0, 0]
+    assert sum(_line_hits._fair_caps([30, 30, 30], 50)) == 50
+
+
+@pytest.mark.asyncio
+async def test_a_regex_serves_the_lines_it_matches(tree):
+    out = await search_codebase(r"connect\(\d+\)")
+
+    assert out["matched_as"] == "regex"
+    assert _rows(out) == [("app/widget.py", 4, "match")]
+    assert out["complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_regex_lists_declarations_first(tree):
+    out = await search_codebase(r"^def \w+\(")
+
+    assert _rows(out) == [
+        ("app/widget.py", 3, "definition"),
+        ("pkg/catalog.py", 4, "definition"),
+    ]
+
+
+def test_a_scan_out_of_time_names_what_it_did_not_read(scan_repo, monkeypatch):
+    import re
+
+    _python_only(monkeypatch)
+    monkeypatch.setattr(_line_hits, "MAX_SCAN_SECONDS", -1.0)
+    rows, reasons = _line_hits._scan_listed_regex(scan_repo, re.compile(r"retry\w+"))
+
+    assert rows == []
+    assert reasons == [
+        f"time budget: scanned 0 of {len(_SCAN_TREE)} files;"
+        " not scanned: src/ 3, docs/ 2, tests/ 1, README.md 1"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_alternatives_past_the_cap_are_named_and_leave_lines_incomplete(tree):
+    parts = ["backend_of"] + [f"absent_{i}" for i in range(_line_hits._MAX_ALTERNATIVES)]
+    out = await search_codebase("|".join(parts))
+
+    cap = _line_hits._MAX_ALTERNATIVES
+    assert out["complete"] is False
+    assert f"only the first {cap} of {len(parts)} alternatives searched" in out["reasons"]
+
+
+def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
+    import re
+
+    # A form feed and a line separator are not line breaks to grep.
+    (tmp_path / "a.py").write_text("x = 1\f y = 2 z\ndef target():\n", encoding="utf-8")
+    rows, reasons = _line_hits._scan(
+        tmp_path, ["a.py"], re.compile(r"def \w+\("), _line_hits._DECLARATION_LINE, None, per_line=True
+    )
+
+    assert [(r["line"], r["kind"]) for r in rows] == [(2, "definition")]
+    assert reasons == []
+
+
+def test_pages_beside_definition_lines_are_dropped():
+    from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL
+
+    named = {"type": "symbol", "path": "pkg/a.py", "name": "run"}
+    response = {
+        "results": [named, {"type": "page", "path": "pkg/b.py", "relation": NOT_THE_NAMED_SYMBOL}],
+        "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
+        "note": f"No indexed symbol is named 'go'. Any page here is {NOT_THE_NAMED_SYMBOL}.",
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=False)
+    assert response["results"] == [named]
+    assert response["pages_omitted"] == 1
+    assert response["note"] == "No indexed symbol is named 'go'."
+
+
+def test_an_identifier_query_drops_every_page_beside_definition_lines():
+    named = {"type": "symbol", "path": "pkg/a.py", "name": "run"}
+    page = {"type": "page", "page_type": "file_page", "path": "pkg/b.py"}
+    response = {
+        "results": [named, page],
+        "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=True)
+    assert response["results"] == [named]
+    assert response["pages_omitted"] == 1
+    # A multi-word question keeps the pages that rank its files.
+    response = {"results": [named, page], "lines": response["lines"]}
+    _line_hits._drop_pages_beside_definitions(response, every_page=False)
+    assert response["results"] == [named, page]
+
+
+def test_pages_stay_when_lines_hold_no_definition():
+    from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL
+
+    page = {"type": "page", "path": "pkg/b.py", "relation": NOT_THE_NAMED_SYMBOL}
+    response = {
+        "results": [page],
+        "lines": [{"path": "pkg/a.py", "line": 9, "kind": "call", "text": "run()"}],
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=True)
+    assert response["results"] == [page]
+    assert "pages_omitted" not in response
+
+
+def test_a_group_drops_its_tests_only_beside_shipped_code():
+    shipped = {"path": "pkg/a.py", "line": 1, "kind": "definition", "text": "def run():"}
+    test_row = {"path": "tests/test_a.py", "line": 4, "kind": "call", "text": "run()"}
+    only_tests = [{"path": "tests/test_b.py", "line": 2, "kind": "call", "text": "go()"}]
+    reasons: list[str] = []
+
+    groups = _line_hits._without_tests_beside_shipped([[shipped, test_row], only_tests], reasons)
+
+    assert groups == [[shipped], only_tests]
+    assert reasons == ["1 lines in tests not shown beside shipped code: lines_omitted counts them"]

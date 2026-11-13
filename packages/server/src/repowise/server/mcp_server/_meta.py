@@ -19,8 +19,10 @@ Rules of thumb baked into the hint generators:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,13 +32,17 @@ from repowise.core.git_head import read_head_commit, same_path
 from repowise.core.index_scope import (
     CANONICAL_INDEX_SCOPE_PROJECTION,
     INDEX_SCOPE_ENV,
+    FreeRoute,
     answers_upgrade_line,
     compact_index_scope,
     index_scope_fingerprint,
     load_index_scope,
+    upgrade_line,
 )
 from repowise.server.mcp_server import _checkout, _code_drift
 from repowise.server.mcp_server._rounding import round_float
+
+_log = logging.getLogger(__name__)
 
 # 2: index_scope carries the compact projection on routine responses. The key
 # and its version field are unchanged, so a consumer reading the old shape has
@@ -444,7 +450,11 @@ def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[
 
 
 def freshness_from_repo(
-    repository: Any | None, targets: list[str] | None = None, root: str | None = None
+    repository: Any | None,
+    targets: list[str] | None = None,
+    root: str | None = None,
+    *,
+    repo_level: bool = False,
 ) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
@@ -466,8 +476,10 @@ def freshness_from_repo(
     "Silence means current" only trains trust if the warning fires only when
     the served content is actually affected — a repo-wide warning after every
     unrelated commit teaches the agent to ignore the field. ``targets=None``
-    (repo-level tools like get_overview) keeps the repo-level warning;
-    ``targets=[]`` means "no file content served" and never warns.
+    (repo-level tools like get_overview) and ``targets=[]`` (no file content
+    served) carry ``index_behind`` and never warn. ``repo_level=True`` asks for
+    the repo-wide verdict instead (HEAD moved with real file changes), for a
+    caller that names which repository of a workspace is behind.
 
     Always-emitted fields:
       * ``index_age_days``  — informational, never a directive
@@ -518,7 +530,7 @@ def freshness_from_repo(
 
     borrowed = _checkout.borrowed_checkout(local_path)
     if borrowed is not None:
-        out.update(_borrowed_freshness(borrowed, indexed_full, targets, local_path))
+        out.update(_borrowed_freshness(borrowed, indexed_full, targets, local_path, repo_level))
         return out
 
     live_full = read_live_head(local_path)
@@ -545,16 +557,19 @@ def freshness_from_repo(
                 # because it holds for repo-level responses too, which are
                 # exactly the ones that previously always warned.
                 pass
-            elif targets is not None and changed is not None:
-                if targets_hit_by_changes(targets, changed):
-                    out["stale_warning"] = _checkout.stale_fact(
-                        indexed_full[:12],
-                        f"a file this response serves differs at HEAD {live_full[:12]}",
-                    )
-            else:
+            elif targets and changed is not None and targets_hit_by_changes(targets, changed):
+                out["stale_warning"] = _checkout.stale_fact(
+                    indexed_full[:12],
+                    f"a file this response serves differs at HEAD {live_full[:12]}",
+                )
+            elif repo_level:
                 # The SHA repeats ``indexed_commit`` on purpose: lean replies
                 # drop that key and keep only this line.
                 out["stale_warning"] = _checkout.stale_fact(indexed_full[:12], "HEAD has moved")
+            # Otherwise ``index_behind`` alone says HEAD moved. A response that
+            # names no file that differs gets no warning: the same "HEAD has
+            # moved" line on every call until the next update is a constant the
+            # agent learns to skip.
         else:
             # Match. No prose, since silence is the signal, but the comparison
             # did run and its answer is "not behind", so say so explicitly.
@@ -590,22 +605,34 @@ def freshness_from_repo(
 
 
 def _borrowed_hit(
-    local_path: str | None, indexed_full: str, head: str, targets: list[str] | None
+    local_path: str | None,
+    indexed_full: str,
+    head: str,
+    targets: list[str] | None,
+    repo_level: bool = False,
 ) -> str | None:
     """``"file"`` when a served file differs between the two commits, ``"repo"``
-    for a repo-level response or an unknown diff, else ``None``."""
+    when *repo_level* asks and they differ (or the diff is unknown), else ``None``.
+
+    Otherwise a response that names no file that differs gets no warning;
+    ``index_behind`` says the commits differ.
+    """
     if head == indexed_full:
         return None
     changed = _changed_files_between(local_path, indexed_full, head) if local_path else None
-    if changed is None or (changed and targets is None):
-        return "repo"
     if changed and targets and targets_hit_by_changes(targets, changed):
         return "file"
+    if repo_level and (changed is None or changed):
+        return "repo"
     return None
 
 
 def _borrowed_freshness(
-    caller: Any, indexed_full: str | None, targets: list[str] | None, local_path: str | None
+    caller: Any,
+    indexed_full: str | None,
+    targets: list[str] | None,
+    local_path: str | None,
+    repo_level: bool = False,
 ) -> dict[str, Any]:
     """Freshness of this index for another checkout of the repo, as a fact.
 
@@ -623,7 +650,7 @@ def _borrowed_freshness(
     hit = None
     if head and indexed_full:
         out["index_behind"] = head != indexed_full
-        hit = _borrowed_hit(local_path, indexed_full, head, targets)
+        hit = _borrowed_hit(local_path, indexed_full, head, targets, repo_level)
     if hit or dirty:
         out["stale_warning"] = _checkout.checkout_fact(
             caller, indexed_full, head, served_file=bool(dirty) or hit == "file"
@@ -650,9 +677,8 @@ def build_meta(
     :func:`freshness_from_repo`.
 
     ``index_scope`` carries the compact projection (the run mode, the
-    provenance, the git tier, one word for whether the index is whole, and a
-    fingerprint identifying the canonical object), and only when that word is
-    not ``complete``. See :func:`build_meta_with_full_scope` for the calls that are
+    provenance, the git tier, and one word for whether the index is whole),
+    and only when that word is not ``complete``. See :func:`build_meta_with_full_scope` for the calls that are
     worth the whole thing.
 
     Stable shape:
@@ -1031,27 +1057,138 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
-#: For a keyless server over an index whose prose a model already wrote.
-_KEY_ONLY_NOTE = (
-    "no model is configured, so answers are not synthesized; set a provider "
-    "key (or a provider in .repowise/config.yaml) and restart the MCP server"
+#: How long the first response on a path waits for the agent-CLI probe. Past
+#: it the line names the fallback route; a later ``get_answer`` names what was
+#: found (the overview names its line once, whatever it held then).
+_ROUTE_WAIT_S = 2.0
+
+# The signed-in agent CLI a keyless line names, probed once per served path in
+# a daemon thread (the probe is a subprocess), and the model calls ``generate``
+# makes, which size its minutes, per repository. Both hold for the process: the line itself
+# says to restart once a model is set up.
+_route_lock = threading.Lock()
+_route_probes: dict[str, threading.Thread] = {}
+_routes: dict[str, FreeRoute | None] = {}
+_generate_calls: dict[str, int] = {}
+#: Served paths whose overview already named the upgrade this process.
+_overview_upgrade_named: set[str] = set()
+
+
+def _detect_route(local_path: str | None) -> FreeRoute | None:
+    from repowise.core.providers.llm.subscription import detect_free_route
+
+    return detect_free_route(local_path)
+
+
+def _probe_route(key: str) -> None:
+    try:
+        _routes[key] = _detect_route(key or None)
+    except Exception:
+        _log.debug("repowise MCP: agent CLI probe failed", exc_info=True)
+        _routes[key] = None
+
+
+def _probed_route(local_path: str | None, wait: float) -> FreeRoute | None:
+    """The route for *local_path*, starting its one probe and waiting up to *wait* s."""
+    key = local_path or ""
+    with _route_lock:
+        probe = _route_probes.get(key)
+        started = probe is None
+        if started:
+            probe = threading.Thread(
+                target=_probe_route, args=(key,), name="repowise-route-probe", daemon=True
+            )
+            _route_probes[key] = probe
+            probe.start()
+    # Only the response that started the probe waits: a slow CLI must not
+    # charge every later response on the path its wait again.
+    if started:
+        probe.join(wait)
+    return _routes.get(key)
+
+
+async def _upgrade_route(
+    local_path: str | None, session_factory: Any = None, repo_id: str | None = None
+) -> FreeRoute | None:
+    """The free route for this index, timed by the calls ``generate`` makes when they can be counted."""
+    import asyncio
+
+    route = await asyncio.to_thread(_probed_route, local_path, _ROUTE_WAIT_S)
+    # The lanes are read from the checkout's state.json: no path, no minutes.
+    if route is None or session_factory is None or not repo_id or not local_path:
+        return route
+    calls = _generate_calls.get(repo_id)
+    if calls is None:
+        from repowise.core.generation.scope import generate_model_calls
+        from repowise.core.persistence import get_session
+
+        try:
+            # Ceiling: pending decision lanes load the stored graph once per
+            # process, seconds on a very large repo; caching the planned count
+            # in state.json at index time is the upgrade if that shows up.
+            async with get_session(session_factory) as session:
+                calls = await generate_model_calls(session, repo_id, local_path)
+        except Exception:
+            _log.debug("repowise MCP: generate call count failed", exc_info=True)
+            return route
+        _generate_calls[repo_id] = calls
+    from repowise.core.providers.llm.subscription import route_minutes
+
+    return route_minutes(route, calls)
+
+
+async def prose_upgrade_meta(
+    local_path: str | None, *, session_factory: Any = None, repo_id: str | None = None
+) -> dict[str, Any]:
+    """``keyless_note`` naming the upgrade, once per process, on an index no model wrote prose for.
+
+    The orientation call is made once per session, so repeating the line on a
+    second overview would charge for a fact the agent already has.
+    """
+    scope = read_index_scope(local_path)
+    key = local_path or ""
+    if answers_upgrade_line(scope) is None or key in _overview_upgrade_named:
+        return {}
+    _overview_upgrade_named.add(key)
+    route = await _upgrade_route(local_path, session_factory, repo_id)
+    return {"keyless_note": answers_upgrade_line(scope, route)}
+
+
+async def keyless_note_meta(
+    local_path: str | None, *, session_factory: Any = None, repo_id: str | None = None
+) -> dict[str, Any]:
+    """What a model would add, on a ``get_answer`` that degrades with ``no-llm-provider``.
+
+    Not once per process: an agent that starts a conversation on a server
+    another conversation already used would never learn how to upgrade. The
+    caller sends it only when the reply is weak (low confidence or no body).
+    """
+    route = await _upgrade_route(local_path, session_factory, repo_id)
+    return {"keyless_note": upgrade_line(read_index_scope(local_path), route)}
+
+
+#: For a natural-language search on an index with no embedder (#5049).
+KEYLESS_SEARCH_NOTE = (
+    "keyword match only (no embedder): rows share words, not meaning; "
+    "mode=symbol or mode=path is exact"
 )
 
 
-def prose_upgrade_meta(local_path: str | None) -> dict[str, Any]:
-    """``keyless_note`` naming the upgrade command, on an index no model wrote prose for."""
-    line = answers_upgrade_line(read_index_scope(local_path))
-    return {"keyless_note": line} if line else {}
+def keyless_search_note_meta() -> dict[str, Any]:
+    """``keyless_note`` for the first natural-language search with rows on an
+    index with no embedder, once per server process.
 
-
-def keyless_note_meta(local_path: str | None) -> dict[str, Any]:
-    """What a key would add, on every ``get_answer`` that degrades with
-    ``no-llm-provider`` (#3105).
-
-    Not once per process: an agent that starts a conversation on a server
-    another conversation already used would never learn how to upgrade.
+    Once, not per call: ``semantic_search: false`` already rides on every
+    reply, and a sentence on each would grow every keyless search. A server
+    shared by several conversations tells only the first; the flag still
+    tells the rest.
     """
-    return prose_upgrade_meta(local_path) or {"keyless_note": _KEY_ONLY_NOTE}
+    from repowise.server.mcp_server import _state
+
+    if semantic_search_state() is not False or _state._keyless_search_noted:
+        return {}
+    _state._keyless_search_noted = True
+    return {"keyless_note": KEYLESS_SEARCH_NOTE}
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:

@@ -54,6 +54,14 @@ import type {
 import { toFriendlyMessage } from "../lib/errors";
 import { GapList, ReasonField, isKnownGap, isReasonGap, refusedGaps } from "./decision-confirm";
 import { DecisionAcceptedLine, DecisionAppliedLine, DecisionOrigin } from "./decision-origin";
+import {
+  PIN_LABEL,
+  PIN_TITLE,
+  PUT_IN_FORCE_LABEL,
+  PinnedMark,
+  UNPIN_LABEL,
+  UNPIN_TITLE,
+} from "./decision-review-drawer";
 
 const MICRO_LABEL =
   "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
@@ -87,6 +95,69 @@ const DONE_COPY: Partial<Record<DecisionStatus, string>> = {
   deprecated: "Decision deprecated",
 };
 
+interface PinState {
+  pinned: boolean;
+  /** The host can pin: it passed `setPinned`. */
+  canPin: boolean;
+  toggle: () => void;
+}
+
+/**
+ * Whether the decision is pinned, and the toggle that asks the host to change
+ * it. Shares the page's busy flag, so a pin in flight disables the other verbs.
+ */
+function usePinState(
+  decision: DecisionRecord,
+  adapter: DecisionDetailAdapter,
+  setLoading: (loading: boolean) => void,
+): PinState {
+  const [pinned, setPinned] = React.useState(decision.pinned === true);
+  const toggle = async () => {
+    if (!adapter.setPinned) return;
+    setLoading(true);
+    try {
+      await adapter.setPinned(!pinned);
+      setPinned(!pinned);
+      toast.success(pinned ? "Decision unpinned" : "Decision pinned");
+    } catch (err) {
+      toast.error(toFriendlyMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+  return { pinned, canPin: adapter.setPinned !== undefined, toggle: () => void toggle() };
+}
+
+/** The header's pinned mark, on a decision in force only. */
+function ActivePinnedMark({ pinned, active }: { pinned: boolean; active: boolean }) {
+  return pinned && active ? <PinnedMark /> : null;
+}
+
+/** The host's agent prompts for a decision in force (change it, veto it, pin it). */
+function RecordPromptsSlot({ active, adapter }: { active: boolean; adapter: DecisionDetailAdapter }) {
+  return active ? <>{adapter.renderRecordPrompts?.()}</> : null;
+}
+
+/** Pin or Unpin, where the host can pin and the decision is in force. */
+function PinButton({ active, pin, loading }: { active: boolean; pin: PinState; loading: boolean }) {
+  if (!active || !pin.canPin) return null;
+  return (
+    <button
+      onClick={pin.toggle}
+      disabled={loading}
+      title={pin.pinned ? UNPIN_TITLE : PIN_TITLE}
+      className="rounded-md border border-[var(--color-border-default)] px-3 py-1.5 text-sm text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] disabled:opacity-50"
+    >
+      {pin.pinned ? UNPIN_LABEL : PIN_LABEL}
+    </button>
+  );
+}
+
+/** The sentence under the verbs that says what Pin does, where the host offers it. */
+function PinSentence({ show }: { show: boolean }) {
+  return show ? <> Pin holds it as law: an agent asks before replacing it.</> : null;
+}
+
 export interface DecisionDetailProps {
   decision: DecisionRecord;
   adapter: DecisionDetailAdapter;
@@ -97,6 +168,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
 
   const [status, setStatus] = React.useState<DecisionStatus>(decision.status);
   const [loading, setLoading] = React.useState(false);
+  const pin = usePinState(decision, adapter, setLoading);
   const [pendingStatus, setPendingStatus] = React.useState<DecisionStatus | null>(null);
   const [linkedModules, setLinkedModules] = React.useState(decision.affected_modules);
   const [linkedFiles, setLinkedFiles] = React.useState(decision.affected_files);
@@ -350,6 +422,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
           </h1>
           <div className="flex flex-wrap items-center gap-2">
             <DecisionStatusMark status={status} />
+            <ActivePinnedMark pinned={pin.pinned} active={status === "active"} />
             {/* Who accepted it is said beside Undo, below. */}
             <DecisionOrigin decision={{ ...decision, status }} accepter={false} />
             {decision.verification && (
@@ -388,6 +461,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               onClick={() => setPromptMode("verify")}
             />
           )}
+          <RecordPromptsSlot active={status === "active"} adapter={adapter} />
           {status === "active" && (
             <AiPromptButton
               label="Enforce this decision"
@@ -567,7 +641,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
                 // one primary action, and primary actions are ink.
                 className="rounded-md bg-[var(--color-action-primary)] px-3 py-1.5 text-sm font-medium text-[var(--color-text-on-action)] hover:bg-[var(--color-action-primary-hover)] disabled:opacity-50"
               >
-                Confirm
+                {PUT_IN_FORCE_LABEL}
               </button>
               {/* Dismissing a proposal and deprecating a decision are not the
                   same act, and this button used to send `deprecated` for both.
@@ -585,6 +659,7 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               </button>
             </>
           )}
+          <PinButton active={status === "active"} pin={pin} loading={loading} />
           {status === "active" && (
             <>
               {/* Undo reverses the review where the host can, the same undo an
@@ -617,8 +692,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
         )}
         {status === "proposed" && (
           <p className="text-xs text-[var(--color-text-tertiary)]">
-            Confirm saves this as a decision your team follows. Dismiss hides it
-            and it won&apos;t be suggested again. Neither changes any code.
+            Put in force saves this as a decision your team follows. Dismiss hides
+            it and it won&apos;t be suggested again. Neither changes any code.
           </p>
         )}
         {status === "active" && (
@@ -628,7 +703,8 @@ export function DecisionDetail({ decision, adapter }: DecisionDetailProps) {
               : "Undo dismisses a decision accepted by mistake."}{" "}
             Deprecate retires one
             that no longer holds: it stays for history but stops guiding work.
-            Neither changes any code.
+            <PinSentence show={pin.canPin} />{" "}
+            None of these changes any code.
           </p>
         )}
       </div>

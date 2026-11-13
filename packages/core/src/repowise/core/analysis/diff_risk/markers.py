@@ -19,7 +19,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-JS = frozenset({"javascript", "typescript", "vue", "svelte", "astro"})
+from repowise.core.ingestion.models import TS_JS_LANGUAGES
+
+JS = TS_JS_LANGUAGES
 PY = frozenset({"python"})
 GO = frozenset({"go"})
 RUST = frozenset({"rust"})

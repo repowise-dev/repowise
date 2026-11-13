@@ -229,3 +229,45 @@ async def test_index_repo_commit_rows_empty_in_rename_mode(tmp_path) -> None:
     idx = GitIndexer(tmp_path, tier=GitIndexTier.FULL, follow_renames=True)
     summary, _results = await idx.index_repo("repo1")
     assert summary.commit_rows == []
+
+
+class _Recorder:
+    """A progress callback that keeps every event it hears."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, int | None]] = []
+
+    def on_phase_start(self, phase: str, total: int | None) -> None:
+        self.events.append(("start", phase, total))
+
+    def on_item_done(self, phase: str) -> None:
+        self.events.append(("item", phase, None))
+
+    def on_phase_done(self, phase: str) -> None:
+        self.events.append(("done", phase, None))
+
+    def on_message(self, level: str, text: str) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_index_repo_shows_the_history_walk_as_it_reads(tmp_path) -> None:
+    """The commit walk counts its commits on a row of its own, and closes it."""
+    import git as gitpython
+
+    repo = gitpython.Repo.init(tmp_path)
+    _configure_author(repo, "Ada Lovelace", "ada@example.com")
+    # The readme's history lies below a window of 2, so the deep walk runs too.
+    _commit(repo, tmp_path / "README.md", "# a\n", "docs: add the readme")
+    for i in range(4):
+        _commit(repo, tmp_path / "a.py", f"x = {i}\n", f"feat: step {i}")
+    progress = _Recorder()
+
+    await GitIndexer(tmp_path, commit_limit=2).index_repo("repo1", progress=progress)
+
+    history = [e for e in progress.events if e[1] == "git.history"]
+    assert history[0] == ("start", "git.history", 5)
+    assert sum(1 for kind, _, _ in history if kind == "item") == 5
+    assert history[-1] == ("done", "git.history", None)
+    phases = {phase for _, phase, _ in progress.events}
+    assert phases <= {"git.history", "git.blame_index"}

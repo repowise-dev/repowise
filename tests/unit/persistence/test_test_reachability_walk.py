@@ -1147,3 +1147,34 @@ async def test_stored_call_hubs_match_the_in_memory_ones(async_session):
         g.add_edge(src, dst, edge_type=kind, resolution_origin=origin[0] if origin else None)
     stored = await cached_hub_files(async_session, repo.id)
     assert stored == build_walk_maps(g).hubs() == {"src/hub.py"}
+
+
+async def test_a_group_label_reaches_every_test_its_files_reach(async_session):
+    """A label walked from a set of files answers once, with the union of their tests."""
+    repo = await insert_repo(async_session)
+    await _seed(
+        async_session,
+        repo.id,
+        nodes={
+            "tests/test_a.py": True,
+            "tests/test_b.py": True,
+            "tests/test_imports.py": True,
+            "src/a.py": False,
+            "src/b.py": False,
+            "src/c.py": False,
+        },
+        edges=[
+            *_calls("tests/test_a.py", "src/a.py"),
+            *_calls("tests/test_b.py", "src/b.py"),
+            ("tests/test_imports.py", "src/c.py", "imports"),
+        ],
+    )
+    files = ["src/a.py", "src/b.py", "src/c.py"]
+    groups = {"src/": files}
+    calls = await by_tier(async_session, repo.id, ["src/"], groups=groups)
+    assert set(calls) == {"src/"}
+    assert sorted(calls["src/"].all_tests) == ["tests/test_a.py", "tests/test_b.py"]
+    closure = await by_tier(async_session, repo.id, ["src/"], call_depth=0, groups=groups)
+    per_file = await by_tier(async_session, repo.id, files, call_depth=0)
+    assert set(closure["src/"].all_tests) == {t for r in per_file.values() for t in r.all_tests}
+    assert closure["src/"].entries["tests/test_imports.py"] == frozenset({"src/c.py"})
