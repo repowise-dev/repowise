@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from repowise.core.workspace.service_names import (
     yarp_forwarder,
 )
 from repowise.core.workspace.service_names.base import Route, SourceFile, template_upstream
+from repowise.core.workspace.service_names.json_config import load_json_config
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "service_names"
 ESHOPONC = ("web.bff.shopping", "catalog.api", "basket.api", "ordering.api", "ordering.signalrhub", "payment.api")
@@ -198,3 +200,28 @@ def test_map_forwarder_shapes() -> None:
         ("catalog", Route("/one", None)),
         ("catalog", Route("/same-line", "/same-line")),
     ]
+
+
+@pytest.mark.parametrize("value", [",}", ",]", ", }", ", \n]", '\\",}', 'quote",]', "http://x/,}", "/*,]*/"])
+@pytest.mark.parametrize("prefix", ["// note\n", "/* note */\n"])
+def test_jsonc_trailing_commas_preserve_string_values(value, prefix):
+    expected = {value: [value, {"nested": value}]}
+    text = json.dumps(expected)
+    assert load_json_config(prefix + text[:-1] + ",}") == expected
+
+
+def test_jsonc_removes_real_trailing_commas_after_comments():
+    assert load_json_config('{"value": [",]", /* array */ ], /* object */ }') == {"value": [",]"]}
+    assert load_json_config('{"value": [1,,]}') is None
+    assert load_json_config('{"value": "unterminated,]}') is None
+
+
+def test_yarp_jsonc_preserves_commas_in_forwarded_paths():
+    text = json.dumps({"ReverseProxy": {
+        "Routes": {"r": {"ClusterId": "c", "Match": {"Path": "/api/{**rest}"},
+                          "Transforms": [{"PathPrefix": "/v,}"}]}},
+        "Clusters": {"c": {"Destinations": {"d": {"Address": "http://backend"}}}},
+    }})
+    expected = [("backend", Route("/api", "/v,}/api"))]
+    assert _read(yarp, text, "appsettings.json") == expected
+    assert _read(yarp, "// note\n" + text, "appsettings.json") == expected
