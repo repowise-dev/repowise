@@ -483,6 +483,42 @@ def test_go_interface_edges_survive_a_body_patch(tmp_path: Path) -> None:
     _assert_equals_full(tree, patched, tmp_path)
 
 
+def test_go_method_moved_above_its_type_drops_the_seeded_has_method(tmp_path: Path) -> None:
+    """The parse owns an edited file's containment edges; the seed must not restore them."""
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "go.mod": "module example.com/poc\n\ngo 1.22\n",
+            "a.go": "package poc\n\ntype A struct{}\n\nfunc (a *A) M() int { return 1 }\n",
+        },
+    )
+    first = build_repo_graph(tree, [], collect_sources=True)[2]
+    assert first.graph().has_edge("a.go::A", "a.go::A::M")
+    (tree / "a.go").write_text("package poc\n\nfunc (a *A) M() int { return 1 }\n\ntype A struct{}\n")
+
+    patched = _patched(tree, _seed_rows(first))
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == ("a.go",)
+    _assert_equals_full(tree, patched, tmp_path)
+
+
+def test_self_call_on_has_method_survives_a_body_patch_of_its_file(
+    indexed: tuple[Path, dict[str, list]], tmp_path: Path
+) -> None:
+    """The call merged onto a scope file's ``has_method`` edge matches a full build."""
+    tree, seed = indexed
+    holder = "src/com/acme/svc/Holder.java"
+    (tree / holder).write_text(_FILES[holder].replace('return "x";', 'return "y";'))
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert patched.patch_plan.scope == (holder,)
+    _assert_equals_full(tree, patched, tmp_path)
+
+
 def test_no_seed_means_a_plain_full_build(indexed: tuple[Path, dict[str, list]]) -> None:
     tree, _seed = indexed
 
