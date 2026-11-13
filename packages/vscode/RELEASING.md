@@ -34,6 +34,11 @@ Webview-consumed subpaths: `graph/`, `health/`, `docs/`, `c4/`, `refactoring/`,
 `lib/format`, `ui/`, `shared`, `wiki/`. Confirm the live import set with
 `git grep -hoE 'from "@repowise-dev/ui[^"]*"' -- 'packages/vscode/webview/**'`.
 
+A subpath match is a hint, not proof: the webviews import only some files under
+`health/` and the others. Before bumping, build the webviews with sourcemaps and
+check that at least one changed `packages/ui` file is in the bundle; if none is,
+the bundled UI is unchanged and no release is needed.
+
 ## The one rule that has bitten us before
 
 **CI (and this checklist) must BUILD, not just type-check.** A barrel
