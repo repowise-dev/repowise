@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from dataclasses import asdict
 from types import SimpleNamespace
 from typing import Any
 
@@ -59,16 +61,21 @@ async def _render_census(run: Any) -> tuple[set[str], dict[str, set[str]]]:
 def _renderer_revision(run: Any) -> str:
     from ...repo_config import config_dependency_fingerprints
 
-    templates = ["file_page.j2", "symbol_spotlight.j2", "api_contract.j2",
-                 "infra_page.j2", "scc_page.j2", "stub/module_page.j2",
-                 "stub/repo_overview.j2", "stub/flow_page.j2"]
-    templates.extend(f"stub/onboarding/{spec.template}" for spec in onboarding.iter_specs())
+    templates = _template_fingerprints(run)
     generation = (
         config_dependency_fingerprints(run.repo_path)["generation"] if run.repo_path else ""
     )
     return hashlib.sha256("\x00".join(
-        [generation, *(run.gen._structural_fingerprint(template) for template in templates)]
+        [generation, onboarding.ONBOARDING_GENERATION_VERSION, *templates]
     ).encode()).hexdigest()
+
+
+def _template_fingerprints(run: Any) -> list[str]:
+    templates = ["file_page.j2", "symbol_spotlight.j2", "api_contract.j2",
+                 "infra_page.j2", "scc_page.j2", "stub/module_page.j2",
+                 "stub/repo_overview.j2", "stub/flow_page.j2"]
+    templates.extend(f"stub/onboarding/{spec.template}" for spec in onboarding.iter_specs())
+    return [run.gen._structural_fingerprint(template) for template in templates]
 
 
 def _subject_paths(pid: str, subjects: dict[str, set[str]], all_paths: set[str]) -> set[str]:
@@ -88,7 +95,23 @@ def _stale_priority(prior: Any, revision: dict, source_changed: bool) -> bool | 
     if prior.freshness_status == "fresh" and previous == revision:
         return None
     source_changed = source_changed or (bool(previous) and previous.get("source") != revision["source"])
+    source_changed = source_changed or (bool(previous) and previous.get("facts") != revision["facts"])
     return not source_changed
+
+
+def _fact_digests(run: Any) -> dict[str, str]:
+    """Version structural facts as well as source; prior prose is not a fact."""
+    digests = {}
+    for path in run.source_map:
+        context = run.file_page_contexts.get(path)
+        facts = asdict(context) if context is not None else {}
+        facts.pop("rag_context", None)
+        facts.pop("dependency_summaries", None)
+        facts["git_metadata"] = (run.git_meta_map or {}).get(path)
+        digests[path] = hashlib.sha256(json.dumps(
+            facts, sort_keys=True, separators=(",", ":"), default=str,
+        ).encode()).hexdigest()
+    return digests
 
 
 def _record_plan(run: Any, candidates: set[str], stale: list, budget: int) -> None:
@@ -119,6 +142,7 @@ async def select_render_batch(run: Any, budget: int, changed_paths: set[str]) ->
     all_paths = set(run.source_map)
     run.render_revisions = {}
     source_digests: dict[frozenset[str], str] = {}
+    facts = _fact_digests(run)
     stale = []
     for pid in sorted(candidates):
         paths = _subject_paths(pid, subjects, all_paths)
@@ -127,7 +151,10 @@ async def select_render_batch(run: Any, budget: int, changed_paths: set[str]) ->
             source_digests[subject] = hashlib.sha256(
                 files_digest(paths, run.source_map).encode()
             ).hexdigest()
-        revision = {"renderer": renderer, "source": source_digests[subject]}
+        revision = {"renderer": renderer, "source": source_digests[subject],
+                    "facts": hashlib.sha256("\x00".join(
+                        facts.get(path, "") for path in sorted(paths)
+                    ).encode()).hexdigest()}
         run.render_revisions[pid] = revision
         priority = _stale_priority(run.gen._prior_pages.get(pid), revision, bool(paths & changed_paths))
         if priority is not None:
