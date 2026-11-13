@@ -186,7 +186,7 @@ async def tombstone_file_pages_outside_scope(
         await session.execute(
             select(Page).where(
                 Page.repository_id == repo_id,
-                Page.page_type.in_(("file_page", "api_contract", "infra_page", "symbol_spotlight")),
+                Page.page_type.in_((*FILE_BACKED_PAGE_TYPES, "symbol_spotlight")),
                 Page.freshness_status != "tombstone",
             )
         )
@@ -255,6 +255,31 @@ async def tombstone_pages_outside_generation(
     for page in pages:
         if page.id in current_page_ids:
             continue
+        _tombstone(page, [], TOMBSTONE_RETIRED)
+        marked.append(page.id)
+    return marked
+
+
+async def retire_page_ids(session: Any, repo_id: str, page_ids: Iterable[str]) -> list[str]:
+    """Retire these pages: the generator, asked for each by id, no longer yields it."""
+    ids = list(dict.fromkeys(page_ids))
+    if not ids:
+        return []
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    pages = (
+        await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.id.in_(ids),
+                Page.freshness_status != "tombstone",
+            )
+        )
+    ).scalars()
+    marked: list[str] = []
+    for page in pages:
         _tombstone(page, [], TOMBSTONE_RETIRED)
         marked.append(page.id)
     return marked

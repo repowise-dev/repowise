@@ -26,6 +26,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.code_origin import ship_rank
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
@@ -55,6 +56,7 @@ from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, served_root
 from repowise.server.mcp_server._query_shape import (
     _MAX_ALTERNATIVES,
     _NL_QUESTION_TOKENS,
+    NOT_THE_NAMED_SYMBOL,
     _canonical_symbol_query,
     _identifier_candidates,
     _qual_norm,
@@ -68,8 +70,9 @@ _log = logging.getLogger("repowise.mcp.search")
 
 MAX_LINES = 50
 # A multi-word query's page rows already rank files, so its lines are a short
-# lead-in (production first) and lines_omitted_by_file names the top files only.
+# lead-in (production first).
 MAX_LINES_MIXED = 15
+# Top directories a capped scan names as not scanned.
 MAX_OMITTED_FILES = 5
 OVER_LINES_MIXED = f"over {MAX_LINES_MIXED} lines for a multi-word query; search one name for more"
 MAX_LINES_PER_FILE = 5
@@ -732,12 +735,12 @@ async def _attach(
 
 
 def _row_order(mixed: bool) -> Any:
-    """Sort key: production before test within each kind group, every kind for
-    a mixed query, definitions against the rest otherwise."""
+    """Sort key: shipped code before tools and tests within each kind group,
+    every kind for a mixed query, definitions against the rest otherwise."""
     order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
     return lambda r: (
         order[r["kind"]] if mixed else r["kind"] != "definition",
-        is_test_related_path(r["path"]),
+        ship_rank(r["path"]),
         order[r["kind"]],
         r.get("repo") or "",
         r["path"],
@@ -751,7 +754,7 @@ def _capped_per_file(rows: list[dict[str, Any]], reasons: list[str]) -> list[dic
     if len(kept) < len(rows):
         reasons.append(
             f"{len(rows) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
-            " not shown: lines_omitted_by_file; the full list is under _meta.omitted"
+            " not shown: lines_omitted counts them; the full list is under _meta.omitted"
         )
     return kept
 
@@ -775,19 +778,47 @@ def _serve_lines(
         collector = OmissionCollector("search_codebase", repo_root=ctx.path)
         collector.add(f"{query} :: lines not shown", hidden)
         collector.attach(response)
-        by_file = Counter(f"{r['repo']}:{r['path']}" if "repo" in r else r["path"] for r in hidden)
-        if mixed and len(by_file) > MAX_OMITTED_FILES:
-            response["lines_omitted_by_file"] = dict(by_file.most_common(MAX_OMITTED_FILES))
-            response["lines_omitted_by_file_total"] = len(by_file)
-        else:
-            response["lines_omitted_by_file"] = dict(by_file)
+        # A count, not a per-file map: the rows are under _meta.omitted, and a
+        # map of mostly test files stays in the caller's context unread.
+        response["lines_omitted"] = len(hidden)
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
     else:
         _drop_sweep_advice(response)
+    _drop_pages_beside_definitions(response, every_page=not mixed)
     if shown:
         _reconcile_symbol_miss(response, literal_scan=literal_scan)
+
+
+def _drop_pages_beside_definitions(response: dict, *, every_page: bool) -> None:
+    """Drop result pages once ``lines`` holds a definition; ``pages_omitted`` counts them.
+
+    The definition rows answer where the names live, and pages around them are
+    prose the caller does not follow. For an identifier, alternation or regex
+    query (*every_page*) every page goes and symbol rows stay; for a
+    multi-word question, whose pages rank the files it asks about, only the
+    pages labelled as not the named symbol go.
+    """
+    if not any(row["kind"] == "definition" for row in response["lines"]):
+        return
+    results = response.get("results")
+    if not isinstance(results, list):
+        return
+    kept = [
+        r for r in results
+        if not (
+            isinstance(r, dict)
+            and (r.get("type") == "page" if every_page else r.get("relation") == NOT_THE_NAMED_SYMBOL)
+        )
+    ]
+    if len(kept) < len(results):
+        response["pages_omitted"] = len(results) - len(kept)
+        response["results"] = kept
+        note = response.get("note")
+        pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}."
+        if isinstance(note, str) and pages in note:
+            response["note"] = note.replace(pages, "")
 
 
 def _drop_sweep_advice(response: dict) -> None:
@@ -828,7 +859,14 @@ async def _attach_pattern(
     caps = _fair_caps([len(g) for g in groups], MAX_LINES)
     if any(len(g) > c for g, c in zip(groups, caps, strict=True)):
         reasons.append(OVER_LINES)
-    shown = [row for g, c in zip(groups, caps, strict=True) for row in g[:c]]
+    # Tests leave each group's share after the caps, so no row takes their place.
+    shown = [
+        row
+        for g in _without_tests_beside_shipped(
+            [g[:c] for g, c in zip(groups, caps, strict=True)], reasons
+        )
+        for row in g
+    ]
     response["matched_as"] = kind
     _serve_lines(response, query, ctx, rows, shown, reasons, False, literal_scan)
 
@@ -872,6 +910,29 @@ async def _alternation_groups(
         # Read with ``complete``: true means these parts match nowhere.
         response["unmatched"] = unmatched
     return ctx, rows, groups, reasons, literal_scan
+
+
+def _without_tests_beside_shipped(
+    groups: list[list[dict[str, Any]]], reasons: list[str]
+) -> list[list[dict[str, Any]]]:
+    """Each group without its test rows when it has a row in shipped code.
+
+    A grep-shaped query names code to read; its tests are counted in
+    ``lines_omitted`` and kept under ``_meta.omitted``. A group found only in
+    tests keeps them.
+    """
+    out: list[list[dict[str, Any]]] = []
+    cut = 0
+    for group in groups:
+        ranks = [ship_rank(r["path"]) for r in group]
+        if 0 in ranks:
+            kept = [r for r, rank in zip(group, ranks, strict=True) if rank != 2]
+            cut += len(group) - len(kept)
+            group = kept
+        out.append(group)
+    if cut:
+        reasons.append(f"{cut} lines in tests not shown beside shipped code: lines_omitted counts them")
+    return out
 
 
 def _fair_caps(sizes: list[int], cap: int) -> list[int]:

@@ -89,10 +89,36 @@ def test_parameters() -> None:
     assert params == {"getCookiesAndManageCookieContainer": 6, "NormalizeVersion": 1}
 
 
-@pytest.mark.skip(reason="an F# type is named <anonymous>: its type_name is not read")
-def test_type_name() -> None:
-    [cls] = _walk(_HTML_PARSER).classes
-    assert cls.name == "CharList"
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (_HTML_PARSER, "CharList"),
+        ("type CharList = { mutable Contents: int }", "CharList"),
+        ("type Counter(initial: int) =\n    member x.Value = initial", "Counter"),
+        ("type Shape = | Circle of float | Empty", "Shape"),
+        ("type Color = | Red = 0 | Blue = 1", "Color"),
+        ("type Box<'T> = { Value: 'T }", "Box"),
+        ("type private Hidden = { Value: int }", "Hidden"),
+        ("type ``Two Words`` = { Value: int }", "``Two Words``"),
+    ],
+)
+def test_type_name(source: str, expected: str) -> None:
+    # Types without members still have a class row, but no function rows.
+    [cls] = walk_file("src/Types.fs", "fsharp", (source + "\n").encode()).classes
+    assert cls.name == expected
+
+
+@pytest.mark.parametrize(
+    ("path", "language", "source", "expected"),
+    [
+        ("src/a.py", "python", "class Counter:\n    pass\n", "Counter"),
+        ("src/a.rs", "rust", "impl Counter { fn count(&self) -> i32 { 1 } }", "Counter"),
+        ("src/a.js", "javascript", "export default class { count() { return 1; } }", "<anonymous>"),
+    ],
+)
+def test_other_class_names(path: str, language: str, source: str, expected: str) -> None:
+    [cls] = walk_file(path, language, source.encode()).classes
+    assert cls.name == expected
 
 
 @pytest.mark.skip(reason="elif_expression is not a branch kind, so else if adds no CCN")

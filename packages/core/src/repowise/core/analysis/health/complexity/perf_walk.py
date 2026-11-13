@@ -33,6 +33,7 @@ from .ast_utils import (
     _find_function_entry_name,
     _find_name,
     _node_text,
+    function_start_line,
     is_function_node,
 )
 from .languages import LanguageNodeMap
@@ -779,9 +780,7 @@ class _PerfWalk:
             self.sources[key] = self.dialect.loop_source(loop, self.probe) or LoopSource()
         return self.sources[key]
 
-    def sink_facts(
-        self, node: Node, loop: Node, sink: bool
-    ) -> tuple[BatchForm | None, str | None]:
+    def sink_facts(self, node: Node, loop: Node, sink: bool) -> tuple[BatchForm | None, str | None]:
         """``(batch, concurrency_bound)`` of *node* in *loop*; both ``None`` off a sink."""
         dialect = self.dialect
         batch = dialect.batch_form(node, loop, self.probe) if sink and self.do_batch else None
@@ -908,7 +907,7 @@ class _PerfWalk:
     def _scope_owner(self, node: Node, t: str, cur: _Frame) -> tuple[str | None, int]:
         """``(func, start)`` the hits under *node* key to; a top-level lambda's span is recorded."""
         if t in self.fn_kinds and is_function_node(node, self.lmap):
-            return _perf_func_name(node) or cur.func, node.start_point[0] + 1
+            return _perf_func_name(node) or cur.func, function_start_line(node)
         if t in self.lambda_kinds and cur.func is None:
             self.lambda_spans.append(
                 (
@@ -1046,8 +1045,13 @@ class _PerfWalk:
             kinds.append("nested_loop_with_io")
         self.hits.extend(
             PerfHit(
-                k, call.line, nxt.func, kind,
-                func_start=nxt.start, loop=facts, sink_call=sink_call,
+                k,
+                call.line,
+                nxt.func,
+                kind,
+                func_start=nxt.start,
+                loop=facts,
+                sink_call=sink_call,
             )
             for k in kinds
         )
@@ -1091,7 +1095,11 @@ class _PerfWalk:
             return
         self.hits.append(
             PerfHit(
-                marker, call.line, nxt.func, "", func_start=nxt.start,
+                marker,
+                call.line,
+                nxt.func,
+                "",
+                func_start=nxt.start,
                 loop=self.loop_facts(call.node, sink=False),
                 # ``arr.includes(x)``: the list is the receiver.
                 subject=call.root_name if marker == _MEMBERSHIP else "",
@@ -1177,9 +1185,7 @@ class _PerfWalk:
             self._on_loop_statement(node, nxt)
 
     def _on_string_concat(self, node: Node, nxt: _Frame) -> None:
-        if self._runs_once(node) or _grows_loop_variable(
-            node, self.loop_kinds, self.fn_kinds
-        ):
+        if self._runs_once(node) or _grows_loop_variable(node, self.loop_kinds, self.fn_kinds):
             return
         self.hits.append(
             PerfHit(
@@ -1272,7 +1278,13 @@ class _PerfWalk:
                 loop_call_lines=tuple(sorted(self.call_loop_lines.get(start, {}).items())),
             )
             for start, (name, loop_targets, lock_targets, sink, misc) in self.fn_acc.items()
-            if (loop_targets or lock_targets or sink[0] is not None or misc[0] or misc[1] is not None)
+            if (
+                loop_targets
+                or lock_targets
+                or sink[0] is not None
+                or misc[0]
+                or misc[1] is not None
+            )
         ]
         fn_facts.sort(key=lambda f: f.func_start)
         return fn_facts

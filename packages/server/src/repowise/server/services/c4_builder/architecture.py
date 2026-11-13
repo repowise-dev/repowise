@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
 from repowise.core.ids import ExternalSystemId, file_path_of, render
-from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES, TEMPORAL_EDGE_TYPES
+from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES, NON_CODE_EDGE_TYPES
 from repowise.core.persistence import (
     ExternalSystem,
     GraphEdge,
@@ -491,8 +491,8 @@ async def _view_edges(
         GraphEdge.repository_id == repo_id,
         _in_view(GraphEdge.source_node_id, include_symbols),
         _in_view(GraphEdge.target_node_id, include_symbols),
-        # A co-change partner is not an architecture arrow, nor a degree.
-        GraphEdge.edge_type.not_in(TEMPORAL_EDGE_TYPES),
+        # A doc naming a file, or a co-change partner, is not an architecture arrow, nor a degree.
+        GraphEdge.edge_type.not_in(NON_CODE_EDGE_TYPES),
     )
     if not include_symbols:
         query = query.where(GraphEdge.edge_type.not_in(_SYMBOL_EDGE_TYPES))

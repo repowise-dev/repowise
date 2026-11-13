@@ -95,7 +95,6 @@ def test_compound_condition() -> None:
     assert conditions == [("ComputeBackHref", 14, 5)]
 
 
-@pytest.mark.skip(reason="an attributed @code property joins the next method, whose span then starts at the attribute")
 def test_method_after_an_attributed_property() -> None:
     source = _ESHOP.replace(
         "@code {\n",
@@ -103,3 +102,16 @@ def test_method_after_an_attributed_property() -> None:
     )
     [fn] = [f for f in _walk(source).functions if f.name == "ComputeBackHref"]
     assert fn.start_line == 14
+
+
+def test_method_after_multiple_attributed_properties() -> None:
+    source = _ESHOP.replace(
+        "@code {\n",
+        "@code {\n"
+        "    [Parameter]\n"
+        "    public int Id { get; set; }\n"
+        "    [Inject]\n"
+        "    private NavigationManager Nav { get; set; } = default!;\n\n",
+    )
+    [fn] = [f for f in _walk(source).functions if f.name == "ComputeBackHref"]
+    assert fn.start_line == 16

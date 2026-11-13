@@ -827,7 +827,8 @@ async def get_answer(
 
     Responses fit 24,000 serialized chars. Pass ``include=["evidence"]`` for
     the deduplicated expanded evidence projection (32,000 chars). Reductions
-    carry counts and a recovery: repeat the call with that include.
+    carry counts and a recovery: repeat the call with that include. A keyless
+    reply has one shape and lists ``evidence`` under ``ignored_arguments``.
 
     Args:
         question: developer question.
