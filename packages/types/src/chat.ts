@@ -393,6 +393,29 @@ export interface ChangeFindingRow {
   inspect?: string;
 }
 
+/** One changed file's score on both sides, from the producer's file_scores rows. */
+export interface ChangeFileScoreRow {
+  path: string;
+  base_score: number | null;
+  head_score: number | null;
+  base_structure: number | null;
+  head_structure: number | null;
+  nloc_base: number | null;
+  nloc_head: number | null;
+  /** A deleted file's code moved to these files. */
+  moved_to?: string[];
+}
+
+/** The changed files' average on each side, weighted by base nloc. */
+export interface ChangeScoreChange {
+  base: number;
+  head: number;
+  delta: number;
+  structure_delta: number;
+  weighting: string;
+  files_compared: number;
+}
+
 export interface ChangeHealthDeltaData {
   /** `partial` and `unavailable` must never render as a clean result. */
   status:
@@ -424,6 +447,12 @@ export interface ChangeHealthDeltaData {
   base?: { ref: string; sha: string; kind: string };
   head?: { ref: string; sha: string; kind: string };
   limits?: string[];
+  /** How the per-file scores were read, e.g. `structure_only`. */
+  score_basis?: string;
+  /** Capped at the producer's row limit; `files_total` is what the change touched. */
+  files?: ChangeFileScoreRow[];
+  files_total?: number;
+  score_change?: ChangeScoreChange;
 }
 
 export interface ChangeRiskDirective {
