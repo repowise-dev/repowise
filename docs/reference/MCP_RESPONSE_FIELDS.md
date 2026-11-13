@@ -308,7 +308,7 @@ A file with no symbol bounds is served whole (`mode: "raw"`). A Markdown or reSt
 
 - `references`: documents naming this file that still resolve to it.
 - `documents_with_drift`: a listed document has some stale assertion somewhere, not necessarily about this file. Do not merge the two claims.
-- `mentions`: live documentation lines naming the file by basename or `folder/stem`, which `references` cannot resolve; `mentions_basis` says to check each.
+- `mentions`: live documentation lines naming the file by basename or `folder/stem`, which `references` cannot resolve. `mentions_basis` says to check each. These are unresolved text hits, unrelated to the graph's `documents` edge.
 - `references_basis` states the limits; `references_excluded` counts documents dropped by exclude rules.
 - Refusals: `{"unavailable": "not_computed"}` (pass not run), `"index_predates_doc_drift"`, `"drift_read_failed"`.
 

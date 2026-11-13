@@ -567,10 +567,14 @@ remove. The distinctions that matter most when consuming the graph:
 | `type_use` | File → file, from a constructor / method / delegate / record parameter type reference | An import. Weighted lower, and its provenance is surfaced separately |
 | `reads` | A data reference, file → file (C# member access) | Anything symbol-level. Its former symbol → symbol producer now emits `framework_binds` |
 | `dynamic_*` | A dynamic-dispatch hint, prefixed by kind (`dynamic_url_route`, `dynamic_uses`, `dynamic_imports`) | A static edge. Note the prefix: a consumer matching bare `"dynamic"` matches none of these |
+| `documents` | Markdown document → a file it links to (`hint_source="doc_link"`, 1.0) or names in backticks (`doc_path`, 0.8), resolved by doc drift's `extract()`/`resolve()` | A dependency or a use. It is in none of the sets below |
 
 Three derived sets are what consumers should read rather than re-deriving their
 own filter: `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
-`REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`).
+`REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`). For deny-lists,
+`NON_CODE_EDGE_TYPES` is `TEMPORAL_EDGE_TYPES` (`co_changes`) plus
+`DOCUMENTATION_EDGE_TYPES` (`documents`), and `NON_DEPENDENCY_EDGE_TYPES` adds
+containment to it.
 
 ### Flow termination
 
