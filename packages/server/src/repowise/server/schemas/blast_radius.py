@@ -78,6 +78,8 @@ class TestRecommendation(BaseModel):
     basis: Literal["measured", "inferred"]
     bases: list[Literal["measured", "inferred"]]
     source_files: list[str]
+    #: Every changed file this test reaches, where ``source_files`` names the first few.
+    source_files_total: int | None = None
     evidence: list[TestImpactEvidence]
     #: A measured row whose test file is gone or changed since the coverage run.
     stale: bool = False
@@ -207,7 +209,8 @@ class BlastRadiusResponse(BaseModel):
 
 class ChangeCandidateModel(BaseModel):
     id: str
-    kind: Literal["working_tree", "branch", "commit"]
+    #: A ``change_request`` (merge or pull request) is never listed; a link opens one.
+    kind: Literal["working_tree", "branch", "commit", "change_request"]
     label: str
     title: str | None = None
     author: str | None = None
@@ -220,6 +223,12 @@ class ChangeCandidateModel(BaseModel):
     #: For a branch: whether it exists on the remote. A local-only branch is
     #: often scratch work, so the picker shows it quieter.
     pushed: bool | None = None
+    #: For a change request: its number on the forge.
+    number: int | None = None
+    #: For a change request: the commit it is compared against.
+    base_sha: str | None = None
+    #: For a change request: what its forge calls one ("merge request", "pull request").
+    change_term: str | None = None
 
 
 class ChangeCandidatesResponse(BaseModel):
@@ -235,10 +244,37 @@ class ChangeCandidatesResponse(BaseModel):
     health_check_supported: bool = False
 
 
+#: Reached files per page of ``transitive_affected`` when a request names no ``limit``.
+CHANGE_PAGE_SIZE = 500
+#: The most one page may hold: enough to draw the map of a wide change.
+CHANGE_PAGE_MAX = 5000
+
+
 class ChangeBlastRadiusRequest(BaseModel):
     #: An ``id`` from ``GET /blast-radius/changes``.
     change_id: str = Field(min_length=1, max_length=300)
     max_depth: int = Field(default=3, ge=1, le=10)
+    #: Also return ``via`` on each reached file, for drawing the map.
+    with_graph: bool = False
+    #: The page of ``transitive_affected``: rows ``offset`` to ``offset + limit``.
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=CHANGE_PAGE_SIZE, ge=1, le=CHANGE_PAGE_MAX)
+
+
+class ReachSummary(BaseModel):
+    """Counts over every file a change reaches, not only the page sent."""
+
+    #: Source files the change reaches; tests are counted apart.
+    files: int
+    #: Test files that import the change at any depth.
+    tests: int
+    #: Source files one import away.
+    direct: int
+    #: Modules the reached source files sit in.
+    modules: int
+    max_depth: int
+    #: Changed files something imports directly.
+    imported: list[str]
 
 
 class ChangeRiskBlock(BaseModel):
@@ -321,11 +357,25 @@ class ChangeReview(BaseModel):
 
 
 class ChangeBlastRadiusResponse(BlastRadiusResponse):
+    #: The change analyzed. A merge or pull request asked for by number
+    #: (``mr:<n>``, ``pr:<n>``) comes back pinned to the two commits read
+    #: (``mr:<n>@<base sha>...<head sha>``), so a link built from it never moves.
     change_id: str
+    #: The merge or pull request, as the picker shows one; ``None`` for other kinds.
+    change: ChangeCandidateModel | None = None
     #: The paths analyzed, after the cap below.
     changed_files: list[str]
     #: Every path the change touches, before the cap.
     changed_files_total: int
+    #: Every reached file. ``transitive_affected`` holds one page of them, and
+    #: ``affected_signals`` and ``test_gaps`` cover the changed files and that page.
+    transitive_total: int = 0
+    #: The ``offset`` of the next page; ``None`` on the last.
+    next_offset: int | None = None
+    reach_summary: ReachSummary | None = None
+    #: Files that usually change with a changed one and are left out, all of
+    #: them; ``cochange_warnings`` lists the strongest pairs.
+    missing_partners_total: int | None = None
     #: The score and tests; ``None`` when the change could not be read from
     #: git here, with ``review_unavailable`` saying why. The blast radius
     #: above is the evidence behind it.

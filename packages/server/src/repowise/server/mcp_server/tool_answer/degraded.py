@@ -221,8 +221,17 @@ async def _degraded_payload(
             targets=[*citations, *fallback_targets],
         ),
         "degraded": reason,
-        **(_keyless_note_meta(served_root(repository)) if reason == "no-llm-provider" else {}),
     }
+    # The upgrade line rides on the weak keyless replies only: a body or a
+    # medium grade already gives the agent something to act on.
+    if reason == "no-llm-provider" and (confidence == "low" or not symbol_bodies):
+        payload["_meta"].update(
+            await _keyless_note_meta(
+                served_root(repository),
+                session_factory=getattr(ctx, "session_factory", None),
+                repo_id=getattr(repository, "id", None),
+            )
+        )
     return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
 
 

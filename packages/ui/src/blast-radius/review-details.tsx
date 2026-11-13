@@ -4,10 +4,11 @@ import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/bl
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { CochangeTable } from "./cochange-table";
 import { PathRef } from "./blast-radius-verdict";
+import { missingPartners, missingPartnersTotal } from "./blast-prompt-input";
 import type { Reach } from "./blast-map-model";
 import { formatNumber } from "../lib/format";
 
-type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
+type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[]; missing_partners_total?: number | null };
 
 /**
  * The details a review rarely needs first, collapsed and last: changed files
@@ -31,7 +32,8 @@ export function ReviewDetails({ result, reach, fileHref }: { result: Result; rea
   // One meaning per number: changed files with no test. Tests and files the
   // index does not have yet are not in it.
   const changed = reach.changed.filter((m) => m.untested).map((m) => m.path);
-  const partners = new Set(result.cochange_warnings.map((w) => w.missing_partner)).size;
+  const partners = missingPartnersTotal(result);
+  const listed = missingPartners(result).length;
   if (changed.length === 0 && partners === 0) return null;
   return (
     <div>
@@ -46,6 +48,11 @@ export function ReviewDetails({ result, reach, fileHref }: { result: Result; rea
           hint={`${formatNumber(partners)} ${partners === 1 ? "file" : "files"}`}
         >
           <CochangeTable rows={result.cochange_warnings} />
+          {listed < partners && (
+            <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+              The strongest pairs, naming {formatNumber(listed)} of the {formatNumber(partners)} files.
+            </p>
+          )}
         </CollapsibleSection>
       )}
     </div>

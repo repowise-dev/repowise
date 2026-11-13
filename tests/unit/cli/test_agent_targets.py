@@ -780,6 +780,19 @@ def test_the_shared_instruction_body_has_one_home() -> None:
     assert codex_config._DISTILL_MARKER_START is instructions.DISTILL_MARKER_START
 
 
+def test_every_written_instruction_block_leads_with_the_call_first_line() -> None:
+    """Cursor, Copilot, Kiro, opencode and Hermes get no generated agent block.
+
+    This body is the only thing they read, so it carries the same call-first
+    line ``CLAUDE.md`` and ``AGENTS.md`` lead with.
+    """
+    from repowise.cli.agent_targets import instructions
+    from repowise.core.agent_steer import AGENT_STEER
+
+    assert instructions.DISTILL_SECTION.startswith(AGENT_STEER + "\n")
+    assert instructions.DISTILL_SECTION_HEADING in instructions.DISTILL_SECTION
+
+
 def test_claude_code_reports_plugin_and_direct_separately(tmp_path: Path, monkeypatch) -> None:
     """The duplicate-registration case the method axis exists for.
 
