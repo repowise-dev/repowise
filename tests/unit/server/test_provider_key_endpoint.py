@@ -6,6 +6,10 @@ Adding a key in the web UI must be visible to a later CLI run in that repo, and
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+
 import pytest
 from httpx import AsyncClient
 
@@ -302,3 +306,145 @@ async def test_detect_names_no_plan_route_without_a_paid_plan(client: AsyncClien
 
     body = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
     assert body["plan_route"] is None
+
+
+@pytest.fixture
+async def plan_route_env(monkeypatch):
+    from repowise.core.index_scope import FreeRoute
+    from repowise.core.providers.llm import subscription
+    from repowise.server.routers import providers
+
+    closed = []
+
+    @asynccontextmanager
+    async def session(_factory):
+        try:
+            yield object()
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(providers, "_generate_calls", {})
+    monkeypatch.setattr(providers, "_generate_counts", {}, raising=False)
+    monkeypatch.setattr(providers, "_CALLS_WAIT_S", 0.01, raising=False)
+    monkeypatch.setattr(providers, "_COUNT_CEILING_S", 5, raising=False)
+    monkeypatch.setattr(providers, "resolve_session_factory", lambda *_: object())
+    monkeypatch.setattr(providers, "get_session", session)
+    monkeypatch.setattr(
+        subscription, "detect_free_route", lambda _: FreeRoute("claude_cli", "Claude Code")
+    )
+    monkeypatch.setattr(subscription, "process_limit", lambda _: 5)
+    request = SimpleNamespace(app=SimpleNamespace(state=object()))
+    try:
+        yield providers, request, closed
+    finally:
+        tasks = list(providers._generate_counts.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_slow_plan_count_returns_untimed_route_then_reuses_minutes(
+    plan_route_env, monkeypatch
+) -> None:
+    from repowise.core.generation import scope
+
+    providers, request, closed = plan_route_env
+    release = asyncio.Event()
+    started = []
+
+    async def count(_session, repo_id, _path):
+        started.append(repo_id)
+        await release.wait()
+        return 300
+
+    monkeypatch.setattr(scope, "generate_model_calls", count)
+    first, second = await asyncio.wait_for(
+        asyncio.gather(
+            providers._plan_route(request, "r1", "repo"),
+            providers._plan_route(request, "r1", "repo"),
+        ),
+        1,
+    )
+    assert first == second == {"provider": "claude_cli", "cli_name": "Claude Code", "minutes": None}
+    assert started == ["r1"] and closed == []
+    release.set()
+    await asyncio.wait_for(providers._generate_counts["r1"], 1)
+    assert (await providers._plan_route(request, "r1", "repo"))["minutes"] == 60
+    assert started == ["r1"] and closed == [True]
+
+
+async def test_stuck_plan_count_releases_session_and_is_not_repeated(
+    plan_route_env, monkeypatch
+) -> None:
+    from repowise.core.generation import scope
+
+    providers, request, closed = plan_route_env
+    started = []
+
+    async def count(_session, repo_id, _path):
+        started.append(repo_id)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(scope, "generate_model_calls", count)
+    monkeypatch.setattr(providers, "_COUNT_CEILING_S", 0.01)
+    result = await asyncio.wait_for(providers._plan_route(request, "r1", "repo"), 1)
+    assert result["minutes"] is None
+    await asyncio.wait_for(providers._generate_counts["r1"], 1)
+    assert closed == [True]
+    assert await providers._plan_route(request, "r1", "repo") == result
+    assert started == ["r1"]
+
+
+async def test_failed_plan_count_retries_and_caches_zero(plan_route_env, monkeypatch) -> None:
+    from repowise.core.generation import scope
+
+    providers, request, _closed = plan_route_env
+    started = []
+
+    async def count(_session, repo_id, _path):
+        started.append(repo_id)
+        if len(started) == 1:
+            raise ValueError("synthetic count failure")
+        return 0
+
+    monkeypatch.setattr(scope, "generate_model_calls", count)
+    assert (await providers._plan_route(request, "r1", "repo"))["minutes"] is None
+    assert (await providers._plan_route(request, "r1", "repo"))["minutes"] is None
+    assert providers._generate_calls["r1"] == 0
+    assert (await providers._plan_route(request, "r1", "repo"))["minutes"] is None
+    assert started == ["r1", "r1"]
+
+
+async def test_cancelled_plan_request_leaves_shared_count_running(
+    plan_route_env, monkeypatch
+) -> None:
+    from repowise.core.generation import scope
+
+    providers, request, closed = plan_route_env
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def count(_session, _repo_id, _path):
+        started.set()
+        await release.wait()
+        return 300
+
+    monkeypatch.setattr(scope, "generate_model_calls", count)
+    monkeypatch.setattr(providers, "_CALLS_WAIT_S", 5)
+    caller = asyncio.create_task(providers._plan_route(request, "r1", "repo"))
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert closed == []
+        assert (await asyncio.wait_for(providers._plan_route(request, "r1", "repo"), 1))[
+            "minutes"
+        ] is None
+        release.set()
+        await asyncio.wait_for(providers._generate_counts["r1"], 1)
+        assert (await providers._plan_route(request, "r1", "repo"))["minutes"] == 60
+        assert closed == [True]
+    finally:
+        caller.cancel()
+        await asyncio.gather(caller, return_exceptions=True)
