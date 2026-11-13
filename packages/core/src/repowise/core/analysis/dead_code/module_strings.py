@@ -224,8 +224,15 @@ class _Reader:
 
     def uses(self, text: bytes) -> Iterator[tuple[str, str | None]]:
         """``(module, attr)`` for each module-path string in *text*."""
+        names = self.index.by_name
         for match in _MODULE_STRING_RE.finditer(text):
             module = match.group(1).decode("ascii")
+            # Every module the index resolves ends in a candidate's own name,
+            # so does the parent of a member path; a string ending in neither
+            # names nothing and is skipped before any lookup.
+            parent, _, last = module.rpartition(".")
+            if last not in names and parent.rpartition(".")[2] not in names:
+                continue
             attr = match.group(2).decode("ascii") if match.group(2) else None
             targets = self._resolve(module)
             if not (targets or attr) and self.members is not None:

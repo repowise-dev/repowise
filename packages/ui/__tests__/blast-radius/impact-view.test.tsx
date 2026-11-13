@@ -500,6 +500,123 @@ describe("what the page counts", () => {
   });
 });
 
+describe("a server that pages the reached files", () => {
+  const SUMMARY = { files: 3000, tests: 0, direct: 3000, modules: 1, max_depth: 1, imported: ["src/core.ts"] };
+
+  function paged(rows: string[], over: Partial<ChangeBlastRadiusResponse> = {}): ChangeBlastRadiusResponse {
+    return {
+      ...changeResult(["src/core.ts"]),
+      transitive_affected: rows.map((path) => ({ path, depth: 1, via: null })),
+      affected_signals: [],
+      transitive_total: 3000,
+      next_offset: rows.length,
+      reach_summary: SUMMARY,
+      ...over,
+    };
+  }
+
+  it("counts every file, reads more on request, and draws a wide change's map when asked", async () => {
+    const analyzeChange = vi.fn(async (input: { offset?: number; withGraph?: boolean }) => {
+      if (input.withGraph)
+        return paged(["src/a.ts", "src/b.ts"], {
+          transitive_affected: [
+            { path: "src/a.ts", depth: 1, via: "src/core.ts" },
+            { path: "src/b.ts", depth: 1, via: "src/core.ts" },
+          ],
+        });
+      return input.offset ? paged(["src/b.ts"], { next_offset: null }) : paged(["src/a.ts"]);
+    });
+    const adapter = makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange });
+    renderView(<ImpactView adapter={adapter} />);
+    await openReach();
+
+    expect(await screen.findByText(/nearest 1 of 3,000 files/)).toBeInTheDocument();
+    // Too wide to draw on arrival: the map waits for the reader.
+    expect(analyzeChange).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Read more files" }));
+    await waitFor(() => expect(analyzeChange).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1 })));
+    expect(await screen.findByText(/nearest 2 of 3,000 files/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Draw the map" }));
+    await waitFor(() =>
+      expect(analyzeChange).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0, limit: 5000, withGraph: true })),
+    );
+    expect(await screen.findByText(/Drawn from the nearest 2 of 3,000 files/)).toBeInTheDocument();
+  });
+
+  it("draws the map on arrival for a change of ordinary reach", async () => {
+    const small = { ...SUMMARY, files: 1, direct: 1 };
+    const analyzeChange = vi.fn(async (input: { withGraph?: boolean }) =>
+      paged(["src/a.ts"], {
+        transitive_total: 1,
+        next_offset: null,
+        reach_summary: small,
+        ...(input.withGraph ? { transitive_affected: [{ path: "src/a.ts", depth: 1, via: "src/core.ts" }] } : {}),
+      }),
+    );
+    renderView(<ImpactView adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })} />);
+
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith(expect.objectContaining({ withGraph: true })));
+    expect(screen.queryByRole("button", { name: "Draw the map" })).not.toBeInTheDocument();
+  });
+});
+
+describe("a cut test list", () => {
+  it("says how many of the recommended tests it lists", async () => {
+    const rec = (i: number) => ({
+      test_id: `tests/test_${i}.py`,
+      test_file: `tests/test_${i}.py`,
+      repository_id: "repo-1",
+      repository: "app",
+      basis: "inferred" as const,
+      bases: ["inferred" as const],
+      source_files: ["src/core.ts"],
+      evidence: [],
+    });
+    const freshness = { status: "unknown" as const, reason: null, ingested_commit: null, indexed_commit: null };
+    const analyze = vi.fn(async (): Promise<BlastRadiusResponse> => ({
+      ...RESULT,
+      test_impact: {
+        recommendations: [rec(1), rec(2)],
+        recommendations_total: 150,
+        recommendations_emitted: 2,
+        recommendations_truncated: true,
+        recommendations_omitted: 148,
+        recommendations_by_primary_basis: { measured: 0, inferred: 150 },
+        files: [],
+        files_total: 1,
+        files_without_measured_tests: [],
+        unknown_files: [],
+        coverage: {
+          status: "unavailable" as const,
+          reason: null,
+          map_present: false,
+          pair_count: 0,
+          test_count: 0,
+          source_file_count: 0,
+          changed_files_total: 1,
+          changed_files_with_measured_tests: 0,
+          changed_files_without_measured_tests: 1,
+          ingested_at: null,
+          source_format: null,
+          freshness,
+        },
+        inference: {
+          status: "available" as const,
+          reason: null,
+          changed_files_total: 1,
+          changed_files_with_candidates: 1,
+          candidates_before_dedup: 150,
+        },
+        analysis: { status: "partial" as const, stale: false, partial: true, degraded: false, basis_categories: ["inferred" as const] },
+      },
+    }));
+    renderView(<ImpactView adapter={makeAdapter({ analyze })} initialFiles={["src/core.ts"]} />);
+    expect(await screen.findByText("The first 2 of 150 are listed here.")).toBeInTheDocument();
+  });
+});
+
 describe("Markdown for agents", () => {
   it("links the shown change's review, with the health check once it has run", async () => {
     const check = {

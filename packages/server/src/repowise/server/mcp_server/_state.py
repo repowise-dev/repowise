@@ -83,6 +83,8 @@ _vector_store_errors: dict[str, str] = {}
 # each newer release is surfaced once per process rather than on every call.
 _release_check: Any = None
 _release_announced: str | None = None
+# Whether a search reply already said its rows are keyword matches only.
+_keyless_search_noted = False
 
 
 def init_tool_state(

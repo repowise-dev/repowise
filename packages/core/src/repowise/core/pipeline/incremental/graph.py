@@ -547,8 +547,10 @@ def _traverse_repo(
             maybe_infos = list(pool.map(traverser._build_file_info, all_paths))
         file_infos = [file_info for file_info in maybe_infos if file_info is not None]
         repo_structure = traverser.get_repo_structure(file_infos)
-    root = traverser.repo_root
-    walked = [path.relative_to(root).as_posix() for path in all_paths]
+    # ``_walk`` joins every path onto the root, so slicing the root off is
+    # ``relative_to`` without building a Path per walked file.
+    cut = len(str(traverser.repo_root).rstrip(os.sep)) + 1
+    walked = [str(path)[cut:].replace(os.sep, "/") for path in all_paths]
     return traverser, file_infos, repo_structure, walked
 
 

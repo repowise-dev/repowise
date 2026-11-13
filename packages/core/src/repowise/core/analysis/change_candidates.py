@@ -13,6 +13,7 @@ revision.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import threading
 import time
@@ -29,6 +30,8 @@ from repowise.core import git_refs
 from repowise.core.analysis.git_cli import _git, checkout_relative
 from repowise.core.forges import BaseForge, ForgeKind, all_forges, detect_forge, get_forge
 from repowise.core.persistence.models import GitCommit, GitCommitFile
+
+log = logging.getLogger(__name__)
 
 #: A ``change_request`` (a merge or pull request) is never listed: it opens
 #: from a link, through :func:`resolve_change_request`.
@@ -251,9 +254,14 @@ def _branch_diffs(
 #: a reader flips between changes far more often than branches move. Keyed by
 #: what moves when a branch does (HEAD, packed refs, the last fetch), with a
 #: short lifetime for the moves that leave those alone, such as a commit made
-#: on another worktree's branch.
+#: on another worktree's branch. Past that lifetime the kept listing is still
+#: served while one background read replaces it, so only a refs move makes a
+#: reader wait for git.
 _BRANCH_TTL_SECONDS = 30.0
 _BRANCHES: dict[str, tuple[tuple[Any, ...], float, list[ChangeCandidate]]] = {}
+#: The background read running per checkout, at most one each.
+_REFRESHING: dict[str, threading.Thread] = {}
+_REFRESH_LOCK = threading.Lock()
 
 
 def _refs_state(repo_path: str) -> tuple[Any, ...]:
@@ -272,14 +280,43 @@ def _refs_state(repo_path: str) -> tuple[Any, ...]:
 def _cached_branches(
     repo_path: str, base: str, current: str | None, max_branches: int
 ) -> list[ChangeCandidate]:
-    """:func:`_list_branches`, reused while the refs state holds and the entry is young."""
+    """:func:`_list_branches`, reused while the refs state holds.
+
+    An entry past its lifetime is served as it is while a background read
+    replaces it; a refs move is read before answering.
+    """
     state = (_refs_state(repo_path), base, current, max_branches)
     hit = _BRANCHES.get(repo_path)
-    if hit and hit[0] == state and time.monotonic() - hit[1] < _BRANCH_TTL_SECONDS:
+    if hit and hit[0] == state:
+        if time.monotonic() - hit[1] >= _BRANCH_TTL_SECONDS:
+            _refresh_branches(repo_path, state)
         return hit[2]
     branches = _list_branches(repo_path, base, current, max_branches)
     _BRANCHES[repo_path] = (state, time.monotonic(), branches)
     return branches
+
+
+def _refresh_branches(repo_path: str, state: tuple[Any, ...]) -> None:
+    """Re-read *repo_path*'s branches on a daemon thread, unless a read is already running."""
+    _, base, current, max_branches = state
+
+    def read() -> None:
+        try:
+            branches = _list_branches(repo_path, base, current, max_branches)
+            _BRANCHES[repo_path] = (state, time.monotonic(), branches)
+        except Exception:  # git failed: the kept listing stays, and the next call tries again
+            log.debug("branch listing refresh failed", exc_info=True)
+        finally:
+            with _REFRESH_LOCK:
+                _REFRESHING.pop(repo_path, None)
+
+    with _REFRESH_LOCK:
+        if repo_path in _REFRESHING:
+            return
+        thread = _REFRESHING[repo_path] = threading.Thread(
+            target=read, name="repowise-branch-refresh", daemon=True
+        )
+    thread.start()
 
 
 def clear_branch_cache() -> None:
@@ -579,7 +616,9 @@ def change_revspec(repo_path: str, change_id: str) -> str | None:
         return None
     kind, _, ref = change_id.partition(":")
     if kind == "branch":
-        if ref not in {b.name for b in git_refs.list_branches(repo_path)}:
+        # One exact ref lookup: listing every branch to find this one takes
+        # seconds on a repository with thousands of them.
+        if not _branch_tip(repo_path, ref):
             raise UnknownChangeError(f"unknown branch {ref!r}")
         return f"{git_refs.default_base(repo_path)}...{ref}"
     if is_change_request(change_id):
@@ -587,4 +626,31 @@ def change_revspec(repo_path: str, change_id: str) -> str | None:
         return f"{change.base_sha}...{change.head_sha}"
     if kind == "commit" and _SHA.match(ref) and git_refs.resolve(repo_path, ref):
         return ref
+    raise UnknownChangeError(f"unknown change {change_id!r}")
+
+
+def change_identity(repo_path: str, change_id: str) -> tuple[str, ...] | None:
+    """The commits a listed change is read from, so an answer about it can be
+    kept until one of them moves; ``None`` for uncommitted work, which moves
+    without a commit.
+
+    A branch is its tip and the default branch's tip, the two ends of what it
+    would bring; a commit, or a merge request pinned to its commits, is its
+    id. The checkout's ``HEAD`` joins each, since a score ranks the change against the history behind it.
+    """
+    if change_id == WORKING_TREE_ID:
+        return None
+    head = git_refs.resolve(repo_path, "HEAD")
+    kind, _, ref = change_id.partition(":")
+    if kind == "branch":
+        tip = _branch_tip(repo_path, ref)
+        if not tip:
+            raise UnknownChangeError(f"unknown branch {ref!r}")
+        base = git_refs.resolve(repo_path, git_refs.default_base(repo_path))
+        return (change_id, tip, base, head)
+    if kind == "commit" and _SHA.match(ref):
+        return (change_id, head)
+    match = _CHANGE_REQUEST.fullmatch(change_id)
+    if match and match.group(4):  # a pinned request names its own two commits
+        return (change_id, head)
     raise UnknownChangeError(f"unknown change {change_id!r}")

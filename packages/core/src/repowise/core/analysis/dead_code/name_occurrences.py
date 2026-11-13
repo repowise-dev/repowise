@@ -135,10 +135,10 @@ def occurrence_files(
     if not names:
         return found
     for path, blob in source_map.items():
-        # Each distinct token once, in first-seen order: a file repeats most of its words.
-        for token in dict.fromkeys(IDENTIFIER_RE.findall(blob)):
-            if token in names:
-                found.setdefault(token, set()).add(path)
+        # Each distinct token once: a file repeats most of its words, and the
+        # intersection runs in C rather than one Python step per token.
+        for token in names.intersection(IDENTIFIER_RE.findall(blob)):
+            found.setdefault(token, set()).add(path)
     return found
 
 
@@ -612,22 +612,44 @@ def _files_naming(targets: set[str], source_map: dict[str, bytes]) -> dict[str, 
     tails = {key.rpartition("/")[2] for key in wanted}
 
     named_in: dict[str, list[str]] = {}
+    # Tokens whose last segment is no target's: the same paths recur across a
+    # repository, so each is ruled out once rather than once per file.
+    unnamed: set[bytes] = set()
     for path, blob in sorted(source_map.items()):
         base = path.rpartition("/")[0]
-        for target in _targets_in(blob, wanted, tails, base) - {path}:
+        for target in _targets_in(blob, wanted, tails, base, unnamed) - {path}:
             named_in.setdefault(target, []).append(path)
     return named_in
 
 
 def _targets_in(
-    blob: bytes, wanted: dict[str, set[str]], tails: set[str], base: str
+    blob: bytes,
+    wanted: dict[str, set[str]],
+    tails: set[str],
+    base: str,
+    unnamed: set[bytes] | None = None,
 ) -> set[str]:
-    """The targets any path-shaped token of *blob*, a file in *base*, names."""
-    return {
-        target
-        for token in dict.fromkeys(_PATH_TOKEN_RE.findall(blob))
-        for target in _targets_named_by(token.decode("ascii"), wanted, tails, base)
-    }
+    """The targets any path-shaped token of *blob*, a file in *base*, names.
+
+    *unnamed*, shared across calls with the same *tails*, holds the tokens
+    whose tail names no target; it is read and filled here.
+    """
+    if unnamed is None:
+        unnamed = set()
+    found: set[str] = set()
+    for token in set(_PATH_TOKEN_RE.findall(blob)) - unnamed:
+        text = token.decode("ascii")
+        if not _tail_wanted(text, tails):
+            unnamed.add(token)
+            continue
+        found.update(_targets_named_by(text, wanted, tails, base))
+    return found
+
+
+def _tail_wanted(token: str, tails: set[str]) -> bool:
+    """Whether *token*'s last segment, with or without its extension, is in *tails*."""
+    tail = token.strip(".").rpartition("/")[2]
+    return tail in tails or tail.rpartition(".")[0] in tails
 
 
 def _targets_named_by(
@@ -639,8 +661,7 @@ def _targets_named_by(
     writes it (``setupFiles: ["./vitest.setup.ts"]`` in ``src/vitest.config.ts``
     is ``src/vitest.setup.ts``), so that resolution is one more spelling.
     """
-    tail = token.strip(".").rpartition("/")[2]
-    if tail not in tails and tail.rpartition(".")[0] not in tails:
+    if not _tail_wanted(token, tails):
         return set()
     spellings = _token_spellings(token)
     if base and not token.startswith("/"):

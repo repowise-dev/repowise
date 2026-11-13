@@ -110,6 +110,37 @@ def _reject_structural_page_ids(page_ids: tuple[str, ...]) -> None:
         )
 
 
+def _signed_in_cli(repo_path: Path) -> str | None:
+    """A signed-in agent CLI on a paid plan to write with, when nothing else names a provider.
+
+    Only when no flag, config, environment or key resolves one: a key the user
+    already set keeps winning, as it always has. Only a login billed to a plan
+    quota is picked unasked, so a bare run never starts metered spend on its
+    own; any other login stays one ``--provider`` away. The run says what it
+    draws on before the cost question.
+    """
+    from repowise.core.providers.llm.subscription import detect_free_route
+
+    route = detect_free_route(repo_path)
+    if route is None:
+        return None
+    console.print(
+        f"No provider configured, so this run {route.uses(timed=False)}. "
+        "Pass [cyan]--provider[/cyan] to choose another."
+    )
+    return route.provider
+
+
+def _key_source(repo_path: Path, provider_name: str) -> str:
+    """`` (key from env:ANTHROPIC_API_KEY)`` when the provider was picked by its key alone."""
+    from repowise.core.providers.llm.resolve import resolve_api_key, resolve_llm
+
+    if resolve_llm(repo_path).provider_source != "autodetect":
+        return ""
+    _key, source = resolve_api_key(provider_name, repo_path)
+    return f" (key from {escape(source)})" if source else ""
+
+
 def _dry_run_provider(
     provider_name: str | None, model: str | None, repo_path: Path, reasoning: str | None
 ) -> Any | None:
@@ -261,6 +292,10 @@ def generate_command(
     writes; naming a structural (file / symbol / api / infra / cycle / layer)
     page is an error, since those refresh on `repowise update`.
 
+    With no provider set, a key it finds is used, else a signed-in Claude
+    Code on a paid plan; the run names which. The provider is saved to
+    .repowise/config.yaml once it has written a page.
+
     Examples:
       repowise generate                 # write the unwritten concept pages
       repowise generate --unwritten     # same, explicitly
@@ -308,6 +343,10 @@ def generate_command(
         record_refusal("no_documentation")
         return
 
+    explicit_provider = provider_name is not None
+    if provider_name is None:
+        provider_name = _signed_in_cli(repo_path)
+
     if dry_run:
         provider = _dry_run_provider(provider_name, model, repo_path, reasoning)
     else:
@@ -329,8 +368,10 @@ def generate_command(
     _record_provider(provider)
     console.print(f"[bold]repowise generate[/bold] {repo_path}")
     if provider is not None:
+        source = "" if explicit_provider else _key_source(repo_path, provider.provider_name)
         console.print(
-            f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}[/cyan]"
+            f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}"
+            f"[/cyan]{source}"
         )
 
     from repowise.core.generation import GenerationConfig
@@ -429,6 +470,11 @@ def _wrote_nothing_and_failed(outcome: Any) -> bool:
     c = _account_for_plan(planned, outcome.generated_pages, outcome.swept_page_ids)
     # A reused page is not written: a dead sign-in on a rerun still fails.
     return c["failed"] > 0 and c["written"] == 0
+
+
+def _model_wrote_a_page(outcome: Any) -> bool:
+    """Whether a model wrote any page this run; a reused or failed page is not one."""
+    return _account_for_plan(set(), outcome.generated_pages, [])["written"] > 0
 
 
 def _account_for_plan(
@@ -593,16 +639,19 @@ def _write_state(
     state["provider"] = provider.provider_name
     state["model"] = provider.model_name
     all_written = outcome.remaining_template_pages == 0
-    if all_written and resolve_docs_mode(state) != "llm":
+    flipped = all_written and resolve_docs_mode(state) != "llm"
+    if flipped:
         state.update(docs_mode_state_fields("llm"))
-        cfg = load_config(repo_path)
-        if not cfg.get("provider"):
-            save_config_partial(
-                repo_path,
-                provider=provider.provider_name,
-                model=provider.model_name,
-            )
-            state["config_fingerprint"] = config_fingerprint(repo_path)
+    # Saved whenever this provider wrote a page, not only once every page is
+    # written: a partial run otherwise leaves its prose on disk and the MCP
+    # server, which reads config.yaml, answering without a model.
+    if not load_config(repo_path).get("provider") and (flipped or _model_wrote_a_page(outcome)):
+        save_config_partial(
+            repo_path,
+            provider=provider.provider_name,
+            model=provider.model_name,
+        )
+        state["config_fingerprint"] = config_fingerprint(repo_path)
     provider_block = {
         "name": provider.provider_name,
         "model": provider.model_name,

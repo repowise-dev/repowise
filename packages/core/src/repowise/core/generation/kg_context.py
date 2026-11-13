@@ -46,6 +46,9 @@ class KnowledgeGraphContext:
         data: dict | None = None,
     ):
         self._file_to_layer: dict[str, dict] = {}
+        # id(layer) -> its node ids as a set, built on first use: a set per
+        # lookup made scoring every file quadratic in the layer size.
+        self._layer_node_sets: dict[int, frozenset[str]] = {}
         self._file_to_tour: dict[str, dict] = {}
         self._file_to_node: dict[str, dict] = {}
         self._layers: list[dict] = []
@@ -141,7 +144,10 @@ class KnowledgeGraphContext:
         node_id = f"file:{file_path}"
 
         incoming = self._edges_by_target.get(node_id, [])
-        layer_node_ids = set(layer.get("nodeIds", []))
+        layer_node_ids = self._layer_node_sets.get(id(layer))
+        if layer_node_ids is None:
+            layer_node_ids = frozenset(layer.get("nodeIds", []))
+            self._layer_node_sets[id(layer)] = layer_node_ids
         cross_layer_in = [
             e for e in incoming
             if e.get("type") == "imports" and e["source"] not in layer_node_ids

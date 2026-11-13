@@ -1063,13 +1063,13 @@ def _release_meta() -> dict[str, Any]:
 _ROUTE_WAIT_S = 2.0
 
 # The signed-in agent CLI a keyless line names, probed once per served path in
-# a daemon thread (the probe is a subprocess), and the unwritten page count that
-# sizes its minutes, per repository. Both hold for the process: the line itself
+# a daemon thread (the probe is a subprocess), and the model calls ``generate``
+# makes, which size its minutes, per repository. Both hold for the process: the line itself
 # says to restart once a model is set up.
 _route_lock = threading.Lock()
 _route_probes: dict[str, threading.Thread] = {}
 _routes: dict[str, FreeRoute | None] = {}
-_unwritten_pages: dict[str, int] = {}
+_generate_calls: dict[str, int] = {}
 #: Served paths whose overview already named the upgrade this process.
 _overview_upgrade_named: set[str] = set()
 
@@ -1110,24 +1110,28 @@ def _probed_route(local_path: str | None, wait: float) -> FreeRoute | None:
 async def _upgrade_route(
     local_path: str | None, session_factory: Any = None, repo_id: str | None = None
 ) -> FreeRoute | None:
-    """The free route for this index, timed by its unwritten pages when they can be counted."""
+    """The free route for this index, timed by the calls ``generate`` makes when they can be counted."""
     import asyncio
 
     route = await asyncio.to_thread(_probed_route, local_path, _ROUTE_WAIT_S)
-    if route is None or session_factory is None or not repo_id:
+    # The lanes are read from the checkout's state.json: no path, no minutes.
+    if route is None or session_factory is None or not repo_id or not local_path:
         return route
-    calls = _unwritten_pages.get(repo_id)
+    calls = _generate_calls.get(repo_id)
     if calls is None:
-        from repowise.core.generation.scope import unwritten_model_page_count
+        from repowise.core.generation.scope import generate_model_calls
         from repowise.core.persistence import get_session
 
         try:
+            # Ceiling: pending decision lanes load the stored graph once per
+            # process, seconds on a very large repo; caching the planned count
+            # in state.json at index time is the upgrade if that shows up.
             async with get_session(session_factory) as session:
-                calls = await unwritten_model_page_count(session, repo_id)
+                calls = await generate_model_calls(session, repo_id, local_path)
         except Exception:
-            _log.debug("repowise MCP: unwritten page count failed", exc_info=True)
+            _log.debug("repowise MCP: generate call count failed", exc_info=True)
             return route
-        _unwritten_pages[repo_id] = calls
+        _generate_calls[repo_id] = calls
     from repowise.core.providers.llm.subscription import route_minutes
 
     return route_minutes(route, calls)
@@ -1161,6 +1165,30 @@ async def keyless_note_meta(
     """
     route = await _upgrade_route(local_path, session_factory, repo_id)
     return {"keyless_note": upgrade_line(read_index_scope(local_path), route)}
+
+
+#: For a natural-language search on an index with no embedder (#5049).
+KEYLESS_SEARCH_NOTE = (
+    "keyword match only (no embedder): rows share words, not meaning; "
+    "mode=symbol or mode=path is exact"
+)
+
+
+def keyless_search_note_meta() -> dict[str, Any]:
+    """``keyless_note`` for the first natural-language search with rows on an
+    index with no embedder, once per server process.
+
+    Once, not per call: ``semantic_search: false`` already rides on every
+    reply, and a sentence on each would grow every keyless search. A server
+    shared by several conversations tells only the first; the flag still
+    tells the rest.
+    """
+    from repowise.server.mcp_server import _state
+
+    if semantic_search_state() is not False or _state._keyless_search_noted:
+        return {}
+    _state._keyless_search_noted = True
+    return {"keyless_note": KEYLESS_SEARCH_NOTE}
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:

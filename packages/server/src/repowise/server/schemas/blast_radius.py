@@ -78,6 +78,8 @@ class TestRecommendation(BaseModel):
     basis: Literal["measured", "inferred"]
     bases: list[Literal["measured", "inferred"]]
     source_files: list[str]
+    #: Every changed file this test reaches, where ``source_files`` names the first few.
+    source_files_total: int | None = None
     evidence: list[TestImpactEvidence]
     #: A measured row whose test file is gone or changed since the coverage run.
     stale: bool = False
@@ -242,10 +244,37 @@ class ChangeCandidatesResponse(BaseModel):
     health_check_supported: bool = False
 
 
+#: Reached files per page of ``transitive_affected`` when a request names no ``limit``.
+CHANGE_PAGE_SIZE = 500
+#: The most one page may hold: enough to draw the map of a wide change.
+CHANGE_PAGE_MAX = 5000
+
+
 class ChangeBlastRadiusRequest(BaseModel):
     #: An ``id`` from ``GET /blast-radius/changes``.
     change_id: str = Field(min_length=1, max_length=300)
     max_depth: int = Field(default=3, ge=1, le=10)
+    #: Also return ``via`` on each reached file, for drawing the map.
+    with_graph: bool = False
+    #: The page of ``transitive_affected``: rows ``offset`` to ``offset + limit``.
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=CHANGE_PAGE_SIZE, ge=1, le=CHANGE_PAGE_MAX)
+
+
+class ReachSummary(BaseModel):
+    """Counts over every file a change reaches, not only the page sent."""
+
+    #: Source files the change reaches; tests are counted apart.
+    files: int
+    #: Test files that import the change at any depth.
+    tests: int
+    #: Source files one import away.
+    direct: int
+    #: Modules the reached source files sit in.
+    modules: int
+    max_depth: int
+    #: Changed files something imports directly.
+    imported: list[str]
 
 
 class ChangeRiskBlock(BaseModel):
@@ -338,6 +367,15 @@ class ChangeBlastRadiusResponse(BlastRadiusResponse):
     changed_files: list[str]
     #: Every path the change touches, before the cap.
     changed_files_total: int
+    #: Every reached file. ``transitive_affected`` holds one page of them, and
+    #: ``affected_signals`` and ``test_gaps`` cover the changed files and that page.
+    transitive_total: int = 0
+    #: The ``offset`` of the next page; ``None`` on the last.
+    next_offset: int | None = None
+    reach_summary: ReachSummary | None = None
+    #: Files that usually change with a changed one and are left out, all of
+    #: them; ``cochange_warnings`` lists the strongest pairs.
+    missing_partners_total: int | None = None
     #: The score and tests; ``None`` when the change could not be read from
     #: git here, with ``review_unavailable`` saying why. The blast radius
     #: above is the evidence behind it.

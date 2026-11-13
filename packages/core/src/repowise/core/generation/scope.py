@@ -98,13 +98,8 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
     return records
 
 
-async def unwritten_model_page_count(session: Any, repo_id: str) -> int:
-    """Pages a model writes that are still on their stub: what ``generate`` writes by default.
-
-    Uses :func:`load_page_records`'s predicate, so a ``model_free`` page (written
-    by a deterministic subkind) is not counted when ``generate --unwritten``
-    would never select it.
-    """
+async def _model_page_records(session: Any, repo_id: str) -> list[PageRecord]:
+    """The stored pages of the types a model writes, as the planner reads them."""
     from sqlalchemy import select
 
     from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
@@ -114,12 +109,37 @@ async def unwritten_model_page_count(session: Any, repo_id: str) -> int:
         await session.execute(
             select(Page).where(
                 Page.repository_id == repo_id,
-                Page.provider_name == "template",
                 Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
             )
         )
     ).scalars()
-    return sum(1 for record in load_page_records(list(rows)) if record.is_template)
+    return load_page_records(list(rows))
+
+
+async def unwritten_model_page_count(session: Any, repo_id: str) -> int:
+    """Pages a model writes that are still on their stub: what ``generate`` writes by default.
+
+    Uses :func:`load_page_records`'s predicate, so a ``model_free`` page (written
+    by a deterministic subkind) is not counted when ``generate --unwritten``
+    would never select it.
+    """
+    return sum(1 for record in await _model_page_records(session, repo_id) if record.is_template)
+
+
+async def generate_model_calls(session: Any, repo_id: str, repo_path: Any) -> int:
+    """Model calls a default ``generate`` makes: its pages plus the pending decision lanes.
+
+    The pages are the unwritten ones and the pinned ones, which ``generate``
+    always rewrites. The count any "about N minutes" for that run is sized
+    by, so an estimate made before the run matches the one ``generate`` prints.
+    """
+    from pathlib import Path
+
+    from repowise.core.decision_lanes import planned_lane_calls
+
+    records = await _model_page_records(session, repo_id)
+    pages = sum(1 for record in records if record.is_template or record.pinned)
+    return pages + await planned_lane_calls(session, repo_id, Path(repo_path))
 
 
 def _selection_inputs(

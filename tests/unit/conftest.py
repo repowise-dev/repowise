@@ -46,7 +46,7 @@ def no_signed_in_agent_cli(monkeypatch):
     monkeypatch.setattr(
         "repowise.core.providers.llm.subscription.agent_cli_auth", lambda _name: None
     )
-    for name in ("_route_probes", "_routes", "_unwritten_pages"):
+    for name in ("_route_probes", "_routes", "_generate_calls"):
         monkeypatch.setattr(_meta, name, {})
     monkeypatch.setattr(_meta, "_overview_upgrade_named", set())
 

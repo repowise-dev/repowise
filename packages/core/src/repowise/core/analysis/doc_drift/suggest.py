@@ -246,14 +246,23 @@ def _similar_target(res: Resolution, idx: RepoIndex) -> Suggestion:
 
 
 def git_run(
-    root: Path, *args: str, stdin: bytes | None = None, timeout: float = _GIT_TIMEOUT_SECONDS
+    root: Path,
+    *args: str,
+    stdin: bytes | None = None,
+    timeout: float = _GIT_TIMEOUT_SECONDS,
+    pathspec_magic: bool = False,
 ) -> tuple[int, bytes] | None:
     """``(exit code, stdout)`` of one short git call, or ``None`` when it did not finish.
 
     Never fetches: in a blobless CI clone, rename detection would otherwise
-    pull blobs over the network.
+    pull blobs over the network. Pathspecs are literal unless *pathspec_magic*,
+    for a caller whose pathspecs are its own constants, not repository paths.
     """
-    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1", "GIT_LITERAL_PATHSPECS": "1"}
+    env = {**os.environ, "GIT_NO_LAZY_FETCH": "1"}
+    if pathspec_magic:
+        env.pop("GIT_LITERAL_PATHSPECS", None)
+    else:
+        env["GIT_LITERAL_PATHSPECS"] = "1"
     try:
         proc = run_git(
             ["-C", str(root), "-c", "core.quotePath=false", *args],
