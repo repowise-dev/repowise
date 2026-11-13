@@ -360,19 +360,31 @@ class MetricsMixin:
         budget, or one that adds, removes or reclassifies a file, detects afresh.
         So does any build with ``fresh_communities`` set (an update's full
         health re-score), which an unchanged input still answers from the cache.
+
+        Test and example files never shape the production partition, so when
+        the file set changed by them alone the last production partition is
+        held to the same rule against the production files and their links,
+        and only the placing of test and example files and the community info
+        is redone. On an unchanged production input that equals a fresh
+        detection, and becomes the new reference.
         """
         if self._community_cache is not None:
             return self._community_cache
 
         from repowise.core.analysis.communities import (
-            detect_file_communities,
             file_community_input,
+            place_file_communities,
+            production_community_input,
+            split_file_nodes,
         )
 
         try:
             repo_path = getattr(self, "_repo_path", None)
             repo_name = repo_path.name if repo_path else None
-            key = self._community_key("file", lambda: file_community_input(self._graph, repo_name))
+            files = split_file_nodes(self._graph)
+            key = self._community_key(
+                "file", lambda: file_community_input(self._graph, repo_name, files)
+            )
             reuse = key and self._reusable_communities(
                 "file", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
             )
@@ -381,11 +393,28 @@ class MetricsMixin:
                 self._community_cache = dict(reuse[0].assignment)
                 self._community_info_cache, self._community_algo = extra
                 return self._community_cache
-            assignment, info, algo = detect_file_communities(self._graph, repo_name=repo_name)
+            prod_key = key and self._community_key(
+                "file_production", lambda: production_community_input(self._graph, files)
+            )
+            held = self._held_production_partition(prod_key)
+            assignment, info, algo, production = place_file_communities(
+                self._graph, repo_name=repo_name, production=held, files=files
+            )
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
-            if key:
+            # A result on a held partition is not written: the references stay
+            # pinned to the last full detection, and writing the cache costs
+            # more than placing the test files again.
+            if production is not held and key:
+                if prod_key:
+                    self._store_communities(
+                        "file_production",
+                        prod_key,
+                        production.assignment,
+                        extra=production,
+                        persist=False,
+                    )
                 self._store_communities("file", key, assignment, extra=(info, algo))
         except Exception as exc:
             log.warning("community_detection_failed", error=str(exc))
@@ -396,6 +425,19 @@ class MetricsMixin:
             self._community_info_cache = {}
             self._community_algo = "failed"
         return self._community_cache
+
+    def _held_production_partition(self, key: Any | None) -> Any | None:
+        """The stored production partition a file detection may stand on, else ``None``."""
+        from repowise.core.analysis.communities import ProductionPartition
+
+        if not key:
+            return None
+        reuse = self._reusable_communities(
+            "file_production", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
+        )
+        if reuse and isinstance(reuse[0].extra, ProductionPartition):
+            return reuse[0].extra
+        return None
 
     def symbol_communities(self) -> dict[str, int]:
         """Assign a community ID to each symbol node using call/heritage edges.
@@ -489,7 +531,12 @@ class MetricsMixin:
         return entry, churn
 
     def _store_communities(
-        self, kind: str, key: Any, assignment: dict[str, int], extra: Any = None
+        self,
+        kind: str,
+        key: Any,
+        assignment: dict[str, int],
+        extra: Any = None,
+        persist: bool = True,
     ) -> None:
         """Pin a full detection as *kind*'s reference; best-effort like every cache write."""
         from repowise.core.analysis.communities import community_code_fingerprint
@@ -504,6 +551,7 @@ class MetricsMixin:
                 edges=key.edges,
                 scored_commit=self._head_commit,
                 extra=extra,
+                persist=persist,
             )
         except Exception as exc:
             log.debug("community_cache_store_failed", kind=kind, error=str(exc))

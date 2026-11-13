@@ -340,11 +340,17 @@ class CentralityCache:
         edges: frozenset[int] = frozenset(),
         scored_commit: str | None,
         extra: Any = None,
+        persist: bool = True,
     ) -> None:
-        """Record a full detection for *kind* and persist atomically."""
+        """Record a full detection for *kind* and persist atomically.
+
+        ``persist=False`` holds it for the next put that persists, so two kinds
+        detected together cost one write of the whole cache.
+        """
         with self._lock:
             self._ensure_loaded()
             self._communities[kind] = CommunityEntry(
                 code, signature, dict(assignment), nodes, edges, scored_commit, extra
             )
-            self._save_locked()
+            if persist:
+                self._save_locked()
