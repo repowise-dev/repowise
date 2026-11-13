@@ -172,7 +172,9 @@ class EditorFileDataFetcher:
             mcp = load_repo_config(self._repo_path).get("mcp")
         except Exception:  # a broken config is reported by the commands that need it
             return None
-        return mcp.get("tools") if isinstance(mcp, dict) else None
+        tools = mcp.get("tools") if isinstance(mcp, dict) else None
+        # A hand-edited value of another shape must not fail the write.
+        return tools if isinstance(tools, (str, list)) else None
 
     # ------------------------------------------------------------------
     # Private helpers

@@ -311,10 +311,28 @@ def test_agents_md_names_only_the_core_tools_by_default(sections, scope):
     assert 'get_why(targets=["<file>"])' in rendered or "get_why(query=" in rendered
 
 
-def test_claude_md_keeps_every_moment_line():
-    rendered = ClaudeMdGenerator().render(_full_data(mcp_tools="core"))
-    assert 'get_risk(targets=["<file>"])' in rendered
-    assert 'get_change_risk(revspec="<base>..HEAD")' in rendered
+@pytest.mark.parametrize("sections", [DEFAULT_SECTIONS, ALL_SECTIONS], ids=["default", "all"])
+def test_claude_md_ignores_the_tool_list(sections):
+    # Claude Code defers schemas and is listed every default tool.
+    gen = ClaudeMdGenerator()
+    plain = gen.render(_full_data(sections=sections))
+    assert gen.render(_full_data(sections=sections, mcp_tools="core")) == plain
+    assert 'get_risk(targets=["<file>"])' in plain
+    assert 'get_change_risk(revspec="<base>..HEAD")' in plain
+
+
+def test_agents_md_edit_line_without_get_why():
+    rendered = AgentsMdGenerator().render(_full_data(mcp_tools="get_answer get_risk"))
+    assert '- Before editing a file: `get_risk(targets=["<file>"])`.\n' in rendered
+    assert "get_why(" not in rendered
+
+
+def test_agents_md_full_protocol_keeps_only_listed_checks():
+    rendered = AgentsMdGenerator().render(_full_data(sections=ALL_SECTIONS))
+    assert '- **Before changing a pattern:** `get_why(query="why ...", targets=["<file>"])`.' in rendered
+    assert "**Before an edit:**" not in rendered
+    assert "get_health(" not in rendered
+    assert "maintainability 8.0/10." in rendered
 
 
 def test_agents_md_follows_the_configured_tool_list():
@@ -328,7 +346,7 @@ def test_agents_md_follows_the_configured_tool_list():
 
 def test_agents_md_drops_a_line_whose_tool_is_configured_off():
     rendered = AgentsMdGenerator().render(_full_data(mcp_tools="get_answer search_codebase"))
-    assert "get_context(" not in rendered
+    assert "get_context(targets" not in rendered
     assert "get_why(" not in rendered
     assert "Recorded decisions govern" not in rendered
 
