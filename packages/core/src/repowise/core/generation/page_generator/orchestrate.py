@@ -1037,7 +1037,15 @@ class _GenerationRun:
             try:
                 from ..related_pages import attach_related_pages
 
-                if not checkpoint:
+                if checkpoint:
+                    for page in all_pages:
+                        prose_targets = {link["target_page_id"]
+                                         for link in page.metadata.get("wiki_links", [])}
+                        page.metadata["related_pages"] = [
+                            link for link in self.render_related_pages.get(page.page_id, [])
+                            if link["target_page_id"] not in prose_targets
+                        ]
+                else:
                     attach_related_pages(
                         all_pages,
                         import_edges=self._file_import_edges(),
@@ -1052,7 +1060,7 @@ class _GenerationRun:
                 log.debug("related_pages.failed", error=str(exc))
 
             # Post-generation: link KG tour steps to wiki page IDs.
-            if self.kg_ctx.available and self.repo_path and not checkpoint:
+            if self.kg_ctx.available and self.repo_path:
                 try:
                     from ..kg_enrichment import enrich_tour_with_wiki_links
 
@@ -1061,7 +1069,8 @@ class _GenerationRun:
                     )
                     kg_path = rp / ".repowise" / "knowledge-graph.json"
                     if kg_path.exists():
-                        enrich_tour_with_wiki_links(kg_path, all_pages)
+                        enrich_tour_with_wiki_links(kg_path, all_pages,
+                                                    preserve_existing=checkpoint)
                 except Exception as exc:
                     log.debug("kg_enrichment.failed", error=str(exc))
 

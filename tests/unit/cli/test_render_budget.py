@@ -176,6 +176,73 @@ def test_failed_unbudgeted_continuation_retains_pending_state(tmp_path, monkeypa
     assert state["renderer_fingerprint"] == stamp
 
 
+def test_unbudgeted_update_keeps_docs_current_after_embedding_warning(tmp_path, monkeypatch):
+    from repowise.cli.helpers import load_state, release_update_lock
+
+    from ._real_call_guard import guard_real_calls
+    from .test_update_reconciles_stale_pages import _git, _repo_at_head, _seed, _state_at
+
+    repo, head = _repo_at_head(tmp_path)
+    run_async(_seed(repo, {"foo.py": "fresh"}))
+    _state_at(repo, head)
+    (repo / "foo.py").write_text("def foo():\n    return 2\n")
+    _git(repo, "add", "foo.py")
+    _git(repo, "commit", "-q", "-m", "change")
+    new_head = _git(repo, "rev-parse", "HEAD")
+    original = deterministic.regenerate_deterministic_pages
+
+    def warn_after_render(*args, **kwargs):
+        pages = original(*args, **kwargs)
+        kwargs["degraded"].append("Embedding failed for a page")
+        return pages
+
+    guard_real_calls(monkeypatch, allow_git=True)
+    monkeypatch.setattr(deterministic, "regenerate_deterministic_pages", warn_after_render)
+    try:
+        result = CliRunner().invoke(command.update_command, [
+            str(repo), "--no-workspace", "--index-only",
+        ])
+    finally:
+        release_update_lock(repo)
+    assert result.exit_code == 0, result.output
+    assert load_state(repo)["last_docs_commit"] == new_head
+
+
+def test_checkpointed_pages_have_related_links_and_preserve_tour_links(tmp_path):
+    import json
+
+    parsed, source, builder, structure = _repository(tmp_path)
+    kg_path = tmp_path / ".repowise" / "knowledge-graph.json"
+    kg_path.parent.mkdir()
+    kg_path.write_text(json.dumps({"tour": [
+        {"nodeIds": ["file:a.py", "file:b.py"]},
+        {"nodeIds": ["file:c.py"], "wikiPageIds": ["file_page:c.py"]},
+    ]}))
+    config = GenerationConfig(deterministic=True, max_concurrency=1,
+                              enable_onboarding=False, file_pages_only=True)
+    prior = {"file_page:c.py": PriorPage(
+        source_hash="", model_name="", content="Saved page", provider_name="template",
+    )}
+    generator = PageGenerator(TemplateProvider(), ContextAssembler(config), config,
+                              prior_pages=prior)
+    committed = []
+
+    def checkpoint(page):
+        assert "related_pages" in page.metadata
+        assert page.metadata["related_pages"]
+        committed.append(page.page_id)
+        tours = json.loads(kg_path.read_text())["tour"]
+        assert set(committed) <= set(tours[0]["wikiPageIds"])
+        assert tours[1]["wikiPageIds"] == ["file_page:c.py"]
+
+    pages = run_async(generator.generate_all(
+        parsed, source, builder, structure, tmp_path.name, repo_path=tmp_path,
+        render_budget=2, only_page_ids={"file_page:a.py", "file_page:b.py"},
+        on_page_ready=checkpoint,
+    ))
+    assert {page.page_id for page in pages} == {"file_page:a.py", "file_page:b.py"}
+
+
 def test_revision_planning_reads_metadata_without_page_bodies(tmp_path):
     from sqlalchemy import event
 
