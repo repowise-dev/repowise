@@ -191,3 +191,158 @@ def test_the_fetch_command_names_each_grammar_and_fails_when_one_is_missing(
     assert result.exit_code == 1
     assert f"COBOL: cached in {tmp_path}" in result.output
     assert "Apex: Download error" in result.output
+
+
+@pytest.fixture
+def flaky_pack(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[object]]:
+    """A pack whose ``get_language`` plays back *script*: an exception raises, else loads."""
+    import tree_sitter_language_pack as pack
+    import tree_sitter_python
+
+    monkeypatch.setattr(grammars, "_DOWNLOAD_BACKOFF_S", 0)
+    calls: list[str] = []
+    script: list[object] = []
+
+    def _get_language(name: str) -> object:
+        calls.append(name)
+        step = script.pop(0) if script else None
+        if isinstance(step, BaseException):
+            raise step
+        return tree_sitter_python.language()
+
+    monkeypatch.setattr(pack, "get_language", _get_language)
+    return calls, script
+
+
+def _download_error(text: str) -> BaseException:
+    import tree_sitter_language_pack as pack
+
+    return pack.DownloadError(text)
+
+
+def test_a_transient_download_failure_is_retried_until_it_loads(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    calls, script = flaky_pack
+    script.extend(
+        [
+            _download_error("Download error: http status: 504"),
+            _download_error("Download error: io: Connection reset by peer"),
+        ]
+    )
+
+    assert grammars.unavailable_runtime_grammars(["apex"]) == []
+    assert calls == ["apex", "apex", "apex"]
+    assert grammars.failed_runtime_grammars() == []
+
+
+def test_a_grammar_still_failing_after_retries_warns_once_and_stays_cached(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    from structlog.testing import capture_logs
+
+    calls, script = flaky_pack
+    script.extend(_download_error("Download error: http status: 504") for _ in range(10))
+
+    with capture_logs() as logs:
+        assert grammars.unavailable_runtime_grammars(["cobol"]) != []
+        for _ in range(5):
+            assert grammars._get_language("cobol") is None
+
+    assert calls == ["cobol"] * grammars._DOWNLOAD_ATTEMPTS
+    warnings = [e for e in logs if e["log_level"] == "warning"]
+    assert len(warnings) == 1
+    assert warnings[0]["language"] == "cobol"
+    assert "repowise grammars fetch" in warnings[0]["fix"]
+    assert grammars.failed_runtime_grammars() == [("cobol", "Download error: http status: 504")]
+
+
+def test_a_404_is_not_retried(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    calls, script = flaky_pack
+    script.append(_download_error("Download error: http status: 404 Not Found"))
+
+    assert grammars.unavailable_runtime_grammars(["apex"]) != []
+    assert calls == ["apex"]
+
+
+def test_a_parse_worker_tries_a_runtime_grammar_once(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    """Only the parent preflight retries; a worker that misses it does not hammer the host."""
+    calls, script = flaky_pack
+    script.append(_download_error("Download error: http status: 504"))
+
+    assert grammars._get_language("apex") is None
+    assert calls == ["apex"]
+
+
+def test_a_full_disk_is_not_retried(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    calls, script = flaky_pack
+    script.append(_download_error("Download error: io: No space left on device"))
+
+    assert grammars.unavailable_runtime_grammars(["cobol"]) != []
+    assert calls == ["cobol"]
+
+
+def test_a_grammar_already_on_disk_loads_in_one_call(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    from structlog.testing import capture_logs
+
+    calls, _script = flaky_pack
+
+    with capture_logs() as logs:
+        assert grammars.unavailable_runtime_grammars(["cobol"]) == []
+
+    assert calls == ["cobol"]
+    assert logs == []
+    assert grammars.failed_runtime_grammars() == []
+
+
+def test_the_fetch_command_retries_a_transient_failure(
+    flaky_pack: tuple[list[str], list[object]], monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import tree_sitter_language_pack as pack
+
+    calls, script = flaky_pack
+    script.append(_download_error("Download error: http status: 503"))
+    monkeypatch.setattr(pack, "configure", lambda config: None)
+    monkeypatch.setattr(pack, "downloaded_languages", lambda: ["apex", "cobol"])
+
+    result = grammars.fetch_runtime_grammars(str(tmp_path))
+
+    assert sorted(result) == [("apex", True, ""), ("cobol", True, "")]
+    assert len(calls) == 3
+
+
+def test_an_update_names_a_failed_grammar_and_records_it_as_degraded(
+    fresh_registry: None, flaky_pack: tuple[list[str], list[object]]
+) -> None:
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.update_cmd.command import _unavailable_grammar_entries
+    from repowise.core.pipeline.incremental.graph import _report_unavailable_grammars
+
+    _calls, script = flaky_pack
+    script.extend(_download_error("Download error: http status: 504") for _ in range(3))
+    cobol = SimpleNamespace(language="cobol")
+    python = SimpleNamespace(language="python")
+    lines: list[str] = []
+
+    _report_unavailable_grammars([(0, (cobol, b""), "h0"), (1, (python, b""), "h1")], lines.append)
+
+    assert len(lines) == 1
+    assert "COBOL grammar unavailable: 1 files indexed without symbols" in lines[0]
+    assert "repowise grammars fetch" in lines[0]
+
+    parsed = [
+        SimpleNamespace(file_info=cobol, grammar_missing=True),
+        SimpleNamespace(file_info=python, grammar_missing=False),
+    ]
+    entries = _unavailable_grammar_entries(parsed)
+    assert len(entries) == 1
+    assert entries[0].startswith("COBOL grammar unavailable: 1 files indexed without symbols")

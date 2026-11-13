@@ -183,8 +183,8 @@ export function DecisionCaptureSettings({
         {/* Not a capture switch: capture proposes, this grants. Kept beside
             them because this is the page for what the layer may do alone. */}
         <Toggle
-          label="Let agents accept decisions"
-          description="On by default: an agent's acceptances are recorded as the agent's, with the session that signed. Off, an agent can propose and withdraw but never grant authority."
+          label="Let agents put decisions in force"
+          description="On by default: what an agent puts in force is recorded as the agent's, with the session that signed. Off, an agent's records stay background until a person puts them in force."
           checked={settings.agent_acceptance}
           disabled={locked || busy("agent_acceptance")}
           {...(readOnlyReason ? { reason: readOnlyReason } : {})}

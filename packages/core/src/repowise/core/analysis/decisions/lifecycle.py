@@ -31,11 +31,13 @@ __all__ = [
     "DECISION_STATUS_ORDER",
     "GRANTING_ACTIONS",
     "HISTORY_CURRENCIES",
+    "MARK_ACTIONS",
     "NEEDS_REVIEW_STALENESS",
     "NO_ACCEPTANCE_IDENTITY_BLOCKER",
     "NO_DECISION_BLOCKER",
     "NO_EVIDENCE_BLOCKER",
     "NO_RATIONALE_BLOCKER",
+    "PIN_ENDING_ACTIONS",
     "REVIEW_LANES",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
@@ -182,7 +184,21 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     # A withdrawal like ``dismissed``, stored at the same currency; the action
     # is what tells a retired decision from a rejected one.
     "deprecated",
+    # Marks, not authority: see :data:`MARK_ACTIONS`.
+    "pinned",
+    "unpinned",
 )
+
+#: Rows that mark a decision without changing its authority. A pin says a
+#: person holds the decision as law; it restates the current row's currency,
+#: scope and evidence so the log's contract holds, and every "which row is
+#: current" read skips it, so pinning never changes who a decision reads as
+#: accepted by or what it amounts to.
+MARK_ACTIONS: frozenset[str] = frozenset({"pinned", "unpinned"})
+
+#: Actions after which a decision is no longer pinned: an unpin, or the
+#: decision leaving force. A later reaffirm or merge keeps the pin.
+PIN_ENDING_ACTIONS: frozenset[str] = frozenset({"unpinned", "superseded", "dismissed", "deprecated"})
 
 #: Actions that create or renew authority, against the ones that withdraw it.
 GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})

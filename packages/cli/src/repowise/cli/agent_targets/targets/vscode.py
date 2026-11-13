@@ -34,14 +34,16 @@ from repowise.core.agents import identity
 # Defined in core: change risk tells this recommendation from a user's edit.
 from repowise.core.owned_paths import EXTENSION_ID
 
-from ..formats.server_entry import RemoteServerEntryError
+from ..formats.server_entry import RENAME_HINT, RemoteServerEntryError, ServerSpec
 from ..types import (
     Capability,
     DoctorReport,
     DoctorStatus,
     FileAction,
     FileWrite,
+    HostedSupport,
     InstallMethod,
+    InstallOptions,
     Registration,
     Scope,
     WriteResult,
@@ -62,6 +64,16 @@ METHODS = (
         provides=frozenset({Capability.MCP, Capability.INSTRUCTIONS}),
         managed_by="repowise",
         preferred=True,
+    ),
+)
+
+#: The hosted entry is ``"type": "http"`` in the workspace file. VS Code shows
+#: a Start action above it and runs the OAuth sign-in on first start.
+HOSTED = HostedSupport(
+    scope=Scope.PROJECT,
+    next_step=(
+        'Open .vscode/mcp.json in VS Code, click Start above "{name}" and allow '
+        "Repowise in the browser."
     ),
 )
 
@@ -92,44 +104,23 @@ def server_entry(repo_path: Path) -> dict:
     return {"type": "stdio", **entry}
 
 
-def write_mcp_config(repo_path: Path) -> FileWrite:
-    """Merge the repowise server into ``.vscode/mcp.json``.
+def write_server(repo_path: Path, spec: ServerSpec) -> tuple[str, FileWrite]:
+    """Merge *spec* (the local server or the hosted one) into ``.vscode/mcp.json``.
 
     Raises ``ValueError`` when the existing file is not strict JSON or is not
     shaped as expected, so the caller can skip rather than destroy a JSONC file.
+    VS Code documents ``"type": "http"`` in this file, so a hand-wired remote
+    repowise server is a shape that really turns up: a local write onto it
+    raises ``RemoteServerEntryError`` (see ``formats.server_entry``).
     """
-    from ..formats.json_merge import (
-        load_json_object_or_value_error,
-        merge_server_entries,
-        write_json_config,
-    )
-    from ..formats.server_entry import is_remote_entry
+    from ..formats.server_entry import write_json_servers
 
-    config_path = mcp_config_path(repo_path)
-    new_entry = {"repowise": server_entry(repo_path)}
+    return write_json_servers(mcp_config_path(repo_path), "servers", spec, local_type="stdio")
 
-    if config_path.exists():
-        existing = load_json_object_or_value_error(config_path, "mcp.json")
-        servers = existing.get("servers", {})
-        if not isinstance(servers, dict):
-            raise ValueError("mcp.json 'servers' must be a JSON object")
-        servers = dict(servers)
-        stored = servers.get("repowise")
-        if isinstance(stored, dict) and is_remote_entry(stored, local_type="stdio"):
-            # VS Code documents ``"type": "http"`` in this file, so a hand-wired
-            # remote repowise server is a shape that really turns up. See
-            # ``formats.server_entry``: the merge would force ``type`` back to
-            # ``stdio`` and keep the ``url`` beside it, leaving an entry that is
-            # neither.
-            raise RemoteServerEntryError("mcp.json 'repowise' is wired to a remote server")
-        merge_server_entries(servers, new_entry)
-        existing["servers"] = servers
-        merged = existing
-    else:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        merged = {"servers": new_entry}
 
-    return FileWrite(path=config_path, action=write_json_config(config_path, merged))
+def write_mcp_config(repo_path: Path) -> FileWrite:
+    """Merge the local repowise server into ``.vscode/mcp.json``."""
+    return write_server(repo_path, ServerSpec(server_entry(repo_path)))[1]
 
 
 def write_extensions_config(repo_path: Path) -> FileWrite:
@@ -336,6 +327,7 @@ class VSCodeTarget:
     capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
+    hosted = HOSTED
 
     def supports_scope(self, scope: Scope) -> bool:
         """Project scope only — there is no user-level file repowise writes."""
@@ -371,6 +363,15 @@ class VSCodeTarget:
             return result
         if repo_path is None:
             raise ValueError("project-scope install needs a repo_path")
+        hosted_url = options.hosted_url if isinstance(options, InstallOptions) else None
+        if hosted_url:
+            from ..formats.server_entry import install_hosted
+
+            return install_hosted(
+                mcp_config_path(repo_path),
+                lambda spec: write_server(repo_path, spec),
+                {"type": "http", "url": hosted_url},
+            )
 
         # ``OSError`` alongside ``ValueError`` because the read and the parent
         # ``mkdir`` both live inside these writers, and neither failure is
@@ -387,17 +388,8 @@ class VSCodeTarget:
             # Before the broader handler below, which it would otherwise reach
             # as a ``ValueError`` and be described as an unreadable file. It is
             # a perfectly readable file holding a deliberate choice.
-            result.record(
-                mcp_config_path(repo_path),
-                FileAction.KEPT,
-                'its "repowise" entry names a remote server',
-            )
-            result.note(
-                '.vscode/mcp.json left unchanged: its "repowise" entry names a remote '
-                "server, and converting it in place would leave an entry that is "
-                "neither. Run 'repowise agents remove --target=vscode' first if you "
-                "want the local server instead."
-            )
+            result.record(mcp_config_path(repo_path), FileAction.KEPT, RENAME_HINT)
+            result.note(f".vscode/mcp.json left unchanged: {RENAME_HINT}.")
         except (ValueError, OSError):
             result.record(
                 mcp_config_path(repo_path),

@@ -354,5 +354,127 @@ def test_model_docs_report_model_refresh_after_deferral(indexed_repo: Path):
     assert current.exit_code == 0, current.output + repr(current.exception)
     assert json.loads(current.stdout.splitlines()[-1])["outcome"] == "noop"
     notice = current.output + current.stderr
-    assert "repowise generate --stale" in notice
+    assert "repowise update --full" in notice
     assert "repowise update --index-only" not in notice
+
+
+async def _commit_shas(repo: Path) -> set[str]:
+    from repowise.core.persistence.models import GitCommit
+
+    engine = create_engine(_db_url(repo))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            return set((await session.execute(select(GitCommit.sha))).scalars())
+    finally:
+        await engine.dispose()
+
+
+async def _git_file_rows(repo: Path) -> tuple[set[str], set[tuple[str, str]]]:
+    from repowise.core.persistence.models import GitCommitFile, GitMetadata
+
+    engine = create_engine(_db_url(repo))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            metadata = set((await session.execute(select(GitMetadata.file_path))).scalars())
+            changes = await session.execute(select(GitCommitFile.sha, GitCommitFile.file_path))
+            return metadata, {(sha, path) for sha, path in changes}
+    finally:
+        await engine.dispose()
+
+
+def test_git_refresh_restores_current_history_without_rendering_docs(
+    indexed_repo: Path, monkeypatch
+):
+    repo = indexed_repo
+    pages = asyncio.run(_pages(repo))
+    vectors = _vector_files(repo)
+    state = load_state(repo)
+    assert not asyncio.run(_commit_shas(repo))
+    assert asyncio.run(_git_file_rows(repo)) == (set(), set())
+
+    def _unwanted(*args, **kwargs):
+        raise AssertionError("Git-only refresh invoked rendering or embedding")
+
+    monkeypatch.setattr(command, "_render_template_pages", _unwanted)
+    monkeypatch.setattr(command, "_build_update_vector_store", _unwanted)
+    result = _defer(repo, "--refresh-git")
+    assert result.exit_code == 0, result.output + result.stderr + repr(result.exception)
+    assert asyncio.run(_commit_shas(repo)) == {_git(repo, "rev-parse", "HEAD")}
+    assert asyncio.run(_git_file_rows(repo)) == (
+        {"foo.py"},
+        {(_git(repo, "rev-parse", "HEAD"), "foo.py")},
+    )
+    after = asyncio.run(_pages(repo))
+    assert {pid: row[:2] for pid, row in after.items()} == {
+        pid: row[:2] for pid, row in pages.items()
+    }
+    assert _vector_files(repo) == vectors
+    current = load_state(repo)
+    for key in [
+        "last_sync_commit",
+        "last_docs_commit",
+        "renderer_fingerprint",
+        "git_history_version",
+    ]:
+        assert current[key] == state[key]
+    monkeypatch.setattr(command, "_rebuild_index", _unwanted)
+    normal = _defer(repo)
+    assert normal.exit_code == 0, normal.output + repr(normal.exception)
+    assert json.loads(normal.stdout.splitlines()[-1])["outcome"] == "noop"
+
+
+def test_git_refresh_dry_run_preserves_store_and_state(indexed_repo: Path):
+    repo = indexed_repo
+    root = repo / ".repowise"
+    before = {
+        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    result = _defer(repo, "--refresh-git", "--dry-run")
+    assert result.exit_code == 0, result.output + result.stderr + repr(result.exception)
+    assert json.loads(result.stdout.splitlines()[-1])["outcome"] == "dry_run"
+    after = {
+        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in root.rglob("*")
+        if p.is_file()
+    }
+    assert after == before
+
+
+def test_git_refresh_full_upgrade_is_refused_before_writing(tmp_path: Path):
+    result = _split_output_runner().invoke(
+        command.update_command, [str(tmp_path), "--refresh-git", "--full"]
+    )
+    assert result.exit_code != 0
+    assert "--refresh-git" in result.stderr
+    assert not (tmp_path / ".repowise").exists()
+
+
+def test_git_refresh_workspace_is_refused_before_writing(tmp_path: Path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(command, "_resolve_target", lambda opts: SimpleNamespace(is_workspace=True))
+    result = _split_output_runner().invoke(
+        command.update_command,
+        [str(tmp_path), "--refresh-git", "--index-only", "--defer-docs", "--workspace"],
+    )
+    assert result.exit_code != 0
+    assert "--refresh-git supports one repo" in result.stderr
+    assert not (tmp_path / ".repowise").exists()
+
+
+@pytest.mark.parametrize("flags", [[], ["--index-only"], ["--defer-docs"]])
+def test_git_refresh_requires_deferred_index_mode_before_writing(
+    indexed_repo: Path, flags: list[str]
+):
+    root = indexed_repo / ".repowise"
+    before = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    result = _split_output_runner().invoke(
+        command.update_command,
+        [str(indexed_repo), "--no-workspace", "--refresh-git", *flags],
+    )
+    assert result.exit_code != 0
+    assert "--refresh-git requires --index-only --defer-docs" in result.stderr
+    after = {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    assert after == before

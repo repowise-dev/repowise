@@ -80,11 +80,15 @@ Per file:
 1. **Walk** (`_walk`, `walk_file`): each `FunctionComplexity` carries name, line range,
    nloc, ccn, max nesting, cognitive complexity, bumps and params; each
    `ClassComplexity` carries method count and list, total nloc, LCOM4, max method ccn and
-   field count. A nested function gets its own entry; a lambda counts toward its holder.
+   field count. A nested function gets its own entry, as does a JS/TS arrow function
+   with a block body bound to a name (`const f = () => { ... }`, an assignment, an
+   object property); other lambdas count toward their holder. A function's nloc
+   leaves out the lines only its nested entries cover.
 2. **Symbol complexity** (`_populate_symbol_complexity`): `max(ccn)` into
    `Symbol.complexity_estimate` for the `ContextAssembler` ranker.
 3. **Evaluate** (`FileEvaluator.evaluate`): a `FileContext` (nloc, `has_test_file`,
-   module, metrics, `git_meta`, in-degree as `dependents_count`, the repo p80 in-degree,
+   module, metrics, `git_meta`, in-degree as `dependents_count` (`co_changes` and
+   `documents` edges not counted), the repo p80 in-degree,
    coverage, the clone slice), then `detect_all()`, `score_file()` and per-finding
    impacts.
 
@@ -110,11 +114,11 @@ divide by what each is permitted to affect:
 
 | Group | Count | Scores into |
 |---|---:|---|
-| Defect-scoring | 23 | `defect` (9 of them also `maintainability`) |
+| Defect-scoring | 22 | `defect` (8 of them also `maintainability`) |
 | Performance | 22 | `performance` only |
 | SQL | 3 | `maintainability` only |
 | Governance | 3 | nothing: the finding surfaces, the score is untouched |
-| Advisory | 11 | nothing: measured by construction, out of impact-ranked lists unless requested |
+| Advisory | 12 | nothing: measured by construction, out of impact-ranked lists unless requested |
 
 The authority is `scoring._BIOMARKER_DIMENSIONS`. An unlisted biomarker defaults into
 `defect`, so every `sql_*` and performance name is listed explicitly: an omission would
@@ -127,7 +131,7 @@ the defect weight (§6.1), "maint" the maintainability and "perf" the performanc
 | `id` | Category | Flags | Threshold | Scoring |
 |---|---|---|---|---|
 | `brain_method` | Structural | A long, complex, central function | NLOC 70, judged CCN 9, file dependents ≥ min(8, max(repo p80, 3)); high at CCN 14 or NLOC 120; critical at CCN 20 and NLOC 150 | Advisory |
-| `low_cohesion` | Structural | A class split into unrelated method groups | LCOM4 2 and 5 methods; high at LCOM4 3 or 20 methods; critical at LCOM4 4 and 15 methods | 0.5; maint 1.0 |
+| `low_cohesion` | Structural | A class split into unrelated method groups | LCOM4 2 and 5 methods; high at LCOM4 3 or 20 methods; critical at LCOM4 4 and 15 methods | Advisory |
 | `god_class` | Structural | A large class hiding a brain method | 200 NLOC, 15 methods, one method at NLOC 70 and CCN 9; high at 300 NLOC or 20 methods; critical at 400 and 25 | 1.13; maint 1.0 |
 | `nested_complexity` | Structural | Deep nesting in a function | Judged depth 4; high at 5; critical at 7 | 1.34; maint 1.0 |
 | `repeated_nesting` | Structural | Several blocks at one nesting depth | 3 bumps (low) and judged CCN 5; medium at 4 bumps, high at 5 | Advisory |
@@ -135,8 +139,8 @@ the defect weight (§6.1), "maint" the maintainability and "perf" the performanc
 | `complex_method` | Size | High cyclomatic complexity | Judged CCN 9; high 15; critical 25 | 1.21; maint 1.0 |
 | `large_method` | Size | A long function | 60 code lines (low) and judged CCN 3; medium 90, high 120, critical 200 | 1.25; maint 1.0 |
 | `primitive_obsession` | Size | A long list of scalar parameters | 5 parameters (constructors 7), over half the typed ones primitive, file at 60 NLOC, not a test (low); medium at threshold + 2, high at + 4 | 0.5; maint 1.0 |
-| `dry_violation` | Duplication | A cross-file clone | File duplication 8% and a clone of 6 lines (low); medium with active co-change (3) or 25% duplication; high with both | 0.5; maint 1.0; hidden by default |
-| `error_handling` | Error handling | Swallowed or catch-all handler, Rust `unwrap`/panic, discarded Go error | Low, one per occurrence | 0.5; maint 1.0 |
+| `dry_violation` | Duplication | A cross-file clone | File duplication 8% and a clone of 6 lines (low); medium with active co-change (3) or 25% duplication; high with both | 0.5; maint 1.0 in TypeScript, advisory elsewhere (§5.4); hidden by default |
+| `error_handling` | Error handling | Swallowed or catch-all handler, Rust `unwrap`/panic, discarded Go error | Low, one per occurrence | 0.5; maint 1.0 in Python, advisory elsewhere (§5.4) |
 | `untested_hotspot` | Test coverage | A depended-on hotspot with weak test evidence | Hotspot, 4 dependents, coverage under 40% (no report: no paired or reaching test); high at ≤ 15% or 10 dependents; critical at both | 1.3 |
 | `coverage_gap` | Test coverage | A large uncovered surface (needs a report) | Under 30% with 50 coverable lines (high at 100 uncovered); under 60% with 25 uncovered is low | 1.0 |
 | `untested_complexity` | Test coverage | A complex function tests barely run | CRAP 30; high 50 and critical 100 on measured coverage only | Advisory |
@@ -167,22 +171,22 @@ the defect weight (§6.1), "maint" the maintainability and "perf" the performanc
 | `apex_hardcoded_id` | Apex | A record Id as a string literal | Medium; 18 chars with a valid checksum or 15 on a standard prefix; non-test Apex | Advisory |
 | `apex_see_all_data` | Apex | `@IsTest(SeeAllData=true)` | Low | Advisory |
 | `cobol_unstructured_flow` | COBOL | A paragraph or section with `ALTER`, `GO TO ... DEPENDING ON`, or a `GO TO` that is not a forward jump to an `...EXIT` paragraph of its own `PERFORM THRU` range | Low; one finding per paragraph | Advisory |
-| `io_in_loop` | Performance | I/O per loop iteration (N+1), across functions | Medium | perf 1.0 |
-| `string_concat_in_loop` | Performance | `+=` of a provable string in a loop | Low | perf 0.7 |
+| `io_in_loop` | Performance | I/O per loop iteration (N+1), across functions | Medium | Listed, never scored |
+| `string_concat_in_loop` | Performance | `+=` of a provable string in a loop | Low | Listed, never scored |
 | `blocking_sync_in_async` | Performance | A sync blocking call in `async def` | Medium; Python, Rust, C#, Kotlin, Scala | perf 0.7 |
 | `regex_compile_in_loop` | Performance | A static regex compiled per iteration | Medium; Java, Go, Rust, C++, Kotlin, Ruby, Scala | perf 0.6 |
 | `defer_in_loop` | Performance | `defer` inside a loop | Medium; Go | perf 0.6 |
 | `resource_construction_in_loop` | Performance | A client built per iteration | Medium | perf 0.7 |
-| `lock_in_loop` | Performance | A lock taken each iteration | Low | perf 0.5 |
+| `lock_in_loop` | Performance | A lock taken each iteration | Low | Listed, never scored |
 | `serial_await_in_loop` | Performance | Awaited I/O run serially in a loop | Low | perf 0.4 |
-| `membership_test_against_list_in_loop` | Performance | `x in list` (or `.includes`) on a provable list in a loop | Low | perf 0.7 |
+| `membership_test_against_list_in_loop` | Performance | `x in list` (or `.includes`) on a provable list in a loop | Low | Listed, never scored |
 | `unbounded_read_reduced_in_memory` | Performance | An unlimited query reduced per key in code | Low; Python | perf 0.4 |
 | `lazy_load_in_loop` | Performance | An ORM lazy relation read per iteration | Low; SQLAlchemy, Django | perf 0.4 (Django 0.7) |
-| `nested_loop_with_io` | Performance | I/O in a loop nested two deep | Medium | perf 0.5 |
+| `nested_loop_with_io` | Performance | I/O in a loop nested two deep | Medium | Listed, never scored |
 | `nested_loop_quadratic` | Performance | A quadratic nested loop, widely called | Low; centrality gated | perf 0.4 |
 | `hot_path_sync_io` | Performance | Sync I/O in a widely called function | Low; centrality gated | perf 0.5 |
 | `blocking_io_under_lock` | Performance | Blocking I/O while holding a lock | Medium | perf 0.6 |
-| `list_insert_zero_in_loop` | Performance | `list.insert(0, x)` in a loop | Medium; Python | perf 0.6 |
+| `list_insert_zero_in_loop` | Performance | `list.insert(0, x)` in a loop | Medium; Python | Listed, never scored |
 | `pd_concat_in_loop` | Performance | `pd.concat` accumulating in a loop | Medium; Python | perf 0.6 |
 | `pandas_iterrows_in_loop` | Performance | `df.iterrows()` | Medium; Python | perf 0.6 |
 | `json_parse_in_loop` | Performance | A `JSON.parse(JSON.stringify(x))` deep clone per iteration | Low; JavaScript, TypeScript | perf 0.4 |
@@ -325,10 +329,45 @@ language because it does not transfer:
   dropping it left defect AUC unchanged on the 66-repo corpus.
 - `repeated_nesting`: 29% in a blind study (7 of 24 findings), mostly short functions
   with a few simple loops; dropping it with four other weak markers cost 0.004 defect AUC.
+- `low_cohesion`: 18% (7 of 39) worth acting on in a blind study of 705 findings on 64
+  repositories; defect AUC as a flag 0.527.
 - `untested_complexity`: complexity and coverage already deduct elsewhere
   ([user guide](../layers/TEST_INTELLIGENCE.md#untested-complexity)).
 - The four `apex_*` markers: every finding on 13 Salesforce repos hand-read, none
   wrong; no defect corpus covers Apex yet.
+
+A marker can also be advisory in some languages only: `scoring._ADVISORY_BY_LANGUAGE`
+maps a marker to the languages where it is listed but never scored, for a cell whose
+measured precision falls short there alone. Within those languages it behaves like an
+advisory marker, and its stored findings carry the `advisory` dimension, so an entry
+takes effect on a repository's next re-score. Only markers without defect signal are
+listed; `complex_method`, `nested_complexity` and `large_method` keep their weight in
+every language. An entry is a cell judged under 80% worth acting on with at least 5
+findings decided (TP / (TP + FP), unsure left out), from its latest blind judging:
+
+| marker | language: worth acting on / decided |
+|---|---|
+| `primitive_obsession` | c 0/5, cpp 0/7, csharp 4/8, java 5/7, javascript 0/5, php 2/5, python 0/8, rust 2/6, scala 3/5, swift 0/5, typescript 4/8 |
+| `complex_conditional` | c 2/5, cpp 3/8, csharp 2/8, dart 1/5, fsharp 3/5, go 3/8, java 3/8, javascript 2/5, kotlin 2/8, objectivec 3/5, php 3/5, python 3/8, ruby 2/5, rust 1/8, typescript 1/8 |
+| `god_class` | csharp 3/8, kotlin 1/5, python 3/6, scala 3/5, typescript 2/7 |
+
+Languages are file tags: `.tsx` files are `typescript`, `.jsx` files `javascript`; Vue,
+Svelte, Astro and Razor files keep their own tags and are not listed.
+
+The inverse, `scoring._SCORED_ONLY_IN`, maps a marker to the only languages where it
+scores; in every other language it behaves like an `_ADVISORY_BY_LANGUAGE` cell. It holds
+markers whose findings are mostly not worth acting on but whose flag still ranks defects
+in one language, measured per language on the keyword-labelled defect corpus:
+
+| marker | worth acting on (blind, all languages) | flag AUC, prevalence where scored | weight there |
+|---|---|---|---|
+| `dry_violation` | 11% (7 of 64), pooled flag AUC 0.498 | typescript 0.571, 32% of files | 0.5; maint 1.0 |
+| `error_handling` | 11% (6 of 54), pooled flag AUC 0.579 | python 0.641, 28% of files | 0.5; maint 1.0 |
+
+Each keeps the floored weight it had when it scored everywhere. Listing them advisory in
+those languages too dropped file-level keyword AUC on nest (0.790 to 0.687), typeorm
+(0.754 to 0.683), zod (0.790 to 0.753), scrapy (0.727 to 0.706) and litestar (0.690 to
+0.661).
 
 ### 5.5 Worked example: the dispatch rule
 
@@ -373,10 +412,9 @@ NLOC as a control fits each marker's lift beyond size, and only the constants sh
   `ownership_risk`, `nested_complexity` (strongest structural).
 - **Prior weights kept:** `untested_hotspot`, `churn_risk`, `code_age_volatility`, which
   are coverage-dependent or rare, so the corpus could not fairly measure them.
-- **Floored at 0.5:** `developer_congestion`, `dry_violation`, `low_cohesion`,
-  `primitive_obsession` fire widely but proved weak under
-  leakage-free scoring; `knowledge_loss` is de-rated to 0.4, the weakest.
-  `error_handling` is not fitted.
+- **Floored at 0.5:** `developer_congestion`, `dry_violation` and `primitive_obsession`
+  fire widely but proved weak under leakage-free scoring; `knowledge_loss` is de-rated to
+  0.4, the weakest. `error_handling` is not fitted.
 
 Maintainability uses an independent expert-set table (floored smells at full weight) and
 performance its own bounded category; the three share one kernel and never feed each

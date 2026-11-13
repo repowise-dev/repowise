@@ -136,7 +136,7 @@ Grouped by what you are trying to do. Every flag for every command lives in the
 | `repowise ask "<q>"` | A synthesized answer with citations and a confidence rating. Costs an LLM call. |
 | `repowise context <files>` | Triage card per file: layer, hotspot, bug-fix history, doc freshness. |
 | `repowise symbol "<file>::<Name>"` | One symbol's body with live-verified line bounds. |
-| `repowise why "<q>"` | Decisions and rationale behind the shape of the code. A path gets its origin story; no argument gets the decision health dashboard. |
+| `repowise why "<q>"` | Decisions and rationale behind the shape of the code. A path gets the decisions that govern it (`--full` adds its origin story); no argument gets the decision health dashboard. |
 | `repowise health` | Lowest-scoring files and why. `--trend` for direction, `--refactoring-targets` for concrete plans. |
 | `repowise risk main..HEAD` | Repo-relative size-and-spread percentile, the touched files' bug-fix record, and a supporting 0-10 diff-shape score. |
 | `repowise dead-code` | What nothing references any more, by confidence tier. |
@@ -283,7 +283,7 @@ behind a cost estimate, put the key in `.repowise/.env` and run:
 ```bash
 repowise generate                  # the unwritten subsystem pages, behind one estimate
 repowise generate --path src/api   # or one area first
-repowise generate --stale          # refresh pages the last update marked stale
+repowise update --full             # refresh every stale page, behind one estimate
 repowise generate --all            # or rewrite every page
 ```
 

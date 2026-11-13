@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
@@ -40,6 +41,7 @@ from ...ingestion.package_roots import module_for as _module_for  # noqa: F401 (
 from ...ingestion.package_roots import package_roots_from_paths as _package_roots
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
+from ...pipeline.parse_pool import PENDING, run_with_deadline
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
 from ..graph_view import ImportEdgeView
@@ -52,7 +54,7 @@ from .dataflow import FileDataflowCache
 from .duplication import ClonePair, DuplicationReport
 from .duplication.detector import clone_ranges, clones_against_index, union_line_count
 from .duplication.isolation import detect_clones_with_isolation as detect_clones
-from .file_evaluator import FileEvaluator, _read_source_lines, _RunConfig
+from .file_evaluator import FileEvaluator, _read_source_lines, _RunConfig, run_extract_method_job
 from .file_evaluator import _mark_deepest_block as _mark_deepest_block
 from .file_evaluator import _mark_function_facts as _mark_function_facts
 from .file_evaluator import walked_functions as walked_functions
@@ -80,7 +82,7 @@ from .repo_tests import _path_basenames as _path_basenames
 from .scope import scores_language
 from .scoring import compute_kpis
 from .source_reader import SourceReader, disk_source_reader
-from .sql_complexity import configured_sql_dialect
+from .sql_complexity import configured_sql_dialect, walks_statements
 from .walk_cache import HealthWalkCache
 
 if TYPE_CHECKING:
@@ -108,15 +110,16 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# v44: this release's maintainability, performance and coverage detectors stop
-# firing on several idiomatic patterns, ternary dispatch chains in Java, C, C++,
-# C#, Dart, Objective-C and PHP keep each decision without nesting their
-# else-arms, and refactoring gains and the headline split change. Re-score
-# stored metrics so old findings do not survive the new rules.
+# v45: Astro joins the TypeScript family in constant-flag gating, Extract Method
+# plans (render and helper naming) and the move-destination language family. The
+# Astro projection the walker parses changed too: a string or comment in a markup
+# ``{expr}`` (``{"<style>"}``) no longer blanks a later ``<script>`` function. The
+# walk cache keys on file bytes, so unchanged ``.astro`` files re-score only on
+# this stamp.
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.
-HEALTH_ANALYZER_VERSION = 44
+HEALTH_ANALYZER_VERSION = 45
 
 
 def _log_duplication_diagnostics(report: DuplicationReport) -> None:
@@ -249,6 +252,87 @@ def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | No
     except Exception as exc:
         log.debug("health_active_contributors_failed", error=str(exc))
         return None
+
+
+# Below this many jobs (walks the cache did not serve, files for Extract
+# Method) they run in this process: starting spawn workers costs seconds, which
+# a changed-files pass of a few files never repays.
+_POOL_MIN_JOBS = 200
+
+
+@dataclass(frozen=True)
+class _WalkJob:
+    """Everything one file's walk reads, so a worker process can run it."""
+
+    abs_path: str
+    language: str
+    source: bytes
+    assert_names: frozenset[str]
+    sql_dialect: str | None
+    sql_statements: bool
+
+
+def run_walk_job(job: _WalkJob) -> FileComplexity:
+    """Walk one file: a pure function of the job, so it runs in any process."""
+    if job.language == "sql":
+        # SQL has no tree-sitter grammar here; the sqlglot-backed walker
+        # produces routine CCN + the sql_* smell hits instead.
+        from .sql_complexity import walk_sql_file
+
+        return walk_sql_file(job.source, job.sql_dialect, statements=job.sql_statements)
+    return walk_file(job.abs_path, job.language, job.source, job.assert_names)
+
+
+def _walk_request(
+    analyzer: Any, pf: Any, vocab: AssertVocabulary
+) -> FileComplexity | tuple[str | None, _WalkJob]:
+    """*pf*'s cached or empty walk, else its cache key and the job to run.
+
+    Records the file's origin on *analyzer* as a side effect.
+    """
+    path = pf.file_info.abs_path
+    language = pf.file_info.language
+    source = analyzer.read_source(path)
+    if source is None:
+        return FileComplexity(functions=[], classes=[])
+    origin = analyzer._origins[pf.file_info.path] = analyzer._origin(pf, source)
+    sql_dialect = configured_sql_dialect(pf.file_info)
+    sql_statements = language != "sql" or walks_statements(origin)
+    job = _WalkJob(path, language, source, vocab.names, sql_dialect, sql_statements)
+    if analyzer._walk_cache is None:
+        return None, job
+    from repowise.core.ingestion import compute_content_hash
+    from repowise.core.ingestion.parser import grammar_tag_for
+
+    # The grammar, not the language: a .tsx file and a byte-identical
+    # .ts file are walked by different grammars and must key apart.
+    key = HealthWalkCache.key(
+        grammar_tag_for(language, path),
+        compute_content_hash(source),
+        vocab.key,
+        sql_dialect or "",
+        sql_statements=sql_statements,
+    )
+    cached = analyzer._walk_cache.get(key)
+    return cached if cached is not None else (key, job)
+
+
+def _walk_request_or_empty(
+    analyzer: Any, pf: Any, vocab: AssertVocabulary
+) -> FileComplexity | tuple[str | None, _WalkJob]:
+    try:
+        return _walk_request(analyzer, pf, vocab)
+    except Exception as exc:
+        log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
+        return FileComplexity(functions=[], classes=[])
+
+
+def _cache_walk(
+    cache: HealthWalkCache | None, key: str | None, fcx: FileComplexity
+) -> FileComplexity:
+    if key is not None and cache is not None:
+        cache.put(key, fcx)
+    return fcx
 
 
 class HealthAnalyzer:
@@ -578,13 +662,6 @@ class HealthAnalyzer:
             and scores_language(pf.file_info.language)
         ]
 
-    def _walk_or_empty(self, pf: Any, vocab: AssertVocabulary) -> FileComplexity:
-        try:
-            return self._walk(pf, vocab)
-        except Exception as exc:
-            log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
-            return FileComplexity(functions=[], classes=[])
-
     def _walk_files(
         self,
         targets: list[Any],
@@ -595,17 +672,37 @@ class HealthAnalyzer:
     ) -> list[tuple[Any, FileComplexity]]:
         """Walk every target before any biomarker runs, so the repo-wide
         percentiles are computed once over the whole walked set. *partial*
-        (a changed-files pass) keeps the cached walks of the files it skipped."""
+        (a changed-files pass) keeps the cached walks of the files it skipped.
+
+        An update walks here, and after a walker change its cache misses
+        everything once: those walks go to the spawn pool as in
+        :meth:`_walk_files_async`, the rest run one at a time.
+        """
         self._load_walk_cache()
-        walked: list[tuple[Any, FileComplexity]] = []
-        for pf in targets:
-            walked.append((pf, self._walk_or_empty(pf, vocab)))
+
+        def tick(pf: Any) -> None:
             # Walk tick — the phase total counts each file twice (walk +
             # evaluate).
             if on_step:
                 on_step(pf.file_info.path)
+
+        requests = [_walk_request_or_empty(self, pf, vocab) for pf in targets]
+        results: list[Any] = [PENDING] * len(targets)
+        pending: list[int] = []
+        for i, (pf, request) in enumerate(zip(targets, requests, strict=True)):
+            if isinstance(request, FileComplexity):
+                results[i] = request
+                tick(pf)
+            else:
+                pending.append(i)
+        if len(pending) >= _POOL_MIN_JOBS:
+            self._walk_in_pool(targets, requests, pending, results, tick)
+        for i in pending:
+            if results[i] is PENDING:
+                results[i] = self._finish_walk(targets[i], requests[i])
+                tick(targets[i])
         self._save_walk_cache(keep_unused=partial)
-        return walked
+        return list(zip(targets, results, strict=True))
 
     async def _walk_files_async(
         self,
@@ -616,23 +713,95 @@ class HealthAnalyzer:
         *,
         partial: bool = False,
     ) -> list[tuple[Any, FileComplexity]]:
-        """:meth:`_walk_files` in worker threads: tree-sitter parsing releases
-        the GIL, so this is real parallelism."""
+        """:meth:`_walk_files` across processes.
+
+        The walk is Python over the tree, so it holds the GIL: threads gave a
+        large repo about one core. Reading each file, deciding its origin and
+        the cache lookup stay here, in threads; the walks the cache did not
+        serve run in the parse pool's spawn workers, falling back to threads
+        when there are too few to repay starting it, or it cannot start.
+        """
         self._load_walk_cache()
         semaphore = asyncio.Semaphore(max(1, int(max_workers or os.cpu_count() or 4)))
 
-        async def _one(pf: Any) -> tuple[Any, FileComplexity]:
-            async with semaphore:
-                fcx = await asyncio.to_thread(self._walk_or_empty, pf, vocab)
+        def tick(pf: Any) -> None:
             # Walk tick — the phase total counts each file twice (walk +
             # evaluate) so the bar moves from the very first completed walk.
             if on_step:
                 on_step(pf.file_info.path)
-            return pf, fcx
 
-        walked = list(await asyncio.gather(*[_one(pf) for pf in targets]))
+        async def _request(pf: Any) -> FileComplexity | tuple[str | None, _WalkJob]:
+            async with semaphore:
+                return await asyncio.to_thread(_walk_request_or_empty, self, pf, vocab)
+
+        requests = await asyncio.gather(*[_request(pf) for pf in targets])
+        results: list[Any] = [PENDING] * len(targets)
+        pending: list[int] = []
+        for i, (pf, request) in enumerate(zip(targets, requests, strict=True)):
+            if isinstance(request, FileComplexity):
+                results[i] = request
+                tick(pf)
+            else:
+                pending.append(i)
+        if len(pending) >= _POOL_MIN_JOBS:
+            await asyncio.to_thread(self._walk_in_pool, targets, requests, pending, results, tick)
+        async def _finish(i: int) -> None:
+            async with semaphore:
+                results[i] = await asyncio.to_thread(self._finish_walk, targets[i], requests[i])
+            tick(targets[i])
+
+        await asyncio.gather(*[_finish(i) for i in pending if results[i] is PENDING])
         self._save_walk_cache(keep_unused=partial)
-        return walked
+        return list(zip(targets, results, strict=True))
+
+    def _walk_in_pool(
+        self,
+        targets: list[Any],
+        requests: list[Any],
+        pending: list[int],
+        results: list[Any],
+        tick: Any,
+    ) -> None:
+        """Run the *pending* walks in spawn workers, filling *results* in place.
+
+        No deadline: a walk has never had one, and a timed-out walk would be
+        an empty one, changing the file's findings. A pool that cannot start
+        leaves its slots ``PENDING`` for the thread fallback.
+        """
+
+        def done(j: int, result: Any) -> None:
+            i = pending[j]
+            pf = targets[i]
+            if isinstance(result, BaseException):
+                # Like a failed walk in a thread: empty for this pass, never cached.
+                log.debug("health_walk_failed", path=pf.file_info.path, error=str(result))
+                results[i] = FileComplexity(functions=[], classes=[])
+            else:
+                results[i] = _cache_walk(self._walk_cache, requests[i][0], result)
+            tick(pf)
+
+        # The parse pool's sizing: REPOWISE_PARSE_WORKERS bounds both pools.
+        from repowise.core.pipeline.phases.ingestion import parse_pool_workers
+
+        try:
+            run_with_deadline(
+                run_walk_job,
+                [requests[i][1] for i in pending],
+                parse_pool_workers(len(pending)),
+                [PENDING] * len(pending),
+                timeout=None,
+                on_done=done,
+            )
+        except Exception as exc:
+            log.warning("health_walk_pool_unavailable", error=str(exc))
+
+    def _finish_walk(self, pf: Any, request: tuple[str | None, _WalkJob]) -> FileComplexity:
+        key, job = request
+        try:
+            return _cache_walk(self._walk_cache, key, run_walk_job(job))
+        except Exception as exc:
+            log.debug("health_walk_failed", path=pf.file_info.path, error=str(exc))
+            return FileComplexity(functions=[], classes=[])
 
     def _score(
         self,
@@ -735,13 +904,25 @@ class HealthAnalyzer:
         walked: list[tuple[Any, FileComplexity]],
         on_step: Any | None,
     ) -> tuple[list[HealthFileMetricData], list[HealthFindingData], list[RefactoringSuggestion]]:
-        metrics: list[HealthFileMetricData] = []
-        findings: list[HealthFindingData] = []
-        suggestions: list[RefactoringSuggestion] = []
+        """Score every walked file, then its refactorings.
+
+        Extract Method's dataflow is most of a large repo's scoring time and
+        holds the GIL, so the files it reads run in spawn workers between the
+        two passes; a file without a worker result runs it here, as before.
+        """
+        assessed = []
         for pf, fcx in walked:
             # Side effect: stamp each matched symbol's complexity_estimate.
             self._populate_symbol_complexity(pf, fcx.functions)
-            file_metric, file_findings, file_suggestions = evaluator.evaluate(pf, fcx)
+            assessed.append((pf, fcx, *evaluator.assess(pf, fcx)))
+        extract_method = self._extract_methods_in_pool(evaluator, assessed)
+        metrics: list[HealthFileMetricData] = []
+        findings: list[HealthFindingData] = []
+        suggestions: list[RefactoringSuggestion] = []
+        for i, (pf, fcx, file_metric, file_findings, file_assessed) in enumerate(assessed):
+            file_suggestions = evaluator.suggest(
+                pf, fcx, file_findings, file_assessed, extract_method.get(i)
+            )
             # Every dataflow consumer has read this file by now.
             evaluator.dataflow_cache.release(pf.file_info.abs_path)
             metrics.append(file_metric)
@@ -750,6 +931,50 @@ class HealthAnalyzer:
             if on_step:
                 on_step(pf.file_info.path)
         return metrics, findings, suggestions
+
+    def _extract_methods_in_pool(
+        self, evaluator: FileEvaluator, assessed: list[tuple[Any, ...]]
+    ) -> dict[int, list[RefactoringSuggestion]]:
+        """Extract Method's suggestions per file index, for the files run in workers.
+
+        Each finding takes back the details the worker's copy ended with. A
+        file whose job failed, or a pool that cannot start, leaves the file to
+        :meth:`FileEvaluator.suggest`'s own in-process run.
+        """
+        jobs = {
+            i: job
+            for i, (pf, _fcx, _metric, file_findings, _a) in enumerate(assessed)
+            if (job := evaluator.extract_method_job(pf, file_findings)) is not None
+        }
+        if len(jobs) < _POOL_MIN_JOBS:
+            return {}
+        order = list(jobs)
+        out: dict[int, list[RefactoringSuggestion]] = {}
+
+        def done(j: int, result: Any) -> None:
+            i = order[j]
+            if isinstance(result, BaseException):
+                log.debug("extract_method_job_failed", path=jobs[i].file_path, error=str(result))
+                return
+            file_suggestions, details = result
+            for finding, finding_details in zip(assessed[i][3], details, strict=True):
+                finding.details = finding_details
+            out[i] = file_suggestions
+
+        from repowise.core.pipeline.phases.ingestion import parse_pool_workers
+
+        try:
+            run_with_deadline(
+                run_extract_method_job,
+                [jobs[i] for i in order],
+                parse_pool_workers(len(order)),
+                [PENDING] * len(order),
+                timeout=None,
+                on_done=done,
+            )
+        except Exception as exc:
+            log.warning("extract_method_pool_unavailable", error=str(exc))
+        return out
 
     def _kpis(
         self, metrics: list[HealthFileMetricData], findings: list[HealthFindingData]
@@ -908,40 +1133,11 @@ class HealthAnalyzer:
             return []
 
     def _walk(self, pf: Any, vocab: AssertVocabulary) -> FileComplexity:
-        path = pf.file_info.abs_path
-        language = pf.file_info.language
-        source = self.read_source(path)
-        if source is None:
-            return FileComplexity(functions=[], classes=[])
-        self._origins[pf.file_info.path] = self._origin(pf, source)
-        sql_dialect = configured_sql_dialect(pf.file_info)
-        key = None
-        if self._walk_cache is not None:
-            from repowise.core.ingestion import compute_content_hash
-            from repowise.core.ingestion.parser import grammar_tag_for
-
-            # The grammar, not the language: a .tsx file and a byte-identical
-            # .ts file are walked by different grammars and must key apart.
-            key = HealthWalkCache.key(
-                grammar_tag_for(language, path),
-                compute_content_hash(source),
-                vocab.key,
-                sql_dialect or "",
-            )
-            cached = self._walk_cache.get(key)
-            if cached is not None:
-                return cached
-        if language == "sql":
-            # SQL has no tree-sitter grammar here; the sqlglot-backed walker
-            # produces routine CCN + the sql_* smell hits instead.
-            from .sql_complexity import walk_sql_file
-
-            fcx = walk_sql_file(source, sql_dialect)
-        else:
-            fcx = walk_file(path, language, source, vocab.names)
-        if key is not None and self._walk_cache is not None:
-            self._walk_cache.put(key, fcx)
-        return fcx
+        request = _walk_request(self, pf, vocab)
+        if isinstance(request, FileComplexity):
+            return request
+        key, job = request
+        return _cache_walk(self._walk_cache, key, run_walk_job(job))
 
     def _project(self) -> str | None:
         """The repository's name, so its own release banner is never read as a

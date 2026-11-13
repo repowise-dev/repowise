@@ -133,13 +133,18 @@ async def replace_git_history(
         GitCommitFile,
         GitCommitHealthDelta,
         GitCommitHealthFinding,
+        GitCommitHealthScan,
         GitMetadata,
     )
 
     # Function blame describes the current source tree and is produced by the
     # health pass, not by persist_git. Preserve it across a history-window
     # replacement; scope reconciliation prunes entries for excluded files.
-    health = () if keep_commit_health else (GitCommitHealthDelta, GitCommitHealthFinding)
+    health = (
+        ()
+        if keep_commit_health
+        else (GitCommitHealthDelta, GitCommitHealthFinding, GitCommitHealthScan)
+    )
     for model in (FixEvent, GitCommit, GitCommitFile, *health, GitMetadata):
         await session.execute(delete(model).where(model.repository_id == repo_id))
     await persist_git(
@@ -160,8 +165,15 @@ async def persist_git_refresh(
     full_git_summary: Any | None,
     *,
     keep_commit_health: bool = False,
+    gone_paths: set[str] | None = None,
 ) -> None:
-    """Persist either a full history replacement or an incremental refresh."""
+    """Persist either a full history replacement or an incremental refresh.
+
+    *gone_paths* are files the range deleted. Their rows leave before the
+    percentiles are ranked, or every rank is taken over a population a fresh
+    index does not have; the deleted-file prune would remove them only after
+    the health markers were scored against those ranks.
+    """
     if full_git_summary is not None:
         await replace_git_history(
             session,
@@ -197,6 +209,18 @@ async def persist_git_refresh(
         decay_rows = [
             row for row in decay_rows if row.get("history_only") or row["file_path"] in stored
         ]
-    await upsert_git_metadata_bulk(session, repo_id, [*git_meta_map.values(), *decay_rows])
+    gone = gone_paths or set()
+    rows = [row for row in (*git_meta_map.values(), *decay_rows) if row["file_path"] not in gone]
+    await upsert_git_metadata_bulk(session, repo_id, rows)
+    if gone:
+        from repowise.core.persistence.crud._shared import _batch_delete_in
+
+        await _batch_delete_in(
+            session,
+            GitMetadata,
+            GitMetadata.file_path,
+            sorted(gone),
+            prefilter=(GitMetadata.repository_id == repo_id,),
+        )
     await recompute_git_percentiles(session, repo_id)
     await clear_attribution_if_disabled(session, repo_id)

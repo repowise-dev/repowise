@@ -642,8 +642,15 @@ class ResolveMixin:
         import_targets: dict[str, set[str]],
         progress: Any | None = None,
         scope: frozenset[str] | None = None,
+        registrations: bool = True,
+        cpp_index: Any | None = None,
     ) -> None:
-        """Run three-tier call resolution and add CALLS edges to the graph."""
+        """Run three-tier call resolution and add CALLS edges to the graph.
+
+        *registrations* also links registering decorators to what they
+        decorate, over every file. *cpp_index* is the C/C++ workspace index
+        the build already made, so the call resolver does not make another.
+        """
         from ..call_resolver import CallResolver
 
         resolver = CallResolver(
@@ -654,6 +661,7 @@ class ResolveMixin:
             heritage_parents=self._heritage_parents(),
             partial_fragments=self._partial_fragments,
             csharp_project_usings=self._csharp_project_usings,
+            cpp_index=cpp_index,
         )
 
         # Record which C/C++ declarations were paired with a definition. The
@@ -742,9 +750,9 @@ class ResolveMixin:
         )
 
         self._add_reference_edges(resolver, scope)
-        if scope is None:
-            # Surface-equivalent patching cannot change registrar identities or
-            # decorators; preserve the snapshot's registration edges.
+        if registrations:
+            # A body-only patch cannot change registrar identities or
+            # decorators, so it keeps the snapshot's registration edges.
             self._add_registration_edges(resolver)
 
     def _add_reference_edges(self, resolver: Any, scope: frozenset[str] | None = None) -> None:

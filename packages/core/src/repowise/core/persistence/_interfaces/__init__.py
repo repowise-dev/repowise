@@ -24,12 +24,20 @@ from __future__ import annotations
 
 from .graph_store import GraphStore
 from .index_store import IndexStore
-from .job_store import JobRecord, JobState, JobStore
+from .job_store import (
+    ABANDONED_JOB_ERROR,
+    JobRecord,
+    JobState,
+    JobStore,
+    reap_abandoned_jobs,
+)
 
 __all__ = [
+    "ABANDONED_JOB_ERROR",
     "GraphStore",
     "IndexStore",
     "JobRecord",
     "JobState",
     "JobStore",
+    "reap_abandoned_jobs",
 ]

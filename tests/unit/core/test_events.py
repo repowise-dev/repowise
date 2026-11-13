@@ -327,15 +327,17 @@ def test_a_config_naming_a_kind_that_no_longer_exists_warns_and_keeps_defaults(t
 
 
 def test_doctor_reports_a_wrong_events_block(tmp_path):
-    from repowise.cli.commands.doctor_cmd.repo_checks import _events_config_check
+    from repowise.cli.commands.doctor_cmd._checks.context import CheckContext
+    from repowise.cli.commands.doctor_cmd._checks.settings import settings_rows
 
-    assert _events_config_check(tmp_path) is None
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "config.yaml").write_text(
-        "events:\n  kinds: {nope: true}\n", encoding="utf-8"
+        "events:\n  retention_days: 0\n  kinds: {nope: true}\n", encoding="utf-8"
     )
-    check = _events_config_check(tmp_path)
-    assert check is not None and not check.ok and "events.kinds.nope" in check.detail
+    rows = settings_rows(CheckContext(tmp_path, tmp_path / ".repowise"))
+    by_id = {r.id: r for r in rows}
+    assert by_id["setting-events-retention-days"].level == "fail"
+    assert by_id["setting-events-kinds-nope"].level == "warn"
 
 
 def test_owner_key_is_kept_and_digests_are_not_plain_hashes(tmp_path):

@@ -28,6 +28,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import full_meta
 from repowise.server.mcp_server._savings import declare_replaced
 from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
+from repowise.server.mcp_server._savings.interaction import note_stage_ms
 from repowise.server.mcp_server._why_pointer import attach_why_pointer
 
 from . import cache as _cache
@@ -85,36 +86,59 @@ async def _score_guarded(
     revspec: str | None, score: Any, *args: Any, **kwargs: Any
 ) -> tuple[Any, dict | None]:
     """Run a git-reading *score* off the loop: ``(result, None)``, or ``(None, error reply)``."""
+    from repowise.server.mcp_server._savings.interaction import error_reply
+
     try:
         result = await asyncio.to_thread(score, *args, **kwargs)
     except ValueError as exc:
-        return None, {"error": str(exc)}
+        return None, error_reply("invalid_args", {"error": str(exc)})
     except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").partition("\nUse '--' to separate paths from revisions")[0]
+        stderr = exc.stderr or ""
+        detail = stderr.partition("\nUse '--' to separate paths from revisions")[0]
         detail = detail.strip() or str(exc)
-        return None, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
+        # A revspec that does not resolve is the caller's to fix; any other git
+        # failure (not a repository, dubious ownership, a corrupt or shallow
+        # clone) is git unable to read this repository.
+        bad_rev = any(marker in stderr for marker in _BAD_REVISION)
+        reason = "invalid_args" if bad_rev else "git_unavailable"
+        return None, error_reply(
+            reason, {"error": f"Could not read change {revspec or 'HEAD'!r}: {detail}"}
+        )
     except subprocess.TimeoutExpired:
-        return None, {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+        return None, error_reply(
+            "timeout", {"error": f"git timed out reading change {revspec or 'HEAD'!r}."}
+        )
     except FileNotFoundError:
         # Scoring spawns git from several readers, so the missing binary is
         # named once here. Any other missing file is a real bug: re-raise.
         if shutil.which("git") is not None:
             raise
-        return None, {
-            "error": "git was not found on PATH; change risk reads the repository history."
-        }
+        return None, error_reply(
+            "git_unavailable",
+            {"error": "git was not found on PATH; change risk reads the repository history."},
+        )
     return result, None
+
+
+#: git's stderr for a revision that does not resolve. English only: under a
+#: localized git a bad revspec is filed as ``git_unavailable``, never ``other``.
+_BAD_REVISION = ("unknown revision", "bad revision", "invalid revision", "bad object")
 
 
 @contextlib.contextmanager
 def _timed(timings: dict[str, int] | None, block: str):
-    """Record the ``with`` body's wall time as ``timings[block]``, in whole ms."""
+    """Record the ``with`` body's wall time as ``timings[block]``, in whole ms.
+
+    Also noted on the call in flight, so the ``mcp_tool_call`` event carries it.
+    """
     started = time.perf_counter()
     try:
         yield
     finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
         if timings is not None:
-            timings[block] = round((time.perf_counter() - started) * 1000)
+            timings[block] = round(elapsed_ms)
+        note_stage_ms(block, elapsed_ms)
 
 
 async def _score_beside_selection(
@@ -282,6 +306,34 @@ async def _attach_branch_blocks(
     if overlap is not None:
         payload["branch_overlap"] = overlap
     return await _independent_changes_block(ctx, changed, collector, revspec)
+
+
+async def _store_payload(
+    scored_entry: Any,
+    include: list[str] | None,
+    payload: dict,
+    changed: dict[str, set[int]],
+    branches: str | None,
+    scan: asyncio.Task | None,
+) -> None:
+    if scored_entry is None:
+        return
+    overlap = await _scan_answer(scan)
+    # A failed or timed-out scan may succeed next time, so the payload is not kept.
+    if overlap is None and scan is not None:
+        return
+    scored_entry.payloads[_cache.payload_key(include)] = _cache.Stored(
+        copy.deepcopy(payload),
+        sorted(changed) or None,
+        branches,
+        overlap,
+    )
+
+
+def _needs_branch_rescan(stored: _cache.Stored, branches: str | None) -> bool:
+    if branches is None or branches != stored.branches:
+        return True
+    return stored.overlap is None and bool(stored.targets)
 
 
 #: ``_meta`` keys a cached payload keeps; the rest is rebuilt on every serve.
@@ -453,15 +505,7 @@ async def get_change_risk(
     declare_replaced(payload, change_risk_replaced_tokens(result.features.nf))
     attach_ignored_arguments(payload, ignored)
     collector.attach(payload)
-    if scored_entry is not None:
-        # Stored before the pointer: an acceptance moves no git state, so a
-        # cached pointer would outlive it. ``_served`` reads it afresh.
-        scored_entry.payloads[_cache.payload_key(include)] = _cache.Stored(
-            copy.deepcopy(payload),
-            sorted(changed) or None,
-            branches,
-            await _scan_answer(scan),
-        )
+    await _store_payload(scored_entry, include, payload, changed, branches, scan)
     await attach_why_pointer(payload, ctx, sorted(changed))
     return payload
 
@@ -505,7 +549,7 @@ async def _revalidated(
     before it, to the full rebuild.
     """
     branches = await asyncio.to_thread(_cache.branch_inputs, str(ctx.path))
-    if branches is None or branches != stored.branches:
+    if _needs_branch_rescan(stored, branches):
         scan = _start_overlap_scan(
             ctx, dict.fromkeys(stored.targets or ()), revspec_head(revspec)
         )

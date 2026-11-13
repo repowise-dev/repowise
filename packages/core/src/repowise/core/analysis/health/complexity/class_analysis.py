@@ -88,13 +88,19 @@ def _class_name(node: Node) -> str:
     """Best-effort class/impl name.
 
     Tries the ``name`` field (most class grammars), then ``type`` (Rust's
-    ``impl T`` exposes the implemented type there), then the generic
-    identifier scan.
+    ``impl T`` exposes the implemented type there), then F#'s nested
+    ``type_name`` and the generic identifier scan.
     """
     for field_name in ("name", "type"):
         child = node.child_by_field_name(field_name)
         if child is not None and child.text is not None:
             return child.text.decode("utf-8", errors="replace")
+    if node.type in {"anon_type_defn", "record_type_defn", "union_type_defn", "enum_type_defn"}:
+        type_name = next((c for c in node.children if c.type == "type_name"), None)
+        name = type_name.child_by_field_name("type_name") if type_name is not None else None
+        if name is not None and name.text is not None:
+            # The field excludes access modifiers and generic type arguments.
+            return name.text.decode("utf-8", errors="replace")
     return _find_name(node)
 
 
@@ -797,6 +803,7 @@ def _collect_classes(
                 tcc=tcc,
                 contract_impl=contract_impl,
                 field_readers=_field_readers(method_fcs, refs),
+                kind=class_node.type,
             )
         )
 

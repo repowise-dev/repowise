@@ -16,7 +16,9 @@ through its body, accumulating:
 Anonymous functions (lambdas, arrow functions, closures) recurse for
 their containing function's metrics when they are nested in a named
 function. Module-level lambdas, such as route callbacks, produce their
-own ``FunctionComplexity`` row.
+own ``FunctionComplexity`` row, and so does a JS/TS arrow function with a
+block body bound to a name wherever it sits. A function's NLOC leaves out
+the rows only the units nested in it cover.
 
 This module is the orchestrator: ``walk_file`` parses the source once and
 drives the individual passes, each of which lives in its own sibling module.
@@ -55,16 +57,23 @@ from .ast_utils import (
     _find_function_entry_name,
     _nested_function_nodes,
     _parameter_list,
+    function_start_line,
+    unit_extent,
 )
 from .class_analysis import _collect_classes
 from .cobol import walk_cobol
 from .cyclomatic import _walk_function_body
 from .deprecation import is_deprecated
-from .dispatch import dispatch_points, dispatch_share
+from .dispatch import (
+    copy_guard_repeats,
+    dispatch_points,
+    dispatch_share,
+    exit_guard_repeats,
+)
 from .file_scan import scan_file
 from .gating import is_gated_off, module_false_constants
 from .languages import get_language_map
-from .markup import markup_rows, rows_within
+from .markup import markup_rows, rows_in_ranges, rows_within
 from .mock_walk import _count_mock_setup, file_may_contain_mocks
 
 # Re-exported so the package façade (``__init__``) and downstream consumers
@@ -82,10 +91,11 @@ from .models import (
 
 # ``_count_file_nloc`` is re-exported for ``tests/unit/health/test_file_nloc.py``,
 # which imports it directly from this module.
-from .nloc import _count_file_nloc
+from .nloc import CodeLineIndex, _count_file_nloc
 from .perf_walk import _collect_perf_hits, perf_pass_runs
 from .signature import (
     bound_param_count,
+    defaulted_param_count,
     is_constructor,
     is_signature_fixed,
     keyword_only_param_count,
@@ -188,7 +198,7 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
-    markup = markup_rows(tree.root_node, grammar_tag, source)
+    markup = markup_rows(tree.root_node, grammar_tag, source, scan.literals, scan.arms, scan.chains)
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
     fn_nodes = _collect_function_nodes(tree.root_node, lmap)
@@ -199,8 +209,12 @@ def walk_file(
     # that shares its name.
     nested = _nested_function_nodes(fn_nodes, scan.function_nodes, lmap)
     first_top_level = len(nested)
+    units_in = _direct_units(nested + fn_nodes, nested)
     for index, fn_node in enumerate(nested + fn_nodes):
         body = fn_node.child_by_field_name("body") or fn_node
+        # The rows only the units nested in this body cover are theirs: they
+        # leave its NLOC as their branches leave its CCN.
+        unit_rows = _unit_rows(scan.lines, body, units_in.get(fn_node.id))
         deepest: list[int] = []
         start_facts, finish_facts = facts_of(fn_node)
         ccn, max_nest, cognitive, bumps, conditions = _walk_function_body(
@@ -221,19 +235,22 @@ def walk_file(
         dispatch = dispatch_points(body, lmap)
         fc = FunctionComplexity(
             name=name,
-            start_line=fn_node.start_point[0] + 1,
+            start_line=function_start_line(fn_node),
             end_line=fn_node.end_point[0] + 1,
             ccn=ccn,
             max_nesting=max_nest,
             cognitive=cognitive,
-            nloc=scan.lines.count(body, source),
-            markup_nloc=rows_within(markup, body) if markup else 0,
+            nloc=scan.lines.count(body, source) - scan.lines.code_rows_in(unit_rows),
+            markup_nloc=(
+                rows_within(markup, body) - rows_in_ranges(markup, unit_rows) if markup else 0
+            ),
             bumps=bumps,
             param_count=_count_parameters(fn_node),
             typed_param_count=typed,
             primitive_param_count=scalar,
             bound_param_count=bound_param_count(params, lmap),
             keyword_only_param_count=keyword_only_param_count(params, lmap),
+            defaulted_param_count=defaulted_param_count(params, lmap),
             is_constructor=is_constructor(fn_node, name, lmap),
             signature_fixed=is_signature_fixed(fn_node, lmap),
             complex_conditions=conditions,
@@ -248,6 +265,8 @@ def walk_file(
             bare_called_names=bare_called,
             dispatch_share=dispatch_share(dispatch.points, ccn),
             dispatch_arm=dispatch.arm,
+            exit_guards=exit_guard_repeats(body, lmap),
+            copy_guards=copy_guard_repeats(body, lmap),
             terminal_share=terminal,
             deprecated=is_deprecated(fn_node, body, name, lmap, source),
             gated_off=body is not fn_node and is_gated_off(body, flags),
@@ -285,6 +304,48 @@ def walk_file(
         has_inline_tests=_detect_inline_tests(source, language),
         rust_test_line_ranges=scan.rust_test_line_ranges,
     )
+
+
+def _direct_units(measured: list[Node], units: list[Node]) -> dict[int, list[Node]]:
+    """``node id -> units nested directly in it``, each list in source order.
+
+    *measured* is every node the walk gives an entry, *units* the nested ones
+    among them. A unit's holder is the innermost measured node around it, so a
+    unit inside another unit belongs to that one. Measured nodes nest or are
+    disjoint, so one sweep in source order with a stack of open nodes finds
+    every holder without climbing the tree.
+    """
+    if not units:
+        return {}
+    unit_ids = {unit.id for unit in units}
+    holders: dict[int, list[Node]] = {}
+    open_nodes: list[Node] = []
+    for node in sorted(measured, key=lambda n: (n.start_byte, -n.end_byte)):
+        while open_nodes and open_nodes[-1].end_byte <= node.start_byte:
+            open_nodes.pop()
+        if open_nodes and node.id in unit_ids:
+            holders.setdefault(open_nodes[-1].id, []).append(node)
+        open_nodes.append(node)
+    return holders
+
+
+def _unit_rows(lines: CodeLineIndex, body: Node, units: list[Node] | None) -> list[tuple[int, int]]:
+    """The rows of *body* only its nested *units* cover; ``[]`` without any.
+
+    A unit covers its binding too (:func:`unit_extent`): the ``const f =`` and
+    ``;`` around an arrow are its own line ends, not the enclosing code's. A
+    unit outside the body (a callback in a parameter's default) never counted
+    toward it, so it takes nothing away.
+    """
+    if not units:
+        return []
+    extents = [unit_extent(unit) for unit in units]
+    inside = [
+        extent
+        for extent in extents
+        if body.start_byte <= extent.start_byte and extent.end_byte <= body.end_byte
+    ]
+    return lines.unit_rows(body, inside) if inside else []
 
 
 FactsStart = Callable[["Node"], tuple["BodyTally | None", Callable[[], "FunctionFacts | None"]]]

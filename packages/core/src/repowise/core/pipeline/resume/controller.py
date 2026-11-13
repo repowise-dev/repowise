@@ -66,11 +66,12 @@ class ResumeController:
         repo_id: str,
         *,
         resume: bool,
+        reap_abandoned: bool = False,
     ) -> None:
         self._sf = session_factory
         self._repo_id = repo_id
         self._resume = resume
-        self._ledger = ResumeLedger(session_factory, repo_id)
+        self._ledger = ResumeLedger(session_factory, repo_id, reap_abandoned=reap_abandoned)
         self._completed: set[ResumePhase] | None = None
         # True once the INDEX phase is provably on disk — either freshly
         # checkpointed this run or rehydrated from a prior run. The caller

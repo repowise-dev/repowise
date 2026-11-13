@@ -279,12 +279,21 @@ class JavaTypeVisibility:
             return sym_id, "same_package"
         return sym_id, "import"
 
-    def _java_type_parameters(self, file_path: str, caller_id: str) -> set[str]:
+    def _java_type_parameters(self, file_path: str, caller_id: str) -> frozenset[str]:
         """Type parameters the caller and its enclosing types declare.
 
         Read off each declaration header, up to its body's ``{``, since no
-        parsed symbol keeps its ``<...>`` list.
+        parsed symbol keeps its ``<...>`` list. Bounded type variables (e.g.
+        ``<T extends Number>``) are captured by identifier name without bound
+        verification under the ingestion heuristic.
         """
+        cache = getattr(self, "_java_type_params_cache", None)
+        if cache is None:
+            cache = {}
+            self._java_type_params_cache = cache
+        key = (file_path, caller_id)
+        if key in cache:
+            return cache[key]
         spans = self._spans_for(file_path)
         line = spans.get(caller_id, (0, 0))[0]
         lines = self._text_of(file_path).splitlines()
@@ -297,7 +306,9 @@ class JavaTypeVisibility:
                 continue
             header = "\n".join(lines[start - 1 : end]).partition("{")[0]
             names.update(_header_type_parameters(header))
-        return names
+        frozen = frozenset(names)
+        cache[key] = frozen
+        return frozen
 
     def _returns_java_self_type(self, callee_id: str) -> bool:
         """Does *callee_id* return its class's self-bounded type parameter?
