@@ -56,6 +56,11 @@ LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 CORE = "core"
 CORE_TOOLS = frozenset({"get_answer", "get_context", "get_symbol", "search_codebase", "get_why"})
 
+# The tools ``mcp.always_load`` asks a schema-deferring host to load up front:
+# the core read tools an agent reaches for first. get_why stays deferred, as
+# history questions come later in a task, if at all.
+ALWAYS_LOAD_TOOLS = CORE_TOOLS - {"get_why"}
+
 # A value of "standard" enables every ``default`` tool usable in this mode: the
 # surface a client that defers schemas gets when nothing is configured.
 STANDARD = "standard"
@@ -283,6 +288,7 @@ def listed_default_tools(
 
 __all__ = [
     "ALL",
+    "ALWAYS_LOAD_TOOLS",
     "CORE",
     "CORE_TOOLS",
     "DEFERRED_SCHEMA_CLIENTS",

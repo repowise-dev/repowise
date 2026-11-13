@@ -366,6 +366,7 @@ in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
 | Key | Default | What it does |
 |-----|---------|--------------|
 | `tools` | unset | Which MCP tools are offered, for every client: a profile (core, lean, standard, all), optionally followed by +name or -name; +name or -name alone to adjust each client's default; or plain names as the exact list. Unset: Claude Code gets standard, clients that load every schema up front get core. |
+| `always_load` | `false` | Ask clients that defer tool schemas (Claude Code) to load get_answer, get_context, search_codebase and get_symbol up front: removes one tool-loading turn before the first call and costs about 2k tokens per turn. Other tools stay deferred. |
 <!-- END GENERATED settings:mcp -->
 
 | `tools` value | Effect |

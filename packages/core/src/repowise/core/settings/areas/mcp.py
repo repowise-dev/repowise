@@ -46,6 +46,16 @@ SETTINGS: tuple[Setting, ...] = (
         # The server lists its tools once, when it starts.
         reload="restart",
     ),
+    _s(
+        "mcp.always_load",
+        "bool",
+        False,
+        "Ask clients that defer tool schemas (Claude Code) to load get_answer, "
+        "get_context, search_codebase and get_symbol up front: removes one "
+        "tool-loading turn before the first call and costs about 2k tokens per "
+        "turn. Other tools stay deferred.",
+        reload="restart",
+    ),
     _e(
         "REPOWISE_ANSWER_TIMEOUT_S",
         "float",

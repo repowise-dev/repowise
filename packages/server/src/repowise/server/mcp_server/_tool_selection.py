@@ -29,6 +29,7 @@ from repowise.core.agents.identity import UNKNOWN_AGENT
 from repowise.core.registry import ToolEntry, mcp_tool_registry
 from repowise.core.registry.tool_selection import (
     ALL,
+    ALWAYS_LOAD_TOOLS,
     PROFILES,
     AvailabilityFacts,
     normalize_override,
@@ -48,6 +49,13 @@ _selected_surface: tuple[bool, frozenset[str]] | None = None
 # The inputs the boot selection resolved from, so each session can resolve its
 # client's default from the same override, mode and facts.
 _boot_inputs: tuple[bool, str | Sequence[str] | None, AvailabilityFacts] | None = None
+# Tools whose tools/list entry carries the always-load hint (``mcp.always_load``),
+# read once at boot like the surface. Empty leaves every entry untouched.
+_always_load: frozenset[str] = frozenset()
+
+#: Per-tool ``_meta`` key Claude Code reads to keep a tool's schema loaded
+#: instead of deferring it behind tool search.
+ALWAYS_LOAD_META_KEY = "anthropic/alwaysLoad"
 
 
 def _ensure_registered() -> None:
@@ -93,6 +101,20 @@ def _read_config_override(repo_path: str | None) -> str | Sequence[str] | None:
     except Exception:
         _log.debug("Failed to read mcp.tools from config", exc_info=True)
     return None
+
+
+def _read_always_load(repo_path: str | None) -> bool:
+    """Read ``mcp.always_load`` from ``.repowise/config.yaml``; off when unreadable."""
+    if not repo_path:
+        return False
+    try:
+        from repowise.core.repo_config import load_repo_config
+        from repowise.core.settings import resolve
+
+        return bool(resolve("mcp.always_load", load_repo_config(repo_path)).value)
+    except Exception:
+        _log.debug("Failed to read mcp.always_load from config", exc_info=True)
+    return False
 
 
 def _is_workspace(repo_path: str | None) -> bool:
@@ -144,9 +166,10 @@ def apply_tool_selection(
         override=override,
         facts=facts,
     )
-    global _selected_surface, _boot_inputs
+    global _selected_surface, _boot_inputs, _always_load
     _selected_surface = (is_workspace, frozenset(enabled))
     _boot_inputs = (is_workspace, override, facts)
+    _always_load = ALWAYS_LOAD_TOOLS if _read_always_load(repo_path) else frozenset()
 
     manager = getattr(mcp, "_tool_manager", None)
     registered = getattr(manager, "_tools", None)
@@ -192,6 +215,22 @@ def session_tool_names(client: str) -> frozenset[str] | None:
         client=client,
     )
     return frozenset(names) & _selected_surface[1]
+
+
+def mark_always_loaded(tools: list[Any]) -> list[Any]:
+    """*tools* (``mcp.types.Tool``) with the always-load hint on those configured.
+
+    Only tools in the list are marked, so a tool the session does not serve is
+    never touched; with the setting off the list comes back as given.
+    """
+    if not _always_load:
+        return tools
+    return [
+        t.model_copy(update={"meta": {**(t.meta or {}), ALWAYS_LOAD_META_KEY: True}})
+        if t.name in _always_load
+        else t
+        for t in tools
+    ]
 
 
 def every_client_lists(names: Iterable[str]) -> bool:
