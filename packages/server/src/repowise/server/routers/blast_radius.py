@@ -12,10 +12,14 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.change_candidates import (
+    ChangeCandidate,
     UnknownChangeError,
+    change_request_ref,
     change_revspec,
+    is_change_request,
     list_change_candidates,
     resolve_change_files,
+    resolve_change_request,
 )
 from repowise.core.analysis.pr_blast import PRBlastRadiusAnalyzer, run_commands
 from repowise.core.persistence import crud
@@ -23,6 +27,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.server.auth import read_route
 from repowise.server.deps import get_db_session, resolve_request_session_factory, verify_api_key
+from repowise.server.managed_checkout import ManagedCheckoutError, fetch_ref, is_managed_checkout
 from repowise.server.review_markdown import render_change_markdown
 from repowise.server.schemas import BlastRadiusRequest, BlastRadiusResponse
 from repowise.server.schemas.blast_radius import (
@@ -200,11 +205,49 @@ async def _review(
         return None, f"The change review failed unexpectedly: {exc!r}"
 
 
+def _change_request(checkout: str, change_id: str) -> ChangeCandidate:
+    """The merge or pull request *change_id* names, pinned to its commits.
+
+    A checkout the server owns fetches the forge's ref: every time for
+    ``mr:<n>``, so it reads the request's latest head, and for a pinned id
+    only when its commits are missing. A developer's clone is never fetched.
+    """
+    ref = change_request_ref(checkout, change_id)
+    managed = bool(ref) and is_managed_checkout(checkout)
+    pinned = "@" in change_id
+    fetch_failed: ManagedCheckoutError | None = None
+    if managed and not pinned:
+        try:
+            fetch_ref(checkout, ref)
+        except ManagedCheckoutError as exc:  # a ref fetched earlier still answers
+            fetch_failed = exc
+    try:
+        return resolve_change_request(checkout, change_id)
+    except UnknownChangeError:
+        if fetch_failed is not None:
+            raise UnknownChangeError(str(fetch_failed)) from fetch_failed
+        if not (managed and pinned):
+            raise
+    try:
+        fetch_ref(checkout, ref)
+    except ManagedCheckoutError as exc:
+        raise UnknownChangeError(str(exc)) from exc
+    return resolve_change_request(checkout, change_id)
+
+
 async def _change_analysis(
     session: AsyncSession, request: Request, repo_id: str, change_id: str, max_depth: int
 ) -> ChangeBlastRadiusResponse:
+    """A merge or pull request (``mr:<n>``, ``pr:<n>``) is read once and pinned,
+    so its files and its review describe the same two commits."""
     checkout = await _checkout(session, repo_id)
+    change = None
     try:
+        if is_change_request(change_id):
+            if checkout is None:
+                raise UnknownChangeError("this server has no checkout to read the change from")
+            change = await asyncio.to_thread(_change_request, checkout, change_id)
+            change_id = change.id
         files = await resolve_change_files(session, repo_id, checkout, change_id)
     except UnknownChangeError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -222,6 +265,7 @@ async def _change_analysis(
     return ChangeBlastRadiusResponse(
         **result,
         change_id=change_id,
+        change=change.to_dict() if change else None,
         changed_files=analyzed,
         changed_files_total=len(files),
         review=review,
@@ -279,7 +323,7 @@ async def change_review_markdown(
             health = "this server has no checkout to read the change from"
         else:
             try:
-                health = await asyncio.to_thread(_run_check, root, change_id)
+                health = await asyncio.to_thread(_run_check, root, response.change_id)
             except (UnknownChangeError, HealthCheckUnavailable) as exc:
                 health = str(exc)
             except Exception as exc:  # git timeouts, unreadable blobs: the review still renders
