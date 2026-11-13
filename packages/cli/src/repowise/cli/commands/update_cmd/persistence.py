@@ -350,6 +350,43 @@ def heal_commit_offsets(repo_path: Any) -> None:
 _REPAIR_MAX_COMMITS = 500
 
 
+def _prune_refusal_outcome(new_state: dict, state: dict, prune_refusals: list[str]) -> bool:
+    """Apply a deleted-file prune refusal to *new_state*; True when it held.
+
+    The prune judges liveness, not the commit range, so a genuine bulk deletion
+    refuses identically on every run. Holding the pointer forever would be worse
+    than the stale paths the hold exists to fix: nothing would ever advance and
+    only a full reindex would break the deadlock. So the hold lasts one run —
+    the first refusal re-covers the range, and a second one at the same
+    unchanged pointer means the deletion is real rather than a broken run.
+    """
+    if not prune_refusals:
+        return False
+    refused_before = state.get("prune_refused_at")
+    if refused_before is not None and refused_before == state.get("last_sync_commit"):
+        console.print(
+            "[yellow]The deleted-file prune refused this change again, at the same "
+            "commit as last time; treating it as a real mass deletion and letting "
+            "it through.[/yellow]"
+        )
+        new_state.pop("prune_refused_at", None)
+        return False
+    record_repair_marker(new_state, state, ["Deleted-file prune (refused)"])
+    new_state["last_sync_commit"] = state.get("last_sync_commit")
+    new_state["last_docs_commit"] = state.get("last_docs_commit")
+    new_state["prune_refused_at"] = state.get("last_sync_commit")
+    console.print(
+        "[yellow]The deleted-file prune refused part of this change and left those "
+        "rows in place; the sync pointer has not advanced, so the next update "
+        "re-covers this range, and a second refusal at the same commit will let it "
+        "through. To clear it now: [cyan]repowise init[/cyan], which re-indexes "
+        "from scratch.[/yellow]"
+    )
+    for refusal in prune_refusals:
+        console.print(f"[yellow]{refusal}[/yellow]")
+    return True
+
+
 def record_repair_marker(new_state: dict, prior_state: dict, failed_steps: list[str]) -> None:
     """Record, or clear, the commit range this update failed to fully persist.
 
@@ -837,23 +874,7 @@ def _persist_index_only_update(
     # pointer below advances to head regardless.
     record_repair_marker(new_state, state, failed_steps)
     if prune_refusals:
-        # The prune refused to apply part of this change set, so the index is
-        # behind the commit it would be recorded against. Leave the pointer
-        # where it is and record the range, exactly like a failed step: the
-        # next update re-covers it, and the repair marker is what stops it
-        # being skipped forever (#5410).
-        record_repair_marker(
-            new_state, state, [*failed_steps, "Deleted-file prune (refused)"]
-        )
-        new_state["last_sync_commit"] = state.get("last_sync_commit")
-        new_state["last_docs_commit"] = state.get("last_docs_commit")
-        console.print(
-            "[yellow]The deleted-file prune refused part of this change and left "
-            "those rows in place; the sync pointer has not advanced, so the next "
-            "update re-covers this range.[/yellow]"
-        )
-        for refusal in prune_refusals:
-            console.print(f"[yellow]{refusal}[/yellow]")
+        _prune_refusal_outcome(new_state, state, prune_refusals)
     if failed_steps:
         console.print(
             "[yellow]Some data for this commit range was not persisted; "
@@ -1129,7 +1150,20 @@ async def _persist_full_update_async(
         prune_refusals=prune_refusals if prune_refusals is not None else [],
         timings=timings,
     )
-    return await write_full_update(ctx)
+    result = await write_full_update(ctx)
+    if ctx.prune_refusals:
+        # The full path re-reads and rewrites the whole index, so a refusal here
+        # is not a stall: it re-covers everything the refusal was protecting.
+        # Said out loud so "the full update advanced past a refusal" reads as a
+        # decision on the record rather than an oversight (#5410 review).
+        console.print(
+            "[yellow]The deleted-file prune refused part of this change; the full "
+            "update re-covers the whole index, so the sync pointer advances "
+            "anyway.[/yellow]"
+        )
+        for refusal in ctx.prune_refusals:
+            console.print(f"[yellow]{refusal}[/yellow]")
+    return result
 
 
 async def _rescore_health_from_db(
