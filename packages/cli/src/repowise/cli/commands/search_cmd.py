@@ -22,6 +22,8 @@ switch the other adapter commands carry.
 
 from __future__ import annotations
 
+from typing import Any
+
 import click
 from rich.table import Table
 
@@ -416,29 +418,7 @@ def _fan_out(
             fused[key] = values[0]
     if payloads and all("exact_match" in p for p in payloads):
         fused["exact_match"] = any(p["exact_match"] for p in payloads)
-
-    all_lines: list[dict] = []
-    has_lines = False
-    for p in payloads:
-        if "lines" in p:
-            has_lines = True
-            for line_item in p.get("lines") or []:
-                line_entry = dict(line_item)
-                line_entry.setdefault("repo", p.get("_repo", ""))
-                all_lines.append(line_entry)
-    if has_lines:
-        from repowise.server.mcp_server._line_hits import MAX_LINES
-
-        fused["lines"] = all_lines[:MAX_LINES]
-        omitted = (len(all_lines) - len(fused["lines"])) + sum(
-            p.get("lines_omitted", 0) for p in payloads
-        )
-        if omitted > 0:
-            fused["lines_omitted"] = omitted
-            fused["complete"] = False
-        else:
-            fused["complete"] = all(p.get("complete", False) for p in payloads if "lines" in p)
-
+    fused.update(_fuse_lines(payloads, query))
     fused["_meta"] = _worst_freshness(payloads)
 
     # "Nothing matched" and "nothing could be searched" are different answers,
@@ -455,6 +435,37 @@ def _fan_out(
         return
     _render(projected, query, mode, multi=True)
     _ta.print_index_note(fused, fmt)
+
+
+def _line_cap(query: str) -> int:
+    from repowise.server.mcp_server._line_hits import MAX_LINES, MAX_LINES_MIXED, _literal
+
+    literal = _literal(query)
+    mixed = not literal and len(query.split()) > 1
+    return MAX_LINES_MIXED if mixed else MAX_LINES
+
+
+def _fuse_lines(payloads: list[dict], query: str) -> dict[str, Any]:
+    """Combine per-repo line hits bounded identically to the MCP tool."""
+    if not any("lines" in p for p in payloads):
+        return {}
+    all_lines: list[dict] = []
+    for p in payloads:
+        repo_name = p.get("_repo", "")
+        for line_item in p.get("lines") or []:
+            line_entry = dict(line_item)
+            line_entry.setdefault("repo", repo_name)
+            all_lines.append(line_entry)
+
+    cap = _line_cap(query)
+    lines = all_lines[:cap]
+    omitted = (len(all_lines) - len(lines)) + sum(p.get("lines_omitted", 0) for p in payloads)
+    is_complete = omitted == 0 and all(p.get("complete", False) for p in payloads if "lines" in p)
+
+    out: dict[str, Any] = {"lines": lines, "complete": is_complete}
+    if omitted > 0:
+        out["lines_omitted"] = omitted
+    return out
 
 
 def _worst_freshness(payloads: list[dict]) -> dict:
@@ -541,19 +552,30 @@ def _render_notes(projected: dict) -> None:
         console.print("\n[bold]Files to read[/bold]")
         for entry in candidates:
             console.print(f"  [cyan]{escape(str(entry.get('path', '')))}[/cyan]")
+    _render_lines(projected)
+
+
+def _format_line_entry(entry: dict) -> str:
+    from rich.markup import escape
+
+    repo_prefix = f"{escape(str(entry['repo']))}: " if entry.get("repo") else ""
+    path = escape(str(entry.get("path") or ""))
+    line_no = entry.get("line") if entry.get("line") is not None else ""
+    kind = entry.get("kind") or ""
+    text = escape(str(entry.get("text") or ""))
+    kind_str = f" [dim]({escape(kind)})[/dim]" if kind else ""
+    return f"  [cyan]{repo_prefix}{path}:{line_no}[/cyan]{kind_str}  {text}"
+
+
+def _render_lines(projected: dict) -> None:
     lines = projected.get("lines") or []
-    if lines:
-        console.print("\n[bold]Lines[/bold]")
-        for entry in lines:
-            repo_prefix = f"{escape(str(entry['repo']))}: " if entry.get("repo") else ""
-            path = escape(str(entry.get("path") or ""))
-            line_no = entry.get("line") if entry.get("line") is not None else ""
-            kind = entry.get("kind") or ""
-            text = escape(str(entry.get("text") or ""))
-            kind_str = f" [dim]({escape(kind)})[/dim]" if kind else ""
-            console.print(f"  [cyan]{repo_prefix}{path}:{line_no}[/cyan]{kind_str}  {text}")
-        if projected.get("lines_omitted"):
-            console.print(f"  [dim]... {projected['lines_omitted']} more lines omitted[/dim]")
+    if not lines:
+        return
+    console.print("\n[bold]Lines[/bold]")
+    for entry in lines:
+        console.print(_format_line_entry(entry))
+    if omitted := projected.get("lines_omitted"):
+        console.print(f"  [dim]... {omitted} more lines omitted[/dim]")
 
 
 def _titled(query: str, mode: str, *, multi: bool) -> str:
