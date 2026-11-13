@@ -170,7 +170,8 @@ describe("DecisionDetail", () => {
         "Couldn't undo: The latest review is Asha's. Accept or dismiss it instead.",
       ),
     );
-    expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled();
+    // The toast fires before the pending state clears.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Undo" })).toBeEnabled());
   });
 
   it("asks to dismiss from the page's Undo when the host cannot undo a review", async () => {
