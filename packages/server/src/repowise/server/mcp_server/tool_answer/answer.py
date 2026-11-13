@@ -116,6 +116,7 @@ from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._neighbor_rerank import (
     expand_via_neighbor_rerank as _expand_via_neighbor_rerank,
 )
+from repowise.server.mcp_server._savings.interaction import timed_stage
 from repowise.server.mcp_server.tool_answer.bodies import (
     _build_symbol_bodies,
     _gather_body_candidates,
@@ -263,6 +264,7 @@ class _Retrieved(NamedTuple):
     other_repo_lines: list[dict]
 
 
+@timed_stage("retrieve")
 async def _run_retrieval_pipeline(
     question: str, ctx, *, scope: str | None, exclude_spec, repo_id
 ) -> _Retrieved:

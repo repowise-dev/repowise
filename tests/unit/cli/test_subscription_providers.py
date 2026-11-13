@@ -18,6 +18,7 @@ from repowise.cli.ui import subscription
 from repowise.cli.ui.brand import THEME
 from repowise.core.cost_estimator import approximate_generation_plan, estimate_cost
 from repowise.core.providers.llm import resolve
+from repowise.core.providers.llm import subscription as core_subscription
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
 from ._provider_picker import pick_default
@@ -190,7 +191,7 @@ def test_note_spawns_no_agent_cli_when_network_is_off(monkeypatch: Any, var: str
     def _boom(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("agent CLI probed with an off switch set")
 
-    monkeypatch.setattr(subscription.subprocess, "run", _boom)
+    monkeypatch.setattr(core_subscription.subprocess, "run", _boom)
     monkeypatch.setenv(var, "1")
     assert _note(monkeypatch, _run()) == ""
 
@@ -205,7 +206,7 @@ def test_every_probe_caller_spawns_no_agent_cli_when_network_is_off(
         raise AssertionError("agent CLI probed with an off switch set")
 
     monkeypatch.setattr(AgentIdentity, "which", lambda self: self.executable)
-    monkeypatch.setattr(subscription.subprocess, "run", _boom)
+    monkeypatch.setattr(core_subscription.subprocess, "run", _boom)
     monkeypatch.setenv(var, "1")
     found = subscription.logged_in_agent_providers()
     # Installed CLIs stay pickable by hand, but nothing offers them unchecked.
@@ -279,7 +280,9 @@ def test_status_output_maps_to_billing(
     monkeypatch.setattr(
         subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 0, output, "")
     )
-    assert subscription.agent_cli_auth(name) == subscription.CliAuth(billing, offer)
+    # Only a named paid plan is a plan quota; every other login bills elsewhere.
+    plan_quota = billing.endswith("uses your plan quota")
+    assert subscription.agent_cli_auth(name) == subscription.CliAuth(billing, offer, plan_quota)
 
 
 @pytest.mark.parametrize(
