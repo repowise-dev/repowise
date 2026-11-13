@@ -124,6 +124,7 @@ from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
     _nested_class_used,
     _non_importable_kinds,
 )
+from .token_cache import token_cache
 
 #: The unindexed scan below and the repo-wide absence check ask the same
 #: question of different file sets, so they share one identifier shape rather
@@ -323,7 +324,11 @@ class DeadCodeAnalyzer:
         whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
 
         findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
-        findings = self._settle(findings)
+        # The settle passes rescan every file's text; an unchanged file's
+        # tokens come from the last run's cache in the index directory.
+        cache_dir = Path(self._repo_root) / ".repowise" if self._repo_root is not None else None
+        with token_cache(cache_dir):
+            findings = self._settle(findings)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)

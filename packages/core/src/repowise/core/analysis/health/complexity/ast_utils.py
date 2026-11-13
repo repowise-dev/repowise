@@ -278,6 +278,34 @@ def _node_text(node: Node) -> str:
     return (node.text or b"").decode("utf-8", errors="replace")
 
 
+def function_start_line(fn_node: Node) -> int:
+    """1-indexed start line of *fn_node*, skipping preceding recovery errors.
+
+    In top-level statement contexts such as Razor ``@code`` blocks, an
+    attributed property before a method is not a valid statement, so
+    tree-sitter C# wraps its attribute/modifiers and an ``ERROR`` child into
+    the following ``local_function_statement``. Advancing past the last
+    pre-declarator ``ERROR`` aligns the start line with the method itself.
+    """
+    cutoff = fn_node.child_by_field_name("parameters")
+    if cutoff is None:
+        cutoff = fn_node.child_by_field_name("body")
+    cutoff_id = cutoff.id if cutoff is not None else None
+    decl: Node | None = None
+    saw_error = False
+    for child in fn_node.children:
+        if child.id == cutoff_id:
+            break
+        if child.type == "ERROR":
+            saw_error = True
+            decl = None
+            continue
+        if saw_error and decl is None and child.is_named and not is_comment(child):
+            decl = child
+    anchor = decl if decl is not None else fn_node
+    return anchor.start_point[0] + 1
+
+
 # Wrappers a lambda's binding is read through: ``(() => {})``, ``(() => {}) as T``.
 _TRANSPARENT_LAMBDA_PARENTS = frozenset(
     {"parenthesized_expression", "as_expression", "satisfies_expression"}
@@ -638,7 +666,9 @@ def _dialect_parameter_list(fn_node: Node) -> Node | None:
     return holder if holder is not None and holder.type in _SWIFT_PARAMETER_HOLDERS else None
 
 
-_SWIFT_PARAMETER_HOLDERS = frozenset({"function_declaration", "init_declaration", "subscript_declaration"})
+_SWIFT_PARAMETER_HOLDERS = frozenset(
+    {"function_declaration", "init_declaration", "subscript_declaration"}
+)
 
 
 def _declarator_parameter_list(fn_node: Node) -> Node | None:
@@ -695,8 +725,12 @@ def _parameter_children(params: Node) -> Iterator[Node]:
 # ``**opts`` / ``&block``, JavaScript and TypeScript ``...rest``.
 _REST_PARAMETERS = frozenset(
     {
-        "list_splat_pattern", "dictionary_splat_pattern", "splat_parameter",
-        "hash_splat_parameter", "block_parameter", "rest_pattern",
+        "list_splat_pattern",
+        "dictionary_splat_pattern",
+        "splat_parameter",
+        "hash_splat_parameter",
+        "block_parameter",
+        "rest_pattern",
     }
 )
 

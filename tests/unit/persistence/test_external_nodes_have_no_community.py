@@ -65,3 +65,22 @@ async def test_external_is_not_a_member_or_a_cross_community_target(async_sessio
     assert [m.node_id for m in members] == ["a.py"]
     crossing = await get_cross_community_edges(async_session, repo.id, 0)
     assert crossing == [{"target_community_id": 1, "edge_count": 1}]
+
+
+@pytest.mark.asyncio
+async def test_cross_community_edges_count_only_code_edges(async_session):
+    """A doc link or co-change into another community is not coupling (#5472)."""
+    repo = await insert_repo(async_session)
+    await batch_upsert_graph_nodes(async_session, repo.id, [_node("a.py", 0), _node("b.py", 1)])
+    await batch_upsert_graph_edges(
+        async_session,
+        repo.id,
+        [
+            {"source_node_id": "a.py", "target_node_id": "b.py", "edge_type": edge_type}
+            for edge_type in ("imports", "co_changes", "documents")
+        ],
+    )
+    await async_session.commit()
+
+    crossing = await get_cross_community_edges(async_session, repo.id, 0)
+    assert crossing == [{"target_community_id": 1, "edge_count": 1}]

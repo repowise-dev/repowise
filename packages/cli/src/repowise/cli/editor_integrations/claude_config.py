@@ -199,22 +199,15 @@ def register_with_claude_code(repo_path: Path, *, retarget: bool = False) -> Pat
     return config_path if _upsert_user_entry(config_path, entry) else None
 
 
-def claude_code_plugin_installed() -> bool:
+def claude_code_plugin_installed(repo_path: Path | None = None) -> bool:
     """Whether the repowise Claude Code plugin is installed and not disabled.
 
-    It ships its own path-less ``repowise`` MCP server.
+    It ships its own path-less ``repowise`` MCP server. With *repo_path*, a
+    plugin installed for another project does not count.
     """
-    import click
+    from repowise.cli.agent_targets.targets.claude_code import _plugin_installs
 
-    from repowise.cli.agent_targets.targets.claude_code import PLUGIN_KEY, _plugin_installs
-
-    if not _plugin_installs():
-        return False
-    try:
-        enabled = load_existing_config(_claude_code_settings_path()).get("enabledPlugins")
-    except click.ClickException:  # absent or unreadable settings: no opt-out
-        enabled = None
-    return not (isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False)
+    return bool(_plugin_installs(repo_path))
 
 
 def claude_code_user_scope_serves(repo_path: Path) -> bool:
@@ -225,7 +218,7 @@ def claude_code_user_scope_serves(repo_path: Path) -> bool:
     command still exists. A project ``.mcp.json`` entry beside either makes
     Claude Code report conflicting scopes, so init leaves it out.
     """
-    if claude_code_plugin_installed():
+    if claude_code_plugin_installed(repo_path):
         return True
     stored = _stored_repowise_entry(_claude_code_user_config_path())
     if stored is None or _pinned_command_missing(stored):

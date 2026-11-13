@@ -42,13 +42,6 @@ class FakeExtractor:
         return self.output
 
 
-@pytest.fixture
-def extractor_registry(monkeypatch):
-    monkeypatch.setattr(document_extractors, "_impls", {})
-    monkeypatch.setattr(document_extractors, "_chosen", None)
-    monkeypatch.setattr(plugins, "load_plugins", lambda: [])
-
-
 def _register(name: str, extractor: FakeExtractor) -> None:
     document_extractors.register(name, extractor)
 

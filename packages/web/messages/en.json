@@ -1720,6 +1720,8 @@
     "pages": "{count, plural, one {# page to write} other {# pages to write}}",
     "counting": "Counting pages",
     "signedInNote": "Uses your {name} sign-in.",
+    "planNote": "Uses your {name} sign-in and plan quota.",
+    "planNoteTimed": "Uses your {name} sign-in and plan quota, about {minutes, plural, one {# minute} other {# minutes}}.",
     "costNote": "About {cost} with this key, shown before anything runs.",
     "pricing": "Pricing with this key",
     "keyNote": "The price shows before anything runs.",
@@ -1805,6 +1807,7 @@
       "lede": "It asks repowise first, so it reads less and guesses less.",
       "none": "No agents found on this machine yet. Setup lists every one repowise supports.",
       "connected": "Connected. Restart it to load the tools.",
+      "coreTools": "Lists the core repowise tools by default. Agents & editors in Settings turns on more.",
       "waiting": "Waiting for its first call",
       "firstCall": "First call {when}",
       "installed": "Installed on this machine. Writes <mono>{file}</mono>.",
@@ -1817,7 +1820,7 @@
       "listLabel": "Agents on this machine",
       "moreAgents": "{count, plural, one {# more agent} other {# more agents}} found. Setup lists them all.",
       "askLabel": "Ask it something",
-      "askRisk": "Which files are riskiest to change, and why?",
+      "askFlow": "How does the main flow in this repo work, end to end?",
       "askHotspot": "Why does {path} change so often?",
       "askStart": "Where should I start reading this repo?",
       "copy": "Copy",
@@ -1836,6 +1839,7 @@
         "local": "Your key or sign-in stays here"
       },
       "detected": "Found on this machine: {names}.",
+      "keyless": "Until you add a model, your agent's answers are ranked evidence from the index.",
       "syncTitle": "Keep the index in sync",
       "syncBody": "Updates after each commit through a git hook.",
       "syncFailed": "Couldn't change sync",
@@ -2967,6 +2971,7 @@
         "detailWaitingOther": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call. {other} is installed, not connected.",
         "detailInstalled": "{agent} is installed. Connecting writes its MCP config.",
         "detailNone": "No coding agent found on this machine. Install one, then connect it here.",
+        "coreTools": "{count, plural, one {{agents} lists} other {{agents} list}} the core repowise tools by default. Agents & editors in Settings turns on more.",
         "detailNoCalls": "{agent} is registered but hasn't reached this index. If it opened a different folder, open {repo} in it or run repowise init there."
       },
       "sync": {
@@ -2984,7 +2989,7 @@
         "statusBuilt": "Built from index",
         "detailActive": "Using {provider}.",
         "detailReady": "{providers} ready on this machine.",
-        "detailNone": "Docs are built from the index. A model writes fuller docs and answers in chat."
+        "detailNone": "Docs are built from the index, and your agent's answers are ranked evidence until you add a model."
       },
       "coverage": {
         "title": "Test coverage",

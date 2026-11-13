@@ -204,6 +204,78 @@ def test_the_stand_down_follows_the_scope_the_host_actually_covers(
     assert "user" in agent["writes"]
 
 
+def _write_plugin(entry: dict, *, enabled: bool | None = None) -> None:
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    claude_dir = Path.home() / ".claude"
+    (claude_dir / "plugins").mkdir(parents=True, exist_ok=True)
+    (claude_dir / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {target_mod.PLUGIN_KEY: [entry]}}),
+        encoding="utf-8",
+    )
+    if enabled is not None:
+        (claude_dir / "settings.json").write_text(
+            json.dumps({"enabledPlugins": {target_mod.PLUGIN_KEY: enabled}}), encoding="utf-8"
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("none", []),
+        ("plugin", ["plugin/user"]),
+        ("init", ["direct/project"]),
+        ("both", ["direct/project", "plugin/user"]),
+        ("disabled-plugin", []),
+        ("project-plugin-here", ["plugin/project"]),
+        ("project-plugin-elsewhere", []),
+    ],
+)
+def test_claude_code_registrations_match_what_loads_in_this_repo(
+    repo: Path, tmp_path: Path, case: str, expected: list[str]
+) -> None:
+    """The listing, and the Setup page row built from it, count only live wiring.
+
+    A plugin turned off in settings.json loads nothing, and a plugin installed
+    for another project does not load here; counting either reads as connected
+    while the session has no repowise server.
+    """
+    from repowise.cli.agent_targets.targets.claude_code import sync_project_mcp_config
+    from repowise.server.services import setup_status
+
+    if case in ("init", "both"):
+        sync_project_mcp_config(repo)
+    if case in ("plugin", "both"):
+        _write_plugin({"scope": "user", "version": "0.41.0"})
+    if case == "disabled-plugin":
+        _write_plugin({"scope": "user", "version": "0.41.0"}, enabled=False)
+    if case == "project-plugin-here":
+        _write_plugin({"scope": "project", "projectPath": str(repo), "version": "0.41.0"})
+    if case == "project-plugin-elsewhere":
+        _write_plugin({"scope": "project", "projectPath": str(tmp_path), "version": "0.41.0"})
+
+    listing = _json(["agents"])
+    row = next(r for r in listing["agents"] if r["id"] == "claude-code")
+    assert sorted(f"{r['method']}/{r['scope']}" for r in row["registrations"]) == expected
+    rows, _ = setup_status._agents(listing, {})
+    setup_row = next(r for r in rows if r["id"] == "claude-code")
+    assert setup_row["connected"] is bool(expected)
+
+
+def test_add_wires_this_repo_when_the_plugin_is_pinned_to_another(
+    repo: Path, tmp_path: Path
+) -> None:
+    """A project-scoped plugin for a different repo covers nothing here."""
+    _write_plugin({"scope": "project", "projectPath": str(tmp_path), "version": "0.41.0"})
+
+    payload = _json(["agents", "add", str(repo), "--target", "claude-code", "-y"])
+
+    agent = payload["agents"][0]
+    assert "project" not in agent.get("skips", {})
+    assert agent["writes"]["project"]["files"][0]["action"] == "created"
+    assert (repo / ".mcp.json").exists()
+
+
 def test_add_honours_the_skip_env_var_for_user_scope(repo: Path, monkeypatch) -> None:
     """The flag means what it says: never touch the developer's global config."""
     monkeypatch.setenv("REPOWISE_SKIP_EDITOR_SETUP", "1")

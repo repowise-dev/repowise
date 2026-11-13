@@ -611,6 +611,60 @@ class TestFieldTypedReceiver:
         for callee in ("app/Api.kt::Api::fetch", "app/Api.kt::Dao::read"):
             assert ("app/Repo.kt::Repo::load", callee, 0.90, "receiver_field_same_package") in edges
 
+    @staticmethod
+    def _kotlin_destructuring_edges(
+        tmp_path: Path, body: str, shapes: str = "data class Reading(val n: Norm, val x: Int)\n"
+    ) -> list[tuple[str, str, float, str]]:
+        parsed = _parse_all(
+            tmp_path,
+            {"k.kt": ("kotlin", f"{shapes}class Norm {{ fun size() = 1 }}\n{body}")},
+        )
+        return _edges(parsed, tmp_path)
+
+    def test_a_kotlin_destructured_local_takes_its_component_type(self, tmp_path: Path) -> None:
+        edges = self._kotlin_destructuring_edges(
+            tmp_path, "fun f(p: Reading) {\n    val (n, x) = p\n    n.size()\n}\n"
+        )
+        assert [e for e in edges if e[:2] == ("k.kt::f", "k.kt::Norm::size")]
+        assert all(e[3].startswith("receiver_typed") for e in edges if e[1] == "k.kt::Norm::size")
+
+    def test_a_kotlin_destructured_local_is_read_by_position(self, tmp_path: Path) -> None:
+        edges = self._kotlin_destructuring_edges(
+            tmp_path,
+            "fun f(p: Reading) {\n    val (_, m) = p\n    m.size()\n}\n",
+            "data class Reading(val n: Int, val x: Norm)\n",
+        )
+        assert ("k.kt::f", "k.kt::Norm::size") in {e[:2] for e in edges}
+
+    def test_a_kotlin_destructured_local_of_a_local_source(self, tmp_path: Path) -> None:
+        edges = self._kotlin_destructuring_edges(
+            tmp_path, "fun f() {\n    val p: Reading = load()\n    val (n, x) = p\n    n.size()\n}\n"
+        )
+        assert ("k.kt::f", "k.kt::Norm::size") in {e[:2] for e in edges}
+
+    def test_a_kotlin_destructuring_types_nothing_it_cannot_read(self, tmp_path: Path) -> None:
+        for body in (
+            # a component past the class's own, an unknown type, an untyped source
+            "fun f(p: Reading) {\n    val (a, b, c) = p\n    c.size()\n}\n",
+            "fun f(p: Reading) {\n    val (a, b) = p\n    b.size()\n}\n",
+            "fun f() {\n    val (n, x) = make()\n    n.size()\n}\n",
+            "fun f(p: Reading) {\n    val (_, x) = p\n    n.size()\n}\n",
+            # a lambda parameter of the same name hides the component
+            "fun f(p: Reading) {\n    val (n, x) = p\n    run { n -> n.size() }\n}\n",
+        ):
+            edges = self._kotlin_destructuring_edges(tmp_path, body)
+            assert "k.kt::Norm::size" not in {e[1] for e in edges}, body
+
+    def test_a_kotlin_destructuring_component_of_an_unknown_type_is_untyped(
+        self, tmp_path: Path
+    ) -> None:
+        edges = self._kotlin_destructuring_edges(
+            tmp_path,
+            "fun f(p: Reading) {\n    val (n, x) = p\n    n.size()\n}\n",
+            "data class Reading(val n: Missing, val x: Int)\n",
+        )
+        assert "k.kt::Norm::size" not in {e[1] for e in edges}
+
     def test_a_swift_stored_property_types_its_receiver(self, tmp_path: Path) -> None:
         """An init-assigned `let`, read bare and through `self`."""
         parsed = _parse_all(

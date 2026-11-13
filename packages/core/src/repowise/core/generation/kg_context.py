@@ -14,8 +14,14 @@ from pathlib import Path
 import structlog
 
 from repowise.core.ids import file_path_of
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 
 logger = structlog.get_logger(__name__)
+
+
+def _caller_edges(kg: dict) -> list[dict]:
+    """A doc naming a file is not a caller: it must not demote an entry point."""
+    return [e for e in kg.get("edges", []) if e.get("type") not in DOCUMENTATION_EDGE_TYPES]
 
 
 @dataclass
@@ -122,7 +128,7 @@ class KnowledgeGraphContext:
                 if (repo_root / fp).exists():
                     self._file_to_tour[fp] = step
 
-        for edge in kg.get("edges", []):
+        for edge in _caller_edges(kg):
             src = edge.get("source", "")
             tgt = edge.get("target", "")
             self._edges_by_source.setdefault(src, []).append(edge)

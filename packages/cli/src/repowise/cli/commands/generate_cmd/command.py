@@ -304,7 +304,43 @@ def generate_command(
       repowise generate --page module_page:src/api --cascade none
     """
     configure_cli_logging(verbose=verbose)
+    run_generate(
+        path,
+        all_pages=all_pages,
+        unwritten=unwritten,
+        stale=stale,
+        path_globs=path_globs,
+        page_ids=page_ids,
+        cascade=cascade,
+        provider_name=provider_name,
+        model=model,
+        reasoning=reasoning,
+        concurrency=concurrency,
+        dry_run=dry_run,
+        yes=yes,
+    )
 
+
+def run_generate(
+    path: str | None,
+    *,
+    all_pages: bool = False,
+    unwritten: bool = False,
+    stale: bool = False,
+    path_globs: tuple[str, ...] = (),
+    page_ids: tuple[str, ...] = (),
+    cascade: str | None = None,
+    provider_name: str | None = None,
+    model: str | None = None,
+    reasoning: str | None = None,
+    concurrency: int = 12,
+    dry_run: bool = False,
+    yes: bool = False,
+) -> Any:
+    """The body of ``repowise generate``; ``update --full`` runs it with ``stale=True``.
+
+    Returns the run's outcome, or None when nothing was generated.
+    """
     repo_path = resolve_repo_path(path)
     load_dotenv(repo_path)
     state = load_state(repo_path)
@@ -319,75 +355,26 @@ def generate_command(
     # `--page file_page:...` is a clear error, not a silent no-op deep in resolve.
     _reject_structural_page_ids(page_ids)
 
-    explicit = bool(all_pages or unwritten or stale or path_globs or page_ids)
-
-    # Bare `generate` on a terminal shows the wiki state and writes the unwritten
-    # concept pages. Piped / `--yes` / flagged runs skip straight to that default.
-    interactive = not explicit and not yes and sys.stdin.isatty()
-
-    # An explicit pick pulls in the pages that summarize it (dependents); the
-    # interactive path asks when it would change the outcome.
-    cascade_mode = cascade if cascade is not None else "dependents"
-
-    intent = _build_intent(
+    intent, interactive, cascade_mode = _selection(
         all_pages=all_pages,
         unwritten=unwritten,
         stale=stale,
-        paths=path_globs,
+        path_globs=path_globs,
         page_ids=page_ids,
+        cascade=cascade,
+        yes=yes,
     )
 
     # Checked first: with nothing to write, a missing key is not the reason.
     if not run_async(has_documentation(repo_path)):
         console.print(NO_DOCUMENTATION_MESSAGE)
         record_refusal("no_documentation")
-        return
+        return None
 
-    explicit_provider = provider_name is not None
-    if provider_name is None:
-        provider_name = _signed_in_cli(repo_path)
-
-    if dry_run:
-        provider = _dry_run_provider(provider_name, model, repo_path, reasoning)
-    else:
-        # Provider is required since a model writes these pages. On a real terminal, a
-        # missing one drops into init's provider + key prompt and persists the choice,
-        # so a first `generate` onboards the same way init does instead of dying.
-        # Onboarding needs a terminal on both ends: a terminal stdout (so the provider
-        # table renders) and a tty stdin (so the answer can be read). The stdin check
-        # keeps a background hook / CI / agent run from hanging even when it inherits a
-        # FORCE_COLOR that makes console.is_terminal report True; those keep the clean
-        # "No provider configured" error. Unlike the bare-run default, this fires
-        # even with explicit page flags, so a keyless `generate --all` still onboards,
-        # not just a bare `generate`.
-        can_prompt_provider = console.is_terminal and sys.stdin.isatty() and not yes
-        provider = resolve_provider_or_prompt(
-            provider_name, model, repo_path, reasoning=reasoning, interactive=can_prompt_provider
-        )
-
-    _record_provider(provider)
-    console.print(f"[bold]repowise generate[/bold] {repo_path}")
-    if provider is not None:
-        source = "" if explicit_provider else _key_source(repo_path, provider.provider_name)
-        console.print(
-            f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}"
-            f"[/cyan]{source}"
-        )
-
-    from repowise.core.generation import GenerationConfig
-
-    config = GenerationConfig.from_repo_config(
-        cfg,
-        max_concurrency=concurrency,
-        language=cfg.get("language", "en"),
-        reasoning=resolve_reasoning(reasoning, cfg),
-        enable_onboarding=flag(cfg.get("enable_onboarding"), True),
-        wiki_style=cfg.get("wiki_style", "comprehensive"),
-        # A whole-repo selection, so the file-page cap chosen at init applies
-        # here; without it this run would grow the file layer back.
-        max_file_pages=resolve_max_file_pages(config=cfg),
+    provider = _generate_provider(
+        provider_name, model, repo_path, reasoning, dry_run=dry_run, yes=yes
     )
-
+    config = _generation_config(cfg, concurrency, reasoning)
     exclude_patterns = list(cfg.get("exclude_patterns") or [])
 
     # A keyless init records `embedder: mock`, because that mode promises no
@@ -418,7 +405,7 @@ def generate_command(
     )
 
     if outcome is None:
-        return  # nothing generated, dry run, or declined — messaging already printed
+        return None  # nothing generated, dry run, or declined — messaging already printed
 
     _write_state(repo_path, state, provider, outcome, embedder=embedder_name)
     # Telemetry never ends a run whose pages are already saved.
@@ -432,6 +419,98 @@ def generate_command(
         # A scheduled run must be able to tell "every page failed" (no sign-in,
         # a dead key) from success. Partial success keeps 0: its pages are kept.
         raise SystemExit(1)
+    return outcome
+
+
+def _selection(
+    *,
+    all_pages: bool,
+    unwritten: bool,
+    stale: bool,
+    path_globs: tuple[str, ...],
+    page_ids: tuple[str, ...],
+    cascade: str | None,
+    yes: bool,
+) -> tuple[PageSelectionIntent, bool, str]:
+    """The page selection, whether to ask for it interactively, and the cascade mode."""
+    explicit = bool(all_pages or unwritten or stale or path_globs or page_ids)
+
+    # Bare `generate` on a terminal shows the wiki state and writes the unwritten
+    # concept pages. Piped / `--yes` / flagged runs skip straight to that default.
+    interactive = not explicit and not yes and sys.stdin.isatty()
+
+    # An explicit pick pulls in the pages that summarize it (dependents); the
+    # interactive path asks when it would change the outcome.
+    cascade_mode = cascade if cascade is not None else "dependents"
+
+    intent = _build_intent(
+        all_pages=all_pages,
+        unwritten=unwritten,
+        stale=stale,
+        paths=path_globs,
+        page_ids=page_ids,
+    )
+    return intent, interactive, cascade_mode
+
+
+def _generate_provider(
+    provider_name: str | None,
+    model: str | None,
+    repo_path: Path,
+    reasoning: str | None,
+    *,
+    dry_run: bool,
+    yes: bool,
+) -> Any:
+    """Resolve (or, on a terminal, onboard) the provider and print the run's header."""
+    explicit_provider = provider_name is not None
+    if provider_name is None:
+        provider_name = _signed_in_cli(repo_path)
+
+    if dry_run:
+        provider = _dry_run_provider(provider_name, model, repo_path, reasoning)
+    else:
+        # Provider is required since a model writes these pages. On a real terminal, a
+        # missing one drops into init's provider + key prompt and persists the choice,
+        # so a first `generate` onboards the same way init does instead of dying.
+        # Onboarding needs a terminal on both ends: a terminal stdout (so the provider
+        # table renders) and a tty stdin (so the answer can be read). The stdin check
+        # keeps a background hook / CI / agent run from hanging even when it inherits a
+        # FORCE_COLOR that makes console.is_terminal report True; those keep the clean
+        # "No provider configured" error. Unlike the bare-run default, this fires
+        # even with explicit page flags, so a keyless `generate --all` still onboards,
+        # not just a bare `generate`.
+        can_prompt_provider = console.is_terminal and sys.stdin.isatty() and not yes
+        provider = resolve_provider_or_prompt(
+            provider_name, model, repo_path, reasoning=reasoning, interactive=can_prompt_provider
+        )
+
+    _record_provider(provider)
+    console.print(f"[bold]repowise generate[/bold] {repo_path}")
+    if provider is not None:
+        source = "" if explicit_provider else _key_source(repo_path, provider.provider_name)
+        console.print(
+            f"Provider: [cyan]{provider_model(provider.provider_name, provider.model_name)}"
+            f"[/cyan]{source}"
+        )
+    return provider
+
+
+def _generation_config(cfg: dict, concurrency: int, reasoning: str | None) -> Any:
+    """The generation config a whole-repo ``generate`` run uses."""
+    from repowise.core.generation import GenerationConfig
+
+    return GenerationConfig.from_repo_config(
+        cfg,
+        max_concurrency=concurrency,
+        language=cfg.get("language", "en"),
+        reasoning=resolve_reasoning(reasoning, cfg),
+        enable_onboarding=flag(cfg.get("enable_onboarding"), True),
+        wiki_style=cfg.get("wiki_style", "comprehensive"),
+        # A whole-repo selection, so the file-page cap chosen at init applies
+        # here; without it this run would grow the file layer back.
+        max_file_pages=resolve_max_file_pages(config=cfg),
+    )
 
 
 def _record_provider(provider: Any) -> None:
