@@ -148,6 +148,7 @@ class JsonProgressEmitter:
         outcome: str | None = None,
         docs_deferred: bool = False,
         stale_pages: int | None = None,
+        render_backlog: int | None = None,
     ) -> None:
         # ``outcome`` lets a supervising agent tell a real regeneration apart
         # from a run that only deferred to an in-flight update or found nothing
@@ -164,6 +165,8 @@ class JsonProgressEmitter:
         }
         if docs_deferred:
             event.update(docs_deferred=True, stale_pages=stale_pages)
+        if render_backlog is not None:
+            event["render_backlog"] = render_backlog
         self._emit(event)
 
     def error(self, message: str) -> None:

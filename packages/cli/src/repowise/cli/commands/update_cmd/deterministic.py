@@ -55,6 +55,7 @@ def load_prior_page_ids(
     page_types: Iterable[str] | None = None,
     *,
     content_paths: Iterable[str] = (),
+    load_revisions: bool = False,
 ) -> dict:
     """Every page id already in the wiki (of *page_types*, when given), mapped to a placeholder.
 
@@ -62,13 +63,15 @@ def load_prior_page_ids(
     re-rendered page can still link to the pages this run did not touch.
     Bodies are read only for the pages of *content_paths*, the files this run
     re-renders: a page that comes out byte-identical keeps its stored vector.
-    The full ``load_prior_pages`` would pull every page's content.
+    *load_revisions* reads all revision metadata without page bodies. Bounded
+    rendering loads its selected bodies after planning.
     """
-    return run_async(_load_prior_page_ids(repo_path, page_types, set(content_paths)))
+    return run_async(_load_prior_page_ids(repo_path, page_types, set(content_paths), load_revisions))
 
 
 async def _load_prior_page_ids(
-    repo_path: Path, page_types: Iterable[str] | None, content_paths: set[str]
+    repo_path: Path, page_types: Iterable[str] | None, content_paths: set[str],
+    load_revisions: bool = False,
 ) -> dict:
     from repowise.cli.helpers import get_db_url_for_repo
     from repowise.core.persistence import create_engine, create_session_factory, get_session
@@ -85,7 +88,12 @@ async def _load_prior_page_ids(
                 query = query.where(Page.page_type.in_(tuple(page_types)))
             rows = (await session.execute(query)).all()
             prior: dict = dict.fromkeys((r[0] for r in rows), None)
-            wanted = [pid for pid, tp in rows if (tp or "").split("::", 1)[0] in content_paths]
+            if load_revisions:
+                prior.update(await _prior_bodies(
+                    session, repo_path, list(prior), include_content=False,
+                ))
+            wanted = [pid for pid, tp in rows
+                      if (tp or "").split("::", 1)[0] in content_paths]
             prior.update(await _prior_bodies(session, repo_path, wanted))
             return prior
     except Exception:
@@ -94,7 +102,9 @@ async def _load_prior_page_ids(
         await engine.dispose()
 
 
-async def _prior_bodies(session: Any, repo_path: Path, page_ids: list[str]) -> dict:
+async def _prior_bodies(
+    session: Any, repo_path: Path, page_ids: list[str], *, include_content: bool = True,
+) -> dict:
     """Stored bodies of *page_ids*. Best effort: without them every page re-embeds."""
     if not page_ids:
         return {}
@@ -102,7 +112,9 @@ async def _prior_bodies(session: Any, repo_path: Path, page_ids: list[str]) -> d
 
     try:
         repo = await get_repository_by_path(session, str(repo_path))
-        return {} if repo is None else await load_prior_pages(session, repo.id, page_ids=page_ids)
+        return {} if repo is None else await load_prior_pages(
+            session, repo.id, page_ids=page_ids, include_content=include_content,
+        )
     except Exception:
         return {}
 
@@ -124,6 +136,9 @@ def regenerate_deterministic_pages(
     full_scope: bool = False,
     stats_out: dict[str, int] | None = None,
     embed_during_generation: bool = True,
+    render_budget: int | None = None,
+    changed_paths: set[str] | None = None,
+    only_page_ids: set[str] | None = None,
 ) -> list:
     """Re-render the template pages for *regenerate_paths*. Never raises.
 
@@ -153,6 +168,9 @@ def regenerate_deterministic_pages(
         full_scope=full_scope,
         stats_out=stats_out,
         embed_during_generation=embed_during_generation,
+        render_budget=render_budget,
+        changed_paths=changed_paths,
+        only_page_ids=only_page_ids,
     )
 
 
@@ -223,6 +241,8 @@ def _render_pages(
     vector_store: Any = None,
     stats_out: dict[str, int] | None = None,
     embed_during_generation: bool = True,
+    render_budget: int | None = None,
+    changed_paths: set[str] | None = None,
 ) -> list:
     """Render the changed files' pages from structure (free, no LLM).
 
@@ -304,11 +324,25 @@ def _render_pages(
             prior_pages=prior_page_ids or {},
             repo_path=repo_path,
         )
-        # A template render takes every page it is fed; deterministic mode
-        # bypasses the budget already, so no page-id scoping is needed.
-        with console.status("  Rebuilding documentation pages from code…"):
-            pages = run_async(
-                generator.generate_all(
+        # Selection still owns file caps and complete repository context.
+        async def generate() -> list:
+            from .persistence import PageCheckpointer
+
+            checkpoint = PageCheckpointer(repo_path, repo_path.name)
+            if render_budget is not None:
+                await checkpoint.start()
+
+            async def prepare_render(stale_ids: set[str]) -> None:
+                await checkpoint.mark_stale(stale_ids)
+                # Embedding reuse needs selected bodies; map pages also read
+                # their parts' openings. Other page bodies stay out of memory.
+                wanted = generator.render_selected_ids | {
+                    pid for pid in generator._prior_pages if pid.startswith("module_page:")
+                }
+                generator._prior_pages.update(await checkpoint.load_prior_pages(wanted))
+
+            try:
+                return await generator.generate_all(
                     affected_parsed,
                     affected_source,
                     graph_builder,
@@ -320,8 +354,20 @@ def _render_pages(
                     only_page_ids=only_page_ids,
                     # Without it a failed embed was logged and nothing else.
                     on_warning=degraded.append,
+                    render_budget=render_budget,
+                    changed_paths=changed_paths,
+                    render_stats=stats_out,
+                    on_page_ready=checkpoint.commit_page if render_budget is not None else None,
+                    on_render_plan=prepare_render if render_budget is not None else None,
                 )
-            )
+            finally:
+                if render_budget is not None:
+                    await checkpoint.close()
+                    if checkpoint.failure:
+                        degraded.append(f"Per-page crash checkpointing: {checkpoint.failure}")
+
+        with console.status("  Rebuilding documentation pages from code…"):
+            pages = run_async(generate())
         if stats_out is not None:
             stats_out["embed_failed_pages"] = (
                 stats_out.get("embed_failed_pages", 0) + generator.embed_failed_pages
@@ -330,6 +376,33 @@ def _render_pages(
     except Exception as exc:
         degraded.append(f"{degrade_label}: {exc}")
         return []
+
+
+def mark_render_backlog(repo_path: Path, page_ids: set[str]) -> None:
+    """Report untouched stale pages through the existing freshness owner."""
+    if not page_ids:
+        return
+
+    async def mark() -> None:
+        from repowise.cli.helpers import get_db_url_for_repo
+        from repowise.core.persistence import (
+            create_engine,
+            create_session_factory,
+            get_repository_by_path,
+            get_session,
+        )
+        from repowise.core.pipeline.persist.tombstones import mark_page_ids_stale
+
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                repo = await get_repository_by_path(session, str(repo_path))
+                if repo is not None:
+                    await mark_page_ids_stale(session, repo.id, page_ids)
+        finally:
+            await engine.dispose()
+
+    run_async(mark())
 
 
 def persist_deterministic_pages(
