@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import posixpath
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
@@ -71,6 +71,7 @@ from .entry_shape import export_shape
 from .jvm_name_scope import JvmNameScope
 from .models import DeadCodeFindingData, DeadCodeKind
 from .risk_factors import RISK_CAP_CONFIDENCE
+from .token_cache import scanned
 
 #: Identifier shape, matched over raw bytes so nothing has to be decoded â€” the
 #: scan covers every indexed file, and decoding them all would dominate it.
@@ -121,8 +122,15 @@ _SPAN_UNKNOWN = _Verdict(_Answer.SPAN_UNKNOWN)
 _ABSENT = _Verdict(_Answer.ABSENT)
 
 
+def file_identifiers(blob: bytes) -> frozenset[bytes]:
+    """The distinct :data:`IDENTIFIER_RE` tokens of *blob*, scanned once per bytes."""
+    return scanned("identifiers", blob, lambda: IDENTIFIER_RE.findall(blob))
+
+
 def occurrence_files(
-    source_map: dict[str, bytes], names: set[bytes]
+    source_map: Mapping[str, bytes],
+    names: set[bytes],
+    identifiers: Callable[[str], frozenset[bytes]] | None = None,
 ) -> dict[bytes, set[str]]:
     """For each name in *names*, the indexed files whose source writes it.
 
@@ -130,14 +138,17 @@ def occurrence_files(
     before the scan starts, so the returned map only ever holds the few names
     some finding actually asks about rather than every identifier in the
     repository â€” which is what keeps this affordable on a large tree.
+
+    *identifiers* gives a path's tokens when the map's text is not what is
+    scanned as is (see ``c_name_uses._CodeOnly``).
     """
     found: dict[bytes, set[str]] = {}
     if not names:
         return found
-    for path, blob in source_map.items():
-        # Each distinct token once: a file repeats most of its words, and the
-        # intersection runs in C rather than one Python step per token.
-        for token in names.intersection(IDENTIFIER_RE.findall(blob)):
+    for path in source_map:
+        tokens = identifiers(path) if identifiers else file_identifiers(source_map[path])
+        # The intersection runs in C over the smaller of the two sets.
+        for token in names.intersection(tokens):
             found.setdefault(token, set()).add(path)
     return found
 
@@ -637,7 +648,7 @@ def _targets_in(
     if unnamed is None:
         unnamed = set()
     found: set[str] = set()
-    for token in set(_PATH_TOKEN_RE.findall(blob)) - unnamed:
+    for token in scanned("path_tokens", blob, lambda: _PATH_TOKEN_RE.findall(blob)) - unnamed:
         text = token.decode("ascii")
         if not _tail_wanted(text, tails):
             unnamed.add(token)

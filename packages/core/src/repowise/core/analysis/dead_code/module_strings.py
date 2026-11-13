@@ -45,11 +45,19 @@ from ...ingestion.languages.python_modules import module_parts
 from ...ingestion.languages.python_strings import defines_top_level, is_python, live_text
 from ...test_paths import is_test_related_path
 from .models import DeadCodeFindingData, DeadCodeKind
+from .token_cache import scanned
 
 #: A quoted module path, optionally followed by ``:attr``.
 _MODULE_STRING_RE = re.compile(
     rb"""['"]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?::([A-Za-z_]\w*))?['"]"""
 )
+
+
+def _module_strings(text: bytes) -> frozenset[tuple[bytes, bytes | None]]:
+    """The distinct ``(module, attr)`` groups of the module-path strings in *text*."""
+    return scanned(
+        "module_strings", text, lambda: (m.groups() for m in _MODULE_STRING_RE.finditer(text))
+    )
 
 
 def _has_module_getattr(tokens: list[tokenize.TokenInfo]) -> bool:
@@ -225,15 +233,15 @@ class _Reader:
     def uses(self, text: bytes) -> Iterator[tuple[str, str | None]]:
         """``(module, attr)`` for each module-path string in *text*."""
         names = self.index.by_name
-        for match in _MODULE_STRING_RE.finditer(text):
-            module = match.group(1).decode("ascii")
+        for module_bytes, attr_bytes in _module_strings(text):
+            module = module_bytes.decode("ascii")
             # Every module the index resolves ends in a candidate's own name,
             # so does the parent of a member path; a string ending in neither
             # names nothing and is skipped before any lookup.
             parent, _, last = module.rpartition(".")
             if last not in names and parent.rpartition(".")[2] not in names:
                 continue
-            attr = match.group(2).decode("ascii") if match.group(2) else None
+            attr = attr_bytes.decode("ascii") if attr_bytes else None
             targets = self._resolve(module)
             if not (targets or attr) and self.members is not None:
                 targets, attr = self._member_owners(module, self.members)
