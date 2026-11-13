@@ -8,7 +8,6 @@ both land and agree, not that one replaced the other.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 from sqlite3 import Row
 
@@ -27,18 +26,7 @@ PYTEST_OUTPUT = "\n".join(
 
 
 @pytest.fixture
-def store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    from repowise.core.distill import session_model
-
-    monkeypatch.setattr(
-        session_model,
-        "resolve_session_model",
-        partial(
-            session_model.resolve_session_model,
-            projects_root=tmp_path / "agent-transcripts" / "claude",
-            codex_sessions_root=tmp_path / "agent-transcripts" / "codex",
-        ),
-    )
+def store(tmp_path: Path):
     opened = OmissionStore(recorder.sidecar_path(tmp_path))
     try:
         yield opened
@@ -62,12 +50,16 @@ def test_distillation_uses_synthetic_transcript_roots(
         _repo_root: Path, projects_root: Path | None, codex_sessions_root: Path | None
     ) -> session_model.ResolvedModel:
         roots.append((projects_root, codex_sessions_root))
-        return session_model.ResolvedModel("claude-sonnet-4-6", "claude-sonnet-4-6", "unknown", "default")
+        return session_model.ResolvedModel(
+            "claude-sonnet-4-6", "claude-sonnet-4-6", "unknown", "default"
+        )
 
     monkeypatch.setattr(session_model, "_resolve", capture)
     distill_output(PYTEST_OUTPUT, command="pytest", source="cli", store=store)
 
-    assert roots == [(tmp_path / "agent-transcripts" / "claude", tmp_path / "agent-transcripts" / "codex")]
+    assert roots == [
+        (tmp_path / "agent-transcripts" / "claude", tmp_path / "agent-transcripts" / "codex")
+    ]
 
 
 def test_a_distillation_records_one_measured_event(store: OmissionStore) -> None:

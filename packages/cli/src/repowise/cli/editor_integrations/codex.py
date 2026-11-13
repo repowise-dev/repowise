@@ -53,11 +53,22 @@ class CodexSetup:
         installed = is_codex_cli_installed()
         logged_in = is_codex_logged_in() if installed else False
 
-        config_path = save_codex_mcp_config(repo_path)
-        console_obj.print(f"  [{OK}]{glyph('ok')}[/] Codex MCP registered ({config_path})")
+        from repowise.cli.agent_targets.formats.server_entry import (
+            RENAME_HINT,
+            RemoteServerEntryError,
+        )
+
+        written: list[Path] = []
+        try:
+            config_path = save_codex_mcp_config(repo_path)
+        except RemoteServerEntryError:
+            console_obj.print(f"  [{WARN}].codex/config.toml left unchanged: {RENAME_HINT}.[/]")
+        else:
+            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Codex MCP registered ({config_path})")
+            written.append(Path(config_path))
         hooks_path = save_codex_hooks_config(repo_path)
         console_obj.print(f"  [{OK}]{glyph('ok')}[/] Codex hooks registered ({hooks_path})")
-        written = [Path(config_path), Path(hooks_path)]
+        written.append(Path(hooks_path))
         if not agents_disabled:
             agents_path = maybe_generate_agents_md(
                 console_obj,

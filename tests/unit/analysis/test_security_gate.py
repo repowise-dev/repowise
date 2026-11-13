@@ -531,6 +531,7 @@ def test_a_submodule_in_the_change_is_skipped_not_fatal(repo, tmp_path):
     _git(sub, "init", "-q")
     _git(sub, "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "s")
     _git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.as_uri(), "sub")
+    assert scan_change(str(repo), {"sub": {1}}, "staged", staged=True).findings == []
     _commit(repo, "submodule")
     assert _scan(repo).findings == []
 

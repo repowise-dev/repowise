@@ -38,7 +38,7 @@ def _build_update_vector_store(
     try:
         from repowise.cli.providers import build_embedder, build_vector_store, resolve_embedder
 
-        embedder = build_embedder(resolve_embedder(cfg.get("embedder")), repo_path)
+        embedder = build_embedder(resolve_embedder(cfg.get("embedder"), repo_path=repo_path), repo_path)
         store = build_vector_store(repo_path, embedder)
         if required and store is None and (Path(repo_path) / ".repowise" / "lancedb").exists():
             raise RuntimeError(
@@ -99,6 +99,7 @@ def _rebuild_graph_and_git(
     force_full_git: bool = False,
     git_summary_sink: list[Any] | None = None,
     timings: PhaseTimings | None = None,
+    fresh_communities: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -143,6 +144,7 @@ def _rebuild_graph_and_git(
             # Re-resolve only the changed files when that is
             # provably equivalent to a rebuild (see pipeline.incremental.surface).
             patch_graph=incremental_graph_enabled(),
+            fresh_communities=fresh_communities,
         )
     )
 
@@ -155,6 +157,7 @@ def _refresh_knowledge_graph(
     git_meta_map: dict,
     dead_code_report: Any,
     prior_fingerprint: str | None,
+    changed_paths: list[str],
 ) -> Any | None:
     """Rebuild the KG skeleton + curation when the graph shape changed.
 
@@ -173,6 +176,7 @@ def _refresh_knowledge_graph(
             git_meta_map,
             dead_code_report,
             prior_fingerprint=prior_fingerprint,
+            changed_paths=changed_paths,
             log=console.print,
         )
     )

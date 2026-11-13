@@ -57,13 +57,19 @@ from .ast_utils import (
     _find_function_entry_name,
     _nested_function_nodes,
     _parameter_list,
+    function_start_line,
     unit_extent,
 )
 from .class_analysis import _collect_classes
 from .cobol import walk_cobol
 from .cyclomatic import _walk_function_body
 from .deprecation import is_deprecated
-from .dispatch import dispatch_points, dispatch_share
+from .dispatch import (
+    copy_guard_repeats,
+    dispatch_points,
+    dispatch_share,
+    exit_guard_repeats,
+)
 from .file_scan import scan_file
 from .gating import is_gated_off, module_false_constants
 from .languages import get_language_map
@@ -89,6 +95,7 @@ from .nloc import CodeLineIndex, _count_file_nloc
 from .perf_walk import _collect_perf_hits, perf_pass_runs
 from .signature import (
     bound_param_count,
+    defaulted_param_count,
     is_constructor,
     is_signature_fixed,
     keyword_only_param_count,
@@ -191,7 +198,7 @@ def walk_file(
     asserts = _assert_dialect(language, extra_assert_names)
     run_perf = perf_pass_runs(language, lmap)
     scan = scan_file(tree.root_node, language, lmap, source, io_names=run_perf)
-    markup = markup_rows(tree.root_node, grammar_tag, source)
+    markup = markup_rows(tree.root_node, grammar_tag, source, scan.literals, scan.arms, scan.chains)
     flags = module_false_constants(tree.root_node, source, language)
     facts_of = _facts_reader(abs_path, language, lmap)
     fn_nodes = _collect_function_nodes(tree.root_node, lmap)
@@ -228,7 +235,7 @@ def walk_file(
         dispatch = dispatch_points(body, lmap)
         fc = FunctionComplexity(
             name=name,
-            start_line=fn_node.start_point[0] + 1,
+            start_line=function_start_line(fn_node),
             end_line=fn_node.end_point[0] + 1,
             ccn=ccn,
             max_nesting=max_nest,
@@ -243,6 +250,7 @@ def walk_file(
             primitive_param_count=scalar,
             bound_param_count=bound_param_count(params, lmap),
             keyword_only_param_count=keyword_only_param_count(params, lmap),
+            defaulted_param_count=defaulted_param_count(params, lmap),
             is_constructor=is_constructor(fn_node, name, lmap),
             signature_fixed=is_signature_fixed(fn_node, lmap),
             complex_conditions=conditions,
@@ -257,6 +265,8 @@ def walk_file(
             bare_called_names=bare_called,
             dispatch_share=dispatch_share(dispatch.points, ccn),
             dispatch_arm=dispatch.arm,
+            exit_guards=exit_guard_repeats(body, lmap),
+            copy_guards=copy_guard_repeats(body, lmap),
             terminal_share=terminal,
             deprecated=is_deprecated(fn_node, body, name, lmap, source),
             gated_off=body is not fn_node and is_gated_off(body, flags),
@@ -267,7 +277,14 @@ def walk_file(
         fc_by_node_id[fn_node.id] = fc
 
     classes = _collect_classes(
-        scan.class_nodes, lmap, source, fc_by_node_id, scan.lines, language
+        scan.class_nodes,
+        lmap,
+        source,
+        fc_by_node_id,
+        scan.lines,
+        language,
+        fn_nodes=fn_nodes,
+        root_node=tree.root_node,
     )
     perf_hits, io_boundary_names, perf_fn_facts = _collect_perf_hits(
         tree.root_node, language, lmap, scan.io_names
@@ -312,9 +329,7 @@ def _direct_units(measured: list[Node], units: list[Node]) -> dict[int, list[Nod
     return holders
 
 
-def _unit_rows(
-    lines: CodeLineIndex, body: Node, units: list[Node] | None
-) -> list[tuple[int, int]]:
+def _unit_rows(lines: CodeLineIndex, body: Node, units: list[Node] | None) -> list[tuple[int, int]]:
     """The rows of *body* only its nested *units* cover; ``[]`` without any.
 
     A unit covers its binding too (:func:`unit_extent`): the ``const f =`` and

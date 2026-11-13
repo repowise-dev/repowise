@@ -43,7 +43,12 @@ from pathlib import Path
 
 from repowise.core.fsutils import repo_relative
 
-from ._shared import HookResult, _extract_output_text, _find_repo_root
+from ._shared import (
+    HookResult,
+    _checkout_root,
+    _extract_output_text,
+    _find_repo_root,
+)
 
 #: Replacement gates. Named for the retired nudge they were first tuned for,
 #: and left that way on purpose: :mod:`search_digest` documents its own ratio
@@ -226,7 +231,7 @@ def _handle_edit_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return None
-    rel = repo_relative(file_path, repo_path, resolve=True)
+    rel = repo_relative(file_path, _checkout_root(Path(cwd), repo_path), resolve=True)
     if rel is None:
         return None
     state = _load_session_state(repo_path, session_id)
@@ -312,7 +317,8 @@ def _handle_read_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return HookResult()
-    rel = repo_relative(file_path, repo_path, resolve=True)
+    checkout = _checkout_root(Path(cwd), repo_path)
+    rel = repo_relative(file_path, checkout, resolve=True)
     if rel is None:
         return HookResult()
     if adapter is None:
@@ -348,6 +354,7 @@ def _handle_read_post(
 
     served, on_emitted = _collapse_replacement(
         repo_path,
+        checkout,
         rel,
         tool_input,
         tool_output,
@@ -363,7 +370,9 @@ def _handle_read_post(
     # make that half true: current, but with every body elided, at exactly the
     # moment the agent has most reason to look at one.
     changed_under_agent = any(category == "changed_since_read" for category, _ in fired)
-    if served is None and not changed_under_agent:
+    # A skeleton cuts the file at the index's line numbers, and a worktree
+    # reading its main checkout's index may have moved them.
+    if served is None and not changed_under_agent and checkout == repo_path:
         served, on_emitted = _skeleton_replacement(
             repo_path,
             rel,
@@ -377,7 +386,7 @@ def _handle_read_post(
             fired.append((served.category, served.text))
             state["skeletonized"].append(rel)
 
-    _record_read_meta(repo_path, rel, tool_input, tool_output, state, replaced=served is not None)
+    _record_read_meta(checkout, rel, tool_input, tool_output, state, replaced=served is not None)
 
     if not _save_session_state(repo_path, state):
         # Every once-per-file gate here *is* that state file. If it did not
@@ -403,7 +412,7 @@ def _handle_read_post(
 
 
 def _record_read_meta(
-    repo_path: Path,
+    checkout: Path,
     rel: str,
     tool_input: dict,
     tool_output: object,
@@ -438,7 +447,7 @@ def _record_read_meta(
 
     size = mtime = -1
     try:
-        stat = (repo_path / rel).stat()
+        stat = (checkout / rel).stat()
         size, mtime = stat.st_size, int(stat.st_mtime_ns)
     except OSError:
         pass
@@ -478,6 +487,7 @@ def _same_range(tool_input: dict, prior: dict) -> bool:
 
 def _collapse_replacement(
     repo_path: Path,
+    checkout: Path,
     rel: str,
     tool_input: dict,
     tool_output: object,
@@ -524,7 +534,7 @@ def _collapse_replacement(
 
         touched = False
         try:
-            stat = (repo_path / rel).stat()
+            stat = (checkout / rel).stat()
             touched = (
                 prior_meta.get("sz") not in (-1, stat.st_size)
                 or prior_meta.get("mt") not in (-1, int(stat.st_mtime_ns))

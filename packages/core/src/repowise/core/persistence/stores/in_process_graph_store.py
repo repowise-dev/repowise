@@ -195,7 +195,7 @@ class InProcessGraphStore(GraphStore):
         ``repowise upgrade`` load a parser to read a ledger. The two existing
         persistence → ingestion imports are local for the same reason.
         """
-        from ...ingestion.models import TEMPORAL_EDGE_TYPES
+        from ...ingestion.models import NON_CODE_EDGE_TYPES
 
         file_nodes = [
             n
@@ -207,7 +207,7 @@ class InProcessGraphStore(GraphStore):
             [
                 (u, v)
                 for u, v, attrs in sub.edges(data=True)
-                if attrs.get("edge_type") in TEMPORAL_EDGE_TYPES
+                if attrs.get("edge_type") in NON_CODE_EDGE_TYPES
             ]
         )
         return sub

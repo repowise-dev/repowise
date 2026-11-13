@@ -106,9 +106,9 @@ def test_swift_and_kotlin_agree(swift, kotlin, expected):
 
 
 def test_guard_is_a_decision():
-    """It has a condition and a path that leaves, like an ``if``."""
-    assert _f("    guard a > 0 else { return 1 }") == (2, 1)
-    assert _f("    guard a > 0, b > 0 else { return 1 }") == (2, 1)
+    """It has a condition and a path that leaves, like an ``if``, and opens no level."""
+    assert _f("    guard a > 0 else { return 1 }") == (2, 0)
+    assert _f("    guard a > 0, b > 0 else { return 1 }") == (2, 0)
 
 
 def test_if_let_and_guard_let_are_the_same_decisions_with_a_binding():

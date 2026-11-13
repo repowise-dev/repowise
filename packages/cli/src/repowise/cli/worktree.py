@@ -39,25 +39,12 @@ def _git_output(args: list[str], cwd: Path) -> str:
 def detect_worktree_base(repo_path: Path) -> Path | None:
     """Return the base checkout of a linked git worktree, else None.
 
-    A linked worktree has ``.git`` as a file; ``--git-common-dir`` then points
-    at the base checkout's ``.git`` directory. Submodules also use a ``.git``
-    file, but their common dir is ``<parent>/.git/modules/<name>``, so the
-    ``.git``-named-parent check filters them out along with bare repos.
+    Read from git's own metadata files, without a subprocess; see
+    :func:`repowise.core.git_head.linked_worktree_base`.
     """
-    if not (repo_path / ".git").is_file():
-        return None
-    common_dir = _git_output(["rev-parse", "--git-common-dir"], repo_path)
-    if not common_dir:
-        return None
-    common = Path(common_dir)
-    if not common.is_absolute():
-        common = (repo_path / common).resolve()
-    if common.name != ".git":
-        return None
-    base = common.parent
-    if base.resolve() == repo_path.resolve():
-        return None
-    return base
+    from repowise.core.git_head import linked_worktree_base
+
+    return linked_worktree_base(repo_path)
 
 
 def base_is_seedable(base: Path) -> bool:

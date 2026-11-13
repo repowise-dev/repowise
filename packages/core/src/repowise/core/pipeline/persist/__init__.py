@@ -43,7 +43,6 @@ from .graph import (
     _community_meta,
     _derive_entry_point_scores,
     _edge_row,
-    _edges_predate_cohesion,
     _prune_vanished_symbol_nodes,
     _stamp_betweenness_commit,
     _stored_edges_parser_fingerprint,
@@ -53,6 +52,7 @@ from .graph import (
     persist_incremental_symbols,
     persist_symbol_analysis,
     prune_absent_graph_rows,
+    prune_absent_synthetic_nodes,
     stamp_edges_parser_fingerprint,
 )
 from .health import (
@@ -93,6 +93,7 @@ from .sweeps import (
     sweep_retired_pages,
     sweep_store_hygiene,
     sweep_superseded_generated_pages,
+    sweep_unyielded_module_pages,
 )
 from .tombstones import (
     _SPOTLIGHT_PATHS_PER_QUERY,

@@ -31,7 +31,7 @@ from pathlib import Path
 
 from repowise.core.fsutils import repo_relative
 
-from ._shared import _find_repo_root, hook_flag_enabled
+from ._shared import _borrowed_index, _find_repo_root, hook_flag_enabled
 from .fast_lookup import _DB_ENV_VARS
 
 #: Report locations checked when ``coverage.paths`` is not set: the literal
@@ -242,7 +242,8 @@ def _local_index(cwd: str) -> tuple[Path, Path] | None:
     if any(os.environ.get(name) for name in _DB_ENV_VARS):
         return None
     repo = _find_repo_root(Path(cwd))
-    if repo is None:
+    # A worktree's coverage is not the main checkout's, and the ingest writes.
+    if repo is None or _borrowed_index(Path(cwd), repo):
         return None
     db = repo / ".repowise" / "wiki.db"
     if not db.is_file() or not hook_flag_enabled(repo, "coverage_reingest"):

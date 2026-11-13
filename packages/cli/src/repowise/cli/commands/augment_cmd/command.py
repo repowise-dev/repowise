@@ -32,9 +32,9 @@ is still answered for installs predating its retirement, but nothing we ship
 registers it any more — see :mod:`.codex`.)
 
   SessionStart (Claude Code)
-    * Emits a one-paragraph context block: whether the index is current,
-      behind (with a changed-file count), or mid-update, plus the core-tool
-      trust rule. CLAUDE.md stays static and cache-friendly; live freshness
+    * Emits a context block only when it has something new: the index
+      behind (with a changed-file count) or mid-update, plus the core-tool
+      trust rule; a current index is silent. CLAUDE.md stays static and cache-friendly; live freshness
       arrives here instead. When active decisions are relevant to the
       session's working set, a capped standing-decisions block rides along.
 
@@ -372,6 +372,58 @@ def _emit_response(event: str, result: HookResult | str, session_id: str = "") -
 # duplicate. Generous enough to cover two hook processes racing on the same
 # tool event, short enough that a genuinely repeated search later still speaks.
 _EMIT_DEDUP_TTL_SECONDS = 8.0
+_MAX_MARKER_CLEANUP_PER_RUN = 20
+_SWEEP_THROTTLE_FILE = ".repowise-augment-sweep.stamp"
+
+
+def _is_sweep_throttled(temp_dir: Path, now: float) -> bool:
+    """Return True if a sweep was performed within the dedup TTL window."""
+    stamp = temp_dir / _SWEEP_THROTTLE_FILE
+    with contextlib.suppress(OSError):
+        if now - stamp.stat().st_mtime < _EMIT_DEDUP_TTL_SECONDS:
+            return True
+    with contextlib.suppress(OSError):
+        stamp.write_text(str(now), encoding="utf-8")
+    return False
+
+
+def _unlink_if_expired(entry: Path, now: float) -> bool:
+    """Delete entry if older than TTL. Return True if deleted."""
+    if entry.name == _SWEEP_THROTTLE_FILE:
+        return False
+    with contextlib.suppress(OSError):
+        if now - entry.stat().st_mtime > _EMIT_DEDUP_TTL_SECONDS:
+            entry.unlink(missing_ok=True)
+            return True
+    return False
+
+
+def _sweep_dir(temp_dir: Path, now: float, max_delete: int) -> None:
+    deleted = 0
+    with contextlib.suppress(OSError):
+        for entry in temp_dir.glob(".repowise-augment-*"):
+            if _unlink_if_expired(entry, now):
+                deleted += 1
+                if deleted >= max_delete:
+                    break
+
+
+def _cleanup_stale_markers(
+    temp_dir: Path, now: float, max_delete: int = _MAX_MARKER_CLEANUP_PER_RUN
+) -> None:
+    """Delete expired .repowise-augment-* markers, throttled to run at most once per TTL window."""
+    if not _is_sweep_throttled(temp_dir, now):
+        _sweep_dir(temp_dir, now, max_delete)
+
+
+def _take_over_stale_marker(marker: Path, now: float) -> bool:
+    """Take over an existing marker if older than TTL. Return True if claimed."""
+    with contextlib.suppress(OSError):
+        if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
+            return False
+    with contextlib.suppress(OSError):
+        marker.write_text(str(now), encoding="utf-8")
+    return True
 
 
 def _claim_emission(event: str, context: str) -> bool:
@@ -399,6 +451,7 @@ def _claim_emission(event: str, context: str) -> bool:
         key = hashlib.sha1(f"{event}\x00{context}".encode(), usedforsecurity=False).hexdigest()[:16]
         marker = Path(tempfile.gettempdir()) / f".repowise-augment-{key}"
         now = time.time()
+        claimed = False
         try:
             # O_EXCL: only the first concurrent caller creates the file.
             fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -406,19 +459,15 @@ def _claim_emission(event: str, context: str) -> bool:
                 os.write(fd, str(now).encode())
             finally:
                 os.close(fd)
-            return True
+            claimed = True
         except FileExistsError:
             # Someone emitted recently — defer unless the marker is stale, in
             # which case take it over (handles a real repeat search later, and
             # a crashed prior run that left the marker behind).
-            try:
-                if now - marker.stat().st_mtime <= _EMIT_DEDUP_TTL_SECONDS:
-                    return False
-            except OSError:
-                return True
-            with contextlib.suppress(OSError):
-                marker.write_text(str(now), encoding="utf-8")
-            return True
+            claimed = _take_over_stale_marker(marker, now)
+        if claimed:
+            _cleanup_stale_markers(marker.parent, now)
+        return claimed
     except Exception:
         return True
 

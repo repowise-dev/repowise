@@ -94,7 +94,7 @@ describe("DecisionDetail", () => {
     const adapter = makeAdapter();
     renderView(<DecisionDetail decision={makeDecision()} adapter={adapter} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Put in force" }));
 
     await waitFor(() =>
       expect(adapter.patchDecision).toHaveBeenCalledWith({ status: "active" }),
@@ -119,14 +119,14 @@ describe("DecisionDetail", () => {
     const adapter = makeAdapter({ undoReview });
     renderView(<DecisionDetail decision={makeDecision()} adapter={adapter} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Put in force" }));
     await pressToastUndo("Decision accepted");
 
     await waitFor(() => expect(undoReview).toHaveBeenCalledTimes(1));
     expect(toastSuccess).toHaveBeenCalledWith("Undone. It is back where it was.");
     expect(adapter.patchDecision).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Put in force" })).toBeInTheDocument();
   });
 
   it("puts a dismissed decision back too", async () => {
@@ -149,7 +149,7 @@ describe("DecisionDetail", () => {
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
 
     await waitFor(() => expect(undoReview).toHaveBeenCalledTimes(1));
-    expect(await screen.findByRole("button", { name: "Confirm" })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Put in force" })).toBeInTheDocument();
     expect(toastSuccess).toHaveBeenCalledWith("Undone. It is back where it was.");
     expect(adapter.patchDecision).not.toHaveBeenCalled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -186,7 +186,7 @@ describe("DecisionDetail", () => {
   it("asks to dismiss instead when the host cannot undo a review", async () => {
     renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Put in force" }));
     await pressToastUndo("Decision accepted");
 
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
@@ -321,7 +321,7 @@ describe("DecisionDetail", () => {
   it("explains what Confirm/Dismiss do next to the buttons", () => {
     renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
     expect(
-      screen.getByText(/Confirm saves this as a decision your team follows/),
+      screen.getByText(/Put in force saves this as a decision your team follows/),
     ).toBeInTheDocument();
   });
 
@@ -359,6 +359,42 @@ describe("DecisionDetail", () => {
 
     renderView(<DecisionDetail decision={makeDecision()} adapter={makeAdapter()} />);
     expect(screen.queryByRole("button", { name: /Enforce this decision/ })).not.toBeInTheDocument();
+  });
+
+  it("pins a decision in force through the host, and marks it pinned", async () => {
+    const setPinned = vi.fn(async () => undefined);
+    renderView(
+      <DecisionDetail
+        decision={makeDecision({ status: "active", currency: "active" })}
+        adapter={makeAdapter({
+          setPinned,
+          renderRecordPrompts: () => <span>record prompts</span>,
+        })}
+      />,
+    );
+
+    expect(screen.getByText("record prompts")).toBeInTheDocument();
+    expect(screen.queryByText("Pinned")).not.toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Pin" }));
+    });
+
+    expect(setPinned).toHaveBeenCalledWith(true);
+    expect(screen.getByText("Pinned")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unpin" })).toBeInTheDocument();
+  });
+
+  it("offers no pin on a background record, or where the host cannot pin", () => {
+    const { unmount } = renderView(
+      <DecisionDetail decision={makeDecision()} adapter={makeAdapter({ setPinned: vi.fn() })} />,
+    );
+    expect(screen.queryByRole("button", { name: "Pin" })).not.toBeInTheDocument();
+    unmount();
+
+    renderView(
+      <DecisionDetail decision={makeDecision({ status: "active" })} adapter={makeAdapter()} />,
+    );
+    expect(screen.queryByRole("button", { name: "Pin" })).not.toBeInTheDocument();
   });
 
   it("renders a host-supplied linked-issues slot, and nothing when omitted", () => {

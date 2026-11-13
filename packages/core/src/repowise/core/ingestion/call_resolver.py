@@ -96,6 +96,7 @@ from .language_data import (
 )
 from .languages.receiver_types import external_type_name, holds_function
 from .models import (
+    TS_JS_LANGUAGES,
     CallReceiver,
     CallSite,
     Import,
@@ -131,9 +132,7 @@ _IMPLICIT_RECEIVER_LANGUAGES = frozenset({"java", "csharp", "cpp", "kotlin", "ap
 # JS/TS (and the single-file components parsed as TypeScript): a member is only
 # reachable as ``this.foo()`` or ``obj.foo()``, so a bare ``foo()`` inside a
 # class method never means a member of that class, whatever the file declares.
-_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = frozenset(
-    {"javascript", "typescript", "svelte", "vue", "astro"}
-)
+_BARE_CALL_SKIPS_MEMBERS_LANGUAGES = TS_JS_LANGUAGES
 
 # Python, Go and Rust share the shape: a bare ``foo()`` inside a method never
 # means a member either (Python needs ``self.``, Go needs a receiver, Rust
@@ -184,9 +183,7 @@ _NAMED_IMPORT_SCOPE_LANGUAGES = _LEXICAL_BARE_NAME_LANGUAGES | {"rust"}
 # may alias a type, whose members it does reach. C, C++ and Ruby are absent
 # because their "alias" is an included file's stem, which a call can only match
 # by coinciding with a variable's name.
-_MODULE_ONLY_ALIAS_LANGUAGES = frozenset(
-    {"python", "typescript", "javascript", "svelte", "vue", "dart", "go", "rust", "swift"}
-)
+_MODULE_ONLY_ALIAS_LANGUAGES = TS_JS_LANGUAGES | {"python", "dart", "go", "rust", "swift"}
 
 # The sentinel an import that binds a whole module's public names carries.
 _WILDCARD_IMPORTED_NAMES = ["*"]
@@ -356,6 +353,7 @@ class CallResolver(
         return_type_chain_languages: frozenset[str] | None = None,
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
         csharp_project_usings: dict[str, frozenset[str]] | None = None,
+        cpp_index: Any | None = None,
     ) -> None:
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
@@ -522,6 +520,10 @@ class CallResolver(
         self._parsed_files = parsed_files
 
         self._init_workspace_indexes(repo_path)
+        if cpp_index is not None:
+            # The C/C++ workspace index the build's warmup already made over
+            # these files; without it one is built here on first use.
+            self._cpp_index, self._cpp_index_built = cpp_index, True
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()

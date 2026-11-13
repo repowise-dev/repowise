@@ -25,6 +25,7 @@ from repowise.core.providers.llm.error_hints import describe_provider_error
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 from repowise.core.reasoning import ReasoningMode, resolve_reasoning
 from repowise.core.repo_config import load_repo_config
+from repowise.server.mcp_server._savings.interaction import note_provider_kind, timed_stage
 from repowise.server.mcp_server.tool_answer.config import (
     _SYNTHESIS_MAX_TOKENS,
     _SYNTHESIS_MAX_TOKENS_ENV,
@@ -529,6 +530,7 @@ async def _first_call(provider, prompts, configured, timeout_s, started):
     return (call, *await call(max_tokens=_SYNTHESIS_MAX_TOKENS, timeout_s=remaining_s))
 
 
+@timed_stage("synthesize")
 async def synthesize(
     provider,
     system_prompt: str,
@@ -557,6 +559,7 @@ async def synthesize(
     optional: with neither, the call is still priced and logged, just not
     persisted.
     """
+    note_provider_kind(provider)
     timeout_s = _synthesis_timeout(provider)
     max_tokens = _SYNTHESIS_MAX_TOKENS
     started = time.monotonic()

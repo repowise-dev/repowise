@@ -454,3 +454,22 @@ def test_a_layer_whose_node_ids_are_not_a_list_is_skipped() -> None:
         {"layers": [{"id": "layer:api", "name": "API", "nodeIds": 5}]}, {"a.py"}
     )
     assert layers[0]["node_ids"] == []
+
+
+async def test_doc_links_and_co_changes_are_not_architecture_edges(client: AsyncClient, app) -> None:
+    """Neither is an arrow or a degree in the file view (#5472)."""
+    repo = await _create_repo(client)
+    await _seed_graph(app, repo["id"])
+    async with app.state.session_factory() as session:
+        await batch_upsert_graph_edges(
+            session,
+            repo["id"],
+            [
+                {"source_node_id": "lib/index.ts", "target_node_id": "src/models.py", "edge_type": t}
+                for t in ("co_changes", "documents")
+            ],
+        )
+        await session.commit()
+        view = await build_architecture_view(session, repo["id"])
+
+    assert not {e.edge_type for e in view.edges} & {"co_changes", "documents"}

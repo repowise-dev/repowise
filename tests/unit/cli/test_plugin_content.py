@@ -14,7 +14,9 @@ disk; that is the failure mode this test exists to make impossible.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -68,17 +70,21 @@ def test_the_two_hosts_ship_the_same_skill_bodies() -> None:
 
     The per-file test above would still pass if someone gave a host its own copy
     of a body in the shared source. This is the property that actually matters:
-    one body, rendered twice.
+    one body, rendered twice. An `{{only:<host>}}` block is the one declared
+    exception, so the bodies are compared with every such block taken out.
     """
     hosts = {host.id: host for host in GEN.HOSTS}
     for item in GEN.load_items("skills"):
+        item = dataclasses.replace(item, body=GEN.HOST_BLOCK.sub("", item.body))
         claude = GEN.render(item, hosts["claude-code"], frontmatter_keys=None)
         codex = GEN.render(item, hosts["codex"], frontmatter_keys=None)
         # Strip frontmatter, since that half is allowed to differ per host.
         claude_body = claude.split("\n---\n\n", 1)[1]
         codex_body = codex.split("\n---\n\n", 1)[1]
         # ...but only where the hosts spell a slash command differently.
-        assert claude_body.replace("/repowise:", "@") == codex_body.replace(
+        # Not the PR decisions block's closing marker, which is the same text.
+        claude_cmds = re.sub(r"(?<!<!-- )/repowise:", "@", claude_body)
+        assert claude_cmds == codex_body.replace(
             "/prompts:repowise-", "@"
         ), f"{item.source.name}: the two hosts have different skill bodies"
 
@@ -119,6 +125,29 @@ def test_codex_prompts_carry_only_frontmatter_codex_reads() -> None:
         frontmatter = _on_disk(path).split("---\n")[1]
         keys = {line.split(":", 1)[0] for line in frontmatter.splitlines() if ":" in line}
         assert keys <= {"description", "argument-hint"}, f"{path.name} carries {keys}"
+
+
+def _item(body: str):
+    return GEN.Item(id="x", source=Path("x.md"), meta={"frontmatter": "name: x\n"}, body=body)
+
+
+def test_a_host_block_reaches_its_own_host_only() -> None:
+    hosts = {host.id: host for host in GEN.HOSTS}
+    item = _item(
+        "a\n{{only:codex}}\nb\n{{end}}\nc {{only:claude-code}}d{{end}}e {{only:codex}}f{{end}}\ng\n"
+    )
+    assert GEN.render(item, hosts["codex"], frontmatter_keys=None).endswith(
+        "\n\na\nb\nc e f\ng\n"
+    )
+    # An inline block that ends a line keeps the line break for the host that drops it.
+    assert GEN.render(item, hosts["claude-code"], frontmatter_keys=None).endswith(
+        "\n\na\nc de \ng\n"
+    )
+
+
+def test_a_host_block_for_no_known_host_fails_the_render() -> None:
+    with pytest.raises(ValueError, match="names no host"):
+        GEN.render(_item("{{only:codx}}b{{end}}"), GEN.HOSTS[0], frontmatter_keys=None)
 
 
 def test_rendering_is_idempotent() -> None:

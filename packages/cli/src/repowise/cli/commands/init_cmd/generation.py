@@ -104,6 +104,7 @@ def estimate_generation(
         skip_tests,
         skip_infra,
         kg_modules=kg_modules,
+        git_meta_map=result.git_meta_map,
     )
     est = estimate_cost(
         plans,
@@ -111,7 +112,9 @@ def estimate_generation(
         provider.model_name,
         repo_path=repo_path,
         embedder=embedder,
-        embedding_model=resolve_embedding_model(embedder) if embedder else None,
+        embedding_model=resolve_embedding_model(embedder, repo_path=repo_path)
+        if embedder
+        else None,
     )
     return plans, est
 
@@ -192,9 +195,7 @@ def structural_page_summary(plans: list[Any]) -> str:
     if not total:
         return ""
     parts = [f"{counts[pt]} {short}" for pt, _, short in _PAGE_TYPE_LABELS if counts.get(pt)]
-    return f"{total} more pages built from code, no model, no cost: " + ", ".join(
-        parts
-    )
+    return f"{total} more pages built from code, no model, no cost: " + ", ".join(parts)
 
 
 def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
@@ -274,8 +275,7 @@ def _enrich_knowledge_graph(
             # Optional enrichment: the reason goes to the log (shown with -v).
             logger.warning("kg_enrichment_skipped", error=f"{type(exc).__name__}: {exc}")
             console.print(
-                "  [dim]Knowledge graph layers and tour were skipped; "
-                "run with -v to see why.[/dim]"
+                "  [dim]Knowledge graph layers and tour were skipped; run with -v to see why.[/dim]"
             )
 
 
@@ -386,7 +386,6 @@ def run_repo_generation(
             "  [dim](each generated page is saved as it completes: safe to Ctrl-C, "
             "then run 'repowise init --resume' to pick up where it stopped)[/dim]"
         )
-
 
     # Filled by a resumed run with the pages it skipped because they already
     # exist. Persistence needs them: they are absent from ``generated_pages``,
