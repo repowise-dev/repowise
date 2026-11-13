@@ -1,25 +1,23 @@
-"""Claude Code SessionStart: index freshness + tool-protocol context block.
+"""Claude Code SessionStart: what is true now and not already in context.
 
-The generated CLAUDE.md is static between reindexes; what it cannot carry is
-whether the index is current *right now*. This handler closes that gap with a
-short per-session block so the agent starts with calibrated trust instead of
-discovering staleness mid-task:
+The block is re-billed for the whole session, so it says only what is both
+true and new, and is silent otherwise:
 
-  * index current  → one line saying so;
+  * no generated ``CLAUDE.md`` block → the call-first line (a plugin-only
+    install has no other place that says it);
   * update running → positive "catching up" notice (never a stale scare);
   * index behind   → indexed vs HEAD with a changed-file count, and the
-    target-scoped trust rule (stale_warning only when a served file changed).
+    target-scoped trust rule (stale_warning only when a served file changed);
+  * the rewrite hook installed but ``repowise`` off PATH → one line saying so;
+  * with ``decisions.session_start`` on, the relevance-ranked decisions block
+    (see :mod:`.decision_inject`), scored against what this session touches.
 
-Deliberately no hotspot/health lines here: CLAUDE.md already carries those
-statically, and this block is re-billed every session; freshness is the only
-signal that must be live. The one addition, when ``decisions.session_start``
-is on, is the relevance-ranked decisions block (see :mod:`.decision_inject`),
-which is also live by nature: it is scored against what this session is about
-to touch.
+A current index says nothing: the agent assumes it, and the ``CLAUDE.md``
+block already carries the indexed commit.
 
 Same operational rules as the rest of augment: stdlib + git subprocess only,
 any failure returns None, and a git failure never produces a false "current"
-claim (it degrades to a line without the freshness fact).
+claim.
 """
 
 from __future__ import annotations
@@ -30,6 +28,7 @@ from pathlib import Path
 # The leaf module, not the ``helpers`` facade: the facade imports rich and
 # asyncio, which every hook call would pay at import.
 from repowise.cli._helpers.git import as_commit_id
+from repowise.core.agent_steer import AGENT_STEER
 
 from ._shared import _checkout_root, _find_repo_root, emitting_build
 from .bash_staleness import _read_in_flight_marker
@@ -81,11 +80,11 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
         freshness = _worktree_freshness_block(repo_path, checkout, last_sync)
     else:
         freshness = _freshness_block(repo_path, last_sync)
-    if freshness is None:
-        return None
-    off_path = _distill_off_path_note()
-    if off_path:
-        freshness = f"{freshness} {off_path}"
+    # Every line here is paid for the whole session, so each one is said only
+    # when it is true and not already in the agent's context.
+    lines = [line for line in (freshness, _distill_off_path_note()) if line]
+    if not _has_agent_block(checkout):
+        lines.insert(0, AGENT_STEER)
 
     # Relevance-ranked standing decisions for this session's working set;
     # silent whenever nothing clears the floor (see decision_inject).
@@ -93,7 +92,36 @@ def _handle_claude_session_start(cwd: str, session_id: str = "") -> str | None:
         decisions = _session_decision_block(repo_path, session_id, checkout)
     except Exception:
         decisions = None
-    return f"{freshness}\n{decisions}" if decisions else freshness
+    if decisions:
+        lines.append(decisions)
+    if not lines:
+        return None
+    # The tag makes what follows attributable to the install that emitted it,
+    # which a transcript otherwise cannot recover; the ledger stamps every row
+    # for the same reason.
+    return f"[repowise {emitting_build()}] " + "\n".join(lines)
+
+
+#: The opening marker of the block ``repowise init`` writes into ``CLAUDE.md``
+#: (``generation.editor_files.ClaudeMdGenerator``), spelled out because that
+#: module loads Jinja, which a hook should not pay for.
+_AGENT_BLOCK_MARKER = "<!-- REPOWISE:START"
+
+
+def _has_agent_block(checkout: Path) -> bool:
+    """Whether a ``CLAUDE.md`` Claude Code reads here already carries the block.
+
+    The plugin writes no ``CLAUDE.md``, so a plugin-only install learns the
+    call-first line from this hook; a repository where ``repowise init`` wrote
+    the block already has the line and is not told twice.
+    """
+    for path in (checkout / ".claude" / "CLAUDE.md", checkout / "CLAUDE.md"):
+        try:
+            if _AGENT_BLOCK_MARKER in path.read_text(encoding="utf-8"):
+                return True
+        except (OSError, UnicodeDecodeError):
+            continue
+    return False
 
 
 #: Said when the rewrite hook is installed but every command it would rewrite
@@ -122,27 +150,19 @@ def _distill_off_path_note() -> str:
 
 
 def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
-    """The live index-freshness paragraph (the original SessionStart block).
+    """The live index-freshness paragraph, or None when there is nothing to say.
 
-    The tag carries the emitting build. It costs a few tokens once per session
-    and it makes the injections that follow attributable to the install that
-    produced them, which a transcript otherwise cannot recover. The ledger
-    stamps every row for the same reason; this is the half a transcript can
-    read back.
+    A current index is what the agent assumes already (the ``CLAUDE.md`` block
+    carries the indexed commit), and a HEAD git cannot read is no fact at all,
+    so both stay silent. Only drift is news.
 
     A sidechain has no SessionStart, so a subagent's emissions are attributable
     through the ledger's ``build`` column only. That is a real gap, stated
     rather than papered over.
     """
-    tag = f"[repowise {emitting_build()}]"
     head = _git_head(repo_path)
-    # No "prefer the MCP tools" sentence on the two lines below: agents did not
-    # act on it, and the generated CLAUDE.md already carries the tool table.
-    if head is None:
-        return f"{tag} This repository has a local codebase index."
-
-    if head == last_sync:
-        return f"{tag} Codebase index is current (HEAD {head[:8]})."
+    if head is None or head == last_sync:
+        return None
 
     in_flight = _read_in_flight_marker(repo_path)
     if in_flight is not None:
@@ -151,7 +171,7 @@ def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
             f"started {int(elapsed)}s ago" if isinstance(elapsed, (int, float)) else "running now"
         )
         return (
-            f"{tag} Index update in progress ({elapsed_str}), catching up to "
+            f"Index update in progress ({elapsed_str}), catching up to "
             f"{head[:8]}. The MCP tools remain reliable meanwhile; a response carries "
             "`stale_warning` only when a file it serves actually changed."
         )
@@ -159,25 +179,25 @@ def _freshness_block(repo_path: Path, last_sync: str) -> str | None:
     changed = _changed_file_count(repo_path, last_sync, head)
     drift = f" ({changed} files changed since)" if changed is not None else ""
     return (
-        f"{tag} Index is behind HEAD: indexed {last_sync[:8]}, now {head[:8]}{drift}. "
+        f"Index is behind HEAD: indexed {last_sync[:8]}, now {head[:8]}{drift}. "
         f"The MCP tools ({_CORE_TOOLS}) stay reliable: a response carries `stale_warning` "
         "only when a file it serves actually changed, and silence means current. "
         "Run `repowise update` to resync."
     )
 
 
-def _worktree_freshness_block(repo_path: Path, checkout: Path, last_sync: str) -> str:
+def _worktree_freshness_block(repo_path: Path, checkout: Path, last_sync: str) -> str | None:
     """The freshness paragraph for a worktree reading its main checkout's index.
 
     The index describes *repo_path* at *last_sync*, not this branch, so the
     paragraph says which files that holds for instead of advising an update:
     `repowise update` here would build the worktree an index of its own.
+    Silent while the worktree sits at the indexed commit: nothing differs.
     """
-    tag = f"[repowise {emitting_build()}]"
     head = _git_head(checkout)
-    base = f"{tag} This worktree reads the codebase index of {repo_path}, indexed at {last_sync[:8]}."
+    base = f"This worktree reads the codebase index of {repo_path}, indexed at {last_sync[:8]}."
     if head is None or head == last_sync:
-        return base
+        return None
     changed = _changed_file_count(checkout, last_sync, head)
     drift = f"{changed} files differ" if changed is not None else "files may differ"
     return (

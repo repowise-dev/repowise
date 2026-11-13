@@ -937,6 +937,51 @@ def test_claude_code_plugin_plus_user_entry_is_still_a_duplicate(
     assert report.fix_command == "repowise agents remove --target=claude-code"
 
 
+def test_claude_code_plugin_plus_init_project_entry_is_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The plugin plus the project ``.mcp.json`` that `repowise init` writes.
+
+    The most common double registration: Claude Code loads both servers, so
+    the instructions and tool names are paid twice on every turn.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: tmp_path / "none.json")
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
+
+    assert target_mod.TARGET.doctor().status is DoctorStatus.OK
+    report = target_mod.TARGET.doctor(repo_path=repo)
+    assert report.status is not DoctorStatus.OK
+    issue = next(i for i in report.issues if "registered twice" in i)
+    assert str(repo / ".mcp.json") in issue
+    # The project file is often the team's; the plugin is the copy to drop.
+    assert report.fix_command == target_mod.PLUGIN_UNINSTALL_COMMAND
+
+
 # ---------------------------------------------------------------------------
 # OpenCode
 # ---------------------------------------------------------------------------

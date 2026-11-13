@@ -1,6 +1,7 @@
 ---
 description: Show Repowise code-health — KPIs, lowest-scoring files, refactoring targets, trends, or per-file markers.
 allowed-tools: Bash(repowise health:*), Read
+disable-model-invocation: true
 ---
 
 # Repowise Health

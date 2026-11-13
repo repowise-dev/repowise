@@ -1,6 +1,7 @@
 ---
 description: Report unreachable files, unused exports, and zombie packages, tiered by confidence.
 allowed-tools: Bash(repowise dead-code:*), Read
+disable-model-invocation: true
 ---
 
 # Repowise Dead Code

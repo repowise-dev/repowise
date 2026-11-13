@@ -3,11 +3,7 @@ claude-code:
   dir: codebase-exploration
   frontmatter: |
     name: codebase-exploration
-    description: >
-      Use when exploring, understanding, or answering questions about a codebase that has Repowise
-      indexed (a .repowise/ directory in the project root). Activates for "how does X work",
-      "explain the architecture", "where is Y implemented", "what does this module do", or any task
-      that needs an understanding of structure before diving into source files.
+    description: How code works or where something lives.
     user-invocable: false
 codex:
   dir: codebase-exploration

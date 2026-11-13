@@ -32,9 +32,9 @@ is still answered for installs predating its retirement, but nothing we ship
 registers it any more — see :mod:`.codex`.)
 
   SessionStart (Claude Code)
-    * Emits a one-paragraph context block: whether the index is current,
-      behind (with a changed-file count), or mid-update, plus the core-tool
-      trust rule. CLAUDE.md stays static and cache-friendly; live freshness
+    * Emits a context block only when it has something new: the index
+      behind (with a changed-file count) or mid-update, plus the core-tool
+      trust rule; a current index is silent. CLAUDE.md stays static and cache-friendly; live freshness
       arrives here instead. When active decisions are relevant to the
       session's working set, a capped standing-decisions block rides along.
 

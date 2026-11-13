@@ -3,11 +3,7 @@ claude-code:
   dir: pre-modification
   frontmatter: |
     name: pre-modification
-    description: >
-      Use before modifying, refactoring, or deleting files in a codebase that has Repowise indexed
-      (indicated by a .repowise/ directory). Activates when Claude is about to edit code, especially
-      shared utilities, core modules, or files the user didn't explicitly mention. Helps assess
-      impact and avoid breaking things.
+    description: Before editing or deleting shared or core files.
     user-invocable: false
 codex:
   dir: pre-modification-check

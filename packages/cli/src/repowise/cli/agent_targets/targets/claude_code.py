@@ -404,6 +404,8 @@ def _plugin_installs() -> list[dict]:
 
 #: What the host, not repowise, has to run to update the plugin.
 PLUGIN_UPDATE_COMMAND = "/plugin update repowise@repowise"
+#: And what it has to run to drop the plugin's copy of a double registration.
+PLUGIN_UNINSTALL_COMMAND = "/plugin uninstall repowise@repowise"
 
 
 def plugin_version_skew() -> list[str]:
@@ -797,7 +799,9 @@ class ClaudeCodeTarget:
                 repairable=False,
             )
 
-        registrations = detect()
+        # With the repository: the project ``.mcp.json`` that `repowise init`
+        # writes is the registration most often doubled by the plugin.
+        registrations = detect(repo_path)
         if not registrations:
             return DoctorReport(
                 target_id=ID,
@@ -826,9 +830,11 @@ class ClaudeCodeTarget:
             if r.method == "direct" and r.detail not in ("desktop", "legacy")
         ]
         if duplicates:
+            where = ", ".join(str(r.config_path) for r in duplicates)
             issues.append(
-                "repowise is registered twice, once by the plugin and once directly, "
-                "so its MCP tool schemas and hooks are loaded twice."
+                "repowise is registered twice, once by the plugin and once directly "
+                f"({where}), so its MCP instructions, tool schemas and hooks are "
+                "loaded twice."
             )
 
         # Reported last and fixed first: an out-of-date plugin ships its own
@@ -836,7 +842,14 @@ class ClaudeCodeTarget:
         # as a side effect, where repairing the matcher does nothing for it.
         fix_command = "repowise hook rewrite install"
         if duplicates:
-            fix_command = "repowise agents remove --target=claude-code"
+            # A project `.mcp.json` is often shared with the team, so when it is
+            # the only other registration, the plugin is the copy to drop.
+            project_only = all(r.scope == Scope.PROJECT for r in duplicates)
+            fix_command = (
+                PLUGIN_UNINSTALL_COMMAND
+                if project_only
+                else "repowise agents remove --target=claude-code"
+            )
         skew = plugin_version_skew()
         if skew:
             from repowise.cli import __version__
