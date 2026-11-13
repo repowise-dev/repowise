@@ -216,6 +216,26 @@ def test_add_honours_the_skip_env_var_for_user_scope(repo: Path, monkeypatch) ->
     assert not (Path.home() / ".claude" / "settings.json").exists()
 
 
+def test_add_says_which_tools_each_agent_lists(repo: Path) -> None:
+    payload = _json(["agents", "add", str(repo), "--target", "vscode,claude-code", "-y"])
+    tools = {agent["id"]: agent["tools"] for agent in payload["agents"]}
+    assert tools == {
+        "vscode": "lists the core MCP tools",
+        "claude-code": "lists the standard MCP tools",
+    }
+    assert "repowise config set mcp.tools" in payload["tools_hint"]
+
+
+def test_add_tools_saves_the_same_setting_config_set_writes(repo: Path) -> None:
+    from repowise.core.repo_config import load_repo_config
+
+    payload = _json(
+        ["agents", "add", str(repo), "--target", "vscode", "--tools", "core,+get_health", "-y"]
+    )
+    assert load_repo_config(str(repo))["mcp"]["tools"] == ["core", "+get_health"]
+    assert payload["agents"][0]["tools"] == "lists the core MCP tools +get_health"
+
+
 def test_add_rejects_an_unknown_target_by_name(repo: Path) -> None:
     """A typo must not resolve to nothing and report success."""
     result = CliRunner().invoke(cli, ["agents", "add", str(repo), "--target", "cursr", "-y"])

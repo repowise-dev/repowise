@@ -229,8 +229,12 @@ def test_fuzzy_results_beside_literal_lines_keep_a_short_label():
 async def test_a_name_with_no_symbol_and_no_lines_keeps_its_miss_advice(tree):
     out = await search_codebase("disconnect", mode="symbol")
 
-    assert "lines" not in out or out["lines"] == []
-    assert "grep_hint" in out
+    assert out["lines"] == [] and out["complete"] is True
+    # The miss is still named; the scan listed every literal match (none), so
+    # there is nothing left to sweep with Grep.
+    assert "'disconnect'" in out["note"]
+    assert "grep_hint" not in out
+    assert "Grep" not in out["note"]
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from repowise.cli.helpers import (
     resolve_max_file_pages,
     resolve_reasoning,
 )
+from repowise.cli.platform import telemetry
 from repowise.cli.providers import resolve_embedder_choice
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.ui import WARN, load_dotenv
@@ -84,6 +85,7 @@ def _start_run(opts: InitOptions, repo_path: Path, start: float) -> InitRun:
         yes=opts.yes,
         resume=opts.resume,
     )
+    telemetry.add_command_outcome(interactive=is_interactive)
 
     if opts.resume:
         console.print(

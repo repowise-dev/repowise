@@ -816,8 +816,26 @@ class _RepowiseMCP(FastMCP):
         state = getattr(request, "scope", {}).get("state") or {}
         return state.get("principal")
 
+    def _client_slug(self) -> str | None:
+        """The agent slug of the client in this request, or None outside one."""
+        try:
+            session = self._mcp_server.request_context.session
+        except LookupError:
+            return None
+        from repowise.core.agents.identity import resolve_client_identity
+
+        info = getattr(getattr(session, "client_params", None), "clientInfo", None)
+        return resolve_client_identity(getattr(info, "name", None))
+
     async def list_tools(self):  # type: ignore[override]
         tools = await super().list_tools()
+        client = self._client_slug()
+        if client is not None:
+            from repowise.server.mcp_server._tool_selection import session_tool_names
+
+            names = session_tool_names(client)
+            if names is not None:
+                tools = [t for t in tools if t.name in names]
         principal = self._request_principal()
         if principal is None:
             return tools
@@ -877,12 +895,28 @@ _WORKSPACE_TOOL_LINES = {
 }
 
 
-def _instructions(enabled: Iterable[str] = (), repo_line: str | None = None) -> str:
+#: Tools the instructions name that a client's default profile may leave out.
+_NAMED_TOOLS = ("get_risk", "get_change_risk")
+
+#: Said when some client is not listed every tool in :data:`_NAMED_TOOLS`. A
+#: host only calls listed tools, so this is how an agent learns to turn them on.
+_OFF_LINE = (
+    "get_risk or get_change_risk not listed? `repowise config set mcp.tools "
+    "standard`, then restart the server."
+)
+
+
+def _instructions(
+    enabled: Iterable[str] = (), repo_line: str | None = None, *, all_listed: bool = True
+) -> str:
     """The server instructions, naming a workspace tool only when it is served.
 
     *repo_line* says what get_why holds for the served repository.
+    *all_listed* is false when some client's default profile leaves out a tool
+    in :data:`_NAMED_TOOLS`, which adds the line saying how to turn it on.
     """
-    text = f"{_INSTRUCTIONS}\n{repo_line}" if repo_line else _INSTRUCTIONS
+    text = _INSTRUCTIONS if all_listed else f"{_INSTRUCTIONS}\n{_OFF_LINE}"
+    text = f"{text}\n{repo_line}" if repo_line else text
     lines = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in enabled]
     if not lines:
         return text
@@ -918,14 +952,19 @@ def create_mcp_server(
     _state._repo_path = repo_path
     _state._force_single_repo = not workspace_mode
     from repowise.server.mcp_server import ensure_full_surface
-    from repowise.server.mcp_server._tool_selection import apply_tool_selection
+    from repowise.server.mcp_server._tool_selection import (
+        apply_tool_selection,
+        every_client_lists,
+    )
 
     # Tool modules import lazily now, so a server has to ask for the full
     # surface before it can advertise (or trim) it.
     ensure_full_surface()
 
     enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-    mcp._mcp_server.instructions = _instructions(enabled, decisions_line(repo_path))
+    mcp._mcp_server.instructions = _instructions(
+        enabled, decisions_line(repo_path), all_listed=every_client_lists(_NAMED_TOOLS)
+    )
     return mcp
 
 
@@ -1132,11 +1171,16 @@ def run_mcp(
         _state._repo_path = repo_path
         _state._force_single_repo = not workspace_mode
         from repowise.server.mcp_server import ensure_full_surface
-        from repowise.server.mcp_server._tool_selection import apply_tool_selection
+        from repowise.server.mcp_server._tool_selection import (
+            apply_tool_selection,
+            every_client_lists,
+        )
 
         ensure_full_surface()
         enabled = apply_tool_selection(mcp, repo_path=repo_path, override=tools)
-        mcp._mcp_server.instructions = _instructions(enabled, decisions_line(repo_path))
+        mcp._mcp_server.instructions = _instructions(
+            enabled, decisions_line(repo_path), all_listed=every_client_lists(_NAMED_TOOLS)
+        )
     except BaseExceptionGroup as group:
         _raise_group_leaf(group, transport)
 

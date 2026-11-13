@@ -98,6 +98,30 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
     return records
 
 
+async def unwritten_model_page_count(session: Any, repo_id: str) -> int:
+    """Pages a model writes that are still on their stub: what ``generate`` writes by default.
+
+    Uses :func:`load_page_records`'s predicate, so a ``model_free`` page (written
+    by a deterministic subkind) is not counted when ``generate --unwritten``
+    would never select it.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+    from repowise.core.persistence.models import Page
+
+    rows = (
+        await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.provider_name == "template",
+                Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
+            )
+        )
+    ).scalars()
+    return sum(1 for record in load_page_records(list(rows)) if record.is_template)
+
+
 def _selection_inputs(
     *,
     parsed_files: list[Any],
