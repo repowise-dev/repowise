@@ -93,6 +93,7 @@ from .sweeps import (
     sweep_retired_pages,
     sweep_store_hygiene,
     sweep_superseded_generated_pages,
+    sweep_unyielded_module_pages,
 )
 from .tombstones import (
     _SPOTLIGHT_PATHS_PER_QUERY,
