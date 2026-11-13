@@ -183,16 +183,26 @@ decisions:
   currency: active
   source: session
   accepted_at: '2026-09-01T13:04:22+00:00'
+  base_token: a7b2f65a4d2b17f5
   accepted_by: Jane Doe
 ```
 
 - The file is ordered by id with a fixed field order, so a one-line change is
   a one-line diff.
+- Each exported entry also carries `base_token`, a 16-character SHA-256 prefix
+  over its accepted title, decision, stripped reason, sorted scope, stored
+  currency and kind. It excludes store-local acceptance ids, timestamps and
+  provenance, so equivalent content has the same token across clones. Keep
+  the token when editing an entry; the next export refreshes it.
 - `export` un-ignores this one file if a `.repowise/` rule in `.gitignore`
   hides it.
-- On `import` the file wins: new entries are created and accepted with the
-  file as accepter (signer kind `import`), changed entries are re-accepted, and
-  entries missing a reason or scope are skipped.
+- On `import`, new entries are created and accepted with the file as accepter
+  (signer kind `import`). An edited entry is re-accepted when its base token
+  matches the store; differing content with a mismatched token is skipped as
+  "changed in the store since this file was exported". Matching content stays
+  unchanged, and older entries without a token keep the previous behaviour.
+  `decision import --force` overrides only the token check; missing reasons
+  or scopes, alias clashes, folded duplicates and superseded wording still skip.
 - Records the file does not hold are left alone on `import`, since a missing
   line may be a bad merge.
 - An empty store never overwrites a non-empty committed file, and a file
