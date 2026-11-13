@@ -8,6 +8,12 @@ update has started: that update scans the newest commits itself and starts a
 fresh drain if it leaves any, so the two never compete for the CPU or the
 store. Each round writes its own rows, so a killed drain loses one round at most.
 
+Bounded on every axis. At most one drain runs and one waits per repo: a drain
+that finds another already waiting exits at once, since the waiting one reads
+the window when its turn comes. A drain that never gets its turn gives up after
+:data:`WAIT_SECONDS`, and one that does exits after its budget plus
+:data:`OVERRUN_SECONDS` whatever it is doing.
+
 Run as ``python -m repowise.core.pipeline.commit_health_drain <repo_path> <repo_id>``.
 """
 
@@ -17,6 +23,7 @@ import asyncio
 import contextlib
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -30,6 +37,13 @@ ROUND_SECONDS = 30.0
 WAIT_SECONDS = 3600.0
 POLL_SECONDS = 2.0
 
+#: Past its budget, how long a drain may run before it exits regardless. The
+#: budget is checked between commits, so the last commit can overrun it: up to
+#: the per-commit file cap at about a second a file, then the read-view rewrite.
+#: Ceiling: a commit slower than this is cut off and retried by the next drain;
+#: a deadline inside the analyzer would let it stop cleanly instead.
+OVERRUN_SECONDS = 600.0
+
 
 def background_enabled() -> bool:
     return os.environ.get(BACKGROUND_ENV, "1") != "0"
@@ -38,6 +52,11 @@ def background_enabled() -> bool:
 def start_background_drain(repo_path: str, repo_id: str) -> None:
     """Start the drain detached; never raises, a missed drain is picked up by the next update."""
     if not background_enabled():
+        return
+    from repowise.core.update_lock import read_drain_queue
+
+    # One already waits, and it reads the window, these commits included, when its turn comes.
+    if read_drain_queue(Path(repo_path)) is not None:
         return
     from repowise.core.spawn import spawn_detached
 
@@ -54,16 +73,30 @@ def _run_active(repo_path: Path) -> bool:
 
 
 def wait_for_turn(repo_path: Path, timeout: float = WAIT_SECONDS) -> bool:
-    """Block until no update or init runs and the scan lock is ours; ``False`` on timeout."""
-    from repowise.core.update_lock import try_acquire_commit_health_lock
+    """Block until no update or init runs and the scan lock is ours; ``False`` on timeout.
 
-    deadline = time.monotonic() + timeout
-    while True:
-        if not _run_active(repo_path) and try_acquire_commit_health_lock(repo_path) is None:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(POLL_SECONDS)
+    Waits in the repo's one queue slot and frees it on return, so the next
+    update can queue a drain behind this one. ``False`` at once when another
+    drain already waits.
+    """
+    from repowise.core.update_lock import (
+        release_drain_queue,
+        try_acquire_commit_health_lock,
+        try_acquire_drain_queue,
+    )
+
+    if try_acquire_drain_queue(repo_path) is not None:
+        return False
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            if not _run_active(repo_path) and try_acquire_commit_health_lock(repo_path) is None:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(POLL_SECONDS)
+    finally:
+        release_drain_queue(repo_path)
 
 
 async def drain(
@@ -124,29 +157,55 @@ async def _rewrite_read_snapshots(session_factory: object, repo_id: str) -> None
         await write_read_snapshots(session, repo_id)
 
 
-def _log_failure(repo_path: Path) -> None:
-    # Detached with stdio on DEVNULL, so the traceback goes to a file.
+def _log(repo_path: Path, text: str) -> None:
+    # Detached with stdio on DEVNULL, so anything worth reading goes to a file.
     try:
-        import traceback
-
         with (repo_path / ".repowise" / "commit_health_drain.log").open("a", encoding="utf-8") as f:
-            f.write(traceback.format_exc() + "\n")
+            f.write(text + "\n")
     except OSError:
         pass
+
+
+def _log_failure(repo_path: Path) -> None:
+    import traceback
+
+    _log(repo_path, traceback.format_exc())
+
+
+def _arm_deadline(repo_path: Path, seconds: float) -> threading.Timer:
+    """Exit the process once *seconds* pass, wherever the scan is.
+
+    The scan lock is left on disk: its owner is then dead, which every reader
+    already treats as free. Rows land one transaction per round, so the exit
+    loses the round in flight and nothing else.
+    """
+
+    def _expire() -> None:
+        _log(repo_path, f"commit-health drain stopped at its {seconds:.0f} s cap")
+        os._exit(0)
+
+    timer = threading.Timer(seconds, _expire)
+    timer.daemon = True
+    timer.start()
+    return timer
 
 
 def main(argv: list[str]) -> int:
     from repowise.core.update_lock import release_commit_health_lock
 
+    from .commit_health import budget_seconds
+
     repo_path, repo_id = Path(argv[0]), argv[1]
     if not wait_for_turn(repo_path):
         return 0
+    deadline = _arm_deadline(repo_path, budget_seconds() + OVERRUN_SECONDS)
     try:
         asyncio.run(_drain_store(repo_path, repo_id))
     except Exception:
         _log_failure(repo_path)
         return 1
     finally:
+        deadline.cancel()
         release_commit_health_lock(repo_path)
     return 0
 
