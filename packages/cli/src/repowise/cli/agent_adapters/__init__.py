@@ -29,6 +29,7 @@ _REGISTRY: dict[str, str] = {
     "claude-code": "repowise.cli.agent_adapters.claude_code:ClaudeCodeAdapter",
     "codex": "repowise.cli.agent_adapters.codex:CodexAdapter",
     "cursor": "repowise.cli.agent_adapters.cursor:CursorAdapter",
+    "pi": "repowise.cli.agent_adapters.pi:PiAdapter",
 }
 
 #: What an unmarked payload is. Claude Code's hook config passes no marker,

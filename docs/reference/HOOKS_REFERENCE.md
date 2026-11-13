@@ -17,6 +17,10 @@ hand. For what each hook does and when it fires, see [HOOKS.md](../agent/HOOKS.m
 | Codex | `PreToolUse` (opt-in) | the shell tool | `repowise-rewrite --agent codex` | `~/.codex/hooks.json` |
 | Codex | `SessionStart` | `startup\|resume\|clear` | `repowise-augment --client codex` | the repo's `.codex/hooks.json` |
 | Codex | `PostToolUse` | `Bash\|shell_command`, `apply_patch\|Edit\|Write` | `repowise-augment --client codex` | the repo's `.codex/hooks.json` |
+| Pi | `PreToolUse` (opt-in) | the shell tool (`bash`, `powershell`) | `repowise-rewrite --agent pi` | the extension's `tool_call` handler (`plugins/pi/repowise.ts`) |
+| Pi | `SessionStart` | first user run of the session | `repowise-augment --client pi` | the extension's `before_agent_start` handler |
+| Pi | `PostToolUse` | `read`, `edit`, `write`, `grep`, `find`, `bash`, `mcp__repowise__*` | `repowise-augment --client pi` | the extension's `tool_result` handler |
+| Pi | `PostToolUseFailure` | `read`, `edit`, `write`, `grep`, `find` | `repowise-augment --client pi` | the extension's `tool_result` handler |
 
 Which switch turns each opt-in entry on:
 
