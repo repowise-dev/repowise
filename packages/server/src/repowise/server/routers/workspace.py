@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from sqlalchemy import case, func, select
 
+from repowise.core.persistence import crud
+from repowise.core.persistence.database import get_session
+from repowise.core.persistence.models import GitMetadata, GraphNode, HealthFileMetric, Page
 from repowise.core.workspace import reads
 from repowise.core.workspace.registry import repo_db_path
 from repowise.core.workspace.repo_stats import member_stats, query_repo_stats
@@ -84,6 +88,116 @@ def _member_stats(ws_config, ws_root: Path, read=query_repo_stats) -> dict[str, 
     }
 
 
+async def _reconcile_with_configured_db(
+    session_factory, repo_path: Path, stats: dict
+) -> dict:
+    """Answer for a member the filesystem walk found unindexed but the store knows.
+
+    ``_member_stats`` reads each member's own ``.repowise/wiki.db``. A repo
+    indexed into the configured database instead — PostgreSQL under
+    ``REPOWISE_DB_URL``, which keeps one shared index and no per-repo file —
+    has no such row, so it reads as ``needs_index`` with every count at zero
+    even though the store holds its index. When the configured store has a
+    ``repositories`` row for the member's resolved path, these figures come
+    from there instead.
+
+    Only the ``needs_index`` case is the store's to answer for: a member with a
+    local index is already read, and one whose directory is gone stays
+    ``missing_dir``. *stats* is the caller's own dict; it is filled in place.
+    """
+    if session_factory is None or stats.get("status") != "needs_index":
+        return stats
+    try:
+        async with get_session(session_factory) as session:
+            repo = await crud.get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return stats
+            stats["repo_id"] = repo.id
+            stats["status"] = "indexed"
+            stats["file_count"] = await crud.count_files(session, repo.id)
+            stats["symbol_count"] = await crud.count_symbols(session, repo.id)
+            stats["page_count"] = (
+                await session.execute(
+                    select(func.count(Page.id)).where(Page.repository_id == repo.id)
+                )
+            ).scalar_one() or 0
+            stats["fresh_page_count"] = (
+                await session.execute(
+                    select(func.count(Page.id)).where(
+                        Page.repository_id == repo.id,
+                        Page.freshness_status == "fresh",
+                    )
+                )
+            ).scalar_one() or 0
+            confidence = (
+                await session.execute(
+                    select(func.avg(Page.confidence)).where(Page.repository_id == repo.id)
+                )
+            ).scalar_one()
+            stats["doc_coverage_pct"] = round(float(confidence or 0.0) * 100, 1)
+            # The canonical is_hotspot flag, as the repo-local read uses.
+            stats["hotspot_count"] = (
+                await session.execute(
+                    select(func.count(GitMetadata.id)).where(
+                        GitMetadata.repository_id == repo.id,
+                        GitMetadata.is_hotspot.is_(True),
+                    )
+                )
+            ).scalar_one() or 0
+            stats["top_language"] = await _top_language_from_db(session, repo.id)
+            stats["health_score"] = await _health_score_from_db(session, repo.id)
+    except Exception:
+        _log.debug("Failed to read %s from the configured store", repo_path, exc_info=True)
+    return stats
+
+
+async def _top_language_from_db(session, repo_id: str) -> str:
+    """The most common indexed file language, matching ``query_top_language``."""
+    row = (
+        await session.execute(
+            select(GraphNode.language, func.count(GraphNode.id))
+            .where(GraphNode.repository_id == repo_id, crud.indexed_file())
+            .where(GraphNode.language.is_not(None), GraphNode.language != "")
+            .group_by(GraphNode.language)
+            .order_by(func.count(GraphNode.id).desc())
+            .limit(1)
+        )
+    ).first()
+    return row[0] if row else "unknown"
+
+
+async def _health_score_from_db(session, repo_id: str) -> float | None:
+    """The canonical NLOC-weighted health score, matching read_repo_health_score.
+
+    The weight is a CASE because PostgreSQL has no two-argument max() (it reads
+    max() as a one-argument aggregate and raises "function max(integer, integer)
+    does not exist"), and SQLite answers "no such function: greatest" for
+    greatest(a, b). This select has to parse on both engines, and the CASE does.
+    score IS NOT NULL mirrors the SQLite filter, so an unscored row cannot pad
+    the denominator while contributing nothing to the numerator.
+    """
+    try:
+        nloc = func.coalesce(HealthFileMetric.nloc, 0)
+        weight = case((nloc > 1, nloc), else_=1)
+        row = (
+            await session.execute(
+                select(
+                    func.sum(HealthFileMetric.score * weight),
+                    func.sum(weight),
+                ).where(
+                    HealthFileMetric.repository_id == repo_id,
+                    HealthFileMetric.score.is_not(None),
+                )
+            )
+        ).first()
+    except Exception:
+        return None
+    if not row or not row[1]:
+        return None
+    average = float(row[0]) / float(row[1])
+    return max(0.0, min(100.0, round(average * 10.0, 1)))
+
+
 # ---------------------------------------------------------------------------
 # GET /api/workspace
 # ---------------------------------------------------------------------------
@@ -109,9 +223,14 @@ async def get_workspace(
     all_stats = (
         await asyncio.to_thread(_member_stats, ws_config, ws_root_path) if ws_root_path else {}
     )
+    session_factory = getattr(request.app.state, "session_factory", None)
     repo_entries = []
     for r in ws_config.repos:
         stats = dict(all_stats.get(r.alias, {}))
+        if ws_root_path is not None:
+            stats = await _reconcile_with_configured_db(
+                session_factory, (ws_root_path / r.path).resolve(), stats
+            )
         stats.pop("top_language", None)
         # The member's own store first: a repo updated on its own leaves the
         # config's time behind.
@@ -335,9 +454,14 @@ async def get_workspace_graph(
         await asyncio.to_thread(_member_stats, ws_config, ws_root_path, member_stats) if ws_root_path else {}
     )
     repo_id_map: dict[str, str] = {}  # alias → repo_id
+    session_factory = getattr(request.app.state, "session_factory", None)
     nodes: list[WorkspaceGraphNode] = []
     for r in ws_config.repos:
-        stats = all_stats.get(r.alias, {})
+        stats = dict(all_stats.get(r.alias, {}))
+        if ws_root_path is not None:
+            stats = await _reconcile_with_configured_db(
+                session_factory, (ws_root_path / r.path).resolve(), stats
+            )
         top_language = stats.get("top_language", "unknown")
         rid = stats.get("repo_id") or r.alias
         repo_id_map[r.alias] = rid
@@ -888,10 +1012,32 @@ async def sync_workspace(
         repo_path = (ws_root_path / entry.path).resolve()
         db_path = repo_path / ".repowise" / "wiki.db"
 
-        # Not indexed yet → establish the repo-local database and run the
+        # A repo is "indexed" when a Repository row exists for its resolved
+        # path in the configured database — not when a local .repowise/wiki.db
+        # file happens to exist. Under PostgreSQL (REPOWISE_DB_URL) repos are
+        # indexed into the shared DB with no per-repo wiki.db, so a file check
+        # alone would wrongly treat every Postgres-indexed repo as "not indexed"
+        # and re-index it on every sync (issue #1034).
+        already_indexed = False
+        configured_repo_id: str | None = None
+        if db_path.exists():
+            already_indexed = True
+        else:
+            try:
+                async with get_session(request.app.state.session_factory) as session:
+                    configured = await crud.get_repository_by_path(
+                        session, str(repo_path.resolve())
+                    )
+            except Exception:
+                configured = None
+            if configured is not None:
+                already_indexed = True
+                configured_repo_id = configured.id
+
+        # Not indexed yet → establish the repository database and run the
         # first full index through the same job machinery, instead of
         # bouncing the user to the CLI.
-        if not db_path.exists():
+        if not already_indexed:
             try:
                 from repowise.server.repo_db import ensure_repo_registration
                 from repowise.server.routers.repos import _enqueue_index_job
@@ -922,30 +1068,35 @@ async def sync_workspace(
             )
             continue
 
-        # Discover repo_id from the per-repo DB.
-        try:
-            with sqlite3.connect(str(db_path)) as conn:
-                row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
-        except Exception as exc:
-            results.append(
-                WorkspaceSyncResult(
-                    alias=entry.alias,
-                    status="error",
-                    reason=f"could not read repo id: {exc}",
+        if configured_repo_id is not None:
+            # No repo-local index to read a row from: the configured store
+            # holds this repo, and its jobs belong to that store's factory.
+            repo_id = configured_repo_id
+        else:
+            # Discover repo_id from the per-repo DB.
+            try:
+                with sqlite3.connect(str(db_path)) as conn:
+                    row = conn.execute("SELECT id FROM repositories LIMIT 1").fetchone()
+            except Exception as exc:
+                results.append(
+                    WorkspaceSyncResult(
+                        alias=entry.alias,
+                        status="error",
+                        reason=f"could not read repo id: {exc}",
+                    )
                 )
-            )
-            continue
+                continue
 
-        if not row:
-            results.append(
-                WorkspaceSyncResult(
-                    alias=entry.alias,
-                    status="error",
-                    reason="repository row missing in wiki.db",
+            if not row:
+                results.append(
+                    WorkspaceSyncResult(
+                        alias=entry.alias,
+                        status="error",
+                        reason="repository row missing in wiki.db",
+                    )
                 )
-            )
-            continue
-        repo_id = row[0]
+                continue
+            repo_id = row[0]
 
         session_factory = resolve_session_factory(request.app.state, repo_id)
 
