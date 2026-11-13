@@ -123,6 +123,8 @@ _OWN_HEADER = (
         ("src/cmd/go/internal/tool/tool.go", "production"),
         ("tool/release.py", "production"),
         ("benchmarks/bench_app.py", "tooling"),
+        ("benchmark/run.py", "tooling"),
+        ("include/benchmark/benchmark.h", "production"),
         ("app/migrations/0001_initial.py", "tooling"),
         ("db/alembic/versions/abc_add.py", "tooling"),
         ("setup.py", "build"),
