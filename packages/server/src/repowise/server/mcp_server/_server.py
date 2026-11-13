@@ -325,24 +325,6 @@ async def _cancel_task(task: asyncio.Task) -> None:
         await task
 
 
-async def _served_repository_id(factory: Any) -> str | None:
-    """The one row a repo-local store holds, else ``None``.
-
-    Same rule as the CLI's moved-repo lookup: identity is inferred only from
-    the served checkout's own store, and only when it holds one repository.
-    """
-    from sqlalchemy import select
-
-    from repowise.core.persistence.models import Repository
-
-    try:
-        async with factory() as session:
-            rows = (await session.scalars(select(Repository.id).limit(2))).all()
-    except OperationalError:
-        return None
-    return rows[0] if len(rows) == 1 else None
-
-
 async def _abort_startup(*tasks: asyncio.Task) -> None:
     """Undo the startup a lifespan raised out of, before it reached its teardown.
 
@@ -745,8 +727,7 @@ async def _lifespan(server: FastMCP):
         engine, expire_on_commit=False, class_=AsyncSession
     )
 
-    if _state._repo_path and configured_db_url is None:
-        _state._served_repo_id = await _served_repository_id(_state._session_factory)
+    await _state.publish_served_repo_id(_state._session_factory)
 
     _state._fts = FullTextSearch(engine)
     try:
