@@ -780,6 +780,36 @@ def test_the_shared_instruction_body_has_one_home() -> None:
     assert codex_config._DISTILL_MARKER_START is instructions.DISTILL_MARKER_START
 
 
+def test_every_written_instruction_block_leads_with_the_call_first_line() -> None:
+    """Cursor, Copilot, Kiro, opencode and Hermes get no generated agent block.
+
+    This body is the only thing they read, so it carries the same call-first
+    line ``CLAUDE.md`` and ``AGENTS.md`` lead with.
+    """
+    from repowise.cli.agent_targets import instructions
+    from repowise.core.agent_steer import AGENT_STEER
+
+    assert instructions.DISTILL_SECTION.startswith(AGENT_STEER + "\n")
+    assert instructions.DISTILL_SECTION_HEADING in instructions.DISTILL_SECTION
+
+
+def test_the_shared_instruction_block_names_only_core_tools() -> None:
+    """Every host that reads this block loads tool schemas up front.
+
+    Those clients are listed the core tools by default, so a line naming any
+    other tool would send the agent to a tool its client was never shown.
+    """
+    import re
+
+    from repowise.cli.agent_targets import instructions
+    from repowise.core.registry.tool_selection import CORE_TOOLS
+
+    tool_name = r"\b(?:get_[a-z_]+|search_codebase|list_repos)\b"
+    named = set(re.findall(tool_name, instructions.DISTILL_SECTION))
+    assert named
+    assert named <= CORE_TOOLS
+
+
 def test_claude_code_reports_plugin_and_direct_separately(tmp_path: Path, monkeypatch) -> None:
     """The duplicate-registration case the method axis exists for.
 
@@ -905,6 +935,51 @@ def test_claude_code_plugin_plus_user_entry_is_still_a_duplicate(
     assert any("registered twice" in issue for issue in report.issues)
     assert not any("—" in issue for issue in report.issues)
     assert report.fix_command == "repowise agents remove --target=claude-code"
+
+
+def test_claude_code_plugin_plus_init_project_entry_is_a_duplicate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The plugin plus the project ``.mcp.json`` that `repowise init` writes.
+
+    The most common double registration: Claude Code loads both servers, so
+    the instructions and tool names are paid twice on every turn.
+    """
+    from repowise.cli import __version__
+    from repowise.cli.agent_targets.targets import claude_code as target_mod
+
+    manifest = tmp_path / "installed_plugins.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "plugins": {
+                    target_mod.PLUGIN_KEY: [
+                        {"scope": "user", "version": __version__, "installPath": "/cache/repowise"}
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"repowise": {"command": "repowise"}}}), encoding="utf-8"
+    )
+
+    monkeypatch.setattr(target_mod, "plugin_manifest_path", lambda: manifest)
+    monkeypatch.setattr(target_mod, "settings_path", lambda: tmp_path / "settings.json")
+    monkeypatch.setattr(target_mod, "user_mcp_config_path", lambda: tmp_path / "none.json")
+    monkeypatch.setattr(target_mod, "desktop_config_path", lambda: None)
+
+    assert target_mod.TARGET.doctor().status is DoctorStatus.OK
+    report = target_mod.TARGET.doctor(repo_path=repo)
+    assert report.status is not DoctorStatus.OK
+    issue = next(i for i in report.issues if "registered twice" in i)
+    assert str(repo / ".mcp.json") in issue
+    # The project file is often the team's; the plugin is the copy to drop.
+    assert report.fix_command == target_mod.PLUGIN_UNINSTALL_COMMAND
 
 
 # ---------------------------------------------------------------------------

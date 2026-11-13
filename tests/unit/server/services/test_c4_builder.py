@@ -353,7 +353,12 @@ async def _seed_two_containers_with_edges(session, edges):
 @pytest.mark.asyncio
 async def test_l2_excludes_cochange(async_session):
     repo = await _seed_two_containers_with_edges(
-        async_session, [("packages/a/index.ts", "packages/b/index.ts", "co_changes")]
+        async_session,
+        [
+            ("packages/a/index.ts", "packages/b/index.ts", "co_changes"),
+            # A doc link stays off L2 even with the co-change overlay on.
+            ("packages/a/index.ts", "packages/b/index.ts", "documents"),
+        ],
     )
     assert (await c4_builder.build_l2(async_session, repo.id)).relations == []
     # The shared roll-up drops history everywhere, the export included.
@@ -361,8 +366,9 @@ async def test_l2_excludes_cochange(async_session):
     assert model.container_relations == [] and model.component_relations == []
 
     overlay = await c4_builder.build_l2(async_session, repo.id, include_co_changes=True)
-    assert [(r.source_id, r.target_id, r.label) for r in overlay.relations] == [
-        ("pkg:packages/a", "pkg:packages/b", "co-changes")
+    # edge_count 1: a doc edge folded into the co-change box pair would still read "co-changes".
+    assert [(r.source_id, r.target_id, r.label, r.edge_count) for r in overlay.relations] == [
+        ("pkg:packages/a", "pkg:packages/b", "co-changes", 1)
     ]
 
 

@@ -55,8 +55,8 @@ export interface ReviewFacts {
 function lookReason(f: ReviewFacts): string | null {
   const risky = f.reach.changed.filter((m) => m.isHotspot || isWeak(m)).length;
   if (risky > 0) return `${count(risky, "changed file")} ${risky === 1 ? "changes" : "change"} often or ${risky === 1 ? "has" : "have"} poor health.`;
-  if (f.band === "broad" || f.reach.files.length > WIDE_REACH)
-    return `${roughCount(f.reach.files.length)} source ${f.reach.files.length === 1 ? "file depends" : "files depend"} on it.`;
+  if (f.band === "broad" || f.reach.filesTotal > WIDE_REACH)
+    return `${roughCount(f.reach.filesTotal)} source ${f.reach.filesTotal === 1 ? "file depends" : "files depend"} on it.`;
   if (f.missingPartners > 0)
     return `${count(f.missingPartners, "file")} that usually ${f.missingPartners === 1 ? "changes" : "change"} with these ${f.missingPartners === 1 ? "is" : "are"} not in it.`;
   return null;
@@ -74,7 +74,7 @@ export function reviewStatus(f: ReviewFacts): ReviewStatus {
   const look = lookReason(f);
   if (look)
     return { tone: "look", word: "Look first", reason: look, next: "Read the files under Look at first, then run the tests." };
-  const small = f.total <= SMALL_FILES && f.reach.files.length <= SMALL_REACH;
+  const small = f.total <= SMALL_FILES && f.reach.filesTotal <= SMALL_REACH;
   const tests = f.runAll
     ? "the whole test suite to run"
     : f.testsTotal > 0

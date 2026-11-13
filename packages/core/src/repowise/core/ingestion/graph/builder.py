@@ -28,6 +28,7 @@ from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
 from ..models import Import, ParsedFile, Symbol, combine_load_kinds
 from ..resolvers import ResolverContext
+from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.go_workspace import cached_go_index, go_package_files
 from ..resolvers.typescript import detect_platform_files
@@ -111,6 +112,10 @@ class GraphBuilder(
         self.console_scripts: frozenset[str] = frozenset()
         self._pytest_roots: Any | None = None
         self._built = False
+        # What every resolver context of this file set shares, made once:
+        # the stem map and the Go modules, which walk the tree. Reset by
+        # ``add_file``.
+        self._context_inputs: tuple[dict[str, list[str]], Any, str | None] | None = None
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
@@ -294,20 +299,22 @@ class GraphBuilder(
         """The import-resolution context :meth:`build` resolves against.
 
         *graph* receives the external nodes resolvers create; a caller that
-        only wants answers passes a copy.
+        only wants answers passes a throwaway graph.
         """
         path_set = set(self._parsed_files.keys())
-        go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
+        if self._context_inputs is None:
+            go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
+            go_module_path = go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
+            self._context_inputs = (build_stem_map(path_set), go_modules, go_module_path)
+        stem_map, go_modules, go_module_path = self._context_inputs
         return ResolverContext(
             path_set=path_set,
-            stem_map=build_stem_map(path_set),
+            stem_map=stem_map,
             graph=graph,
             repo_path=self._repo_path,
             prune_nested_git=self._prune_nested_git,
             tsconfig_resolver=self._tsconfig_resolver,
-            go_module_path=(
-                go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
-            ),
+            go_module_path=go_module_path,
             go_modules=go_modules,
             has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
             has_platform_files=detect_platform_files(path_set),
@@ -315,11 +322,21 @@ class GraphBuilder(
             source_map=self._source_map,
         )
 
+    def _shared_cpp_index(self, ctx: ResolverContext) -> Any | None:
+        """The warmup's C/C++ workspace index, when the call resolver would build the same.
+
+        The call resolver's own index walks the tree pruning nested git
+        repositories; the warmup's is that index only when this build prunes
+        them too.
+        """
+        return getattr(ctx, CPP_INDEX_KEY, None) if self._prune_nested_git else None
+
     def add_file(self, parsed: ParsedFile) -> None:
         """Register one parsed file and its symbols in the graph."""
         path = parsed.file_info.path
         self._parsed_files[path] = parsed
         self._built = False  # invalidate cached metrics
+        self._context_inputs = None
 
         # --- File node ---
         self._graph.add_node(
@@ -641,7 +658,11 @@ class GraphBuilder(
 
         # --- Phase 3: Resolve symbol-level calls ---
         self._resolve_calls(
-            import_targets, progress=progress, scope=scope_set, registrations=run_global
+            import_targets,
+            progress=progress,
+            scope=scope_set,
+            registrations=run_global,
+            cpp_index=self._shared_cpp_index(ctx),
         )
 
         # --- Pascal property -> the read/write methods it runs ---
@@ -656,6 +677,7 @@ class GraphBuilder(
         # Reads only the graph and is cheap, so every build re-derives it: a
         # seeded edge cannot tell whether a call now holds its pair.
         self._resolve_override_dispatch(progress=progress)
+        self._resolve_document_edges()  # global: a scoped build can make a seeded doc's link resolve
 
         # Which symbols a package exports, read off the imports just resolved.
         try:

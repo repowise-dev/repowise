@@ -37,14 +37,14 @@ def _run(repo_path: Path, *, wiki_rebuild: bool) -> UpdateRun:
 
 def test_no_rebuild_owed_is_up_to_date(quiet_store: list[str], tmp_path: Path) -> None:
     run = _run(tmp_path, wiki_rebuild=False)
-    command._assess_staleness(SimpleNamespace(refresh_git=False), run)
+    command._assess_staleness(SimpleNamespace(refresh_git=False, cascade_budget=None), run)
     assert run.git_is_current
     assert quiet_store == ["parser", "stale"]
 
 
 def test_owed_rebuild_is_not_up_to_date(quiet_store: list[str], tmp_path: Path) -> None:
     run = _run(tmp_path, wiki_rebuild=True)
-    command._assess_staleness(SimpleNamespace(refresh_git=False), run)
+    command._assess_staleness(SimpleNamespace(refresh_git=False, cascade_budget=None), run)
     assert not run.git_is_current
     # The "up to date" store reads are skipped, as for any other pending rework.
     assert quiet_store == []
@@ -76,7 +76,7 @@ def test_pages_left_stale_at_this_commit_keep_the_update_a_no_op(
 ) -> None:
     run = _run(tmp_path, wiki_rebuild=False)
     run.state = {command.STALE_PAGES_PLANNED_KEY: "abc123"}
-    command._assess_staleness(SimpleNamespace(refresh_git=False), run)
+    command._assess_staleness(SimpleNamespace(refresh_git=False, cascade_budget=None), run)
     assert not _woken(run)
     assert run.stale_pages_planned == 3
 
@@ -86,7 +86,22 @@ def test_stale_pages_no_run_at_this_commit_planned_still_wake_the_update(
 ) -> None:
     run = _run(tmp_path, wiki_rebuild=False)
     run.state = {command.STALE_PAGES_PLANNED_KEY: "older"}
-    command._assess_staleness(SimpleNamespace(refresh_git=False), run)
+    command._assess_staleness(SimpleNamespace(refresh_git=False, cascade_budget=None), run)
+    assert _woken(run)
+    assert run.stale_db_paths == ["a.cpp", "b.h"]
+    assert run.stale_pages_planned == 0
+
+
+def test_update_full_catch_up_renders_pages_planned_at_this_commit(
+    stale_pages: None, tmp_path: Path
+) -> None:
+    from repowise.cli.commands.update_cmd.catch_up import UNCAPPED_CASCADE
+
+    run = _run(tmp_path, wiki_rebuild=False)
+    run.state = {command.STALE_PAGES_PLANNED_KEY: "abc123"}
+    command._assess_staleness(
+        SimpleNamespace(refresh_git=False, cascade_budget=UNCAPPED_CASCADE), run
+    )
     assert _woken(run)
     assert run.stale_db_paths == ["a.cpp", "b.h"]
     assert run.stale_pages_planned == 0
@@ -101,7 +116,7 @@ def test_reasons_to_run_still_run_with_pages_planned_at_this_commit(
 ) -> None:
     run = _run(tmp_path, wiki_rebuild=False)
     run.state = {command.STALE_PAGES_PLANNED_KEY: "abc123"}
-    opts = SimpleNamespace(refresh_git=force == "refresh_git")
+    opts = SimpleNamespace(refresh_git=force == "refresh_git", cascade_budget=None)
     if force == "config":
         run.config = SimpleNamespace(changed=True)
     elif force == "analyzer":

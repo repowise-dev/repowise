@@ -24,6 +24,23 @@ describe("deriveSetup", () => {
     });
     expect(agent.action).toEqual({ kind: "connect", agentId: "cursor", agentName: "Cursor" });
     expect(agent.command).toBe("repowise agents add --target=cursor");
+    // Cursor loads every schema up front, so it is listed the core tools.
+    expect(agent.note).toEqual({ key: "agent.coreTools", values: { agents: "Cursor", count: 1 } });
+  });
+
+  it("adds no core-tools note when every agent it names is listed the standard tools", () => {
+    const base = setupFixture();
+    const onlyClaude = setupFixture({ agents: (base.agents ?? []).filter((a) => a.id === "claude-code") });
+    expect(deriveSetup(onlyClaude, OPTS).essentials[1]!.note).toBeUndefined();
+  });
+
+  it("says agent answers are ranked evidence while no model is set up", () => {
+    const keyless = setupFixture({ model: { docs_mode: "deterministic", active_provider: null, configured_providers: [] } });
+    const model = deriveSetup(keyless, OPTS).optional[0]!;
+    expect(model.detail).toEqual({ key: "model.detailNone" });
+    expect(model.prompt.state).toContain("get_answer returns ranked evidence");
+    const keyed = setupFixture({ model: { docs_mode: "deterministic", active_provider: "anthropic", configured_providers: ["anthropic"] } });
+    expect(deriveSetup(keyed, OPTS).optional[0]!.prompt.state).not.toContain("ranked evidence");
   });
 
   it("is done when the index is current, an agent has called and sync is on", () => {

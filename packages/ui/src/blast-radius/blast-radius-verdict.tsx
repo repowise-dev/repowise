@@ -10,7 +10,7 @@ import type {
   ChangeReview,
 } from "@repowise-dev/types/blast-radius";
 import { isWeak, riskySpots, type FileMarks, type Reach } from "./blast-map-model";
-import { blastPromptInput, missingPartners, ownerName, testsLimited } from "./blast-prompt-input";
+import { blastPromptInput, missingPartners, missingPartnersTotal, ownerName, testsLimited } from "./blast-prompt-input";
 import { count, reviewStatus, roughCount, type ReviewStatus } from "./review-status";
 import { HEALTH_BAND_LABEL, bandForScore, formatScore } from "@repowise-dev/types/health";
 import { AiPromptButton } from "../health/ai-prompt-button";
@@ -189,6 +189,11 @@ function TestList({ impact }: { impact: Result["test_impact"] }) {
           {all ? "Show fewer" : `Show all ${formatNumber(tests.length)}`}
         </button>
       )}
+      {(impact?.recommendations_omitted ?? 0) > 0 && (
+        <p className={NONE}>
+          The first {formatNumber(tests.length)} of {formatNumber(impact!.recommendations_total)} are listed here.
+        </p>
+      )}
     </>
   );
 }
@@ -341,7 +346,7 @@ function MissingPartners({ result, fileHref }: { result: Result; fileHref: Href 
           </span>
         </Row>
       ))}
-      {partners.length > 3 && <li className={NONE}>{partners.length} in all, under the details below.</li>}
+      {partners.length > 3 && <li className={NONE}>{formatNumber(missingPartnersTotal(result))} in all, under the details below.</li>}
     </ul>
   );
 }
@@ -372,7 +377,7 @@ function Stat({ figure, label }: { figure: string; label: string }) {
 }
 
 function Stats({ reach, total, analyzed, tests }: { reach: Reach; total: number; analyzed: number; tests: ReturnType<typeof testsFigure> }) {
-  const files = reach.files.length;
+  const files = reach.filesTotal;
   return (
     // The glossary button sits beside the list, not in it: a <dl> holds only terms and definitions.
     <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1.5">
@@ -507,7 +512,7 @@ export function BlastRadiusVerdict({
   const total = changedTotal ?? changedFiles.length;
   const plan = review ? testsPlan(review) : null;
   const tests = testsFigure(review, result.test_impact?.recommendations_total ?? 0);
-  const partners = missingPartners(result).length;
+  const partners = missingPartnersTotal(result);
   const status = useMemo(
     () =>
       reviewStatus({

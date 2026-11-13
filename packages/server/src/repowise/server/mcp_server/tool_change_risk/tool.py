@@ -28,6 +28,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import full_meta
 from repowise.server.mcp_server._savings import declare_replaced
 from repowise.server.mcp_server._savings.counterfactual import change_risk_replaced_tokens
+from repowise.server.mcp_server._savings.interaction import note_stage_ms
 from repowise.server.mcp_server._why_pointer import attach_why_pointer
 
 from . import cache as _cache
@@ -126,13 +127,18 @@ _BAD_REVISION = ("unknown revision", "bad revision", "invalid revision", "bad ob
 
 @contextlib.contextmanager
 def _timed(timings: dict[str, int] | None, block: str):
-    """Record the ``with`` body's wall time as ``timings[block]``, in whole ms."""
+    """Record the ``with`` body's wall time as ``timings[block]``, in whole ms.
+
+    Also noted on the call in flight, so the ``mcp_tool_call`` event carries it.
+    """
     started = time.perf_counter()
     try:
         yield
     finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
         if timings is not None:
-            timings[block] = round((time.perf_counter() - started) * 1000)
+            timings[block] = round(elapsed_ms)
+        note_stage_ms(block, elapsed_ms)
 
 
 async def _score_beside_selection(

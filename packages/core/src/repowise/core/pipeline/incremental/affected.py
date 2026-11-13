@@ -274,11 +274,15 @@ def _import_lookup(
 ) -> Callable[[str], list[tuple[str, ...]]]:
     """``targets_of(path)``: each import's targets now, or as last saved for a deleted file.
 
-    Resolves against a copy of the graph, after the warmup a build runs for
+    Resolves against a graph of its own, after the warmup a build runs for
     the file's language, so nothing here touches the graph the build will
-    patch. Both are made on first need: a patch that re-resolves no import
+    patch. Resolvers only add external nodes to that graph and warmups only
+    stamp the nodes it holds, so an empty one gives the same answers as a
+    copy. Both are made on first need: a patch that re-resolves no import
     pays for neither.
     """
+    import networkx as nx
+
     from repowise.core.ingestion.graph_warmups import run_warmups
 
     parsed_files = graph_builder._parsed_files
@@ -292,7 +296,7 @@ def _import_lookup(
             return [found for _r, _s, found in resolutions.get(path, (None, []))[1]]
         if path not in fresh:
             if not contexts:
-                contexts.append(graph_builder.resolver_context(graph_builder._graph.copy()))
+                contexts.append(graph_builder.resolver_context(nx.DiGraph()))
             language = parsed.file_info.language
             if language not in warmed:
                 warmed.add(language)
@@ -401,12 +405,23 @@ def _with_aliases(names: set[str], parsed_files: dict[str, Any]) -> set[str]:
     return out
 
 
-def _word_pattern(words: Iterable[str], flags: int = 0) -> re.Pattern[bytes] | None:
-    words = sorted({w for w in words if w}, key=len, reverse=True)
-    if not words:
+# What may stand on either side of a spelled word for it to be the whole word.
+_WORD_BYTES = frozenset(b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
+
+
+def _word_pattern(words: Iterable[str], *, fold: bool = False) -> re.Pattern[bytes] | None:
+    """Any of *words*, ending a word; *fold* matches them in lower-cased text.
+
+    The start of the word is checked by :func:`_spells`, not here: a pattern
+    that opens on a lookbehind or folds case gets no first-byte skip from the
+    regex engine, and these run over every file's source.
+    """
+    # ``bytes.lower`` folds ASCII only, as a case-insensitive bytes pattern does.
+    encoded = sorted({w.encode().lower() if fold else w.encode() for w in words if w}, key=len, reverse=True)
+    if not encoded:
         return None
-    alternation = b"|".join(re.escape(w.encode()) for w in words)
-    return re.compile(rb"(?<![\w$])(?:" + alternation + rb")(?![\w$])", flags)
+    alternation = b"|".join(map(re.escape, encoded))
+    return re.compile(rb"(?:" + alternation + rb")(?![\w$])")
 
 
 def _files_spelling(
@@ -418,7 +433,7 @@ def _files_spelling(
 ) -> set[str]:
     """Files whose source spells one of *names*, or one of *stems* in any case."""
     exact = _word_pattern(names)
-    folded = _word_pattern(stems, re.IGNORECASE)
+    folded = _word_pattern(stems, fold=True)
     if exact is None and folded is None:
         return set()
     return {
@@ -426,7 +441,7 @@ def _files_spelling(
         for path, parsed in parsed_files.items()
         if path not in skip
         and _resolvable(parsed)
-        and _spells(source_map.get(path), (exact, folded))
+        and _spells(source_map.get(path), exact, folded)
     }
 
 
@@ -444,11 +459,29 @@ def _files_naming(parsed_files: dict[str, Any], names: Collection[str]) -> set[s
     return found
 
 
-def _spells(text: bytes | None, patterns: Iterable[re.Pattern[bytes] | None]) -> bool:
-    """Whether *text* matches one of *patterns*; a file with no text is assumed to."""
+def _spells(
+    text: bytes | None, exact: re.Pattern[bytes] | None, folded: re.Pattern[bytes] | None
+) -> bool:
+    """Whether *text* spells a word of *exact*, or of *folded* in any case.
+
+    A file with no text is assumed to.
+    """
     if text is None:
         return True
-    return any(pattern is not None and pattern.search(text) for pattern in patterns)
+    if exact is not None and _spells_word(exact, text):
+        return True
+    return folded is not None and _spells_word(folded, text.lower())
+
+
+def _spells_word(pattern: re.Pattern[bytes], text: bytes) -> bool:
+    """Whether *pattern* matches *text* at a position no word byte precedes."""
+    match = pattern.search(text)
+    while match is not None:
+        start = match.start()
+        if start == 0 or text[start - 1] not in _WORD_BYTES:
+            return True
+        match = pattern.search(text, start + 1)
+    return False
 
 
 def _scope_refusal(scope: set[str], parsed_files: dict[str, Any]) -> str | None:

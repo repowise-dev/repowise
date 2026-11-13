@@ -118,6 +118,7 @@ async def _impacted_tests_block(
         working_tree=working_tree,
         owned_excludes=owned_excludes,
         detail=detail,
+        agent=True,
     )
     if made is None:
         return block

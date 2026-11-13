@@ -263,7 +263,7 @@ describe("the step map", () => {
 describe("change links", () => {
   it("reads every picker id pasted as is, so ?change=commit:<sha> opens the commit", () => {
     const sha = "e".repeat(40);
-    for (const id of [`commit:${sha}`, "branch:feat/x", "working-tree"]) {
+    for (const id of [`commit:${sha}`, "branch:feat/x", "mr:7", "pr:9", "working-tree"]) {
       expect(changeIdFromLink(id)).toBe(id);
       expect(changeIdFromLink(changeLinkParam(id))).toBe(id);
     }
@@ -274,9 +274,64 @@ describe("change links", () => {
     expect(changeIdFromLink("commit:abc")).toBe("branch:commit:abc");
   });
 
-  it("knows no pull request kind: an unlisted pr:<n> id names nothing", async () => {
+  it("passes mr:<n>, pr:<n> and their pinned form through both ways, never as a branch", () => {
+    const pinned = `mr:7@${"a".repeat(40)}...${"b".repeat(40)}`;
+    for (const id of ["mr:7", "pr:123", pinned]) {
+      expect(changeIdFromLink(id)).toBe(id);
+      expect(changeLinkParam(id)).toBe(id);
+    }
+    // A branch literally named like a request number keeps the branch reading.
+    expect(changeIdFromLink("pr-123")).toBe("branch:pr-123");
+    expect(changeIdFromLink("mr:07")).toBe("branch:mr:07");
+  });
+
+  it("names an unlisted request from its link and a resolved one by the forge's reference and title", async () => {
     const { changeFor } = await import("../../src/blast-radius/impact-view.js");
-    expect(changeFor("pr:7", [])).toBeUndefined();
+    const { changeName, changeMeta } = await import("../../src/blast-radius/change-picker.js");
+    const unlisted = changeFor("mr:7", [])!;
+    expect([unlisted.kind, unlisted.label, unlisted.change_term]).toEqual(["change_request", "Merge request 7", "merge request"]);
+    const pinned = changeFor(`pr:3@${"a".repeat(40)}...${"b".repeat(40)}`, [])!;
+    expect([pinned.label, pinned.base_sha, pinned.head_sha]).toEqual(["Pull request 3", "a".repeat(40), "b".repeat(40)]);
+    const resolved = { ...unlisted, label: "!7", title: "Tune the core", author: "Dev", files_changed: 4 };
+    expect(changeName(resolved)).toBe("!7 Tune the core");
+    expect(changeMeta(resolved)).toContain("Dev");
+    expect(changeMeta(resolved)).toContain("4 files");
+  });
+});
+
+describe("a merge request opened from a link", () => {
+  it("shows the forge's name for it and pins the link to the commits read", async () => {
+    const base = "a".repeat(40);
+    const head = "b".repeat(40);
+    const pinned = `mr:7@${base}...${head}`;
+    const analyzeChange = vi.fn(async () => ({
+      ...changeResult(["src/core.ts"]),
+      change_id: pinned,
+      change: {
+        id: pinned,
+        kind: "change_request" as const,
+        label: "!7",
+        title: "Tune the core",
+        author: "Dev",
+        committed_at: null,
+        head_sha: head,
+        base: "origin/main",
+        base_sha: base,
+        number: 7,
+        change_term: "merge request",
+        ahead: null,
+        files_changed: 1,
+        is_current: false,
+      },
+    }));
+    const onChangePicked = vi.fn();
+    const adapter = makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange });
+    renderView(<ImpactView adapter={adapter} initialChange="mr:7" onChangePicked={onChangePicked} />);
+
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "mr:7", maxDepth: 3 }));
+    expect(await screen.findByRole("button", { name: /Change under review: !7 Tune the core/ })).toBeInTheDocument();
+    await waitFor(() => expect(onChangePicked).toHaveBeenCalledWith(pinned));
+    expect(onChangePicked).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -442,6 +497,123 @@ describe("what the page counts", () => {
     // Whether a dependent is tested is not about this change: no count, section or chip says it.
     expect(screen.queryByText(/Dependent files with no test/)).not.toBeInTheDocument();
     expect(screen.getByText("1 changed file with no test found.")).toBeInTheDocument();
+  });
+});
+
+describe("a server that pages the reached files", () => {
+  const SUMMARY = { files: 3000, tests: 0, direct: 3000, modules: 1, max_depth: 1, imported: ["src/core.ts"] };
+
+  function paged(rows: string[], over: Partial<ChangeBlastRadiusResponse> = {}): ChangeBlastRadiusResponse {
+    return {
+      ...changeResult(["src/core.ts"]),
+      transitive_affected: rows.map((path) => ({ path, depth: 1, via: null })),
+      affected_signals: [],
+      transitive_total: 3000,
+      next_offset: rows.length,
+      reach_summary: SUMMARY,
+      ...over,
+    };
+  }
+
+  it("counts every file, reads more on request, and draws a wide change's map when asked", async () => {
+    const analyzeChange = vi.fn(async (input: { offset?: number; withGraph?: boolean }) => {
+      if (input.withGraph)
+        return paged(["src/a.ts", "src/b.ts"], {
+          transitive_affected: [
+            { path: "src/a.ts", depth: 1, via: "src/core.ts" },
+            { path: "src/b.ts", depth: 1, via: "src/core.ts" },
+          ],
+        });
+      return input.offset ? paged(["src/b.ts"], { next_offset: null }) : paged(["src/a.ts"]);
+    });
+    const adapter = makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange });
+    renderView(<ImpactView adapter={adapter} />);
+    await openReach();
+
+    expect(await screen.findByText(/nearest 1 of 3,000 files/)).toBeInTheDocument();
+    // Too wide to draw on arrival: the map waits for the reader.
+    expect(analyzeChange).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Read more files" }));
+    await waitFor(() => expect(analyzeChange).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 1 })));
+    expect(await screen.findByText(/nearest 2 of 3,000 files/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Draw the map" }));
+    await waitFor(() =>
+      expect(analyzeChange).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0, limit: 5000, withGraph: true })),
+    );
+    expect(await screen.findByText(/Drawn from the nearest 2 of 3,000 files/)).toBeInTheDocument();
+  });
+
+  it("draws the map on arrival for a change of ordinary reach", async () => {
+    const small = { ...SUMMARY, files: 1, direct: 1 };
+    const analyzeChange = vi.fn(async (input: { withGraph?: boolean }) =>
+      paged(["src/a.ts"], {
+        transitive_total: 1,
+        next_offset: null,
+        reach_summary: small,
+        ...(input.withGraph ? { transitive_affected: [{ path: "src/a.ts", depth: 1, via: "src/core.ts" }] } : {}),
+      }),
+    );
+    renderView(<ImpactView adapter={makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange })} />);
+
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith(expect.objectContaining({ withGraph: true })));
+    expect(screen.queryByRole("button", { name: "Draw the map" })).not.toBeInTheDocument();
+  });
+});
+
+describe("a cut test list", () => {
+  it("says how many of the recommended tests it lists", async () => {
+    const rec = (i: number) => ({
+      test_id: `tests/test_${i}.py`,
+      test_file: `tests/test_${i}.py`,
+      repository_id: "repo-1",
+      repository: "app",
+      basis: "inferred" as const,
+      bases: ["inferred" as const],
+      source_files: ["src/core.ts"],
+      evidence: [],
+    });
+    const freshness = { status: "unknown" as const, reason: null, ingested_commit: null, indexed_commit: null };
+    const analyze = vi.fn(async (): Promise<BlastRadiusResponse> => ({
+      ...RESULT,
+      test_impact: {
+        recommendations: [rec(1), rec(2)],
+        recommendations_total: 150,
+        recommendations_emitted: 2,
+        recommendations_truncated: true,
+        recommendations_omitted: 148,
+        recommendations_by_primary_basis: { measured: 0, inferred: 150 },
+        files: [],
+        files_total: 1,
+        files_without_measured_tests: [],
+        unknown_files: [],
+        coverage: {
+          status: "unavailable" as const,
+          reason: null,
+          map_present: false,
+          pair_count: 0,
+          test_count: 0,
+          source_file_count: 0,
+          changed_files_total: 1,
+          changed_files_with_measured_tests: 0,
+          changed_files_without_measured_tests: 1,
+          ingested_at: null,
+          source_format: null,
+          freshness,
+        },
+        inference: {
+          status: "available" as const,
+          reason: null,
+          changed_files_total: 1,
+          changed_files_with_candidates: 1,
+          candidates_before_dedup: 150,
+        },
+        analysis: { status: "partial" as const, stale: false, partial: true, degraded: false, basis_categories: ["inferred" as const] },
+      },
+    }));
+    renderView(<ImpactView adapter={makeAdapter({ analyze })} initialFiles={["src/core.ts"]} />);
+    expect(await screen.findByText("The first 2 of 150 are listed here.")).toBeInTheDocument();
   });
 });
 

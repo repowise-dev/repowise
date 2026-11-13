@@ -1,6 +1,6 @@
 ---
 frontmatter: |
-    description: Set up Repowise for this codebase. Installs if needed, asks about your preferences, and runs the indexing.
+    description: Set up Repowise for this codebase (install, options, indexing).
     allowed-tools: Bash(repowise --version), Bash(repowise init:*), Bash(repowise status:*), Bash(repowise update:*), Bash(git rev-parse --git-common-dir), Bash(uv tool install repowise), Bash(pipx install repowise), Bash(pip install repowise), Bash(python -m pip install repowise), Read, AskUserQuestion
 ---
 

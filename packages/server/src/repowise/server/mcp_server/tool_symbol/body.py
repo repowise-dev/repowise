@@ -43,8 +43,8 @@ _OUTLINE_HEADER_LINES = 12
 _OUTLINE_SUMMARY_CHARS = 160
 # Serialized chars of member rows listed in full; the members past it are named
 # with their first line only, up to _OUTLINE_NAMES_CHARS, and the rest counted
-# in members_total.
-_OUTLINE_MEMBER_CHARS = DEFAULT_RESPONSE_CHARS // 4
+# in members_total. Sized so a large class's whole response stays under 8 KB.
+_OUTLINE_MEMBER_CHARS = DEFAULT_RESPONSE_CHARS // 5
 _OUTLINE_NAMES_CHARS = DEFAULT_RESPONSE_CHARS // 12
 # Member kinds a row leaves implicit.
 _CALLABLE_MEMBER_KINDS = frozenset({"method", "function"})

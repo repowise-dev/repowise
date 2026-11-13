@@ -80,37 +80,27 @@ def render_changed_files(file_diffs: list, *, verbose: bool) -> None:
 
 
 def render_cascade_budget_warning(
-    budget: int, skipped_files: int, split: tuple[int, int] | None
+    budget: int, skipped_files: int, split: tuple[int, int] | None, command: str
 ) -> None:
-    """Warn that the cascade budget left pages stale, and how each kind catches up.
+    """Warn that the cascade budget left pages stale, and the one command that catches up.
 
     ``split`` is ``(model_pages, structural_pages)``; ``None`` prints the
-    unsplit warning.
+    unsplit warning. ``command`` is ``repowise update --full``, aimed at the
+    repo in a workspace.
     """
-    full = f"--cascade-budget {budget + skipped_files}"
     console.print(
         f"\n[yellow]⚠ Cascade budget of {budget} pages was reached. {skipped_files} "
         "dependent files were skipped and their pages marked stale.[/yellow]"
     )
-    if split is None:
-        console.print(
-            f"[yellow]  Pass `{full}` on the update that brings these changes.[/yellow]\n"
-        )
-        return
-    model, structural = split
-    if structural:
-        console.print(
-            f"  {structural} structural pages (file / cycle) refresh on the next "
-            "[cyan]repowise update[/cyan] that brings a commit, no model needed."
-        )
-    if model:
-        console.print(
-            f"  {model} pages written by a model: run [cyan]repowise generate --stale[/cyan] "
-            f"to rewrite them (it estimates the cost first), or pass `{full}` "
-            "on the update that brings these changes."
-        )
-    else:
-        console.print(f"  Pass `{full}` on the update that brings these changes.")
+    model, structural = split or (0, 0)
+    kinds = [
+        f"{structural} structural pages (file / cycle), no model needed" if structural else "",
+        f"{model} pages written by a model, priced before they are rewritten" if model else "",
+    ]
+    detail = "; ".join(k for k in kinds if k)
+    console.print(
+        f"  Run [cyan]{command}[/cyan] to refresh them" + (f": {detail}." if detail else ".")
+    )
     console.print()
 
 

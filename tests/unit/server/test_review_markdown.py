@@ -204,6 +204,21 @@ def test_every_list_is_capped_and_says_how_much_it_left_out() -> None:
     assert "tests/test_01999.py" not in text
 
 
+def test_a_paged_reply_counts_every_reached_file_not_the_page() -> None:
+    page = [{"path": f"lib/d{i:03}.py", "depth": 1, "via": "src/core.py"} for i in range(50)]
+    text = render_change_markdown(
+        _response(
+            transitive_affected=page,
+            transitive_total=3000,
+            next_offset=50,
+            reach_summary={"files": 2990, "tests": 10, "direct": 2000, "modules": 4, "max_depth": 3, "imported": []},
+        )
+    )
+    assert "- Source files that depend on it: 2990, 2000 directly" in text
+    assert f"And {2990 - DEPENDENTS_LIMIT} more files." in text
+    assert "Not counted here: 10 test files that import the change" in text
+
+
 async def test_route_serves_markdown_for_a_listed_change(client, tmp_path) -> None:
     _git_repo(tmp_path)
     repo = await create_test_repo(client, tmp_path)

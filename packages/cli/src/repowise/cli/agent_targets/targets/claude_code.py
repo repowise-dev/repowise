@@ -223,7 +223,7 @@ def _local_server_loaded(repo_path: Path) -> bool:
 
     from ..formats.server_entry import is_remote_entry
 
-    if claude_code_plugin_installed():
+    if claude_code_plugin_installed(repo_path):
         return True
     for path in (user_mcp_config_path(), project_mcp_config_path(repo_path)):
         stored = _stored_repowise_entry(path)
@@ -376,8 +376,8 @@ def retire_project_mcp_entry(repo_path: Path) -> FileWrite:
 # ---------------------------------------------------------------------------
 
 
-def _plugin_installs() -> list[dict]:
-    """Records the host holds for the repowise plugin, or an empty list.
+def _plugin_installs(repo_path: Path | None = None) -> list[dict]:
+    """Records the host holds for the enabled repowise plugin, or an empty list.
 
     Reads the host's own manifest (``installed_plugins.json``, schema version 2:
     a ``plugins`` map from ``"<plugin>@<marketplace>"`` to a list of installs,
@@ -385,6 +385,10 @@ def _plugin_installs() -> list[dict]:
     mode degrades to "no plugin": a manifest we cannot read is not evidence of
     absence, but treating it as presence would make us report a registration
     that may not exist.
+
+    A plugin the user turned off (``enabledPlugins`` false in settings.json)
+    loads nothing, so it has no installs. With *repo_path*, an install pinned
+    to a project (its ``projectPath``) counts only for that project.
     """
     manifest = plugin_manifest_path()
     if not manifest.exists():
@@ -399,11 +403,40 @@ def _plugin_installs() -> list[dict]:
     installs = plugins.get(PLUGIN_KEY)
     if not isinstance(installs, list):
         return []
-    return [entry for entry in installs if isinstance(entry, dict)]
+    if _plugin_turned_off():
+        return []
+    return [
+        entry
+        for entry in installs
+        if isinstance(entry, dict) and (repo_path is None or _install_serves(entry, repo_path))
+    ]
+
+
+def _plugin_turned_off() -> bool:
+    """Whether settings.json sets the plugin to false in ``enabledPlugins``."""
+    import click
+
+    from repowise.cli.mcp_config import load_existing_config
+
+    try:
+        enabled = load_existing_config(settings_path()).get("enabledPlugins")
+    except click.ClickException:  # absent or unreadable settings: no opt-out
+        return False
+    return isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False
+
+
+def _install_serves(entry: dict, repo_path: Path) -> bool:
+    """Whether a plugin install loads in *repo_path*: user-wide, or pinned to it."""
+    from repowise.cli._helpers.paths import _same_path
+
+    pinned = entry.get("projectPath")
+    return not isinstance(pinned, str) or not pinned or _same_path(Path(pinned), repo_path)
 
 
 #: What the host, not repowise, has to run to update the plugin.
 PLUGIN_UPDATE_COMMAND = "/plugin update repowise@repowise"
+#: And what it has to run to drop the plugin's copy of a double registration.
+PLUGIN_UNINSTALL_COMMAND = "/plugin uninstall repowise@repowise"
 
 
 def plugin_version_skew() -> list[str]:
@@ -492,7 +525,7 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
     """
     found: list[Registration] = []
 
-    for entry in _plugin_installs():
+    for entry in _plugin_installs(repo_path):
         scope = Scope.USER if entry.get("scope") != "project" else Scope.PROJECT
         found.append(
             Registration(
@@ -797,7 +830,9 @@ class ClaudeCodeTarget:
                 repairable=False,
             )
 
-        registrations = detect()
+        # With the repository: the project ``.mcp.json`` that `repowise init`
+        # writes is the registration most often doubled by the plugin.
+        registrations = detect(repo_path)
         if not registrations:
             return DoctorReport(
                 target_id=ID,
@@ -826,9 +861,11 @@ class ClaudeCodeTarget:
             if r.method == "direct" and r.detail not in ("desktop", "legacy")
         ]
         if duplicates:
+            where = ", ".join(str(r.config_path) for r in duplicates)
             issues.append(
-                "repowise is registered twice, once by the plugin and once directly, "
-                "so its MCP tool schemas and hooks are loaded twice."
+                "repowise is registered twice, once by the plugin and once directly "
+                f"({where}), so its MCP instructions, tool schemas and hooks are "
+                "loaded twice."
             )
 
         # Reported last and fixed first: an out-of-date plugin ships its own
@@ -836,7 +873,14 @@ class ClaudeCodeTarget:
         # as a side effect, where repairing the matcher does nothing for it.
         fix_command = "repowise hook rewrite install"
         if duplicates:
-            fix_command = "repowise agents remove --target=claude-code"
+            # A project `.mcp.json` is often shared with the team, so when it is
+            # the only other registration, the plugin is the copy to drop.
+            project_only = all(r.scope == Scope.PROJECT for r in duplicates)
+            fix_command = (
+                PLUGIN_UNINSTALL_COMMAND
+                if project_only
+                else "repowise agents remove --target=claude-code"
+            )
         skew = plugin_version_skew()
         if skew:
             from repowise.cli import __version__

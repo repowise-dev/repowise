@@ -62,6 +62,8 @@ _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
 #: Pinned decisions are the only ones listed by name; the rest are a pointer.
 _MAX_PINNED_DECISIONS = 5
+#: A pinned line is paid on every turn; the full record is one ``get_why`` away.
+_MAX_PIN_TITLE_CHARS = 80
 _MAX_FIX_FIRST = 3
 
 
@@ -156,10 +158,23 @@ class EditorFileDataFetcher:
             kg_tour=kg_tour,
             index_scope=self._get_index_scope(),
             sections=s,
+            mcp_tools=self._get_mcp_tools(),
         )
 
     def _get_index_scope(self) -> dict:
         return load_index_scope(self._repo_path) or resolve_index_scope({})
+
+    def _get_mcp_tools(self) -> str | list[str] | None:
+        """The ``mcp.tools`` setting the server resolves its tool list from."""
+        from repowise.core.repo_config import load_repo_config
+
+        try:
+            mcp = load_repo_config(self._repo_path).get("mcp")
+        except Exception:  # a broken config is reported by the commands that need it
+            return None
+        tools = mcp.get("tools") if isinstance(mcp, dict) else None
+        # A hand-edited value of another shape must not fail the write.
+        return tools if isinstance(tools, (str, list)) else None
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -385,7 +400,7 @@ class EditorFileDataFetcher:
         signatures = await decision_signatures(self._session, self._repo_id, pinned)
         summaries = [
             DecisionSummary(
-                title=rec.title,
+                title=_truncate_at_word(rec.title or "", _MAX_PIN_TITLE_CHARS),
                 status=rec.status,
                 rationale=_truncate_at_word(rec.rationale or "", 100),
                 decision=_truncate_at_word(rec.decision or "", 120),

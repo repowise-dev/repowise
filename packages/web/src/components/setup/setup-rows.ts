@@ -34,6 +34,8 @@ export interface SetupRow {
   status: SetupMsg;
   title: SetupMsg;
   detail: SetupMsg;
+  /** A second, quieter line under the detail. */
+  note?: SetupMsg;
   action: SetupAction | null;
   command: string;
   prompt: SetupPromptRow;
@@ -235,6 +237,13 @@ function agentSilentRow(agent: SetupAgent, o: DeriveOptions): SetupRow {
   };
 }
 
+/** At connect time: the agents here that are listed the core tools unless
+ *  Settings turns on more (every client that loads tool schemas up front). */
+function coreToolsNote(agents: SetupAgent[]): { note?: SetupMsg } {
+  const names = agents.filter((a) => a.default_profile === "core").map((a) => a.display_name);
+  return names.length ? { note: msg("agent.coreTools", { agents: names.join(", "), count: names.length }) } : {};
+}
+
 function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
   const agents = s.agents ?? [];
   const connected = agents.filter((a) => a.connected);
@@ -296,6 +305,7 @@ function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
       detail: offer
         ? msg("agent.detailWaitingOther", { agents: names, count: connected.length, other: offer.display_name })
         : msg("agent.detailWaiting", { agents: names, count: connected.length }),
+      ...coreToolsNote(offer ? [...connected, offer] : connected),
       action: connectAction,
       prompt: prompt(`${names} is registered and has not called the index yet.`),
     };
@@ -307,6 +317,7 @@ function agentRow(s: SetupResponse, o: DeriveOptions): SetupRow {
     tone: "off",
     status: msg("agent.statusOff"),
     detail,
+    ...coreToolsNote(offer ? [offer] : []),
     action: connectAction,
     prompt: prompt(
       offer
@@ -364,7 +375,7 @@ function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
       title: "A model for docs, chat and answers",
       state: llm
         ? `The docs are written by a model${s.model.active_provider ? ` (${s.model.active_provider})` : ""}.`
-        : "The docs are built from the index, without a model. Pick a model source available on this machine (a signed-in agent CLI, an API key or a local model) and write the docs with it.",
+        : `The docs are built from the index, without a model.${s.model_available && !s.model.active_provider ? " Until a model is set up, get_answer returns ranked evidence instead of a written answer." : ""} Pick a model source available on this machine (a signed-in agent CLI, an API key or a local model) and write the docs with it.`,
       command: "repowise generate",
       verify: "status",
     },

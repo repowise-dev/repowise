@@ -354,7 +354,7 @@ def test_model_docs_report_model_refresh_after_deferral(indexed_repo: Path):
     assert current.exit_code == 0, current.output + repr(current.exception)
     assert json.loads(current.stdout.splitlines()[-1])["outcome"] == "noop"
     notice = current.output + current.stderr
-    assert "repowise generate --stale" in notice
+    assert "repowise update --full" in notice
     assert "repowise update --index-only" not in notice
 
 
