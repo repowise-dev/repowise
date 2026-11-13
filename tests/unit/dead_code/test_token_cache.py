@@ -53,3 +53,19 @@ def test_no_index_directory_writes_nothing(tmp_path: Path) -> None:
     with token_cache(missing):
         _scan(SOURCE)
     assert not missing.exists()
+
+
+def test_stale_or_unreadable_cache_is_ignored(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.analysis.dead_code import token_cache as module
+
+    expected = _scan(SOURCE)
+    with token_cache(tmp_path):
+        _scan(SOURCE)
+    monkeypatch.setattr(module, "_fingerprint", lambda: "other rules")
+    with token_cache(tmp_path) as cache:
+        assert cache._stored == {}
+        assert _scan(SOURCE) == expected
+    (tmp_path / _CACHE_FILENAME).write_bytes(b"not a sealed pickle")
+    with token_cache(tmp_path) as cache:
+        assert cache._stored == {}
+        assert _scan(SOURCE) == expected
