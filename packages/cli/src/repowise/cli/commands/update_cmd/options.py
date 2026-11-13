@@ -38,6 +38,7 @@ class UpdateOptions:
     include_working_tree: bool = False
     defer_docs: bool = False
     refresh_git: bool = False
+    render_budget: int | None = None
 
 
 @dataclass
