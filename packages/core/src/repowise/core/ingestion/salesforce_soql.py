@@ -1,18 +1,22 @@
 """SObject and field names written in Apex SOQL/SOSL, DML and triggers.
 
-Read: SOQL ``FROM`` objects and field paths (a select-list subquery names a
-child relationship, so it is skipped), SOSL ``RETURNING`` objects, DML targets
-by declared type, ``trigger ... on Obj``, single-literal ``Database.query`` /
-``Search.query`` strings and ``.soql`` files.
+Read: SOQL ``FROM`` objects and field paths, ``TYPEOF`` ``WHEN`` objects and
+their ``THEN`` fields, select-list child-relationship subqueries (reported
+against the parent object and the relationship names walked, which resolve to
+the child object through lookup metadata), SOSL ``RETURNING`` objects, DML
+targets by declared type, ``trigger ... on Obj``, literal describe tokens
+(``Schema.SObjectType.Account.fields.Name``, ``Account.Name.getDescribe()``,
+``Account.SObjectType``), single-literal ``Database.query`` / ``Search.query``
+strings and ``.soql`` files.
 
-Ceiling: ``Account.Name.getDescribe()`` tokens, ``TYPEOF`` branches and the
-child object behind a relationship name are not read.
+Ceiling: a dynamic describe (``Schema.getGlobalDescribe().get(name)``) and the
+``TYPEOF`` polymorphic field itself are not read.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from functools import lru_cache
+from typing import Protocol
 
 from tree_sitter import Language, Node, Parser
 
@@ -37,8 +41,12 @@ _DECLARATIONS = frozenset(
     {"local_variable_declaration", "formal_parameter", "enhanced_for_statement"}
 )
 
-# (node to report, object name, field path)
-_Emit = Callable[[Node, str, tuple[str, ...]], None]
+
+# (node to report, object name, field path, child relationships walked from the object)
+class _Emit(Protocol):
+    def __call__(
+        self, node: Node, obj: str, path: tuple[str, ...], via: tuple[str, ...] = ()
+    ) -> None: ...
 
 
 def _text(node: Node | None) -> str:
@@ -80,9 +88,34 @@ def _field_path(node: Node, alias: str | None) -> tuple[str, ...]:
     return tuple(parts)
 
 
-def _soql(body: Node, emit: _Emit) -> None:
+def _type_of(clause: Node, emit: _Emit) -> None:
+    """``TYPEOF What WHEN Account THEN Phone``: each ``WHEN`` object and its ``THEN`` fields."""
+    for branch in clause.named_children:
+        if branch.type != "when_expression":
+            continue
+        ident = next((c for c in branch.named_children if c.type == "identifier"), None)
+        obj = _text(ident)
+        if ident is None or not obj:
+            continue
+        emit(ident, obj, ())
+        for names in (c for c in branch.named_children if c.type == "field_list"):
+            for field in names.named_children:
+                path = tuple(p for p in _text(field).split(".") if p)
+                if path:
+                    emit(field, obj, path)
+
+
+def _soql(body: Node, emit: _Emit, root: str | None = None, via: tuple[str, ...] = ()) -> None:
+    """Emit one query body.
+
+    *root* and *via* are set for a select-list subquery, whose ``FROM`` names a
+    child relationship of the enclosing query: every reference in it is then
+    reported against *root*, the enclosing query's object, behind the
+    relationships walked.
+    """
     obj: str | None = None
     alias: str | None = None
+    chain: tuple[str, ...] = ()
     from_clause = body.child_by_field_name("from_clause")
     if from_clause is not None:
         storage = next(
@@ -96,8 +129,11 @@ def _soql(body: Node, emit: _Emit) -> None:
         )
         name = _text(storage)
         if storage is not None and name and "." not in name:
-            obj = name
-            emit(storage, obj, ())
+            if root is None:
+                obj = name
+            else:
+                obj, chain = root, (*via, name)
+            emit(storage, obj, (), chain)
             holder = storage.parent
             if holder is not None and holder.type == "storage_alias":
                 alias_node = next(
@@ -108,18 +144,25 @@ def _soql(body: Node, emit: _Emit) -> None:
     def walk(node: Node, in_select: bool) -> None:
         for child in node.named_children:
             kind = child.type
-            if kind in ("from_clause", "type_of_clause", "bound_apex_expression"):
+            if kind == "type_of_clause":
+                _type_of(child, emit)
+                continue
+            if kind in ("from_clause", "bound_apex_expression"):
                 continue
             if kind == "subquery":
-                # In the select list it names a child relationship, not an object.
                 inner = next((c for c in child.named_children if c.type == "soql_query_body"), None)
-                if inner is not None and not in_select:
+                if inner is None:
+                    continue
+                if not in_select:
                     _soql(inner, emit)
+                elif obj is not None:
+                    # In the select list it names a child relationship, not an object.
+                    _soql(inner, emit, obj, chain)
                 continue
             if kind == "field_identifier":
                 path = _field_path(child, alias)
                 if obj and path:
-                    emit(child, obj, path)
+                    emit(child, obj, path, chain)
                 continue
             walk(child, in_select or kind == "select_clause")
 
@@ -171,7 +214,72 @@ def _literal_query(literal: Node, grammar: str, emit: _Emit) -> None:
     if parser is None:
         return
     root = parser.parse(text.encode("utf-8")).root_node
-    _query(root, lambda _n, obj, path: emit(literal, obj, path))
+    _query(root, lambda _n, obj, path, via=(): emit(literal, obj, path, via))
+
+
+# ---------------------------------------------------------------------------
+# Describe tokens
+# ---------------------------------------------------------------------------
+
+
+def _dotted(node: Node | None) -> list[str] | None:
+    """``A.B.C`` as ``["A", "B", "C"]`` when every link is a plain identifier."""
+    if node is None:
+        return None
+    if node.type == "identifier":
+        return [_text(node)]
+    if node.type != "field_access":
+        return None
+    head = _dotted(node.child_by_field_name("object"))
+    tail = node.child_by_field_name("field")
+    if head is None or tail is None or tail.type != "identifier":
+        return None
+    return [*head, _text(tail)]
+
+
+def _describe_token(
+    node: Node, parts: list[str], *, describe: bool
+) -> tuple[str, tuple[str, ...]] | None:
+    """The object and field path a literal describe token names, else None.
+
+    ``Schema.SObjectType.Obj`` and ``Obj.SObjectType`` name the object;
+    ``Schema.SObjectType.Obj.fields.Fld`` and, as the receiver of
+    ``getDescribe()``, ``Obj.Fld`` name a field. A bare ``Obj.`` that is a
+    declared variable or field is that variable, not an SObject.
+    """
+    folded = [p.lower() for p in parts]
+    if len(parts) > 1 and folded[0] == "schema":
+        parts, folded = parts[1:], folded[1:]
+    if len(parts) >= 2 and folded[0] == "sobjecttype":
+        rest = parts[1:]
+        if len(rest) == 1:
+            return rest[0], ()
+        if len(rest) == 3 and folded[2] == "fields":
+            return rest[0], (rest[2],)
+        return None
+    if len(parts) == 2 and _declared_type(node, parts[0]) is None:
+        if folded[1] == "sobjecttype":
+            return parts[0], ()
+        if describe:
+            return parts[0], (parts[1],)
+    return None
+
+
+def _describe(node: Node, emit: _Emit) -> bool:
+    """Emit the describe token *node* spells, if it is one; True when it did."""
+    if node.type == "method_invocation":
+        if _text(node.child_by_field_name("name")).lower() != "getdescribe":
+            return False
+        parts = _dotted(node.child_by_field_name("object"))
+        describe = True
+    else:
+        parts = _dotted(node)
+        describe = False
+    token = _describe_token(node, parts, describe=describe) if parts else None
+    if token is None:
+        return False
+    emit(node, *token)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -314,10 +422,10 @@ def _collector(path: str, symbols: list[Symbol]) -> tuple[list[SchemaReference],
     module = f"{path}::__module__"
     refs: list[SchemaReference] = []
 
-    def emit(node: Node, obj: str, field_path: tuple[str, ...]) -> None:
+    def emit(node: Node, obj: str, field_path: tuple[str, ...], via: tuple[str, ...] = ()) -> None:
         line = node.start_point[0] + 1
         owner = _find_enclosing_symbol(line, ranges) or module
-        refs.append(SchemaReference(owner, obj, line, field_path))
+        refs.append(SchemaReference(owner, obj, line, field_path, via))
 
     return refs, emit
 
@@ -342,6 +450,8 @@ def apex_schema_refs(root: Node, symbols: list[Symbol], path: str) -> list[Schem
                 emit(node, obj_name, ())
         elif kind == "method_invocation":
             _database_call(node, emit)
+        if kind in ("method_invocation", "field_access") and _describe(node, emit):
+            continue
         stack.extend(node.named_children)
     return refs
 

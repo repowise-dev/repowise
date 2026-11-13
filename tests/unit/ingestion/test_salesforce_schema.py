@@ -298,3 +298,159 @@ def test_dml_target_type_respects_block_scope() -> None:
     # blocks sees neither, so it names nothing rather than guessing. An array
     # literal's element type is the target.
     assert sorted((r.line, r.object_name) for r in refs) == [(3, "Contact"), (4, "Lead"), (6, "Case")]
+
+
+def _apex_refs(source: bytes) -> list[tuple[str, tuple[str, ...], tuple[str, ...]]]:
+    from tree_sitter import Parser
+    from tree_sitter_language_pack import get_language
+
+    from repowise.core.ingestion.salesforce_soql import apex_schema_refs
+
+    root = Parser(get_language("apex")).parse(source).root_node
+    return sorted((r.object_name, r.path, r.via) for r in apex_schema_refs(root, [], "T.cls"))
+
+
+def test_describe_tokens_name_objects_and_fields() -> None:
+    refs = _apex_refs(
+        b"""class T {
+    void m(Account local) {
+        Object a = Schema.SObjectType.Account.fields.Name;
+        Object b = Contact.LastName.getDescribe();
+        Object c = Lead.SObjectType;
+        Object d = Schema.Case.SObjectType.getDescribe();
+        Object e = Schema.SObjectType.Opportunity.fields.Amount.getDescribe().getLabel();
+    }
+}
+"""
+    )
+    assert refs == [
+        ("Account", ("Name",), ()),
+        ("Case", (), ()),
+        ("Contact", ("LastName",), ()),
+        ("Lead", (), ()),
+        ("Opportunity", ("Amount",), ()),
+    ]
+
+
+def test_dynamic_and_variable_describes_name_nothing() -> None:
+    refs = _apex_refs(
+        b"""class T {
+    Account stored;
+    void m(Account local, String name) {
+        Object a = local.Name.getDescribe();
+        Object b = this.stored.Name.getDescribe();
+        Object c = stored.SObjectType;
+        Object d = Schema.getGlobalDescribe().get(name).getDescribe();
+        Object e = Schema.SObjectType.Account.fields.getMap();
+    }
+}
+"""
+    )
+    # Only the literal ``Schema.SObjectType.Account`` inside the map call names an object.
+    assert refs == [("Account", (), ())]
+
+
+def test_typeof_names_when_objects_and_then_fields() -> None:
+    refs = _apex_refs(
+        b"""class T {
+    void m() {
+        List<Event> e = [SELECT TYPEOF What WHEN Account THEN Phone, Name
+            WHEN Opportunity THEN Amount ELSE Name END, Subject FROM Event];
+    }
+}
+"""
+    )
+    assert refs == [
+        ("Account", (), ()),
+        ("Account", ("Name",), ()),
+        ("Account", ("Phone",), ()),
+        ("Event", (), ()),
+        ("Event", ("Subject",), ()),
+        ("Opportunity", (), ()),
+        ("Opportunity", ("Amount",), ()),
+    ]
+
+
+def test_select_subquery_is_reported_behind_its_relationship() -> None:
+    refs = _apex_refs(
+        b"""class T {
+    void m() {
+        List<Account> a = [SELECT Id, (SELECT LastName, Account.Name FROM Contacts c) FROM Account];
+        List<Account> b = [SELECT (SELECT (SELECT Id FROM Notes) FROM Contacts) FROM Account];
+        List<Account> w = [SELECT Id FROM Account WHERE Id IN (SELECT AccountId FROM Contact)];
+    }
+}
+"""
+    )
+    # The select subqueries sit behind their relationships (nested ones behind
+    # the whole chain); the WHERE subquery names a real object.
+    assert refs == [
+        ("Account", (), ()),
+        ("Account", (), ()),
+        ("Account", (), ()),
+        ("Account", (), ("Contacts",)),
+        ("Account", (), ("Contacts",)),
+        ("Account", (), ("Contacts", "Notes")),
+        ("Account", ("Account", "Name"), ("Contacts",)),
+        ("Account", ("Id",), ()),
+        ("Account", ("Id",), ()),
+        ("Account", ("Id",), ()),
+        ("Account", ("Id",), ("Contacts", "Notes")),
+        ("Account", ("LastName",), ("Contacts",)),
+        ("Contact", (), ()),
+        ("Contact", ("AccountId",), ()),
+    ]
+
+
+_CHILD_APEX = """public class Reader {
+    public static void read() {
+        List<Job__c> jobs = [SELECT Id, (SELECT Hours__c FROM Shifts__r) FROM Job__c];
+        List<Job__c> more = [SELECT (SELECT Hours__c FROM Visits__r) FROM Job__c];
+    }
+}
+"""
+
+
+def _lookup(reference_to: str, relationship: str | None) -> str:
+    rel = f"    <relationshipName>{relationship}</relationshipName>\n" if relationship else ""
+    return (
+        f'<?xml version="1.0"?>\n<CustomField {_NS}>\n    <fullName>X</fullName>\n'
+        f"    <type>Lookup</type>\n    <referenceTo>{reference_to}</referenceTo>\n{rel}"
+        "</CustomField>\n"
+    )
+
+
+def test_child_relationship_subquery_binds_through_the_declaring_lookup(tmp_path: Path) -> None:
+    job = f"{_ROOT}/Job__c/Job__c.object-meta.xml"
+    shift = f"{_ROOT}/Shift__c/Shift__c.object-meta.xml"
+    job_lookup = f"{_ROOT}/Shift__c/fields/Job__c.field-meta.xml"
+    hours = f"{_ROOT}/Shift__c/fields/Hours__c.field-meta.xml"
+    visit_lookup = f"{_ROOT}/Visit__c/fields/Job__c.field-meta.xml"
+    visit_hours = f"{_ROOT}/Visit__c/fields/Hours__c.field-meta.xml"
+    cls = "force-app/main/default/classes/Reader.cls"
+    g = _build(
+        tmp_path,
+        {
+            job: _object("Job"),
+            shift: _object("Shift"),
+            # Metadata declares ``Shifts``; SOQL writes ``Shifts__r``.
+            job_lookup: _lookup("Job__c", "Shifts"),
+            hours: _field("Number"),
+            visit_lookup: _lookup("Job__c", None),
+            visit_hours: _field("Number"),
+            cls: _CHILD_APEX,
+        },
+    )
+    out = {
+        t
+        for _, t, d in g.out_edges(f"{cls}::Reader::read", data=True)
+        if d["edge_type"] == "references"
+    }
+    # ``Shifts__r`` resolves to Shift__c through Shift__c.Job__c; ``Visits__r``
+    # is declared by no field, so it adds no edge.
+    assert out == {
+        f"{job}::Job__c",
+        f"{shift}::Shift__c",
+        f"{job_lookup}::Job__c",
+        f"{hours}::Hours__c",
+    }
