@@ -19,13 +19,13 @@ import os
 import re
 import subprocess
 import time
-from collections import Counter
 from collections.abc import Container
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.code_origin import ship_rank
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
@@ -54,6 +54,7 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, served_root
 from repowise.server.mcp_server._query_shape import (
     _NL_QUESTION_TOKENS,
+    NOT_THE_NAMED_SYMBOL,
     _canonical_symbol_query,
     _identifier_candidates,
     _qual_norm,
@@ -65,9 +66,8 @@ _log = logging.getLogger("repowise.mcp.search")
 
 MAX_LINES = 50
 # A multi-word query's page rows already rank files, so its lines are a short
-# lead-in (production first) and lines_omitted_by_file names the top files only.
+# lead-in (production first).
 MAX_LINES_MIXED = 15
-MAX_OMITTED_FILES = 5
 OVER_LINES_MIXED = f"over {MAX_LINES_MIXED} lines for a multi-word query; search one name for more"
 MAX_LINES_PER_FILE = 5
 MAX_SYMBOLS = 3
@@ -581,12 +581,12 @@ async def _attach(
     ctx, (rows, reasons, literal_scan) = found
     mixed = not literal and len(query.split()) > 1
     order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
-    # Production before test within each kind group: every kind for a mixed
-    # query, definitions against the rest otherwise.
+    # Shipped code before tools and tests within each kind group: every kind
+    # for a mixed query, definitions against the rest otherwise.
     rows.sort(
         key=lambda r: (
             order[r["kind"]] if mixed else r["kind"] != "definition",
-            is_test_related_path(r["path"]),
+            ship_rank(r["path"]),
             order[r["kind"]],
             r.get("repo") or "",
             r["path"],
@@ -597,7 +597,7 @@ async def _attach(
     if len(kept) < len(rows):
         reasons.append(
             f"{len(rows) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
-            " not shown: lines_omitted_by_file; the full list is under _meta.omitted"
+            " not shown: lines_omitted counts them; the full list is under _meta.omitted"
         )
     cap, over = (MAX_LINES_MIXED, OVER_LINES_MIXED) if mixed else (MAX_LINES, OVER_LINES)
     if len(kept) > cap and over not in reasons:
@@ -609,19 +609,37 @@ async def _attach(
         collector = OmissionCollector("search_codebase", repo_root=ctx.path)
         collector.add(f"{query} :: lines not shown", hidden)
         collector.attach(response)
-        by_file = Counter(f"{r['repo']}:{r['path']}" if "repo" in r else r["path"] for r in hidden)
-        if mixed and len(by_file) > MAX_OMITTED_FILES:
-            response["lines_omitted_by_file"] = dict(by_file.most_common(MAX_OMITTED_FILES))
-            response["lines_omitted_by_file_total"] = len(by_file)
-        else:
-            response["lines_omitted_by_file"] = dict(by_file)
+        # A count, not a per-file map: the rows are under _meta.omitted, and a
+        # map of mostly test files stays in the caller's context unread.
+        response["lines_omitted"] = len(hidden)
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
     else:
         _drop_sweep_advice(response)
+    _drop_pages_beside_definitions(response)
     if response["lines"]:
         _reconcile_symbol_miss(response, literal_scan=literal_scan)
+
+
+def _drop_pages_beside_definitions(response: dict) -> None:
+    """Drop result pages labelled as not the named symbol once ``lines`` holds a definition.
+
+    The definition rows answer where the names live; pages that only mention
+    them are prose the caller does not follow. ``pages_omitted`` counts them.
+    """
+    if not any(row["kind"] == "definition" for row in response["lines"]):
+        return
+    results = response.get("results")
+    if not isinstance(results, list):
+        return
+    kept = [
+        r for r in results
+        if not (isinstance(r, dict) and r.get("relation") == NOT_THE_NAMED_SYMBOL)
+    ]
+    if len(kept) < len(results):
+        response["pages_omitted"] = len(results) - len(kept)
+        response["results"] = kept
 
 
 def _drop_sweep_advice(response: dict) -> None:

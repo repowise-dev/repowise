@@ -717,7 +717,8 @@ def _record_reductions(
         payload.setdefault("_meta", {}).setdefault("reductions", []).append(
             {"field": "evidence", "total": hidden, "emitted": shown, "reason": reason}
         )
-    if reduced and not expanded:
+    # A keyless reply has no expanded shape to recover.
+    if reduced and not expanded and payload.get("degraded") != "no-llm-provider":
         projection = payload.setdefault("_meta", {}).setdefault("projection", {})
         # The caller already holds the question; restating a long one costs
         # tokens on every reduced reply. Short scope and repo stay, so a caller
@@ -757,7 +758,12 @@ def _project(
         for key in _COLLECTIONS
     }
     _deduplicate(payload)
-    expanded = "evidence" in set(include or [])
+    asked = set(include or [])
+    # Keyless replies have one shape: with no prose to check, the expanded rows
+    # are long excerpts of ranked files that stay in the caller's context, and
+    # every file they name is already a guess or a citation to Read.
+    keyless = payload.get("degraded") == "no-llm-provider"
+    expanded = "evidence" in asked and not keyless
     facts = payload.pop("_candidate_file_facts", None)
     slimmed = False
     if not expanded:
@@ -778,9 +784,11 @@ def _project(
         payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
         bodies_cut=bodies_cut,
     )
-    if "diagnostics" not in set(include or []):
+    if "diagnostics" not in asked:
         payload.pop("retrieval_quality", None)
-    unknown = sorted(set(include or []) - _INCLUDES)
+    unknown = sorted(asked - _INCLUDES)
+    if keyless and "evidence" in asked:
+        unknown.append("evidence")
     if unknown:
         payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
     return payload, slimmed, ranked
