@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import structlog
+from rich.markup import escape
 
 # The cost-gate helpers moved to ``repowise.cli.cost_gate`` so ``init`` and
 # ``generate`` share one gate. Re-exported here for the callers that still
@@ -110,7 +111,9 @@ def estimate_generation(
         provider.model_name,
         repo_path=repo_path,
         embedder=embedder,
-        embedding_model=resolve_embedding_model(embedder) if embedder else None,
+        embedding_model=resolve_embedding_model(embedder, repo_path=repo_path)
+        if embedder
+        else None,
     )
     return plans, est
 
@@ -134,6 +137,7 @@ def concept_page_count(plans: list[Any]) -> int:
 # in the mode panel was the old state.
 _PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("module_page", "Subsystem pages", "subsystem"),
+    ("flow_page", "Walkthrough pages", "walkthrough"),
     ("repo_overview", "Repo overview", "overview"),
     ("architecture_diagram", "Architecture diagram", "diagram"),
     ("onboarding", "Onboarding pages", "onboarding"),
@@ -141,7 +145,6 @@ _PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("api_contract", "API contract pages", "API"),
     ("symbol_spotlight", "Symbol spotlights", "symbol"),
     ("scc_page", "Dependency cycle pages", "cycle"),
-    ("layer_page", "Layer pages", "layer"),
     ("infra_page", "Infrastructure pages", "infra"),
 )
 
@@ -156,6 +159,24 @@ def page_type_label(page_type: str) -> str:
     to a silent hole.
     """
     return _ROW_LABELS.get(page_type) or page_type.replace("_", " ").capitalize()
+
+
+def folder_coverage_override(rules: tuple[str, ...]) -> dict[str, Any]:
+    """``--folder-coverage`` as a GenerationConfig override; absent, config.yaml decides."""
+    if not rules:
+        return {}
+    from repowise.core.generation.folder_coverage import parse_folder_coverage
+
+    return {"folder_coverage": parse_folder_coverage(rules)}
+
+
+def folder_coverage_lines(plans: list[Any]) -> list[str]:
+    """One ``src/core: 12 of 12 files get a page`` line per folder floor (#633)."""
+    return [
+        f"{glob}: {documented:,} of {eligible:,} files get a page"
+        for plan in plans
+        for glob, documented, eligible in getattr(plan, "folder_coverage", None) or []
+    ]
 
 
 def structural_page_summary(plans: list[Any]) -> str:
@@ -173,9 +194,7 @@ def structural_page_summary(plans: list[Any]) -> str:
     if not total:
         return ""
     parts = [f"{counts[pt]} {short}" for pt, _, short in _PAGE_TYPE_LABELS if counts.get(pt)]
-    return f"{total} more pages built from code, no model, no cost: " + ", ".join(
-        parts
-    )
+    return f"{total} more pages built from code, no model, no cost: " + ", ".join(parts)
 
 
 def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
@@ -255,9 +274,37 @@ def _enrich_knowledge_graph(
             # Optional enrichment: the reason goes to the log (shown with -v).
             logger.warning("kg_enrichment_skipped", error=f"{type(exc).__name__}: {exc}")
             console.print(
-                "  [dim]Knowledge graph layers and tour were skipped; "
-                "run with -v to see why.[/dim]"
+                "  [dim]Knowledge graph layers and tour were skipped; run with -v to see why.[/dim]"
             )
+
+
+def _checkpoint_failed_page_ids(repo_path: Path | str, result: Any) -> list[str]:
+    """Failed page ids read back from the jobs directory, for a run that did not report."""
+    jobs_dir = Path(repo_path) / ".repowise" / "jobs"
+    if not jobs_dir.exists():
+        return []
+    with contextlib.suppress(Exception):
+        from repowise.core.generation import JobSystem
+
+        js = JobSystem(jobs_dir)
+        job_id = getattr(result, "job_id", None)
+        if job_id:
+            return js.get_checkpoint(job_id).failed_page_ids
+        jobs = js.list_jobs()
+        if jobs:
+            return jobs[0].failed_page_ids
+    return []
+
+
+def _generation_cost_tracker(
+    deterministic: bool, cost_tracker: Any | None, repo_path: Any, result: Any
+) -> Any | None:
+    """The run's tracker, a fresh one when indexing built none, ``None`` without a model."""
+    if deterministic:
+        return None
+    if cost_tracker is not None:
+        return cost_tracker
+    return build_cost_tracker(repo_path, result.repo_name)
 
 
 def run_repo_generation(
@@ -274,12 +321,18 @@ def run_repo_generation(
     timings: Any | None = None,
     warnings: list[str] | None = None,
     total_phases: int | None = None,
+    cost_tracker: Any | None = None,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
-    Builds the embedder + vector store + cost tracker, runs the resume-friendly
+    Builds the embedder + vector store + cost tracker (or reuses *cost_tracker*,
+    the one indexing billed), runs the resume-friendly
     generation wrapper, enriches the KG, and flushes buffered cost rows in one
     transaction (kept out of the contended generation window, issue #326).
+
+    ``gen_config.reuse_prior_pages=False`` (``repowise init --force``) disables the
+    cross-run reuse gate so every page is regenerated, as the flag's help
+    text has always promised (issue #1089).
 
     Mutates ``result`` in place with ``generated_pages``, ``preserved_page_ids``
     (the pages a resumed run skipped, which persistence must not sweep) and
@@ -322,7 +375,9 @@ def run_repo_generation(
     # llm_costs table. Attached to the provider unconditionally (all providers
     # accept ``_cost_tracker`` as an attribute). A deterministic run makes no
     # calls, so it gets none: an empty ledger, not a ledger of zeroes.
-    cost_tracker = None if deterministic else build_cost_tracker(repo_path, result.repo_name)
+    # *cost_tracker* is the one indexing already billed for decision mining;
+    # reusing it keeps one ledger and one "Cost" total for the run.
+    cost_tracker = _generation_cost_tracker(deterministic, cost_tracker, repo_path, result)
     provider._cost_tracker = cost_tracker
 
     if verbose and not deterministic:
@@ -330,7 +385,6 @@ def run_repo_generation(
             "  [dim](each generated page is saved as it completes: safe to Ctrl-C, "
             "then run 'repowise init --resume' to pick up where it stopped)[/dim]"
         )
-
 
     # Filled by a resumed run with the pages it skipped because they already
     # exist. Persistence needs them: they are absent from ``generated_pages``,
@@ -346,6 +400,13 @@ def run_repo_generation(
     generation_scope: dict[str, int | None] = {}
     result.generation_scope = generation_scope
     generation_stats: dict[str, int] = {}
+    failed_page_ids: list[str] = []
+    generation_reported = False
+
+    def _record_generation_failures(page_ids: list[str]) -> None:
+        nonlocal generation_reported
+        generation_reported = True
+        failed_page_ids[:] = page_ids
 
     # No cost column on a deterministic run: it would sit at $0.000 for the
     # whole run, which reads as an unanswered question rather than an answer.
@@ -377,6 +438,7 @@ def run_repo_generation(
                 progress=gen_callback,
                 resume=resume,
                 preserved_page_ids=preserved_page_ids,
+                reuse_prior_pages=getattr(gen_config, "reuse_prior_pages", True),
                 cost_tracker=cost_tracker,
                 generation_config=gen_config,
                 # In-memory curated modules: on a fresh init the
@@ -396,25 +458,18 @@ def run_repo_generation(
                 test_run=test_run,
                 selection_out=generation_scope,
                 stats_out=generation_stats,
+                on_generation_complete=_record_generation_failures,
             )
         )
         if warnings is not None:
             warnings.extend(gen_callback.warnings)
 
-    jobs_dir = Path(repo_path) / ".repowise" / "jobs"
-    failed_page_ids: list[str] = []
-    if jobs_dir.exists():
-        with contextlib.suppress(Exception):
-            from repowise.core.generation import JobSystem
-
-            js = JobSystem(jobs_dir)
-            job_id = getattr(result, "job_id", None)
-            if job_id:
-                failed_page_ids = js.get_checkpoint(job_id).failed_page_ids
-            else:
-                jobs = js.list_jobs()
-                if jobs:
-                    failed_page_ids = jobs[0].failed_page_ids
+    # Tests and integrations can replace the async generation boundary, so the
+    # completion callback is not guaranteed to run. Preserve the checkpoint
+    # lookup as a fallback, but never let stale job data override a callback
+    # that explicitly reported zero failures for the current run.
+    if not generation_reported:
+        failed_page_ids[:] = _checkpoint_failed_page_ids(repo_path, result)
 
     result.generated_pages = generated_pages
     result.failed_page_ids = failed_page_ids
@@ -436,7 +491,7 @@ def run_repo_generation(
         )
         console.print(f"  [bold][{WARN}]Failed pages by type:[/][/bold]")
         for page_type, count in sorted(type_counts.items(), key=lambda x: -x[1]):
-            console.print(f"    {glyph('bullet')} {page_type}: {count}")
+            console.print(f"    {glyph('bullet')} {escape(page_type)}: {count}")
         # Saying only "missing" sends the user looking for absent pages and
         # finding present ones, which reads as the report being wrong. Most
         # failures leave a placeholder behind; --resume replaces those too,

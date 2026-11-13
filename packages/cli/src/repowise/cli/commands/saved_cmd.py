@@ -97,6 +97,7 @@ def saved_command(
     reported as "nothing recorded" rather than as zero. Covers the distill
     path, the replacement hooks and MCP calls; ``--by surface`` splits them.
     """
+    from repowise.cli.helpers import find_repowise_repo_root
     from repowise.core.distill.store import default_store_path
     from repowise.core.savings.service import load_report
 
@@ -104,7 +105,10 @@ def saved_command(
     since_ts = _parse_since(since)
     window_days = _window_days(since_ts)
 
-    start = Path(path).resolve() if path else Path.cwd()
+    base = Path(path).resolve() if path else Path.cwd()
+    # The ledger is filed under the repository root, so a subdirectory reads
+    # the root's report instead of an empty one.
+    start = find_repowise_repo_root(base) or base
 
     if show_missed:
         # Resolved only on this branch. Detection scans the local agent
@@ -740,10 +744,12 @@ def _distill_opted_out(repo_root: Path | None) -> bool:
         cfg = load_repo_config(repo_root).get("distill")
         if not isinstance(cfg, dict):
             return False
-        if cfg.get("enabled") is False:
+        from repowise.core.settings.model import flag
+
+        if not flag(cfg.get("enabled"), True):
             return True
         commands = cfg.get("commands")
-        return isinstance(commands, dict) and commands.get("enabled") is False
+        return isinstance(commands, dict) and not flag(commands.get("enabled"), True)
     except Exception:
         return False
 

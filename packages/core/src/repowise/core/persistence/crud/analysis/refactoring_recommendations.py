@@ -46,6 +46,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 )
 from repowise.core.analysis.test_collection import narrow_scopes
 from repowise.core.analysis.test_reachability import (
+    cached_file_paths,
     cached_test_files,
     imported_names_by_test,
     reach_into_symbols,
@@ -206,7 +207,11 @@ async def validation_inputs(
     )
     unreached = sorted(unanswered - inferred.keys())
     if unreached:
-        inferred.update(tests_matching_by_name(unreached, test_files))
+        inferred.update(
+            tests_matching_by_name(
+                unreached, test_files, await cached_file_paths(session, repository_id)
+            )
+        )
     walked = {path: reached.all_tests or tuple(reached.tests) for path, reached in inferred.items()}
     narrowed = await narrow_scopes(session, repository_id, walked, test_files)
     inferred = {

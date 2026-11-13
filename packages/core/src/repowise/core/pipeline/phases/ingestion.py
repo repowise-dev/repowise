@@ -8,17 +8,25 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import multiprocessing
 import os
 import time
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import structlog
 
+from repowise.core.cancellation import check_cancelled
+from repowise.core.pipeline.parse_pool import (
+    PENDING,
+    ParseTimeoutError,
+    ParseWorkerCrashError,
+    parse_timeout_s,
+    run_with_deadline,
+)
 from repowise.core.pipeline.progress import ProgressCallback, emit_item, emit_warning
 
 from ._common import _phase_done
@@ -39,11 +47,11 @@ def _report_missing_grammars(stats: Any, progress: ProgressCallback | None) -> N
     if not lang_counts:
         return
     try:
-        from repowise.core.ingestion.languages.registry import REGISTRY
         from repowise.core.ingestion.parser import (
             missing_grammar_languages,
             unavailable_runtime_grammars,
         )
+        from repowise.core.ingestion.parser.grammars import runtime_grammar_warning
 
         missing = missing_grammar_languages(lang_counts)
         unavailable = unavailable_runtime_grammars(lang_counts)
@@ -59,14 +67,7 @@ def _report_missing_grammars(stats: Any, progress: ProgressCallback | None) -> N
             "reinstall repowise to pick up the missing grammars.",
         )
     for lang, reason in unavailable:
-        spec = REGISTRY.get(lang)
-        emit_warning(
-            progress,
-            f"{spec.display_name if spec else lang} grammar unavailable: "
-            f"{lang_counts[lang]:,} files indexed without symbols ({reason}). "
-            "It downloads on first use; on a machine with no network, set "
-            "REPOWISE_GRAMMAR_DIR to a pre-staged grammar cache.",
-        )
+        emit_warning(progress, runtime_grammar_warning(lang, reason, lang_counts[lang]))
 
 
 def _report_query_compilation_failures(stats: Any, progress: ProgressCallback | None) -> None:
@@ -192,6 +193,74 @@ async def _record_structural_episodes(
         logger.debug("structural_episodes_skipped", exc_info=True)
 
 
+def _skipped_reason(skipped_source: Any) -> str:
+    """Why a skipped file was left out, in words."""
+    # Local import: this module defers its ingestion imports so the phase
+    # can be loaded without building the language registry.
+    from repowise.core.ingestion.traverser import _SOURCE_MAX_FILE_SIZE_BYTES
+
+    ceiling_kb = _SOURCE_MAX_FILE_SIZE_BYTES // 1024
+    return {
+        "minified": "looks minified",
+        "unreadable": "could not be read",
+        "extracted_over_max_size": f"extracted Markdown over the {ceiling_kb:,} KB limit",
+        "no_parser_over_max_size": "over the size limit for files without a parser",
+    }.get(skipped_source.reason, f"over the {ceiling_kb:,} KB limit")
+
+
+def _skipped_source_line(skipped_source: Any) -> str:
+    """One "Not indexed" line naming a skipped file and why."""
+    return (
+        f"  Not indexed: {skipped_source.path} "
+        f"({skipped_source.size_kb:,} KB, {_skipped_reason(skipped_source)})"
+    )
+
+
+# Source files named on the console before the rest are left to the report.
+_SKIPPED_SOURCES_SHOWN = 20
+
+#: Every file left out on size or as generated, one per line, rewritten by each
+#: full walk. The console names a few; this names them all.
+SKIPPED_FILES_REPORT = Path(".repowise") / "skipped_files.txt"
+
+
+def _emit_skipped_sources(progress: ProgressCallback | None, skipped_sources: list[Any]) -> None:
+    if progress is None:
+        return
+    for skipped_source in skipped_sources:
+        progress.on_message("notice", _skipped_source_line(skipped_source))
+
+
+def _skipped_report_rows(stats: Any) -> list[str]:
+    rows = [
+        f"{record.path}\t{record.size_kb:,} KB\t{_skipped_reason(record)}"
+        for record in (
+            *getattr(stats, "skipped_source_files", ()),
+            *getattr(stats, "oversized_unparsed_files", ()),
+        )
+    ]
+    rows.extend(f"{path}\t\tgenerated" for path in getattr(stats, "generated_files", ()))
+    return sorted(rows)
+
+
+def write_skipped_files_report(repo_path: Path, stats: Any) -> None:
+    """Write :data:`SKIPPED_FILES_REPORT`, or remove a stale one when nothing was skipped.
+
+    Best effort: a read-only ``.repowise`` costs the report, never the run.
+    """
+    target = Path(repo_path) / SKIPPED_FILES_REPORT
+    rows = _skipped_report_rows(stats)
+    try:
+        if not rows:
+            target.unlink(missing_ok=True)
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        header = "# Files repowise did not index: path, size, reason (tab-separated)"
+        target.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+    except OSError:
+        logger.warning("skipped_files_report_not_written", path=str(target), exc_info=True)
+
+
 def _emit_traversal_summary(
     progress: ProgressCallback | None,
     stats: Any,
@@ -217,25 +286,13 @@ def _emit_traversal_summary(
     # with its CLI, gateway and web server missing and nothing saying so
     # (#1237). Blobs stay in the aggregate — only files with a real parser
     # earn a name here.
-    skipped_sources = getattr(stats, "skipped_source_files", [])
-    if skipped_sources:
-        # Local import: this module defers its ingestion imports so the phase
-        # can be loaded without building the language registry.
-        from repowise.core.ingestion.traverser import _SOURCE_MAX_FILE_SIZE_BYTES
-
-        ceiling_kb = _SOURCE_MAX_FILE_SIZE_BYTES // 1024
-        for skipped_source in skipped_sources:
-            detail = {
-                "minified": "looks minified",
-                "unreadable": "could not be read",
-            }.get(skipped_source.reason, f"over the {ceiling_kb:,} KB limit")
-            progress.on_message(
-                "notice",
-                f"  Not indexed: {skipped_source.path} "
-                f"({skipped_source.size_kb:,} KB, {detail})",
-            )
-        if getattr(stats, "skipped_source_files_truncated", False):
-            progress.on_message("notice", "  ...and more source files skipped on size")
+    sources = sorted(getattr(stats, "skipped_source_files", []), key=lambda s: s.path)
+    _emit_skipped_sources(progress, sources[:_SKIPPED_SOURCES_SHOWN])
+    if _skipped_report_rows(stats):
+        more = len(sources) - _SKIPPED_SOURCES_SHOWN
+        lead = f"...and {more:,} more source files. " if more > 0 else ""
+        report = SKIPPED_FILES_REPORT.as_posix()
+        progress.on_message("notice", f"  {lead}Every skipped file and why: {report}")
 
     if stats.lang_counts:
         ranked = sorted(stats.lang_counts.items(), key=lambda item: -item[1])
@@ -250,16 +307,8 @@ def _emit_traversal_summary(
 # Process-pool worker (module-level — must be picklable)
 # ---------------------------------------------------------------------------
 
-# Force ``spawn`` for the parse pool instead of the POSIX default ``fork``.
-# A workspace init generates docs for one repo (which imports and connects
-# LanceDB) before ingesting the next, and ``lance`` is not fork-safe — it
-# registers an ``os.register_at_fork`` hook that resets its native async
-# runtime in the child but can still deadlock. Forking the parse workers
-# after LanceDB is live is exactly what hung multi-repo inits at "Parsing
-# files" (issue #678). ``spawn`` starts clean workers that never inherit the
-# runtime; it is already the default on Windows/macOS, so ``_parse_one`` and
-# its picklable args are known to work under it.
-_MP_SPAWN = multiprocessing.get_context("spawn")
+# The pool itself (spawn context, per-file deadline, worker memory cap) lives in
+# ``pipeline/parse_pool.py``; this module decides how many workers and what runs.
 
 # Upper bound on the parse pool, independent of how many cores the host has.
 #
@@ -345,6 +394,10 @@ def _parse_one(path_and_fi_and_bytes: tuple) -> Any:
 
             _WORKER_PARSER = ASTParser()
         return _WORKER_PARSER.parse_file(fi, source)
+    except MemoryError:
+        # Raised, not folded into an error tuple: the parent reports it as a
+        # file it gave up on (see ``report_parse_failures``).
+        raise
     except Exception as exc:
         return (fi.abs_path, str(exc))
 
@@ -353,42 +406,112 @@ def _split_cached(
     repo_path: Path,
     fi_and_bytes: list[tuple],
     progress: ProgressCallback | None,
-) -> tuple[Any, dict[int, Any], list[tuple[int, tuple, str]]]:
+    *,
+    write_cache: bool = True,
+) -> tuple[Any, dict[int, Any], list[tuple[int, tuple, str]], list[Any]]:
     """Partition pre-read files into parse-cache hits and misses.
 
-    Returns ``(cache, hits, misses)`` where *hits* maps the position in
+    Returns ``(cache, hits, misses, skipped)`` where *hits* maps the position in
     *fi_and_bytes* to a cached ParsedFile and *misses* keeps ``(position,
     (FileInfo, bytes), content_hash)`` triples that still need a real parse
     (the hash rides along so the post-parse ``put`` doesn't re-digest).
     Positions let the caller reassemble results in traversal order. Hits
     tick the parse progress bar here (misses tick when their worker
     finishes). Cache failures degrade to all-miss.
+
+    *skipped* names the documents whose Markdown is over the parseable-source
+    ceiling. They are removed from *fi_and_bytes* in place; the caller takes
+    them out of its scope with :func:`drop_skipped_documents`.
     """
-    from repowise.core.ingestion import compute_content_hash
+    from repowise.core.ingestion.document_extractors import source_fingerprint
     from repowise.core.ingestion.parse_cache import ParseCache
 
     cache = None
     hits: dict[int, Any] = {}
-    misses: list[tuple[int, tuple, str]] = []
     try:
         cache = ParseCache(repo_path / ".repowise")
         cache.load()
     except Exception as exc:
         logger.debug("parse_cache_init_failed", error=str(exc))
-        return None, hits, [(idx, item, "") for idx, item in enumerate(fi_and_bytes)]
 
-    for idx, (fi, source) in enumerate(fi_and_bytes):
-        content_hash = compute_content_hash(source)
-        parsed = cache.get(fi, content_hash)
+    # Fingerprints hash the original bytes, so take them before extraction
+    # swaps a document's bytes for its Markdown.
+    hashes = [source_fingerprint(fi, source) for fi, source in fi_and_bytes]
+    # A hit still needs its Markdown: the source map carries it to the graph,
+    # generation and analysis, exactly as for a freshly parsed file.
+    skipped = _prepare_document_sources(repo_path, fi_and_bytes, write_cache=write_cache)
+    _drop_skipped(fi_and_bytes, hashes, skipped)
+    for idx, (fi, _source) in enumerate(fi_and_bytes):
+        parsed = cache.get(fi, hashes[idx]) if cache is not None else None
         if parsed is not None:
             hits[idx] = parsed
             if progress:
                 progress.on_item_done("parse")
-        else:
-            misses.append((idx, (fi, source), content_hash))
-    if hits:
+
+    misses = [(idx, item, hashes[idx]) for idx, item in enumerate(fi_and_bytes) if idx not in hits]
+    if cache is not None and hits:
         logger.info("parse_cache_used", hits=cache.hits, misses=cache.misses)
-    return cache, hits, misses
+    return cache, hits, misses, skipped
+
+
+def _drop_skipped(fi_and_bytes: list[tuple], hashes: list[str], skipped: list[Any]) -> None:
+    """Remove skipped documents from *fi_and_bytes* and their fingerprints from *hashes*."""
+    if not skipped:
+        return
+    dropped = {record.path for record in skipped}
+    kept = [idx for idx, (fi, _source) in enumerate(fi_and_bytes) if fi.path not in dropped]
+    hashes[:] = [hashes[idx] for idx in kept]
+    fi_and_bytes[:] = [fi_and_bytes[idx] for idx in kept]
+
+
+def drop_skipped_documents(file_infos: list[Any], stats: Any, skipped: list[Any]) -> None:
+    """Take documents whose Markdown is over the ceiling out of the index scope.
+
+    They leave *file_infos* (the set that decides which prior rows survive)
+    and join the traversal stats' skipped sources, beside files skipped on
+    size during the walk.
+    """
+    if not skipped:
+        return
+    dropped = {record.path for record in skipped}
+    file_infos[:] = [fi for fi in file_infos if fi.path not in dropped]
+    if stats is not None:
+        stats.skipped_source_files.extend(skipped)
+
+
+def _prepare_document_sources(
+    repo_path: Path, fi_and_bytes: list[tuple], *, write_cache: bool = True
+) -> list[Any]:
+    """Read Markdown at the shared boundary, independently of the parse cache.
+
+    Returns a :class:`SkippedSourceFile` for each document whose Markdown is
+    over the parseable-source ceiling. Those entries keep their original bytes
+    for the caller to drop.
+    """
+    from repowise.core.ingestion.source_reader import OverCeiling, read_document_sources
+    from repowise.core.ingestion.traverser import SkippedSourceFile
+
+    requests = [
+        (idx, fi.extractor_name, fi.extractor_version, Path(fi.abs_path), fi.path, source)
+        for idx, (fi, source) in enumerate(fi_and_bytes)
+        if fi.extractor_name is not None
+    ]
+    extracted = read_document_sources(
+        repo_path, [request[1:] for request in requests], write_cache=write_cache
+    )
+    skipped = []
+    for (idx, *_request), parse_source in zip(requests, extracted, strict=True):
+        fi, _raw_source = fi_and_bytes[idx]
+        if isinstance(parse_source, OverCeiling):
+            # The size that broke the limit: the Markdown's, not the source's.
+            skipped.append(
+                SkippedSourceFile(
+                    fi.path, parse_source.size_bytes // 1024, "extracted_over_max_size"
+                )
+            )
+        else:
+            fi_and_bytes[idx] = (fi, parse_source)
+    return skipped
 
 
 def _cache_parsed(cache: Any, parsed: Any, content_hash: str) -> None:
@@ -430,9 +553,6 @@ def _read_sources(
 
 # Languages ``skip_infra`` drops from the parse set.
 _INFRA_LANGUAGES = ("dockerfile", "makefile", "terraform", "shell")
-
-# TS/JS-family languages whose presence wires the tsconfig path-alias resolver.
-_TS_LANGUAGES = frozenset({"typescript", "javascript", "svelte", "vue", "astro"})
 
 
 @dataclass(frozen=True)
@@ -522,47 +642,90 @@ async def _traverse_stage(
     return traverser, file_infos, repo_structure
 
 
-async def _parse_in_pool(
-    to_parse: list[tuple], workers: int, progress: ProgressCallback | None
-) -> list[Any]:
-    """Parse cache misses in the spawn process pool; results in *to_parse* order."""
-    loop = asyncio.get_running_loop()
-    with ProcessPoolExecutor(max_workers=workers, mp_context=_MP_SPAWN) as pool:
-        tasks = [loop.run_in_executor(pool, _parse_one, item) for _idx, item, _h in to_parse]
-        # Tick per finished worker: ``asyncio.gather`` alone holds every event
-        # until the last file is done, which on large repos looked like a hang
-        # at ``0/N``. Done-callbacks keep gather's ordered results intact.
-        if progress is not None:
+def _parse_in_process(
+    to_parse: list[tuple], results: list[Any], on_done: Callable[[int], None] | None
+) -> None:
+    """Sequential in-process parse of every slot still ``PENDING``.
 
-            def _parse_tick(path: str) -> Any:
-                def _tick(_fut: Any) -> None:
-                    progress.on_item_done("parse")
-                    emit_item(progress, "parse", path)
-
-                return _tick
-
-            for fut, (_idx, (fi, _src), _h) in zip(tasks, to_parse, strict=True):
-                fut.add_done_callback(_parse_tick(fi.path))
-        return await asyncio.gather(*tasks, return_exceptions=True)
-
-
-async def _parse_in_process(to_parse: list[tuple], progress: ProgressCallback | None) -> list[Any]:
-    """Sequential in-process parse, the fallback when the pool is unavailable."""
+    The fallback when the pool cannot start. It has no deadline (a thread
+    cannot be stopped), but files the pool already timed out or crashed on
+    are resolved and never reach it.
+    """
     from repowise.core.ingestion import ASTParser
 
-    parse_results: list[Any] = []
-    fallback_parser = ASTParser()
+    parser: Any = None
     for i, (_idx, (fi, source), _h) in enumerate(to_parse):
+        if results[i] is not PENDING:
+            continue
+        check_cancelled()
         try:
-            parse_results.append(fallback_parser.parse_file(fi, source))
+            if parser is None:
+                parser = ASTParser()
+            results[i] = parser.parse_file(fi, source)
         except Exception as exc:
-            parse_results.append((fi.abs_path, str(exc)))
-        if progress:
-            progress.on_item_done("parse")
-            emit_item(progress, "parse", fi.path)
-        if i % 50 == 49:
-            await asyncio.sleep(0)
-    return parse_results
+            results[i] = (fi.abs_path, str(exc))
+        if on_done is not None:
+            on_done(i)
+
+
+def parse_guarded(
+    to_parse: list[tuple],
+    *,
+    on_done: Callable[[int], None] | None = None,
+    on_fallback: Callable[[Exception], None] | None = None,
+) -> list[Any]:
+    """Parse ``(idx, (FileInfo, bytes), hash)`` triples; results in *to_parse* order.
+
+    Runs in the deadline pool (see ``parse_pool``), falling back to one
+    in-process parser for whatever is left when the pool cannot start. Each
+    result is a ``ParsedFile``, an ``(abs_path, error)`` tuple or an
+    exception. ``on_done(i)`` fires once per file, from the calling thread.
+    """
+    if not to_parse:
+        return []
+    results: list[Any] = [PENDING] * len(to_parse)
+    workers = parse_pool_workers(len(to_parse))
+    pool_done = None if on_done is None else (lambda i, _result: on_done(i))
+    try:
+        run_with_deadline(
+            _parse_one,
+            [item for _idx, item, _h in to_parse],
+            workers,
+            results,
+            timeout=parse_timeout_s(),
+            on_done=pool_done,
+        )
+    except Exception as pool_exc:
+        if on_fallback is not None:
+            on_fallback(pool_exc)
+        else:
+            logger.warning("parse_pool_unavailable", error=str(pool_exc))
+        _parse_in_process(to_parse, results, on_done)
+    return results
+
+
+def report_parse_failures(to_parse: list[tuple], results: list[Any]) -> str | None:
+    """Log each file the pool gave up on; one sentence naming them, or None.
+
+    Ordinary parse errors stay at debug (they are routine); a timeout, a
+    crashed worker or a worker out of memory means a file is missing from the
+    index for a reason the user can act on, such as excluding it.
+    """
+    failed: list[tuple[str, str]] = []
+    for (_idx, (fi, _src), _h), result in zip(to_parse, results, strict=True):
+        if isinstance(result, ParseTimeoutError | ParseWorkerCrashError | MemoryError):
+            reason = str(result) or "parse ran out of memory"
+            logger.warning("parse_file_abandoned", path=fi.path, reason=reason)
+            failed.append((fi.path, reason))
+    if not failed:
+        return None
+    shown = ", ".join(f"{path} ({reason})" for path, reason in failed[:5])
+    more = f" and {len(failed) - 5} more" if len(failed) > 5 else ""
+    return (
+        f"Skipped {len(failed)} file(s) the parser could not finish: {shown}{more}. "
+        "The rest of the index is complete; exclude these files, or raise "
+        "REPOWISE_PARSE_TIMEOUT_S if they are just slow."
+    )
 
 
 async def _parse_misses(
@@ -572,23 +735,41 @@ async def _parse_misses(
     fallback_event: str,
     warn_on_fallback: bool,
 ) -> list[Any]:
-    workers = parse_pool_workers(len(to_parse))
     if not to_parse:
         return []
-    try:
-        return await _parse_in_pool(to_parse, workers, progress)
-    except Exception as pool_exc:
+    loop = asyncio.get_running_loop()
+    on_done = None
+    if progress is not None:
+
+        def _tick(i: int) -> None:
+            progress.on_item_done("parse")
+            emit_item(progress, "parse", to_parse[i][1][0].path)
+
+        # Ticks come from the parse thread; hop to the loop like the old
+        # executor done-callbacks did, so progress is only touched there.
+        def on_done(i: int) -> None:
+            loop.call_soon_threadsafe(_tick, i)
+
+    def on_fallback(pool_exc: Exception) -> None:
         logger.warning(fallback_event, error=str(pool_exc))
         if warn_on_fallback:
             # Said out loud, not only logged: the index is still correct, but
             # one process instead of up to eight makes a large repo several
             # times slower for a reason nothing on screen explained.
-            emit_warning(
+            loop.call_soon_threadsafe(
+                emit_warning,
                 progress,
                 f"Parallel parsing unavailable ({pool_exc}); "
                 "falling back to a single process, which is much slower.",
             )
-        return await _parse_in_process(to_parse, progress)
+
+    results = await asyncio.to_thread(
+        parse_guarded, to_parse, on_done=on_done, on_fallback=on_fallback
+    )
+    message = report_parse_failures(to_parse, results)
+    if message:
+        emit_warning(progress, message)
+    return results
 
 
 def _merge_parse_results(
@@ -600,6 +781,8 @@ def _merge_parse_results(
     """Key fresh parses by traversal position next to the cache hits."""
     merged: dict[int, Any] = dict(cached_hits)
     for (idx, _item, content_hash), result in zip(to_parse, parse_results, strict=True):
+        if not isinstance(result, tuple | Exception):
+            result.content_hash = content_hash
         merged[idx] = result
         if not isinstance(result, tuple | Exception):
             _cache_parsed(parse_cache, result, content_hash)
@@ -633,17 +816,27 @@ async def _parse_stage(
     *,
     fallback_event: str,
     warn_on_fallback: bool,
+    stats: Any = None,
 ) -> tuple[list[Any], dict[str, bytes]]:
     """Read, cache-split and parse *file_infos*; results keep their order.
 
     Source bytes are read up front in a thread pool so worker args stay small
     (FileInfo + bytes). Content-hash cache hits skip the worker pool; misses
     are parsed in the process pool. Does not mark the parse phase done.
+    A document whose Markdown is over the ceiling leaves *file_infos* in place
+    and is recorded in the traversal *stats*.
     """
     if progress:
         progress.on_phase_start("parse", len(file_infos))
     fi_and_bytes: list[tuple] = _read_sources(file_infos, progress)
-    parse_cache, cached_hits, to_parse = _split_cached(repo_path, fi_and_bytes, progress)
+    parse_cache, cached_hits, to_parse, skipped = await asyncio.to_thread(
+        _split_cached, repo_path, fi_and_bytes, None,
+    )
+    drop_skipped_documents(file_infos, stats, skipped)
+    _emit_skipped_sources(progress, skipped)
+    if progress:
+        for _ in [*cached_hits, *skipped]:
+            progress.on_item_done("parse")
     parse_results = await _parse_misses(
         to_parse, progress, fallback_event=fallback_event, warn_on_fallback=warn_on_fallback
     )
@@ -692,6 +885,8 @@ def _new_graph_builder(
         include_nested_repos=walk.include_nested_repos,
     )
     graph_builder.console_scripts = traverser.console_script_names
+    # A full index never reuses a partition its graph has drifted from.
+    graph_builder.fresh_communities = True
     for parsed in parsed_files:
         graph_builder.add_file(parsed)
     # Lend the just-read bytes so the language warmups that scan file text
@@ -713,7 +908,9 @@ def _wire_tsconfig(
     Its own phase label: on large TS monorepos it indexes hundreds of tsconfig
     files, which otherwise shows as a silent gap right after parsing.
     """
-    if not any(pf.file_info.language in _TS_LANGUAGES for pf in parsed_files):
+    from repowise.core.ingestion.models import TS_JS_LANGUAGES
+
+    if not any(pf.file_info.language in TS_JS_LANGUAGES for pf in parsed_files):
         return
     if progress:
         progress.on_phase_start("tsconfig", None)
@@ -788,6 +985,8 @@ async def _add_dynamic_hints(
                 dotnet_index=graph_builder.dotnet_index,
                 file_paths=hint_paths,
                 source_map=source_map,
+                # The graph's cache directory: none on a read-only run.
+                cache_dir=getattr(graph_builder, "_cache_dir", None),
             ),
         )
         graph_builder.add_dynamic_edges(dynamic_edges)
@@ -871,12 +1070,24 @@ async def _run_ingestion(
         progress,
         fallback_event="process_pool_parse_failed_falling_back",
         warn_on_fallback=True,
+        stats=traverser.stats,
     )
+    # After the parse stage, which adds the documents it drops.
+    write_skipped_files_report(repo_path, traverser.stats)
     graph_builder = _new_graph_builder(repo_path, traverser, parsed_files, source_map, walk)
     _phase_done(progress, "parse")
 
     _wire_tsconfig(graph_builder, repo_path, parsed_files, walk, progress)
     await _build_graph(graph_builder, len(file_infos), progress)
+    # Persist resolver side data unless graph patching is turned off.
+    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+
+    if incremental_graph_enabled():
+        from repowise.core.pipeline.incremental.resolution_cache import save_resolutions
+
+        save_resolutions(
+            repo_path / ".repowise", parsed_files, graph_builder.import_resolutions, source_map
+        )
     # Stack detection and framework edges fail separately: the stack also
     # feeds the persisted tech list and the editor files.
     tech_items = _detect_tech_items(
@@ -930,13 +1141,14 @@ async def reparse_for_resume(
         skip_infra=skip_infra,
         derive_environment_facts=derive_environment_facts,
     )
-    _traverser, file_infos, repo_structure = await _traverse_stage(repo_path, walk, progress)
+    traverser, file_infos, repo_structure = await _traverse_stage(repo_path, walk, progress)
     parsed_files, source_map = await _parse_stage(
         repo_path,
         file_infos,
         progress,
         fallback_event="resume_reparse_pool_failed_falling_back",
         warn_on_fallback=False,
+        stats=traverser.stats,
     )
     _phase_done(progress, "parse")
     tech_items = _detect_tech_items(repo_path, progress, consequence=".")

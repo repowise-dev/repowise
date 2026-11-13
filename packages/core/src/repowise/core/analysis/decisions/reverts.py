@@ -526,8 +526,9 @@ async def apply_revert_supersession(
         if all_reverted and not retired_here:
             revert_sha = reverted[resolved[0]].revert
             successor = f"{REVERT_SUPERSEDED_PREFIX}{revert_sha}"[:_SUPERSEDED_BY_WIDTH]
-            await _retire(session, rec, successor_id=successor)
-            result["superseded"] += 1
+            # A pinned decision stays in force: a person retires it, not a revert.
+            if await _retire(session, rec, successor_id=successor):
+                result["superseded"] += 1
         elif retired_here and not all_reverted and rec.status == "superseded":
             # The revert was itself reverted: the decision holds again.
             # ``proposed``, as ``unretire_auto_superseded`` restores: the lower

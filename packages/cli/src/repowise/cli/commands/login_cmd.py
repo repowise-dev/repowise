@@ -2,9 +2,11 @@
 
 Sign-in is browser-based OAuth with PKCE: the command binds an ephemeral
 loopback port, opens the hosted consent page, and exchanges the returned
-code for tokens stored at ``~/.repowise/credentials.json``. For headless
-machines, ``repowise login --with-token`` accepts a personal API key minted
-in the hosted dashboard instead.
+code for tokens stored at ``~/.repowise/credentials.json``. On a machine
+with no browser (SSH, a container, a cloud agent), ``repowise login --device``
+prints a short code to approve from any other device instead, and
+``repowise login --with-token`` accepts a personal API key minted in the
+hosted dashboard.
 
 Signing in is always optional: every local feature works without it. A
 login adds the hosted layer (your indexed repos on repowise.dev, reindex
@@ -23,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import click
+from rich.markup import escape
 
 from repowise.cli.helpers import console
 
@@ -131,13 +134,23 @@ def _link_anonymous_id() -> None:
     "Reads from stdin when piped, otherwise prompts. For SSH/headless machines.",
 )
 @click.option(
+    "--device",
+    "use_device_code",
+    is_flag=True,
+    help="Sign in without a browser on this machine: prints a code to approve "
+    "at repowise.dev/device from any other device.",
+)
+@click.option(
     "--device-name",
     default=None,
     help="Label this machine in your connected apps (default: hostname).",
 )
-def login_command(with_token: bool, device_name: str | None) -> None:
+def login_command(with_token: bool, use_device_code: bool, device_name: str | None) -> None:
     """Sign in to your Repowise account."""
     from repowise.cli.platform import auth, credentials
+
+    if with_token and use_device_code:
+        raise click.UsageError("Use one of --with-token or --device, not both.")
 
     existing = credentials.load()
     if existing and not existing.get("stale"):
@@ -178,6 +191,9 @@ def login_command(with_token: bool, device_name: str | None) -> None:
         _greet(account)
         return
 
+    if use_device_code:
+        device_sign_in(device)
+        return
     browser_sign_in(device, src="cli_login")
 
 
@@ -187,7 +203,7 @@ def browser_sign_in(device: str | None, *, src: str) -> dict:
     starts here to the command that sent the person. Raises
     ``click.ClickException`` when the sign-in does not complete.
     """
-    from repowise.cli.platform import auth, credentials
+    from repowise.cli.platform import auth
 
     # Browser PKCE flow.
     verifier, challenge = auth.make_pkce_pair()
@@ -236,14 +252,122 @@ def browser_sign_in(device: str | None, *, src: str) -> dict:
     )
     if body is None:
         raise click.ClickException(error or "Token exchange failed.")
+    return _complete_sign_in(body, device)
 
-    credentials.save(auth.credentials_from_token_response(body, device_name=device))
+
+def _complete_sign_in(token_response: dict, device: str | None) -> dict:
+    """Store the tokens, cache the account and greet. Shared by every OAuth sign-in.
+
+    The token itself is never printed.
+    """
+    from repowise.cli.platform import auth, credentials
+
+    credentials.save(auth.credentials_from_token_response(token_response, device_name=device))
     account = auth.fetch_account()
     if account:
         auth.store_account_snapshot(account)
     _link_anonymous_id()
     _greet(account or {})
     return account or {}
+
+
+_DEVICE_UNSUPPORTED = (
+    "repowise.dev does not offer device sign-in yet. Run 'repowise login' on a "
+    "machine with a browser, or 'repowise login --with-token' with an API key."
+)
+
+_DEVICE_UNAUTHORIZED = (
+    "repowise.dev did not allow this CLI to use device sign-in. Update repowise "
+    "('pip install -U repowise'), or run 'repowise login' on a machine with a browser."
+)
+
+#: What to say when polling ends without a token, by RFC 8628 error code.
+_DEVICE_ERRORS = {
+    "access_denied": "Sign-in was denied on the approval page. Nothing was stored.",
+    "expired_token": (
+        "The code expired before it was approved. Run 'repowise login --device' again."
+    ),
+    "unauthorized_client": _DEVICE_UNAUTHORIZED,
+    "unsupported_grant_type": _DEVICE_UNSUPPORTED,
+}
+
+
+def _bounded_seconds(value: object, *, default: int, low: int, high: int) -> int:
+    """*value* as whole seconds within ``[low, high]``; *default* when unreadable."""
+    try:
+        seconds = int(value) if value is not None else default
+    except (TypeError, ValueError):
+        seconds = default
+    return min(max(seconds, low), high)
+
+
+def device_sign_in(device: str | None) -> dict:
+    """Run the RFC 8628 device sign-in and return the account (``{}`` when
+    ``/auth/me`` did not answer). Raises ``click.ClickException`` when the
+    sign-in does not complete.
+
+    An ``invalid_grant`` while polling (the code is unknown, used, or belongs
+    to another client) starts the flow over once with a fresh code, then stops.
+    """
+    from repowise.cli.platform import auth
+
+    for attempt in range(2):
+        body = _start_device_flow(device)
+        # Bounded: a server value we cannot read, or one far outside RFC 8628's
+        # norms, must not leave the command waiting for hours.
+        expires_in = _bounded_seconds(body.get("expires_in"), default=600, low=60, high=1800)
+        interval = _bounded_seconds(body.get("interval"), default=5, low=1, high=60)
+        _print_device_prompt(body, expires_in)
+
+        outcome, token = auth.poll_device_token(
+            body["device_code"], interval=interval, expires_in=expires_in
+        )
+        if outcome == "ok":
+            return _complete_sign_in(token, device)
+        if outcome == "invalid_grant" and attempt == 0:
+            console.print(
+                "[yellow]That code is no longer valid. Starting over with a new one.[/yellow]"
+            )
+            continue
+        detail = token.get("error_description") or outcome
+        raise click.ClickException(
+            _DEVICE_ERRORS.get(outcome) or f"Device sign-in failed: {detail}"
+        )
+    raise click.ClickException(
+        "Device sign-in failed twice with an invalid code. Run 'repowise login --device' again."
+    )
+
+
+def _start_device_flow(device: str | None) -> dict:
+    """Ask for a device code; the server's answer, or a ``ClickException`` saying why not."""
+    from repowise.cli.platform import auth
+
+    status, body = auth.request_device_code(device)
+    error = body.get("error")
+    if status in (404, 405) or error == "unsupported_grant_type":
+        raise click.ClickException(_DEVICE_UNSUPPORTED)
+    if error == "unauthorized_client":
+        raise click.ClickException(_DEVICE_UNAUTHORIZED)
+    if status == 0:
+        raise click.ClickException(
+            "Could not reach repowise.dev. Check the connection and try again."
+        )
+    if status != 200 or not body.get("device_code") or not body.get("user_code"):
+        detail = body.get("error_description") or error or f"HTTP {status}"
+        raise click.ClickException(f"Device sign-in could not start: {detail}")
+    return body
+
+
+def _print_device_prompt(body: dict, expires_in: int) -> None:
+    """Where to go and what to type. Server strings are escaped, never markup."""
+    verify = escape(str(body.get("verification_uri") or "https://repowise.dev/device"))
+    console.print(f"To sign in, open [cyan]{verify}[/cyan] on any device")
+    console.print(f"and enter the code [bold]{escape(str(body['user_code']))}[/bold]")
+    if body.get("verification_uri_complete"):
+        complete = escape(str(body["verification_uri_complete"]))
+        console.print(f"(or open [cyan]{complete}[/cyan] with the code filled in).")
+    console.print("Approve it only if you started this sign-in yourself, on a machine you control.")
+    console.print(f"[dim]Waiting for approval (the code expires in {expires_in // 60} min)...[/dim]")
 
 
 @click.command(name="logout")

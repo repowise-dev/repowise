@@ -32,7 +32,7 @@ describe("AttentionPanel", () => {
     render(<AttentionPanel items={items} repoId="r1" previewCount={5} />);
 
     expect(screen.getByText(/40/)).toBeInTheDocument();
-    expect(screen.getByText(/auto-proposed decisions awaiting review/)).toBeInTheDocument();
+    expect(screen.getByText(/background decision records/)).toBeInTheDocument();
     // None of the 40 proposals are rendered as their own rows.
     expect(screen.queryByText("title-prop-0")).not.toBeInTheDocument();
     expect(screen.getByText("title-stale-1")).toBeInTheDocument();
@@ -90,7 +90,7 @@ describe("AttentionPanel", () => {
 
     render(<AttentionPanel items={items} repoId="r1" previewCount={5} />);
 
-    expect(screen.getByText(/auto-proposed decisions awaiting review/)).toBeInTheDocument();
+    expect(screen.getByText(/background decision records/)).toBeInTheDocument();
     expect(screen.queryByText("Nothing needs attention")).not.toBeInTheDocument();
   });
 

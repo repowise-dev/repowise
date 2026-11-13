@@ -113,7 +113,7 @@ def test_clean_install_has_versioned_event_link_and_query_indexes(tmp_path: Path
         store.close()
 
 
-def test_old_sidecar_reset_is_scoped_and_preserves_recovery_bytes(tmp_path: Path) -> None:
+def test_old_sidecar_upgrade_keeps_every_row(tmp_path: Path) -> None:
     db_path = tmp_path / "omissions.db"
     _seed_legacy(db_path)
     store = OmissionStore(db_path)
@@ -124,7 +124,7 @@ def test_old_sidecar_reset_is_scoped_and_preserves_recovery_bytes(tmp_path: Path
         assert store._conn.execute("SELECT * FROM evidence_references").fetchall() == [
             ("ev_1", b"\x04\x05\x06", "repo", 2.0)
         ]
-        assert store._conn.execute("SELECT COUNT(*) FROM savings").fetchone()[0] == 0
+        assert store._conn.execute("SELECT COUNT(*) FROM savings").fetchone()[0] == 1
         assert store._conn.execute("SELECT * FROM other_data").fetchall() == [("keep me",)]
     finally:
         store.close()
@@ -136,9 +136,71 @@ def test_claimed_current_but_incomplete_sidecar_is_repaired(tmp_path: Path) -> N
     with sqlite3.connect(db_path) as conn:
         conn.execute(f"PRAGMA user_version={schema.SAVINGS_SCHEMA_VERSION}")
     with OmissionStore(db_path) as store:
-        assert store._conn.execute("SELECT COUNT(*) FROM savings").fetchone()[0] == 0
+        assert store._conn.execute("SELECT COUNT(*) FROM savings").fetchone()[0] == 1
         assert store._conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 0
         assert store._conn.execute("SELECT content FROM omissions").fetchone()[0] == b"\x01\x02\x03"
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["savings_opportunities", "savings_event_correlations", "savings", "savings_event_omissions"],
+)
+def test_a_missing_table_is_added_without_dropping_the_others(tmp_path: Path, missing) -> None:
+    db_path = tmp_path / "omissions.db"
+    with OmissionStore(db_path) as store:
+        assert SavingsRepository(store._conn).record_event(_event(1))
+        store._conn.execute("PRAGMA foreign_keys=OFF")
+        store._conn.execute(f"DROP TABLE {missing}")
+    with OmissionStore(db_path) as store:
+        conn = store._conn
+        assert conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 1
+        assert conn.execute(f"SELECT COUNT(*) FROM {missing}").fetchone()[0] == 0
+        assert SavingsRepository(conn).record_event(_event(2))
+
+
+def test_v1_sidecar_keeps_its_events_and_opportunities(tmp_path: Path) -> None:
+    """v2 only loosened the agent checks, so a v1 ledger upgrades in place."""
+    db_path = tmp_path / "omissions.db"
+    with OmissionStore(db_path) as store:
+        assert SavingsRepository(store._conn).record_event(_event(1))
+        store._conn.executescript(
+            """
+            DROP TABLE savings_opportunities;
+            CREATE TABLE savings_opportunities (
+                observation_id TEXT PRIMARY KEY,
+                occurred_at TEXT NOT NULL,
+                repository_id TEXT NOT NULL,
+                integration TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                estimated_potential_input_tokens INTEGER NOT NULL,
+                CHECK(integration IN ('claude_code','codex','unknown')),
+                CHECK(estimated_potential_input_tokens >= 0)
+            );
+            INSERT INTO savings_opportunities VALUES ('o1', '2026-09-14T00:00:00Z', 'repo',
+                'codex', 'hook_surface_disabled:read', 5);
+            PRAGMA user_version=1;
+            """
+        )
+    with OmissionStore(db_path) as store:
+        conn = store._conn
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == schema.SAVINGS_SCHEMA_VERSION
+        assert conn.execute("SELECT COUNT(*) FROM savings_events").fetchone()[0] == 1
+        assert conn.execute("SELECT observation_id FROM savings_opportunities").fetchall() == [
+            ("o1",)
+        ]
+        # The rebuilt table takes an agent the v1 list never named.
+        assert SavingsRepository(conn).record_opportunity(
+            OpportunityObservation.from_mapping(
+                {
+                    "observation_id": "o2",
+                    "occurred_at": "2026-09-14T00:00:01Z",
+                    "integration": "new_agent",
+                    "kind": "hook_surface_disabled:read",
+                    "estimated_potential_input_tokens": 1,
+                },
+                repository_id="repo",
+            )
+        )
 
 
 def test_failed_upgrade_rolls_back_tables_rows_and_version(tmp_path: Path, monkeypatch) -> None:
@@ -148,8 +210,8 @@ def test_failed_upgrade_rolls_back_tables_rows_and_version(tmp_path: Path, monke
     apply_sqlite_pragmas(conn, 5000)
     original = schema._apply_schema
 
-    def fail_after_changes(connection: sqlite3.Connection) -> None:
-        original(connection)
+    def fail_after_changes(connection: sqlite3.Connection, version: int) -> None:
+        original(connection, version)
         raise RuntimeError("simulated upgrade failure")
 
     monkeypatch.setattr(schema, "_apply_schema", fail_after_changes)

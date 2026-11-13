@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -65,6 +67,7 @@
       "process",
       "trivial"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -138,7 +141,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -217,6 +222,7 @@
       "deploy",
       "build_step"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -274,7 +280,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -342,6 +350,7 @@
     "exports": [
       "main"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -431,11 +440,14 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -477,7 +489,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -508,6 +522,7 @@
     "exports": [
       "setup"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {

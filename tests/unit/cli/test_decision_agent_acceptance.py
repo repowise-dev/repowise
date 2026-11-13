@@ -9,12 +9,15 @@ and it is refused only where the repository turned agent acceptance off.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
+from repowise.cli.commands.decision_cmd import _accept_remedy_for_blockers
 from repowise.cli.main import cli
+from repowise.core.analysis.decisions.lifecycle import NO_ACCEPTANCE_IDENTITY_BLOCKER
 
 from .test_decision_cmd import _seed_wiki_db
 
@@ -45,6 +48,14 @@ def _forbid_agents(repo: Path) -> None:
     assert result.exit_code == 0, result.output
 
 
+def test_a_missing_acceptance_identity_explains_how_to_name_the_signer() -> None:
+    remedy = _accept_remedy_for_blockers([NO_ACCEPTANCE_IDENTITY_BLOCKER])
+
+    assert "--as <name>" in remedy
+    assert "--agent <slug>" in remedy
+    assert "Supply the missing parts" not in remedy
+
+
 def test_an_agent_accepts_with_no_config(repo: Path) -> None:
     result = _run(repo, "confirm", "aaaa", "--agent", "claude_code")
 
@@ -59,7 +70,7 @@ def test_an_agent_is_refused_on_a_repository_that_turned_it_off(repo: Path) -> N
 
     assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
-    assert "may not record" in payload["results"][0]["message"]
+    assert "may not accept here" in payload["results"][0]["message"]
     assert "agent-acceptance --on" in payload["remedy"]
 
 
@@ -72,6 +83,7 @@ def test_the_refusal_leads_with_the_switch_it_was_refused_by(repo: Path) -> None
 
     remedy = json.loads(result.output)["remedy"]
     assert remedy.startswith("Agent acceptance is off")
+    assert "Supply the missing parts" not in remedy
 
 
 def test_an_agent_signs_as_itself(repo: Path) -> None:
@@ -98,14 +110,21 @@ def test_a_candidate_reports_no_signer(repo: Path) -> None:
     assert json.loads(_run(repo, "show", "aaaa").output)["decision"]["signature"] is None
 
 
-def test_a_batch_refusal_still_names_the_switch(repo: Path) -> None:
-    """The remedy reached only the one-id path, so a scripted confirm of two
-    ids was refused without ever being told which switch to turn on."""
+def test_a_batch_refusal_includes_each_remedy_needed(repo: Path) -> None:
+    """A policy refusal and an incomplete record need different next steps."""
     _forbid_agents(repo)
+    with sqlite3.connect(repo / ".repowise" / "wiki.db") as conn:
+        conn.execute(
+            "UPDATE decision_records SET affected_files_json = '[]' WHERE id = ?",
+            ("b" * 32,),
+        )
+
     result = _run(repo, "confirm", "aaaa", "bbbb", "--agent", "claude_code")
 
     assert result.exit_code == 1, result.output
-    assert "agent-acceptance --on" in json.loads(result.output)["remedy"]
+    remedy = json.loads(result.output)["remedy"]
+    assert "agent-acceptance --on" in remedy
+    assert "Supply the missing parts" in remedy
 
 
 def test_the_remedy_sends_the_agent_to_a_person(repo: Path) -> None:
@@ -350,3 +369,62 @@ def test_a_locked_store_is_one_line_not_a_traceback(repo: Path, monkeypatch) -> 
     assert "database is locked" in result.output
     assert "retry once it finishes" in result.output
     assert "Traceback" not in result.output
+
+
+# --- re-adding a title, and evidence given at confirm ---------------------------
+
+
+def test_re_adding_a_title_keeps_the_fields_the_retry_left_out(repo: Path) -> None:
+    first = json.loads(_add(repo, "--agent", "claude_code", "--evidence-commit", "abc1234").output)
+    retry = _run(
+        repo, "add", "--agent", "claude_code",
+        "--title", "Bound the cache at 512", "--decision", "Cap the cache at 512 entries",
+    )
+
+    assert retry.exit_code == 0, retry.output
+    payload = json.loads(retry.output)["decision"]
+    assert payload["id"] == first["decision"]["id"]
+    assert payload["existed"] is True
+    assert payload["kept"] == ["rationale", "affected_files"]
+    shown = json.loads(_run(repo, "show", payload["id"]).output)["decision"]
+    assert shown["affected_files"] == ["src/cache.py"]
+    assert shown["rationale"] == "unbounded growth ran a worker out of memory"
+    assert shown["evidence_commits"] == ["abc1234"]
+
+
+def test_re_adding_a_title_adds_new_commits_to_the_stored_ones(repo: Path) -> None:
+    _add(repo, "--agent", "claude_code", "--evidence-commit", "abc1234")
+    retry = json.loads(_add(repo, "--agent", "claude_code", "--evidence-commit", "def5678").output)
+
+    shown = json.loads(_run(repo, "show", retry["decision"]["id"]).output)["decision"]
+    assert shown["evidence_commits"] == ["abc1234", "def5678"]
+
+
+def test_re_adding_an_accepted_decision_keeps_it_accepted(repo: Path) -> None:
+    decision_id = json.loads(_add(repo, size=256).output)["decision"]["id"]
+    assert _run(repo, "confirm", decision_id).exit_code == 0
+
+    retry = json.loads(_add(repo, size=256).output)["decision"]
+
+    assert retry["existed"] is True
+    assert retry["status"] == "active"
+
+
+def test_a_new_title_reports_that_nothing_existed(repo: Path) -> None:
+    payload = json.loads(_add(repo, "--agent", "claude_code").output)["decision"]
+
+    assert payload["existed"] is False
+    assert "kept" not in payload
+
+
+def test_reaffirm_rests_on_the_evidence_given_at_confirm(repo: Path) -> None:
+    decision_id = json.loads(_add(repo, "--agent", "claude_code").output)["decision"]["id"]
+    confirmed = _run(repo, "confirm", decision_id, "--agent", "claude_code", "--evidence", "abc1234")
+    assert confirmed.exit_code == 0, confirmed.output
+
+    reaffirmed = _run(repo, "reaffirm", decision_id, "--agent", "claude_code", "--reason", "holds")
+
+    assert reaffirmed.exit_code == 0, reaffirmed.output
+    shown = json.loads(_run(repo, "show", decision_id).output)["decision"]
+    assert shown["signature"]["action"] == "reaffirmed"
+    assert shown["signature"]["evidence"] == ["abc1234"]

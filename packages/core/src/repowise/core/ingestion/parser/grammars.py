@@ -93,8 +93,70 @@ _RUNTIME_DOWNLOAD_PACKAGE = "tree_sitter_language_pack"
 # A pre-staged language-pack cache, for machines with no network.
 GRAMMAR_DIR_ENV = "REPOWISE_GRAMMAR_DIR"
 
+# A transient download failure (5xx, timeout, reset) is tried this many times
+# in all, about 3s of backoff, before the language is given up for the process.
+# Only the parent's preflight retries: by the time the parse workers start it has
+# either cached the grammar on disk or given up, so a worker tries once.
+_DOWNLOAD_ATTEMPTS = 3
+_DOWNLOAD_BACKOFF_S = 1.0
+# "http status: 504" in the pack's DownloadError text; a 4xx other than these
+# will fail the same way on every attempt.
+_HTTP_STATUS = re.compile(r"status:?\s*(\d{3})", re.IGNORECASE)
+_RETRYABLE_4XX = frozenset({408, 429})
+# Local io failures that no retry fixes.
+_LOCAL_IO_ERROR = re.compile(r"permission denied|read-only|no (?:storage|space)|quota", re.I)
 
-def _load_language(tag: str) -> Language | None:
+
+def _is_transient_download_error(pack: object, exc: BaseException) -> bool:
+    """A network failure worth another attempt: not a 4xx, not a load error."""
+    if not isinstance(exc, getattr(pack, "DownloadError", ())):
+        return False
+    status = _HTTP_STATUS.search(str(exc))
+    if status is None:
+        # Connection reset, timeout, refused; not a full or read-only disk.
+        return _LOCAL_IO_ERROR.search(str(exc)) is None
+    code = int(status.group(1))
+    return code >= 500 or code in _RETRYABLE_4XX
+
+
+def _download_with_retry(
+    pack: object, loader: str, *args: object, attempts: int = _DOWNLOAD_ATTEMPTS
+) -> object:
+    """``pack.<loader>(*args)``, retrying transient download failures with backoff."""
+    if attempts <= 1:
+        return getattr(pack, loader)(*args)
+    from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
+
+    retrying = Retrying(
+        stop=stop_after_attempt(attempts),
+        wait=wait_exponential(multiplier=_DOWNLOAD_BACKOFF_S, max=2 * _DOWNLOAD_BACKOFF_S),
+        retry=retry_if_exception(lambda exc: _is_transient_download_error(pack, exc)),
+        reraise=True,
+    )
+    return retrying(getattr(pack, loader), *args)
+
+
+def runtime_grammar_warning(tag: str, reason: str, files: int) -> str:
+    """The one line a run shows for a runtime grammar that would not load."""
+    spec = _LANG_REGISTRY.get(tag)
+    name = spec.display_name if spec else tag
+    return (
+        f"{name} grammar unavailable: {files:,} files indexed without symbols ({reason}). "
+        "It downloads on first use; re-run with network access, or stage it with "
+        f"'repowise grammars fetch <dir>' and set {GRAMMAR_DIR_ENV} to that dir."
+    )
+
+
+def failed_runtime_grammars() -> list[tuple[str, str]]:
+    """``(tag, reason)`` for each runtime grammar this process tried and could not load."""
+    return sorted(
+        (tag, reason)
+        for tag, reason in _GRAMMAR_FAILURES.items()
+        if downloads_grammar_at_runtime(tag)
+    )
+
+
+def _load_language(tag: str, attempts: int = 1) -> Language | None:
     """Load *tag*'s grammar alone, so a repo never loads one it has no files for."""
     if tag == "tsx":
         # TypeScript's tsx variant: same package, different loader.
@@ -116,17 +178,31 @@ def _load_language(tag: str) -> Language | None:
     if not spec.grammar_package:
         return None
 
+    runtime = spec.grammar_package == _RUNTIME_DOWNLOAD_PACKAGE
     try:
         mod = __import__(spec.grammar_package)
-        if spec.grammar_package == _RUNTIME_DOWNLOAD_PACKAGE:
+        if runtime:
             _configure_grammar_dir(mod)
-        loaded = getattr(mod, spec.grammar_loader)(*spec.grammar_loader_args)
+            loaded = _download_with_retry(
+                mod, spec.grammar_loader, *spec.grammar_loader_args, attempts=attempts
+            )
+        else:
+            loaded = getattr(mod, spec.grammar_loader)(*spec.grammar_loader_args)
         # Standalone grammar wheels return a PyCapsule; shared grammar
         # packs may return the fully constructed Language directly.
         return loaded if isinstance(loaded, Language) else Language(loaded)
     except Exception as exc:
         _GRAMMAR_FAILURES[tag] = str(exc)
-        log.debug("tree-sitter language unavailable", language=tag, reason=str(exc))
+        if runtime:
+            # Once per process: the failure is cached, so no file retries it.
+            log.warning(
+                "runtime grammar unavailable",
+                language=tag,
+                reason=str(exc),
+                fix=f"repowise grammars fetch <dir>, then set {GRAMMAR_DIR_ENV}",
+            )
+        else:
+            log.debug("tree-sitter language unavailable", language=tag, reason=str(exc))
         return None
 
 
@@ -165,7 +241,7 @@ def fetch_runtime_grammars(cache_dir: str) -> list[tuple[str, bool, str]]:
             continue
         name = spec.grammar_loader_args[0] if spec.grammar_loader_args else spec.tag
         try:
-            getattr(pack, spec.grammar_loader)(name)
+            _download_with_retry(pack, spec.grammar_loader, name)
         except Exception as exc:
             # A cached file that will not load is still a failed fetch.
             results.append((spec.tag, False, str(exc) or type(exc).__name__))
@@ -267,19 +343,19 @@ def unavailable_runtime_grammars(language_tags: Iterable[str]) -> list[tuple[str
         if (
             tag in LANGUAGE_CONFIGS
             and downloads_grammar_at_runtime(tag)
-            and _get_language(tag) is None
+            and _get_language(tag, attempts=_DOWNLOAD_ATTEMPTS) is None
         ):
             failed.append((tag, _GRAMMAR_FAILURES.get(tag, "not loadable")))
     return failed
 
 
-def _get_language(tag: str) -> Language | None:
+def _get_language(tag: str, attempts: int = 1) -> Language | None:
     # Filled in place, never rebound: the package re-exports this dict.
     if tag in _LANGUAGE_REGISTRY:
         return _LANGUAGE_REGISTRY[tag]
     if tag in _GRAMMAR_FAILURES:
         return None
-    language = _load_language(tag)
+    language = _load_language(tag, attempts)
     if language is not None:
         _LANGUAGE_REGISTRY[tag] = language
     return language
@@ -346,6 +422,68 @@ _KOTLIN_DECLARATION_HEAD = re.compile(
     rb"(?:(?:" + _KOTLIN_MODIFIER_WORDS.encode() + rb")\s+)*"
     rb"(?:fun|class|interface|object|val|var)\b"
 )
+
+
+# Spans that send tree-sitter-kotlin into an ERROR swallowing the rest of the
+# class body, each rewritten in place (same length, newlines kept):
+# - a primary constructor on its own line under ``class X`` led by more than
+#   one modifier or by ``actual`` (``internal actual constructor(``): blanked;
+# - an annotated accessor of a property with no declared type (``val size``
+#   then ``@JvmName("size") get() = ...``): the annotation blanked;
+# - a statement ``get(x)`` right under a ``val``, read as its getter though a
+#   getter takes no parameter: the last indent byte becomes ``;``;
+# - an assignment to a property named like a modifier (``final``, ``open``,
+#   ``override``, ...) at statement start, read as a class modifier: five
+#   indent bytes become ``this.``.
+_KOTLIN_MISPARSED_SPANS = re.compile(
+    rb"(?m)^[ \t]*(?P<ctor>(?:(?:@[\w.]+|public|private|internal|protected|expect|actual)[ \t]+)+)"
+    rb"constructor[ \t]*\("
+    rb"|(?<![\w.])(?P<accessor>@[\w.]+(?:\([^()\n]*\))?)(?=\s*(?:get|set)[ \t]*\()"
+    rb"|(?m:^[ \t]*va[lr][ \t][^\n]*\n[ \t]*)(?P<stmt>[ \t])(?=get[ \t]*\([ \t]*[^)\s])"
+    rb"|(?m:^[ \t]*?)(?P<prop>[ \t]{5})"
+    rb"(?=(?:final|open|abstract|sealed|override|lateinit|internal)\b[ \t]*[+\-*/%]?=(?!=))"
+)
+
+
+def _recover_kotlin_misparsed_spans(
+    language: Language, root: Node, source: bytes
+) -> tuple[Node, bytes]:
+    """Re-parse with those spans rewritten, when that clears errors."""
+    if not root.has_error:
+        return root, source
+    # Only a span on a line an ERROR covers is rewritten: one that parsed keeps
+    # its text. Lines, since the ERROR may open just past the span that caused it.
+    errors = _error_rows(root)
+    rewritten = bytearray(source)
+    for m in _KOTLIN_MISPARSED_SPANS.finditer(source):
+        start, end = m.span(m.lastgroup)
+        row = source.count(b"\n", 0, start)
+        if any(lo <= row <= hi for lo, hi in errors):
+            if m.lastgroup == "stmt":
+                rewritten[start:end] = b";"
+            elif m.lastgroup == "prop":
+                rewritten[start:end] = b"this."
+            else:
+                rewritten[start:end] = b" " * (end - start)
+    if rewritten == source:
+        return root, source
+    new_root = Parser(language).parse(bytes(rewritten)).root_node
+    if len(_collect_error_nodes(new_root)) >= len(_collect_error_nodes(root)):
+        return root, source
+    return new_root, bytes(rewritten)
+
+
+def _error_rows(root: Node) -> list[tuple[int, int]]:
+    """First and last rows of the outermost ERROR nodes under *root*."""
+    ranges: list[tuple[int, int]] = []
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        if node.type == "ERROR":
+            ranges.append((node.start_point[0], node.end_point[0]))
+        elif node.has_error:
+            pending.extend(node.children)
+    return ranges
 
 
 def _kotlin_leading_annotations(top: Node) -> tuple[list[Node], Node | None]:

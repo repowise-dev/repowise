@@ -24,7 +24,6 @@ from ._parts import (
     MAX_FACTS,
     SIZE_BREAK_UP,
     Validate,
-    _num,
     _one_of,
     _risk,
     _tail,
@@ -60,7 +59,7 @@ def _finding_rank(finding: Any, files: _Files) -> _ShapeRank:
         ),
         cloned=sized and files.cloned(path, shape),
         low=low_priority(marker, shape, error_kind=detail_map(finding).get("kind")),
-        gain=_num(field(finding, "health_impact")),
+        gain=files.gain(finding),
         # Breaking up the whole function takes out its whole CCN.
         ccn_removed=shape.get("ccn", 0) if sized else 0,
         dependents=deps,

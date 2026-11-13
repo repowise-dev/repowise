@@ -106,12 +106,24 @@ async def test_each_range_gets_its_strongest_evidence(async_session):
     assert stale["src/util.py"][0].basis == "none"
 
 
-async def test_an_empty_index_hints_none(async_session):
+async def test_an_index_with_no_tests_hints_none(async_session):
     repo = await insert_repo(async_session)
+    async_session.add(GraphNode(repository_id=repo.id, node_id="a.py", node_type="file"))
+    await async_session.flush()
     pc = compute_patch_coverage({"a.py": {1}}, {"a.py": file_coverage("a.py", [], [1])})
 
     (hint,) = (await read_test_hints(async_session, repo.id, pc))["a.py"]
     assert (hint.symbol, hint.basis, hint.tests, hint.total) == (None, "none", (), 0)
+
+
+async def test_a_file_the_index_has_not_seen_gets_no_hint(async_session):
+    """A new file: the graph cannot say no test reaches it, so it says nothing."""
+    repo = await insert_repo(async_session)
+    async_session.add(GraphNode(repository_id=repo.id, node_id="old.py", node_type="file"))
+    await async_session.flush()
+    pc = compute_patch_coverage({"a.py": {1}}, {"a.py": file_coverage("a.py", [], [1])})
+
+    assert "a.py" not in await read_test_hints(async_session, repo.id, pc)
 
 
 def _git(cwd, *args: str) -> str:
@@ -132,6 +144,7 @@ async def test_spans_are_moved_to_the_working_tree(async_session, tmp_path):
     repo = await insert_repo(async_session, local_path=str(tmp_path))
     repo.head_commit = indexed
     async_session.add(_symbol(repo.id, "auth.py", "login", 1, 3))
+    async_session.add(GraphNode(repository_id=repo.id, node_id="auth.py", node_type="file"))
     await async_session.flush()
     (tmp_path / "auth.py").write_text(
         "def fresh():\n    return 0\n\n\ndef login():\n    a = 2\n    return a\n",

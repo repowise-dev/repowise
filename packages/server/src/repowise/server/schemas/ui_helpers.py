@@ -64,7 +64,9 @@ class ProviderEntry(BaseModel):
     #: What on this machine makes it usable: ``signed_in`` (a signed-in agent
     #: CLI, reported only for ``?detect=true``), ``env`` (a key in the process
     #: env or the repo's ``.repowise/.env``) or ``saved`` (a key stored here).
-    detected: Literal["signed_in", "env", "saved"] | None = None
+    #: ``installed``: an agent CLI is on PATH but its sign-in cannot be told
+    #: (no login query, or ``REPOWISE_OFFLINE``/``DO_NOT_TRACK`` is set).
+    detected: Literal["signed_in", "installed", "env", "saved"] | None = None
 
 
 class EmbedderEntry(BaseModel):
@@ -103,12 +105,27 @@ class ActiveProviderSelection(BaseModel):
     embedder: str | None = None
 
 
+class PlanRoute(BaseModel):
+    """A signed-in agent CLI on a paid plan: a model with no new spend."""
+
+    #: The provider id that runs on it.
+    provider: str
+    #: What the user calls the CLI, e.g. ``Claude Code``.
+    cli_name: str
+    #: About how long ``repowise generate`` takes on it; ``None`` when uncounted.
+    minutes: int | None = None
+
+
 class ProviderStatusResponse(BaseModel):
     active: ActiveProviderSelection
     providers: list[ProviderEntry] = []
     #: Registerable providers the catalog leaves out (picker_rank ``None``).
     flag_only_providers: list[str] = []
     embedders: list[EmbedderEntry] = []
+    #: With ``?detect=true`` and a repo: the plan-billed sign-in the repo can
+    #: add a model with, as the keyless upgrade line names it. ``None`` when a
+    #: provider already resolves or no signed-in CLI reports a paid plan.
+    plan_route: PlanRoute | None = None
 
 
 class ProviderModelEntry(BaseModel):

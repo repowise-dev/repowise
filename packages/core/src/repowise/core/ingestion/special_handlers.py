@@ -161,6 +161,20 @@ _ENTRYPOINT_RE = re.compile(r"^\s*(?:ENTRYPOINT|CMD)\s+(.+)", re.IGNORECASE)
 _EXPOSE_RE = re.compile(r"^\s*EXPOSE\s+(\d+)", re.IGNORECASE)
 _ENV_RE = re.compile(r"^\s*ENV\s+(\w+)", re.IGNORECASE)
 _ARG_RE = re.compile(r"^\s*ARG\s+(\w+)", re.IGNORECASE)
+# ``FROM [--platform=...] image AS name``: the name ``docker build --target`` takes.
+_STAGE_RE = re.compile(r"^\s*FROM\s+(?:--\S+\s+)*\S+\s+AS\s+(\S+)", re.IGNORECASE)
+
+
+def iter_docker_stages(text: str) -> Iterator[str]:
+    """Yield the named build stages a Dockerfile declares, in order.
+
+    The Dockerfile counterpart of :func:`iter_make_targets`: the names a reader
+    can pass to ``docker build --target``. An unnamed ``FROM`` declares none.
+    """
+    for line in text.splitlines():
+        m = _STAGE_RE.match(line)
+        if m:
+            yield m.group(1)
 
 
 def _parse_dockerfile(file_info: FileInfo, source: bytes) -> ParsedFile:
@@ -393,23 +407,14 @@ def _parse_sql(file_info: FileInfo, source: bytes) -> ParsedFile:
 
 def _extract_sql_symbols(file_info: FileInfo, text: str) -> tuple[list[Symbol], list[str]]:
     try:
-        import sqlglot
         from sqlglot import exp
     except ImportError:
         return [], ["sqlglot not installed"]
 
-    # sqlglot warns per statement it falls back to a generic Command for
-    # (procedural bodies, vendor syntax); routine here, so keep it quiet.
-    import logging
-
-    logging.getLogger("sqlglot").setLevel(logging.ERROR)
+    from .sql_parse import parse_sql
 
     try:
-        statements = sqlglot.parse(
-            text,
-            read=_sql_dialect_for(file_info),
-            error_level=sqlglot.ErrorLevel.IGNORE,
-        )
+        statements = parse_sql(text, dialect=_sql_dialect_for(file_info))
     except Exception as exc:
         # Tokenizer errors and dialect-specific syntax sqlglot can't
         # recover from: degrade the file to passthrough behaviour.

@@ -8,6 +8,7 @@ from repowise.core.persistence.crud import (
     save_health_metrics,
     upsert_repository,
 )
+from repowise.core.persistence.crud.analysis.health.metrics import health_file_paths
 from repowise.core.pipeline.persist import _prune_stale_file_rows
 
 
@@ -100,6 +101,8 @@ async def test_health_reads_honor_repo_settings_excludes(session, tmp_path) -> N
     summary = await get_health_summary(session, repo.id)
 
     assert [m.file_path for m in metrics] == ["src/app.py"]
+    # The path-only read names the same files without loading the rows.
+    assert await health_file_paths(session, repo.id) == {"src/app.py"}
     assert [f.file_path for f in findings] == ["src/app.py"]
     assert await get_health_metrics(session, repo.id, file_paths=["tools/gen.py"]) == []
     assert await get_health_findings(session, repo.id, file_path="tools/gen.py") == []

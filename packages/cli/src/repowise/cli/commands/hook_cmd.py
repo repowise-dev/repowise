@@ -405,6 +405,9 @@ def rewrite_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> 
     """Remove the rewrite hooks and the AGENTS.md awareness section."""
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
     from repowise.cli.agent_adapters.codex import CodexAdapter
+    from repowise.cli.editor_integrations.claude_config import (
+        claude_code_plugin_ships_rewrite_hook,
+    )
     from repowise.cli.editor_integrations.codex_config import (
         remove_agents_md_distill_section,
     )
@@ -412,6 +415,11 @@ def rewrite_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> 
 
     removed = ClaudeCodeAdapter().uninstall_rewrite_hook()
     console.print(f"Rewrite hook: {'[green]removed[/green]' if removed else 'not installed'}")
+    if claude_code_plugin_ships_rewrite_hook():
+        console.print(
+            "  [dim]The repowise Claude Code plugin also runs it. Repos below are "
+            "opted out; disable the plugin with /plugin to remove it everywhere.[/dim]"
+        )
 
     codex = CodexAdapter()
     if codex.detect():
@@ -766,7 +774,7 @@ def search_digest_install(path: str | None, workspace: bool, no_workspace: bool)
 @click.option("--workspace", "-w", is_flag=True, default=False, help="Force workspace mode.")
 @click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
 def search_digest_uninstall(path: str | None, workspace: bool, no_workspace: bool) -> None:
-    """Stop replacing search floods in this repo; the digest goes back to riding alongside."""
+    """Stop replacing search floods in this repo; greps come back whole."""
     _set_hook_surface(
         path, workspace, no_workspace,
         surface="search_digest", label="Digest-served searches", enabled=False,

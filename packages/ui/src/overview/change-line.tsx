@@ -1,5 +1,6 @@
 import * as React from "react";
-import { formatDateTime, formatRelativeTime } from "../lib/format";
+import { formatDateTime, RELATIVE_TIME_WORDS, type RelativeTimeWords } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface ChangeStat {
   /** Pre-formatted figure, e.g. "8" or "10+". */
@@ -8,6 +9,19 @@ export interface ChangeStat {
   label: string;
 }
 
+export interface ChangeLineCopy {
+  /** The lead-in. `relative` is the previous index's age, e.g. "2d ago". */
+  since: (relative: string) => string;
+  /** Words the previous index's age per bucket, e.g. "{value}d ago". Plain
+   *  strings, so the age is worked out from the viewer's clock. */
+  ago: Partial<RelativeTimeWords>;
+}
+
+export const CHANGE_LINE_COPY: ChangeLineCopy = {
+  since: (relative) => `Since the previous index, ${relative}`,
+  ago: RELATIVE_TIME_WORDS,
+};
+
 export interface ChangeLineProps {
   /**
    * ISO timestamp of the PREVIOUS index snapshot — the point the figures are
@@ -15,6 +29,7 @@ export interface ChangeLineProps {
    */
   since: string | null;
   stats: ChangeStat[];
+  copy?: Partial<ChangeLineCopy> | undefined;
 }
 
 /**
@@ -35,8 +50,9 @@ export interface ChangeLineProps {
  * Renders nothing without two snapshots to compare, or when nothing moved: an
  * all-zeroes strip is noise pretending to be news.
  */
-export function ChangeLine({ since, stats }: ChangeLineProps) {
+export function ChangeLine({ since, stats, copy }: ChangeLineProps) {
   if (!since || stats.length === 0) return null;
+  const c = { ...CHANGE_LINE_COPY, ...copy };
 
   return (
     <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-y border-[var(--color-border-default)] py-2.5 text-xs text-[var(--color-text-secondary)]">
@@ -44,7 +60,7 @@ export function ChangeLine({ since, stats }: ChangeLineProps) {
         className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]"
         title={formatDateTime(since)}
       >
-        Since the previous index, {formatRelativeTime(since)}
+        <RelativeTime date={since} template={c.since("{time}")} words={c.ago} />
       </span>
       {stats.map((s) => (
         <span key={s.label}>

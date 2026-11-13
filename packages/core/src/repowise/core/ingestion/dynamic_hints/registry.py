@@ -83,6 +83,7 @@ class HintRegistry:
         dotnet_index: object | None = None,
         file_paths: Iterable[str] | None = None,
         source_map: dict[str, bytes] | None = None,
+        cache_dir: Path | str | None = None,
     ) -> list[DynamicEdge]:
         """Run every registered extractor and merge their edges.
 
@@ -108,6 +109,10 @@ class HintRegistry:
 
         *source_map* is ingestion's ``{repo-relative path: raw bytes}``; an
         extractor that reads whole files takes them from it instead of disk.
+
+        *cache_dir* keeps the per-file scans of the extractors that make them
+        (:mod:`.scan_cache`) between runs, so a file whose text is unchanged is
+        not scanned again. ``None`` (read-only runs, tests) scans every file.
         """
         edges: list[DynamicEdge] = []
         if not self._extractors:
@@ -128,10 +133,14 @@ class HintRegistry:
                 snapshot = WalkSnapshot(repo_root, prune_dirs=PRUNED_DIRS, prune=is_output_dir)
         except Exception as e:  # pragma: no cover - snapshot is best-effort
             log.warning("dynamic_hints_snapshot_failed", error=str(e))
+        from .scan_cache import ScanCache
+
+        scan_cache = ScanCache.load(cache_dir)
         for ex in self._extractors:
             ex._walk_snapshot = snapshot
             ex._dotnet_index = dotnet_index
             ex._source_map = source_map
+            ex._scan_cache = scan_cache
 
         try:
             with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
@@ -152,6 +161,9 @@ class HintRegistry:
                 ex._walk_snapshot = None
                 ex._dotnet_index = None
                 ex._source_map = None
+                ex._scan_cache = None
+        if scan_cache is not None:
+            scan_cache.save()
         # Thread-completion order varies run-to-run; sort so downstream graph
         # construction (and therefore the exported KG) stays deterministic.
         edges.sort(key=lambda e: (e.source, e.target, e.edge_type, e.hint_source, e.weight))

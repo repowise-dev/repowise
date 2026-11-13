@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -16,18 +17,23 @@ from repowise.core.analysis.dead_code.file_reachability import (
     file_dependency_neighbors,
     is_file_reachable,
 )
+from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.ids import file_path_of, is_external
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANGUAGES
 from repowise.core.ingestion.models import ParsedFile, RepoStructure, Symbol
 from repowise.core.ingestion.package_roots import (
     module_for,
     package_roots_from_paths,
     scan_package_roots,
 )
+from repowise.core.ingestion.special_handlers import iter_docker_stages
+from repowise.core.ingestion.symbol_use import is_test_caller, symbol_use, symbol_use_edges
 
 from ...co_change import STRUCTURAL_UNEXPLAINED, parse_partners
 from ..categories import file_category
 from ..entry_points import orientation_entry_points, rank_entry_point_paths
 from ..models import GenerationConfig
+from ..public_api import is_public_api
 from .contexts import (
     ApiContractContext,
     FilePageContext,
@@ -45,7 +51,16 @@ from .graph_intelligence import (
     extract_heritage,
 )
 from .module_excerpts import module_excerpts
-from .module_facts import build_module_facts
+from .module_facts import (
+    ModuleBudget,
+    build_module_facts,
+    git_activity,
+    importing_tests,
+    module_base,
+    module_budget,
+    symbol_weight,
+)
+from .readme_digest import module_readmes
 from .token_budget import (
     estimate_kg_tokens,
     estimate_tokens,
@@ -55,11 +70,12 @@ from .token_budget import (
 
 log = structlog.get_logger(__name__)
 
+# A module prompt's size besides its code excerpts: facts, parts, readme, instructions.
+_MODULE_FRAME_TOKENS = 5000
+
 
 # Maximum imports to include before truncating
 _MAX_IMPORTS = 30
-# Tokens of code excerpts a module page prompt carries; the Public API claims them first.
-_MODULE_EXCERPT_BUDGET = 10_000
 # Public API names are always listed, even past the budget, up to this cap; the rest are counted.
 _MODULE_EXCERPT_HARD_CAP = 15_000
 # Maximum top-files to include in repo overview
@@ -72,10 +88,6 @@ _MAX_TOP_FILES = 20
 # public surface.
 _MAX_CONCEPT_ROWS = 40
 
-# The graph gives every file a synthetic symbol that owns its module-scope
-# calls. It is not a caller anyone can look up, and the importer list already
-# covers import-time use.
-_MODULE_SCOPE_NODE = "__module__"
 
 # How many co-change partners a file page names. Past a handful the list
 # stops being "and this other thing moves with it" and becomes a second,
@@ -195,34 +207,29 @@ def build_concept_index(
     straight from the assembled symbol data, which is why the table can be
     trusted where the surrounding prose has to be read as a summary.
 
-    Only top-level public symbols. Methods would multiply the table by the size
-    of the classes without adding a name a reader would search for on its own,
-    and a private symbol is not a route into the module.
+    Only top-level public API (``is_public_api``: no ``log``, no dunders).
+    Methods would multiply the table by the size of the classes without adding
+    a name a reader would search for on its own, and a private symbol is not a
+    route into the module. Most-called first, so the cap drops the symbols
+    nothing uses; ties keep the files' PageRank and declaration order.
     """
-    ranked = sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True)
-    rows: list[dict[str, str]] = []
-    total = 0
-    for fc in ranked:
+    candidates: list[tuple[int, str, str]] = []
+    for fc in sorted(file_contexts, key=lambda fc: fc.pagerank_score, reverse=True):
         for symbol in sorted(fc.symbols, key=lambda s: s.get("start_line") or 0):
             name = (symbol.get("name") or "").strip()
-            if not name or name.startswith("_"):
-                continue
-            if symbol.get("visibility") != "public":
+            if not name or name.startswith("_") or symbol.get("visibility") != "public":
                 continue
             # A method's own name is rarely what a reader searches for, and
             # including them turns a 40-row cap into 40 rows of one class.
-            if symbol.get("parent_name"):
+            if symbol.get("parent_name") or not is_public_api(symbol):
                 continue
-            total += 1
-            if len(rows) < _MAX_CONCEPT_ROWS:
-                rows.append(
-                    {
-                        "concept": concept_wording(name),
-                        "symbol": name,
-                        "file": fc.file_path,
-                    }
-                )
-    return rows, total - len(rows)
+            candidates.append((symbol.get("callers") or 0, name, fc.file_path))
+    candidates.sort(key=lambda c: -c[0])
+    rows = [
+        {"concept": concept_wording(name), "symbol": name, "file": path}
+        for _, name, path in candidates[:_MAX_CONCEPT_ROWS]
+    ]
+    return rows, len(candidates) - len(rows)
 
 
 def _flow_entry_is_reachable(flow: Any, graph: Any, rescues: ReachabilityRescues) -> bool:
@@ -258,6 +265,33 @@ def _flow_entry_is_reachable(flow: Any, graph: Any, rescues: ReachabilityRescues
 # ---------------------------------------------------------------------------
 
 
+def _not_under(files: list[str], child_pages: list[dict] | None) -> set[str]:
+    """The files no part page below this one covers: a map page quotes only its own code."""
+    roots = tuple(c["path"].rstrip("/") + "/" for c in child_pages or () if c.get("path"))
+    return {f for f in files if not f.startswith(roots)} if roots else set(files)
+
+
+def _own_excerpts(
+    own: set[str],
+    public_api: list[dict],
+    parsed: dict[str, ParsedFile],
+    ranked: list[str],
+    source_map: dict[str, bytes],
+    budget: ModuleBudget,
+    weight: dict[str, int],
+) -> tuple[Any, list[str]]:
+    """Code excerpts from the files the page owns, heaviest symbols first."""
+    return module_excerpts(
+        [e for e in public_api if e.get("file") in own],
+        parsed,
+        [p for p in ranked if p in own],
+        source_map,
+        budget.excerpt_tokens,
+        weight=weight,
+        per_file=budget.per_file,
+    )
+
+
 class ContextAssembler:
     """Assemble Jinja2 template context from ingestion data.
 
@@ -268,9 +302,14 @@ class ContextAssembler:
 
     def __init__(self, config: GenerationConfig, repo_path: Any | None = None) -> None:
         self._config = config
-        # Checkout root, used only to read package boundaries off disk.
+        # Checkout root, used to read package boundaries and module READMEs off disk.
         self._repo_path = repo_path
         self._package_roots: set[str] | None = None
+
+    def use_context_window(self, window: int | None) -> None:
+        """Size material for the window the generating model runs with."""
+        if window and window != self._config.context_window:
+            self._config = replace(self._config, context_window=window)
 
     # ------------------------------------------------------------------
     # Token utilities
@@ -338,7 +377,11 @@ class ContextAssembler:
         selected_private, used = items_within_budget(
             private_documented + private_undocumented, used, budget, sig_cost
         )
-        sym_dicts = [_symbol_to_dict(s) for s in selected_public + selected_private]
+        # Production callers per symbol, so the page lists the used API first.
+        sym_dicts = [
+            _symbol_to_dict(s, callers=symbol_use(graph, s.id).callers)
+            for s in selected_public + selected_private
+        ]
 
         # Imports (truncate to _MAX_IMPORTS)
         raw_imports = [imp.raw_statement for imp in parsed.imports]
@@ -452,40 +495,23 @@ class ContextAssembler:
         self,
         symbol: Symbol,
         parsed: ParsedFile,
-        pagerank: dict[str, float],
         graph: Any,  # nx.DiGraph
-        source_bytes: bytes = b"",
     ) -> SymbolSpotlightContext:
         """Assemble context for the symbol_spotlight template."""
-        path = parsed.file_info.path
-        # The file page's own importer list, so the two pages report one count.
-        callers = file_dependency_neighbors(graph, path, incoming=True)
-
-        call_sites = _resolved_call_sites(symbol, graph)
-
-        # Extract source body for the symbol
-        source_body = None
-        if source_bytes and symbol.start_line and symbol.end_line:
-            lines = source_bytes.decode("utf-8", errors="replace").splitlines()
-            body_lines = lines[symbol.start_line - 1 : symbol.end_line]
-            body = "\n".join(body_lines)
-            if len(body) > 8000:
-                body = body[:8000] + "\n...[truncated]"
-            source_body = body
-
+        sites = _resolved_call_sites(symbol, graph)
+        production = [s for s in sites if not s["from_test"]]
         return SymbolSpotlightContext(
             symbol_name=symbol.name,
             qualified_name=symbol.qualified_name,
             kind=symbol.kind,
             signature=symbol.signature,
             docstring=symbol.docstring,
-            file_path=path,
+            file_path=parsed.file_info.path,
             decorators=symbol.decorators,
             is_async=symbol.is_async,
             complexity_estimate=symbol.complexity_estimate,
-            callers=callers,
-            source_body=source_body,
-            call_sites=call_sites,
+            call_sites=production,
+            test_call_sites=len(sites) - len(production),
         )
 
     # ------------------------------------------------------------------
@@ -513,12 +539,16 @@ class ContextAssembler:
         parsed_files: dict[str, ParsedFile] | None = None,
         source_map: dict[str, bytes] | None = None,
         execution_flows: Sequence[Any] = (),
+        target_path: str | None = None,
+        full_material: bool = False,
     ) -> ModulePageContext:
         """Assemble context for the module_page template.
 
         *public_api* (see :func:`~.public_api.compute_public_api`) has first
         claim on the excerpt budget; entries past it keep only their name.
-        With *parsed_files* and *source_map*, code excerpts take what it leaves.
+        With *parsed_files* and *source_map*, code excerpts take what it leaves,
+        from the files no part page below this one covers. *full_material*
+        (the default style) sizes the budget and the page by the module.
         """
         total_symbols = sum(len(fc.symbols) for fc in file_contexts)
         public_symbols = sum(
@@ -638,13 +668,21 @@ class ContextAssembler:
             most_fixed_file,
         ) = self._module_git_enrichment(files, set(files), git_meta_map)
 
-        api_rows, api_cost = self._excerpt_public_api(public_api or [])
-        excerpts, declared_files = module_excerpts(
+        own = _not_under(files, child_pages)
+        budget = module_budget(len(files), len(own), full_material)
+        cap = budget.excerpt_tokens
+        budget = budget._replace(
+            excerpt_tokens=self._config.material_budget(cap, cap + _MODULE_FRAME_TOKENS)
+        )
+        api_rows, api_cost = self._excerpt_public_api(public_api or [], budget.excerpt_tokens)
+        excerpts, declared_files = _own_excerpts(
+            own,
             public_api or [],
             parsed_files or {},
             [fc.file_path for fc in by_rank],
             source_map or {},
-            max(0, _MODULE_EXCERPT_BUDGET - api_cost),
+            budget._replace(excerpt_tokens=max(0, budget.excerpt_tokens - api_cost)),
+            symbol_weight(graph, own, execution_flows),
         )
 
         ctx = ModulePageContext(
@@ -690,11 +728,17 @@ class ContextAssembler:
             coupled_modules=coupled_modules,
             bugfix_total=bugfix_total,
             most_fixed_file=most_fixed_file,
+            readmes=module_readmes(self._repo_path, [target_path, *directories]),
+            tests=importing_tests(graph, files, parsed_files),
+            git_activity=git_activity(files, git_meta_map, module_base(files)),
+            words=budget.words,
         )
         ctx.facts = build_module_facts(ctx, file_contexts, graph, execution_flows)
         return ctx
 
-    def _excerpt_public_api(self, api: list[dict]) -> tuple[list[dict], int]:
+    def _excerpt_public_api(
+        self, api: list[dict], budget: int
+    ) -> tuple[list[dict], int]:
         """Every name (to the hard cap), then signature + doc line while half the rest lasts.
 
         Costs follow the rendered shape (bare names grouped under their file);
@@ -712,7 +756,7 @@ class ContextAssembler:
             return 1 + self._estimate_tokens(row)
 
         named, used = items_within_budget(api, 0, _MODULE_EXCERPT_HARD_CAP, name_cost)
-        half = used + max(0, _MODULE_EXCERPT_BUDGET - used) // 2
+        half = used + max(0, budget - used) // 2
         kept, used = items_within_budget(named, used, half, row_cost)
         return kept + [{**e, "signature": "", "doc": ""} for e in named[len(kept) :]], used
 
@@ -852,7 +896,7 @@ class ContextAssembler:
         external_systems: list[dict] | None = None,
         decision_records: list[dict] | None = None,
         parsed_files: list[ParsedFile] | None = None,
-        prose_digest: str = "",
+        material: Any = None,
     ) -> RepoOverviewContext:
         """Assemble context for the repo_overview template."""
         # Top files sorted by PageRank descending, path breaking ties. Leaf
@@ -900,12 +944,9 @@ class ContextAssembler:
             try:
                 flow_report = graph_builder.execution_flows()
                 if flow_report and hasattr(flow_report, "flows"):
-                    # Highest-scoring first: the templates render the first
+                    # Most important first: the templates render the first
                     # five, so the order here is the selection.
-                    ranked = sorted(
-                        flow_report.flows,
-                        key=lambda f: (-f.entry_point_score, f.entry_point_id),
-                    )
+                    ranked = rank_by_importance(flow_report.flows)
                     flow_graph = graph_builder.graph()
                     # The package map is supplied, so a Go / JVM / C-C++ file
                     # is answered for rather than assumed reachable. It used to
@@ -972,7 +1013,7 @@ class ContextAssembler:
             repo_name=repo_name or getattr(repo_structure, "name", None) or "this repository",
             is_monorepo=repo_structure.is_monorepo,
             packages=repo_structure.packages,
-            language_distribution=repo_structure.root_language_distribution,
+            language_distribution=_code_language_share(repo_structure.root_language_distribution),
             total_files=repo_structure.total_files,
             total_loc=repo_structure.total_loc,
             # Ranked, not filtered, and ranked by the helper every other
@@ -987,7 +1028,7 @@ class ContextAssembler:
             external_systems=external_systems or [],
             decision_records=decision_records or [],
             package_stats=package_stats,
-            prose_digest=prose_digest,
+            material=material,
         )
 
     # ------------------------------------------------------------------
@@ -1035,13 +1076,11 @@ class ContextAssembler:
         remaining = self._config.token_budget
         raw_content = self._trim_to_budget(source_text, remaining)
 
-        targets = [sym.name for sym in parsed.symbols]
-
         return InfraPageContext(
             file_path=parsed.file_info.path,
             language=parsed.file_info.language,
             raw_content=raw_content,
-            targets=targets,
+            targets=_infra_targets(parsed, source_text),
         )
 
     # ------------------------------------------------------------------
@@ -1136,8 +1175,23 @@ class ContextAssembler:
 # ---------------------------------------------------------------------------
 
 
-def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
-    """Convert a Symbol to a plain dict for template rendering."""
+def _infra_targets(parsed: ParsedFile, source_text: str) -> list[str]:
+    """What a reader can build from an infra file by name: Makefile targets or
+    Dockerfile stages. Other formats declare no targets; their source shows the rest.
+    """
+    language = parsed.file_info.language
+    if language == "makefile":
+        return [sym.name for sym in parsed.symbols]
+    if language == "dockerfile":
+        return list(iter_docker_stages(source_text))
+    return []
+
+
+def _symbol_to_dict(symbol: Symbol, callers: int = 0) -> dict[str, Any]:
+    """Convert a Symbol to a plain dict for template rendering.
+
+    *callers* is its production caller count (``symbol_use``), 0 when unknown.
+    """
     return {
         "name": symbol.name,
         "qualified_name": symbol.qualified_name,
@@ -1152,54 +1206,48 @@ def _symbol_to_dict(symbol: Symbol) -> dict[str, Any]:
         "language": symbol.language,
         "start_line": symbol.start_line,
         "end_line": symbol.end_line,
+        "callers": callers,
     }
 
 
 def _resolved_call_sites(symbol: Symbol, graph: Any) -> list[dict]:
-    """Calls the resolver actually resolved to *symbol*, most confident first.
+    """The uses the resolver resolved to *symbol*, most confident first.
 
-    A spotlight's ``callers`` list is the files importing the defining module,
-    which for a constant like ``PRUNED_DIRS`` means thirty-seven files that
-    may never touch it. The call graph knows better wherever the resolver
-    reached a verdict, and ``Symbol.id`` is the graph's own node key, so this
-    is an in-edge scan on one node rather than a walk.
+    The same edges ``symbol_use`` counts for spotlight selection, so a page
+    chosen for its callers lists them. Each site carries ``from_test`` so the
+    page can list production users and count the rest; a file's top-level
+    code is named by the module-scope node's ``__module__``.
 
-    Uncapped: the template slices what it prints and reports the true total,
-    the way the importer list already does. A count that was silently the cap
-    would tell a reader with nine hundred callers that it had twenty-five.
-
-    Empty when nothing resolved, which is the common case for data and for
-    dynamically dispatched languages — the template then keeps the honest
-    import-level wording.
+    Uncapped: the template slices what it prints and reports the true total.
+    A count that was silently the cap would tell a reader with nine hundred
+    callers that it had twenty-five.
     """
     try:
-        if symbol.id not in graph:
-            return []
-        scored: list[tuple[float, dict]] = []
-        for source, _, edata in graph.in_edges(symbol.id, data=True):
-            if edata.get("edge_type") != "calls":
-                continue
-            data = graph.nodes.get(source, {})
-            if data.get("name") == _MODULE_SCOPE_NODE:
-                continue
-            scored.append(
-                (
-                    float(edata.get("confidence") or 0.0),
-                    {
-                        "caller": data.get("name", source),
-                        "caller_file": data.get("file_path", ""),
-                    },
-                )
+        scored = [
+            (
+                float(edata.get("confidence") or 0.0),
+                {
+                    "caller": data.get("name", source),
+                    "caller_file": data.get("file_path", ""),
+                    "from_test": is_test_caller(graph, data),
+                },
             )
+            for source, data, edata in symbol_use_edges(graph, symbol.id)
+        ]
     except Exception:
         return []
+    # One entry per using symbol (the graph keeps one edge per pair), so the
+    # count matches what ``symbol_use`` ranked the symbol by.
     scored.sort(key=lambda s: (-s[0], s[1]["caller_file"], s[1]["caller"]))
-    seen: set[tuple[str, str]] = set()
-    unique: list[dict] = []
-    for _, site in scored:
-        key = (site["caller_file"], site["caller"])
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(site)
-    return unique
+    return [site for _, site in scored]
+
+
+def _code_language_share(distribution: dict[str, float]) -> dict[str, float]:
+    """The share of each code language, or the whole distribution when there is none.
+
+    The summary names the first language as what the repository is written in,
+    and a project with more docs than source is still a project in its code
+    language, not "a markdown codebase".
+    """
+    code = _LANGUAGES.code_languages()
+    return {k: v for k, v in distribution.items() if k in code} or distribution

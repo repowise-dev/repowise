@@ -356,12 +356,7 @@ def test_empty_deprecated_consumers_list_is_left_out():
     from repowise.server.mcp_server.tool_risk.enrichment import _attach_impact
 
     card: dict = {"target": "src/api.py"}
-    link = {
-        "evidence_kind": "structural",
-        "source_repository": "web",
-        "target_repository": "api",
-    }
-    links = {"all": [link], "provider": [], "consumer": []}
+    links = {"affected": ["web"], "provider": [], "consumer": []}
     _attach_impact(card, "api", {"status": "ok"}, [], links, None)
     impact = card["cross_repo_impact"]
     assert impact["affected_repos"] == ["web"]

@@ -34,8 +34,20 @@ _OBJECT_FIELD_NAMES = ("object", "value", "argument", "operand", "expression")
 # Leaf node types that carry a declared name at the bottom of a C/C++
 # ``declarator`` chain.
 _DECLARATOR_NAME_KINDS = frozenset(
-    {"identifier", "field_identifier", "type_identifier", "qualified_identifier"}
+    {
+        "identifier",
+        "field_identifier",
+        "type_identifier",
+        "qualified_identifier",
+        "destructor_name",
+        "operator_name",
+        "operator_cast",
+    }
 )
+# Declarators whose inner declarator is a plain child, not a ``declarator`` field.
+_FIELDLESS_DECLARATORS = ("parenthesized_declarator", "reference_declarator")
+# C++ ``= default`` / ``= delete`` bodies: a declaration, not a function unit.
+_NO_BODY_CLAUSES = frozenset({"default_method_clause", "delete_method_clause"})
 
 # Longest callee path a callback's name carries. A longer chain keeps its
 # trailing segments, which name the call the callback is handed to.
@@ -167,8 +179,8 @@ def _find_name(node: Node) -> str:
     hops = 0
     while decl is not None and hops < 6:
         if decl.type in _DECLARATOR_NAME_KINDS and decl.text is not None:
-            return decl.text.decode("utf-8", errors="replace")
-        decl = decl.child_by_field_name("declarator") or decl.child_by_field_name("name")
+            return _declarator_name(decl)
+        decl = _inner_declarator(decl) or decl.child_by_field_name("name")
         hops += 1
     for child in node.children:
         if (
@@ -177,6 +189,71 @@ def _find_name(node: Node) -> str:
         ):
             return child.text.decode("utf-8", errors="replace")
     return "<anonymous>"
+
+
+def _inner_declarator(decl: Node) -> Node | None:
+    """The next declarator down a C/C++ declarator spine, or ``None``."""
+    inner = decl.child_by_field_name("declarator")
+    if inner is None and decl.type in _FIELDLESS_DECLARATORS:
+        inner = next(
+            (c for c in decl.named_children if c.type != "ERROR" and not is_comment(c)),
+            None,
+        )
+    if inner is None and decl.type == "qualified_identifier":
+        inner = decl.child_by_field_name("name")
+    return inner
+
+
+def _declarator_name(decl: Node) -> str:
+    """The name a C/C++ declarator leaf spells, without return type or signature."""
+    if decl.type == "qualified_identifier":
+        leaf = decl
+        while leaf.type == "qualified_identifier":
+            name = leaf.child_by_field_name("name")
+            if name is None:
+                return _node_text(decl)
+            leaf = name
+        # ``EXPORT T* f()`` nests the function declarator under the name.
+        while leaf.type not in _DECLARATOR_NAME_KINDS and (inner := _inner_declarator(leaf)):
+            leaf = inner
+        head = (decl.text or b"")[: leaf.start_byte - decl.start_byte]
+        prefix = head.decode("utf-8", errors="replace")
+        return prefix[_scope_start(prefix) :] + _declarator_name(leaf)
+    if decl.type == "operator_cast":
+        # ``operator bool() const`` is named ``operator bool``.
+        return " ".join(_node_text(decl).split("(", 1)[0].split())
+    return _node_text(decl)
+
+
+def _scope_start(prefix: str) -> int:
+    """Where the ``A::B<T>::`` run that ends *prefix* starts.
+
+    A macro before the return type (``EXPORT bool A::f``,
+    ``EXPORT std::string f``) makes the grammar read the return type as part
+    of the qualified name; only the ``::``-joined run before the name is scope.
+    """
+    start = len(prefix)
+    while prefix.endswith("::", 0, start):
+        end = start - 2
+        if end > 0 and prefix[end - 1] == ">":
+            end = _template_open(prefix, end - 1)
+        seg = end
+        while seg > 0 and (prefix[seg - 1].isalnum() or prefix[seg - 1] == "_"):
+            seg -= 1
+        start = seg
+        if seg == end:
+            break
+    return start
+
+
+def _template_open(text: str, close: int) -> int:
+    """Index of the ``<`` matching the ``>`` at *close*, or *close* + 1 if none."""
+    depth = 0
+    for i in range(close, -1, -1):
+        depth += {">": 1, "<": -1}.get(text[i], 0)
+        if depth == 0:
+            return i
+    return close + 1
 
 
 _SWIFT_PROPERTY_UNITS = frozenset({"computed_property", "willset_didset_block", "accessor_list"})
@@ -199,6 +276,12 @@ def _swift_property_name(unit: Node) -> str:
 
 def _node_text(node: Node) -> str:
     return (node.text or b"").decode("utf-8", errors="replace")
+
+
+# Wrappers a lambda's binding is read through: ``(() => {})``, ``(() => {}) as T``.
+_TRANSPARENT_LAMBDA_PARENTS = frozenset(
+    {"parenthesized_expression", "as_expression", "satisfies_expression"}
+)
 
 
 def _find_assigned_lambda_name(node: Node) -> str | None:
@@ -226,10 +309,61 @@ def _find_assigned_lambda_name(node: Node) -> str | None:
             lhs = parent.child_by_field_name("lhs")
             if lhs is not None and lhs.text is not None:
                 return _node_text(lhs)
-        if parent.type not in {"parenthesized_expression", "as_expression", "satisfies_expression"}:
+        if parent.type == "pair" and node.type in _UNIT_LAMBDA_KINDS:
+            # JS/TS ``{ check: () => { ... } }``: the property key names it.
+            # Other grammars' ``pair`` (a Python dict entry) is left alone.
+            key = parent.child_by_field_name("key")
+            if key is not None and key.text is not None:
+                return _node_text(key).strip("'\"`")
+        if parent.type not in _TRANSPARENT_LAMBDA_PARENTS:
             return None
         parent = parent.parent
     return None
+
+
+# Lambda kinds that can be a unit of their own when nested in a function. Only
+# the JS/TS ``arrow_function`` qualifies: PHP's ``arrow_function`` (``fn() =>
+# expr``) never has a block body, and no other grammar binds a block-bodied
+# lambda to a name often enough to read it as a function.
+_UNIT_LAMBDA_KINDS = frozenset({"arrow_function"})
+# Where a lambda is bound to a name: ``const f = ...``, ``obj.f = ...``,
+# ``{ f: ... }``.
+_UNIT_LAMBDA_HOLDERS = frozenset({"variable_declarator", "assignment_expression", "pair"})
+
+
+def is_named_block_lambda(node: Node, lmap: LanguageNodeMap) -> bool:
+    """True for a lambda that is a function in every practical sense.
+
+    A JS/TS arrow function with a ``{ ... }`` body bound to a name, as a
+    variable's value, the right side of an assignment or an object property's
+    value, read through parentheses and ``as`` / ``satisfies``. Nested in a
+    function, it is measured as a unit of its own, like a nested ``function``.
+    An arrow passed as an argument (an inline callback) or with an expression
+    body is not one and stays with the function that holds it.
+    """
+    if node.type not in _UNIT_LAMBDA_KINDS or node.type not in lmap.lambda_kinds:
+        return False
+    body = node.child_by_field_name("body")
+    if body is None or body.type != "statement_block":
+        return False
+    holder = _binding_holder(node)
+    return (
+        holder is not None and holder.type in _UNIT_LAMBDA_HOLDERS and _is_bound_value(node, holder)
+    )
+
+
+def _binding_holder(node: Node) -> Node | None:
+    """*node*'s parent, read through parentheses and ``as`` / ``satisfies``."""
+    holder = node.parent
+    while holder is not None and holder.type in _TRANSPARENT_LAMBDA_PARENTS:
+        holder = holder.parent
+    return holder
+
+
+def _is_bound_value(node: Node, holder: Node) -> bool:
+    """*node* sits on *holder*'s value side (``value`` / ``right``), not its name."""
+    value = holder.child_by_field_name("value") or holder.child_by_field_name("right")
+    return value is not None and value.start_byte <= node.start_byte < value.end_byte
 
 
 def _find_call_callback_callee(node: Node) -> str | None:
@@ -292,12 +426,37 @@ def _dart_signature_sibling(body: Node) -> Node | None:
     return sib
 
 
+_DART_ACCESSOR_PREFIX = {"getter_signature": "get", "setter_signature": "set"}
+
+
+def _dart_signature_name(sig: Node) -> str:
+    """``A`` / ``A.named`` for a constructor, ``get x`` / ``set x`` for an
+    accessor, ``operator ==`` for an operator, so no two members of one
+    class share a name."""
+    if sig.type in ("constructor_signature", "factory_constructor_signature"):
+        return ".".join(_node_text(c) for c in sig.children if c.type == "identifier")
+    if sig.type in _DART_ACCESSOR_PREFIX:
+        return f"{_DART_ACCESSOR_PREFIX[sig.type]} {_find_name(sig)}"
+    if sig.type == "operator_signature":
+        # The symbol sits between the ``operator`` keyword and the parameters.
+        kinds = [c.type for c in sig.children]
+        start = kinds.index("operator") + 1 if "operator" in kinds else len(kinds)
+        symbol = "".join(
+            _node_text(c) for c in sig.children[start:] if c.type != "formal_parameter_list"
+        )
+        params = next((c for c in sig.children if c.type == "formal_parameter_list"), None)
+        if symbol == "-" and params is not None and params.named_child_count == 0:
+            symbol = "unary-"  # Dart's own name, apart from binary ``-``
+        return f"operator {symbol}"
+    return _find_name(sig)
+
+
 def _find_function_entry_name(node: Node, lmap: LanguageNodeMap) -> str:
     if node.type not in lmap.lambda_kinds:
         if node.type == "function_body":
             sig = _dart_signature_sibling(node)
             if sig is not None:
-                return _find_name(sig)
+                return _dart_signature_name(sig)
         return _find_name(node)
     assigned = _find_assigned_lambda_name(node)
     if assigned:
@@ -313,8 +472,20 @@ def is_misread_scope(node: Node, lmap: LanguageNodeMap) -> bool:
 
 
 def is_function_node(node: Node, lmap: LanguageNodeMap) -> bool:
-    """True for a function definition, False for a scope the grammar misread as one."""
-    return node.type in lmap.function_kinds and not is_misread_scope(node, lmap)
+    """True for a function definition, False for a scope the grammar misread as
+    one or a declaration with no body (abstract, interface, extern)."""
+    return (
+        node.type in lmap.function_kinds
+        and not is_misread_scope(node, lmap)
+        and not (lmap.bodyless is not None and lmap.bodyless(node))
+    )
+
+
+def _is_function_unit(node: Node, lmap: LanguageNodeMap) -> bool:
+    """A function with code of its own: not a C++ ``= default`` / ``= delete`` member."""
+    return is_function_node(node, lmap) and not any(
+        c.type in _NO_BODY_CLAUSES for c in node.children
+    )
 
 
 def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
@@ -334,12 +505,55 @@ def _collect_function_nodes(root: Node, lmap: LanguageNodeMap) -> list[Node]:
         if node.type in lmap.lambda_kinds and _is_test_suite_callback(node, lmap):
             stack.extend(node.children)
             continue
-        if is_function_node(node, lmap) or node.type in lmap.lambda_kinds:
+        if _is_function_unit(node, lmap) or node.type in lmap.lambda_kinds:
             out.append(node)
             continue
         for child in node.children:
             stack.append(child)
     return out
+
+
+_DECLARATION_KINDS = frozenset({"lexical_declaration", "variable_declaration"})
+
+
+def unit_extent(node: Node) -> Node:
+    """The node whose lines a nested unit owns: its binding when it has one.
+
+    ``const f = () => { ... };`` is one statement that only exists to define
+    ``f``, so its first and last line are the unit's, as ``function f() {``
+    and its ``}`` are a declaration's. The declaration stands in when it binds
+    this one name, the expression statement for an assignment, the property
+    for an object pair; a binding that shares its statement with others
+    (``const a = ..., b = ...``) is the declarator. Anything else is the node
+    itself.
+    """
+    holder = _binding_holder(node)
+    if holder is None or holder.type not in _UNIT_LAMBDA_HOLDERS:
+        return node
+    statement = holder.parent
+    if statement is None or holder.type == "pair":
+        return holder
+    if holder.type == "variable_declarator":
+        return statement if _declares_only(statement, holder) else holder
+    return statement if statement.type == "expression_statement" else holder
+
+
+def _declares_only(statement: Node, declarator: Node) -> bool:
+    """*statement* is a ``let`` / ``const`` / ``var`` declaring *declarator* alone."""
+    if statement.type not in _DECLARATION_KINDS:
+        return False
+    return [c.id for c in statement.named_children if c.type == "variable_declarator"] == [
+        declarator.id
+    ]
+
+
+def _is_nested_unit(node: Node, lmap: LanguageNodeMap) -> bool:
+    """A function unit that is no local value, or a named block-bodied lambda."""
+    if is_function_node(node, lmap):
+        return _is_function_unit(node, lmap) and (
+            lmap.local_value is None or not lmap.local_value(node)
+        )
+    return is_named_block_lambda(node, lmap)
 
 
 def _nested_function_nodes(
@@ -348,41 +562,55 @@ def _nested_function_nodes(
     """The functions and methods defined inside a collected function.
 
     *collected* is what :func:`_collect_function_nodes` returned and
-    *candidates* every ``function_kinds`` node in the file. That collector
-    stops at the first function or lambda it meets and descends everything
-    else, so a function it did not return sits below one it did: a nested
-    ``def``, a function expression, a local function, a method of a local or
-    anonymous class. Each is a unit of its own, which the enclosing function's
-    walk skips. Lambdas are not candidates; they stay with the function that
+    *candidates* every ``function_kinds`` node and every unit-capable lambda
+    (``arrow_function``) in the file. That collector stops at the first
+    function or lambda it meets and descends everything else, so a function it
+    did not return sits below one it did: a nested ``def``, a function
+    expression, a local function, a method of a local or anonymous class, or a
+    block-bodied arrow function bound to a name (:func:`is_named_block_lambda`).
+    Each is a unit of its own, which the enclosing function's walk skips. Other
+    lambdas (inline callbacks, expression bodies) stay with the function that
     holds them. A local value that shares a function's node type
     (``lmap.local_value``) is no unit either.
     """
     seen = {node.id for node in collected}
-    local_value = lmap.local_value
-    return [
-        node
-        for node in candidates
-        if node.id not in seen
-        and is_function_node(node, lmap)
-        and not (local_value is not None and local_value(node))
-    ]
+    return [node for node in candidates if node.id not in seen and _is_nested_unit(node, lmap)]
 
 
 def _parameter_list(fn_node: Node) -> Node | None:
     """The node holding *fn_node*'s declared parameters, or ``None``."""
     params = fn_node.child_by_field_name("parameters")
+    if params is not None and (params.type == "type_parameters" or _is_context_list(params)):
+        # Scala tags ``[A, B]`` with the ``parameters`` field too, and an
+        # ``implicit`` / ``using`` list is filled by the compiler: the first
+        # list a caller passes is the signature.
+        params = next(
+            (c for c in fn_node.children if c.type == "parameters" and not _is_context_list(c)),
+            None,
+        )
+        if params is None:
+            return None
     if params is None:
         params = next(
             (
                 c
                 for c in fn_node.children
-                if c.type in (
-                    "parameters", "parameter_list", "formal_parameters", "function_value_parameters",
+                if c.type
+                in (
+                    "parameters",
+                    "parameter_list",
+                    "formal_parameters",
+                    "function_value_parameters",
                 )
             ),
             None,
         )
     return params if params is not None else _dialect_parameter_list(fn_node)
+
+
+def _is_context_list(params: Node) -> bool:
+    """A Scala ``(implicit ...)`` or ``(using ...)`` parameter list."""
+    return any(c.type in ("implicit", "using") for c in params.children)
 
 
 def _dialect_parameter_list(fn_node: Node) -> Node | None:
@@ -404,7 +632,13 @@ def _dialect_parameter_list(fn_node: Node) -> Node | None:
         header = fn_node.child_by_field_name("header")
         if header is not None:
             return header.child_by_field_name("args")
-    return None
+    # Swift: the declaration holds its parameters; a subscript's are on the
+    # ``subscript_declaration`` around its ``computed_property`` body.
+    holder = fn_node.parent if fn_node.type == "computed_property" else fn_node
+    return holder if holder is not None and holder.type in _SWIFT_PARAMETER_HOLDERS else None
+
+
+_SWIFT_PARAMETER_HOLDERS = frozenset({"function_declaration", "init_declaration", "subscript_declaration"})
 
 
 def _declarator_parameter_list(fn_node: Node) -> Node | None:
@@ -418,26 +652,62 @@ def _declarator_parameter_list(fn_node: Node) -> Node | None:
     while node is not None:
         if node.type == "function_declarator":
             params = node.child_by_field_name("parameters")
-        inner = node.child_by_field_name("declarator")
-        if inner is None and node.type in ("parenthesized_declarator", "reference_declarator"):
-            inner = next((c for c in node.named_children if not is_comment(c)), None)
-        node = inner
+        node = _inner_declarator(node)
     return params
 
 
 def _parameter_nodes(params: Node) -> Iterator[Node]:
     """Declared parameters, excluding comments and grammar-only siblings."""
+    if params.type in _SWIFT_PARAMETER_HOLDERS:
+        yield from (c for c in params.children if c.type == "parameter")
+        return
     if params.type == "function_value_parameters":
         # Kotlin defaults and modifiers (e.g. ``vararg``) are siblings of
         # the parameters, not children of them.
         yield from (c for c in params.named_children if c.type == "parameter")
         return
+    for child in _parameter_children(params):
+        if child.type == "optional_formal_parameters":
+            # Dart wraps its ``[optional]`` and ``{named}`` parameters in one node.
+            yield from (c for c in child.named_children if c.type == "formal_parameter")
+        # C++ represents a bare variadic parameter as an unnamed token.
+        elif child.is_named or child.type == "...":
+            yield child
+
+
+def _parameter_children(params: Node) -> Iterator[Node]:
+    """Children of *params* that can hold a parameter: no comments, no C
+    ``(void)``, and no parse error continuing the parameter before it."""
+    after_param = False
     for child in params.children:
         if is_comment(child) or _is_void_parameter(child):
             continue
-        # C++ represents a bare variadic parameter as an unnamed token.
-        if child.is_named or child.type == "...":
+        # A parse error right after a parameter, with no comma between, is the
+        # rest of that parameter: C++ SAL ``_In_ UINT* p`` splits into a
+        # declaration and an ERROR holding ``* p``.
+        continues = child.type == "ERROR" and after_param
+        after_param = child.type not in {",", ";", "("}
+        if not continues:
             yield child
+
+
+# Rest parameters: Python ``*args`` / ``**kwargs``, Ruby ``*args`` /
+# ``**opts`` / ``&block``, JavaScript and TypeScript ``...rest``.
+_REST_PARAMETERS = frozenset(
+    {
+        "list_splat_pattern", "dictionary_splat_pattern", "splat_parameter",
+        "hash_splat_parameter", "block_parameter", "rest_pattern",
+    }
+)
+
+
+def is_rest_parameter(param: Node) -> bool:
+    """A rest parameter collects what is left over, so no call site has to
+    fill it, and it is no parameter of the signature."""
+    # ``*args: int`` / ``...rest: T[]`` wrap the rest pattern in a typed node.
+    typed = param.type in ("typed_parameter", "required_parameter") and param.named_child_count
+    first = param.named_children[0] if typed else param
+    return first.type in _REST_PARAMETERS
 
 
 def _is_void_parameter(node: Node) -> bool:
@@ -472,7 +742,8 @@ def _receiver_parameter(params: Node) -> Node | None:
 def _count_parameters(fn_node: Node) -> int:
     """Best-effort parameter-list size for *fn_node*.
 
-    Counts declared parameters, excluding receivers, comments and separators.
+    Counts declared parameters, excluding receivers, comments, separators and
+    Python's ``*args`` / ``**kwargs``.
     Returns 0 when no parameter list is found (apart from Swift's flat list).
     """
     params = _parameter_list(fn_node)
@@ -491,18 +762,24 @@ def _count_parameters(fn_node: Node) -> int:
         # A bare ``*`` (keyword-only marker) and a bare ``/`` (positional-only
         # marker) parse as named ``keyword_separator`` / ``positional_separator``
         # nodes but carry no arity.
-        if child.type in ("keyword_separator", "positional_separator"):
+        if child.type in ("keyword_separator", "positional_separator") or is_rest_parameter(child):
             continue
-        if child.type == "declArg":
-            # Pascal groups same-typed parameters under one ``declArg``
-            # (``A, B, C: Boolean``) -- one node, three names -- so counting
-            # the node itself would undercount; count its direct
-            # ``identifier`` children instead (the trailing ``type`` child
-            # is a different node type and never matches).
-            count += sum(1 for gc in child.children if gc.type == "identifier")
-            continue
-        count += 1
+        count += param_arity(child)
     return count
+
+
+def param_arity(param: Node) -> int:
+    """Names one parameter node declares. Pascal (``A, B, C: Boolean``) and Go
+    (``a, b int``) declare several same-typed names in one node."""
+    if param.type == "declArg":
+        # The trailing ``type`` child is a different node type and never matches.
+        return sum(1 for c in param.children if c.type == "identifier")
+    if param.type == "parameter_declaration":
+        # Go's grouped names; C and C++ declarations carry no ``name`` field.
+        return max(1, len(param.children_by_field_name("name")))
+    # Other grammars give one parameter several ``name`` fields (a Swift
+    # argument label and its local name): still one parameter.
+    return 1
 
 
 def _identifier_chain(node: Node, *, lower: bool = True) -> list[str]:

@@ -47,6 +47,7 @@ from typing import Any, NamedTuple
 
 from sqlalchemy import select
 
+from repowise.core.persistence.crud.tombstoned_pages import deleted_file_paths
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Page, WikiSymbol
 from repowise.core.test_paths import is_test_path, is_test_related_path
@@ -64,7 +65,6 @@ from repowise.server.mcp_server.tool_search_symbols import (
     _symbol_kind_for_request_kind,
     _symbol_result,
     _tokens,
-    _tombstoned_paths,
     file_path_index,
 )
 
@@ -341,14 +341,14 @@ async def search_symbols_by_terms(
             )
         )
         gmap = {g.node_id: g for g in gres.scalars().all()}
-        tombstoned = await _tombstoned_paths(
+        deleted = await deleted_file_paths(
             session, repository.id, {r.file_path for r in by_id.values()}
         )
 
     spec = _get_exclude_spec(ctx.path)
     scored: list[tuple[float, WikiSymbol]] = []
     for symbol_id, row in by_id.items():
-        if is_excluded(row.file_path, spec) or row.file_path in tombstoned:
+        if is_excluded(row.file_path, spec) or row.file_path in deleted:
             continue
         gnode = gmap.get(symbol_id)
         is_test = (gnode is not None and gnode.is_test) or is_test_related_path(
@@ -480,7 +480,6 @@ class _FilenameIndex(NamedTuple):
     """One repo's file names as stemmed words, paged or not, by position."""
 
     paths: tuple[str, ...]
-    paged: frozenset[str]  # paths with a file page, live or tombstoned
     sizes: tuple[int, ...]  # how many words each file name has
     postings: dict[str, tuple[int, ...]]  # file name word -> positions
 
@@ -518,7 +517,6 @@ async def _filename_index(session, repo_id: str) -> _FilenameIndex:
                 postings.setdefault(w, []).append(i)
         return _FilenameIndex(
             paths,
-            frozenset(paged),
             tuple(len(ws) for ws in words),
             {w: tuple(pos) for w, pos in postings.items()},
         )
@@ -546,12 +544,14 @@ async def filename_backed_pages(ctx: Any, question: str, *, max_files: int) -> l
         ranked = sorted(hits, key=lambda i: (-hits[i], index.sizes[i], index.paths[i]))[
             :max_files
         ]
-        by_path = await _file_pages(session, [index.paths[i] for i in ranked])
+        ranked_paths = [index.paths[i] for i in ranked]
+        by_path = await _file_pages(session, ranked_paths)
+        deleted = await deleted_file_paths(session, repository.id, ranked_paths)
     rows = []
     for i in ranked:
         path = index.paths[i]
-        # A tombstoned page's file is gone, so it gets no pageless row either.
-        if path not in by_path and path in index.paged:
+        # A deleted file gets no pageless row either.
+        if path in deleted:
             continue
         row = by_path.get(path) or _pageless_row(path, "")
         row["full_cover"] = hits[i] >= max(index.sizes[i], _FULL_COVER_MIN_WORDS)

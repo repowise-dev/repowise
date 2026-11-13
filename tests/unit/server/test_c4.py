@@ -291,3 +291,57 @@ async def test_l3_relations_with_root_container(client: AsyncClient, app) -> Non
         await client.get(f"/api/graph/{repo_id}/c4/l3", params={"container_id": "pkg:."})
     ).json()
     assert ("pkg:packages/core" in {r["target_id"] for r in root["relations"]})
+
+
+async def test_zoom_map_endpoint_returns_json_and_restores_the_collector(
+    client: AsyncClient, app
+) -> None:
+    import gc
+
+    repo_id = await _seed_two_containers(client, app)
+    assert gc.isenabled()
+    resp = await client.get(f"/api/graph/{repo_id}/zoom-map")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/json"
+    body = resp.json()
+    assert body["root_id"] and isinstance(body["nodes"], list)
+    assert gc.isenabled()
+
+
+def test_cyclic_gc_pause_nests_and_keeps_a_disabled_collector_disabled() -> None:
+    import gc
+
+    from repowise.server.routers.c4 import _cyclic_gc_paused
+
+    assert gc.isenabled()
+    with _cyclic_gc_paused():
+        assert not gc.isenabled()
+        with _cyclic_gc_paused():
+            assert not gc.isenabled()
+        assert not gc.isenabled()
+    assert gc.isenabled()
+
+    gc.disable()
+    try:
+        with _cyclic_gc_paused():
+            pass
+        assert not gc.isenabled()
+    finally:
+        gc.enable()
+
+
+def test_cyclic_gc_pause_ends_with_the_request_that_started_it() -> None:
+    import gc
+
+    from repowise.server.routers.c4 import _cyclic_gc_paused
+
+    first, second = _cyclic_gc_paused(), _cyclic_gc_paused()
+    first.__enter__()
+    second.__enter__()
+    assert not gc.isenabled()
+    # The first request ends while the second is still building: the
+    # collector comes back now, not when the overlap finally drains.
+    first.__exit__(None, None, None)
+    assert gc.isenabled()
+    second.__exit__(None, None, None)
+    assert gc.isenabled()

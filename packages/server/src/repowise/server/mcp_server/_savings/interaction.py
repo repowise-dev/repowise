@@ -23,8 +23,10 @@ would change the schema every layer is carefully written to preserve.
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -52,11 +54,20 @@ class Interaction:
     request_id: str | None = None
     #: The counterfactual the answer replaced, when one could be derived.
     baseline_input_tokens: int | None = None
-    #: Raw tool output, before any budget shed anything.
+    #: Raw tool output before any budget shed anything, sized in the shape it
+    #: is delivered in (trust envelope and lean pass applied to a copy).
     pre_budget_input_tokens: int | None = None
     #: Why an in-band ``{"error": ...}`` reply failed, as a fixed slug for
     #: telemetry. Set where the error payload is built; see :data:`ERROR_REASONS`.
     error_reason: str | None = None
+    #: Where that error was built: ``tool`` (the tool's own error reply) or
+    #: ``exception`` (the failure shield shaped an exception).
+    error_source: str | None = None
+    #: The kind of LLM provider the call synthesised with (see
+    #: :func:`repowise.core.providers.llm.specs.provider_kind`).
+    provider_kind: str | None = None
+    #: Wall time in whole ms per named stage, from :data:`STAGES`.
+    stage_ms: dict[str, int] = field(default_factory=dict)
 
     def observe_pre_budget(self, tokens: int | None) -> None:
         """Record the raw size, first positive writer only.
@@ -91,12 +102,46 @@ def current() -> Interaction | None:
 
 
 #: Every ``error_reason`` a tool call can report. Fixed slugs, never message text.
+#: ``git_unavailable``: git is missing or cannot read the repository.
+#: ``timeout``: a bounded git read ran out of time. ``no_provider``: the tool
+#: needs an LLM provider and none is configured.
 ERROR_REASONS = frozenset(
-    {"not_found", "invalid_args", "no_index", "index_behind", "server_stale", "internal"}
+    {
+        "not_found",
+        "invalid_args",
+        "no_index",
+        "index_behind",
+        "server_stale",
+        "internal",
+        "git_unavailable",
+        "timeout",
+        "no_provider",
+    }
 )
 
 
-def note_error_reason(reason: str) -> None:
+#: Where an error reply was built. ``tool``: the tool's own error payload.
+#: ``exception``: the failure shield shaped an exception the tool raised.
+ERROR_SOURCES = frozenset({"tool", "exception"})
+
+#: Every stage a call can time. ``retrieve`` and ``synthesize`` are get_answer's;
+#: the rest are get_change_risk's blocks.
+STAGES = frozenset(
+    {
+        "retrieve",
+        "synthesize",
+        "score",
+        "health_delta",
+        "impacted_tests",
+        "patch_coverage",
+        "prior_fixes",
+        "cross_repo",
+        "branch_overlap",
+    }
+)
+
+
+def note_error_reason(reason: str, *, source: str = "tool") -> None:
     """Record why the call in flight is answering with an error. Never raises.
 
     The first note wins: the site that built the payload knows best, and an
@@ -105,6 +150,58 @@ def note_error_reason(reason: str) -> None:
     live = _CURRENT.get()
     if live is not None and live.error_reason is None and reason in ERROR_REASONS:
         live.error_reason = reason
+        if source in ERROR_SOURCES:
+            live.error_source = source
+
+
+def note_provider_kind(provider: Any) -> None:
+    """Record the kind of provider the call in flight synthesises with. Never raises."""
+    live = _CURRENT.get()
+    if live is None:
+        return
+    with contextlib.suppress(Exception):
+        from repowise.core.providers.llm.specs import provider_kind
+
+        live.provider_kind = provider_kind(getattr(provider, "provider_name", None))
+
+
+def note_stage_ms(stage: str, ms: float) -> None:
+    """Record *stage*'s wall time on the call in flight. Never raises.
+
+    A stage that runs twice in one call keeps the sum.
+    """
+    live = _CURRENT.get()
+    if live is not None and stage in STAGES:
+        live.stage_ms[stage] = live.stage_ms.get(stage, 0) + round(ms)
+
+
+def timed_stage(stage: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Decorate an async function so its wall time is noted as *stage*."""
+
+    def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        async def wrapped(*args: Any, **kwargs: Any) -> Any:
+            started = time.perf_counter()
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                note_stage_ms(stage, (time.perf_counter() - started) * 1000)
+
+        return wrapped
+
+    return decorate
+
+
+def error_reply(reason: str, reply: dict[str, Any]) -> dict[str, Any]:
+    """Return *reply*, a tool's top-level ``{"error": ...}`` answer, with *reason* noted.
+
+    Every top-level error dict is built inside this call, so none leaves
+    without a reason; a test holds that, and every *reason* passed here to
+    :data:`ERROR_REASONS`. Error cards nested inside an ok reply (one target of
+    several) do not use it: they must not claim the call's reason.
+    """
+    note_error_reason(reason)
+    return reply
 
 
 @contextmanager

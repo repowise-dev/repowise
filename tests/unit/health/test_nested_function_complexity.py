@@ -315,10 +315,11 @@ def test_a_nested_function_is_an_entry_of_its_own(path, language, source, outer,
 # (id, path, language, source, name of the one entry)
 _LAMBDAS = [
     (
+        # A callback; an arrow bound to a name is a unit of its own (#4575).
         "javascript-arrow",
         "a.js",
         "javascript",
-        f"function outer(){{ const h = () => {{ {_C3} }}; }}\n",
+        f"function outer(){{ run(() => {{ {_C3} }}); }}\n",
         "outer",
     ),
     (
@@ -426,7 +427,7 @@ def test_each_level_of_nesting_is_counted_once():
 
 def test_a_function_inside_a_lambda_inside_a_function():
     """The arrow's own branch stays with ``outer``; ``deep`` is its own entry."""
-    source = f"function outer(){{ const h = () => {{ if (z) {{ }} function deep(){{ {_C3} }} }}; }}\n"
+    source = f"function outer(){{ run(() => {{ if (z) {{ }} function deep(){{ {_C3} }} }}); }}\n"
 
     assert _shape(_walk("a.js", "javascript", source)) == {"outer": (2, 1), "deep": (4, 3)}
 
@@ -441,7 +442,7 @@ def test_a_lambda_inside_a_nested_function_belongs_to_the_nested_function():
     source = (
         "function outer(){\n"
         "  function inner(){\n"
-        f"    const h = () => {{ {_C3} }};\n"
+        f"    run(() => {{ {_C3} }});\n"
         "  }\n"
         "}\n"
     )
@@ -485,8 +486,9 @@ def test_the_nested_entry_has_its_own_lines_and_the_outer_keeps_its_own():
     outer, inner = by_name["outer"], by_name["inner"]
     assert (outer.start_line, outer.end_line, outer.param_count) == (1, 7, 2)
     assert (inner.start_line, inner.end_line, inner.param_count) == (3, 6, 1)
-    # The outer function is still as long as it is written.
-    assert outer.nloc == 6
+    # The outer function keeps its own lines and no longer counts inner's
+    # four (#4575): ``x = 1`` and ``return inner``.
+    assert outer.nloc == 2
     assert inner.nloc == 3
 
 

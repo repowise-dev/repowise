@@ -16,16 +16,20 @@ flow.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import structlog
 
+from ....analysis.execution_flows import rank_by_importance
 from ....support_paths import is_example_path
 from ...entry_points import orientation_entry_points
+from ..docs import DocSection, doc_sections, rank_by_overlap, terms
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals, file_layer_map
 from ..slots import SLOT_HOW_IT_WORKS, SLOT_TITLES
+from ..surface import Journey, Surfaces
 
 log = structlog.get_logger(__name__)
 
@@ -105,6 +109,15 @@ class HowItWorksContext:
     flows: list[FlowTrace] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)
     kg_tour_steps: list[dict] = field(default_factory=list)
+    #: The walkthrough pages written for the main operations. When present the
+    #: page is told from them, and the traced flows above are not used.
+    journeys: list[Journey] = field(default_factory=list)
+    #: Documentation sections ranked by what they share with the journeys.
+    arch_docs: list[DocSection] = field(default_factory=list)
+    #: Top-level parts, each with its own page's description.
+    parts: list[Any] = field(default_factory=list)
+    #: Prose range under the default style, sized to the number of journeys.
+    word_budget: tuple[int, int] | None = None
 
 
 def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str]]:
@@ -139,6 +152,13 @@ def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str
             evidence.append(f"{api_contract_count} API contract file(s) (OpenAPI/proto/GraphQL)")
         return "service", evidence
 
+    # A top-level package whose re-exported names the user documentation
+    # calls is a library first, even when it also ships a command.
+    api = (signals.surfaces or Surfaces()).api
+    if api:
+        evidence.append(f"documented public names: {', '.join(a.name for a in api[:3])}")
+        return "library", evidence
+
     if cli_hits:
         evidence.append(f"CLI framework(s) detected: {', '.join(sorted(cli_hits))}")
         return "cli", evidence
@@ -147,22 +167,62 @@ def _classify_archetype(signals: OnboardingSignals) -> tuple[Archetype, list[str
         evidence.append(f"pipeline framework(s) detected: {', '.join(sorted(pipeline_hits))}")
         return "pipeline", evidence
 
-    # Entry-point shape — `__main__.py` or `bin/` is CLI-shaped.
+    # Entry-point shape: `__main__.py` or `bin/` is CLI-shaped, and so is a
+    # repository that installs a program a user types.
     entry_points = list(getattr(signals.repo_structure, "entry_points", []))
-    if any(
+    programs = (signals.surfaces or Surfaces()).programs
+    if programs or any(
         ep.endswith("__main__.py") or "/bin/" in ep or ep.startswith("bin/") for ep in entry_points
     ):
-        evidence.append("entry point shape suggests a CLI (__main__ or bin/)")
+        evidence.append(
+            f"installs {', '.join(programs[:3])}"
+            if programs
+            else "entry point shape suggests a CLI (__main__ or bin/)"
+        )
         return "cli", evidence
 
-    # If packages have a clear public API but no service / CLI signal, it's a library.
+    # Packages with no entry point of their own are a library. Packages with
+    # entry points are an application with several ways in: calling that a
+    # library sent the page to narrate a configuration helper.
     packages = getattr(signals.repo_structure, "packages", []) or []
-    if packages:
-        evidence.append(f"{len(packages)} package(s) with declared public surface")
+    if packages and not entry_points:
+        evidence.append(f"{len(packages)} package(s) and no entry point of their own")
         return "library", evidence
 
     evidence.append("no service / CLI / library signal — treating as module collection")
     return "module", evidence
+
+
+def _ranked_candidate(
+    flow: object, trace: list, layers: dict[str, str], declared_entry_points: set[str]
+) -> tuple[int, int, int, int, float, str, FlowTrace]:
+    """One flow as a sort key plus the trace the template renders.
+
+    Keyed by reach, then a declared entry point, then breadth across layers or
+    top-level directories, trace length and score; the entry id breaks ties.
+    """
+    entry_point = str(getattr(flow, "entry_point_id", ""))
+    paths = [str(hop).split("::", 1)[0].removeprefix("file:") for hop in trace]
+    lifecycle_regions = {
+        layers.get(path) or (path.split("/", 1)[0] if "/" in path else "<root>")
+        for path in paths
+        if path
+    }
+    candidate = FlowTrace(
+        entry_point=entry_point,
+        hops=trace[:_TRACE_DISPLAY_HOPS],
+        score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
+        lifecycle_breadth=len(lifecycle_regions),
+    )
+    return (
+        int(getattr(flow, "reach", 0) or 0),
+        1 if entry_point.split("::", 1)[0] in declared_entry_points else 0,
+        candidate.lifecycle_breadth,
+        len(trace),
+        candidate.score,
+        candidate.entry_point,
+        candidate,
+    )
 
 
 def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
@@ -179,7 +239,7 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     if not report or not hasattr(report, "flows"):
         return []
 
-    flows: list[tuple[int, int, int, float, str, FlowTrace]] = []
+    flows: list[tuple[int, int, int, int, float, str, FlowTrace]] = []
     layers = file_layer_map(signals)
     repo_structure = getattr(signals, "repo_structure", None)
     declared_entry_points = (
@@ -191,35 +251,14 @@ def _collect_flows(signals: OnboardingSignals) -> list[FlowTrace]:
     # ``entry_point_score``. Read as ``entry_point`` / ``score`` the getattr
     # defaults applied instead of raising, so every page ever generated
     # carried an empty entry point and a zero score on every flow.
-    for flow in getattr(report, "flows", [])[:_FLOW_CANDIDATE_LIMIT]:
+    # Importance first (see ``rank_by_importance``): the walkthrough is about
+    # the operation that drives the most code, not the symbol that looks most
+    # like an entry point, which on a repository with a UI is a view helper.
+    for flow in rank_by_importance(getattr(report, "flows", []))[:_FLOW_CANDIDATE_LIMIT]:
         trace = list(getattr(flow, "trace", []) or [])
-        if len(trace) < _MIN_TRACE_HOPS:
-            continue
-        entry_point = str(getattr(flow, "entry_point_id", ""))
-        entry_path = entry_point.split("::", 1)[0]
-        paths = [str(hop).split("::", 1)[0].removeprefix("file:") for hop in trace]
-        lifecycle_regions = {
-            layers.get(path) or (path.split("/", 1)[0] if "/" in path else "<root>")
-            for path in paths
-            if path
-        }
-        candidate = FlowTrace(
-            entry_point=entry_point,
-            hops=trace[:_TRACE_DISPLAY_HOPS],
-            score=float(getattr(flow, "entry_point_score", 0.0) or 0.0),
-            lifecycle_breadth=len(lifecycle_regions),
-        )
-        flows.append(
-            (
-                1 if entry_path in declared_entry_points else 0,
-                candidate.lifecycle_breadth,
-                len(trace),
-                candidate.score,
-                candidate.entry_point,
-                candidate,
-            )
-        )
-    flows.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3], item[4]))
+        if len(trace) >= _MIN_TRACE_HOPS:
+            flows.append(_ranked_candidate(flow, trace, layers, declared_entry_points))
+    flows.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3], -item[4], item[5]))
     selected = [item[-1] for item in flows[:_TOP_FLOWS]]
     if selected:
         log.info(
@@ -255,8 +294,47 @@ def _normalize_tour_step(step: dict) -> dict:
     }
 
 
+#: Identifiers in backticks: the function and command names a walkthrough uses.
+_CODE_SPAN = re.compile(r"`([^`\n]+)`")
+_ARCH_WORDS = ("architecture", "design", "internals", "lifecycle", "overview", "how it works")
+
+
+def _journey_docs(signals: OnboardingSignals, journeys: list[Journey]) -> list[DocSection]:
+    """Documentation sections that talk about these journeys, best first.
+
+    A section qualifies only by naming one of the walkthroughs' own
+    identifiers, so documentation about some other feature stays out.
+    """
+    query = " ".join(f"{j.title} {j.opening} {j.stages}" for j in journeys)
+    strong = {
+        t for code in _CODE_SPAN.findall(query) for t in terms(code.replace(".", " ")) if len(t) >= 5
+    }
+    return rank_by_overlap(
+        doc_sections(signals.doc_sources), query, strong=strong, boost_words=_ARCH_WORDS
+    )
+
+
+def _from_journeys(signals: OnboardingSignals, archetype: Archetype, evidence: list[str]):
+    """The page told from the walkthroughs written for the main operations."""
+    journeys = list(signals.journeys)
+    n = len(journeys)
+    return HowItWorksContext(
+        repo_name=signals.repo_name,
+        archetype=archetype,
+        archetype_evidence=evidence,
+        journeys=journeys,
+        arch_docs=_journey_docs(signals, journeys),
+        parts=list(signals.parts),
+        # About 80 words a journey plus the fixed sections: a flat range made
+        # the model pad each journey paragraph to fill it.
+        word_budget=(150 + 110 * n, 300 + 120 * n),
+    )
+
+
 def _build(signals: OnboardingSignals) -> HowItWorksContext | None:
     archetype, evidence = _classify_archetype(signals)
+    if signals.journeys:
+        return _from_journeys(signals, archetype, evidence)
     flows = _collect_flows(signals)
 
     kg_tour = [_normalize_tour_step(s) for s in signals.kg_tour_steps or ()]
@@ -294,5 +372,6 @@ register(
         template="how_it_works.j2",
         build_context=_build,
         evidence_references=_evidence_references,
+        needs_parts=True,
     )
 )

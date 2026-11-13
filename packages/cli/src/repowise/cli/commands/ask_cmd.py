@@ -36,7 +36,8 @@ def project(payload: dict, question: str) -> dict:
                         best_guesses (without their
                         excerpts), next_action_hint, note,
                         omission_marker, episodes (subject / recorded
-                        / still_true), error, index (from ``_meta``)
+                        / still_true), other_repo_lines, error,
+                        index (from ``_meta``)
     dropped             every block in ``_DROPPED_BLOCKS`` — but
                         their names are reported in
                         ``dropped_blocks``, so nothing is silent —
@@ -93,10 +94,11 @@ def project(payload: dict, question: str) -> dict:
     dropped = [key for key in _DROPPED_BLOCKS if payload.get(key)]
     if dropped:
         out["dropped_blocks"] = dropped
-    if payload.get("fallback_targets"):
-        out["fallback_targets"] = list(payload["fallback_targets"])
-    if payload.get("candidate_files"):
-        out["candidate_files"] = list(payload["candidate_files"])
+    # ``other_repo_lines``: lines from the workspace's other repos, the evidence
+    # for an answer citing them; no other kept block names another repo.
+    for key in ("fallback_targets", "candidate_files", "other_repo_lines"):
+        if payload.get(key):
+            out[key] = list(payload[key])
     episodes = payload.get("episodes") or []
     if episodes:
         out["episodes"] = [
@@ -137,7 +139,7 @@ def ask_command(
     LLM call where the other read-only commands do not.
     """
     fmt = _ta.resolve_format_for(fmt, full)
-    repo_path = _ta.resolve_indexed_repo(
+    repo_path, workspace_root = _ta.resolve_indexed_target(
         path=path,
         repo_alias=repo_alias,
         no_workspace=no_workspace,
@@ -150,7 +152,9 @@ def ask_command(
 
         return get_answer(question=question, scope=scope)
 
-    payload = _ta.run(repo_path, _factory, "get_answer")
+    # In a workspace the tool reads the other members' documents too, as it
+    # does over MCP.
+    payload = _ta.run(repo_path, _factory, "get_answer", workspace_root=workspace_root)
 
     if full:
         _ta.emit_full(payload)
@@ -236,6 +240,8 @@ def _render(projected: dict) -> None:
             where = f":{lines[0]}" if lines else ""
             console.print(f"  [cyan]{q.get('path', '')}{where}[/cyan]  {q.get('quote', '')}")
 
+    _render_other_repo_lines(projected)
+
     episodes = projected.get("episodes") or []
     if episodes:
         console.print("\n[bold]Recorded about this checkout[/bold]")
@@ -243,3 +249,19 @@ def _render(projected: dict) -> None:
             console.print(f"  {e.get('subject', '')}: {e.get('recorded', '')}")
             if e.get("still_true"):
                 console.print(f"    [dim]{e['still_true']}[/dim]")
+
+
+def _render_other_repo_lines(projected: dict) -> None:
+    """The lines the tool read in the workspace's other repos, as ``repo: path:line  text``."""
+    rows = projected.get("other_repo_lines") or []
+    if not rows:
+        return
+    from rich.markup import escape
+
+    from repowise.cli.helpers import console
+
+    # Escaped: document lines are prose and Markdown, brackets included.
+    console.print("\n[bold]Other workspace repos[/bold]")
+    for r in rows:
+        where = escape(f"{r.get('repo', '')}: {r.get('path', '')}:{r.get('line', '')}")
+        console.print(f"  [cyan]{where}[/cyan]  {escape(str(r.get('text', '')))}")

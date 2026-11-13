@@ -74,6 +74,12 @@ class ProviderSpec:
     note: str = ""
     #: Where to get a key (or the runtime) when the provider is not set up.
     signup_url: str = ""
+    #: ``auto`` leaves a thinking model at its own default effort, so ``low``
+    #: only trims thinking. Where this is False, ``low`` can switch thinking on
+    #: for a model that does not think by default.
+    low_effort_trims: bool = False
+    #: A model's reasoning modes are known only after listing the models.
+    lists_reasoning_modes: bool = False
 
     @property
     def module_path(self) -> str:
@@ -110,6 +116,8 @@ _LLM = "repowise.core.providers.llm"
 _SPECS: tuple[ProviderSpec, ...] = (
     ProviderSpec(
         name="gemini",
+        low_effort_trims=True,
+        lists_reasoning_modes=True,
         picker_rank=0,
         impl=f"{_LLM}.gemini:GeminiProvider",
         label="Google Gemini",
@@ -139,6 +147,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="openai",
+        low_effort_trims=True,
         picker_rank=1,
         impl=f"{_LLM}.openai:OpenAIProvider",
         label="OpenAI",
@@ -186,6 +195,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="kimi",
+        low_effort_trims=True,
         picker_rank=4,
         impl=f"{_LLM}.kimi:KimiProvider",
         label="Kimi",
@@ -200,6 +210,7 @@ _SPECS: tuple[ProviderSpec, ...] = (
     ),
     ProviderSpec(
         name="edenai",
+        low_effort_trims=True,
         picker_rank=5,
         impl=f"{_LLM}.edenai:EdenAIProvider",
         label="Eden AI",
@@ -327,3 +338,24 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {spec.name: spec for spec in _SPECS}
 ZERO_COST_MODEL_PREFIXES: tuple[str, ...] = tuple(
     f"{spec.name}/" for spec in _SPECS if spec.zero_cost
 )
+
+#: Every value :func:`provider_kind` returns. Fixed labels, safe for telemetry.
+PROVIDER_KINDS = frozenset({"none", "subscription_cli", "local", "api_key", "mock", "other"})
+
+
+def provider_kind(provider_name: str | None) -> str:
+    """How the named provider runs, as one fixed label from :data:`PROVIDER_KINDS`.
+
+    An agent CLI login (``subscription_cli``) before ``local``, since those
+    CLIs also run on this machine.
+    """
+    if not provider_name:
+        return "none"
+    spec = PROVIDER_SPECS.get(provider_name)
+    if spec is None:
+        return "other"
+    if spec.agent:
+        return "subscription_cli"
+    if spec.name == "mock":
+        return "mock"
+    return "local" if spec.local else "api_key"

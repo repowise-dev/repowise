@@ -797,18 +797,16 @@ def run_warmups(
     than dropping it into ``graph.imports``.
     """
     present_langs: set[str] = {pf.file_info.language for pf in parsed_files.values()}
-    fired_phases: set[str] = set()
+    # Languages that share an index (TS + JS, Java + Kotlin, C + C++) share
+    # one warmup, and a warmup's stamps depend only on the context: it runs
+    # once per context, however many of its languages are present or however
+    # many times this is called on that context.
+    done_warmups: set[Warmup] = getattr(ctx, "_warmups_run", None) or set()
+    ctx._warmups_run = done_warmups  # type: ignore[attr-defined]
     for lang, (phase_name, warmup) in _WARMUPS.items():
-        if lang not in present_langs:
+        if lang not in present_langs or warmup in done_warmups:
             continue
-        # Some warmups (TS + JS) share a phase event because they share the
-        # underlying index — only fire start/done once per phase name and
-        # rely on the warmup's own idempotency for the second invocation.
-        if phase_name in fired_phases:
-            with contextlib.suppress(Exception):
-                warmup(ctx)
-            continue
-        fired_phases.add(phase_name)
+        done_warmups.add(warmup)
         if progress is not None:
             progress.on_phase_start(phase_name, None)
         with contextlib.suppress(Exception):  # warmup failures must not abort the build

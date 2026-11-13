@@ -20,6 +20,7 @@ __all__ = [
     "ACCEPTANCE_ACTIONS",
     "ACCEPTER_KINDS",
     "ACCEPTER_SESSION_MAX",
+    "AGENT_ACCEPTANCE_DISABLED_BLOCKER",
     "AGENT_ACCEPTANCE_REMEDY",
     "AGREEMENT_KIND",
     "AGREEMENT_SCOPE",
@@ -30,8 +31,13 @@ __all__ = [
     "DECISION_STATUS_ORDER",
     "GRANTING_ACTIONS",
     "HISTORY_CURRENCIES",
+    "MARK_ACTIONS",
     "NEEDS_REVIEW_STALENESS",
+    "NO_ACCEPTANCE_IDENTITY_BLOCKER",
     "NO_DECISION_BLOCKER",
+    "NO_EVIDENCE_BLOCKER",
+    "NO_RATIONALE_BLOCKER",
+    "PIN_ENDING_ACTIONS",
     "REVIEW_LANES",
     "SPLIT_MARKERS",
     "STORED_CURRENCIES",
@@ -178,10 +184,25 @@ ACCEPTANCE_ACTIONS: tuple[str, ...] = (
     # A withdrawal like ``dismissed``, stored at the same currency; the action
     # is what tells a retired decision from a rejected one.
     "deprecated",
+    # Marks, not authority: see :data:`MARK_ACTIONS`.
+    "pinned",
+    "unpinned",
 )
+
+#: Rows that mark a decision without changing its authority. A pin says a
+#: person holds the decision as law; it restates the current row's currency,
+#: scope and evidence so the log's contract holds, and every "which row is
+#: current" read skips it, so pinning never changes who a decision reads as
+#: accepted by or what it amounts to.
+MARK_ACTIONS: frozenset[str] = frozenset({"pinned", "unpinned"})
+
+#: Actions after which a decision is no longer pinned: an unpin, or the
+#: decision leaving force. A later reaffirm or merge keeps the pin.
+PIN_ENDING_ACTIONS: frozenset[str] = frozenset({"unpinned", "superseded", "dismissed", "deprecated"})
 
 #: Actions that create or renew authority, against the ones that withdraw it.
 GRANTING_ACTIONS: frozenset[str] = frozenset({"accepted", "reaffirmed", "merged"})
+_GRANTING_ACTION_VERBS = {"accepted": "accept", "reaffirmed": "reaffirm", "merged": "merge"}
 
 #: Who signed an acceptance. ``person`` is a human, ``agent`` a coding agent
 #: or a pipeline stage, ``import`` a tracked artifact or manifest speaking for
@@ -205,6 +226,12 @@ AGENT_ACCEPTANCE_REMEDY = (
     "turn agent acceptance back on with `repowise decision config agent-acceptance --on`."
 )
 
+#: Stable blocker phrases shared with the CLI so remedy selection does not depend
+#: on duplicating human-readable messages in another module.
+AGENT_ACCEPTANCE_DISABLED_BLOCKER = "agent acceptance is off for this repository"
+NO_RATIONALE_BLOCKER = "no rationale or explicit constraint reason"
+NO_EVIDENCE_BLOCKER = "no evidence reference"
+
 
 def accepter_kind_blocker(kind: str) -> str | None:
     """Why *kind* cannot be stamped on a new acceptance, or ``None``."""
@@ -225,10 +252,8 @@ def machine_grant_blocker(kind: str, action: str, *, granted: bool) -> str | Non
     """
     if kind != "agent" or action not in GRANTING_ACTIONS or granted:
         return None
-    return (
-        f"an agent may not record a {action!r} acceptance here: agent acceptance "
-        "is off for this repository"
-    )
+    verb = _GRANTING_ACTION_VERBS[action]
+    return f"an agent may not {verb} here: {AGENT_ACCEPTANCE_DISABLED_BLOCKER}"
 
 
 #: The fraction of a decision's files that must have moved before the decision
@@ -335,6 +360,7 @@ class AcceptanceRequirement:
 NO_SCOPE_BLOCKER = "no scope: name the files or modules it governs"
 
 NO_DECISION_BLOCKER = "no decision text: state what was chosen"
+NO_ACCEPTANCE_IDENTITY_BLOCKER = "no accepter or tracked-artifact identity"
 
 
 def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
@@ -351,13 +377,13 @@ def acceptance_blockers(req: AcceptanceRequirement) -> list[str]:
     if req.decision is not None and not req.decision.strip():
         blockers.append(NO_DECISION_BLOCKER)
     if not req.reason.strip():
-        blockers.append("no rationale or explicit constraint reason")
+        blockers.append(NO_RATIONALE_BLOCKER)
     if not [s for s in req.scope if s and s.strip()]:
         blockers.append(NO_SCOPE_BLOCKER)
     if not req.self_authored and not [e for e in req.evidence if e and e.strip()]:
-        blockers.append("no evidence reference")
+        blockers.append(NO_EVIDENCE_BLOCKER)
     if not req.accepter.strip() and not req.artifact.strip():
-        blockers.append("no accepter or tracked-artifact identity")
+        blockers.append(NO_ACCEPTANCE_IDENTITY_BLOCKER)
     return blockers
 
 

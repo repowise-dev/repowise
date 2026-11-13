@@ -14,7 +14,7 @@ from __future__ import annotations
 import fnmatch
 from collections.abc import Callable, Iterator
 from collections.abc import Set as AbstractSet
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +87,7 @@ from .name_occurrences import (
     drop_internals_used_in_own_file,
     drop_reference_assembly_api,
 )
+from .pascal_name_uses import drop_pascal_name_uses
 from .passes.unreachable_files import UnreachableFilePass
 from .passes.unused_exports import UnusedExportPass
 from .passes.unused_internals import UnusedInternalPass
@@ -123,6 +124,7 @@ from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
     _nested_class_used,
     _non_importable_kinds,
 )
+from .token_cache import token_cache
 
 #: The unindexed scan below and the repo-wide absence check ask the same
 #: question of different file sets, so they share one identifier shape rather
@@ -164,8 +166,11 @@ class DeadCodeAnalyzer:
         repo_root: Path | None = None,
         unindexed_source_files: list[tuple[str, str]] | None = None,
         dotnet_index: Any | None = None,
+        as_of: datetime | None = None,
     ) -> None:
         self.graph = graph
+        # "Now" for git-age checks; resolved from the repo on first use.
+        self._as_of = as_of
         # The C# resolver's project index (``GraphBuilder.dotnet_index``):
         # scopes the C# name rescue to the projects that can see a file.
         self._dotnet_index = dotnet_index
@@ -319,7 +324,11 @@ class DeadCodeAnalyzer:
         whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
 
         findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
-        findings = self._settle(findings)
+        # The settle passes rescan every file's text; an unchanged file's
+        # tokens come from the last run's cache in the index directory.
+        cache_dir = Path(self._repo_root) / ".repowise" if self._repo_root is not None else None
+        with token_cache(cache_dir):
+            findings = self._settle(findings)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
@@ -370,6 +379,8 @@ class DeadCodeAnalyzer:
         )
         # Same for Go, scoped to the package and to importers naming it.
         findings = drop_go_package_uses(findings, self._source_map, self.graph)
+        # And Pascal, scoped to the unit and the units that ``uses`` it.
+        findings = drop_pascal_name_uses(findings, self._source_map, self.graph)
         # Before the confidence filter, not after: a finding an unread importer
         # could explain must be able to fall *below* min_confidence and drop
         # out entirely, rather than being reported at a number it no longer
@@ -653,6 +664,21 @@ class DeadCodeAnalyzer:
                 extract_guarded_jsx_renders(pred_file, src) if src else []
             )
         return self._guard_cache[pred_file]
+
+    def days_since(self, when: datetime) -> int:
+        """Whole days from *when* to the indexed commit, the anchor the git windows
+        use, so a commit's verdicts do not drift with the wall clock. Without a
+        repo root there is no commit to anchor to, and wall-clock time stands in."""
+        if self._as_of is None:
+            if self._repo_root is None:
+                self._as_of = datetime.now(UTC)
+            else:
+                from ...ingestion.git_indexer import GitIndexer
+
+                self._as_of = GitIndexer(self._repo_root, read_only=True).window_anchor()
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        return (self._as_of - when).days
 
     def _file_line_count(self, file_path: str) -> int | None:
         """Physical line count of an indexed file, or ``None`` when unread.

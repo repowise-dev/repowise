@@ -36,38 +36,48 @@ class UpdateOptions:
     progress: str = "rich"
     skip_cross_repo_hooks: bool = False
     include_working_tree: bool = False
+    defer_docs: bool = False
+    refresh_git: bool = False
 
 
 @dataclass
 class UpdateRun:
-    """What one run has learned so far; each stage reads and fills it in order."""
+    """Per-run state; target, preflight and page planning bind their fields in order."""
 
     start: float
     timings: PhaseTimings
     emitter: Any = None
-    repo_path: Path | None = None
+    repo_path: Path = field(init=False, repr=False)
 
     # Preflight: stored state, the resolved mode and the commit range.
     state: dict = field(default_factory=dict)
     cfg: dict = field(default_factory=dict)
     index_only: bool = False
-    base_ref: str | None = None
+    base_ref: str = field(init=False, repr=False)
+    defer_docs: bool = False
     head: str | None = None
-    config: ConfigChanges | None = None
+    config: ConfigChanges = field(init=False, repr=False)
     prev_renderer_fp: str | None = None
     curr_renderer_fp: str = ""
     renderer_changed: bool = False
+    # An upgrade asked this run to rebuild the wiki once (see wiki_rebuild.py).
+    wiki_rebuild: bool = False
 
     # Change detection.
     detector: Any = None
     working_tree_diffs: list = field(default_factory=list)
     analyzer_changed: bool = False
     history_stale: bool = False
+    refresh_git: bool = False
     git_is_current: bool = False
     extraction_changed: bool = False
     scanner_changed: bool = False
     stale_db_paths: list[str] = field(default_factory=list)
     stale_deterministic_ids: set[str] = field(default_factory=set)
+    # Stale pages this mode cannot regenerate: left stale, reported, never a reason to run.
+    stale_pages_deferred: int = 0
+    # Eligible files the index has no page for and no cap explains: render them.
+    fill_file_pages: bool = False
     file_diffs: list = field(default_factory=list)
 
     # Index: the rebuilt graph, the page plan and the partial analyses.
@@ -84,13 +94,23 @@ class UpdateRun:
     repo_structure: Any = None
     file_count: int = 0
     git_meta_map: Any = None
-    cascade_budget: int | None = None
+    # git_meta_map plus the stored rows of every re-rendered file; render only.
+    render_git_meta: Any = None
+    cascade_budget: int = field(init=False, repr=False)
     affected: Any = None
     partial_health_report: Any = None
     dead_code_report: Any = None
     doc_drift_report: Any = None
     persisted_git_meta: Any = None
     knowledge_graph_result: Any = None
+    # The graph kept its shape: the refresh patches only the changed files' nodes.
+    knowledge_graph_shape_unchanged: bool = False
+
+    @property
+    def full_generation(self) -> bool:
+        """Whether this run regenerates the whole page set, every level included."""
+        config = getattr(self, "config", None)
+        return bool(config and config.generation_changed) or self.wiki_rebuild
 
 
 @dataclass
@@ -104,6 +124,9 @@ class DocsPass:
     session_decisions: list = field(default_factory=list)
     # Decision records touched by evolution, surfaced in the completion panel.
     decisions_evolved: int = 0
+    # Git archaeology was re-mined in full for a history-window change, so its
+    # earlier mined records may be replaced and the persist must not fail.
+    git_history_remined: bool = False
     decision_vector_store: Any = None
     prior_pages: dict = field(default_factory=dict)
     generated_pages: list = field(default_factory=list)

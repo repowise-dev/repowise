@@ -12,21 +12,38 @@ export function changeLabel(c: Pick<ChangeListItem, "forge_ref" | "id">): string
   return c.forge_ref ?? (c.id.length > 19 ? c.id.slice(0, 19) : c.id);
 }
 
-export type CommitsView = "changes" | "commits" | "events" | "review";
+export type CommitsView = "changes" | "commits";
 
 /**
- * The Commits page in one view: `?view=changes` groups by merged change,
- * `?view=events` lists what moved between index runs, `?view=review` weighs
- * a change's blast radius before it lands.
+ * The Commits page in one view: the history by commit, or with
+ * `?view=changes` by merged change.
  */
 export function commitsViewHref(repoId: string, view: CommitsView): string {
   const base = `/repos/${repoId}/commits`;
   return view === "commits" ? base : `${base}?view=${view}`;
 }
 
-/** The view a `?view=` value asks for; anything else is the commit view. */
+/**
+ * The view a `?view=` value asks for; anything else is the commit view,
+ * including `?view=events` from older links.
+ */
 export function parseCommitsView(raw: string | string[] | undefined): CommitsView {
-  return raw === "changes" || raw === "events" || raw === "review" ? raw : "commits";
+  return raw === "changes" ? raw : "commits";
+}
+
+/** What a link into the Review page carries: files to analyze, or a change (`wip`, a branch, a sha). */
+export interface ReviewLink {
+  file?: string[] | undefined;
+  change?: string | undefined;
+}
+
+/** The Review page, optionally opened on files or on one change. */
+export function reviewHref(repoId: string, link: ReviewLink = {}): string {
+  const q = new URLSearchParams();
+  for (const f of link.file ?? []) q.append("file", f);
+  if (link.change) q.set("change", link.change);
+  const qs = q.toString();
+  return `/repos/${repoId}/review${qs ? `?${qs}` : ""}`;
 }
 
 /** Filters and paging of the by-change view, as its query parameters keep them. */

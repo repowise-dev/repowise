@@ -3,6 +3,11 @@
  *  `.repowise/.env`, or a key stored on the server. */
 export type ModelSourceDetection = "signed_in" | "env" | "saved";
 
+/** What the providers API may report: a source above, or `installed` (an agent
+ *  CLI is on PATH but its sign-in is unknown). `installed` is not a ready
+ *  source, so it never reaches a row. */
+export type ProviderDetection = ModelSourceDetection | "installed";
+
 /** The provider fields the source list reads. */
 export interface ModelSourceProvider {
   id: string;
@@ -10,7 +15,7 @@ export interface ModelSourceProvider {
   requires_key?: boolean;
   /** A model that runs on this machine (not an agent CLI). */
   local_model?: boolean;
-  detected?: ModelSourceDetection | null;
+  detected?: ProviderDetection | null;
 }
 
 export type ModelSourceKind = "cli" | "key" | "local" | "paste" | "hosted";
@@ -45,7 +50,8 @@ function providerSource(
     kind,
     providerId: provider.id,
     name: shortName(provider.name),
-    detected: provider.detected ?? null,
+    detected:
+      provider.detected === "installed" ? null : (provider.detected ?? null),
   };
 }
 

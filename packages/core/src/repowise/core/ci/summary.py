@@ -236,7 +236,7 @@ def _finding_lines(g: GateSummary) -> list[str]:
         for f in ordered[:ROW_LIMIT]
     ]
     if rest := more_line(len(ordered) - ROW_LIMIT, "findings"):
-        out.append(f"- {rest[0].upper()}{rest[1:]} See the job summary.")
+        out.append(f"- {rest[0].upper()}{rest[1:]} The gate's own report lists them all.")
     return out
 
 

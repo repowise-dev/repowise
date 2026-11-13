@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +10,23 @@ from pydantic import BaseModel, ConfigDict, Field
 from repowise.core.analysis.decisions.lifecycle import DECISION_KINDS
 from repowise.core.analysis.decisions.policy import DISCOVERY_BOUNDS
 from repowise.core.analysis.decisions.scope import derive_decision_scope
+from repowise.server.schemas._datetime import UTCDateTime
+
+
+class DecisionRecentInfo(BaseModel):
+    """How a decision came into force, for the ``recent`` lane's rows."""
+
+    #: When it came into force.
+    at: str
+    #: Who: an agent slug, a person's name, or ``web``.
+    signer: str
+    #: ``agent`` or ``person``.
+    signer_kind: str
+    signer_session: str = ""
+    #: The commit it landed in, or the first commit it cites; ``""`` when none.
+    commit: str = ""
+    #: The branch it landed on, when its merge put it in force.
+    landed_on: str = ""
 
 
 class EvidencePreview(BaseModel):
@@ -51,15 +67,18 @@ class DecisionRecordResponse(BaseModel):
     # the linkage fields, so old records get it too.
     scope: str | None = None
     superseded_by: str | None
-    last_code_change: datetime | None
-    created_at: datetime
-    updated_at: datetime
+    last_code_change: UTCDateTime | None
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
     # List-row evidence preview: the top-ranked evidence row's verbatim quote
     # plus how many evidence rows back the record. Populated by the list
     # endpoint only (None on detail/graph responses, which have the full
     # /evidence endpoint instead).
     evidence_count: int | None = None
     evidence_preview: EvidencePreview | None = None
+    # The named files that are churn hotspots. List endpoint only, like the
+    # evidence fields above; it is one of the signals the review order reads.
+    hotspot_files: list[str] | None = None
     # Effective currency from the acceptance, or None for a candidate. This is
     # the authority answer; ``status`` is the projection kept in step for
     # readers that predate the split. A record can be stored ``active`` and
@@ -74,10 +93,20 @@ class DecisionRecordResponse(BaseModel):
     # Why a record just created stayed a candidate, in the acceptance
     # contract's words. Set by the create route only.
     blockers: list[str] | None = None
+    # In force and held by a person as law: agents must ask before replacing
+    # it. ``None`` where the route did not read pins.
+    pinned: bool | None = None
+    # How it came into force. Set on the ``recent`` lane's rows only.
+    recent: DecisionRecentInfo | None = None
     # True when the stored ``decision`` is blank and ``decision`` carries the
     # title fallback. Acceptance reads the stored text, so a review surface
     # needs this to predict the "no decision text" refusal.
     decision_text_missing: bool = False
+    # How many times agents were shown this record (session start, edit
+    # notice, get_why, commit line) and when last, from the local hook ledger.
+    # Null when no ledger could be read, never 0. List and detail only.
+    delivered_count: int | None = None
+    last_delivered_at: UTCDateTime | None = None
 
     @classmethod
     def from_orm(cls, obj: object) -> DecisionRecordResponse:
@@ -139,6 +168,21 @@ class DecisionCountsResponse(BaseModel):
     deprecated: int
 
 
+class DecisionAgentPromptResponse(BaseModel):
+    """A decision prompt for the reader's agent, as ``repowise decision discover`` prints it.
+
+    ``kind`` is the prompt served: ``discover`` asked with no background
+    records to check comes back as ``add``. ``text`` is empty only for
+    ``agreements`` with none stored, and then a surface offers nothing.
+    """
+
+    kind: Literal["discover", "add", "agreements", "review", "pin", "unpin", "veto", "edit"]
+    text: str
+    #: The records the prompt names, in its order.
+    ids: list[str]
+    count: int
+
+
 class DecisionLaneCountsResponse(BaseModel):
     """Records per review lane, from a scan of the acceptance join.
 
@@ -154,6 +198,12 @@ class DecisionLaneCountsResponse(BaseModel):
     history: int
     governing: int
     total: int
+    #: Accepted and not retired: ``active`` + ``needs_review`` + ``uncheckable``.
+    in_force: int | None = None
+    #: In force and pinned.
+    pinned: int | None = None
+    #: Put in force in the last week; overlaps ``in_force``.
+    recent: int | None = None
 
 
 class DecisionCreate(BaseModel):
@@ -172,6 +222,13 @@ class DecisionCreate(BaseModel):
     tags: list[str] = []
 
 
+class DecisionPinUpdate(BaseModel):
+    """POST body for /decisions/{id}/pin and /unpin. Both fields optional."""
+
+    #: Why it is law, or why it no longer is.
+    reason: str | None = None
+
+
 class DecisionStatusUpdate(BaseModel):
     """PATCH body for /decisions/{id}.
 
@@ -181,6 +238,9 @@ class DecisionStatusUpdate(BaseModel):
     """
 
     status: str | None = None
+    # Why the decision holds, for a confirm of a record that says none. Stored
+    # as the rationale, as `repowise decision confirm --reason` does.
+    reason: str | None = None
     superseded_by: str | None = None
     affected_modules: list[str] | None = None
     affected_files: list[str] | None = None
@@ -277,7 +337,7 @@ class DecisionGraphResponse(BaseModel):
 
 
 class DecisionHealthResponse(BaseModel):
-    """Governance rollup: what is stale, awaiting review, and ungoverned."""
+    """Governance rollup: what is stale, what is background, and what is ungoverned."""
 
     #: Record counts by status, plus ``stale``, ``unscoped`` and ``conflicts``.
     summary: dict[str, int] = {}

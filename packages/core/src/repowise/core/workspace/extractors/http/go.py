@@ -113,6 +113,8 @@ class GoDialect:
         routes = chain(go_routes(content), title_case_routes(content), gorilla_routes(content))
         out: list[Contract] = []
         for route in outside_comments(ctx, routes):
+            if ctx.in_string(route.offset):
+                continue  # another program's source, e.g. a test's raw-string fixture
             method = _method(route.verb)
             if method is None or route.receiver in refused:
                 continue  # an unrecorded verb, or a prefix this cannot read

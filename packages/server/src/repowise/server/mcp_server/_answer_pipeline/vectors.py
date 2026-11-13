@@ -40,7 +40,9 @@ async def question_vector(ctx: Any, question: str) -> list[float] | None:
 
     timeout_s = embed_timeout_s()
     try:
-        vectors = await asyncio.wait_for(store.embed_texts([question]), timeout=timeout_s)
+        vectors = await asyncio.wait_for(
+            store.embed_texts([question], kind="query"), timeout=timeout_s
+        )
     except TimeoutError:
         # Recorded so a lexical-only answer is visible as one.
         _record_leg("embed", "timeout")

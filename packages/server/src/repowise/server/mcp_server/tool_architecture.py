@@ -16,6 +16,7 @@ from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
+from repowise.server.mcp_server._savings.interaction import error_reply
 
 #: Cap the per-role member lists in the agent payload; full roles are on REST.
 _MCP_CORE_MEMBER_LIMIT = 25
@@ -40,21 +41,27 @@ async def get_architecture() -> dict[str, Any]:
     snapshot. Structural edges only; co-change is excluded.
     """
     if not _is_workspace_mode():
-        return {
-            "error": "get_architecture is only available in workspace mode.",
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "error": "get_architecture is only available in workspace mode.",
+                "_meta": _build_meta(),
+            },
+        )
 
     enricher = _state._cross_repo_enricher
     metrics = enricher.get_architecture_metrics() if enricher is not None else None
     if not metrics:
-        return {
-            "error": (
-                "No system graph is available yet. Run `repowise update --workspace` "
-                "to build cross-repo relationships first."
-            ),
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "no_index",
+            {
+                "error": (
+                    "No system graph is available yet. Run `repowise update --workspace` "
+                    "to build cross-repo relationships first."
+                ),
+                "_meta": _build_meta(),
+            },
+        )
 
     payload = architecture_payload(metrics)
     payload["_meta"] = _build_meta(

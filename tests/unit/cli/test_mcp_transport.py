@@ -483,6 +483,7 @@ def test_an_interrupt_is_not_reported_as_a_crash(monkeypatch, tmp_path: Path) ->
     CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
     assert "error_leaves" not in recorded
+    assert recorded["transport_outcome"] == "server_stopped"
 
 
 def test_the_way_a_session_ended_reaches_the_invocation_outcome(
@@ -523,7 +524,8 @@ def test_a_store_failure_reports_its_reason_code(monkeypatch, tmp_path: Path) ->
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
     assert result.exit_code == 1
-    assert recorded["transport_outcome"] == "server_fault"
+    # A deliberate exit with a reason, not a crash.
+    assert recorded["transport_outcome"] == "server_refused"
     assert recorded["failure_reason"] == "db_url_unreachable"
 
 
@@ -545,3 +547,62 @@ def test_a_client_hanging_up_is_not_an_error_exit(monkeypatch, tmp_path: Path) -
 
     assert result.exit_code == 0
     assert "Traceback" not in result.output
+
+
+def test_mcp_cli_sse_transport_prints_deprecation_notice(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """SSE still starts, and says what replaces it before it does."""
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kwargs: None)
+
+    result = CliRunner().invoke(cli, ["mcp", str(tmp_path), "--transport", "sse"])
+
+    assert result.exit_code == 0
+    # Normalised because rich wraps the notice to the console width.
+    flat = " ".join(result.output.split())
+    assert "sse is deprecated" in flat
+    assert "use --transport streamable-http" in flat
+
+
+def test_mcp_cli_streamable_http_prints_no_deprecation_notice(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".repowise").mkdir()
+    monkeypatch.setattr("repowise.server.mcp_server.run_mcp", lambda **kwargs: None)
+
+    result = CliRunner().invoke(
+        cli, ["mcp", str(tmp_path), "--transport", "streamable-http"]
+    )
+
+    assert result.exit_code == 0
+    assert "deprecated" not in result.output
+
+
+def test_workspace_summary_matches_server_detection_for_sibling_and_member(
+    tmp_path: Path,
+) -> None:
+    from repowise.cli.commands.mcp_cmd import _workspace_summary
+
+    member = tmp_path / "apps" / "b"
+    sibling = tmp_path / "tools" / "c"
+    (tmp_path / "apps" / "a").mkdir(parents=True)
+    member.mkdir()
+    (sibling / ".repowise").mkdir(parents=True)
+    (sibling / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    WorkspaceConfig(
+        repos=[
+            RepoEntry(path="apps/a", alias="a", is_primary=True),
+            RepoEntry(path="apps/b", alias="b"),
+        ],
+        default_repo="a",
+    ).save(tmp_path)
+
+    # The server serves an indexed non-member single-repo; the banner must not
+    # name the primary as its default repo.
+    assert _workspace_summary(sibling) is None
+    summary = _workspace_summary(member)
+    assert summary is not None
+    assert summary["default_repo"] == "b"

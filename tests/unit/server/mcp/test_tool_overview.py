@@ -321,12 +321,12 @@ async def test_key_decisions_survive_corrupt_affected_files(session, populated_d
     assert block["recent_reversals"] == []
 
 
-def test_production_average_needs_tests_in_the_reading():
+def test_production_average_needs_non_production_files_in_the_reading():
     from repowise.server.mcp_server.tool_overview.health import _production_average
 
     prod = SimpleNamespace(file_path="a.py", score=6.0, nloc=10, is_test=False)
     test = SimpleNamespace(file_path="t.py", score=10.0, nloc=10, is_test=True)
 
-    assert _production_average([prod, test]) == 6.0
-    # With no tests it would only repeat the headline.
-    assert _production_average([prod]) is None
+    assert _production_average([prod, test], 2) == 6.0
+    # With only production files it would repeat the headline.
+    assert _production_average([prod], 1) is None

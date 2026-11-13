@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from repowise.cli._helpers.paths import STATE_FILENAME, ensure_repowise_dir, get_repowise_dir
 
@@ -13,18 +14,48 @@ from repowise.cli._helpers.paths import STATE_FILENAME, ensure_repowise_dir, get
 # ---------------------------------------------------------------------------
 
 
-def load_state(repo_path: Path) -> dict[str, Any]:
-    """Load ``.repowise/state.json`` or return an empty dict if absent."""
+@dataclass(frozen=True)
+class StateReadResult:
+    """Parsed state plus enough context for diagnostics such as ``doctor``."""
+
+    state: dict[str, Any]
+    status: Literal["ok", "missing", "empty", "unreadable"]
+    error: str | None = None
+
+
+def read_state(repo_path: Path) -> StateReadResult:
+    """Read state while preserving whether it was missing, empty, or corrupt."""
     state_path = get_repowise_dir(repo_path) / STATE_FILENAME
-    if state_path.exists():
-        return json.loads(state_path.read_text(encoding="utf-8"))
-    return {}
+    try:
+        content = state_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return StateReadResult({}, "missing")
+    except UnicodeDecodeError as err:
+        return StateReadResult({}, "unreadable", str(err))
+
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, UnicodeDecodeError) as err:
+        return StateReadResult({}, "unreadable", str(err))
+
+    if not isinstance(data, dict):
+        return StateReadResult(
+            {}, "unreadable", f"expected a JSON object, got {type(data).__name__}"
+        )
+    if not data:
+        return StateReadResult({}, "empty")
+    return StateReadResult(data, "ok")
+
+
+def load_state(repo_path: Path) -> dict[str, Any]:
+    """Load state or return an empty dict if absent, empty, or corrupt."""
+    return read_state(repo_path).state
 
 
 #: Slots the last whole-repo generation put in front of this repository's
 #: signals, which is not the same as the slots that produced a page. The two
-#: differ, and only the first answers "has this index ever been offered a
-#: Glossary?".
+#: differ, and only the first answers "has this index ever been offered an
+#: Active Landscape?".
 ONBOARDING_SLOTS_OFFERED_KEY = "onboarding_slots_offered"
 
 
@@ -40,11 +71,10 @@ def stamp_offered_slots(state: dict[str, Any], *, enabled: bool = True) -> None:
     was built has never been evaluated here, and ``update --full`` would build
     it; a slot that *was* evaluated and whose gate refused the repository will
     be refused again by the same signals, and telling the user to spend a model
-    run on it is a lie. Measured on ``test-repos/microdot``: of the five
-    registered slots, two produce pages and three (``getting_started``,
-    ``active_landscape``, ``glossary``) are gate-skipped on every run, full or
-    fresh. A notice driven by the rows alone would name all three, forever, and
-    none of them would ever arrive.
+    run on it is a lie. Measured on ``test-repos/microdot``: some registered
+    slots (``getting_started``, ``active_landscape``) are gate-skipped on every
+    run, full or fresh. A notice driven by the rows alone would name them
+    forever, and none of them would ever arrive.
 
     ``enabled`` is the run's ``enable_onboarding``. A run with onboarding off
     offered nothing, and recording otherwise would silence the notice for a

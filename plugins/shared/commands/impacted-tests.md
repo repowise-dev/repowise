@@ -2,6 +2,7 @@
 frontmatter: |
     description: Print the tests whose coverage intersects a change's changed lines — for a commit, base..head range, or staged diff.
     allowed-tools: Bash(repowise impacted-tests:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Impacted Tests
@@ -53,4 +54,4 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
   (lockfiles, build or CI config, a changed file no test reaches, an index built
   at neither end of the change). Run everything when you see it.
 - For a whole-change repo-relative review priority, use `{{cmd:risk}}`. For per-file
-  blast radius / `tests_to_run`, use the `get_risk` MCP tool.
+  blast radius / `tests_to_run`, use `repowise risk --target <path> --changed-file <path>`.

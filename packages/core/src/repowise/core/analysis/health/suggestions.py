@@ -46,9 +46,9 @@ _TEMPLATES: dict[str, str] = {
         "dispatch dict."
     ),
     "complex_method": (
-        "Reduce cyclomatic complexity. Decompose the function along its "
-        "conditional axes; if it dispatches on a type tag, replace the "
-        "if/elif ladder with polymorphism or a lookup table."
+        "Split the function where its paths serve separate jobs. Each "
+        "independent path is a case to test; if it dispatches on a type tag, "
+        "a lookup table or polymorphism can replace the if/elif ladder."
     ),
     "repeated_nesting": (
         "Split the function into stages. Several nested blocks side by side "
@@ -186,10 +186,10 @@ _TEMPLATES: dict[str, str] = {
         "to check against."
     ),
     "stale_governance": (
-        "The architectural decision governing this file has gone stale: "
-        "the code has changed but the decision hasn't been reviewed. "
-        "Update or supersede the decision via `repowise decision edit` "
-        "so the rationale reflects the current implementation."
+        "Files governed by this file's architectural decision have changed "
+        "since the decision was recorded. Review it, and if it no longer "
+        "holds, update or supersede it via `repowise decision edit` so the "
+        "rationale reflects the current implementation."
     ),
     "contradictory_decision": (
         "Two active decisions make contradictory claims that affect this "
