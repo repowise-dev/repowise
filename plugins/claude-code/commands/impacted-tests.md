@@ -52,4 +52,4 @@ repowise impacted-tests main..HEAD --format list | xargs pytest
   (lockfiles, build or CI config, a changed file no test reaches, an index built
   at neither end of the change). Run everything when you see it.
 - For a whole-change repo-relative review priority, use `/repowise:risk`. For per-file
-  blast radius / `tests_to_run`, use `repowise risk --target <path>`.
+  blast radius / `tests_to_run`, use `repowise risk --target <path> --changed-file <path>`.
