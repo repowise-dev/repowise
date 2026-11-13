@@ -442,8 +442,8 @@ def selection_block(
         "always_run_total": always,
         "summary": (
             f"the index predates files changed outside this change, so {held} of "
-            f"{len(known)} test files were selected; run the whole suite, or "
-            "`repowise update` to narrow it."
+            f"{len(known)} test files were selected{ORDER if shown else ''}; "
+            "run the whole suite, or `repowise update` to narrow it."
             if degraded
             else _summary(
                 selection, len(run_list), always, len(shown), len(broadcast), len(closure)
@@ -508,6 +508,7 @@ def agent_head(
 
 
 NO_TESTS = "No test needs to run for this change."
+ORDER = ", listed likeliest to fail first"
 
 
 def _summary(
@@ -533,6 +534,8 @@ def _summary(
     rule = (
         f", {always} of them because they run with every subset (not listed)" if always else ""
     )
+    # ``tests_to_run`` is in run order; said here, or an agent reads it as alphabetical.
+    shown += ORDER if listed else ""
     if known and held == len(known):
         return f"{total} test(s) to run for this change, every test file there is{rule}{shown}."
     if spread:
