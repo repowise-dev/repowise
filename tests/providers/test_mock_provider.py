@@ -7,6 +7,11 @@ access are required to run these tests.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
+from repowise.core.generation.cost_tracker import CostTracker
 from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
 from repowise.core.providers.llm.mock import MockProvider
 
@@ -219,6 +224,38 @@ class TestPresetResponses:
         provider = MockProvider(fixture_name="default", responses=responses)
         result = await provider.generate("sys", "user")
         assert result.content == "preset wins"
+
+
+async def test_generate_records_tokens_at_zero_cost_for_all_response_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.mock._FIXTURE_DIR",
+        Path(__file__).parent / "fixtures",
+    )
+    cases = [
+        (
+            MockProvider(
+                responses=[
+                    GeneratedResponse("first", 100, 50),
+                    GeneratedResponse("second", 200, 100),
+                ]
+            ),
+            450,
+        ),
+        (MockProvider(fixture_name="default"), 1300),
+        (MockProvider(fixture_name="missing-fixture"), 450),
+    ]
+
+    for provider, expected_tokens in cases:
+        tracker = CostTracker()
+        provider._cost_tracker = tracker
+
+        await provider.generate("sys", "user")
+        await provider.generate("sys", "user")
+
+        assert tracker.session_tokens == expected_tokens
+        assert tracker.session_cost == 0
 
 
 # ---------------------------------------------------------------------------

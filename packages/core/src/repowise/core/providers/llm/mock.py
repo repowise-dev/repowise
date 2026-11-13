@@ -31,7 +31,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from repowise.core.providers.llm.base import BaseProvider, GeneratedResponse
+from repowise.core.providers.llm.base import (
+    BaseProvider,
+    GeneratedResponse,
+    record_generation_cost,
+)
 from repowise.core.reasoning import ReasoningMode
 
 # Resolve fixture directory relative to this file so tests work regardless
@@ -129,22 +133,31 @@ class MockProvider(BaseProvider):
         # Preset responses take priority
         if self._preset_responses:
             idx = min(call_idx, len(self._preset_responses) - 1)
-            return self._preset_responses[idx]
+            result = self._preset_responses[idx]
+        else:
+            # Try loading from fixture file
+            fixture_path = _FIXTURE_DIR / f"{self._fixture_name}.json"
+            if fixture_path.exists():
+                data = json.loads(fixture_path.read_text(encoding="utf-8"))
+                result = GeneratedResponse(**data)
+            else:
+                # Default inline response
+                result = GeneratedResponse(
+                    content=f"{_DEFAULT_CONTENT}\n\n---\n*Mock call #{call_idx + 1}*",
+                    input_tokens=150,
+                    output_tokens=75,
+                    cached_tokens=0,
+                    usage={
+                        "mock": True,
+                        "fixture": self._fixture_name,
+                        "call": call_idx,
+                    },
+                )
 
-        # Try loading from fixture file
-        fixture_path = _FIXTURE_DIR / f"{self._fixture_name}.json"
-        if fixture_path.exists():
-            data = json.loads(fixture_path.read_text(encoding="utf-8"))
-            return GeneratedResponse(**data)
-
-        # Default inline response
-        return GeneratedResponse(
-            content=f"{_DEFAULT_CONTENT}\n\n---\n*Mock call #{call_idx + 1}*",
-            input_tokens=150,
-            output_tokens=75,
-            cached_tokens=0,
-            usage={"mock": True, "fixture": self._fixture_name, "call": call_idx},
+        await record_generation_cost(
+            getattr(self, "_cost_tracker", None), model="mock", result=result
         )
+        return result
 
     @property
     def call_count(self) -> int:
