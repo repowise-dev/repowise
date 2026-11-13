@@ -20,12 +20,10 @@ _TOKEN_HEURISTICS: dict[str, tuple[int, int]] = {
     "symbol_spotlight": (8_000, 2_500),
     "file_page": (25_000, 5_000),
     "scc_page": (12_000, 4_000),
-    # The model-written pages, from stored runs: 79 subsystem pages averaged
-    # 20k in / 3.4k out, overviews 3-10k / 2.4-4k, onboarding pages 3-7k / 1-3.6k.
-    "module_page": (20_000, 3_500),
-    "repo_overview": (8_000, 3_500),
+    "module_page": (45_000, 6_000),
+    "repo_overview": (30_000, 5_000),
     "infra_page": (4_000, 2_000),
-    "onboarding": (6_000, 3_000),
+    "onboarding": (15_000, 3_500),
     # Fourteen steps, five of them with source excerpts, and a 700-word page.
     "flow_page": (9_000, 2_500),
     # One decision-extraction call: a batch of commits, PR bodies or comments.
