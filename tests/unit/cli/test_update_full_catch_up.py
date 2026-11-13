@@ -182,3 +182,18 @@ def test_unproduced_stale_pages_are_retired(tmp_path) -> None:
     catch_up_mod._retire_unproduced(repo_path, written)
 
     assert asyncio.run(statuses()) == {"module_page:gone": "tombstone", "module_page:kept": "fresh"}
+
+
+def test_yes_reaches_the_update_too(monkeypatch, tmp_path) -> None:
+    rec = _Recorder(monkeypatch, {True: [0], False: [0]})
+    catch_up_mod.catch_up(_opts(yes=True), tmp_path)
+    assert rec.events[0][1]["yes"] is True
+
+
+def test_json_progress_is_refused_before_any_run(monkeypatch, tmp_path) -> None:
+    import click
+
+    rec = _Recorder(monkeypatch, {True: [1], False: [1]})
+    with pytest.raises(click.ClickException, match="--progress json"):
+        catch_up_mod.catch_up(_opts(progress="json"), tmp_path)
+    assert rec.events == []

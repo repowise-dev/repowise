@@ -56,8 +56,18 @@ def catch_up_command(repo_path: Path) -> str:
 
 def catch_up(opts: UpdateOptions, repo_path: Path) -> Any:
     """Bring the commits in uncapped, refresh structural pages, rewrite stale model pages."""
+    from repowise.cli.errors import reasoned_error
+
     from .command import UpdateOutcome, run_update
 
+    if opts.progress == "json":
+        # Ceiling: the catch-up chains whole update runs, each with its own
+        # event stream; one stream for the chain needs the emitter shared.
+        raise reasoned_error(
+            "--progress json is not supported by --full on a full index; "
+            "run it with the default progress.",
+            reason="full_catch_up_json_progress",
+        )
     console.print(f"[bold]repowise update --full[/bold]: bringing {repo_path} fully up to date")
 
     def update() -> Any:
@@ -69,6 +79,7 @@ def catch_up(opts: UpdateOptions, repo_path: Path) -> Any:
             reasoning=opts.reasoning,
             cascade_budget=UNCAPPED_CASCADE,
             dry_run=opts.dry_run,
+            yes=opts.yes,
             workspace=False,
             no_workspace=True,
             repo_alias=None,
