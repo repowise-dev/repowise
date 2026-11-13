@@ -375,7 +375,7 @@ function modelRow(s: SetupResponse, o: DeriveOptions): SetupRow {
       title: "A model for docs, chat and answers",
       state: llm
         ? `The docs are written by a model${s.model.active_provider ? ` (${s.model.active_provider})` : ""}.`
-        : `The docs are built from the index, without a model.${s.model.active_provider ? "" : " Until a model is set up, get_answer returns ranked evidence instead of a written answer."} Pick a model source available on this machine (a signed-in agent CLI, an API key or a local model) and write the docs with it.`,
+        : `The docs are built from the index, without a model.${s.model_available && !s.model.active_provider ? " Until a model is set up, get_answer returns ranked evidence instead of a written answer." : ""} Pick a model source available on this machine (a signed-in agent CLI, an API key or a local model) and write the docs with it.`,
       command: "repowise generate",
       verify: "status",
     },

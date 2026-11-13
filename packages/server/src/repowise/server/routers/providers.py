@@ -96,8 +96,9 @@ async def _plan_route(
 
     try:
         route = await asyncio.to_thread(detect_free_route, repo_path)
-    except (OSError, ValueError):
-        # ValueError covers an unparsable config.yaml or .env; the list says why.
+    except Exception:
+        # The line is extra: a failed probe must not fail the provider list.
+        logger.debug("providers: plan route probe failed for %s", repo_id, exc_info=True)
         return None
     if route is None:
         return None
