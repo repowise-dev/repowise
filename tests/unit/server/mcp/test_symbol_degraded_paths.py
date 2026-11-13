@@ -89,8 +89,62 @@ async def test_omission_query_that_matches_nothing_says_how_to_get_everything(
     assert result["kind"] == "omission"
     assert result["query"] == "zeta"
     assert not result["content"]
-    assert result["note"].startswith("No lines matched the query")
+    assert result["lines_total"] == 2
+    assert result["note"] == "No lines matched the query; omit query for the full content (2 lines)."
     assert "created_at" in result
+
+
+@pytest.mark.asyncio
+async def test_omission_query_no_match_reports_unfiltered_lines_total(
+    setup_mcp, omission_stores
+):
+    """Querying a non-matching pattern against a stored ref reports lines_total."""
+    from repowise.server.mcp_server import get_symbol
+
+    content_40 = "\n".join(f"item {i}" for i in range(40)) + "\n"
+    ref = _put(omission_stores["repo"], content_40)
+    result = await get_symbol(f"repowise#{ref}", query="nonexistent_match_pattern")
+    assert result["content"] == ""
+    assert result["lines_total"] == 40
+    assert result["note"] == "No lines matched the query; omit query for the full content (40 lines)."
+
+
+@pytest.mark.asyncio
+async def test_omission_query_no_match_omits_lines_total_when_raw_content_missing(
+    setup_mcp, omission_stores, monkeypatch
+):
+    """If the raw content cannot be retrieved, lines_total is omitted and note gives no false size."""
+    from repowise.core.distill.store import OmissionStore
+    from repowise.server.mcp_server import get_symbol
+
+    ref = _put(omission_stores["repo"], "alpha\nbeta\n")
+    monkeypatch.setattr(OmissionStore, "get", lambda self, r: None)
+    result = await get_symbol(f"repowise#{ref}", query="zeta")
+    assert not result["content"]
+    assert "lines_total" not in result
+    assert result["note"] == "No lines matched the query; omit query for the full content."
+
+
+@pytest.mark.asyncio
+async def test_omission_query_no_match_survives_raw_read_error(
+    setup_mcp, omission_stores, monkeypatch
+):
+    """If store.get raises an SQLite error, get_symbol survives and omits lines_total."""
+    import sqlite3
+
+    from repowise.core.distill.store import OmissionStore
+    from repowise.server.mcp_server import get_symbol
+
+    ref = _put(omission_stores["repo"], "alpha\nbeta\n")
+
+    def _broken_get(self, r):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(OmissionStore, "get", _broken_get)
+    result = await get_symbol(f"repowise#{ref}", query="zeta")
+    assert not result["content"]
+    assert "lines_total" not in result
+    assert result["note"] == "No lines matched the query; omit query for the full content."
 
 
 @pytest.mark.asyncio
@@ -134,6 +188,27 @@ async def test_range_read_refuses_an_excluded_path(setup_mcp, tmp_path, monkeypa
     result = await get_symbol("vendor/lib.py:1-1")
     assert result["error"] == "'vendor/lib.py' is excluded from indexing."
     assert "source" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_bare_file_path_names_the_whole_file_and_range_calls(setup_mcp, tmp_path):
+    from repowise.server.mcp_server import get_symbol
+
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "plain.py").write_text("x = 1\n", encoding="utf-8")
+    result = await get_symbol("pkg/plain.py")
+    assert result["error"] == (
+        "'pkg/plain.py' is a file, not a symbol. Whole file: "
+        'get_context(targets=["pkg/plain.py"], include=["skeleton"]). '
+        'Lines: get_symbol("pkg/plain.py:1-120").'
+    )
+    missing = await get_symbol("pkg/ghost.py")
+    assert missing["error"].startswith("Symbol not found: 'pkg/ghost.py'.")
+    (tmp_path.parent / "outside.txt").write_text("x\n", encoding="utf-8")
+    outside = await get_symbol("../outside.txt")
+    assert outside["error"].startswith("Symbol not found:")
+    folder = await get_symbol("pkg")
+    assert folder["error"].startswith("Symbol not found:")
 
 
 # ---------------------------------------------------------------------------

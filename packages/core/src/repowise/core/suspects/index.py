@@ -47,18 +47,11 @@ def _tracked_files(repo_path: Path) -> frozenset[str]:
 
 
 async def _imports(session: Any, repo_id: str) -> dict[str, set[str]]:
-    from sqlalchemy import select
+    from repowise.core.persistence.crud.graph import get_file_import_edges
 
-    from repowise.core.persistence.models import GraphEdge
-
-    rows = await session.execute(
-        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
-            GraphEdge.repository_id == repo_id, GraphEdge.edge_type == "imports"
-        )
-    )
     adj: dict[str, set[str]] = {}
-    for u, v in rows.all():
-        if "::" in u or "::" in v or u == v:
+    for u, v in await get_file_import_edges(session, repo_id):
+        if u == v:
             continue
         adj.setdefault(u, set()).add(v)
         adj.setdefault(v, set()).add(u)

@@ -326,6 +326,14 @@ the two dumps (do not commit them). Always report coverage
 with precision beside it: serving more files raises coverage for free, so a
 coverage gain that costs precision is a trade-off to justify, not a win.
 
+### MCP response gate
+
+`tests/integration/mcp/test_response_gate.py` runs on pull requests that touch the
+MCP tools or retrieval. It checks each default tool's response size against
+`tests/fixtures/mcp/response_budgets.json`. If a size change is intended, re-bless
+with `REPOWISE_REWRITE_GOLDEN=1 uv run pytest tests/integration/mcp/test_response_gate.py`
+and commit the budget diff.
+
 ## Pull Request Guidelines
 
 - Keep PRs focused on a single change

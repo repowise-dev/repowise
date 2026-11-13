@@ -15,13 +15,14 @@ snapshot. The structural graph stays available for traversal.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 import networkx as nx
 import structlog
 
 from ..cohesion import cannot_close_cycle
-from ..models import SYMBOL_USE_EDGE_TYPES, TEMPORAL_EDGE_TYPES
+from ..models import NON_CODE_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from ..symbol_use import SymbolUse, symbol_use_counts
 
 log = structlog.get_logger(__name__)
 
@@ -38,10 +39,24 @@ _LARGE_REPO_THRESHOLD = 30_000  # nodes — above this, algorithms are expensive
 # they were scored at.
 _CHURN_BUDGET_FRACTION = 0.002
 
+# Brandes cost (~nodes x edges) below which a graph keeps exact-signature-only
+# reuse. Sequential NetworkX on a fully reachable graph took 0.7 s at 1.2e6,
+# 2 s at 4e6 and 45 s at 3.2e7, so mid graphs under the parallel threshold
+# were paying tens of seconds for every added call edge.
+_CHURN_BUDGET_MIN_COST = 1e6
+
 
 def is_test_to_test_edge(g: nx.DiGraph, u: str, v: str) -> bool:
     """Whether both ends are test material; such edges carry no centrality."""
     return bool(g.nodes[u].get("is_test") and g.nodes[v].get("is_test"))
+
+
+def without_non_code_edges(g: nx.DiGraph) -> nx.DiGraph:
+    """Read-only view of *g* minus doc links and ``co_changes``: the edges no code dependency runs on."""
+    return nx.subgraph_view(
+        g,
+        filter_edge=lambda u, v: g.edges[u, v].get("edge_type") not in NON_CODE_EDGE_TYPES,
+    )
 
 
 def _exact_symbol_betweenness(g: nx.DiGraph) -> dict[str, float]:
@@ -63,6 +78,25 @@ def _exact_symbol_betweenness(g: nx.DiGraph) -> dict[str, float]:
     for node, score in raw.items():
         values[node] = score * scale
     return values
+
+
+class _CommunityKey(NamedTuple):
+    """A partition input's signature, plus node and edge fingerprints to count drift."""
+
+    signature: str
+    nodes: frozenset[int]
+    edges: frozenset[int]
+
+
+def _symbol_community_input(builder: Any, undirected: nx.Graph) -> _CommunityKey:
+    """The symbol partition input's :class:`_CommunityKey`."""
+    from ._centrality_cache import fingerprints
+
+    return _CommunityKey(
+        signature=builder._centrality_cache.signature("symbol_communities", undirected),
+        nodes=fingerprints(undirected.nodes()),
+        edges=fingerprints(f"{u}\0{v}" for u, v in undirected.edges()),
+    )
 
 
 class MetricsMixin:
@@ -147,7 +181,7 @@ class MetricsMixin:
             edges_to_remove = [
                 (u, v)
                 for u, v, d in sub.edges(data=True)
-                if u == v or d.get("edge_type") in TEMPORAL_EDGE_TYPES
+                if u == v or d.get("edge_type") in NON_CODE_EDGE_TYPES
             ]
             sub.remove_edges_from(edges_to_remove)
             self._file_subgraph_cache = sub
@@ -281,17 +315,14 @@ class MetricsMixin:
         """Return PageRank scores for file nodes only (cached)."""
         if self._pagerank_cache is not None:
             return self._pagerank_cache
-        filtered = self.centrality_subgraph()
-        if filtered.number_of_nodes() == 0:
-            self._pagerank_cache = {}
-            return self._pagerank_cache
+        from ._pagerank import cached_pagerank
 
-        try:
-            self._pagerank_cache = nx.pagerank(filtered, alpha=alpha)
-        except nx.PowerIterationFailedConvergence:
-            log.warning("PageRank did not converge, using uniform scores")
-            n = filtered.number_of_nodes()
-            self._pagerank_cache = {node: 1.0 / n for node in filtered.nodes()}
+        self._pagerank_cache = cached_pagerank(
+            self.centrality_subgraph(),
+            kind="file",
+            alpha=alpha,
+            cache=getattr(self, "_centrality_cache", None),
+        )
         return self._pagerank_cache
 
     def betweenness_centrality(self) -> dict[str, float]:
@@ -326,20 +357,73 @@ class MetricsMixin:
     # ------------------------------------------------------------------
 
     def community_detection(self) -> dict[str, int]:
-        """Assign a community ID to each file node."""
+        """Assign a community ID to each file node.
+
+        With the disk cache attached, the last full detection is reused while
+        the file set (with each file's test flag and language) is unchanged and
+        its links have drifted no further than the churn budget betweenness
+        uses: an unchanged input gives the same result, a drifted one keeps the
+        earlier partition and its community info. The reference stays pinned to
+        that detection, so drift accumulates and the first update past the
+        budget, or one that adds, removes or reclassifies a file, detects afresh.
+        So does any build with ``fresh_communities`` set (an update's full
+        health re-score), which an unchanged input still answers from the cache.
+
+        Test and example files never shape the production partition, so when
+        the file set changed by them alone the last production partition is
+        held to the same rule against the production files and their links,
+        and only the placing of test and example files and the community info
+        is redone. On an unchanged production input that equals a fresh
+        detection, and becomes the new reference.
+        """
         if self._community_cache is not None:
             return self._community_cache
 
-        from repowise.core.analysis.communities import detect_file_communities
+        from repowise.core.analysis.communities import (
+            file_community_input,
+            place_file_communities,
+            production_community_input,
+            split_file_nodes,
+        )
 
         try:
             repo_path = getattr(self, "_repo_path", None)
-            assignment, info, algo = detect_file_communities(
-                self._graph, repo_name=repo_path.name if repo_path else None
+            repo_name = repo_path.name if repo_path else None
+            files = split_file_nodes(self._graph)
+            key = self._community_key(
+                "file", lambda: file_community_input(self._graph, repo_name, files)
+            )
+            reuse = key and self._reusable_communities(
+                "file", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
+            )
+            extra = reuse[0].extra if reuse else None
+            if isinstance(extra, tuple) and len(extra) == 2:
+                self._community_cache = dict(reuse[0].assignment)
+                self._community_info_cache, self._community_algo = extra
+                return self._community_cache
+            prod_key = key and self._community_key(
+                "file_production", lambda: production_community_input(self._graph, files)
+            )
+            held = self._held_production_partition(prod_key)
+            assignment, info, algo, production = place_file_communities(
+                self._graph, repo_name=repo_name, production=held, files=files
             )
             self._community_cache = assignment
             self._community_info_cache = info
             self._community_algo = algo
+            # A result on a held partition is not written: the references stay
+            # pinned to the last full detection, and writing the cache costs
+            # more than placing the test files again.
+            if production is not held and key:
+                if prod_key:
+                    self._store_communities(
+                        "file_production",
+                        prod_key,
+                        production.assignment,
+                        extra=production,
+                        persist=False,
+                    )
+                self._store_communities("file", key, assignment, extra=(info, algo))
         except Exception as exc:
             log.warning("community_detection_failed", error=str(exc))
             file_nodes = [
@@ -350,19 +434,135 @@ class MetricsMixin:
             self._community_algo = "failed"
         return self._community_cache
 
+    def _held_production_partition(self, key: Any | None) -> Any | None:
+        """The stored production partition a file detection may stand on, else ``None``."""
+        from repowise.core.analysis.communities import ProductionPartition
+
+        if not key:
+            return None
+        reuse = self._reusable_communities(
+            "file_production", key, self._churn_budget_for(len(key.nodes), len(key.edges)), False
+        )
+        if reuse and isinstance(reuse[0].extra, ProductionPartition):
+            return reuse[0].extra
+        return None
+
     def symbol_communities(self) -> dict[str, int]:
-        """Assign a community ID to each symbol node using call/heritage edges."""
+        """Assign a community ID to each symbol node using call/heritage edges.
+
+        With the disk cache attached, the last full detection is reused while
+        the call graph has drifted from its input no further than the churn
+        budget betweenness uses, carried onto the current symbols by
+        :func:`~repowise.core.analysis.communities.carry_symbol_communities`.
+        The reference stays pinned to that detection, so drift accumulates and
+        the first update past the budget, or any build with ``fresh_communities``
+        set, detects afresh.
+        """
         if self._symbol_community_cache is not None:
             return self._symbol_community_cache
 
-        from repowise.core.analysis.communities import detect_symbol_communities
+        from repowise.core.analysis.communities import (
+            carry_symbol_communities,
+            detect_symbol_communities,
+            symbol_community_graph,
+        )
 
         try:
-            self._symbol_community_cache = detect_symbol_communities(self._graph)
+            undirected = symbol_community_graph(self._graph)
+            key = self._community_key("symbol", lambda: _symbol_community_input(self, undirected))
+            reuse = key and self._reusable_communities(
+                "symbol", key, self._churn_budget(undirected), True
+            )
+            if reuse:
+                entry, churn = reuse
+                self._symbol_community_cache = (
+                    dict(entry.assignment)
+                    if churn == 0
+                    else carry_symbol_communities(entry.assignment, undirected)
+                )
+                return self._symbol_community_cache
+            self._symbol_community_cache = detect_symbol_communities(self._graph, undirected)
+            if key:
+                self._store_communities("symbol", key, self._symbol_community_cache)
         except Exception as exc:
             log.warning("symbol_community_detection_failed", error=str(exc))
             self._symbol_community_cache = {}
         return self._symbol_community_cache
+
+    def _community_key(self, kind: str, build: Callable[[], Any]) -> Any | None:
+        """*build*'s partition-input key, or ``None`` without a cache or when it fails."""
+        if getattr(self, "_centrality_cache", None) is None:
+            return None
+        try:
+            return build()
+        except Exception as exc:
+            log.debug("community_cache_key_failed", kind=kind, error=str(exc))
+            return None
+
+    def _reusable_communities(
+        self, kind: str, key: Any, budget: int, new_nodes_ok: bool
+    ) -> tuple[Any, int] | None:
+        """``(entry, churn)`` of the stored detection this input may reuse, else ``None``.
+
+        An unchanged input always may. A drifted one may while its churn stays
+        within *budget*, no ``fresh_communities`` is asked for, and (unless
+        *new_nodes_ok*) its node set is the one detected.
+        """
+        from repowise.core.analysis.communities import community_code_fingerprint
+
+        try:
+            hit = self._centrality_cache.lookup_communities(
+                kind,
+                signature=key.signature,
+                code=community_code_fingerprint(),
+                nodes=key.nodes,
+                edges=key.edges,
+            )
+        except Exception as exc:
+            log.debug("community_cache_lookup_failed", kind=kind, error=str(exc))
+            return None
+        if hit is None:
+            return None
+        entry, node_churn, edge_churn = hit
+        churn = node_churn + edge_churn
+        drifted_ok = (
+            not self.fresh_communities and churn <= budget and (new_nodes_ok or node_churn == 0)
+        )
+        if entry.signature != key.signature and not drifted_ok:
+            return None
+        log.info(
+            "communities_reused_from_cache",
+            kind=kind,
+            churn=churn,
+            scored_commit=entry.scored_commit,
+        )
+        return entry, churn
+
+    def _store_communities(
+        self,
+        kind: str,
+        key: Any,
+        assignment: dict[str, int],
+        extra: Any = None,
+        persist: bool = True,
+    ) -> None:
+        """Pin a full detection as *kind*'s reference; best-effort like every cache write."""
+        from repowise.core.analysis.communities import community_code_fingerprint
+
+        try:
+            self._centrality_cache.put_communities(
+                kind,
+                signature=key.signature,
+                code=community_code_fingerprint(),
+                assignment=assignment,
+                nodes=key.nodes,
+                edges=key.edges,
+                scored_commit=self._head_commit,
+                extra=extra,
+                persist=persist,
+            )
+        except Exception as exc:
+            log.debug("community_cache_store_failed", kind=kind, error=str(exc))
 
     def community_info(self) -> dict[int, Any]:
         """Return metadata for each file-level community."""
@@ -383,18 +583,27 @@ class MetricsMixin:
         """
         if self._symbol_pagerank_cache is not None:
             return self._symbol_pagerank_cache
+        from ._pagerank import cached_pagerank
+
         sub = self.symbol_subgraph()
         if sub.number_of_nodes() == 0:
             self._symbol_pagerank_cache = {}
             return self._symbol_pagerank_cache
-        try:
-            self._symbol_pagerank_cache = nx.pagerank(sub, alpha=alpha)
-        except nx.PowerIterationFailedConvergence:
-            log.warning("Symbol PageRank did not converge, using uniform scores")
-            n = sub.number_of_nodes()
-            self._symbol_pagerank_cache = {node: 1.0 / n for node in sub.nodes()}
+        self._symbol_pagerank_cache = cached_pagerank(
+            sub,
+            kind="symbol",
+            alpha=alpha,
+            cache=getattr(self, "_centrality_cache", None),
+        )
         self._release_symbol_subgraph()
         return self._symbol_pagerank_cache
+
+    def symbol_uses(self) -> dict[str, SymbolUse]:
+        """Production callers per symbol (see :func:`symbol_use_counts`).
+
+        Uncached: one linear pass over the edges, read once per selection.
+        """
+        return symbol_use_counts(self.graph())
 
     def symbol_betweenness_centrality(self) -> dict[str, float]:
         """Return betweenness centrality for symbol nodes (cached)."""
@@ -431,19 +640,18 @@ class MetricsMixin:
     def _churn_budget(self, g: nx.DiGraph) -> int:
         """How far *g* may drift from its last exact scoring before rescoring.
 
-        Zero below the cost threshold that already decides whether exact
-        Brandes is worth parallelising: under it the recompute is fast enough
-        that trading accuracy for it buys nothing, so those graphs keep the
-        exact-signature-only behaviour they had before. Above it, proportional
-        to the graph, because the same absolute delta perturbs a large ranking
-        far less than a small one.
+        Zero below :data:`_CHURN_BUDGET_MIN_COST`: there the recompute takes
+        under a second, so trading accuracy for it buys nothing and small graphs
+        keep exact-signature-only reuse. Above it, proportional to the graph,
+        because the same absolute delta perturbs a large ranking far less than
+        a small one.
         """
-        from . import _betweenness
+        return self._churn_budget_for(g.number_of_nodes(), g.number_of_edges())
 
-        n, e = g.number_of_nodes(), g.number_of_edges()
-        # Read through the module so the tests that lower the threshold reach
-        # this decision too.
-        if n * e < _betweenness._PARALLEL_COST_THRESHOLD:
+    @staticmethod
+    def _churn_budget_for(n: int, e: int) -> int:
+        """:meth:`_churn_budget` of a graph with *n* nodes and *e* edges."""
+        if n * e < _CHURN_BUDGET_MIN_COST:
             return 0
         return int((n + e) * _CHURN_BUDGET_FRACTION)
 
@@ -460,12 +668,8 @@ class MetricsMixin:
         signature: str | None = None
         if cache is not None:
             try:
-                from ._centrality_cache import subgraph_signature
-
-                signature = subgraph_signature(g)
-                hit = cache.lookup(
-                    kind, g, signature=signature, max_churn=self._churn_budget(g)
-                )
+                signature = cache.signature(kind, g)
+                hit = cache.lookup(kind, g, signature=signature, max_churn=self._churn_budget(g))
                 if hit is not None:
                     log.info(
                         "betweenness_reused_from_cache",
@@ -486,19 +690,11 @@ class MetricsMixin:
             # Seeded: k-sampling is the one randomized kernel left in the
             # pipeline. Unseeded it made every large-repo index emit a
             # different betweenness ranking (typst's entry-point order
-            # flapped between runs).
-            #
-            # The seed alone is not enough. NetworkX samples from
-            # ``list(G.nodes())``, so a fixed seed over a population in a
-            # different order still draws a different 500 nodes, and that is a
-            # different ranking rather than a rounding difference. Re-inserting
-            # the nodes in sorted order is what makes the sample reproducible.
-            # The copy costs one pass over a graph we are about to run 500
-            # shortest-path trees on.
-            ordered = nx.DiGraph() if g.is_directed() else nx.Graph()
-            ordered.add_nodes_from(sorted(g.nodes()))
-            ordered.add_edges_from(g.edges())
-            values = nx.betweenness_centrality(ordered, k=k, normalized=True, seed=42)
+            # flapped between runs). The kernel also fixes the population
+            # order the sample is drawn from.
+            from ._sampled_betweenness import sampled_betweenness_centrality
+
+            values = sampled_betweenness_centrality(g, k=k, seed=42)
         elif kind == "symbol":
             values = _exact_symbol_betweenness(g)
         else:

@@ -99,7 +99,8 @@ class TestClaudeMdKGSection:
             key_modules=[
                 KeyModule(name="src/api", purpose="API layer", owner=None),
                 KeyModule(name="src/core", purpose="", owner=None),
-            ]
+            ],
+            sections=frozenset({"key_modules"}),
         )
         rendered = tmpl.render(data=data)
         assert "### Key modules" in rendered
@@ -107,28 +108,17 @@ class TestClaudeMdKGSection:
         # No purpose → no dangling separator.
         assert "- `src/core`\n" in rendered
 
-    def test_workflow_protocol_follows_the_repo_facts(self, jinja_env):
-        from repowise.core.generation.editor_files.data import HotspotFile
+    def test_the_lean_protocol_leads_with_the_call_first_line(self, jinja_env):
+        from repowise.core.agent_steer import AGENT_STEER
 
         tmpl = jinja_env.get_template("claude_md.j2")
-        hot = HotspotFile(path="src/a.py", churn_percentile=99.0, commit_count_90d=3, owner=None)
-        rendered = tmpl.render(data=self._data(entry_points=["src/main.py"], hotspots=[hot]))
-        assert "### How to work in this repo" in rendered
-        # The load-bearing trust and basis clauses stay; the rest of the old
-        # bullets ride in the responses themselves (`_meta` hints, stale warnings).
-        assert "`verified: true` need no re-read" in rendered
-        assert '`bounds: "approximate"`' in rendered
-        assert "`*_basis`" in rendered
+        rendered = tmpl.render(data=self._data(entry_points=["src/main.py"]))
+        # One imperative line, then one line per moment; no reference sections.
+        assert rendered.index(AGENT_STEER) < rendered.index("- Before a rename:")
+        assert "### " not in rendered.split("\n", 1)[1]
         assert "never re-read them" not in rendered
-        # Pre-edit framing: the mandatory Read of edit targets is conceded.
-        assert "raw Read of any file you will Edit" in rendered
-        # The tool table renders from the single-source module.
-        assert "| Tool | When and why |" in rendered
-        assert "`get_answer(question)`" in rendered
-        # Repo facts lead: they are what an agent acts on before an edit.
-        protocol = rendered.index("### How to work in this repo")
-        assert rendered.index("### Entry points") < protocol
-        assert rendered.index("### Files that need care") < protocol
+        assert "Grep, Glob and Read are faster" not in rendered
+        assert "| Tool | When and why |" not in rendered
 
     def test_the_full_protocol_is_opt_in(self, jinja_env):
         tmpl = jinja_env.get_template("claude_md.j2")

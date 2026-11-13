@@ -12,6 +12,7 @@ from typing import Any
 
 from repowise.core.generation import GENERATION_LEVELS
 from repowise.core.generation.selection import SelectionInputs, select_pages
+from repowise.core.generation.selection.selector import near_clone_paths
 
 from .types import PageTypePlan
 
@@ -46,7 +47,7 @@ def build_generation_plan(
     if skip_tests:
         files = [p for p in files if not p.file_info.is_test]
     if skip_infra:
-        from repowise.core.generation.selection.selector import _is_infra_file
+        from repowise.core.generation.page_generator.helpers import _is_infra_file
 
         files = [p for p in files if not _is_infra_file(p)]
 
@@ -59,9 +60,14 @@ def build_generation_plan(
     except Exception:
         community_info_map = {}
 
+    # The near-clones generation drops never get a page, so the plan leaves
+    # them out the same way.
+    drop = near_clone_paths(
+        files, pagerank, enabled=getattr(config, "dedupe_near_clones", True)
+    )
     selection = select_pages(
         SelectionInputs(
-            parsed_files=files,
+            parsed_files=[p for p in files if p.file_info.path not in drop],
             pagerank=pagerank,
             betweenness=betweenness,
             community=community,
@@ -70,6 +76,7 @@ def build_generation_plan(
             git_meta_map=None,
             config=config,
             kg_modules=kg_modules,
+            symbol_uses=graph_builder.symbol_uses(),
         )
     )
 
@@ -99,6 +106,19 @@ def build_generation_plan(
                     ),
                 )
             )
+
+    # Flow pages come from the call graph, by the selection generation runs.
+    from repowise.core.generation.flow_pages import plans_for_index
+
+    flow_count = len(plans_for_index(graph_builder, files))
+    if flow_count:
+        plans.append(
+            PageTypePlan(
+                page_type="flow_page",
+                count=flow_count,
+                level=GENERATION_LEVELS["flow_page"],
+            )
+        )
 
     # Onboarding count comes from the registry (curated, gated at
     # generation time); the budget allocator does not touch it.

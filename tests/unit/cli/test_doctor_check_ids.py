@@ -24,18 +24,22 @@ from repowise.cli.commands.doctor_cmd._types import _check
 # "*" stands for a per-target or per-language suffix.
 PINNED_IDS = {
     "agent-*",
+    "agent-hook-scripts",
+    "agent-hooks-firing",
     "agent-integrations",
     "attribution-notes",
     "claude-code-mcp-entry",
+    "claude-desktop-mcp-entry",
     "coordinator-drift",
     "database",
     "distill-config",
     "distill-rewrite-hook",
-    "events-config",
     "fts-index-sync",
     "git-repository",
     "grammar-*",
     "hosted-account",
+    "index-data",
+    "index-freshness",
     "llm-provider",
     "mcp-responds",
     "omission-store",
@@ -43,10 +47,13 @@ PINNED_IDS = {
     "provider-config",
     "providers",
     "repowise-dir",
+    "setting-*",
+    "settings",
     "stale-pages",
     "state-json",
     "store-consistency",
     "store-format",
+    "update-lock",
     "vector-store",
     "vector-store-sync",
 }
@@ -199,10 +206,10 @@ def test_unregistered_entry_warns_only_when_settings_cannot_be_parsed(
 ) -> None:
     from repowise.cli.editor_integrations import claude_config
 
-    settings_path = tmp_path / "settings.json"
+    settings_path = tmp_path / ".claude.json"
     if settings is not None:
         settings_path.write_text(settings, encoding="utf-8")
-    monkeypatch.setattr(claude_config, "_claude_code_settings_path", lambda: settings_path)
+    monkeypatch.setattr(claude_config, "_claude_code_user_config_path", lambda: settings_path)
     monkeypatch.setattr(integrations, "_registered_mcp_entry", lambda: None)
     row, wedged = integrations._claude_registration_check(tmp_path)
     assert (row.id, row.level, row.ok, wedged) == ("claude-code-mcp-entry", level, True, False)
@@ -213,12 +220,15 @@ def test_json_rows_carry_id_level_and_fix(tmp_path: Path, no_mcp_launch) -> None
         doctor_command, [str(_git_repo(tmp_path)), "--no-workspace", "--format", "json"]
     )
     payload = json.loads(result.output[result.output.index("{") :])
-    assert set(payload) == {"ok", "checks"}
+    assert set(payload) == {"ok", "checks", "suggestions"}
     for c in payload["checks"]:
         assert set(c) == {"id", "name", "ok", "level", "detail", "fix"}
     by_id = {c["id"]: c for c in payload["checks"]}
     assert by_id["repowise-dir"]["level"] == "fail"
     assert by_id["repowise-dir"]["fix"] == "repowise init"
+    assert by_id["state-json"]["level"] == "fail"
+    assert by_id["state-json"]["detail"] == "missing"
+    assert by_id["state-json"]["fix"] == "repowise init"
     assert by_id["post-commit-hook"]["level"] == "warn"
     assert by_id["git-repository"] == {
         "id": "git-repository",
@@ -228,3 +238,18 @@ def test_json_rows_carry_id_level_and_fix(tmp_path: Path, no_mcp_launch) -> None
         "detail": str(tmp_path),
         "fix": None,
     }
+
+
+def test_json_corrupt_state_row_is_actionable(tmp_path: Path, no_mcp_launch) -> None:
+    repowise_dir = tmp_path / ".repowise"
+    repowise_dir.mkdir()
+    state_path = repowise_dir / "state.json"
+    state_path.write_text("{not json", encoding="utf-8")
+    result = CliRunner().invoke(
+        doctor_command, [str(_git_repo(tmp_path)), "--no-workspace", "--format", "json"]
+    )
+    payload = json.loads(result.output[result.output.index("{") :])
+    row = next(check for check in payload["checks"] if check["id"] == "state-json")
+    assert row["level"] == "fail"
+    assert row["fix"] == "repowise init"
+    assert row["detail"].startswith(f"unreadable: {state_path}:")

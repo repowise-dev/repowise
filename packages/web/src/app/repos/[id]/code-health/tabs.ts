@@ -8,7 +8,7 @@
  */
 
 import { Bug, Gauge, LayoutDashboard, Scissors, type LucideIcon } from "lucide-react";
-import { commitsViewHref } from "@/lib/changes";
+import { reviewHref } from "@/lib/changes";
 
 export const CODE_HEALTH_TABS = ["map", "findings", "performance", "dead-code"] as const;
 export type CodeHealthTabId = (typeof CODE_HEALTH_TABS)[number];
@@ -73,12 +73,8 @@ export function movedTabHref(repoId: string, params: URLSearchParams): string | 
         ? `${base}/docs/drift?document=${encodeURIComponent(document)}`
         : `${base}/docs/drift`;
     }
-    case "impact": {
-      const q = new URLSearchParams();
-      for (const file of params.getAll("file")) q.append("file", file);
-      const files = q.toString();
-      return `${commitsViewHref(repoId, "review")}${files ? `&${files}` : ""}`;
-    }
+    case "impact":
+      return reviewHref(repoId, { file: params.getAll("file") });
     default:
       return null;
   }

@@ -7,6 +7,38 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
+## 0.15.0
+
+The Docs panel reads as a table of contents with walkthroughs in their own group,
+and every health score reads on the same five bands.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved; repowise
+0.60.0 fills every view in this release, including the walkthrough pages.
+
+### Docs
+
+- The overview and onboarding chapters lead the page tree in reading order,
+  walkthroughs that follow one operation end to end get their own group, and
+  generated code pages sit under one "Reference" folder.
+- Sections are numbered two levels deep and labelled as titles, such as "CLI"
+  where the tree used to show "Cli Overview".
+- The tree searches as you type and stays quick on large wikis.
+- Page sources name the cited line range, as `path:12-40`.
+- Mermaid diagrams use a neutral palette.
+
+### Code Health
+
+- Scores and the trend chart use the five canonical bands: Excellent, Good,
+  Fair, Needs work and At risk.
+
+### Other
+
+- The CLI-not-found and out-of-date server notices offer `uv tool install` /
+  `uv tool upgrade` first, with a pip command beside it.
+- The walkthrough points to `repowise serve` for the guided tour and Setup.
+- Figures group their digits the same way in every view, whatever the system
+  locale.
+
 ## 0.14.0
 
 Code Health findings come with the rule that silences them and an agent prompt

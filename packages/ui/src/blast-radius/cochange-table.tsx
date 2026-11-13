@@ -2,6 +2,7 @@
 
 import type { CochangeWarning } from "@repowise-dev/types/blast-radius";
 import { ResponsiveTable, type ResponsiveColumn } from "../shared/responsive-table";
+import { FilePath } from "../shared/file-path";
 
 interface CochangeTableProps {
   rows: CochangeWarning[];
@@ -10,25 +11,17 @@ interface CochangeTableProps {
 const COLUMNS: ResponsiveColumn<CochangeWarning>[] = [
   {
     key: "changed",
-    header: "Changed File",
-    render: (r) => (
-      <span className="font-mono text-xs break-all" title={r.changed}>
-        {r.changed}
-      </span>
-    ),
+    header: "Changed file",
+    render: (r) => <FilePath path={r.changed} copyable />,
   },
   {
     key: "missing_partner",
-    header: "Missing Partner",
-    render: (r) => (
-      <span className="font-mono text-xs break-all" title={r.missing_partner}>
-        {r.missing_partner}
-      </span>
-    ),
+    header: "Usually changes with it",
+    render: (r) => <FilePath path={r.missing_partner} copyable />,
   },
   {
     key: "score",
-    header: "Co-change Count",
+    header: "Times together",
     align: "right",
     render: (r) => <span className="tabular-nums">{r.score}</span>,
   },

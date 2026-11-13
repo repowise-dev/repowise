@@ -20,7 +20,7 @@ _MAX_SOURCE_LINES = 600
 
 def _read_file_text(repo_path: Path, file_path: str) -> str | None:
     """Read a repo file's live text, or None when unreadable/outside the root."""
-    text = read_repo_file_text(repo_path, file_path)
+    text = read_repo_file_text(repo_path, file_path, allow_extracted=False)
     if text is None:
         _log.warning("get_symbol could not serve %s (unreadable or outside repo root)", file_path)
     return text

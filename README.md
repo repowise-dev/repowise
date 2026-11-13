@@ -71,14 +71,17 @@ the index, and asks you before anything costs money. To do it by hand:
 uv tool install repowise          # or: pipx install repowise / pip install repowise
 cd /path/to/your/repo
 repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
-                                  # (add model-written docs any time with: repowise generate)
+                                  # answers and docs: run repowise generate (one command, no re-index)
 repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
 ```
 
+`serve` opens the dashboard in your browser. After a first index it starts with a short
+guided tour, and Setup is where you connect agents, turn on sync and add coverage or a model.
+
 Restart Claude Code or run `/mcp`, then ask *"What breaks if I change
 `src/auth.py`?"* or *"Use Repowise `get_overview` to summarize this repository."*
-`init` wires Claude Code for this repo and points the global repowise MCP entry
-here. [Full setup for every agent →](docs/start/QUICKSTART.md)
+`init` wires Claude Code for this repo and adds the global repowise MCP entry
+when there is none; it never moves one that serves another repo. [Full setup for every agent →](docs/start/QUICKSTART.md)
 
 ---
 
@@ -391,7 +394,7 @@ advertised surface, against answer keys we did not write.
 | **Work saved in an agent loop** | 3.8 tool calls instead of 7.2, 3.0 files opened instead of 7.2, **31.6% less output**. The best of five context tools. *n=43, p<0.0001* |
 | **Finding the right files** | **0.876** of the files a fix needed, against 0.610 for the next tool, on a sealed set. *n=42, p=0.00004* |
 | **Command output** | Up to **99.5%** smaller (`npm ci`), 89% for `git log`, 86% for `git diff`, no error line lost |
-| **Call graph the compiler agrees with** | **95% to 99.6%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
+| **Call graph the compiler agrees with** | **93.8% to 99.8%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
 | **Health that predicts bugs** | **2.3x** CodeScene's recall of later-buggy files at the same review budget. *2,770 files, p=0.003* |
 | **Scale** | **15 million lines** (dotnet/runtime) on one laptop. Building the call graph takes **75 MB**, 10x less than the next tool |
 
@@ -418,7 +421,6 @@ rows we lose live. Unmarked rows are capability presence, not measurements.
 | **Memory to build the graph** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run), 5 tools, 35 repos)* | ✅ **75 MB**, lowest on 35 of 35 | 757 MB | not measured | n/a, cloud |
 | **Time to build the graph** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run), same run)* | **2.77s**, fastest on 14 of 35 | **3.65s**, fastest on 16 | not measured | n/a, cloud |
 | **Time to build the full index, django** *([measured](docs/BENCHMARKS.md#what-it-costs-to-run))* | ⚠️ **366.8s**, slowest here | ✅ **16.4s** | not measured | n/a, cloud |
-| **Call-edge precision, hand-graded** *([measured](docs/BENCHMARKS.md#7-edge-precision), 560 rows, 9 languages)* | ✅ **85.7%** | 58.6% | not measured | not measured |
 | **Call-edge precision, judged by a compiler** *([measured](docs/BENCHMARKS.md#8-the-same-question-against-an-answer-key-we-do-not-control), 5 tools, 7 cells)* | ✅ **nothing that finds as much gets more of it right**, 7 of 7 | lower precision in 7 | not measured | not measured |
 | Generated documentation | ✅ | ❌ | ❌ | ✅ |
 | Proactive agent hooks | ✅ Claude + Codex | ❌ | ❌ | ❌ |
@@ -433,14 +435,6 @@ the fastest. Building the *whole* index, CodeGraph is **22x faster than we are**
 because by then we have also built the git-history layer, the wiki, the decisions and
 the health pass. If a call graph is all you need, that is the right trade and you
 should take it. With model-written prose on, it is **135x**.
-
-**The hand-graded precision row cuts both ways.** About fourteen percent of the call
-edges we draw are wrong, and on `seastar` CodeGraph grades better than we do. The
-compiler row exists because we graded the hand-read one ourselves: on Go and
-TypeScript the answer key is the Go team's own call graph and the `tsc` checker's own
-resolution, which we neither wrote nor can tune. Precision alone is easy to win by
-drawing almost nothing, and recall alone by drawing everything, so the claim is the
-pair.
 
 <sub>Competitors measured at CodeGraph 1.5.0, Graphify 0.9.31, Serena 1.6.2.dev0 and
 code-review-graph 2.3.7 in August 2026. Repowise compiler-graded figures are from main
@@ -569,7 +563,7 @@ languages moving up the ladder: **[roadmap →](ROADMAP.md#languages)**
 
 ## Supported agents and editors
 
-**Eight agents wired end to end · two at the Full tier · every other MCP host one
+**Nine agents wired end to end · two at the Full tier · every other MCP host one
 paste away.**
 
 <p>
@@ -586,12 +580,16 @@ paste away.**
   <img src="https://img.shields.io/badge/GitHub_Copilot_CLI-000000?style=flat-square&logo=githubcopilot&logoColor=white" alt="GitHub Copilot CLI" />
   <img src="https://img.shields.io/badge/Kiro-790ECB?style=flat-square&logoColor=white" alt="Kiro" />
 </p>
+<p>
+  <strong>Basic tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Windsurf-0B100F?style=flat-square&logo=windsurf&logoColor=white" alt="Windsurf" />
+</p>
 
 **Full** is every surface Repowise has: MCP tools, skills, slash commands, a managed
 instructions file, hook-level interception of tool calls, and transcript mining after
 the session. **Good** is MCP tools plus an instructions file or skills, without transcript mining
 (hooks only where the matrix says). **Basic** is the MCP config alone. Anything else that speaks MCP is one snippet away:
-`repowise agents print-config claude-code` prints a server entry for Cline, Windsurf,
+`repowise agents print-config claude-code` prints a server entry for Cline,
 Zed, Gemini CLI or any host that reads `mcpServers`.
 [Integration matrix →](docs/agent/INTEGRATIONS.md)
 
@@ -718,7 +716,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 
 ```bash
 repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
-repowise generate [PATH]  # write wiki pages with a model, on demand
+repowise generate [PATH]  # answers and docs with a model, on an existing index (no re-index)
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (--workspace for every repo)
 repowise watch            # re-index on file change

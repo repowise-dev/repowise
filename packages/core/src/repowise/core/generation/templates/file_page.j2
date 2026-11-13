@@ -116,8 +116,11 @@
 {#- Import neighbourhoods, one line per directory. The opening already says
     how many and where most of them are; this is the lookup. Each path is
     printed whole: it is what the reader's link resolves and what a question
-    matches in the index. -#}
-{%- for heading, paths in [(labels.used_by, ctx.dependents), (labels.depends_on, ctx.dependencies)] if paths %}
+    matches in the index. Importers that are tests are counted, not listed:
+    on a well-tested hub they were most of the list and buried the code that
+    uses the file. -#}
+{%- set users = facts.importers %}
+{%- for heading, paths in [(labels.used_by, users.code_paths), (labels.depends_on, ctx.dependencies)] if paths or (heading == labels.used_by and users.tests) %}
 
 ## {{ heading }}
 {% for group in paths | group_paths %}
@@ -126,6 +129,10 @@
 {%- if paths | length > 25 %}
 
 _{{ labels.and_more.format(count=paths | length - 25) }}_
+{%- endif %}
+{%- if heading == labels.used_by and users.tests %}
+
+{{ labels.used_by_tests.format(count=users.tests, file_word=labels.file_plural if users.tests != 1 else labels.file_singular) }}
 {%- endif %}
 {%- endfor %}
 {#- What the history knows and the code cannot say, as one short paragraph.
@@ -185,45 +192,9 @@ _{{ labels.and_more.format(count=paths | length - 25) }}_
 - `{{ cc.path }}`: {{ labels.changes_with_entry.format(count=cc.commits, commit_word=labels.commit_plural if cc.commits != 1 else labels.commit_singular) }}{% if cc.last %} ({{ labels.last_together.format(date=cc.last | datestamp) }}){% endif %}
 {%- endfor %}
 {%- endif %}
-{#- Question-shaped text, built from structure rather than prose.
-
-    Every search query is a question and this page is a declarative reference,
-    so the two share almost no vocabulary. The identifiers are the whole point:
-    thousands of file pages asking the same question differ only in the file
-    and symbol they name, and without those they would be one sentence
-    repeated across the corpus, matching everything and distinguishing nothing.
-
-    A question is emitted only where the page can answer it. A question whose
-    answer is not below it puts the words of a promise into the index and then
-    breaks it, which is the failure this block exists to avoid. Low on the
-    page so it cannot become the summary ``_extract_summary`` reads back.
-
-    Built as a list and capped, because a fully-connected file qualifies for
-    more of them than are worth carrying: past three the block stops being
-    question-shaped text and starts being padding on every page in the corpus.
--#}
-{%- set questions = [] -%}
-{%- if api_syms -%}
-{%- set _ = questions.append(labels.question_exports.format(path=ctx.file_path)) -%}
-{%- set _ = questions.append(labels.question_where_defined.format(symbol=api_syms[0].name)) -%}
-{%- endif -%}
-{%- if ctx.dependents -%}
-{%- set _ = questions.append(labels.question_what_imports.format(path=ctx.file_path)) -%}
-{%- endif -%}
-{%- if ctx.dependencies -%}
-{%- set _ = questions.append(labels.question_depends_on.format(path=ctx.file_path)) -%}
-{%- endif -%}
-{%- if questions %}
-
-## {{ labels.questions_heading }}
-{% for q in questions[:3] %}
-- {{ q }}
-{%- endfor %}
-{%- endif %}
 {#- The file's own vocabulary (``ctx.file_vocabulary``) is not rendered.
     ``_render_file_page`` stores it in page metadata and ``embed_item`` adds
     it to the embedded text: it is a bag of words, which serves retrieval and
     reads to a person as noise.
 #}
 
-{% include "_footer.j2" %}

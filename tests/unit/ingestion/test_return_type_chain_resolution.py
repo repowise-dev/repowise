@@ -216,7 +216,9 @@ def test_unbound_global_return_type_preserves_legacy_fallback(
 
 def test_only_audited_lanes_are_enabled_by_default() -> None:
     assert (
-        frozenset({"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python"})
+        frozenset(
+            {"apex", "cpp", "csharp", "dart", "go", "java", "kotlin", "python", "typescript"}
+        )
         == PRODUCTION_RETURN_TYPE_CHAIN_LANGUAGES
     )
 
@@ -1086,6 +1088,46 @@ def test_kotlin_chained_call_reaches_an_extension_on_the_returned_type(tmp_path:
     assert any(callee.endswith("::extra") for callee in callees)
 
 
+_KOTLIN_PROPERTY_AND_EXTENSION = (
+    "interface Source\n"
+    "class Peek(private val up: Int) : Source {\n"
+    "    private val buffer = 1\n"
+    "    val onClose: () -> Unit = {}\n"
+    "}\n"
+    "{extension}"
+    "class Use {\n"
+    "    fun chain() { Peek(1).buffer() }\n"
+    "    fun local() { val p = Peek(1); p.buffer() }\n"
+    "    fun param(p: Peek) { p.buffer() }\n"
+    "    fun lambda(p: Peek) { p.onClose() }\n"
+    "}\n"
+    "class Holder(val p: Peek) {\n"
+    "    fun field() { p.buffer() }\n"
+    "}\n"
+)
+
+
+@pytest.mark.parametrize("extension", ["fun Source.buffer(): Int = 0\n", ""])
+def test_kotlin_member_call_never_binds_a_property_of_the_name(
+    tmp_path: Path, extension: str
+) -> None:
+    """``x.buffer()`` is the ``Source.buffer()`` extension, never the ``val buffer`` of ``x``'s class."""
+    text = _KOTLIN_PROPERTY_AND_EXTENSION.replace("{extension}", extension)
+    parsed = _parse(tmp_path, "a.kt", "kotlin", text)
+    resolver = CallResolver(
+        parsed, {"a.kt": set()}, heritage_parents={"a.kt::Peek": {"a.kt::Source"}}
+    )
+    edges = {
+        (rc.caller_id.rpartition("::")[2], rc.callee_id)
+        for rc in resolver.resolve_file("a.kt", parsed["a.kt"].calls)
+        if not rc.callee_id.endswith("::Peek")
+    }
+
+    bound = {(caller, "a.kt::buffer") for caller in ("chain", "local", "param", "field")}
+    # A property holding a function is still the callee of its call.
+    assert edges == (bound if extension else set()) | {("lambda", "a.kt::Peek::onClose")}
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -1253,3 +1295,41 @@ def test_dart_unprefixed_named_constructor_and_prefixed_plain_one_still_bind(
     edges = _dart_field_edges(tmp_path, "Repo.fromJson(1);\np.Repo();", _DART_PREFIXED)
 
     assert (2, "repo.dart::Repo", "module_alias") in edges
+
+
+def _ts_js_edges(tmp_path: Path, path: str, language: str, source: str) -> set[tuple[str, str]]:
+    parsed = _parse(tmp_path, path, language, source)
+    resolver = CallResolver(parsed, {path: set()})
+    return {
+        (rc.caller_id.rpartition("::")[2], rc.callee_id.rpartition("::")[2])
+        for rc in resolver.resolve_file(path, parsed[path].calls)
+    }
+
+
+@pytest.mark.parametrize(("path", "language"), [("q.ts", "typescript"), ("q.js", "javascript")])
+def test_ts_js_chained_call_on_an_untyped_result_binds_no_repo_method(
+    tmp_path: Path, path: str, language: str
+) -> None:
+    """``db.selectFrom(t).execute()`` on a library builder is not the repo's one ``execute``."""
+    source = (
+        "class Runner {\n  execute(job) { return job; }\n}\n"
+        "function load(db) {\n  return db.selectFrom('t').where('a', '=', 1).execute();\n}\n"
+        "function direct(r) {\n  return run(r);\n}\n"
+        "function run(x) { return x; }\n"
+    )
+    calls = _parse(tmp_path, path, language, source)[path].calls
+    assert next(c for c in calls if c.target_name == "execute").receiver_call is not None
+
+    edges = _ts_js_edges(tmp_path, path, language, source)
+
+    assert ("load", "execute") not in edges
+    assert ("direct", "run") in edges
+
+
+def test_ts_chained_call_on_a_typed_result_still_binds(tmp_path: Path) -> None:
+    source = (
+        "class Runner {\n  execute(job: string) { return job; }\n}\n"
+        "function make(): Runner { return new Runner(); }\n"
+        "function load() {\n  return make().execute('x');\n}\n"
+    )
+    assert ("load", "execute") in _ts_js_edges(tmp_path, "q.ts", "typescript", source)

@@ -3,9 +3,10 @@
 import { AlertTriangle, CheckCircle, XCircle, ExternalLink, Settings, X } from "lucide-react";
 import { Spinner } from "../ui/spinner";
 import { Progress } from "../ui/progress";
-import { formatNumber, formatRelativeTime } from "../lib/format";
+import { formatNumber } from "../lib/format";
 import type { Job } from "@repowise-dev/types/jobs";
 import { jobOutcome, providerIssue, type ProviderIssue } from "../jobs/job-outcome";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface ActiveJobBannerProps {
   /**
@@ -109,7 +110,7 @@ export function ActiveJobBanner({
               {job.config?.total_input_tokens != null && (
                 <> · {formatNumber(job.config.total_input_tokens as number)} tokens</>
               )}
-              {job.finished_at && <> · {formatRelativeTime(job.finished_at)}</>}
+              {job.finished_at && <> · <RelativeTime date={job.finished_at} /></>}
             </>
           )}
           {isWarning && (issue ? formatIssue(issue) : l.pagesFailed(job.failed_pages))}

@@ -41,6 +41,7 @@ follows from the strategy.
 | 1.0 | `unique_path` | exact | The consumer's base is unread and one service serves the path |
 | 0.6 | `ambiguous_path` | candidate | The base is unread and several services of one repo serve the path; linked to each |
 | 0.6 | `prefix_stripped` | candidate | Matched only after stripping mount, version or base prefixes |
+| 0.6 | `param_segment` | candidate | A concrete path segment in the call meets the route's `{param}` segment (`/render/1` to `/render/{id}`); the most literal route wins, and routes in two or more repos link to none |
 | 0.5 | `host_only` | candidate | The host names a workspace service, but no route there serves the path; a service-level edge |
 | 1.0 | `gateway_route` | exact | A gateway's config forwards the path to the service: the gateway's own edge, and a call through it linked on the forwarded path |
 | 1.0 | `manual` | manual | Declared in the workspace config |
@@ -86,6 +87,12 @@ nothing). Such a link carries the exchange as its `contract_id` and the queue as
 `consumer_contract_id`. When no consumer of the bound queue is found, the
 binding site itself is linked. A publish to the default exchange
 (`publish('', 'jobs')`) is a publish to the queue `jobs`.
+
+Two ends link only when they can be one broker's destination. The same broker
+always can. A Dapr, Laravel or NestJS name runs over a transport configured
+outside the code, so it meets any broker but BullMQ, whose queue is Redis keys
+only BullMQ reads. Any other pair must be the same broker: a Kafka topic and a
+RabbitMQ queue of one name are two things.
 
 ## Data contracts
 

@@ -111,7 +111,9 @@ def estimate_generation(
         provider.model_name,
         repo_path=repo_path,
         embedder=embedder,
-        embedding_model=resolve_embedding_model(embedder) if embedder else None,
+        embedding_model=resolve_embedding_model(embedder, repo_path=repo_path)
+        if embedder
+        else None,
     )
     return plans, est
 
@@ -135,6 +137,7 @@ def concept_page_count(plans: list[Any]) -> int:
 # in the mode panel was the old state.
 _PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("module_page", "Subsystem pages", "subsystem"),
+    ("flow_page", "Walkthrough pages", "walkthrough"),
     ("repo_overview", "Repo overview", "overview"),
     ("architecture_diagram", "Architecture diagram", "diagram"),
     ("onboarding", "Onboarding pages", "onboarding"),
@@ -142,7 +145,6 @@ _PAGE_TYPE_LABELS: tuple[tuple[str, str, str], ...] = (
     ("api_contract", "API contract pages", "API"),
     ("symbol_spotlight", "Symbol spotlights", "symbol"),
     ("scc_page", "Dependency cycle pages", "cycle"),
-    ("layer_page", "Layer pages", "layer"),
     ("infra_page", "Infrastructure pages", "infra"),
 )
 
@@ -192,9 +194,7 @@ def structural_page_summary(plans: list[Any]) -> str:
     if not total:
         return ""
     parts = [f"{counts[pt]} {short}" for pt, _, short in _PAGE_TYPE_LABELS if counts.get(pt)]
-    return f"{total} more pages built from code, no model, no cost: " + ", ".join(
-        parts
-    )
+    return f"{total} more pages built from code, no model, no cost: " + ", ".join(parts)
 
 
 def announce_file_page_cap(parsed_files: list[Any], gen_config: Any) -> None:
@@ -274,8 +274,7 @@ def _enrich_knowledge_graph(
             # Optional enrichment: the reason goes to the log (shown with -v).
             logger.warning("kg_enrichment_skipped", error=f"{type(exc).__name__}: {exc}")
             console.print(
-                "  [dim]Knowledge graph layers and tour were skipped; "
-                "run with -v to see why.[/dim]"
+                "  [dim]Knowledge graph layers and tour were skipped; run with -v to see why.[/dim]"
             )
 
 
@@ -297,6 +296,17 @@ def _checkpoint_failed_page_ids(repo_path: Path | str, result: Any) -> list[str]
     return []
 
 
+def _generation_cost_tracker(
+    deterministic: bool, cost_tracker: Any | None, repo_path: Any, result: Any
+) -> Any | None:
+    """The run's tracker, a fresh one when indexing built none, ``None`` without a model."""
+    if deterministic:
+        return None
+    if cost_tracker is not None:
+        return cost_tracker
+    return build_cost_tracker(repo_path, result.repo_name)
+
+
 def run_repo_generation(
     *,
     repo_path: Any,
@@ -311,10 +321,12 @@ def run_repo_generation(
     timings: Any | None = None,
     warnings: list[str] | None = None,
     total_phases: int | None = None,
+    cost_tracker: Any | None = None,
 ) -> list[Any]:
     """Generate wiki pages for one repo and enrich its knowledge graph.
 
-    Builds the embedder + vector store + cost tracker, runs the resume-friendly
+    Builds the embedder + vector store + cost tracker (or reuses *cost_tracker*,
+    the one indexing billed), runs the resume-friendly
     generation wrapper, enriches the KG, and flushes buffered cost rows in one
     transaction (kept out of the contended generation window, issue #326).
 
@@ -363,7 +375,9 @@ def run_repo_generation(
     # llm_costs table. Attached to the provider unconditionally (all providers
     # accept ``_cost_tracker`` as an attribute). A deterministic run makes no
     # calls, so it gets none: an empty ledger, not a ledger of zeroes.
-    cost_tracker = None if deterministic else build_cost_tracker(repo_path, result.repo_name)
+    # *cost_tracker* is the one indexing already billed for decision mining;
+    # reusing it keeps one ledger and one "Cost" total for the run.
+    cost_tracker = _generation_cost_tracker(deterministic, cost_tracker, repo_path, result)
     provider._cost_tracker = cost_tracker
 
     if verbose and not deterministic:
@@ -371,7 +385,6 @@ def run_repo_generation(
             "  [dim](each generated page is saved as it completes: safe to Ctrl-C, "
             "then run 'repowise init --resume' to pick up where it stopped)[/dim]"
         )
-
 
     # Filled by a resumed run with the pages it skipped because they already
     # exist. Persistence needs them: they are absent from ``generated_pages``,

@@ -28,6 +28,11 @@ export async function getMetaVersion(repoId?: string): Promise<MetaVersion> {
   );
 }
 
-export async function getChangelog(limit = 20): Promise<ChangelogData> {
-  return apiGet<ChangelogData>("/api/meta/changelog", { limit });
+/** `includeNewer` adds the releases between the running and the latest version
+ *  (read from the latest release's changelog), for the upgrade banner. */
+export async function getChangelog(limit = 20, includeNewer = false): Promise<ChangelogData> {
+  return apiGet<ChangelogData>(
+    "/api/meta/changelog",
+    includeNewer ? { limit, include_newer: true } : { limit },
+  );
 }

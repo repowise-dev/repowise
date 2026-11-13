@@ -134,14 +134,27 @@ def _texts(
     read: Callable[[str], str | None],
     holding: Callable[[Collection[str]], Collection[str] | None] | None,
 ) -> dict[str, str]:
-    """The lowercased code text of each file that may name one of *roots*' trees."""
+    """The lowercased code text of each file that may name one of *roots*' trees.
+
+    Code outside the test trees counts only when it names a tree's whole path
+    (:func:`_tree_readers`), so one whose raw text holds no such path skips the
+    costly :func:`code_text` pass. That pass only drops text or spaces tokens
+    apart, so it cannot make a path without whitespace appear.
+    """
     names = {n for r in roots for n in _dir_names(r)}
     held = holding(names) if holding else None
-    return {
-        p: code_text(p, read(p) or "").lower()
-        for p in sorted({*test_code, *other_code})
-        if held is None or p in held
-    }
+    tests = set(test_code)
+    paths = [r.lower() for r in roots]
+    by_path = not any(c.isspace() for r in paths for c in r)
+    out: dict[str, str] = {}
+    for p in sorted({*tests, *other_code}):
+        if held is not None and p not in held:
+            continue
+        text = read(p) or ""
+        if by_path and p not in tests and not any(map(text.lower().__contains__, paths)):
+            continue
+        out[p] = code_text(p, text).lower()
+    return out
 
 
 def _tree_readers(

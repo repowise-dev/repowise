@@ -13,6 +13,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from repowise.core.workspace.package_reach import package_link_reaches
+
 _log = logging.getLogger("repowise.mcp.enrichment")
 
 # Sentinels from _read_artifact: a parsed JSON ``null`` is a real payload.
@@ -314,8 +316,17 @@ class CrossRepoEnricher:
             self._package_dep_index[src_repo].append({"target_repo": tgt_repo, **evidence})
             # Reverse: who depends on target_repo
             self._package_dep_reverse[tgt_repo].append(src_repo)
+            reached = pd.get("reached_files")
+            if not isinstance(reached, list):
+                reached = None  # absent or malformed: the whole package counts
             self._package_dep_reverse_links[tgt_repo].append(
-                {"source_repo": src_repo, "target_repo": tgt_repo, **evidence}
+                {
+                    "source_repo": src_repo,
+                    "target_repo": tgt_repo,
+                    **evidence,
+                    # A set for the per-file test; None reads as the whole package.
+                    "reached_files": None if reached is None else frozenset(reached),
+                }
             )
         return malformed
 
@@ -711,6 +722,14 @@ class CrossRepoEnricher:
         """Typed package links whose source repository depends on *repo_alias*."""
         return self._package_dep_reverse_links.get(repo_alias, [])
 
+    def get_package_consumers_of(self, repo_alias: str, file_path: str) -> list[dict]:
+        """The package links of :meth:`get_package_consumers` whose imports reach *file_path*."""
+        return [
+            link
+            for link in self.get_package_consumers(repo_alias)
+            if package_link_reaches(link, file_path)
+        ]
+
     def get_cross_repo_summary(self) -> dict:
         """High-level cross-repo stats for the overview footer."""
         # Count repo-to-repo connections
@@ -753,23 +772,20 @@ class CrossRepoEnricher:
         return self._consumer_index.get((repo_alias, file_path), [])
 
     def get_affected_repos(self, repo_alias: str, file_path: str) -> list[str]:
-        """Return repo aliases that may be impacted by changes to this file.
+        """Other repos a concrete link ties to this file.
 
-        Combines co-change partners + package dep consumers + contract links.
+        A contract link on either side, or a package dependent whose imports
+        reach the file (:func:`package_link_reaches`). Co-change is history,
+        not a link, and a package dependency alone names no file.
         """
-        repos: set[str] = set()
-
-        for partner in self._co_change_index.get((repo_alias, file_path), []):
-            repos.add(partner["repo"])
-
-        for dep_repo in self._package_dep_reverse.get(repo_alias, []):
-            repos.add(dep_repo)
-
-        for link in self._contract_provider_index.get((repo_alias, file_path), []):
-            repos.add(link["consumer_repo"])
-
-        repos.discard(repo_alias)
-        return sorted(repos)
+        provided = self.get_contract_links_as_provider(repo_alias, file_path)
+        consumed = self.get_contract_links_as_consumer(repo_alias, file_path)
+        repos = {
+            *(link.get("consumer_repo") for link in provided),
+            *(link.get("provider_repo") for link in consumed),
+            *(link["source_repo"] for link in self.get_package_consumers_of(repo_alias, file_path)),
+        }
+        return sorted(repo for repo in repos if repo and repo != repo_alias)
 
     # Contract queries
 

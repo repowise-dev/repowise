@@ -29,6 +29,7 @@ import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { ApiError } from "@repowise-dev/ui/shared/api-error";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { useGraph } from "@/lib/hooks/use-graph";
+import { useGraphMapCopy } from "@/components/graph/use-graph-map-copy";
 
 export function CodeGraphTreeView({
   repoId,
@@ -43,6 +44,7 @@ export function CodeGraphTreeView({
 }) {
   const [graphLimit, setGraphLimit] = useState<number | undefined>(undefined);
   const { graph, error, isLoading, mutate } = useGraph(repoId, graphLimit);
+  const mapCopy = useGraphMapCopy();
 
   const fileHref = useCallback(
     (path: string) => fileEntityPath(`/repos/${repoId}`, path),
@@ -75,7 +77,7 @@ export function CodeGraphTreeView({
           </p>
         </div>
         <div className="shrink-0">
-          <GraphScopeSwitcher scope={scope} onScopeChange={onScopeChange} />
+          <GraphScopeSwitcher scope={scope} onScopeChange={onScopeChange} copy={mapCopy.scope} />
         </div>
       </div>
 
@@ -85,6 +87,7 @@ export function CodeGraphTreeView({
           total={graph.total_node_count}
           limit={graphLimit ?? graph.nodes.length}
           onLoadMore={(nextLimit) => setGraphLimit(nextLimit)}
+          copy={mapCopy.truncation}
         />
       )}
 

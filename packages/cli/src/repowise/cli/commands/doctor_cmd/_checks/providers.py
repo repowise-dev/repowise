@@ -46,15 +46,10 @@ def _stale_page_guidance(counts: dict[str, int]) -> str:
         f"{total} stale ({', '.join(categories)}) — content no longer matches its "
         "current inputs or generation selection."
     )
+    detail += " `repowise update --full` refreshes them"
     if model_written:
-        detail += (
-            " `repowise generate --stale` is the cheaper refresh for model-written "
-            "pages that are still selected."
-        )
-    detail += (
-        " `repowise update --full` performs the authoritative reconciliation and "
-        "retires pages no longer selected."
-    )
+        detail += ", pricing the model-written ones before it rewrites them"
+    detail += "."
     return detail + " `--repair` only fixes store drift."
 
 
@@ -92,15 +87,19 @@ def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
     from repowise.core.providers.llm.registry import provider_available_for_repo
 
     llm_available = provider_available_for_repo(repo_path)
-    llm_detail = (
-        "Resolves for this repository"
-        if llm_available
-        else "None configured — prose degrades to a structural wiki; set a key or pass --provider"
-    )
+    llm_detail = "Resolves for this repository" if llm_available else _no_provider_detail(repo_path)
     # Keyless operation is supported, so this is informational rather than a
     # failing health check.  The detail tells users what init will actually do.
     checks.append(_check("LLM provider", True, llm_detail, check_id="llm-provider"))
     return checks
+
+
+def _no_provider_detail(repo_path: _DoctorPath) -> str:
+    """The shared upgrade line, naming a signed-in agent CLI on a paid plan when there is one."""
+    from repowise.cli.ui.subscription import upgrade_route
+    from repowise.core.index_scope import load_index_scope, upgrade_line
+
+    return f"None configured: {upgrade_line(load_index_scope(repo_path), upgrade_route(repo_path))}"
 
 
 def _hosted_account_check() -> DoctorCheck:
@@ -121,9 +120,10 @@ def _hosted_account_check() -> DoctorCheck:
         if creds.get("stale"):
             return _check(
                 name,
-                False,
+                True,
                 "Session expired or revoked; run repowise login",
                 check_id=check_id,
+                warn=True,
                 fix="repowise login",
             )
         account = auth.fetch_account()

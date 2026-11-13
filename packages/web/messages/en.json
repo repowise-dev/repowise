@@ -131,6 +131,7 @@
     }
   },
   "nav": {
+    "review": "Review",
     "dashboard": "Dashboard",
     "settings": "Settings",
     "overview": "Overview",
@@ -159,6 +160,7 @@
     "security": "Security"
   },
   "breadcrumb": {
+    "review": "Review",
     "overview": "Overview",
     "docs": "Docs",
     "chat": "Chat",
@@ -265,6 +267,10 @@
     "allCurrent": "Every index is current with its checkout. {parts}"
   },
   "views": {
+    "review": {
+      "title": "Review",
+      "description": "Pick a change, uncommitted work, a branch or a commit, to see what it reaches, which files to look at first, which tests to run and who to ask."
+    },
     "files": {
       "title": "Files",
       "description": "Drill the map to see how the tree is shaped and where health is thin, then filter the table to find a specific file."
@@ -274,6 +280,28 @@
       "description": "The things about this codebase you can't see anywhere else: how big it got, when it started, when the work happens, and the records it holds."
     },
     "commits": {
+      "periodLede": {
+        "better": "Health moved the right way: {resolved, plural, one {# finding} other {# findings}} resolved or improved, {worse, number} added or worsened.",
+        "worse": "Health slipped: {worse, plural, one {# finding} other {# findings}} added or worsened, {resolved, number} resolved or improved.",
+        "flatNone": "No analysed commit changed a health finding.",
+        "flat": "Health held even: {resolved, plural, one {# finding} other {# findings}} resolved or improved and as many added or worsened.",
+        "mix": "{topShare}% were {top}.",
+        "mixTwo": "{topShare}% were {top}, then {second} at {secondShare}%.",
+        "notable": "Biggest single cleanup: {subject}, {resolved, plural, one {# finding} other {# findings}} resolved.",
+        "coverage": "Health counts cover the {analysed, number} of {total, number} commits the current analyzer has read; the rest fill in as updates run.",
+        "unit": "{n, plural, one {commit} other {commits}}",
+        "empty": "No commits in this window.",
+        "categories": {
+          "feature": "features",
+          "fix": "fixes",
+          "refactor": "refactors",
+          "docs": "docs changes",
+          "test": "test changes",
+          "deps": "dependency updates",
+          "chore": "chores",
+          "other": "other work"
+        }
+      },
       "emptyTitle": "No scored commits yet",
       "emptyAction": "Go to overview",
       "title": "Commits",
@@ -284,12 +312,9 @@
       "changeRisk": "Change risk",
       "evolutionTitle": "How the work changed shape",
       "evolutionDescription": "Commit categories over time, read off the subject line. Fixes carry the accent because that is the series this chart exists to show.",
-      "viewLabel": "History view",
+      "groupLabel": "Group history by",
       "viewByChange": "By change",
       "viewByCommit": "By commit",
-      "viewEvents": "Events",
-      "viewReview": "Review a change",
-      "reviewDescription": "Pick the files a change touches to see what depends on them, what tends to change with them, and who should review.",
       "listTitle": "Commit history",
       "listDescription": "Newest first, each led by what it did to code health. The filters narrow the whole repository, not the page.",
       "hotspotMark": "Hotspot",
@@ -311,6 +336,9 @@
         "catchingUp": "Most commits in this window have not been analysed by the current analyzer yet. Recent commits come first, as updates run; the rows below show each older commit's direction from the earlier analysis."
       },
       "wins": {
+        "summaryResolved": "{n} resolved",
+        "summaryHealthier": "{n} healthier",
+        "summaryRefactored": "{n} refactored",
         "title": "Recent wins",
         "wholeRepo": "whole repository",
         "findingsLabel": "Findings resolved",
@@ -451,7 +479,7 @@
         "contracts": "{touched, plural, =0 {No workspace contract touched} one {# workspace contract touched} other {# workspace contracts touched}}; {breaking, plural, =0 {no breaking signature change} one {# breaking signature change} other {# breaking signature changes}}",
         "contracts_unchecked": "{touched, plural, =0 {No workspace contract touched} one {# workspace contract touched} other {# workspace contracts touched}}; signatures not compared",
         "cross_repo_consumers": "{links, plural, =0 {No consumer in another repo} one {# consumer in {names}{more, plural, =0 {} other { and # more}}} other {# consumers in {names}{more, plural, =0 {} other { and # more}}}}",
-        "decisions_crossed": "{accepted, plural, one {# accepted decision} other {# accepted decisions}}, {candidate, plural, one {# candidate} other {# candidates}}",
+        "decisions_crossed": "{accepted, plural, one {# decision in force} other {# decisions in force}}, {candidate, number} background",
         "decisions_none": "No decision crossed",
         "health_delta": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved",
         "health_delta_partial": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved (partial comparison)",
@@ -536,7 +564,7 @@
       "coChangeNoticeTitle": "Health scores changed in this release.",
       "coChangeNoticeMore": "What changed",
       "coChangeNoticeLess": "Hide",
-      "coChangeNoticeBody": "Some files now count as a different kind of code. A tools/ folder below the repo root is product code, so it is scored; only a root-level or engineering tools/ folder stays tooling. Python _vendor/ folders and Salesforce static-resource libraries count as vendored code, and prefixed migration folders under db/ count as migrations, so they leave the score. A tests/ folder inside a JavaScript or TypeScript src tree is product code, so its files are scored. Apex and COBOL files are scored, Scala gets dataflow findings, and comments inside a switch block do not count against its function. Repos with these files can move either way; other repos keep their scores.",
+      "coChangeNoticeBody": "Some findings and scores moved. Abstract, interface and extern methods are no longer counted as functions, a switch opens one nesting level and its case arms none, ternary dispatch chains in Java, C, C++, C#, Dart, Objective-C and PHP no longer add nesting, and flat boolean chains and TSX style objects are not counted as complexity or code. C++ operators, destructors and macro-declared functions and Dart constructors get names of their own. Several performance and maintainability findings now fire only on the pattern they describe, repeated nesting is advisory, C and C++ #if blocks count their largest arm, and COBOL GO TO DEPENDING ON is counted correctly. Repo averages leave out tooling, vendored and generated files on every surface, health bars read on the same five bands everywhere, and refactoring gains are priced by rescoring the file. Repos with these patterns can move either way; other repos keep their scores.",
       "tabs": {
         "performance": "Performance",
         "findings": "Findings",
@@ -622,7 +650,10 @@
       "title": "Knowledge Graph",
       "description": "Explore your codebase like a map: scroll to zoom, drag to pan, and double-click any card to dive into its layers, folders and files, ranked by how the code actually runs.",
       "loading": "Building the knowledge graph…",
-      "error": "Could not load the knowledge graph for this repository."
+      "error": "Could not load the knowledge graph for this repository.",
+      "errorHint": "The server did not return a map. Check that the repository is indexed and the API is running, then try again.",
+      "loadingHint": "Laying out every layer, folder and file. Large repositories take a few seconds.",
+      "showTestLinks": "Show test links"
     },
     "refactoring": {
       "title": "Refactoring",
@@ -644,17 +675,17 @@
     "decisions": {
       "title": "Decisions",
       "description": "What this codebase has settled on and what is true of the checkout you are standing in: the constraints, the tradeoffs, and the facts that catch people out.",
-      "ledeAccepted": "Accepted",
+      "ledeAccepted": "In force",
       "ledeConfirmed": "Confirmed",
       "ledeEmpty": "Decisions land here as the indexer mines them from pull requests, commit messages, code comments and your own sessions, and as you record them yourself — below, or with <code>repowise decision add</code>. Each one keeps the quote it was drawn from and the files it governs.",
-      "ledeNoGovernance": "Nothing here governs yet. A record governs only once somebody accepts it, naming the files it covers and why — mining it, seeing it recur, and scoring it confident all stop short of that.",
-      "ledeCandidates": "{count, plural, one {# candidate is} other {# candidates are}} waiting below, and {count, plural, one {it is} other {they are}} all still here: nothing was deleted and every id still resolves. If this page used to show confirmed decisions, those are the records now in Candidates. Accepting one takes a click and changes no code.",
-      "ledeAcceptedRecords": "{count, plural, one {# record is} other {# records are}} accepted: somebody read {count, plural, one {it} other {them}} and marked {count, plural, one {it} other {them}} as something the team stands behind, which is what makes {count, plural, one {it} other {them}} worth quoting back to an agent later.",
-      "ledeAcceptedMore": "{count, plural, one {# more is a candidate} other {# more are candidates}} the indexer mined and nobody has accepted. Until one is accepted it is a guess about your codebase rather than a rule for it, and no agent is ever given one. Open the Candidates lane below to work through them; accepting or dismissing one takes a click and changes no code.",
+      "ledeNoGovernance": "Nothing is in force yet. A decision an agent records comes into force when the commit it cites merges to the default branch.",
+      "ledeCandidates": "{count, plural, one {# background record is} other {# background records are}} below, mined from pull requests, commits, comments and sessions. {count, plural, one {It is} other {They are}} not in force; agents ask about {count, plural, one {it} other {them}} through get_why for the why behind the code.",
+      "ledeAcceptedRecords": "{count, plural, one {# decision is} other {# decisions are}} in force. A decision an agent records comes into force when the commit it cites merges to the default branch.",
+      "ledeAcceptedMore": "{count, plural, one {# more is a background record} other {# more are background records}} mined from history. Not in force; agents ask about them through get_why for the why.",
       "checkoutTitle": "About this checkout",
       "checkoutDescription": "Facts about the working tree rather than claims anybody made about it, derived at index time with no model call and no history. These are the ones that trip up a newcomer, human or agent.",
-      "reviewTitle": "Review",
-      "reviewDescription": "Split by what each record's acceptance amounts to, not by a status word. Every record is in exactly one lane and the counts add up: what governs, what nobody has reviewed, what has drifted from the code it names, what names nothing at all, and what has been retired."
+      "reviewTitle": "Records",
+      "reviewDescription": "What is in force, with pinned decisions first; what your agents decided this week; background mined from history; and what has been retired. Hand any one to your agent to pin, veto or change it."
     },
     "contributors": {
       "title": "Ownership",
@@ -862,7 +893,7 @@
       "syncDescription": "Pull recent commits into the existing index, or rebuild it from scratch.",
       "providerDescription": "A model key lets this repository's documentation be written with AI. Keys are stored with the repository and used by generation from the UI or the CLI.",
       "captureTitle": "Decision capture",
-      "captureDescription": "What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only ever produces candidates: nothing here can accept a decision on your behalf.",
+      "captureDescription": "What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only adds background records; nothing it mines is put in force.",
       "refactoringTitle": "Refactoring code generation",
       "refactoringDescription": "Opt in to turning refactoring plans into reviewable diffs with your configured model.",
       "healthTitle": "Index health",
@@ -921,10 +952,9 @@
         "andMore": "{list} and {count} more"
       },
       "ribbon": {
-        "files": "Files",
-        "filesSub": "across {count, plural, one {# repository} other {# repositories}}",
-        "symbols": "Symbols",
-        "symbolsSub": "functions, classes and methods",
+        "lowestHealth": "Lowest health",
+        "lowestHealthSub": "{name} · {healthy} of {scored} scored {scored, plural, one {repository} other {repositories}} Good or better",
+        "lowestHealthNone": "no health snapshot yet",
         "docFreshness": "Doc freshness",
         "docFreshnessNoPages": "no documentation generated yet",
         "docFreshnessSub": "{fresh} of {pages} pages fresh",
@@ -954,36 +984,6 @@
       "breadcrumb": "Code Health",
       "notFoundTitle": "Module not found",
       "notFoundDescription": "The requested module path doesn't exist in this repository's index."
-    },
-    "events": {
-      "title": "Events",
-      "description": "What moved between two index runs in a row: owners, bus factor, hotspots, contracts, decisions, dead code and test reach, per component.",
-      "repository": "Whole repository",
-      "count": "{count, plural, one {# event} other {# events}}, newest first.",
-      "emptyTitle": "No events yet",
-      "baselineOnly": "{runs, plural, =0 {No component snapshot is stored yet.} one {One component snapshot is stored, the baseline.} other {# component snapshots are stored.}} Events are what moved between two index runs in a row, so they start after the next `repowise update` on a new commit.",
-      "nothingMoved": "Nothing crossed a threshold across {runs} stored component snapshots.",
-      "noMatch": "No event matches these filters across {runs} stored component snapshots.",
-      "loadErrorTitle": "Could not load events",
-      "loadErrorBody": "The event list could not be read from the server. Reload the page to try again.",
-      "kinds": {
-        "ownership_shift": "Declared owner changed",
-        "owner_inactive": "Main owners stopped changing it",
-        "bus_factor_drop": "Bus factor fell",
-        "new_hotspot": "Files became hotspots",
-        "contract_added": "Provided contract appeared",
-        "contract_broken": "Contract with consumers disappeared",
-        "decision_stale": "Governing decision went stale",
-        "dead_code_growth": "Dead-code findings grew",
-        "test_reach_drop": "Test reach fell"
-      },
-      "severities": {
-        "critical": "critical",
-        "high": "high",
-        "medium": "medium",
-        "low": "low",
-        "info": "info"
-      }
     },
     "security": {
       "title": "Security",
@@ -1107,11 +1107,20 @@
     },
     "mcpTools": {
       "title": "Tool surface",
-      "description": "Which tools the MCP server offers an agent. Saved to the repo's .repowise/config.yaml and applied the next time you start repowise mcp for it.",
+      "description": "Which tools the MCP server lists to an agent. Saved to the repo's .repowise/config.yaml as mcp.tools, the same setting as repowise config set mcp.tools and repowise mcp --tools.",
       "workspaceOnly": "workspace only",
-      "summary": "{on} of {total} tools exposed. {mode}",
-      "summaryWorkspace": "Workspace mode, so workspace-only tools are available.",
-      "summarySingleRepo": "Single-repo mode, so workspace-only tools are unavailable here.",
+      "profile": "Tools listed",
+      "perClient": "Per client (recommended)",
+      "profileCore": "Core: answer, context, search, symbol, why",
+      "profileLean": "Lean: core plus get_risk",
+      "profileStandard": "Standard: Claude Code's default set",
+      "profileAll": "All: every tool available here",
+      "perClientHint": "Claude Code loads tool schemas only when needed, so it lists {standard} tools. Other clients load every schema each turn, so they list the {core} core tools. Switches below add or remove tools for every client.",
+      "summary": "{on} tools on, about {tokens, number} schema tokens per turn on clients that load schemas up front.",
+      "summaryPerClient": "Claude Code lists {standard} tools. Other clients list {others}, about {tokens, number} schema tokens per turn.",
+      "restart": "Applies when the MCP server next starts: restart it, or your agent.",
+      "coreBadge": "core",
+      "tokens": "~{n} tokens",
       "perRepoLabel": "Tools per repository",
       "perRepoHint": "Which tools the MCP server offers is saved per repository, in its Agents settings.",
       "chooseTools": "Choose tools",
@@ -1155,6 +1164,10 @@
       },
       "display": {
         "title": "Display"
+      },
+      "all": {
+        "title": "All settings",
+        "description": "Every repowise setting for this repository: its value, where it came from, and what it does. Changes save to .repowise/config.yaml, the same file repowise config set writes."
       }
     },
     "advanced": "Advanced",
@@ -1169,6 +1182,60 @@
       "defaultModelHint": "Repositories without their own model use the server default.",
       "webhooksLabel": "Webhooks",
       "webhooksHint": "A push on GitHub or GitLab can start a sync. The addresses are the same for every repository."
+    },
+    "registry": {
+      "search": "Search settings",
+      "searchPlaceholder": "Search by name or what it does",
+      "changedOnly": "Changed only",
+      "showInternal": "Show internal settings",
+      "countAll": "{total, plural, one {# setting} other {# settings}}",
+      "count": "{shown} of {total} settings",
+      "noMatches": "No setting matches these filters.",
+      "suggestionsTitle": "Suggested for this repository",
+      "suggestionsDescription": "Values that fit this repository better than the current ones.",
+      "apply": "Apply",
+      "applyAria": "Apply the suggested value for {key}",
+      "suggested": "Suggested: {value}",
+      "changed": "Changed",
+      "defaultValue": "default {value}",
+      "sources": {
+        "default": "Default",
+        "env": "Environment",
+        "repo_file": "Repo file",
+        "user_file": "User file"
+      },
+      "envOverride": "{name} is set in the environment and wins over the file.",
+      "envOnly": "Read from {name} in the server's environment.",
+      "userSetting": "Saved for your user, not this repository. Change it with repowise config set {key} in a terminal.",
+      "lockedReason": "Set above this repository, so it cannot be changed here.",
+      "reset": "Reset",
+      "resetAria": "Reset {key} to its default",
+      "copyPrompt": "Copy prompt",
+      "promptTitle": "Change {key} with your agent",
+      "promptDescription": "Your agent explains the setting, asks before changing it, and gives you the undo command.",
+      "saveFailed": "Could not save",
+      "unset": "unset",
+      "none": "(none)",
+      "listPlaceholder": "a, b",
+      "loading": "Loading settings…",
+      "loadFailed": "Could not load settings.",
+      "retry": "Try again",
+      "moreOn": "More options on the {page} page",
+      "areas": {
+        "account": "Account",
+        "attribution": "AI attribution",
+        "decisions": "Decisions",
+        "distill": "Command output",
+        "editor": "Editor files",
+        "events": "Change events",
+        "generation": "Documentation",
+        "health": "Code health",
+        "hooks": "Agent hooks",
+        "indexing": "Indexing",
+        "mcp": "MCP",
+        "providers": "Model providers",
+        "server": "Server"
+      }
     }
   },
   "repos": {
@@ -1282,6 +1349,8 @@
       "showTree": "Show pages tree",
       "askQuestion": "Explain \"{title}\" using the source code, and name the files it rests on.",
       "askLabel": "Ask about {title}",
+      "askPlaceholder": "Ask about this page",
+      "noProse": "This documentation is built from the index: structure, history and signals. A model has not written the prose for {count, plural, one {# page} other {# pages}} yet.",
       "more": "More",
       "menu": {
         "exportPage": "Export this page (Markdown)",
@@ -1290,6 +1359,74 @@
         "present": "Present",
         "readerLevel": "Reader level"
       }
+    },
+    "tree": {
+      "searchPlaceholder": "Search docs...",
+      "folderView": "Folder view",
+      "domainView": "Domain view",
+      "switchToFolderView": "Switch to folder view",
+      "switchToDomainView": "Switch to domain view",
+      "toggleFilters": "Toggle filters",
+      "typeLabel": "Type",
+      "statusLabel": "Status",
+      "all": "All",
+      "status": {
+        "fresh": "Fresh",
+        "stale": "Stale",
+        "outdated": "Outdated",
+        "unwritten": "Not written"
+      },
+      "showFreshnessDots": "Show freshness dots on every row",
+      "pageCount": "{count, plural, one {# page} other {# pages}}",
+      "summary": {
+        "stale": "{count} stale",
+        "outdated": "{count} outdated",
+        "unwritten": "{count} not written"
+      },
+      "noMatches": "No matching pages",
+      "showMore": "Show {next} more ({remaining} left)",
+      "stubTitle": "Built from the index. A model has not written this page yet.",
+      "onboarding": "Onboarding",
+      "walkthroughs": "Walkthroughs ({count})",
+      "supportingPackages": "Supporting packages ({count})",
+      "codeReference": "Reference",
+      "codeReferenceMeta": "{files, plural, one {# file} other {# files}} · {symbols, plural, one {# symbol} other {# symbols}}{other, plural, =0 {} other { · # other}}",
+      "referenceApi": "API",
+      "referenceFiles": "Files",
+      "referenceInfrastructure": "Infrastructure",
+      "referenceCycles": "Dependency cycles",
+      "projectActivity": "Project activity"
+    },
+    "reader": {
+      "selectPageTitle": "Select a page",
+      "selectPageBody": "Choose a file or module from the tree to read what Repowise wrote about it.",
+      "missingTitle": "No page for this one yet",
+      "missingBody": "Repowise has not written a page for <path></path>. It documents the files that carry the repository's shape first. Pick another from the tree, or re-run the index with a wider page budget.",
+      "builtFromIndex": "Built from the index",
+      "writtenBy": "Written by {model}",
+      "writtenByModel": "Written by a model",
+      "updated": "updated {relative}",
+      "inModule": "in {name}",
+      "openFilePage": "Open file page",
+      "openFilePageTitle": "Health, history and dependents for {path}",
+      "builtFromSources": "Built from {count, plural, one {# source} other {# source files}}",
+      "viewPage": "Page",
+      "viewReference": "Reference",
+      "viewsLabel": "Page or reference",
+      "referenceIntro": "What this page carries for search and agents: the questions it answers, the identifiers behind it and its git history.",
+      "proseLost": "This page is built from the index. A model was meant to write over it on the last run and the call did not complete.",
+      "proseNotWritten": "This page is built from the index. A model can write the how and why on top of it.",
+      "previous": "Previous",
+      "next": "Next",
+      "possibleInaccuracies": "Possible inaccuracies detected",
+      "related": "Related",
+      "relatedReasons": {
+        "imports": "imports",
+        "importedBy": "imported by",
+        "coChangesWith": "changes together",
+        "sameModule": "same module"
+      },
+      "moreRelated": "+ {count} more"
     },
     "bulk": {
       "button": "Write {count, plural, one {# page} other {# pages}} with AI",
@@ -1312,16 +1449,49 @@
     "breadcrumb": {
       "label": "Zoom location"
     },
+    "sheet": {
+      "label": "Selected item details"
+    },
     "hint": {
       "scroll": "Scroll to zoom",
       "drag": "Drag to pan",
       "doubleClick": "Double-click a card to dive in",
       "dismiss": "Dismiss hint"
     },
+    "controls": {
+      "label": "Map controls",
+      "zoomIn": "Zoom in (+)",
+      "zoomOut": "Zoom out (-)",
+      "fit": "Fit the whole system (0)",
+      "up": "Up one level (Esc)"
+    },
     "search": {
-      "placeholder": "Search files…",
+      "placeholder": "Search layers, folders, files…",
       "aria": "Search the system map",
-      "clear": "Clear search"
+      "clear": "Clear search",
+      "shortcut": "Press / to search",
+      "results": "Search results",
+      "usedMostBy": "Used most by {name}",
+      "repositoryRoot": "Repository root",
+      "kind": {
+        "system": "System",
+        "layer": "Layer",
+        "group": "Group",
+        "folder": "Folder",
+        "file": "File",
+        "container": "Container",
+        "external": "External"
+      }
+    },
+    "canvas": {
+      "aria": "Zoomable system map. Drag to pan, scroll to zoom, double-click a card to dive into it. Keys: plus and minus zoom, 0 fits the whole system, Enter selects the centre card or dives into the selected one, arrow keys pan or move between sibling cards, Escape closes the selection or goes up a level. Press slash to search, external systems included.",
+      "minimap": "Overview map. Click or drag to move the view.",
+      "relationCount": "{count, plural, one {# relation} other {# relations}}",
+      "capOnMap": "Showing the {shown} strongest on the map",
+      "externalUsage": "{imports, plural, one {# import} other {# imports}} from here · {files, plural, one {# file} other {# files}} in the repo",
+      "containerSpan": "Spans {count} containers",
+      "externalMostFrom": "Imported most by",
+      "externalDive": "Double-click to go to {name}"
     },
     "export": {
       "downloaded": "Downloaded {filename}",
@@ -1334,14 +1504,26 @@
       "building": "Building…"
     },
     "mapKey": {
+      "button": "Map key and relation filter",
+      "buttonFiltered": "Map key and relation filter, filter on",
       "showingFiltered": "Showing <verbs>{list}</verbs> only. Arrow weight is how many file pairs the relation covers.",
       "hoverHint": "Hover a card to see what it depends on. Arrow weight is how many file pairs the dependency covers.",
       "unclaimed": "{shown} of {total} files are not on the map; they belong to no layer.",
       "clear": "Clear",
-      "topRightDot": "Top-right dot",
-      "entryDotHelp": "Entry point, hotspot, dead code or on an execution flow. Hover for which.",
-      "footerDot": "Footer dot",
-      "healthBand": "Code health: {good} from {goodMin}, {fair} from {fairMin}, {needsWork} from {needsWorkMin}, {atRisk} below that."
+      "roleIcons": "Role icons",
+      "hotspot": "Hotspot",
+      "entryPoint": "Entry point",
+      "deadCode": "Dead code",
+      "roleIconsHelp": "A card's footer counts the files with each role; a file shows the icon beside its name. Hover a card to see if it is on an execution flow.",
+      "cornerScore": "Top-right number",
+      "healthBand": "The top-right number is code health: {good} from {goodMin}, {fair} from {fairMin}, {needsWork} from {needsWorkMin}, {atRisk} below that.",
+      "containers": "Containers.",
+      "containersHint": "Pick one to dim every card outside it.",
+      "dashedCard": "Dashed card",
+      "externalsHelp": "External system the code reaches. Hover one to see which parts use it.",
+      "linksShown": "Links shown:",
+      "linksShownSome": "strongest {shown, number} of {total, number} · hover a card for all of its links.",
+      "linksShownAll": "all {total, number} · hover a card to lift its links."
     },
     "detail": {
       "close": "Close details",
@@ -1356,8 +1538,32 @@
       "capSuffix": "{cap} on the map.",
       "language": "Language",
       "zoomIn": "Zoom in",
-      "readModule": "Read the module page",
-      "openFile": "Open file page"
+      "openDocs": "Read docs",
+      "openFile": "Open file",
+      "ask": "Ask about this",
+      "askQuestion": "Explain what {name} does in this system and how it connects to the rest, naming the files it rests on.",
+      "copyLink": "Copy link",
+      "linkCopied": "Link copied"
+    },
+    "c4": {
+      "technologies": "Technologies",
+      "container": "Container",
+      "containers": "Spans {count} containers",
+      "externals": "External systems",
+      "imports": "{count, plural, one {# import} other {# imports}}",
+      "kind": {
+        "extension": "Extension",
+        "web_app": "Web app",
+        "api": "API",
+        "cli": "CLI",
+        "worker": "Worker",
+        "library": "Library"
+      },
+      "external": {
+        "db": "Database",
+        "network": "Network",
+        "service": "Service"
+      }
     }
   },
   "architecture": {
@@ -1373,6 +1579,123 @@
     "graph": {
       "communitiesDescription": "Files that depend on each other more than on the rest of the repo, detected automatically. Circle size is how much code a group holds, and the nearer the centre, the nearer an entry point. Double-click a group to see the files inside it and what they depend on.",
       "filesDescription": "Every file, grouped into the communities it depends on most, with a band for each strong link between communities. Hover or select a file to see exactly what it imports and what imports it."
+    },
+    "map": {
+      "communityFallback": "Community {id}",
+      "allCommunities": "All communities",
+      "insideCommunity": "How the files in this group depend on each other.",
+      "openFileHint": "Double-click a file to open it.",
+      "truncation": {
+        "showing": "Showing the <shown></shown> most-connected files of <total></total>.",
+        "slowerHint": " Loading more will be slower.",
+        "seeAllGrouped": "See all of them grouped",
+        "loadMore": "Load {count} more"
+      },
+      "scope": {
+        "label": "Graph scope",
+        "communities": "Communities",
+        "communitiesHint": "One circle per detected community",
+        "files": "Files",
+        "filesHint": "Individual files and how they depend on each other",
+        "tree": "Tree",
+        "treeHint": "The same files as an outline, with what each one imports"
+      },
+      "narrowing": {
+        "showing": "Showing",
+        "allFiles": "All files",
+        "community": "Community",
+        "module": "Module",
+        "smallerModules": "Smaller modules"
+      },
+      "nodeFilter": {
+        "label": "Node filter",
+        "all": "All",
+        "allHint": "Show every node",
+        "hot": "Hot",
+        "hotHint": "High-churn files",
+        "dead": "Dead",
+        "deadHint": "Dead-code files"
+      },
+      "toolbar": {
+        "trace": "Trace",
+        "traceTitle": "Trace a dependency path or an execution flow",
+        "traceTitleFlowsOnly": "Trace an execution flow",
+        "traceAriaPathOpen": "Trace: dependency path open",
+        "traceAriaFlowsOpen": "Trace: execution flows open",
+        "findPath": "Find dependency path",
+        "executionFlows": "Execution flows",
+        "searchPlaceholder": "Search nodes…",
+        "searchLabel": "Search graph nodes",
+        "clearSearch": "Clear search"
+      },
+      "population": {
+        "allCounted": "All {total, plural, one {# file} other {# files}}",
+        "someCounted": "{visible, number} of {total, plural, one {# file} other {# files}}",
+        "allFiles": "All files",
+        "productionFiles": "Production files",
+        "ariaLabel": "Files counted: {summary}",
+        "popoverLabel": "Files counted",
+        "explainer": "Production code is always counted. Turning a kind on re-sizes and re-ranks every group.",
+        "tests": "Tests",
+        "examples": "Examples and benchmarks",
+        "docs": "Docs and config"
+      },
+      "legend": {
+        "communities": "{count, plural, one {# community} other {# communities}}",
+        "noCommunities": "No communities detected",
+        "smallerNotListed": "+{count, number} smaller not listed",
+        "notGrouped": "Not grouped",
+        "notGroupedTitle": "Files with no dependency on the rest of the repo",
+        "scopedFiles": "{count, plural, one {# file} other {# files}}",
+        "scopedOutside": "{count, number} outside",
+        "scopedEdges": "{count, plural, one {# edge} other {# edges}} shown",
+        "outsideGroup": "Outside this group",
+        "overviewFiles": "{count, plural, one {# file} other {# files}}",
+        "overviewThirdParty": "{count, number} third-party",
+        "overviewDependencies": "{count, plural, one {# dependency} other {# dependencies}}",
+        "nodesEdges": "{nodes, plural, one {# node} other {# nodes}} · {edges, plural, one {# edge} other {# edges}}",
+        "thirdPartyShown": "Third-party modules shown",
+        "thirdPartyHidden": "{count, plural, one {# third-party module} other {# third-party modules}} hidden",
+        "show": "Show",
+        "hide": "Hide",
+        "showThirdParty": "Show third-party modules",
+        "hideThirdParty": "Hide third-party modules",
+        "unlinkedNotDrawn": "{count, plural, one {# unlinked file} other {# unlinked files}} not drawn",
+        "unlinkedTitle": "Files with no dependency edge to anything drawn have no place in the layout and nothing to reveal on hover.",
+        "weakerLinksNotDrawn": "{count, plural, one {# weaker community link} other {# weaker community links}} not drawn",
+        "weakerLinksTitle": "Pairs of communities with too few dependencies between them to band. Their edges still show on a hovered or selected file.",
+        "languageGroup": "Language",
+        "communityGroup": "Community",
+        "edgesGroup": "Edges",
+        "focusGroup": "Hover or select a file",
+        "configLanguage": "Config",
+        "otherLanguage": "Other",
+        "deselectAll": "Deselect all",
+        "selectAll": "Select all",
+        "edgeKinds": {
+          "crossCommunity": "Cross-community",
+          "internal": "Internal",
+          "dynamic": "Co-change",
+          "lowConfidence": "Low confidence"
+        },
+        "scopedEdgeKinds": {
+          "internal": "Within this group",
+          "crossCommunity": "Leaving this group"
+        },
+        "overviewEdgeKinds": {
+          "crossCommunity": "Between communities",
+          "internal": "Within a community"
+        },
+        "imports": "imports",
+        "importedBy": "imported by",
+        "toggleEdges": "Toggle {label} edges",
+        "toggleCommunity": "Toggle community {label}",
+        "viewCaptions": {
+          "dead": "Showing unreachable files",
+          "hotfiles": "Most-committed files (30d)",
+          "unified": "Dead and high-churn files"
+        }
+      }
     }
   },
   "modelUpgrade": {
@@ -1397,6 +1720,8 @@
     "pages": "{count, plural, one {# page to write} other {# pages to write}}",
     "counting": "Counting pages",
     "signedInNote": "Uses your {name} sign-in.",
+    "planNote": "Uses your {name} sign-in and plan quota.",
+    "planNoteTimed": "Uses your {name} sign-in and plan quota, about {minutes, plural, one {# minute} other {# minutes}}.",
     "costNote": "About {cost} with this key, shown before anything runs.",
     "pricing": "Pricing with this key",
     "keyNote": "The price shows before anything runs.",
@@ -1458,9 +1783,9 @@
       },
       "decisions": {
         "label": "Decisions",
-        "unit": "to review",
-        "caption": "Candidates mined from PRs, commits and comments.",
-        "open": "Review"
+        "unit": "background records",
+        "caption": "Mined from pull requests, commits and comments; agents ask about them for the why.",
+        "open": "Open"
       },
       "docs": {
         "label": "Documentation",
@@ -1482,6 +1807,7 @@
       "lede": "It asks repowise first, so it reads less and guesses less.",
       "none": "No agents found on this machine yet. Setup lists every one repowise supports.",
       "connected": "Connected. Restart it to load the tools.",
+      "coreTools": "Lists the core repowise tools by default. Agents & editors in Settings turns on more.",
       "waiting": "Waiting for its first call",
       "firstCall": "First call {when}",
       "installed": "Installed on this machine. Writes <mono>{file}</mono>.",
@@ -1494,7 +1820,7 @@
       "listLabel": "Agents on this machine",
       "moreAgents": "{count, plural, one {# more agent} other {# more agents}} found. Setup lists them all.",
       "askLabel": "Ask it something",
-      "askRisk": "Which files are riskiest to change, and why?",
+      "askFlow": "How does the main flow in this repo work, end to end?",
       "askHotspot": "Why does {path} change so often?",
       "askStart": "Where should I start reading this repo?",
       "copy": "Copy",
@@ -1513,6 +1839,7 @@
         "local": "Your key or sign-in stays here"
       },
       "detected": "Found on this machine: {names}.",
+      "keyless": "Until you add a model, your agent's answers are ranked evidence from the index.",
       "syncTitle": "Keep the index in sync",
       "syncBody": "Updates after each commit through a git hook.",
       "syncFailed": "Couldn't change sync",
@@ -1566,6 +1893,28 @@
   },
   "commits": {
     "detail": {
+      "events": {
+        "title": "Flagged when this commit was indexed",
+        "description": "What the index run at this commit found had moved since the run before it.",
+        "repository": "Whole repository",
+        "kinds": {
+          "ownership_shift": "Declared owner changed",
+          "owner_inactive": "Main owners stopped changing it",
+          "bus_factor_drop": "Bus factor fell",
+          "new_hotspot": "Files became hotspots",
+          "contract_added": "Provided contract appeared",
+          "contract_broken": "Contract with consumers disappeared",
+          "decision_stale": "Governing decision went stale",
+          "dead_code_growth": "Dead-code findings grew",
+          "test_reach_drop": "Test reach fell"
+        },
+        "severities": {
+          "critical": "critical",
+          "high": "high",
+          "medium": "medium",
+          "low": "low"
+        }
+      },
       "title": "Review this commit",
       "fixPromptLabel": "Copy prompt to fix what this commit made worse",
       "fixPromptTitle": "Fix what this commit made worse",
@@ -1628,6 +1977,15 @@
     "regenFailed": "Couldn't start regeneration"
   },
   "decisions": {
+    "agent": {
+      "discover": "Check background records with your agent",
+      "agreements": "Move working agreements to CLAUDE.md",
+      "review": "Check with your agent",
+      "edit": "Change with your agent",
+      "veto": "Veto with your agent",
+      "pin": "Pin with your agent",
+      "unpin": "Unpin with your agent"
+    },
     "add": {
       "trigger": "Record a decision",
       "title": "Record a decision",
@@ -1638,13 +1996,20 @@
       "saveFailed": "Couldn't save capture settings."
     },
     "review": {
-      "accepted": "Accepted. It governs the files it names.",
-      "dismissed": "Dismissed. Reindexing will not propose it again.",
-      "acceptFailed": "Couldn't accept: {message}",
+      "accepted": "In force. It governs the files it names.",
+      "dismissed": "Dismissed. Reindexing will not mine it again.",
+      "acceptFailed": "Couldn't put it in force: {message}",
       "dismissFailed": "Couldn't dismiss: {message}",
-      "actionFailed": "The review action failed.",
+      "reaffirmed": "Reaffirmed. It is current again for the files it names.",
+      "reaffirmFailed": "Couldn't reaffirm: {message}",
+      "bulkDismissed": "Dismissed {count, plural, one {# record} other {# records}}.",
+      "actionFailed": "That action failed.",
       "previous": "Previous",
-      "next": "Next"
+      "next": "Next",
+      "pinned": "Pinned. An agent asks a person before replacing it.",
+      "unpinned": "Unpinned. It stays in force.",
+      "pinFailed": "Couldn't pin: {message}",
+      "unpinFailed": "Couldn't unpin: {message}"
     }
   },
   "files": {
@@ -1708,6 +2073,173 @@
       "worstFile": "What makes {path} the lowest-scoring file?",
       "decision": "Why did we decide \"{title}\"?",
       "trend": "How has code health moved since the previous index?"
+    },
+    "identity": {
+      "lines": "{lines} lines",
+      "synced": "synced {when}"
+    },
+    "ago": {
+      "now": "just now",
+      "s": "{value}s ago",
+      "m": "{value}m ago",
+      "h": "{value}h ago",
+      "d": "{value}d ago",
+      "w": "{value}w ago",
+      "mo": "{value}mo ago",
+      "y": "{value}y ago"
+    },
+    "quickActions": {
+      "sync": "Sync",
+      "resync": "Full Re-index",
+      "deadCode": "Dead Code Scan"
+    },
+    "body": {
+      "exploreTitle": "Explore this codebase",
+      "exploreMore": "Also"
+    },
+    "changeLine": {
+      "since": "Since the previous index, {when}",
+      "files": "{count, plural, one {file} other {files}}",
+      "codeHealth": "code health",
+      "hotspotHealth": "hotspot health"
+    },
+    "healthLede": {
+      "label": "Code health",
+      "unit": "out of 10",
+      "reportLink": "Full health report",
+      "empty": "Health scores land with the first index: complexity, duplication, coverage, churn and ownership across every file.",
+      "hint": "Average code health of every scored file, from 1 to 10.",
+      "hintHotspots": "Average code health of every scored file, from 1 to 10. Hotspots are the {hotspots} of {files} files that git history changes and fixes most.",
+      "hotspotsHealthy": "Hotspots average <score></score>, as healthy as the rest of the code.",
+      "hotspotsPayoff": "Hotspots average <score></score>, the place fixes pay off most."
+    },
+    "reads": {
+      "docsLabel": "Documentation",
+      "docsUnit": "pages",
+      "docsSplit": "{prose, number} with model-written prose, {withoutProse, number} built from the index",
+      "docsModules": "Across {modules, number} modules",
+      "docsProseBar": "Pages with model-written prose",
+      "docsIndexBar": "Pages built from the index alone"
+    },
+    "cards": {
+      "health": "Code health map",
+      "ownership": "Ownership",
+      "architecture": "Architecture",
+      "decisions": "Decisions",
+      "refactoring": "Refactoring",
+      "tests": "Tests",
+      "healthScored": "files scored",
+      "healthHotspots": "{hotspots, plural, one {hotspot} other {hotspots}} across {files, number} files",
+      "ownershipEmpty": "Who knows each file, and what depends on them",
+      "ownershipSole": "sole-owned {files, plural, one {file} other {files}}: one author, no second reader",
+      "architectureModules": "{modules, plural, one {module} other {modules}}, {entryPoints, number} entry points",
+      "decisionsEmpty": "No decisions recorded yet",
+      "decisionsRecorded": "recorded, of which {accepted, number} in force and {candidates, number} background",
+      "refactoringEmpty": "No refactoring analysis yet",
+      "refactoringOpen": "open {count, plural, one {opportunity} other {opportunities}}, one per file",
+      "testsCoverage": "line coverage from the latest report",
+      "testsUnknown": "Coverage and the tests that reach each file",
+      "testsNone": "No coverage report yet. Run your tests with coverage on, then add the report:"
+    },
+    "explore": {
+      "labels": {
+        "docs": "Docs",
+        "chat": "Chat",
+        "files": "Files",
+        "architecture": "Architecture",
+        "codeHealth": "Code health",
+        "knowledgeGraph": "Knowledge graph",
+        "coupling": "Change coupling",
+        "commits": "Commits",
+        "decisions": "Decisions",
+        "contributors": "Contributors",
+        "stats": "Stats",
+        "costs": "Costs"
+      },
+      "docs": "{pages, number} pages across {modules, number} modules",
+      "files": "{files, number} files with per-file docs, health and history",
+      "architecture": "Dependency graph, layers, and {entryPoints, number} entry points",
+      "codeHealth": "Per-file scores, {findings, number} open findings, coverage and refactoring targets",
+      "chat": "Ask this codebase a question and get an answer with its sources.",
+      "knowledgeGraph": "Entities, communities, and the paths between them",
+      "coupling": "Files that keep changing together, mined from commit history",
+      "commits": "Change-risk ranked history with agent provenance",
+      "decisions": "Why the code is shaped this way, from decision records and git history",
+      "contributors": "Bus factor, per-file maintainers, and the human/agent split",
+      "stats": "Size class, origin, lifetime churn, rhythm and records",
+      "costs": "What indexing this snapshot cost, by model and by run."
+    },
+    "attention": {
+      "title": "Needs attention",
+      "description": "Each area of work, led by the worst thing in it.",
+      "inventoryTitle": "Everything we found",
+      "inventoryDescription": "Every detector's open count by area. The actions above are the part worth doing.",
+      "scopeAreas": "{count, plural, one {# area} other {# areas}}",
+      "scopeOpen": "{count, number} open",
+      "empty": "Nothing needs attention right now.",
+      "areas": {
+        "security": "Security",
+        "health": "Code health",
+        "refactoring": "Refactoring",
+        "doc_drift": "Doc drift",
+        "decisions": "Decisions",
+        "ownership": "Ownership",
+        "dead_code": "Dead code"
+      },
+      "severity": {
+        "critical": "Critical",
+        "high": "High",
+        "medium": "Medium",
+        "low": "Low"
+      },
+      "healthUnit": "open findings",
+      "securityUnit": "in shipped source",
+      "securityElsewhere": "{count, number} more in tests and docs",
+      "refactoringUnit": "open opportunities",
+      "decisionsUnit": "drifting from the code",
+      "ownershipUnit": "sole-owned files",
+      "ownershipDetail": "One author, no second reader"
+    },
+    "next": {
+      "title": "Do next",
+      "titleCount": "Do next · {count, number}",
+      "timeFrame": "Time frame",
+      "week": "This week",
+      "weekHint": "What the last 7 days of commits changed",
+      "quarter": "This quarter",
+      "quarterHint": "What the last 90 days say is worth planning",
+      "tier": {
+        "act_now": "Now",
+        "plan": "Worth planning",
+        "improve_signal": "Improve what Repowise can see"
+      },
+      "allAnswered": "You have answered everything listed here. Answers are kept until the facts change.",
+      "showFewer": "Show fewer",
+      "showAll": "Show all {count, number}",
+      "listing": "Listing {shown, number} of {total, number}.",
+      "answered": "{count, plural, one {# action} other {# actions}} answered (done, snoozed or dismissed).",
+      "notChecked": "Not checked: {checks}.",
+      "runUpdate": "Run <code>repowise update</code> to include them.",
+      "emptyChecks": "Repowise ran {count, plural, one {# check} other {# checks}} over this index and none of them produced work for this time frame.",
+      "undo": "Undo",
+      "undoFailed": "Could not undo",
+      "saveFailed": "Could not save that; the action is back in the list",
+      "openDetails": "Open details",
+      "markDone": "Mark done",
+      "markedDone": "Marked done. It returns if the facts change.",
+      "snooze": "Snooze for 14 days",
+      "snoozed": "Snoozed for 14 days",
+      "dismiss": "Dismiss",
+      "dismissed": "Dismissed. It returns if the facts change.",
+      "effort": {
+        "S": "Small effort",
+        "M": "Medium effort",
+        "L": "Large effort"
+      },
+      "worthCheck": "worth a check",
+      "inferred": "(inferred)",
+      "openRow": "Open {title}",
+      "moreFor": "More for {title}"
     }
   },
   "risk": {
@@ -1936,9 +2468,11 @@
       "gated": "Held back"
     },
     "band": {
-      "healthy": "Healthy",
-      "warning": "Warning",
-      "alert": "Alert"
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "needs_work": "Needs work",
+      "at_risk": "At risk"
     },
     "danglingReason": {
       "no_provider": "no provider in the workspace",
@@ -2102,6 +2636,7 @@
         "unique_path": "Matched by path only",
         "ambiguous_path": "Path served by several services",
         "prefix_stripped": "Matched after stripping a prefix",
+        "param_segment": "Matched a route parameter",
         "manual": "Declared by hand",
         "manifest": "Declared in a manifest"
       },
@@ -2421,6 +2956,7 @@
         "detailUpToDate": "{files} files indexed at {commit}.",
         "detailIncomplete": "There's no complete index for this repository yet.",
         "detailBehind": "Indexed at {indexed}. HEAD has moved on to {live}.",
+        "detailMissing": "Indexed at {indexed}, a commit this history no longer has (rebased or reset), so pass a commit the index covers with --since.",
         "detailSkipped": "{count, plural, one {# file could not be parsed, so its symbols are missing from the graph.} other {# files could not be parsed, so their symbols are missing from the graph.}}"
       },
       "agent": {
@@ -2435,6 +2971,7 @@
         "detailWaitingOther": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call. {other} is installed, not connected.",
         "detailInstalled": "{agent} is installed. Connecting writes its MCP config.",
         "detailNone": "No coding agent found on this machine. Install one, then connect it here.",
+        "coreTools": "{count, plural, one {{agents} lists} other {{agents} list}} the core repowise tools by default. Agents & editors in Settings turns on more.",
         "detailNoCalls": "{agent} is registered but hasn't reached this index. If it opened a different folder, open {repo} in it or run repowise init there."
       },
       "sync": {
@@ -2452,7 +2989,7 @@
         "statusBuilt": "Built from index",
         "detailActive": "Using {provider}.",
         "detailReady": "{providers} ready on this machine.",
-        "detailNone": "Docs are built from the index. A model writes fuller docs and answers in chat."
+        "detailNone": "Docs are built from the index, and your agent's answers are ranked evidence until you add a model."
       },
       "coverage": {
         "title": "Test coverage",

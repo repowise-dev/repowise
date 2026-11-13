@@ -63,6 +63,15 @@ class TestExtraction:
     def test_empty_value_is_skipped(self) -> None:
         assert _modules('<script src=""></script>') == []
 
+    def test_self_closing_link(self) -> None:
+        assert _modules('<link rel="stylesheet" href="a.css" />') == ["a.css"]
+
+    @pytest.mark.parametrize("source", ['<script src="a.js"', '<script src="a.js" />'])
+    def test_a_script_the_grammar_reads_as_an_error_yields_nothing(self, source: str) -> None:
+        # Main's result, kept: tree-sitter-html reads both as ERROR. A browser does
+        # load the self-closing one (HTML ignores the "/"); Astro's scan reads its own.
+        assert _modules(source) == []
+
     @pytest.mark.parametrize(
         "ref",
         [

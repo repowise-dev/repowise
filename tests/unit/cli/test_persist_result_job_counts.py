@@ -47,6 +47,8 @@ def _result(pages: list[GeneratedPage]) -> SimpleNamespace:
     return SimpleNamespace(
         repo_name="r",
         index_persisted_incrementally=True,
+        parsed_files=[],
+        file_infos=[],
         generated_pages=pages,
         tech_stack=None,
         vector_store=None,

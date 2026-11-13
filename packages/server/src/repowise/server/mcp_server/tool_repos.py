@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.core.registry import mcp_tool_registry as mcp
-from repowise.server.auth import current_principal, get_authorizer
+from repowise.server.auth import Action, authorize_repo, checks_repo_access, current_principal
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._references import repository_identity
@@ -63,13 +63,17 @@ def _workspace_repos(registry: Any) -> list[dict[str, Any]]:
     return repos
 
 
-def _in_scope(*identifiers: str | None) -> bool:
+def _in_scope(*identifiers: str | None, registry: Any = None) -> bool:
     """True unless a repo-restricted principal is calling and none of these
-    identifiers (alias, path, id or name of one repo) is in its scope."""
+    identifiers (alias, path, id or name of one repo) is in its scope. With a
+    workspace ``registry``, the first identifier (the alias) also yields the
+    repo id, read only when a check runs."""
     principal = current_principal.get()
-    if principal is None or principal.repo_scope is None:
+    if principal is None or not checks_repo_access(principal):
         return True
-    return get_authorizer().can_access_repo(principal, identifiers)
+    if registry is not None:
+        identifiers = (registry.repo_id(identifiers[0]), *identifiers)
+    return authorize_repo(principal, identifiers, Action.READ)
 
 
 @mcp.tool(
@@ -88,10 +92,14 @@ async def list_repos() -> dict[str, Any]:
     """
     registry = _state._registry
     if registry is not None:
-        repos = [r for r in _workspace_repos(registry) if _in_scope(r["alias"], r["path"])]
+        repos = [
+            r
+            for r in _workspace_repos(registry)
+            if _in_scope(r["alias"], r["path"], registry=registry)
+        ]
         default_alias = registry.get_default_alias()
         default_paths = [r["path"] for r in repos if r.get("is_default")]
-        default_in_scope = _in_scope(default_alias, *default_paths)
+        default_in_scope = _in_scope(default_alias, *default_paths, registry=registry)
         return {
             "workspace": True,
             "workspace_root": registry.workspace_root.as_posix(),

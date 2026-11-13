@@ -109,10 +109,30 @@ def test_repeated_nesting_is_advisory():
     assert deductions == [0.0]
 
 
+@pytest.mark.parametrize("language", [None, "python", "typescript", "go", "java"])
+def test_low_cohesion_is_listed_not_scored(language):
+    """Mostly judged not worth acting on in a blind study; still detected, never deducted."""
+    assert is_advisory("low_cohesion")
+    scores, deductions = score_file([_result("low_cohesion", Severity.CRITICAL)], language)
+    assert scores == {"defect": 10.0, "maintainability": 10.0, "performance": 10.0}
+    assert deductions == [0.0]
+    (finding,) = attach_impacts([_result("low_cohesion")], [0.0], language)
+    assert finding.dimension == ADVISORY_DIMENSION
+
+
+@pytest.mark.parametrize("name", ["complex_method", "nested_complexity", "large_method"])
+def test_function_shape_markers_keep_their_score(name):
+    """These carry the defect signal; they stay score-bearing."""
+    assert not is_advisory(name)
+    scores, deductions = score_file([_result(name)])
+    assert scores["defect"] < 10.0 and scores["maintainability"] < 10.0
+    assert deductions[0] > 0.0
+
+
 def test_advisory_findings_do_not_dilute_a_real_deduction():
     """Adding an advisory finding to a scored one leaves the score alone."""
-    scored_only, _ = score_file([_result("low_cohesion")])
-    with_advisory, _ = score_file([_result("low_cohesion"), _result("mock_saturated_test")])
+    scored_only, _ = score_file([_result("god_class")])
+    with_advisory, _ = score_file([_result("god_class"), _result("mock_saturated_test")])
     assert scored_only == with_advisory
     assert with_advisory["defect"] < 10.0
 
@@ -203,7 +223,7 @@ def test_an_advisory_finding_is_never_a_files_dominant_cause():
 
     advisory = _finding("mock_saturated_test", 0.0, ADVISORY_DIMENSION)
     assert primary_finding([advisory]) is None
-    scored = _finding("low_cohesion", 0.5, "defect")
+    scored = _finding("god_class", 0.5, "defect")
     assert primary_finding([advisory, scored]) is scored
 
 
@@ -233,7 +253,7 @@ def test_severity_breakdown_excludes_advisory():
     counts = severity_breakdown(
         [
             _finding("mock_saturated_test", 0.0, ADVISORY_DIMENSION),
-            _finding("low_cohesion", 0.5, "defect"),
+            _finding("god_class", 0.5, "defect"),
         ]
     )
     assert counts["medium"] == 1
@@ -260,7 +280,7 @@ def test_advisory_is_absent_from_every_change_delta_counter():
     from repowise.core.analysis.change_health.matcher import FindingMatcher
 
     advisory = _finding("mock_saturated_test", 0.0, ADVISORY_DIMENSION)
-    scored = _finding("low_cohesion", 0.5, "defect")
+    scored = _finding("god_class", 0.5, "defect")
     keep = [f for f in (advisory, scored) if not is_advisory(f.biomarker_type)]
 
     both_sides = FindingMatcher({}).match([advisory, scored], [advisory, scored])

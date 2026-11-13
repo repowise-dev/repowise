@@ -1,9 +1,6 @@
 ---
 name: dead-code-cleanup
-description: >
-  Use when the user asks about cleanup, removing unused code, refactoring, reducing bundle size,
-  or identifying dead code in a Repowise-indexed codebase (.repowise/ directory exists). Also
-  activates when discussing technical debt, code hygiene, or repository maintenance.
+description: Find and safely remove unused code.
 user-invocable: false
 ---
 

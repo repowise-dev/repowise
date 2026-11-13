@@ -95,7 +95,7 @@ export function DecisionCreateForm({
       toast.success(
         governs
           ? "Decision recorded and confirmed"
-          : "Saved as a candidate. Add the files it governs to confirm it.",
+          : "Saved as background. Add the files it governs to put it in force.",
       );
       onCreated?.();
     } catch (err) {
@@ -216,7 +216,7 @@ export function DecisionCreateForm({
         >
           {governs
             ? "Recorded as confirmed, because you are the person confirming it. It will govern the files above."
-            : "Name the files it governs to confirm it. Without them it is saved as a candidate: nothing checks it against the code, and it does not reach an agent."}
+            : "Name the files it governs to confirm it. Without them it is saved as background: nothing checks it against the code, and it is not in force."}
         </p>
         {onCancel && (
           <Button type="button" variant="ghost" onClick={onCancel} disabled={saving}>
@@ -228,7 +228,7 @@ export function DecisionCreateForm({
             ? "Recording…"
             : governs
               ? "Record decision"
-              : "Save as candidate"}
+              : "Save as background"}
         </Button>
       </div>
     </form>

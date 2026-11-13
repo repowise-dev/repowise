@@ -76,6 +76,24 @@ def join_notices(*notices: str | None) -> str | None:
 _elapsed_ms = _hook_ledger._elapsed_ms
 emitting_build = _hook_ledger.emitting_build
 
+#: Total time one hook process may spend waiting on a locked index (wiki.db).
+#: A busy timeout applies per statement, so a locked index used to cost one
+#: wait per query, 30s each on the ORM path, and ran past the agent's 10s
+#: hook timeout. A read in WAL mode never waits, so this only bounds the
+#: contended case. The savings ledger writes keep their own timeouts: they
+#: contend with sibling hook processes, and a lost write is lost data.
+_SQLITE_WAIT_BUDGET_MS = 1500
+#: The budget counts from process start, so a slow start can spend it before
+#: any wait. The floor keeps a short grace for a writer's brief commit.
+_SQLITE_WAIT_FLOOR_S = 0.25
+
+
+def sqlite_wait_s(cap_s: float) -> float:
+    """Busy timeout for the next index connection: *cap_s*, or what is left
+    of this process's :data:`_SQLITE_WAIT_BUDGET_MS`, never under the floor."""
+    left_s = (_SQLITE_WAIT_BUDGET_MS - _elapsed_ms()) / 1000
+    return min(cap_s, max(_SQLITE_WAIT_FLOOR_S, left_s))
+
 
 def _ledger_key(surface: str, category: str, text: str) -> str:
     """Efficacy-ledger id for one emission, keyed on the text itself.
@@ -179,9 +197,15 @@ def hook_flag_enabled(repo_path: Path, flag: str, *, default: bool = False) -> b
     try:
         import yaml
 
+        from repowise.core.settings.model import parse_flag
+
         data = yaml.safe_load(text) or {}
         hooks = data.get("hooks")
-        return bool(isinstance(hooks, dict) and hooks.get(flag, default) is True)
+        value = hooks.get(flag) if isinstance(hooks, dict) else None
+        if value is None:
+            return default
+        # A value that is neither on nor off reads as off: these fail closed.
+        return parse_flag(value)
     except Exception:
         return False
 
@@ -206,16 +230,26 @@ _FORGONE_TABLE_SQL = (
 _FORGONE_MIGRATION_SQL = "ALTER TABLE forgone_savings ADD COLUMN filter TEXT NOT NULL DEFAULT ''"
 
 
-def _omission_db(repo_path: Path) -> Path | None:
+def _omission_db(repo_path: Path, *, create: bool = False) -> Path | None:
     """The omission store, or None when this repo has not opted into one.
 
     Path spelled out rather than imported: the constants live in
     ``distill.store``, which imports structlog: 250ms to learn that a repo
     without an omission store has no omission store. Kept in sync by
-    ``test_the_omission_store_path_matches_distills``.
+    ``test_the_omission_store_path_matches_distills``. With *create*, a repo
+    with ``.repowise/`` but no store yet gets one, once, without that import.
     """
     db_path = repo_path / ".repowise" / "omissions" / "omissions.db"
-    return db_path if db_path.exists() else None
+    if db_path.exists():
+        return db_path
+    if not create:
+        return None
+    try:
+        from repowise.core.savings.recorder import ensure_sidecar
+
+        return ensure_sidecar(repo_path)
+    except Exception:
+        return None
 
 
 def record_saving(
@@ -235,21 +269,24 @@ def record_saving(
     canonical report instead; writing both means this change neither regresses
     a published figure nor claims the old row improved.
 
-    Never creates the omission store: its absence means this repo has not
-    opted into distill bookkeeping, and a hook is not the place to decide
-    otherwise. Any failure is swallowed, because accounting must not cost the agent an
-    enrichment that is already computed.
+    Writes only in a repo that opted in with ``.repowise/``. Any failure is
+    swallowed, because accounting must not cost the agent an enrichment that
+    is already computed.
     """
-    db_path = _omission_db(repo_path)
+    db_path = _omission_db(repo_path, create=True)
     if db_path is None:
         return
     try:
         import sqlite3
 
         from repowise.core.distill.tracking import record_saving as _record
+        from repowise.core.savings.schema import initialize_savings_schema
 
-        con = sqlite3.connect(str(db_path), timeout=2)
+        con = sqlite3.connect(str(db_path), timeout=2, isolation_level=None)
         try:
+            # One version read when current. Repairs a store another process
+            # created but had not finished initializing when this one opened it.
+            initialize_savings_schema(con)
             _record(
                 con,
                 filter_name=filter_name,
@@ -350,7 +387,8 @@ def record_forgone(
 ) -> None:
     """Record a saving this repo *would* have made, had the surface been on.
 
-    Same never-create-the-store rule as :func:`record_saving`, into the
+    Never creates the omission store: a saving that did not happen is no
+    reason to open a ledger. Writes into the
     separate ``forgone_savings`` table so a hypothetical can never be summed
     into the published figure.
     """
@@ -424,8 +462,14 @@ def _record_opportunity(
 
 
 @lru_cache(maxsize=8)
-def _find_repo_root(cwd: Path) -> Path | None:
-    """Walk up from cwd to find a directory with .repowise/.
+def _find_roots(cwd: Path) -> tuple[Path, Path] | None:
+    """``(checkout, store)`` for *cwd*: where its files are, where its index is.
+
+    Walks up to the first directory with ``.repowise/``, which is both. A
+    linked git worktree with no ``.repowise/`` of its own, met on the way up,
+    reads its main checkout's index instead: the checkout is the worktree, the
+    store is the main checkout (see
+    :func:`repowise.cli._helpers.paths.borrowed_index_base`).
 
     ``~/.repowise`` is the user-level config dir and a ``.repowise`` at the
     system temp ROOT is always a stray artifact (a tool that indexed with
@@ -436,16 +480,54 @@ def _find_repo_root(cwd: Path) -> Path | None:
     the walk costs up to 20 ``resolve()``/``is_dir()`` syscall pairs. The
     cache lives only as long as the hook process, so it cannot go stale.
     """
+    from repowise.cli._helpers.paths import borrowed_index_base
+
     current = Path(cwd).resolve()
     try:
         skip = {Path.home().resolve(), Path(tempfile.gettempdir()).resolve()}
     except (OSError, RuntimeError):
         skip = set()
     for _ in range(20):
-        if current not in skip and (current / ".repowise").is_dir():
-            return current
+        if current not in skip:
+            if (current / ".repowise").is_dir():
+                return current, current
+            base = borrowed_index_base(current)
+            if base is not None:
+                return current, base
         parent = current.parent
         if parent == current:
             break
         current = parent
     return None
+
+
+def _find_repo_root(cwd: Path) -> Path | None:
+    """The directory whose ``.repowise/`` answers for *cwd*, or ``None``.
+
+    Every read and ledger write goes here. In a linked worktree that borrows
+    its main checkout's index this is the main checkout, so file paths must be
+    made relative to :func:`_checkout_root` instead.
+    """
+    roots = _find_roots(cwd)
+    return roots[1] if roots is not None else None
+
+
+def _checkout_root(cwd: Path, repo_path: Path) -> Path:
+    """Where *cwd*'s files live when *repo_path*'s index answers for it.
+
+    The worktree when it borrows *repo_path*'s index, else *repo_path*.
+    Repo-relative paths, file reads and git commands use this; the index,
+    config and ledger use *repo_path*.
+    """
+    roots = _find_roots(cwd)
+    return roots[0] if roots is not None and roots[1] == repo_path else repo_path
+
+
+def _borrowed_index(cwd: Path, repo_path: Path) -> bool:
+    """True when *cwd* is a worktree reading *repo_path*'s index.
+
+    That index describes the main checkout's indexed commit, not this
+    branch, so surfaces anchored on exact lines or on the index's own
+    freshness stay quiet here.
+    """
+    return _checkout_root(cwd, repo_path) != repo_path

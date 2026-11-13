@@ -4,9 +4,10 @@ import Link from "next/link";
 import { useTranslations } from "next-intl";
 import { ResponsiveTable, type ResponsiveColumn } from "@repowise-dev/ui/shared/responsive-table";
 import { HealthDeltaMark } from "@repowise-dev/ui/commits/health-delta-mark";
-import { formatLOC, formatRelativeTime } from "@repowise-dev/ui/lib/format";
+import { formatLOC } from "@repowise-dev/ui/lib/format";
 import type { ChangeEvidenceSummary, ChangeListItem } from "@/lib/api/changes";
 import { changeLabel, healthDeltaLabels } from "@/lib/changes";
+import { RelativeTime } from "@repowise-dev/ui/shared/relative-time";
 
 /**
  * The kept checklist, marked only when it flags something: a dot and a word
@@ -82,7 +83,7 @@ export function ChangesTable({ repoId, rows }: { repoId: string; rows: ChangeLis
       priority: 2,
       render: (c) => (
         <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]" title={c.merged_at ?? undefined}>
-          {c.merged_at ? formatRelativeTime(c.merged_at) : ""}
+          {c.merged_at ? <RelativeTime date={c.merged_at} /> : ""}
         </span>
       ),
     },

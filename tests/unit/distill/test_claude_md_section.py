@@ -37,10 +37,16 @@ class TestDistillSection:
     def test_teaches_distill_command(self, rendered: str) -> None:
         assert "repowise distill <cmd>" in rendered
 
-    def test_teaches_marker_expansion(self, rendered: str) -> None:
-        # Marker semantics: see a [repowise#<ref>: ...] marker → expand it.
-        assert "[repowise#" in rendered
-        assert "repowise expand <ref>" in rendered
+    def test_the_marker_itself_names_its_restore_command(self) -> None:
+        # The block names the command once; each marker carries how to restore
+        # what it omitted, so the block does not repeat it on every turn.
+        from repowise.core.distill.markers import _MARKER_TEMPLATE
 
-    def test_discourages_rerunning(self, rendered: str) -> None:
-        assert "never re-run the command" in rendered
+        assert "restore: repowise expand {ref}" in _MARKER_TEMPLATE
+
+    def test_hosts_without_a_hook_get_the_full_marker_rules(self) -> None:
+        from repowise.cli.agent_targets.instructions import DISTILL_SECTION
+
+        assert "[repowise#" in DISTILL_SECTION
+        assert "repowise expand <ref>" in DISTILL_SECTION
+        assert "Never re-run a command" in DISTILL_SECTION
