@@ -81,6 +81,13 @@ async def get_providers(request: Request, repo_id: str | None = None, detect: bo
     return list_provider_status(repo_id=repo_id, repo_path=repo_path)
 
 
+# Model calls ``generate`` makes, per repo, counted once per process: the count
+# loads the stored graph, seconds on a very large repo. It only times a route
+# while the repo has no model, and the first page ``generate`` writes saves the
+# provider, which ends the route, so a count cannot outlive what it sized.
+_generate_calls: dict[str, int] = {}
+
+
 async def _plan_route(
     request: Request, repo_id: str | None, repo_path: str | None
 ) -> dict | None:
@@ -103,9 +110,13 @@ async def _plan_route(
     if route is None:
         return None
     try:
-        factory = resolve_session_factory(request.app.state, repo_id)
-        async with get_session(factory) as session:
-            route = route_minutes(route, await generate_model_calls(session, repo_id, repo_path))
+        calls = _generate_calls.get(repo_id)
+        if calls is None:
+            factory = resolve_session_factory(request.app.state, repo_id)
+            async with get_session(factory) as session:
+                calls = await generate_model_calls(session, repo_id, repo_path)
+            _generate_calls[repo_id] = calls
+        route = route_minutes(route, calls)
     except Exception:
         logger.debug("providers: could not count generate's calls for %s", repo_id, exc_info=True)
     return {"provider": route.provider, "cli_name": route.cli_name, "minutes": route.minutes}

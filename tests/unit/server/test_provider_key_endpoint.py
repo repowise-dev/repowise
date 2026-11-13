@@ -259,15 +259,19 @@ async def test_detect_names_the_plan_route_timed_by_generate(client: AsyncClient
     from repowise.core.generation import scope
     from repowise.core.index_scope import FreeRoute
     from repowise.core.providers.llm import subscription
+    from repowise.server.routers import providers
 
+    monkeypatch.setattr(providers, "_generate_calls", {})
     repo = await create_test_repo(client)
     seen: list[str] = []
+    counted: list[str] = []
 
     def route(path):
         seen.append(str(path))
         return FreeRoute(provider="claude_cli", cli_name="Claude Code")
 
     async def calls(session, repo_id, repo_path):
+        counted.append(repo_id)
         return 300
 
     monkeypatch.setattr(subscription, "detect_free_route", route)
@@ -282,6 +286,11 @@ async def test_detect_names_the_plan_route_timed_by_generate(client: AsyncClient
     assert (await client.get(f"/api/providers?repo_id={repo['id']}")).json()["plan_route"] is None
     assert (await client.get("/api/providers?detect=true")).json()["plan_route"] is None
     assert len(seen) == 1
+
+    # A second open probes the sign-in again but reuses the count.
+    again = (await client.get(f"/api/providers?detect=true&repo_id={repo['id']}")).json()
+    assert again["plan_route"]["minutes"] == 60
+    assert len(seen) == 2 and counted == [repo["id"]]
 
 
 @pytest.mark.asyncio
