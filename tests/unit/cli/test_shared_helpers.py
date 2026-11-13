@@ -167,11 +167,17 @@ def test_setup_logging_silence_runs() -> None:
 def test_configure_cli_logging_quiet_by_default() -> None:
     import logging
 
-    prior = {n: logging.getLogger(n).level for n in ("repowise.core", "repowise.server")}
+    prior = {
+        n: logging.getLogger(n).level
+        for n in ("repowise.core", "repowise.server", "repowise.core.ingestion.parser")
+    }
     try:
         _setup.configure_cli_logging(verbose=False)
+        # The tree stays quiet at ERROR; only the parser logger keeps its
+        # WARNINGs so worker warnings like parser.symbol_bloat stay visible.
         assert logging.getLogger("repowise.core").level == logging.ERROR
         assert logging.getLogger("repowise.server").level == logging.ERROR
+        assert logging.getLogger("repowise.core.ingestion.parser").level == logging.WARNING
         # HTTP libs stay quiet regardless of verbosity.
         assert logging.getLogger("httpx").level == logging.ERROR
     finally:
@@ -199,3 +205,28 @@ def test_configure_cli_logging_verbose_shows_repowise_debug() -> None:
 
 def test_repo_session_exposes_open_repo_db() -> None:
     assert callable(_repo_session.open_repo_db)
+
+
+def test_configure_cli_logging_shows_repowise_warnings_by_default() -> None:
+    """Quiet-by-default still lets parser WARNINGs through (issue #4482).
+
+    ``parser.symbol_bloat`` and friends are emitted at WARNING level; quieting
+    the parser logger to ERROR made them unreachable on a normal run, while
+    raising the whole ``repowise.core`` tree leaked unrelated pipeline
+    warnings into the piped/JSON output.
+    """
+    import logging
+
+    prior = {
+        n: logging.getLogger(n).level
+        for n in ("repowise.core", "repowise.server", "repowise.core.ingestion.parser")
+    }
+    try:
+        _setup.configure_cli_logging(verbose=False)
+        parser = logging.getLogger("repowise.core.ingestion.parser")
+        assert parser.isEnabledFor(logging.WARNING)
+        assert not logging.getLogger("repowise.core").isEnabledFor(logging.WARNING)
+    finally:
+        for name, level in prior.items():
+            logging.getLogger(name).setLevel(level)
+        _setup.configure_cli_logging(verbose=False)
