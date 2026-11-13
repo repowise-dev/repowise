@@ -77,6 +77,9 @@ class SetupAgent(BaseModel):
     #: This agent's calls to this repo's index, from the local savings ledger.
     first_call_at: str | None = None
     last_call_at: str | None = None
+    #: The MCP tool profile this agent is listed when ``mcp.tools`` is unset:
+    #: ``standard`` for a client that defers schemas, else ``core``.
+    default_profile: str = "core"
 
 
 class SetupCalls(BaseModel):

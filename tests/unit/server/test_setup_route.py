@@ -173,6 +173,9 @@ async def test_setup_payload_shape(
     assert cursor["connected"] is False and cursor["installed"] is True
     assert cursor["first_call_at"] is None
     assert cursor["config_files"]["project"][0].endswith(".cursor/mcp.json")
+    # Claude Code defers schemas and is listed the standard tools; others the core ones.
+    assert claude["default_profile"] == "standard"
+    assert cursor["default_profile"] == "core"
     assert body["calls"] == {
         "first_call_at": "2026-09-30T10:00:00Z",
         "last_call_at": "2026-10-02T10:00:00Z",

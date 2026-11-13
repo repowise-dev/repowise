@@ -368,12 +368,14 @@ def _agents(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Agent rows with their own call times, and the repo-level call summary."""
     from repowise.core.agents.identity import UNKNOWN_AGENT, identity_for_target_id
+    from repowise.core.registry.tool_selection import default_profile
 
     rows = []
     for row in _listing_rows(listing):
         identity = identity_for_target_id(str(row.get("id", "")))
-        first, last = calls.get(identity.slug, (None, None)) if identity else (None, None)
-        rows.append(_agent_row(row, first, last))
+        slug = identity.slug if identity else UNKNOWN_AGENT
+        first, last = calls.get(slug, (None, None)) if identity else (None, None)
+        rows.append(_agent_row(row, first, last, default_profile(slug)))
     times = list(calls.values())
     summary = {
         "first_call_at": min((t[0] for t in times), default=None),
@@ -389,7 +391,7 @@ def _listing_rows(listing: dict | None) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
-def _agent_row(row: dict, first: str | None, last: str | None) -> dict[str, Any]:
+def _agent_row(row: dict, first: str | None, last: str | None, profile: str) -> dict[str, Any]:
     registrations = [r for r in row.get("registrations") or [] if isinstance(r, dict)]
     files = row.get("config_files")
     return {
@@ -410,6 +412,7 @@ def _agent_row(row: dict, first: str | None, last: str | None) -> dict[str, Any]
         "config_files": files if isinstance(files, dict) else {},
         "first_call_at": first,
         "last_call_at": last,
+        "default_profile": profile,
     }
 
 
