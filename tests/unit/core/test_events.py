@@ -205,6 +205,9 @@ def test_dead_code_growth_needs_both_floors():
 def test_test_reach_drop_by_share_or_measured_coverage():
     assert _kinds(_facts(), _facts(test_reach={"share": 0.5})) == [("test_reach_drop", "")]
     assert _kinds(_facts(), _facts(test_reach={"share": 0.55})) == []
+    # one file on a 10-file component is a 0.10 drop but not worth an alert
+    ten = {"share": 1.0, "production_files": 10}
+    assert _kinds(_facts(test_reach=ten), _facts(test_reach={**ten, "share": 0.9})) == []
     cov = {"line_coverage": {"pct": 80.0}}
     fell = {"line_coverage": {"pct": 70.0}}
     found = diff_snapshots({"c": _facts(test_reach=cov)}, {"c": _facts(test_reach=fell)})
