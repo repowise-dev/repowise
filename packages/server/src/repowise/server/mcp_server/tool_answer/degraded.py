@@ -7,7 +7,7 @@ with no LLM; body selection matches the question's identifiers, not prose.
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import time
 
 from repowise.core.persistence.database import get_session
@@ -50,6 +50,8 @@ from repowise.server.mcp_server.tool_answer.payload import (
 from repowise.server.mcp_server.tool_answer.retrieval import (
     serialize_hits as _serialize_hits,
 )
+
+_log = logging.getLogger("repowise.mcp.answer")
 
 
 def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> str:
@@ -228,7 +230,7 @@ async def _degraded_payload(
                 confidence,
                 degraded=reason,
                 retrieval_quality=retrieval_quality,
-                has_bodies=served_named_body,
+                has_bodies=served_named_body and not hops,
             ),
             repository=repository,
             targets=[*citations, *fallback_targets],
@@ -237,7 +239,7 @@ async def _degraded_payload(
     }
     # The upgrade line rides on the weak keyless replies only: a body or a
     # medium grade already gives the agent something to act on.
-    if reason == "no-llm-provider" and (confidence == "low" or not symbol_bodies):
+    if reason == "no-llm-provider" and (confidence == "low" or not payload.get("symbol_bodies")):
         payload["_meta"].update(
             await _keyless_note_meta(
                 served_root(repository),
@@ -274,7 +276,7 @@ async def _call_path_from_named(
     body = _named_body(symbol_bodies, question_ids)
     if body is None or not isinstance(body.get("lines"), list):
         return None, []
-    with contextlib.suppress(Exception):
+    try:
         async with get_session(ctx.session_factory) as session:
             root = await symbol_at(session, repository.id, body["path"], body["lines"][0])
             if root is not None:
@@ -285,6 +287,8 @@ async def _call_path_from_named(
                 )
                 if len(hops) >= 2:
                     return {**body, "upstream": upstream}, hops
+    except Exception:  # the body stays the reply
+        _log.debug("get_answer: call path failed", exc_info=True)
     return None, []
 
 

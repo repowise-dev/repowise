@@ -93,12 +93,19 @@ def test_the_gate_reads_motion_along_calls():
     assert is_call_path_question("What happens when a user runs `tool serve`?")
     assert not is_call_path_question("What is the retry limit?")
     assert not is_call_path_question("What happens when the upload fails?")
+    assert not is_call_path_question("Where does the API register its routes?")
+    assert not is_call_path_question("Why does handle print a stack trace?")
+    assert not is_call_path_question("How do data flows get documented?")
 
 
 def test_a_name_after_the_motion_word_is_the_destination():
     assert names_destination("How does a message reach run_job?", "run_job")
     assert not names_destination("How does handle reach the job runner?", "handle")
     assert names_destination("How does input end up in Store.save?", "Store.save")
+    # A leading "trace" does not make the start of the chain its end.
+    assert not names_destination("Trace how process_order flows to the db", "process_order")
+    # A short name inside another word is not the name.
+    assert not names_destination("How does the result get back to run?", "get")
 
 
 @pytest.mark.asyncio

@@ -347,9 +347,9 @@ async def _place_files(
 # How something gets somewhere: the calls out of the symbol the question names
 # answer it. Words of motion along a call chain, not of any one codebase.
 _PATH_RE = re.compile(
-    r"\b(?:reach(?:es|ed)?|ends? up|gets? (?:to|into|back)|flows?|dispatch(?:es|ed)?"
-    r"|routed?|routes|propagat\w*|pass(?:es|ed)? (?:to|into|through)|hands? (?:off|over)"
-    r"|trac(?:e|es|ed))\b",
+    r"\b(?:reach(?:es|ed)?|ends? up|gets? (?:to|into|back)|flows? (?:to|into|through)"
+    r"|dispatch(?:es|ed)?|propagat\w*|pass(?:es|ed)? (?:to|into|through)|hands? (?:off|over)"
+    r"|(?<!stack )trac(?:e|es|ed))\b",
     re.IGNORECASE,
 )
 # Sized to a reply of about 1-2 KB: three levels of call, the four heaviest
@@ -402,10 +402,20 @@ def _hop_row(caller: str, call_line: int, callee: str, start: int) -> str:
 
 
 def names_destination(question: str, name: str) -> bool:
-    """True when *name* comes after the question's motion word: the call ends there."""
-    motion = _PATH_RE.search(question)
-    at = question.lower().find(name.rsplit(".", 1)[-1].lower())
-    return motion is not None and at > motion.start()
+    """True when a motion word comes before *name* and none after: the call ends there.
+
+    "How does a message reach run_job" ends at ``run_job``; "trace how
+    handle flows to the store" starts at ``handle``.
+    """
+    named = None
+    for part in dict.fromkeys((name, name.rsplit(".", 1)[-1])):
+        named = named or re.search(rf"(?<![\w.]){re.escape(part)}(?!\w)", question, re.IGNORECASE)
+    if named is None:
+        return False
+    motions = [m.start() for m in _PATH_RE.finditer(question)]
+    return any(at < named.start() for at in motions) and not any(
+        at > named.start() for at in motions
+    )
 
 
 def _picked(
