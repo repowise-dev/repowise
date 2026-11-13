@@ -171,3 +171,7 @@ def test_the_hops_replace_the_named_body_and_the_rationale():
     assert payload["call_path"] == ["a -> b", "b -> c"]
     assert payload["call_path_from"] == f"into Jobs.dispatch {_CORE}:5"
     assert not {"symbol_bodies", "code_rationale", "grounding", "note"} & set(payload)
+
+
+def test_a_qualified_mention_of_the_name_counts():
+    assert names_destination("How does a message reach Agent.run_job and come back?", "run_job")

@@ -409,7 +409,7 @@ def names_destination(question: str, name: str) -> bool:
     """
     named = None
     for part in dict.fromkeys((name, name.rsplit(".", 1)[-1])):
-        named = named or re.search(rf"(?<![\w.]){re.escape(part)}(?!\w)", question, re.IGNORECASE)
+        named = named or re.search(rf"(?<!\w){re.escape(part)}(?!\w)", question, re.IGNORECASE)
     if named is None:
         return False
     motions = [m.start() for m in _PATH_RE.finditer(question)]
