@@ -1,10 +1,10 @@
 """Telemetry-based calibration from prior generation runs.
 
-When ``.repowise/db.sqlite`` exists and has ``wiki_pages`` rows for the
+When ``.repowise/wiki.db`` exists and has ``wiki_pages`` rows for the
 target repo, we read actual ``input_tokens`` / ``output_tokens`` per
 page_type and use the per-type average instead of the static
-heuristics. This makes the **second** run of ``repowise init`` /
-``repowise update`` on the same repo highly accurate.
+heuristics. This makes subsequent runs of ``repowise init`` /
+``repowise update`` / ``repowise generate`` on the same repo highly accurate.
 
 The function is intentionally tolerant of missing tables and schema
 drift — any error short-circuits to ``{}`` so the heuristic path runs.
@@ -17,6 +17,8 @@ from pathlib import Path
 
 import structlog
 
+from repowise.core.persistence.database import DB_FILENAME, REPOWISE_DIRNAME, get_repo_db_path
+
 log = structlog.get_logger(__name__)
 
 
@@ -26,12 +28,17 @@ def load_telemetry_averages(repo_path: Path | str) -> dict[str, tuple[float, flo
     Returns an empty dict when no telemetry is available — the caller
     falls back to static heuristics.
     """
-    db_path = Path(repo_path) / ".repowise" / "db.sqlite"
+    try:
+        db_path = get_repo_db_path(repo_path)
+    except Exception as exc:
+        log.debug("cost_estimator.telemetry_path_failed", error=str(exc))
+        return {}
+
     if not db_path.exists():
         return {}
 
     try:
-        with sqlite3.connect(str(db_path)) as conn:
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
             cur = conn.execute(
                 """
                 SELECT page_type, AVG(input_tokens), AVG(output_tokens), COUNT(*)
@@ -41,7 +48,7 @@ def load_telemetry_averages(repo_path: Path | str) -> dict[str, tuple[float, flo
                 """
             )
             rows = cur.fetchall()
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, OSError) as exc:
         log.debug("cost_estimator.telemetry_load_failed", error=str(exc))
         return {}
 
