@@ -637,8 +637,12 @@ def import_command(path: str | None, dry_run: bool, force: bool, fmt: str) -> No
         f"reaffirmed {len(result['reaffirmed'])}  unchanged {len(result['unchanged'])}  "
         f"skipped {len(result['skipped'])}  repaired {len(result['repaired'])}"
     )
+    unchecked = set(result["unchecked"])
     for decision_id in result["reaffirmed"]:
-        console.print(f"  [cyan]reaffirmed[/cyan] {decision_id[:8]}: the file's edit re-accepted")
+        note = " (no base token, not checked for staleness)" if decision_id in unchecked else ""
+        console.print(
+            f"  [cyan]reaffirmed[/cyan] {decision_id[:8]}: the file's edit re-accepted{note}"
+        )
     for skipped in result["skipped"]:
         console.print(f"  [yellow]skipped[/yellow] {skipped['id'][:8]}: {skipped['reason']}")
     _print_repairs(result["repaired"])

@@ -182,12 +182,22 @@ async def export_manifest(
 class ImportOutcome:
     """What reconciling the store against the manifest did."""
 
-    __slots__ = ("accepted", "created", "reaffirmed", "repaired", "skipped", "unchanged")
+    __slots__ = (
+        "accepted",
+        "created",
+        "reaffirmed",
+        "repaired",
+        "skipped",
+        "unchanged",
+        "unchecked",
+    )
 
     def __init__(self) -> None:
         self.created: list[str] = []
         self.accepted: list[str] = []
         self.reaffirmed: list[str] = []
+        #: Reaffirmed entries with no ``base_token``: never checked for staleness.
+        self.unchecked: list[str] = []
         self.unchanged: list[str] = []
         self.skipped: list[tuple[str, str]] = []
         #: The stale supersede pointers the repair deleted.
@@ -198,6 +208,7 @@ class ImportOutcome:
             "created": self.created,
             "accepted": self.accepted,
             "reaffirmed": self.reaffirmed,
+            "unchecked": self.unchecked,
             "unchanged": self.unchanged,
             "skipped": [{"id": i, "reason": r} for i, r in self.skipped],
             "repaired": self.repaired,
@@ -557,6 +568,8 @@ async def import_manifest(
                 # with the store — appended to the log, so the history of both
                 # acceptances survives.
                 outcome.reaffirmed.append(entry.id)
+                if not entry.base_token:
+                    outcome.unchecked.append(entry.id)
                 if dry_run:
                     continue
                 await _apply_entry(session, entry, record)

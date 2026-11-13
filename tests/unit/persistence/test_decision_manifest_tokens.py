@@ -112,6 +112,7 @@ async def test_a_legacy_file_still_reaccepts_its_edit(async_session, tmp_path, e
     outcome = await import_manifest(async_session, repo.id, tmp_path)
 
     assert outcome.reaffirmed == [entry.id]
+    assert outcome.unchecked == [entry.id]
     assert not outcome.skipped
     accepted = await latest_acceptance(async_session, record.id)
     assert accepted.id != current.id

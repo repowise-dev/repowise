@@ -69,6 +69,9 @@ def test_an_edited_entry_is_listed_as_reaffirmed(tmp_path: Path, with_token: boo
     assert payload["reaffirmed"] == [DECISION]
     assert "reaffirmed 1" in text
     assert f"reaffirmed {DECISION[:8]}" in text
+    # Only a legacy entry, with no token to compare, is flagged as unchecked.
+    assert payload["unchecked"] == ([] if with_token else [DECISION])
+    assert ("not checked for staleness" in text) is (not with_token)
 
 
 def test_a_stale_entry_is_listed_as_skipped_until_forced(tmp_path: Path) -> None:
