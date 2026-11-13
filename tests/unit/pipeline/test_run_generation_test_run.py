@@ -49,15 +49,11 @@ def _graph_builder_for(paths: list[str]):
     """A bare GraphBuilder whose graph has a node per file (pagerank on a
     graph with no edges is uniform, so ranking never drops any file before
     the cap)."""
-    import networkx as nx
+    from repowise.core.ingestion.graph.builder import GraphBuilder
 
-    from repowise.core.ingestion.graph import builder as _builder_mod
-
-    g = nx.DiGraph()
+    b = GraphBuilder()
     for p in paths:
-        g.add_node(p)
-    b = object.__new__(_builder_mod.GraphBuilder)
-    b._graph = g
+        b.graph().add_node(p, node_type="file")
     return b
 
 
@@ -102,3 +98,19 @@ async def test_no_test_run_generates_every_file(
     )
     assert _stub_generator.parsed_files is not None
     assert len(_stub_generator.parsed_files) == 15
+
+
+def test_test_run_rank_ignores_co_changes() -> None:
+    """Only a code edge lifts a file into the cap; co-change history does not (#5472)."""
+    from repowise.core.pipeline.phases._common import limit_to_top_pagerank
+
+    paths = [f"pkg/mod_{i}.py" for i in range(5)]
+    builder = _graph_builder_for(paths)
+    g = builder.graph()
+    g.add_edge("pkg/mod_1.py", "pkg/mod_4.py", edge_type="imports")
+    for src in ("pkg/mod_0.py", "pkg/mod_2.py"):
+        g.add_edge(src, "pkg/mod_3.py", edge_type="co_changes")
+
+    top = limit_to_top_pagerank(_parsed_files(5), builder, n=1)
+
+    assert [pf.file_info.path for pf in top] == ["pkg/mod_4.py"]
