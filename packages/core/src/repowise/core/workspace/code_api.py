@@ -194,7 +194,43 @@ def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
         if isinstance(include, str):
             source = entry.get("from")
             dirs.append(f"{source}/{include}" if isinstance(source, str) else include)
+    dirs += _flit_module_dirs(data)
+    dirs += _uv_build_module_dirs(data)
     return [d.strip("/") for d in dirs if isinstance(d, str) and d.strip("/")]
+
+
+def _module_paths(module: Any, roots: tuple[str, ...]) -> list[str]:
+    """A dotted module name as package paths, one per *root* it may sit under.
+
+    ``acme.providers.ftp`` is the import path of a namespace package; the
+    directory a build backend ships for it is the dots spelled as separators,
+    ``acme/providers/ftp``, under whichever root that backend uses.
+    """
+    if not isinstance(module, str):
+        return []
+    path = module.strip().replace(".", "/").strip("/")
+    if not path:
+        return []
+    return [f"{root.strip('/')}/{path}" if root.strip("/") else path for root in roots]
+
+
+def _flit_module_dirs(data: dict[str, Any]) -> list[str]:
+    """``[tool.flit.module] name``, under ``src/`` or beside the manifest.
+
+    flit names the import package in the TOML, which is the only reliable
+    source when the distribution name does not spell it - a namespace package
+    such as ``acme-providers-ftp`` shipping ``acme.providers.ftp`` has no
+    top-level directory a guess from the name could find.
+    """
+    return _module_paths(_table(data, "tool", "flit", "module").get("name"), ("src", ""))
+
+
+def _uv_build_module_dirs(data: dict[str, Any]) -> list[str]:
+    """uv_build's ``module-name``, under its ``module-root``."""
+    backend = _table(data, "tool", "uv", "build-backend")
+    root = backend.get("module-root")
+    roots = (root, "") if isinstance(root, str) else ("src", "")
+    return _module_paths(backend.get("module-name"), roots)
 
 
 def dunder_all(path: Path) -> frozenset[str] | None:

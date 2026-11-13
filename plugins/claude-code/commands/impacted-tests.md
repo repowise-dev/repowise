@@ -25,7 +25,8 @@ an index lookup. Useful as a pre-merge / CI gate ("run these 40, not all 4,000")
 - "staged" → `repowise impacted-tests --staged`
 
 Useful flags:
-- `--format list` — test ids one per line (pipe to `xargs pytest`)
+- `--format list` — test ids one per line (pipe to `xargs pytest`); nothing on
+  stdout and `Run every test: <reason>` on stderr when the whole suite must run
 - `--format json` — full report
 - `--format args` — one line of runner arguments, or `:all` when the whole suite
   must run; reasons go to stderr. `--runner pytest|go|jest|files|auto` picks the

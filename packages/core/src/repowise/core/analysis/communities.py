@@ -649,7 +649,7 @@ def file_community_input(
     edge_items = sorted(
         f"{u}\0{v}\0{d.get('edge_type', '<absent>')}"
         for u, v, d in graph.edges(file_nodes, data=True)
-        if v in file_set and d.get("edge_type") not in TEMPORAL_EDGE_TYPES
+        if v in file_set and d.get("edge_type") not in NON_CODE_EDGE_TYPES
     )
     digest = hashlib.sha256(f"{repo_name}\0{community_code_fingerprint()}".encode())
     for item in (*node_items, "\1", *edge_items):
