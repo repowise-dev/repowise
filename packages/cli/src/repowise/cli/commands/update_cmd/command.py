@@ -313,6 +313,8 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
 @click.option(
     "--dry-run", is_flag=True, default=False, help="Show affected pages without regenerating."
 )
+@click.option("--render-budget", type=click.IntRange(min=1), default=None,
+              help="Max stale pages built from code to render this run; resume on the next update.")
 @click.option(
     "--workspace",
     "-w",
@@ -468,6 +470,7 @@ def update_command(
     include_working_tree: bool = False,
     defer_docs: bool = False,
     refresh_git: bool = False,
+    render_budget: int | None = None,
 ) -> None:
     """Incrementally update the index and pages for files changed since the last sync.
 
@@ -500,6 +503,7 @@ def update_command(
         include_working_tree=include_working_tree,
         defer_docs=defer_docs,
         refresh_git=refresh_git,
+        render_budget=render_budget,
     )
 
 
@@ -695,6 +699,8 @@ def _emit_done(
             from repowise.cli.commands._page_freshness import stale_page_count
 
             extra.update(docs_deferred=True, stale_pages=run_async(stale_page_count(run.repo_path)))
+        if "pending_render_pages" in run.state:
+            extra["render_backlog"] = run.state["pending_render_pages"]
         run.emitter.done(
             ok=True,
             pages_generated=pages_generated,
@@ -735,6 +741,9 @@ def _resolve_target(opts: UpdateOptions):
 
 
 def _validate_update_options(opts: UpdateOptions) -> None:
+    if opts.render_budget is not None and (opts.render_budget < 1 or opts.full or opts.defer_docs):
+        raise reasoned_error("--render-budget requires a positive budget without --full or --defer-docs.",
+                             reason="invalid_render_budget")
     if opts.refresh_git and opts.full:
         raise reasoned_error(
             "--refresh-git keeps the current index scope; use --full separately to upgrade it.",
@@ -755,6 +764,9 @@ def _validate_update_options(opts: UpdateOptions) -> None:
 
 
 def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> UpdateOutcome:
+    if opts.render_budget is not None:
+        raise reasoned_error("--render-budget supports one repo at a time; pass --no-workspace.",
+                             reason="render_budget_needs_one_repo")
     if opts.refresh_git:
         raise reasoned_error(
             "--refresh-git supports one repo at a time. Pass its path and --no-workspace.",
@@ -1034,6 +1046,7 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         and not run.analyzer_changed
         and not run.history_stale
         and not run.refresh_git
+        and not state.get("pending_render_pages")
     )
     run.git_is_current = current_but_config and not run.config.changed
     # A store read, so only asked when the run would otherwise exit or take the
@@ -1416,6 +1429,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
         or run.stale_db_paths
         or run.stale_deterministic_ids
         or run.fill_file_pages
+        or run.state.get("pending_render_pages")
     )
 
 
@@ -1908,6 +1922,9 @@ class _TemplatePages:
 def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Index-only: re-render a template wiki (no model), persist, and finish."""
     docs_mode = resolve_docs_mode(run.state)
+    if opts.render_budget is not None and (docs_mode != "deterministic" or opts.defer_docs):
+        raise reasoned_error("--render-budget requires documentation built from code without --defer-docs.",
+                             reason="render_budget_needs_template_wiki")
     pages = _TemplatePages(
         docs_mode=docs_mode,
         renderer_render_ok=docs_mode != "llm" and not opts.defer_docs,
@@ -1946,21 +1963,55 @@ def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
 def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePages) -> None:
     from .deterministic import (
+        hydrate_symbol_complexity,
         load_prior_page_ids,
         persist_deterministic_pages,
+        with_stored_git_meta,
     )
 
     _stage(run, "generate")
-    prior_ids = load_prior_page_ids(run.repo_path, content_paths=run.affected.regenerate)
-    full_scope = run.full_generation or run.renderer_changed
+    if opts.render_budget is not None or run.state.get("pending_render_pages"):
+        paths = [pf.file_info.path for pf in run.parsed_files]
+        hydrate_symbol_complexity(
+            run.repo_path, run.parsed_files,
+            set(paths) - {fd.path for fd in run.file_diffs},
+        )
+        complete_git_meta = with_stored_git_meta(run.repo_path, run.git_meta_map, paths)
+        if complete_git_meta is None:
+            run.degraded.append("Documentation backlog retained: stored Git history unreadable")
+            out.renderer_render_ok = False
+            return
+        run.render_git_meta = complete_git_meta
+    prior_ids = load_prior_page_ids(
+        run.repo_path,
+        content_paths=run.affected.regenerate if opts.render_budget is None else (),
+        load_revisions=opts.render_budget is not None,
+    )
+    full_scope = run.full_generation or run.renderer_changed or bool(
+        run.state.get("pending_render_pages")
+    )
 
     degraded = run.degraded
     degraded_before_render = len(degraded)
     with timed(run.timings, "render"):
         out.pages = _render_template_page_set(opts, run, out, prior_ids, full_scope)
-    out.renderer_render_ok = not (run.renderer_changed or run.wiki_rebuild) or (
+    out.renderer_render_ok = not (
+        run.renderer_changed or run.wiki_rebuild or run.state.get("pending_render_pages")
+    ) or (
         bool(out.pages) and len(degraded) == degraded_before_render
     )
+    if opts.render_budget is not None:
+        if "render_stale_ids" not in out.render_stats and not out.renderer_render_ok:
+            raise RuntimeError("Documentation render planning failed; completion was not recorded.")
+        selected = out.render_stats.get("render_stale_ids", set())
+        out.render_stats["render_backlog"] = len(selected - {p.page_id for p in out.pages})
+        out.renderer_render_ok = (out.render_stats["render_backlog"] == 0
+                                 and len(degraded) == degraded_before_render)
+        run.state["pending_render_pages"] = out.render_stats["render_backlog"]
+        if not out.renderer_render_ok:
+            console.print(f"  Pages built from code still pending: {out.render_stats.get('render_backlog', 0)}")
+    elif out.renderer_render_ok:
+        run.state.pop("pending_render_pages", None)
     if run.config.generation_changed and len(degraded) > degraded_before_render:
         raise RuntimeError(
             "Configuration-driven page generation failed; the previous "
@@ -1974,10 +2025,10 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
                 repo_path=run.repo_path,
                 generated_pages=out.pages,
                 # Cascade-reached pages the render did not touch.
-                decay_paths=run.affected.decay_only,
+                decay_paths=[] if opts.render_budget is not None else run.affected.decay_only,
                 degraded=degraded,
             )
-        if run.head:
+        if run.head and out.renderer_render_ok:
             run.state["last_docs_commit"] = run.head
         console.print(
             f"  [green]✓[/green] Rebuilt [bold]{len(out.pages):,}[/bold] "
@@ -1994,6 +2045,17 @@ def _render_template_page_set(
     )
 
     assert run.config is not None
+    if opts.render_budget is not None:
+        return regenerate_deterministic_pages(
+            repo_path=run.repo_path, parsed_files=run.parsed_files, source_map=run.source_map,
+            graph_builder=run.graph_builder, repo_structure=run.repo_structure,
+            git_meta_map=run.render_git_meta, regenerate_paths=run.affected.regenerate,
+            cfg=run.cfg, concurrency=opts.concurrency, degraded=run.degraded,
+            dead_code_report=run.dead_code_report, prior_page_ids=prior_ids,
+            full_scope=True, stats_out=out.render_stats, render_budget=opts.render_budget,
+            changed_paths={fd.path for fd in run.file_diffs},
+            embed_during_generation=not run.config.generation_changed,
+        )
     pages = regenerate_deterministic_pages(
         repo_path=run.repo_path,
         parsed_files=run.parsed_files,
@@ -2045,6 +2107,11 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
         else [fd.path for fd in run.file_diffs]
     )
     config_vector_store = _config_vector_store(run, pages, template_wiki)
+    if "render_stale_ids" in pages.render_stats:
+        from .deterministic import mark_render_backlog
+
+        mark_render_backlog(run.repo_path,
+                            pages.render_stats["render_stale_ids"] - {p.page_id for p in pages.pages})
     if template_wiki and pages.renderer_render_ok:
         record_wiki_rebuilt(run)
     _persist_index_only_update(
@@ -2089,7 +2156,8 @@ def _persist_index_only(run: UpdateRun, pages: _TemplatePages) -> None:
             if pages.docs_deferred
             else None
         ),
-        stamp_config=not (pages.docs_deferred and config.generation_changed),
+        stamp_config=not ((pages.docs_deferred or not pages.renderer_render_ok)
+                          and config.generation_changed),
         timings=run.timings,
     )
 
@@ -2119,7 +2187,9 @@ def _full_generation_page_ids(
     full_render = run.config.generation_changed or (
         (run.renderer_changed or run.wiki_rebuild) and pages.renderer_render_ok
     )
-    if template_wiki and full_render and not pages.docs_deferred:
+    if (template_wiki and full_render and pages.renderer_render_ok and not pages.docs_deferred):
+        if "render_page_ids" in pages.render_stats:
+            return pages.render_stats["render_page_ids"]
         return {page.page_id for page in pages.pages}
     return None
 
@@ -2523,6 +2593,7 @@ def run_update(
     include_working_tree: bool = False,
     defer_docs: bool = False,
     refresh_git: bool = False,
+    render_budget: int | None = None,
 ) -> UpdateOutcome:
     """Incrementally update wiki pages for files changed since last sync.
 
@@ -2565,6 +2636,7 @@ def run_update(
         include_working_tree=include_working_tree,
         defer_docs=defer_docs,
         refresh_git=refresh_git,
+        render_budget=render_budget,
     )
     _validate_update_options(opts)
     run = _start_run(opts)
@@ -2587,6 +2659,11 @@ def run_update(
         return _full_upgrade(opts, run)
     _load_sync_base(opts, run)
     _check_config_and_renderer(run)
+    if opts.render_budget is not None and (
+        not run.index_only or resolve_docs_mode(run.state) != "deterministic"
+    ):
+        raise reasoned_error("--render-budget requires documentation built from code and --index-only or --no-docs.",
+                             reason="render_budget_needs_template_wiki")
     if not opts.defer_docs:
         resolve_wiki_rebuild(opts, run)
     _collect_working_tree(opts, run)

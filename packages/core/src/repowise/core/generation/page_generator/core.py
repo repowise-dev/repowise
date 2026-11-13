@@ -14,7 +14,7 @@ The level-by-level orchestration of ``generate_all`` lives in
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -277,7 +277,7 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
         dead_code_report: Any | None = None,
         decision_report: Any | None = None,
         external_systems: list[dict] | None = None,
-        on_page_ready: Callable[[GeneratedPage], None] | None = None,
+        on_page_ready: Callable[[GeneratedPage], Awaitable[None] | None] | None = None,
         kg_modules: list[dict] | None = None,
         kg_data: dict | None = None,
         only_page_ids: set[str] | None = None,
@@ -286,6 +286,10 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
         on_warning: Callable[[str], None] | None = None,
         persisted_page_ids: set[str] | None = None,
         on_embed: Callable[[int, bool], None] | None = None,
+        render_budget: int | None = None,
+        changed_paths: set[str] | None = None,
+        render_stats: dict | None = None,
+        on_render_plan: Callable[[set[str]], Any] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -317,6 +321,12 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
 
         ``on_embed(count, finished)`` brackets each batched embed of ``count``
         pages, so a display can show embedding as its own step.
+
+        ``render_budget`` limits stale deterministic pages, using per-page
+        source/renderer revisions and ``changed_paths`` for priority. Its
+        census and backlog are returned in ``render_stats``. ``on_render_plan``
+        runs once before rendering so the caller can durably mark that backlog.
+        ``on_page_ready`` may return an awaitable to commit each completed page.
         """
         from .orchestrate import run_generate_all
 
@@ -358,6 +368,10 @@ class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin
             on_warning=on_warning,
             persisted_page_ids=persisted_page_ids,
             on_embed=on_embed,
+            render_budget=render_budget,
+            changed_paths=changed_paths,
+            render_stats=render_stats,
+            on_render_plan=on_render_plan,
         )
 
     # ------------------------------------------------------------------

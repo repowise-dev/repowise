@@ -915,6 +915,37 @@ class PageCheckpointer:
         if self._queue is not None and self.failure is None:
             self._queue.put_nowait(page)
 
+    async def commit_page(self, page: Any) -> None:
+        """Commit the page before bounded rendering admits more work."""
+        self.on_page_ready(page)
+        if self._queue is not None:
+            await self._queue.join()
+        if self.failure is not None:
+            raise RuntimeError(f"Page checkpoint failed: {self.failure}")
+
+    async def mark_stale(self, page_ids: set[str]) -> None:
+        """Mark the planned backlog before the first bounded page is committed."""
+        from repowise.core.persistence import get_session, upsert_repository
+        from repowise.core.pipeline.persist.tombstones import mark_page_ids_stale
+
+        if self.failure is not None:
+            raise RuntimeError(f"Page checkpoint failed: {self.failure}")
+        async with get_session(self._session_factory) as session:
+            repo = await upsert_repository(session, name=self.repo_name,
+                                           local_path=str(self.repo_path))
+            await mark_page_ids_stale(session, repo.id, page_ids)
+
+    async def load_prior_pages(self, page_ids: set[str]) -> dict:
+        """Read the selected reuse bodies through this sink's native session."""
+        from repowise.core.persistence import get_repository_by_path, get_session
+        from repowise.core.persistence.crud import load_prior_pages
+
+        async with get_session(self._session_factory) as session:
+            repo = await get_repository_by_path(session, str(self.repo_path))
+            return {} if repo is None else await load_prior_pages(
+                session, repo.id, page_ids=sorted(page_ids),
+            )
+
     async def _drain(self) -> None:
         from repowise.core.persistence import (
             get_session,
@@ -928,8 +959,10 @@ class PageCheckpointer:
         while True:
             page = await queue.get()
             if page is None:
+                queue.task_done()
                 return
             if self.failure is not None:
+                queue.task_done()
                 continue  # keep consuming so close() never hangs
             try:
                 async with get_session(self._session_factory) as session:
@@ -943,6 +976,8 @@ class PageCheckpointer:
             except Exception as exc:
                 self.failure = str(exc)
                 log.warning("page_checkpoint_disabled", error=str(exc))
+            finally:
+                queue.task_done()
 
     async def close(self) -> None:
         if self._queue is not None and self._task is not None:

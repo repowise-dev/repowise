@@ -46,6 +46,7 @@ def _page(page_id: str) -> GeneratedPage:
 def _fake_run(max_concurrency: int = 1) -> SimpleNamespace:
     """Duck-typed ``_GenerationRun`` exposing only what ``run_level`` reads."""
     return SimpleNamespace(
+        render_budget=None,
         semaphore=asyncio.Semaphore(max_concurrency),
         job_system=None,
         job_id=None,

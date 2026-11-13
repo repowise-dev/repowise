@@ -172,7 +172,7 @@ def test_workspace_full_with_repo_alias_upgrades_that_repo(monkeypatch, tmp_path
     )
     run = SimpleNamespace(repo_path=None)
     command._update_workspace_target(
-        SimpleNamespace(full=True, repo_alias="api", refresh_git=False, defer_docs=False),
+        SimpleNamespace(full=True, repo_alias="api", refresh_git=False, defer_docs=False, render_budget=None),
         run,
         target,
     )
@@ -180,7 +180,7 @@ def test_workspace_full_with_repo_alias_upgrades_that_repo(monkeypatch, tmp_path
 
     with pytest.raises(click.ClickException, match="--repo <alias>"):
         command._update_workspace_target(
-            SimpleNamespace(full=True, repo_alias=None, refresh_git=False, defer_docs=False),
+            SimpleNamespace(full=True, repo_alias=None, refresh_git=False, defer_docs=False, render_budget=None),
             run,
             target,
         )

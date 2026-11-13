@@ -200,6 +200,8 @@ def attach_wiki_links_and_backlinks(
     pages: list[GeneratedPage],
     parsed_files: list[Any] | None = None,
     prior_page_ids: Any = None,
+    *,
+    index: LinkIndex | None = None,
 ) -> None:
     """Populate ``metadata['wiki_links']`` and ``metadata['backlinks']``.
 
@@ -217,8 +219,9 @@ def attach_wiki_links_and_backlinks(
     if not pages:
         return
 
-    index = LinkIndex.build(pages, parsed_files)
-    index.add_prior_page_ids(prior_page_ids)
+    if index is None:
+        index = LinkIndex.build(pages, parsed_files)
+        index.add_prior_page_ids(prior_page_ids)
     by_id: dict[str, GeneratedPage] = {p.page_id: p for p in pages}
 
     # First pass — resolve forward links per page.

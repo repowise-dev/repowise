@@ -235,6 +235,7 @@ repowise update --since v1.0.0 --working-tree
 repowise update --workspace --docs     # every stale repo, docs forced
 repowise update --repo backend         # one workspace repo
 repowise update --no-workspace --index-only --defer-docs   # facts now, docs later
+repowise update --no-workspace --index-only --render-budget 100   # render a bounded batch
 repowise update --no-workspace --index-only --defer-docs --refresh-git   # recover Git rows
 repowise update --full                 # leave nothing stale (fast index: upgrade to full)
 ```
@@ -251,6 +252,7 @@ repowise update --full                 # leave nothing stale (fast index: upgrad
 | `--docs` / `--no-docs` | This run: `--docs` LLM-regenerates changed pages (even if indexed without docs); `--no-docs` = `--index-only`. | `docs_mode` in `.repowise/state.json` (from `init`) |
 | `--index-only` | Skip model regeneration; template wikis still render. In a workspace, applies to every stale repo. | off |
 | `--defer-docs` | With `--index-only` or `--no-docs`, persist facts and mark affected docs stale without rendering or embedding. Single repo only. | off |
+| `--render-budget N` | Render at most N stale pages built from code, with changed sources first. Requires documentation built from code and `--index-only` or `--no-docs`; single repo only. | unlimited |
 | `--refresh-git` | Re-read Git history at the current tier and commit cap, even at an unchanged HEAD. Requires `--index-only --defer-docs`; single repo only; not with `--full`. | off |
 | `--working-tree` | Also index staged, unstaged, untracked work; see notes. | off |
 | `--full` | Leave nothing stale: catch a full index up, or upgrade a fast one (below). One repo at a time (`--repo <alias>` in a workspace). | off |
@@ -262,6 +264,11 @@ repowise update --full                 # leave nothing stale (fast index: upgrad
 | `--progress` | `rich` bar, or `json` events on stdout for another process. | `rich` |
 
 **What it refreshes.** Graph, git metadata, health, dead code; on graph-shape changes, the knowledge graph (layers, guided tour, entry points) and `knowledge-graph.json`.
+
+With `--render-budget`, completed pages are committed as they finish. Rerun the
+same command to continue after interruption; pages with current source and
+renderer revisions are skipped. The renderer stamp advances only when the
+backlog is clear. `--progress json` reports the remaining `render_backlog`.
 
 - Index-only runs reuse stored layer names and node summaries (no LLM call). Docs mode saves pages as they finish; reruns skip them by prompt hash.
 - Failed best-effort steps (git metadata, decisions, dead code, ...) still exit 0, listed in the completion panel and `done` event's `degraded` array (`--progress json`); the next update retries.
