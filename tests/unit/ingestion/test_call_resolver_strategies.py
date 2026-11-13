@@ -208,6 +208,165 @@ class TestUnpinnedStrategies:
             parsed, tmp_path
         )
 
+    def test_kotlin_companion_extension_import_resolves_a_string_receiver(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "H.kt": (
+                    "kotlin",
+                    "package app\n\n"
+                    "class H {\n"
+                    "    companion object {\n"
+                    "        fun String.shout() = 1\n"
+                    "    }\n"
+                    "}\n",
+                ),
+                "U.kt": (
+                    "kotlin",
+                    "package other\n"
+                    "import app.H.Companion.shout\n\n"
+                    "fun f() = \"a\".shout()\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"U.kt": {"app.H.Companion.shout": "H.kt"}})
+
+        assert (
+            "U.kt::f",
+            "H.kt::H::shout",
+            0.88,
+            "receiver_extension_import",
+        ) in _edges(parsed, tmp_path)
+
+    def test_kotlin_companion_extension_without_import_stays_out_of_scope(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "H.kt": (
+                    "kotlin",
+                    "package app\n\n"
+                    "class H {\n"
+                    "    companion object {\n"
+                    "        fun String.shout() = 1\n"
+                    "    }\n"
+                    "}\n\n"
+                    "fun outside() = \"x\".shout()\n",
+                ),
+                "U.kt": (
+                    "kotlin",
+                    "package other\n\n"
+                    "fun f() = \"a\".shout()\n",
+                ),
+            },
+        )
+
+        assert not [edge for edge in _edges(parsed, tmp_path) if edge[1].endswith("::shout")]
+
+    def test_kotlin_companion_extension_is_visible_inside_its_holder(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "H.kt": (
+                    "kotlin",
+                    "package app\n\n"
+                    "class H {\n"
+                    "    companion object {\n"
+                    "        fun String.shout() = 1\n"
+                    "    }\n\n"
+                    "    fun f() = \"a\".shout()\n"
+                    "}\n",
+                )
+            },
+        )
+
+        assert (
+            "H.kt::H::f",
+            "H.kt::H::shout",
+            0.93,
+            "receiver_extension_same_file",
+        ) in _edges(parsed, tmp_path)
+
+    def test_kotlin_non_companion_member_extension_does_not_use_companion_import_scope(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "H.kt": (
+                    "kotlin",
+                    "package app\n\n"
+                    "class H {\n"
+                    "    fun String.shout() = 1\n"
+                    "}\n",
+                ),
+                "U.kt": (
+                    "kotlin",
+                    "package other\n"
+                    "import app.H.Companion.shout\n\n"
+                    "fun f() = \"a\".shout()\n",
+                ),
+            },
+        )
+        _link_imports(parsed, {"U.kt": {"app.H.Companion.shout": "H.kt"}})
+
+        assert not [edge for edge in _edges(parsed, tmp_path) if edge[1].endswith("::shout")]
+
+    def test_kotlin_nested_member_extension_inside_companion_is_not_indexed(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "H.kt": (
+                    "kotlin",
+                    "package app\n\n"
+                    "class H {\n"
+                    "    companion object {\n"
+                    "        class Nested {\n"
+                    "            fun String.shout() = 1\n"
+                    "            fun f() = \"a\".shout()\n"
+                    "        }\n"
+                    "    }\n"
+                    "}\n",
+                )
+            },
+        )
+
+        assert not [edge for edge in _edges(parsed, tmp_path) if edge[1].endswith("::shout")]
+
+    def test_kotlin_same_named_nested_holders_do_not_share_companion_extensions(
+        self, tmp_path: Path
+    ) -> None:
+        parsed = _parse_all(
+            tmp_path,
+            {
+                "H.kt": (
+                    "kotlin",
+                    "package app\n\n"
+                    "class A {\n"
+                    "    class H {\n"
+                    "        companion object {\n"
+                    "            fun String.shout() = 1\n"
+                    "        }\n"
+                    "    }\n"
+                    "}\n\n"
+                    "class B {\n"
+                    "    class H {\n"
+                    "        fun f() = \"a\".shout()\n"
+                    "    }\n"
+                    "}\n",
+                )
+            },
+        )
+
+        assert not [edge for edge in _edges(parsed, tmp_path) if edge[1].endswith("::shout")]
+
     def test_a_target_name_declared_nowhere_resolves_to_nothing(self, tmp_path: Path) -> None:
         """The population the cascade spends most of its budget on."""
         parsed = _parse_all(
