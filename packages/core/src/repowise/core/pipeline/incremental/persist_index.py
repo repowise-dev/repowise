@@ -589,7 +589,9 @@ async def delete_vector_rows(ctx: IncrementalPersist) -> None:
 
 
 def _lance_dir(ctx: IncrementalPersist) -> Path:
-    return Path(ctx.repo_path) / ".repowise" / "lancedb"
+    from repowise.core.persistence.database import LANCEDB_DIRNAME
+
+    return Path(ctx.repo_path) / ".repowise" / LANCEDB_DIRNAME
 
 
 def _needs_vector_store(ctx: IncrementalPersist) -> bool:

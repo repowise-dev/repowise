@@ -21,6 +21,8 @@ from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS, class
 
 _log = logging.getLogger(__name__)
 
+KNOWLEDGE_GRAPH_FILENAME = "knowledge-graph.json"
+
 #: Schema version of the ``knowledge-graph.json`` artifact. Bump whenever a
 #: change makes an older file unsafe to load — readers reject anything below
 #: this and callers rebuild from scratch, which is cheaper and safer than
@@ -571,6 +573,6 @@ def save_knowledge_graph_json(repo_path: Path, kg: Any, *, portable: bool = Fals
     else:
         data = kg.to_dict()
 
-    kg_json_path = Path(repo_path) / ".repowise" / "knowledge-graph.json"
+    kg_json_path = Path(repo_path) / ".repowise" / KNOWLEDGE_GRAPH_FILENAME
     kg_json_path.parent.mkdir(parents=True, exist_ok=True)
     kg_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
