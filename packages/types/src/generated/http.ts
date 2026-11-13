@@ -3022,6 +3022,7 @@ export interface McpToolInfo {
   presentation: string;
   safety: string;
   evidence_basis: string;
+  schema_tokens?: number;
 }
 
 export interface McpToolRecipeInfo {
@@ -3035,6 +3036,8 @@ export interface McpToolSurfaceResponse {
   repo_id?: string | null;
   is_workspace: boolean;
   override?: string[] | string | null;
+  profile?: string | null;
+  profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
 }
 
@@ -4780,8 +4783,9 @@ export interface UnclusteredFiles {
  * Persist a new ``mcp.tools`` override for a repo.
  *
  * ``tools`` accepts the same shapes as the config block: a list of explicit
- * names or ``+``/``-`` deltas, the string ``"all"``, or ``null``/empty to
- * clear the override and fall back to the default surface.
+ * names, a profile name optionally followed by ``+``/``-`` deltas, deltas
+ * alone, or ``null``/empty to clear the override and fall back to each
+ * client's default.
  */
 export interface UpdateMcpToolsRequest {
   repo_id: string;
