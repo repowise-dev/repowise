@@ -27,6 +27,10 @@ INIT_LOCK_FILENAME = ".init.lock"
 #: Held by whichever process is scanning commit health, so one scanner runs per repo.
 COMMIT_HEALTH_LOCK_FILENAME = ".commit_health.lock"
 
+#: Held by the one commit-health drain waiting for its turn, so a burst of
+#: updates queues one drain behind the running one instead of one per update.
+DRAIN_QUEUE_LOCK_FILENAME = ".commit_health_queue.lock"
+
 # Wall-clock ceiling, applied only when the owner's liveness cannot be
 # established: no PID in the payload (legacy writer) or a probe that could not
 # decide. A lock this old whose owner we cannot find is treated as abandoned.
@@ -371,3 +375,24 @@ def try_acquire_commit_health_lock(repo_path: Path) -> dict[str, Any] | None:
 
 def release_commit_health_lock(repo_path: Path) -> None:
     _release_lock_at(_commit_health_lock_path(repo_path))
+
+
+def _drain_queue_lock_path(repo_path: Path) -> Path:
+    return Path(repo_path) / ".repowise" / DRAIN_QUEUE_LOCK_FILENAME
+
+
+def try_acquire_drain_queue(repo_path: Path) -> dict[str, Any] | None:
+    """Take the one waiting-drain slot. ``None`` means taken; see :func:`try_acquire_update_lock`."""
+    return _try_acquire_lock_at(_drain_queue_lock_path(repo_path), None)
+
+
+def read_drain_queue(repo_path: Path) -> dict[str, Any] | None:
+    """The waiting drain's lock payload, or ``None`` when no live drain waits."""
+    return _read_lock_at(_drain_queue_lock_path(repo_path))
+
+
+def release_drain_queue(repo_path: Path) -> None:
+    """Free the slot, only when this process holds it: the next waiter may already."""
+    payload = read_drain_queue(repo_path)
+    if payload is not None and payload.get("pid") == os.getpid():
+        _release_lock_at(_drain_queue_lock_path(repo_path))
