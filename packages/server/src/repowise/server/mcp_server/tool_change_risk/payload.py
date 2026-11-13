@@ -209,11 +209,16 @@ def _drill_down(payload: dict, delta: Any, finding_id: str, revspec: str | None)
     """Expand one ephemeral change finding, or say why it is not there."""
     match = next((f for f in delta.findings if f.change_finding_id == finding_id), None)
     if match is None:
-        return {
-            "error": f"No change finding {finding_id!r} in {payload.get('ref', 'this change')}.",
-            "hint": "Ids are scoped to one comparison; re-run without finding_id to list them.",
-            "available": [f.change_finding_id for f in review_order(delta.findings)[:10]],
-        }
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "not_found",
+            {
+                "error": f"No change finding {finding_id!r} in {payload.get('ref', 'this change')}.",
+                "hint": "Ids are scoped to one comparison; re-run without finding_id to list them.",
+                "available": [f.change_finding_id for f in review_order(delta.findings)[:10]],
+            },
+        )
     return {
         "finding": _finding_detail(match, revspec),
         "ref": payload.get("ref"),

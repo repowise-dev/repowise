@@ -98,13 +98,13 @@ def test_primary_finding_tie_does_not_depend_on_input_order() -> None:
     tree read the rows in different orders and disagreed on it."""
     from repowise.core.analysis.health.models import primary_finding
 
-    cohesion = _f("f.java", "low_cohesion", 0.871, "lcom 0.9")
+    god = _f("f.java", "god_class", 0.871, "nloc 400")
     complex_ = _f("f.java", "complex_method", 0.871, "ccn 30")
-    assert primary_finding([cohesion, complex_]) is complex_
-    assert primary_finding([complex_, cohesion]) is complex_
+    assert primary_finding([god, complex_]) is complex_
+    assert primary_finding([complex_, god]) is complex_
 
     # Severity breaks the tie before the name does.
-    severe = _f("f.java", "low_cohesion", 0.871, "lcom 0.9", severity="high")
+    severe = _f("f.java", "god_class", 0.871, "nloc 400", severity="high")
     assert primary_finding([complex_, severe]) is severe
     assert primary_finding([severe, complex_]) is severe
 

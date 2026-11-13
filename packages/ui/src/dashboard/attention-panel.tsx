@@ -216,10 +216,10 @@ export function AttentionPanel({
                 <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
                   {formatNumber(proposed.length)}
                 </span>{" "}
-                auto-proposed decision{proposed.length === 1 ? "" : "s"} awaiting review
+                background decision record{proposed.length === 1 ? "" : "s"}
               </span>
               <span className="shrink-0 text-xs text-[var(--color-accent-primary)] group-hover:underline">
-                Review →
+                Open →
               </span>
             </a>
           )}

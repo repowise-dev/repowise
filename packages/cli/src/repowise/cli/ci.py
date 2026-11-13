@@ -219,8 +219,9 @@ def append_step_summary(markdown: str, *, env: Mapping[str, str] | None = None) 
     return True
 
 
-#: Set by the GitHub Action: a directory where each gate run in ``github``
-#: format leaves its row of the combined summary (``repowise ci-summary``).
+#: Set by the GitHub Action and the GitLab template: a directory where each gate
+#: run in ``github`` or ``markdown`` format leaves its row of the combined
+#: summary (``repowise ci-summary``).
 GATE_SUMMARY_DIR_ENV = "REPOWISE_GATE_SUMMARY_DIR"
 
 

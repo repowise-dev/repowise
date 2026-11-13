@@ -24,6 +24,23 @@ describe("deriveSetup", () => {
     });
     expect(agent.action).toEqual({ kind: "connect", agentId: "cursor", agentName: "Cursor" });
     expect(agent.command).toBe("repowise agents add --target=cursor");
+    // Cursor loads every schema up front, so it is listed the core tools.
+    expect(agent.note).toEqual({ key: "agent.coreTools", values: { agents: "Cursor", count: 1 } });
+  });
+
+  it("adds no core-tools note when every agent it names is listed the standard tools", () => {
+    const base = setupFixture();
+    const onlyClaude = setupFixture({ agents: (base.agents ?? []).filter((a) => a.id === "claude-code") });
+    expect(deriveSetup(onlyClaude, OPTS).essentials[1]!.note).toBeUndefined();
+  });
+
+  it("says agent answers are ranked evidence while no model is set up", () => {
+    const keyless = setupFixture({ model: { docs_mode: "deterministic", active_provider: null, configured_providers: [] } });
+    const model = deriveSetup(keyless, OPTS).optional[0]!;
+    expect(model.detail).toEqual({ key: "model.detailNone" });
+    expect(model.prompt.state).toContain("get_answer returns ranked evidence");
+    const keyed = setupFixture({ model: { docs_mode: "deterministic", active_provider: "anthropic", configured_providers: ["anthropic"] } });
+    expect(deriveSetup(keyed, OPTS).optional[0]!.prompt.state).not.toContain("ranked evidence");
   });
 
   it("is done when the index is current, an agent has called and sync is on", () => {
@@ -71,6 +88,44 @@ describe("deriveSetup", () => {
     expect(ids(view.attention)).toEqual(["index-behind"]);
     expect(view.attention[0]!.command).toBe("repowise update");
     expect(view.doneCount).toBe(1);
+  });
+
+  it("offers --since when the indexed commit is no longer in the history", () => {
+    const s = setupFixture();
+    const index = { ...s.index, state: "behind" as const, live_head: "9999999aaa", indexed_commit_missing: true };
+    const row = deriveSetup({ ...s, index }, OPTS).attention[0]!;
+    expect(row.id).toBe("index-behind");
+    expect(row.command).toBe("repowise update --since <ref>");
+    expect(row.detail).toEqual({ key: "index.detailMissing", values: { indexed: "abcdef1" } });
+    expect(row.prompt!.command).toBe("repowise update --since <ref>");
+    expect(row.prompt!.state).toContain("abcdef1, which is no longer in this repository's history");
+  });
+
+  it("shows an index behind HEAD once when doctor reports it too", () => {
+    const s = setupFixture();
+    const view = deriveSetup(
+      {
+        ...s,
+        index: { ...s.index, state: "behind", live_head: "9999999aaa" },
+        checks: [
+          {
+            id: "index-freshness",
+            name: "Index freshness",
+            level: "warn",
+            detail: "indexed at 1234567a; HEAD has moved on to 9999999a",
+            fix: "repowise update",
+          },
+          {
+            id: "update-lock",
+            name: "Update lock",
+            level: "warn",
+            detail: "An update (pid 42) has held the lock for 9.0h.",
+          },
+        ],
+      },
+      OPTS,
+    );
+    expect(ids(view.attention)).toEqual(["index-behind", "check-update-lock"]);
   });
 
   it("names the wrong-folder case for an agent with no call a day after it connected", () => {

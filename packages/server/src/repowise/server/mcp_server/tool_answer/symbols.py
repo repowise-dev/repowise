@@ -44,6 +44,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _LITERAL_SCAN_MAX_TOKENS,
     _SPECIFIC_TOKEN_MAX_FILES,
     _STOPWORDS,
+    _UNINDEXED_LINES_MAX,
 )
 from repowise.server.mcp_server.tool_answer.hydration import (  # noqa: F401  re-exported
     _DEFINE_KIND_RANK,
@@ -315,8 +316,11 @@ async def _anchor_symbol_hits(
         guard = _TopicGuard(repo_root, hits, question, qids_lower)
         if prose:
             by_name = await _trusted_over_topic(by_name, question_ids, guard)
-            literal = await _literal_holders(session, repo_id, question_ids - indexed_names, guard)
+            literal, homonyms["unindexed_lines"] = await _literal_holders(
+                session, repo_id, question_ids - indexed_names, guard
+            )
         homonyms["absent"] = await _absent_names(homonyms["unindexed"], guard, scope)
+        homonyms["not_searched"] = guard.unread()
 
     chosen = await _choose_anchor_symbols(
         by_name, question_ids, _verified_dict, homonyms, question=question
@@ -381,9 +385,9 @@ class _TopicGuard:
         named = set().union(*(_text_stems(q) for q in qids_lower))
         self.topic_stems = _text_stems(question) - named
         self.about_tests = _is_test_query(question)
-        self._scans: dict[str, tuple[list[dict], bool]] = {}
+        self._scans: dict[str, tuple[list[dict], bool, list[str]]] = {}
 
-    async def _scan(self, token: str) -> tuple[list[dict], bool]:
+    async def _scan(self, token: str) -> tuple[list[dict], bool, list[str]]:
         """Every line writing *token*, scanned at most once per question."""
         if token not in self._scans:
             self._scans[token] = await asyncio.to_thread(word_scan, self.root, token)
@@ -391,13 +395,18 @@ class _TopicGuard:
 
     async def lines(self, token: str) -> list[dict]:
         """Production lines writing *token*."""
-        rows, _complete = await self._scan(token)
+        rows, _complete, _unread = await self._scan(token)
         return production_only(rows)
+
+    def unread(self) -> list[str]:
+        """Why files went unread by any scan run so far, each reason once."""
+        reasons = (r for _rows, _complete, unread in self._scans.values() for r in unread)
+        return list(dict.fromkeys(reasons))
 
     async def written(self, token: str, scope: str | None = None) -> bool | None:
         """Whether any file (under *scope*, if given) writes *token* as code;
         None when the scan stopped short. See :func:`_writes_as_code`."""
-        rows, complete = await self._scan(token)
+        rows, complete, _unread = await self._scan(token)
         if scope:
             rows = [r for r in rows if f"{r['path']}/".startswith(f"{scope}/")]
         if rows and await asyncio.to_thread(_writes_as_code, self.root, rows, token):
@@ -535,8 +544,9 @@ async def _trusted_over_topic(
 
 async def _literal_holders(
     session, repo_id: str, tokens: set[str], guard: _TopicGuard
-) -> dict[str, list]:
-    """The functions holding an identifier the index does not define, by identifier.
+) -> tuple[dict[str, list], list[dict]]:
+    """The functions holding an identifier the index does not define, by
+    identifier, and its lines in files the index holds no symbol for.
 
     A string literal or a key (``"retry_after"``) lives in a function body, so
     no page and no symbol name carries it. A holder must pass the same guard
@@ -550,7 +560,7 @@ async def _literal_holders(
     )
     lines = {t: rows for t in plain[:_LITERAL_SCAN_MAX_TOKENS] if (rows := await guard.lines(t))}
     if not lines:
-        return {}
+        return {}, []
     res = await session.execute(
         select(WikiSymbol).where(
             WikiSymbol.repository_id == repo_id,
@@ -569,7 +579,41 @@ async def _literal_holders(
     out: dict[str, list] = {}
     for _key, token, d in found[:_INLINE_BODY_MAX_SYMBOLS]:
         out.setdefault(token, []).append(d)
-    return out
+    return out, await _unindexed_file_lines(session, repo_id, lines, {d.file_path for d in defs})
+
+
+async def _unindexed_file_lines(
+    session, repo_id: str, lines: dict[str, list[dict]], held: set[str]
+) -> list[dict]:
+    """*lines* in files the index holds no symbol for, at most ``_UNINDEXED_LINES_MAX``.
+
+    A file ingestion left out (over the parse size cap, say) has no holder to
+    anchor, so its line is the only pointer to it. Only for a name few
+    production files write, the bar a holder's guard sets.
+    """
+    rows = [
+        r
+        for token_rows in lines.values()
+        if len({r["path"] for r in token_rows}) <= _SPECIFIC_TOKEN_MAX_FILES
+        for r in token_rows
+        if r["path"] not in held
+    ]
+    if not rows:
+        return []
+    res = await session.execute(
+        select(WikiSymbol.file_path)
+        .where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.file_path.in_({r["path"] for r in rows}),
+        )
+        .distinct()
+    )
+    indexed = set(res.scalars().all())
+    return [
+        {"path": r["path"], "line": r["line"], "text": r["text"]}
+        for r in rows
+        if r["path"] not in indexed
+    ][:_UNINDEXED_LINES_MAX]
 
 
 def _innermost_holders(defs: list, rows: list[dict]) -> Counter:

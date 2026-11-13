@@ -84,6 +84,13 @@ _GO_WRITE_FUNCS = {
     "fmt": frozenset({"Fprint", "Fprintf", "Fprintln"}),
     "io": frozenset({"WriteString"}),
 }
+# Stdlib calls whose last result is a bool or int, not an ``error``: a blank in
+# that slot drops an ``ok``/``found`` flag (``before, after, _ := strings.Cut(s, "=")``).
+_GO_NON_ERROR_LAST = {
+    "strings": frozenset({"Cut", "CutPrefix", "CutSuffix"}),
+    "bytes": frozenset({"Cut", "CutPrefix", "CutSuffix"}),
+    "runtime": frozenset({"Caller"}),
+}
 # A logger's name: ``logger``, ``log``, ``logging``, ``app_log``, ``_LOGGER``
 # (not ``catalog`` or ``dialog``), and its methods at a level someone reads;
 # ``debug`` is off in production, so it reports nothing.
@@ -433,6 +440,8 @@ def _eh_go_deliberate_discard(call: Node, all_blank: bool) -> bool:
     ``strings.Builder`` or ``bytes.Buffer`` never fails, and a buffered or
     response writer reports its error at ``Flush``/``Close``. A write whose
     byte count is kept (``n, _ := conn.Write(b)``) stays a finding.
+    ``strings.Cut``, ``bytes.Cut`` and their prefix/suffix forms, and
+    ``runtime.Caller``, end in a bool, not an error, so there is no error to drop.
     """
     fn = call.child_by_field_name("function")
     if fn is None or fn.type != "selector_expression":
@@ -441,6 +450,8 @@ def _eh_go_deliberate_discard(call: Node, all_blank: bool) -> bool:
     method = _eh_text(fn.child_by_field_name("field"))
     if receiver == "strconv":
         return method in _GO_STRCONV_PARSERS
+    if receiver in _GO_NON_ERROR_LAST and method in _GO_NON_ERROR_LAST[receiver]:
+        return True
     if not all_blank:
         return False
     if receiver in _GO_WRITE_FUNCS:

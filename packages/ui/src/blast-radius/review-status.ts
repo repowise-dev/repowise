@@ -7,6 +7,9 @@
  * often or has poor health, many files depend on the change, or files that
  * usually move with it were left out; otherwise "Small change" or
  * "Contained", with the size of it.
+ *
+ * The Markdown review for agents says the same verdict from the server
+ * (`repowise/server/review_markdown.py`); change the two together.
  */
 
 import { isWeak, type Reach } from "./blast-map-model";
@@ -45,13 +48,15 @@ export interface ReviewFacts {
   /** Distinct files that usually change with these and are left out. */
   missingPartners: number;
   band: "localized" | "moderate" | "broad";
+  /** The test selection could not narrow the suite: the whole of it is to run. */
+  runAll?: boolean;
 }
 
 function lookReason(f: ReviewFacts): string | null {
   const risky = f.reach.changed.filter((m) => m.isHotspot || isWeak(m)).length;
   if (risky > 0) return `${count(risky, "changed file")} ${risky === 1 ? "changes" : "change"} often or ${risky === 1 ? "has" : "have"} poor health.`;
-  if (f.band === "broad" || f.reach.files.length > WIDE_REACH)
-    return `${roughCount(f.reach.files.length)} source ${f.reach.files.length === 1 ? "file depends" : "files depend"} on it.`;
+  if (f.band === "broad" || f.reach.filesTotal > WIDE_REACH)
+    return `${roughCount(f.reach.filesTotal)} source ${f.reach.filesTotal === 1 ? "file depends" : "files depend"} on it.`;
   if (f.missingPartners > 0)
     return `${count(f.missingPartners, "file")} that usually ${f.missingPartners === 1 ? "changes" : "change"} with these ${f.missingPartners === 1 ? "is" : "are"} not in it.`;
   return null;
@@ -69,12 +74,20 @@ export function reviewStatus(f: ReviewFacts): ReviewStatus {
   const look = lookReason(f);
   if (look)
     return { tone: "look", word: "Look first", reason: look, next: "Read the files under Look at first, then run the tests." };
-  const small = f.total <= SMALL_FILES && f.reach.files.length <= SMALL_REACH;
-  const tests = f.testsTotal > 0 ? `${count(f.testsTotal, "test")} to run` : "no test found to run";
+  const small = f.total <= SMALL_FILES && f.reach.filesTotal <= SMALL_REACH;
+  const tests = f.runAll
+    ? "the whole test suite to run"
+    : f.testsTotal > 0
+      ? `${count(f.testsTotal, "test")} to run`
+      : "no test found to run";
   return {
     tone: "calm",
     word: small ? "Small change" : "Contained",
     reason: `${count(f.total, "file")} changed, ${tests}.`,
-    next: f.testsTotal > 0 ? "Run the tests below and merge when they pass." : "Nothing here asks for a closer look.",
+    next: f.runAll
+      ? "Run the whole suite and merge when it passes."
+      : f.testsTotal > 0
+        ? "Run the tests below and merge when they pass."
+        : "Nothing here asks for a closer look.",
   };
 }

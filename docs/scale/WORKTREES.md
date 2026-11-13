@@ -1,10 +1,43 @@
 # Git Worktrees
 
-repowise treats a linked git worktree (`git worktree add`) as a first-class checkout. You do not re-index from scratch: the worktree seeds its index from your main checkout automatically and catches up incrementally.
+repowise treats a linked git worktree (`git worktree add`) as a first-class checkout. A new worktree needs no setup: it reads your main checkout's index straight away. For a worktree you keep for a long time, you can give it an index of its own by seeding.
 
-## What happens automatically
+## With no setup: the worktree reads the main checkout's index
 
-Run either of these inside a fresh worktree whose base checkout is already indexed:
+A linked worktree that has no `.repowise/` of its own uses the index of the checkout it was created from, as long as that checkout is indexed. repowise finds that checkout from git's own metadata; there is nothing to configure. This covers worktrees you create by hand and the ones coding agents create for parallel work.
+
+What works in the worktree:
+
+| Surface | In a worktree |
+|---|---|
+| Edit notices (governing decisions, bug-fix history) | Fire for the file you edit, matched by its repo-relative path |
+| Session start context and standing decisions | Fire; the context names the main checkout's index and how many files this branch changed |
+| Search triage and the flood digest | Fire, ranking the files your search matched |
+| Wrong-path rescue | Fires when the suggested file exists in the worktree |
+| Re-read and stale-read notices | Fire; they track this session's own reads |
+| Decision capture after a commit | Fires; `repowise decision add` in a worktree records into the main checkout's index |
+| Command distilling | On or off as the main checkout sets it; filters run with their defaults |
+| MCP server (`repowise mcp` started in the worktree) | Serves the main checkout's index; responses flag a served file that differs in the worktree |
+
+What stays quiet, because the index describes the main checkout's indexed commit, not your branch:
+
+| Surface | Why |
+|---|---|
+| Read skeletons | They cut files at the index's line numbers, which your branch may have moved |
+| Zero-result and missing-file search rescues | A search misses most often because the branch moved or removed the symbol the index points at |
+| Timed-out glob rescue | It lists the index's paths, which may not exist in the worktree |
+| "Index is stale" after a commit | A commit on the branch does not age the main checkout's index |
+| Coverage re-ingest | The worktree's coverage is not the main checkout's |
+| Edit capture for attribution | It writes events; worktree edits are recovered from transcripts instead |
+| Health gate on commit and push | It checks against an index of the checkout itself, which the worktree does not have |
+
+The worktree never writes the main checkout's index. Hook bookkeeping (the session ledger that `repowise hook stats` reads) does land in the main checkout's `.repowise/`, so worktree sessions are counted with the rest. No `.repowise/` is created in the worktree, so the post-commit hook stays inert there and never starts an update.
+
+To turn the fallback off, set `REPOWISE_WORKTREE_FALLBACK=0` in the environment your agent or editor runs in. The hooks and the MCP server then treat the worktree as an unindexed checkout.
+
+## For long-lived worktrees: seed an index of its own
+
+Run either of these inside a worktree whose base checkout is already indexed:
 
 ```bash
 repowise init        # seeds from the base checkout, then runs an incremental update
@@ -19,9 +52,7 @@ and catches it up with repowise update instead of indexing from scratch.
 Pass --no-seed for a full init here.
 ```
 
-Agents and git hooks benefit without any setup: a post-commit hook or a coding agent running `repowise update` inside an unindexed worktree gets the seed-then-update path instead of an error.
-
-The seeded index is fully the worktree's own: the copied database is re-pointed at the worktree, so subsequent updates, searches, and MCP queries stay coherent. Deleting the worktree deletes its index with it; the base checkout is never modified.
+The seeded index is fully the worktree's own: the copied database is re-pointed at the worktree, so every surface above answers for your branch, and later updates, searches, and MCP queries stay coherent. With the post-commit hook installed, it stays current on each commit. The copy is the size of the base's `.repowise/` directory, so seeding pays off for a worktree you work in for days, not one an agent uses for a single task. Deleting the worktree deletes its index with it; the base checkout is never modified.
 
 ## When seeding is skipped
 

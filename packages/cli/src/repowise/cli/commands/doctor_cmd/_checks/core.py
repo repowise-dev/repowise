@@ -1,14 +1,15 @@
-"""Checks 1-4b: git, ``.repowise/``, hooks, database, state.json, store format."""
+"""Checks 1-4b: git, ``.repowise/``, hooks, settings, database, state.json, freshness, store format."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path as _DoctorPath
 
-from repowise.cli.helpers import db_configured, load_state, run_async
+from repowise.cli.helpers import db_configured, read_state, run_async
 
 from .._types import DoctorCheck, _check
 from .context import CheckContext, open_store
+from .settings import settings_rows
 
 
 async def _page_count(session: object, repo_id: str) -> int:
@@ -125,23 +126,6 @@ def _attribution_notes_check(repo_path: _DoctorPath) -> DoctorCheck | None:
     return _check(name, True, f"fetch refspec and notes.rewriteRef set; {push}", check_id=check_id)
 
 
-def _events_config_check(repo_path: _DoctorPath) -> DoctorCheck | None:
-    """The ``events:`` block, when it has values that fell back to defaults."""
-    try:
-        from repowise.core.events.store import load_event_settings
-
-        errors = load_event_settings(repo_path).errors
-    except Exception as exc:
-        return _check(
-            "Events config", True, f"could not read it ({exc})", check_id="events-config", warn=True
-        )
-    if not errors:
-        return None
-    return _check(
-        "Events config", False, "; ".join(errors) + " (defaults used)", check_id="events-config"
-    )
-
-
 def _env_repo_covers(repo_path: _DoctorPath) -> bool:
     """Whether the repo ``GIT_DIR`` / ``GIT_WORK_TREE`` name holds ``repo_path`` (#1931).
 
@@ -183,9 +167,9 @@ def _hook_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
     # The post-commit hook is installed by init by default; not having it is a
     # choice (--no-hook), so its absence is informational, not a fail.
     rows = [_autosync_hook_check(repo_path)]
-    for optional in (_attribution_notes_check(repo_path), _events_config_check(repo_path)):
-        if optional is not None:
-            rows.append(optional)
+    notes = _attribution_notes_check(repo_path)
+    if notes is not None:
+        rows.append(notes)
     return rows
 
 
@@ -218,16 +202,75 @@ def _database_rows(ctx: CheckContext) -> list[DoctorCheck]:
 
 
 def _state_row(ctx: CheckContext) -> DoctorCheck:
-    ctx.state = load_state(ctx.repo_path)
-    ctx.state_ok = bool(ctx.state)
+    result = read_state(ctx.repo_path)
+    ctx.state = result.state
+    ctx.state_ok = result.status == "ok"
+    if result.status == "ok":
+        detail = f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
+    elif result.status == "missing":
+        detail = "missing"
+    elif result.status == "empty":
+        detail = "Not found or empty"
+    else:
+        state_path = ctx.repowise_dir / "state.json"
+        detail = f"unreadable: {state_path}: {result.error}"
     return _check(
         "state.json",
         ctx.state_ok,
-        f"last_sync: {(ctx.state.get('last_sync_commit') or '—')[:8]}"
-        if ctx.state_ok
-        else "Not found or empty",
+        detail,
         check_id="state-json",
+        fix=None if ctx.state_ok else "repowise init",
     )
+
+
+def _index_freshness_row(repo_path: _DoctorPath, state: dict) -> DoctorCheck | None:
+    """Whether the index still describes HEAD, as the web Setup page judges it.
+
+    HEAD is read from the ref files, so a quick run spawns nothing while the
+    two agree; git is asked only once they differ, to tell a commit HEAD moved
+    past from one this history no longer has (a rebase, a reset, another
+    clone's state.json). ``None`` without both commits: the git and state.json
+    rows already cover those.
+    """
+    from repowise.core.git_head import read_head_commit
+    from repowise.core.index_freshness import commit_state, indexed_commit_missing
+
+    name, check_id = "Index freshness", "index-freshness"
+    indexed = state.get("last_sync_commit")
+    live = read_head_commit(repo_path)
+    if not indexed or not live:
+        return None
+    if commit_state(indexed, live) == "up_to_date":
+        return _check(name, True, f"indexed at HEAD ({live[:8]})", check_id=check_id)
+    if indexed_commit_missing(repo_path, indexed, live):
+        return _check(
+            name,
+            True,
+            f"last_sync_commit {indexed[:8]} is not in this repository's history, so "
+            "'repowise update' has no base to diff from; pass a commit the index "
+            "covers with --since",
+            check_id=check_id,
+            warn=True,
+            fix="repowise update --since <ref>",
+        )
+    return _check(
+        name,
+        True,
+        f"indexed at {indexed[:8]}; HEAD has moved on to {live[:8]}",
+        check_id=check_id,
+        warn=True,
+        fix="repowise update",
+    )
+
+
+def _update_lock_row(repo_path: _DoctorPath) -> DoctorCheck | None:
+    """A live update holding the lock past the suspect age, worded as ``update`` words it."""
+    from repowise.core.update_lock import stuck_update_line
+
+    detail = stuck_update_line(repo_path)
+    if detail is None:
+        return None
+    return _check("Update lock", True, detail, check_id="update-lock", warn=True)
 
 
 def _store_format_row(repo_path: _DoctorPath) -> DoctorCheck:
@@ -335,9 +378,16 @@ def core_checks(ctx: CheckContext) -> list[DoctorCheck]:
     # existence-only row would say OK for the one state that fails every call.
     checks.append(_repowise_dir_check(ctx.repowise_dir))
     checks.extend(_hook_rows(ctx.repo_path))
+    checks.extend(settings_rows(ctx))
     checks.extend(_database_rows(ctx))
     checks.append(_state_row(ctx))
     if ctx.state_ok:
+        freshness = _index_freshness_row(ctx.repo_path, ctx.state)
+        if freshness is not None:
+            checks.append(freshness)
         checks.append(_store_format_row(ctx.repo_path))
+    stuck = _update_lock_row(ctx.repo_path)
+    if stuck is not None:
+        checks.append(stuck)
     checks.extend(_runtime_grammar_rows(ctx.repo_path))
     return checks

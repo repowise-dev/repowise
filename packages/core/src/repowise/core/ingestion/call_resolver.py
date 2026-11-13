@@ -353,6 +353,7 @@ class CallResolver(
         return_type_chain_languages: frozenset[str] | None = None,
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
         csharp_project_usings: dict[str, frozenset[str]] | None = None,
+        cpp_index: Any | None = None,
     ) -> None:
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
@@ -519,6 +520,10 @@ class CallResolver(
         self._parsed_files = parsed_files
 
         self._init_workspace_indexes(repo_path)
+        if cpp_index is not None:
+            # The C/C++ workspace index the build's warmup already made over
+            # these files; without it one is built here on first use.
+            self._cpp_index, self._cpp_index_built = cpp_index, True
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()

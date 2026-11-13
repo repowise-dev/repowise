@@ -37,7 +37,7 @@ _EXPECTED_NAMES = frozenset(
         "costs", "coverage",
         "dead-code", "decision", "delete", "distill", "doc-drift", "doctor",
         "events", "expand",
-        "export", "generate", "generate-claude-md", "grammars", "health", "hook",
+        "export", "generate", "generate-claude-md", "grammars", "health", "hook", "hosted",
         "impacted-tests", "init", "login", "logout", "mcp", "next", "overlap", "packages", "pages", "plugins",
         "publish", "reindex", "report",
         "restyle",
