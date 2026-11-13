@@ -16,6 +16,11 @@ from repowise.server.mcp_server import mcp
 _MAX_INSTRUCTIONS_CHARS = 1500
 #: The base text before a repository or workspace line is added.
 _BASE_INSTRUCTIONS_CHARS = 720
+#: The base text plus the line naming the command that lists get_risk and
+#: get_change_risk, which a default server sends because some client's default
+#: profile leaves them out. Always-present context on Claude Code with it is
+#: 684 tokens against a 700-token gate.
+_DEFAULT_INSTRUCTIONS_CHARS = 810
 
 
 def test_instructions_fit_the_length_cap() -> None:
@@ -35,8 +40,14 @@ def test_instructions_say_when_each_tool_replaces_a_text_search() -> None:
 def test_instructions_stay_short() -> None:
     # Read into every session and paid again per registration; a response
     # already flags what it says about uncommitted edits, so that stays there.
-    assert len(mcp.instructions) <= _BASE_INSTRUCTIONS_CHARS
-    assert "uncommitted" not in mcp.instructions
+    # Built here, not read from ``mcp.instructions``, which any earlier
+    # create_mcp_server call in the process rewrites.
+    from repowise.server.mcp_server._server import _instructions
+
+    base, default = _instructions(), _instructions(all_listed=False)
+    assert len(base) <= _BASE_INSTRUCTIONS_CHARS
+    assert len(default) <= _DEFAULT_INSTRUCTIONS_CHARS
+    assert "uncommitted" not in base and "uncommitted" not in default
 
 
 def test_instructions_keep_the_no_index_and_workspace_guidance() -> None:
