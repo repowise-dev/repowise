@@ -501,11 +501,13 @@ def is_misread_scope(node: Node, lmap: LanguageNodeMap) -> bool:
 
 def is_function_node(node: Node, lmap: LanguageNodeMap) -> bool:
     """True for a function definition, False for a scope the grammar misread as
-    one or a declaration with no body (abstract, interface, extern)."""
+    one, a declaration with no body (abstract, interface, extern) or a value
+    binding that shares a function's node type (F# ``let v = ...``)."""
     return (
         node.type in lmap.function_kinds
         and not is_misread_scope(node, lmap)
         and not (lmap.bodyless is not None and lmap.bodyless(node))
+        and not (lmap.local_value is not None and lmap.local_value(node))
     )
 
 
@@ -576,11 +578,9 @@ def _declares_only(statement: Node, declarator: Node) -> bool:
 
 
 def _is_nested_unit(node: Node, lmap: LanguageNodeMap) -> bool:
-    """A function unit that is no local value, or a named block-bodied lambda."""
+    """A function unit, or a named block-bodied lambda."""
     if is_function_node(node, lmap):
-        return _is_function_unit(node, lmap) and (
-            lmap.local_value is None or not lmap.local_value(node)
-        )
+        return _is_function_unit(node, lmap)
     return is_named_block_lambda(node, lmap)
 
 
