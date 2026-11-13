@@ -1066,6 +1066,8 @@ _ROUTE_WAIT_S = 2.0
 #: waits for it. Past it the line names the route without minutes; the count
 #: keeps running and a later response uses it. About 2.6 s on a 12,881-node repo.
 _CALLS_WAIT_S = 5.0
+#: When the count gives up, releasing its DB session.
+_COUNT_CEILING_S = 60.0
 
 # The signed-in agent CLI a keyless line names, probed once per served path in
 # a daemon thread (the probe is a subprocess), and the model calls ``generate``
@@ -1138,7 +1140,14 @@ async def _count_generate_calls(session_factory: Any, repo_id: str, local_path: 
         # process, seconds on a very large repo; caching the planned count in
         # state.json at index time is the upgrade if that shows up.
         async with get_session(session_factory) as session:
-            calls = await generate_model_calls(session, repo_id, local_path)
+            calls = await asyncio.wait_for(
+                generate_model_calls(session, repo_id, local_path), _COUNT_CEILING_S
+            )
+    except TimeoutError:
+        # Cancelled, so the session closes; a stuck planning thread keeps
+        # running but holds no connection. Kept as done, so no reply retries.
+        _log.debug("repowise MCP: generate call count gave up after %ss", _COUNT_CEILING_S)
+        return None
     except Exception:
         _log.debug("repowise MCP: generate call count failed", exc_info=True)
         _generate_counts.pop(repo_id, None)  # the next response tries again

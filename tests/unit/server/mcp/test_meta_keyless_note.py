@@ -225,3 +225,33 @@ async def test_a_slow_generate_count_never_holds_the_reply(tmp_path, monkeypatch
     await _meta._generate_counts["r1"]
     timed = await _meta._upgrade_route(repo, object(), "r1")
     assert timed == subscription.route_minutes(first, 17) and started == ["r1"]
+
+
+async def test_a_stuck_count_gives_up_and_releases_its_session(monkeypatch) -> None:
+    import asyncio
+
+    from repowise.core.generation import scope
+
+    closed: list[bool] = []
+    started: list[str] = []
+
+    @contextlib.asynccontextmanager
+    async def _session(_factory):
+        try:
+            yield object()
+        finally:
+            closed.append(True)
+
+    async def _stuck(_session, repo_id, _path):
+        started.append(repo_id)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(_meta, "_COUNT_CEILING_S", 0.05)
+    monkeypatch.setattr(scope, "generate_model_calls", _stuck)
+    monkeypatch.setattr("repowise.core.persistence.get_session", _session)
+
+    assert await _meta._generate_call_count(object(), "r1", "repo") is None
+    assert closed == [True]
+    # Given up, not retried by every later reply.
+    assert await _meta._generate_call_count(object(), "r1", "repo") is None
+    assert started == ["r1"]
