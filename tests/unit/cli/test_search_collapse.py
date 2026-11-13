@@ -406,6 +406,114 @@ def test_search_reaches_the_tool_with_the_mapped_mode(monkeypatch, repo, request
     assert seen["query"] == "width"
 
 
+def test_search_defaults_to_auto_mode(monkeypatch, repo):
+    """With no --mode, the CLI defaults to the tool's auto mode."""
+    seen: dict = {}
+
+    def _run(repo_path, factory, tool_name, **_kwargs):
+        coro = factory()
+        seen.update(coro.cr_frame.f_locals)
+        coro.close()
+        return CONCEPT_PAYLOAD
+
+    monkeypatch.setattr(_ta, "run", _run)
+    result = CliRunner(mix_stderr=False).invoke(
+        search_command, ["width", str(repo), "--no-workspace"]
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["mode"] == "auto"
+    assert seen["query"] == "width"
+
+
+def test_search_projection_keeps_lines_and_completeness():
+    payload = {
+        "results": [SYMBOL_HIT],
+        "mode": "symbol",
+        "lines": [{"path": "a.py", "line": 10, "kind": "definition", "text": "def foo():"}],
+        "complete": True,
+        "lines_omitted": 0,
+        "_meta": META,
+    }
+    out = project(payload, "foo", multi=False)
+    assert out["lines"] == payload["lines"]
+    assert out["complete"] is True
+    assert out["lines_omitted"] == 0
+
+
+def test_the_table_path_renders_lines(monkeypatch, repo):
+    payload = {
+        "results": [SYMBOL_HIT],
+        "mode": "symbol",
+        "lines": [{"path": "a.py", "line": 42, "kind": "definition", "text": "def test_func():"}],
+        "lines_omitted": 3,
+        "_meta": META,
+    }
+    result = _search(monkeypatch, ["test_func"], repo, payload)
+    assert "Lines" in result.output
+    assert "a.py:42" in result.output
+    assert "def test_func():" in result.output
+    assert "... 3 more lines omitted" in result.output
+
+
+def test_search_identifier_resolves_to_symbol_with_lines_and_prose_to_concept(monkeypatch, repo):
+    from repowise.server.mcp_server._query_shape import _resolve_mode
+
+    assert _resolve_mode("persist_result", "auto") == "symbol"
+    assert _resolve_mode("how does cost calibration work", "auto") == "concept"
+
+    def _mock_search_codebase(query, limit=10, mode="auto"):
+        resolved = _resolve_mode(query, mode)
+        if resolved == "symbol":
+            return {
+                "results": [SYMBOL_HIT],
+                "mode": "symbol",
+                "lines": [
+                    {
+                        "path": "packages/cli/src/repowise/cli/commands/init_cmd/persistence.py",
+                        "line": 134,
+                        "kind": "definition",
+                        "text": "async def persist_result(",
+                    }
+                ],
+                "complete": True,
+                "_meta": META,
+            }
+        return {
+            "results": [PAGE_HIT],
+            "mode": "concept",
+            "_meta": META,
+        }
+
+    def _run(repo_path, factory, tool_name, **_kwargs):
+        coro = factory()
+        q = coro.cr_frame.f_locals["query"]
+        m = coro.cr_frame.f_locals["mode"]
+        coro.close()
+        return _mock_search_codebase(q, mode=m)
+
+    monkeypatch.setattr(_ta, "run", _run)
+
+    # Identifier query with no --mode routes to symbol and carries lines
+    res_ident = CliRunner(mix_stderr=False).invoke(
+        search_command, ["persist_result", str(repo), "--no-workspace", "--format", "json"]
+    )
+    assert res_ident.exit_code == 0
+    data_ident = json.loads(res_ident.output)
+    assert data_ident["mode"] == "symbol"
+    assert "lines" in data_ident
+    assert data_ident["lines"][0]["line"] == 134
+
+    # Prose query with no --mode routes to concept
+    res_prose = CliRunner(mix_stderr=False).invoke(
+        search_command,
+        ["how does cost calibration work", str(repo), "--no-workspace", "--format", "json"],
+    )
+    assert res_prose.exit_code == 0
+    data_prose = json.loads(res_prose.output)
+    assert data_prose["mode"] == "concept"
+    assert data_prose["results"][0]["page_type"] == "file_page"
+
+
 @pytest.mark.parametrize("mode", ["fulltext", "semantic", "symbol", "auto", "concept",
                                   "path", "hybrid"])
 def test_every_mode_is_accepted_by_the_command(monkeypatch, repo, mode):
