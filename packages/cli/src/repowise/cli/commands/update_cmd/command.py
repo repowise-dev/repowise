@@ -107,6 +107,8 @@ log = structlog.get_logger(__name__)
 
 #: ``state.json`` key: the commit whose run last looked for files with no page.
 FILE_PAGE_FILL_KEY = "file_page_fill_commit"
+#: ``state.json`` key: the commit whose run last planned pages with the full graph.
+STALE_PAGES_PLANNED_KEY = "stale_pages_planned_commit"
 
 
 def _fail_on_embed_failure(
@@ -1047,7 +1049,27 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
         run.stale_pages_deferred = load_actionable_stale_targets(run, opts)
+        _keep_planned_pages_stale(opts, run)
         run.fill_file_pages = _file_pages_to_fill(run, opts)
+
+
+def _keep_planned_pages_stale(opts: UpdateOptions, run: UpdateRun) -> None:
+    """Stale pages a run at this commit left stale wait for the next commit.
+
+    That run held the full graph and left them stale on purpose (the cascade
+    budget). Healing them here would rebuild the whole index for a commit it
+    already indexed, so an update with nothing new stays a no-op; the next
+    update that brings a commit renders them. An uncapped run
+    (``update --full``'s catch-up) renders them now.
+    """
+    from .catch_up import UNCAPPED_CASCADE
+
+    if opts.cascade_budget == UNCAPPED_CASCADE:
+        return
+    if run.state.get(STALE_PAGES_PLANNED_KEY) != run.head:
+        return
+    run.stale_pages_planned = len(run.stale_db_paths) + len(run.stale_deterministic_ids)
+    run.stale_db_paths, run.stale_deterministic_ids = [], set()
 
 
 def _file_pages_to_fill(run: UpdateRun, opts: UpdateOptions) -> bool:
@@ -1128,6 +1150,14 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
                 f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
                 f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
             )
+    if run.stale_pages_planned:
+        from .catch_up import catch_up_command
+
+        console.print(
+            f"[dim]{run.stale_pages_planned} stale page(s) the last update at this commit "
+            "left stale refresh with the next commit, or now with "
+            f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
+        )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
     repo_path = run.repo_path
@@ -1574,6 +1604,11 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
         if opts.verbose:
             console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
     run.cascade_budget = cascade_budget
+    # What this plan leaves stale waits for the next commit, not the next idle run.
+    # Only when it could render stale pages: one without a model leaves them for
+    # an update at this commit that has one.
+    if can_regenerate_pages(run, opts):
+        run.state[STALE_PAGES_PLANNED_KEY] = run.head
     # The builder's cached pagerank spares a full-graph pass.
     from .deterministic import load_stale_file_page_ages
 
@@ -2345,6 +2380,8 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
         from .persistence import record_repair_marker
 
         record_repair_marker(state, dict(state), docs.failed_steps)
+        # A failed render retries at this commit.
+        state.pop(STALE_PAGES_PLANNED_KEY, None)
         console.print(
             "[yellow]Some data for this commit range was not persisted; "
             "the next update will re-cover it.[/yellow]"
