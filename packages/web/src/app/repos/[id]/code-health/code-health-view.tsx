@@ -384,7 +384,7 @@ export function CodeHealthView() {
           release's version so a reader who dismissed an earlier one sees it. */}
       <ReleaseNotice
         id="health-scoring"
-        version="0.60.0"
+        version="0.61.0"
         detail={t("coChangeNoticeBody")}
         detailLabel={t("coChangeNoticeMore")}
         hideLabel={t("coChangeNoticeLess")}
