@@ -229,13 +229,39 @@ class TestPatternSubscriptions:
         ]
         assert len(match_contracts(contracts)) == 2
 
-    @pytest.mark.parametrize(("pattern", "syntax"), [(">", "nats"), ("*", "glob"), (".*", "regex")])
+    @pytest.mark.parametrize(
+        ("pattern", "syntax"),
+        [(">", "nats"), ("*", "glob"), (".*", "regex"), ("#", "mqtt"), ("+", "mqtt")],
+    )
     def test_a_pattern_of_wildcards_alone_links_nothing(self, pattern: str, syntax: str) -> None:
         contracts = [
             _topic("orders", "provider", "orders.created", "a.go", kind="subject"),
             self._subscriber(pattern, syntax),
         ]
         assert match_contracts(contracts) == []
+
+    @pytest.mark.parametrize(
+        ("pattern", "name", "expected"),
+        [
+            ("home/#", "home/kitchen/temp", True),
+            ("home/+/temp", "home/kitchen/temp", True),
+            ("home/+", "home/kitchen/temp", False),
+            ("home/+", "home/kitchen", True),
+            ("home/#", "home", True),
+            ("+/+/temp", "home/kitchen/temp", True),
+            ("+/temp", "home/kitchen/temp", False),
+        ],
+    )
+    def test_mqtt_wildcards(self, pattern: str, name: str, expected: bool) -> None:
+        assert pattern_matches("mqtt", pattern, name) is expected
+
+    def test_mqtt_pattern_subscription_links_publisher(self) -> None:
+        pub = _topic("device", "provider", "home/kitchen/temp", "pub.js", broker="mqtt")
+        sub = _topic("dashboard", "consumer", "home/#", "sub.js", broker="mqtt", pattern="mqtt")
+        links = match_contracts([pub, sub])
+        assert len(links) == 1
+        assert links[0].provider_file == "pub.js"
+        assert links[0].consumer_file == "sub.js"
 
     def test_a_pattern_reaches_only_its_own_broker(self) -> None:
         kafka = _topic("orders", "provider", "orders.created", "a.ts", kind="topic")

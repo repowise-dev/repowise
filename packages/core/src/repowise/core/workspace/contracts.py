@@ -105,6 +105,7 @@ TOPIC_NAMES_UNRESOLVED_STAT = "topic_names_unresolved"
 #: names the pattern syntax.
 TOPIC_PATTERN = "pattern"
 TOPIC_PATTERN_NATS = "nats"
+TOPIC_PATTERN_MQTT = "mqtt"
 TOPIC_PATTERN_GLOB = "glob"
 TOPIC_PATTERN_REGEX = "regex"
 

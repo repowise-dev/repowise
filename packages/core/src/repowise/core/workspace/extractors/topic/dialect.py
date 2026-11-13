@@ -20,6 +20,7 @@ from repowise.core.workspace.contracts import (
     TOPIC_KIND_TOPIC,
     TOPIC_PATTERN,
     TOPIC_PATTERN_GLOB,
+    TOPIC_PATTERN_MQTT,
     TOPIC_PATTERN_NATS,
     TOPIC_PATTERN_REGEX,
     TOPIC_PREFIX,
@@ -43,7 +44,12 @@ if TYPE_CHECKING:
 
 #: Wildcard characters of each subscription-pattern syntax, which a name must
 #: contain to be read as a pattern (``regex`` names are patterns outright).
-_PATTERN_WILDCARDS = {TOPIC_PATTERN_NATS: "*>", TOPIC_PATTERN_GLOB: "*?[", TOPIC_PATTERN_REGEX: ""}
+_PATTERN_WILDCARDS = {
+    TOPIC_PATTERN_NATS: "*>",
+    TOPIC_PATTERN_MQTT: "+#",
+    TOPIC_PATTERN_GLOB: "*?[",
+    TOPIC_PATTERN_REGEX: "",
+}
 
 
 @dataclass(frozen=True)
