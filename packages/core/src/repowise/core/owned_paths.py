@@ -100,6 +100,15 @@ _COPILOT_OWNER_PAIR = ("<!-- REPOWISE_COPILOT_CLI:START -->", "<!-- REPOWISE_COP
 _HOOK_COMMANDS = (COVERAGE_HOOK_COMMAND, HEALTH_GATE_HOOK_COMMAND, CODEX_HOOK_COMMAND)
 #: The server entry's key in every target's config (each target's ``SERVER_NAME``).
 _SERVER_NAME = "repowise"
+_SERVER_LOCATIONS = {
+    (".mcp.json", "mcpServers"),
+    (".cursor/mcp.json", "mcpServers"),
+    (".kiro/settings/mcp.json", "mcpServers"),
+    (".vscode/mcp.json", "servers"),
+    ("opencode.json", "mcp"),
+    ("opencode.jsonc", "mcp"),
+    (".codex/config.toml", "mcp_servers"),
+}
 
 
 def only_repowise_differs(path: str, old: str, new: str) -> bool:
@@ -124,20 +133,24 @@ def _without_repowise(path: str, text: str) -> object:
     except ValueError:
         # JSONC with comments, or a broken file: never repowise's alone, so it counts.
         return None
-    return _prune(data)
+    return _prune(data, (path,))
 
 
-def _prune(value: object) -> object:
+def _prune(value: object, location: tuple[str | None, ...]) -> object:
     """Drop the server entry, repowise's hooks and recommendation, and what that alone empties."""
     if isinstance(value, dict):
-        items = [(k, v) for k, v in value.items() if k != _SERVER_NAME]
+        items = [
+            (k, v)
+            for k, v in value.items()
+            if k != _SERVER_NAME or location not in _SERVER_LOCATIONS
+        ]
     elif isinstance(value, list):
         items = [(None, v) for v in value if not _is_ours(v)]
     else:
         return value
     kept = []
     for key, v in items:
-        pruned = _prune(v)
+        pruned = _prune(v, (*location, key))
         # A container emptied by the removal goes; one the user left empty
         # stays. Falsy scalars (0, false, "") are never emptied: ``not v``.
         if not (pruned or not v) or _lost_its_hooks(v, pruned):
