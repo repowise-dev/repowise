@@ -144,7 +144,7 @@ def tool_counts() -> dict[str, int]:
     be imported already.
     """
     from repowise.core.registry import mcp_tool_registry
-    from repowise.core.registry.tool_selection import LEAN, resolve_enabled_tools
+    from repowise.core.registry.tool_selection import CORE, LEAN, resolve_enabled_tools
     from repowise.server.mcp_server import ensure_full_surface
 
     ensure_full_surface()
@@ -171,6 +171,8 @@ def tool_counts() -> dict[str, int]:
         # derived rather than written as a literal next to a derived total.
         "workspace_extra": workspace - single_repo,
         "opt_in": len([entry for entry in entries if not entry.default]),
+        "core": len(resolve_enabled_tools(entries, is_workspace=False, override=CORE)),
+        "core_workspace": len(resolve_enabled_tools(entries, is_workspace=True, override=CORE)),
         "lean": len(resolve_enabled_tools(entries, is_workspace=False, override=LEAN)),
         "lean_workspace": len(resolve_enabled_tools(entries, is_workspace=True, override=LEAN)),
     }
@@ -403,15 +405,34 @@ def render() -> str:
         "## The MCP surface",
         "",
         textwrap.fill(
-            f"repowise registers **{spell(counts['total'])} MCP tools**. A single-repo "
-            f"server advertises **{spell(counts['single_repo'])}** of them by default, "
-            f"and workspace mode adds {spell(counts['workspace_extra'])} more "
-            f"automatically for **{spell(counts['workspace'])}**. A further "
-            f"**{spell(counts['opt_in'])}** are off by default, enabled through the "
-            "`mcp.tools` config block or `--tools +name`. The `lean` profile trims the "
-            f"default surface to **{spell(counts['lean'])}** tools "
-            f"({spell(counts['lean_workspace'])} in workspace mode) for agents on a "
-            "tight context budget.",
+            f"repowise registers **{spell(counts['total'])} MCP tools**. What a client "
+            "is listed depends on how it loads tool schemas. Claude Code loads a schema "
+            "only when the model asks for that tool, so it gets the standard surface: "
+            f"**{spell(counts['single_repo'])}** tools in a single repo, "
+            f"**{spell(counts['workspace'])}** in workspace mode. Clients that send every "
+            "schema with every request (Codex, Cursor, VS Code and Copilot, OpenCode, "
+            "Windsurf, Kiro, Hermes and any client repowise does not recognise) get the "
+            "`core` "
+            f"profile: **{spell(counts['core'])}** tools ({spell(counts['core_workspace'])} "
+            "in workspace mode), `get_answer`, `get_context`, `search_codebase`, "
+            "`get_symbol` and `get_why`. A further "
+            f"**{spell(counts['opt_in'])}** specialists are off for every client.",
+            width=_WRAP,
+        ),
+        "",
+        textwrap.fill(
+            "One setting, `mcp.tools`, changes it for every client: `repowise config set "
+            "mcp.tools <value>`, `repowise agents add --tools <value>`, the `mcp` block "
+            "in `.repowise/config.yaml`, or the Agents page of a repository's dashboard "
+            "settings. `repowise mcp --tools <value>` in one client's server entry pins "
+            "that client alone and wins over the setting. The value is a profile "
+            "(`core`, `lean`, `standard`, `all`), optionally followed by `+name` or "
+            "`-name`; `+name` or `-name` alone adjusts each client's default; plain "
+            "names are the exact list. The server reads it when it starts, so restart "
+            "it (or the agent) after a change. A tool left out only by a client's "
+            "default still answers if called, and the server's instructions name the "
+            f"command that lists it. The `lean` profile is **{spell(counts['lean'])}** tools "
+            f"({spell(counts['lean_workspace'])} in workspace mode): core plus `get_risk`.",
             width=_WRAP,
         ),
         "",

@@ -190,7 +190,12 @@ def test_web_cli_and_mcp_give_one_score_and_one_test_list(tmp_path, monkeypatch)
             shown = mcp["impacted_tests"]
             for key in ("status", "run_all", "basis", "total"):
                 assert shown[key] == tests[key], (sha, key)
-            assert shown["tests_to_run"] == tests["tests_to_run"][:10], sha
+            # The agent's head is drawn from the same selection: each listed test
+            # is in the full list, or a test id inside a listed file.
+            files = {t.split("::", 1)[0] for t in tests["tests_to_run"]}
+            for test in shown["tests_to_run"]:
+                assert test in tests["tests_to_run"] or test.split("::", 1)[0] in files, sha
+            assert bool(shown["tests_to_run"]) == bool(tests["tests_to_run"]), sha
             named += bool(tests["tests_to_run"])
     finally:
         asyncio.run(engine.dispose())

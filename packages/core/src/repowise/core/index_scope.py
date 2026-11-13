@@ -363,11 +363,9 @@ def resolve_index_scope(
     }
 
 
-#: What a routine response says instead of the whole canonical scope. The full
-#: object is roughly 900 characters, which on a small ``get_symbol`` response
-#: was about a third of everything the agent received — paid for on every call
-#: to answer a question almost none of them asked.
-COMPACT_INDEX_SCOPE_PROJECTION = "compact"
+#: The env value that asks for the whole canonical scope on routine responses.
+#: A routine response otherwise carries the compact digest: the full object is
+#: roughly 900 characters, about a third of a small ``get_symbol`` reply.
 CANONICAL_INDEX_SCOPE_PROJECTION = "full"
 
 #: Degraded-analysis entries the compact scope names; the count stays exact and
@@ -516,8 +514,10 @@ def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | Non
     """The routine-response projection of a canonical scope.
 
     Keeps what changes how an answer should be read — the run mode, where the
-    prose came from, how much git there is, and whether the index is whole —
-    plus a fingerprint identifying the full object. The call that returns it
+    prose came from, how much git there is, and whether the index is whole.
+    The version, projection name and fingerprint stay on the whole object: they
+    are the same on every response of a session, and an agent acts on none of
+    them. The call that returns the whole object
     (``get_overview(include=["scope"])``) is documented, not repeated on every
     response: agents did not follow it. Everything else is a diagnostic, and a diagnostic that rides on every
     response is a tax, not a disclosure.
@@ -530,13 +530,10 @@ def compact_index_scope(scope: Mapping[str, Any] | None) -> dict[str, Any] | Non
     if not isinstance(scope, Mapping):
         return None
     compact: dict[str, Any] = {
-        "version": scope.get("version", INDEX_SCOPE_VERSION),
-        "projection": COMPACT_INDEX_SCOPE_PROJECTION,
         "run_mode": scope.get("run_mode", "unknown"),
         "content_provenance": scope.get("content_provenance", "unknown"),
         "git_tier": scope.get("git_tier", "unknown"),
         "status": _scope_status(scope),
-        "fingerprint": index_scope_fingerprint(scope),
     }
     unavailable = _section(scope, "analysis").get("unavailable")
     if unavailable:

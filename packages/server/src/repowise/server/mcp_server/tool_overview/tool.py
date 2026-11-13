@@ -20,6 +20,7 @@ from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._call_tasks import cancel_and_wait
 from repowise.server.mcp_server._changes import overview_changes
 from repowise.server.mcp_server._components import component_list
+from repowise.server.mcp_server._failure_shield import _NOT_INDEXED_MARKER, _shape_not_indexed
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -118,7 +119,10 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     # dropped — the response carries an expandable [repowise#<ref>] marker.
     collector = OmissionCollector("get_overview", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
-        repository = await _get_repo(session)
+        repository, notice = await _repo_or_notice(session)
+        if notice is not None:
+            attach_ignored_arguments(notice, ignored)
+            return notice
         result = await _repo_overview(
             session,
             ctx.session_factory,
@@ -161,6 +165,32 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
         collector.attach(result)
         attach_ignored_arguments(result, ignored)
         return result
+
+
+async def _repo_or_notice(session: Any) -> tuple[Any, dict[str, Any] | None]:
+    """The served repository, or the not-indexed answer when there is none."""
+    try:
+        return await _get_repo(session), None
+    except LookupError as exc:
+        notice = _not_indexed_overview(exc)
+        if notice is None:
+            raise
+        return None, notice
+
+
+def _not_indexed_overview(exc: LookupError) -> dict[str, Any] | None:
+    """The orientation answer for a directory with no index, or None for any other miss.
+
+    Orientation is the first call of a session, and "nothing is indexed here,
+    this is how to index it" is its true answer, so it is an ordinary result
+    rather than an error. A store that would not open stays an error.
+    """
+    if _NOT_INDEXED_MARKER not in str(exc) or _state._store_error is not None:
+        return None
+    if _state._registry is not None:  # one workspace member; the notice speaks for the server
+        return None
+    notice = _shape_not_indexed()
+    return {"title": "Not indexed", "content_md": notice.pop("error"), **notice}
 
 
 async def _repo_overview(

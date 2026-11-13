@@ -82,7 +82,7 @@ def _stale_entry(alias: str, repository: Any, root: str | None) -> dict[str, Any
     Stale means ``_meta`` would warn for a repo-level answer: HEAD moved past the
     indexed commit with real file changes, or the index is very old with no git.
     """
-    fresh = freshness_from_repo(repository, targets=None, root=root)
+    fresh = freshness_from_repo(repository, targets=None, root=root, repo_level=True)
     if "stale_warning" not in fresh:
         return None
     entry: dict[str, Any] = {"repo": alias}

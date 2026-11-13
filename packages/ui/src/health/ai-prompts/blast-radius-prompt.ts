@@ -10,6 +10,17 @@ export type BlastPromptChange =
   | { kind: "working_tree"; label: string }
   | { kind: "branch"; label: string; base: string; head_sha?: string | null }
   | { kind: "commit"; label: string; sha: string; title?: string | null }
+  | {
+      kind: "change_request";
+      /** The forge's own reference, e.g. `!12` or `#12`. */
+      label: string;
+      /** What the forge calls one: "merge request", "pull request". */
+      term: string;
+      title?: string | null;
+      /** The two commits the review read; null until the server resolved them. */
+      base_sha?: string | null;
+      head_sha?: string | null;
+    }
   | { kind: "files"; label: string };
 
 export interface BlastPromptInput {
@@ -63,6 +74,9 @@ function diffCommand(c: BlastPromptChange, files: string[]): string {
       return `git diff ${c.base}...${c.label}`;
     case "commit":
       return `git show ${c.sha}`;
+    case "change_request":
+      if (c.base_sha && c.head_sha) return `git diff ${c.base_sha}...${c.head_sha}`;
+      return `git diff HEAD -- ${files.slice(0, 5).join(" ")}${files.length > 5 ? " ..." : ""}`;
     case "files":
       return `git diff HEAD -- ${files.slice(0, 5).join(" ")}${files.length > 5 ? " ..." : ""}`;
   }
@@ -76,6 +90,8 @@ function changeLine(c: BlastPromptChange): string {
       return `Branch \`${c.label}\` against \`${c.base}\` (merge-base diff)${c.head_sha ? `, head \`${c.head_sha.slice(0, 12)}\`` : ""}`;
     case "commit":
       return `Commit \`${c.sha}\`${c.title ? `: ${c.title}` : ""}`;
+    case "change_request":
+      return `${c.term.charAt(0).toUpperCase()}${c.term.slice(1)} ${c.label}${c.title ? `: ${c.title}` : ""}${c.head_sha ? `, head \`${c.head_sha.slice(0, 12)}\`` : ""}`;
     case "files":
       return "A hand-picked set of files (not a commit)";
   }
