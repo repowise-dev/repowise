@@ -195,6 +195,21 @@ async def test_fetch_empty_db_returns_defaults(session, repo, tmp_path):
     assert data.avg_confidence == 0.0
 
 
+async def test_fetch_reads_the_mcp_tool_setting(session, repo, tmp_path):
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "mcp:\n  tools: core +get_risk\n", encoding="utf-8"
+    )
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    assert data.mcp_tools == "core +get_risk"
+    assert "get_risk" in data.listed_tools("codex")
+
+
+async def test_fetch_without_an_mcp_tool_setting(session, repo, tmp_path):
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    assert data.mcp_tools is None
+
+
 async def test_fetch_repo_name(session, repo, tmp_path):
     fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
     data = await fetcher.fetch()

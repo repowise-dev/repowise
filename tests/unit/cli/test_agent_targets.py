@@ -793,6 +793,23 @@ def test_every_written_instruction_block_leads_with_the_call_first_line() -> Non
     assert instructions.DISTILL_SECTION_HEADING in instructions.DISTILL_SECTION
 
 
+def test_the_shared_instruction_block_names_only_core_tools() -> None:
+    """Every host that reads this block loads tool schemas up front.
+
+    Those clients are listed the core tools by default, so a line naming any
+    other tool would send the agent to a tool its client was never shown.
+    """
+    import re
+
+    from repowise.cli.agent_targets import instructions
+    from repowise.core.registry.tool_selection import CORE_TOOLS
+
+    tool_name = r"\b(?:get_[a-z_]+|search_codebase|list_repos)\b"
+    named = set(re.findall(tool_name, instructions.DISTILL_SECTION))
+    assert named
+    assert named <= CORE_TOOLS
+
+
 def test_claude_code_reports_plugin_and_direct_separately(tmp_path: Path, monkeypatch) -> None:
     """The duplicate-registration case the method axis exists for.
 

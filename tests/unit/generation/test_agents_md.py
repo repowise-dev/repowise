@@ -24,23 +24,27 @@ def test_agents_md_routes_tasks_to_tools() -> None:
     assert "Grep, Glob and Read are faster" not in rendered
     assert "call a Repowise tool first (get_answer for how/where/why questions" in rendered
     assert 'get_context(targets=["<symbol>"], include=["references"])' in rendered
-    assert 'get_risk(targets=["<file>"])' in rendered
     assert 'get_why(targets=["<file>"])' in rendered
+    # AGENTS.md readers load schemas up front and get the core tools by default.
+    assert "get_risk" not in rendered
+    assert "get_change_risk" not in rendered
     # Codex and other AGENTS.md readers name tools their own way.
     assert "mcp__" not in rendered
     assert "| Tool | When and why |" not in rendered
 
 
 def test_agents_md_renders_the_full_shared_tool_table() -> None:
-    # AGENTS.md must reach the same tool surface as CLAUDE.md: both render the
-    # single shared table from tool_table.py. Asserting the whole rendered table
-    # is embedded means a future tool added to the registry (and therefore to
-    # TOOL_TABLE_ROWS, which test_tool_table_drift pins to the registry) fails CI
-    # here if AGENTS.md ever stops rendering it. This is the AGENTS.md twin of
-    # the CLAUDE.md guard so the two can never drift apart again.
+    # With every default tool listed, AGENTS.md reaches the same tool surface as
+    # CLAUDE.md: both render the single shared table from tool_table.py.
+    # Asserting the whole rendered table is embedded means a future tool added
+    # to the registry (and therefore to TOOL_TABLE_ROWS, which
+    # test_tool_table_drift pins to the registry) fails CI here if AGENTS.md
+    # ever stops rendering it.
     import dataclasses
 
-    data = dataclasses.replace(_data(), sections=_data().sections | {"tools"})
+    data = dataclasses.replace(
+        _data(), sections=_data().sections | {"tools"}, mcp_tools="standard"
+    )
     rendered = AgentsMdGenerator().render(data)
 
     assert render_tool_table() in rendered

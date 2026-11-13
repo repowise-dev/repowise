@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from repowise.core.generation.editor_files import AgentsMdGenerator, ClaudeMdGenerator
@@ -127,6 +129,8 @@ _HEADINGS = {
     "commands": "### Commands",
 }
 
+_KEYLESS_SCOPE = {"content_provenance": "template", "search": {"semantic": "unavailable"}}
+
 _STEER = (
     "For any question about this codebase, call a Repowise tool first "
     "(get_answer for how/where/why questions, search_codebase for an identifier, "
@@ -194,7 +198,9 @@ def test_the_opt_in_sections_bring_the_detail_back(gen):
 
 
 def test_full_how_to_work_names_the_pre_edit_and_finish_calls(gen):
-    rendered = gen.render(_full_data(sections=frozenset({"how_to_work_full"})))
+    rendered = gen.render(
+        _full_data(sections=frozenset({"how_to_work_full"}), mcp_tools="standard")
+    )
     assert rendered.count("**Before an edit:**") == 1
     assert 'get_risk(targets=["<file>"])' in rendered
     assert 'get_change_risk(revspec="<base>..HEAD")' in rendered
@@ -202,7 +208,7 @@ def test_full_how_to_work_names_the_pre_edit_and_finish_calls(gen):
 
 
 def test_how_to_work_is_one_line_per_moment(gen):
-    rendered = gen.render(_full_data(sections=frozenset({"how_to_work"})))
+    rendered = gen.render(_full_data(sections=frozenset({"how_to_work"}), mcp_tools="standard"))
     assert (
         '- Before a rename: `get_context(targets=["<symbol>"], include=["references"])`.'
         in rendered
@@ -273,7 +279,8 @@ def test_fix_first_alone_keeps_its_heading(gen):
 
 @pytest.mark.parametrize("sections", [None, ALL_SECTIONS], ids=["default", "all"])
 def test_the_shared_body_differs_only_in_the_read_note(sections):
-    data = _full_data(sections=sections) if sections else _full_data()
+    # With every default tool listed to both readers, only the read note differs.
+    data = _full_data(mcp_tools="standard", **({"sections": sections} if sections else {}))
     claude = ClaudeMdGenerator().render(data)
     agents = AgentsMdGenerator().render(data)
     if sections is None:
@@ -285,6 +292,72 @@ def test_the_shared_body_differs_only_in_the_read_note(sections):
         )
         == agents
     )
+
+
+# ---------------------------------------------------------------------------
+# AGENTS.md names only the tools its reader's client is listed
+# ---------------------------------------------------------------------------
+
+_TOOL_NAME = re.compile(r"\b(?:get_[a-z_]+|search_codebase|list_repos)\b")
+
+
+@pytest.mark.parametrize("scope", [{}, _KEYLESS_SCOPE], ids=["model", "keyless"])
+@pytest.mark.parametrize("sections", [DEFAULT_SECTIONS, ALL_SECTIONS], ids=["default", "all"])
+def test_agents_md_names_only_the_core_tools_by_default(sections, scope):
+    from repowise.core.registry.tool_selection import CORE_TOOLS
+
+    rendered = AgentsMdGenerator().render(_full_data(sections=sections, index_scope=scope))
+    assert set(_TOOL_NAME.findall(rendered)) <= CORE_TOOLS, rendered
+    assert 'get_why(targets=["<file>"])' in rendered or "get_why(query=" in rendered
+
+
+@pytest.mark.parametrize("sections", [DEFAULT_SECTIONS, ALL_SECTIONS], ids=["default", "all"])
+def test_claude_md_ignores_the_tool_list(sections):
+    # Claude Code defers schemas and is listed every default tool.
+    gen = ClaudeMdGenerator()
+    plain = gen.render(_full_data(sections=sections))
+    assert gen.render(_full_data(sections=sections, mcp_tools="core")) == plain
+    assert 'get_risk(targets=["<file>"])' in plain
+    assert 'get_change_risk(revspec="<base>..HEAD")' in plain
+
+
+def test_agents_md_edit_line_without_get_why():
+    rendered = AgentsMdGenerator().render(_full_data(mcp_tools="get_answer get_risk"))
+    assert '- Before editing a file: `get_risk(targets=["<file>"])`.\n' in rendered
+    assert "get_why(" not in rendered
+
+
+def test_agents_md_full_protocol_keeps_only_listed_checks():
+    rendered = AgentsMdGenerator().render(_full_data(sections=ALL_SECTIONS))
+    assert '- **Before changing a pattern:** `get_why(query="why ...", targets=["<file>"])`.' in rendered
+    assert "**Before an edit:**" not in rendered
+    assert "get_health(" not in rendered
+    assert "maintainability 8.0/10." in rendered
+
+
+def test_agents_md_follows_the_configured_tool_list():
+    rendered = AgentsMdGenerator().render(_full_data(mcp_tools="core +get_risk"))
+    assert (
+        '- Before editing a file: `get_risk(targets=["<file>"])`; before changing how it works: '
+        '`get_why(targets=["<file>"])`'
+    ) in rendered
+    assert "get_change_risk" not in rendered
+
+
+def test_agents_md_drops_a_line_whose_tool_is_configured_off():
+    rendered = AgentsMdGenerator().render(_full_data(mcp_tools="get_answer search_codebase"))
+    assert "get_context(targets" not in rendered
+    assert "get_why(" not in rendered
+    assert "Recorded decisions govern" not in rendered
+
+
+def test_agents_md_tool_table_lists_only_the_listed_tools():
+    from repowise.core.registry.tool_selection import CORE_TOOLS
+
+    rendered = AgentsMdGenerator().render(_full_data(sections=frozenset({"tools"})))
+    rows = [line for line in rendered.splitlines() if line.startswith("| `")]
+    assert len(rows) == len(CORE_TOOLS)
+    assert set(_TOOL_NAME.findall("\n".join(rows))) <= CORE_TOOLS
 
 
 # ---------------------------------------------------------------------------
