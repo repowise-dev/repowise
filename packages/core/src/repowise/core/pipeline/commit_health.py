@@ -235,6 +235,25 @@ async def refresh_commit_health(
         return nothing
 
 
+async def pending_window(
+    session_factory: Any, repo_id: str, repo_path: str, *, strict: bool = False
+) -> tuple[list[str], bool]:
+    """Read the latest commit window and find what the current analyzer has left."""
+    from repowise.core.persistence import get_session
+    from repowise.core.persistence.crud import get_git_commits
+
+    limit = commit_limit()
+    if limit <= 0:
+        return [], False
+    async with get_session(session_factory) as session:
+        window = [
+            row.sha for row in await get_git_commits(session, repo_id, limit=limit, sort="date")
+        ]
+        if not window:
+            return [], False
+        return await _pending_shas(session, repo_id, repo_path, window, limit, strict=strict)
+
+
 async def scan_window(
     session_factory: Any, repo_id: str, repo_path: str, budget: float, *, strict: bool = False
 ) -> dict[str, int]:
@@ -249,18 +268,8 @@ async def scan_window(
     commit-health lock.
     """
     from repowise.core.persistence import get_session
-    from repowise.core.persistence.crud import get_git_commits
 
-    limit = commit_limit()
-    async with get_session(session_factory) as session:
-        window = [
-            row.sha for row in await get_git_commits(session, repo_id, limit=limit, sort="date")
-        ]
-        pending, waiting = (
-            await _pending_shas(session, repo_id, repo_path, window, limit, strict=strict)
-            if window
-            else ([], False)
-        )
+    pending, waiting = await pending_window(session_factory, repo_id, repo_path, strict=strict)
     stats = _nothing()
     if pending:
         scan = await _scan(repo_path, pending, budget, strict=strict)
