@@ -109,9 +109,7 @@ _PY_ANNOTATED = re.compile(
 # ``x = T(...)``. Bare-named: ``x = Foo.bar(...)`` is a call on a class, not a
 # construction. Anchored to a statement start, or ``dispatch(logger=Emitter())``
 # would read as declaring ``logger``.
-_PY_CONSTRUCTED = re.compile(
-    r"(?m)^[ \t]*(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\("
-)
+_PY_CONSTRUCTED = re.compile(r"(?m)^[ \t]*(?P<name>[a-z_]\w*)\s*=\s*(?P<type>[A-Z]\w*)\s*\(")
 
 # ``self.x: T`` and ``self.x = T(...)`` in a method: the fields a Python class
 # gives its instances. The ``member`` group marks a declaration of the
@@ -164,9 +162,7 @@ _GO_TYPE = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?"
 # before a comma or the list end. Juxtaposition is a declaration nearly
 # everywhere Go allows it. ``a * b`` is not matched because gofmt spaces binary
 # operators while a pointer type binds tight.
-_GO_PARAM = re.compile(
-    rf"(?<![\w.])(?P<name>{_GO_NAME})\s+\*?(?P<type>{_GO_TYPE})\s*(?=[,)])"
-)
+_GO_PARAM = re.compile(rf"(?<![\w.])(?P<name>{_GO_NAME})\s+\*?(?P<type>{_GO_TYPE})\s*(?=[,)])")
 
 # ``x := Foo{}``, ``x := &Foo{}``, ``x := y.(Foo)``, ``x, ok := y.(Foo)``. The
 # closing ``{`` or ``)`` tells them from ``x := f()``, whose return type is not
@@ -632,9 +628,12 @@ _BINDING_SCAN_AS = {"javascript": "typescript"}
 # scope would otherwise answer for (`{ api -> api.m() }` is not the field).
 # `(named, listed)` shapes; a lambda's list stays on its opening line.
 _JAVA_LAMBDA = (
-    re.compile(r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)"),
-    re.compile(r"(?<![\w.])(?P<name>[a-z_]\w*)\s*->"),
-), (re.compile(r"\((?P<lhs>[\w\s,]*)\)\s*->"),)
+    (
+        re.compile(r"(?<![\w.])var\s+(?P<name>[a-z_]\w*)"),
+        re.compile(r"(?<![\w.])(?P<name>[a-z_]\w*)\s*->"),
+    ),
+    (re.compile(r"\((?P<lhs>[\w\s,]*)\)\s*->"),),
+)
 _LOCAL_NAME_SHAPES: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
     "csharp": (
         (
@@ -650,11 +649,7 @@ _LOCAL_NAME_SHAPES: dict[str, tuple[tuple[re.Pattern[str], ...], ...]] = {
             ),
         ),
         # A function literal's list follows punctuation, never a name or `if`.
-        (
-            re.compile(
-                r"(?m)(?:(?<=[(,=:>])|^)\s*\((?P<lhs>[\w\s,]*)\)\s*(?:async\s*)?(?:=>|\{)"
-            ),
-        ),
+        (re.compile(r"(?m)(?:(?<=[(,=:>])|^)\s*\((?P<lhs>[\w\s,]*)\)\s*(?:async\s*)?(?:=>|\{)"),),
     ),
     # An `auto` local and a structured binding spell no type the scan reads,
     # but still hide a field of their name.
@@ -946,9 +941,7 @@ def scan_scope_marks(text: str, language: str) -> ScopeMarks:
         for match in (escapes.finditer(cleaned) if escapes else ())
         for name in match.group("names").split(",")
     }
-    return ScopeMarks(
-        tuple(sorted(found_hoisted)), tuple(sorted(found_escaped)), (0, *line_depths)
-    )
+    return ScopeMarks(tuple(sorted(found_hoisted)), tuple(sorted(found_escaped)), (0, *line_depths))
 
 
 def names_in_span(
@@ -971,6 +964,7 @@ def framework_decorated_type(decorators: Iterable[str], language: str) -> str | 
             if pattern.match(decorator):
                 return type_name
     return None
+
 
 _LANGUAGE_BLOCK_COMMENTS: dict[str, re.Pattern[str]] = {
     # C++ needs the block strip for the reason Kotlin does: doxygen writes
@@ -1191,7 +1185,11 @@ def _in_type_body(cleaned: str, type_header: re.Pattern[str]) -> Callable[[int],
 
 
 _TS_TYPE_HEADER = re.compile(
-    r"(?:\binterface\s+[A-Za-z_$][\w$]*|\btype\s+[A-Za-z_$][\w$]*[^=]*=|(?:[:<]|\bas)\s*$)"
+    r"(?:\binterface\s+[A-Za-z_$][\w$]*|\btype\s+[A-Za-z_$][\w$]*[^=]*=|(?:<|\bas)\s*$)"
+)
+_TS_ANNOTATION_HEADER = re.compile(r"(?:[A-Za-z_$][\w$]*\??|\))\s*:\s*$")
+_TS_NON_ANNOTATION = re.compile(
+    r"(?:\bcase\b|\bdefault\s*:|(?:^|[;{}])\s*[A-Za-z_$][\w$]*\s*:)", re.MULTILINE
 )
 
 
@@ -1210,7 +1208,11 @@ def _inside_ts_type(cleaned: str) -> Callable[[int], bool]:
     for match in _BRACE.finditer(cleaned):
         char = match.group()
         if char == "{":
-            is_type = bool(_TS_TYPE_HEADER.search(cleaned[segment_start : match.start()]))
+            segment = cleaned[segment_start : match.start()]
+            is_type = bool(_TS_TYPE_HEADER.search(segment)) or (
+                bool(_TS_ANNOTATION_HEADER.search(segment))
+                and not _TS_NON_ANNOTATION.search(segment)
+            )
             stack.append(is_type or (bool(stack) and stack[-1]))
         elif char == "}" and stack:
             stack.pop()
@@ -1691,16 +1693,16 @@ _GO_ELEMENT_SHAPES = (
 )
 
 # Any one of those spellings, for the declaration scans to capture whole.
-_GO_CONTAINER = (
-    rf"(?:\[\d*\]|\.\.\.|map\[\*?{_GO_TYPE}\]|(?:<-\s*)?chan(?:\s*<-)?\s+)\*?{_GO_TYPE}"
-)
+_GO_CONTAINER = rf"(?:\[\d*\]|\.\.\.|map\[\*?{_GO_TYPE}\]|(?:<-\s*)?chan(?:\s*<-)?\s+)\*?{_GO_TYPE}"
 
 _GO_CONTAINER_DECLARATIONS = (
     # A parameter or named result, as ``_GO_PARAM``. Only the last name of
     # ``a, b []T`` is read: a missed declaration, never a wrong one.
     re.compile(rf"(?<![\w.])(?P<name>{_GO_NAME})\s+(?P<type>{_GO_CONTAINER})\s*(?=[,)])"),
     # ``var xs []T``.
-    re.compile(rf"(?m)(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+(?P<type>{_GO_CONTAINER})\s*(?=[=;)]|$)"),
+    re.compile(
+        rf"(?m)(?<![\w.])var\s+(?P<name>{_GO_NAME})\s+(?P<type>{_GO_CONTAINER})\s*(?=[=;)]|$)"
+    ),
     # ``xs := []T{}`` and ``xs := make([]T, n)``.
     re.compile(
         rf"(?<![\w.])(?P<name>{_GO_NAME})\s*:=\s*(?:make\(\s*)?(?P<type>{_GO_CONTAINER})\s*(?=[{{,)])"
@@ -1734,9 +1736,7 @@ _DART_TYPE_NAME = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?"
 # generic (``List<List<T>>``) or an un-awaited ``Future<List<T>>`` is no shape
 # here, so each yields nothing.
 _DART_ITERABLE = r"(?:List|Iterable|Set|Queue|Stream)"
-_DART_ELEMENT_SHAPES = (
-    re.compile(rf"{_DART_ITERABLE}\s*<\s*(?P<value>{_DART_TYPE_NAME})\??\s*>"),
-)
+_DART_ELEMENT_SHAPES = (re.compile(rf"{_DART_ITERABLE}\s*<\s*(?P<value>{_DART_TYPE_NAME})\??\s*>"),)
 
 # The whole spelling, nested arguments too, so the element shape refuses it
 # instead of the declaration going unseen.

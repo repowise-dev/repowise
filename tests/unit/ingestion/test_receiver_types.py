@@ -383,7 +383,6 @@ class TestKotlinRefusals:
         source = "class C {\n    fun f() {\n        val local: Logger = make()\n    }\n}"
         assert "local" not in fields(source, "kotlin", [(2, 4)])
 
-
     def test_a_chained_construction_types_nothing(self) -> None:
         """``val x = Builder().build()`` makes ``x`` whatever ``build()``
         returns, so typing it as a ``Builder`` is a wrong answer rather than a
@@ -467,7 +466,6 @@ class TestKotlinFieldScope:
     def test_an_uninitialised_property_is_a_field(self) -> None:
         source = "abstract class Repo {\n    abstract val api: Api\n}"
         assert fields(source, "kotlin", [])["api"] == "Api"
-
 
 
 class TestSwiftShapes:
@@ -717,9 +715,9 @@ class TestGoShapes:
 def go_fields(source: str) -> dict[str, str | None]:
     """The fields of one struct spanning the whole text; Go methods sit outside it."""
     lines = source.count("\n") + 1
-    return types_by_class(
-        scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go"
-    ).get("f.go::C", {})
+    return types_by_class(scan_declarations(source, "go"), {"f.go::C": (1, lines)}, [], "go").get(
+        "f.go::C", {}
+    )
 
 
 class TestGoFields:
@@ -919,9 +917,7 @@ class TestKotlinSwiftDartCallAssignments:
             ("while let r = findRepo() {", CallAssignment(2, "r", None, "findRepo")),
         ],
     )
-    def test_swift_optional_binding(
-        self, statement: str, expected: CallAssignment
-    ) -> None:
+    def test_swift_optional_binding(self, statement: str, expected: CallAssignment) -> None:
         body = f"f() {{\n  {statement}\n}}"
         assert scan_call_assignments(body, "swift") == (expected,)
 
@@ -975,7 +971,9 @@ class TestClassScope:
         assert fields(source, "java", [])["factory"] == "NodeFactory"
 
     def test_an_inner_class_field_answers_for_the_inner_class(self) -> None:
-        source = "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        source = (
+            "class C {\nprivate CacheLoader outer;\nclass D {\nprivate NodeFactory inner;\n}\n}"
+        )
         by_class = types_by_class(
             scan_declarations(source, "java"),
             {"f.java::C": (1, 6), "f.java::C::D": (3, 5)},
@@ -1206,13 +1204,7 @@ class TestTypeScriptShapes:
         assert declared_types(body, "typescript")["manager"] == "TaskManager"
 
     def test_class_field(self) -> None:
-        source = (
-            "class Store {\n"
-            "    users: Users;\n"
-            "    private client: Client;\n"
-            "    run() {}\n"
-            "}"
-        )
+        source = "class Store {\n    users: Users;\n    private client: Client;\n    run() {}\n}"
         assert fields(source, "typescript", [(4, 4)]) == {
             "users": "Users",
             "client": "Client",
@@ -1221,22 +1213,12 @@ class TestTypeScriptShapes:
 
 class TestTypeScriptRefusals:
     def test_interface_properties_are_not_declarations(self) -> None:
-        source = (
-            "interface ServiceConfig {\n"
-            "    service: UserService;\n"
-            "    timeout: number;\n"
-            "}\n"
-        )
+        source = "interface ServiceConfig {\n    service: UserService;\n    timeout: number;\n}\n"
         assert scan_declarations(source, "typescript") == ()
         assert declared_types(source, "typescript") == {}
 
     def test_type_alias_properties_are_not_declarations(self) -> None:
-        source = (
-            "type Options = {\n"
-            "    client: HttpClient;\n"
-            "    timeout: number;\n"
-            "};\n"
-        )
+        source = "type Options = {\n    client: HttpClient;\n    timeout: number;\n};\n"
         assert scan_declarations(source, "typescript") == ()
         assert declared_types(source, "typescript") == {}
 
@@ -1291,4 +1273,35 @@ class TestTypeScriptRefusals:
         assert "client" not in types
         assert types["realService"] == "RealService"
 
-
+    def test_switch_case_braced_blocks_and_labels_are_not_treated_as_types(self) -> None:
+        source = (
+            "function handle(action: string) {\n"
+            "    switch (action) {\n"
+            "        case 'connect': {\n"
+            "            const client: Client = makeClient();\n"
+            "            client.connect();\n"
+            "            break;\n"
+            "        }\n"
+            "        case 1: {\n"
+            "            const numClient: Client = makeClient();\n"
+            "            numClient.connect();\n"
+            "            break;\n"
+            "        }\n"
+            "        default: {\n"
+            "            const fallback: Client = makeClient();\n"
+            "            fallback.connect();\n"
+            "            break;\n"
+            "        }\n"
+            "    }\n"
+            "    outer: {\n"
+            "        const inner: Item = getItem();\n"
+            "    }\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["client", "numClient", "fallback", "inner"]
+        types = declared_types(source, "typescript")
+        assert types["client"] == "Client"
+        assert types["numClient"] == "Client"
+        assert types["fallback"] == "Client"
+        assert types["inner"] == "Item"
