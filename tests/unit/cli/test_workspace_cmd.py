@@ -89,7 +89,7 @@ class TestWorkspaceList:
 
     def test_list_counts_from_configured_db_url(self, runner, tmp_path, monkeypatch):
         # A configured DB URL with no local wiki.db still has counts to show.
-        from repowise.cli.commands import status_cmd
+        from repowise.cli.commands.workspace_cmd import _shared as workspace_shared
 
         repo = tmp_path / "svc"
         (repo / ".repowise").mkdir(parents=True)
@@ -100,7 +100,9 @@ class TestWorkspaceList:
             coro.close()
             return 7, 4321
 
-        monkeypatch.setattr(status_cmd, "run_async", _fake_run_async)
+        # The listing asks the workspace's store query, which is the one that
+        # can also say "no store answered" for a repo the store does not hold.
+        monkeypatch.setattr(workspace_shared, "run_async", _fake_run_async)
 
         result = runner.invoke(cli, ["workspace", "list", str(tmp_path)])
         assert result.exit_code == 0, result.output

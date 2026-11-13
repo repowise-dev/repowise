@@ -8,11 +8,11 @@ import click
 from rich.table import Table
 
 from repowise.cli._setup import configure_cli_logging
-from repowise.cli.commands.status_cmd import _format_relative_time, _query_repo_counts
+from repowise.cli.commands.status_cmd import _format_relative_time
 from repowise.cli.helpers import console, resolve_repo_path
 
 from ._index import _resolve_docs_flag, _run_index_for_repo
-from ._shared import _require_workspace
+from ._shared import _query_store_counts, _require_workspace
 
 # ---------------------------------------------------------------------------
 # Command group
@@ -33,7 +33,7 @@ def workspace_group() -> None:
 @click.argument("path", required=False, default=None)
 def workspace_list(path: str | None) -> None:
     """Show all repos in the workspace with their status."""
-    from repowise.cli.helpers import get_repowise_dir
+    from repowise.cli.helpers import db_configured, get_repowise_dir
     from repowise.core.workspace import check_repo_staleness
     from repowise.core.workspace.update import sync_workspace_state_from_disk
 
@@ -51,6 +51,7 @@ def workspace_list(path: str | None) -> None:
     table.add_column("Status")
 
     indexed_count = 0
+    configured_db = db_configured()
 
     for entry in ws_config.repos:
         abs_path = (ws_root / entry.path).resolve()
@@ -62,14 +63,26 @@ def workspace_list(path: str | None) -> None:
 
         rel_path = entry.path
 
-        if not repowise_dir.exists():
+        # A missing local directory means "not indexed" only for the
+        # repo-local SQLite default it describes. With a shared database
+        # configured (REPOWISE_DB_URL or REPOWISE_DATABASE_URL) the index may
+        # live there with nothing on local disk, so the store answers instead:
+        # a repository row for this path is the index, and its absence is the
+        # not-indexed verdict. With no configured URL the directory check is
+        # unchanged.
+        counts = _query_store_counts(abs_path)
+        indexed = counts is not None if configured_db else repowise_dir.exists()
+
+        if not indexed:
             table.add_row(label, rel_path, "-", "-", "-", "[yellow]not indexed[/yellow]")
             continue
 
         indexed_count += 1
 
-        # Query file/symbol counts from DB
-        file_count, symbol_count = _query_repo_counts(abs_path)
+        # An existing .repowise/ with no readable store is still an indexed
+        # repo with nothing counted yet, which is what the local path has
+        # always reported.
+        file_count, symbol_count = counts if counts is not None else (0, 0)
 
         # Indexed timestamp
         indexed_ago = _format_relative_time(entry.indexed_at)
