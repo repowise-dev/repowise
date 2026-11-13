@@ -512,6 +512,12 @@ def _check_folder_coverage(
         "and next commands. Human text goes to stderr."
     ),
 )
+@click.option(
+    "--source",
+    default=None,
+    hidden=True,
+    help="Which setup instructions started this run, for anonymous usage stats.",
+)
 def init_command(**params: Any) -> None:
     """Index a codebase and build its documentation.
 
@@ -530,9 +536,26 @@ def init_command(**params: Any) -> None:
             exit_interrupted()
 
 
+#: What ``--source`` may report. Any other value is reported as ``other``, so
+#: the raw text never leaves the machine.
+INSTRUCTION_SOURCES = frozenset({"plugin_command", "setup_doc", "hosted_setup", "mcp_notice"})
+
+
+def _record_instruction_source(source: str | None) -> None:
+    """Attach which setup instructions started this run, when the caller said."""
+    if source is None:
+        return
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(
+        instruction_source=source if source in INSTRUCTION_SOURCES else "other"
+    )
+
+
 def _run_init(opts: InitOptions) -> None:
     """The whole init, one repo or a workspace; exits 2 when it finishes with gaps."""
     start = time.monotonic()
+    _record_instruction_source(opts.source)
     repo_path = resolve_repo_path(opts.path)
 
     if not repo_path.is_dir():

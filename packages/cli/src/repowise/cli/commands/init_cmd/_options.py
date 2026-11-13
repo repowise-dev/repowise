@@ -63,6 +63,8 @@ class InitOptions:
     progress: str
     # Raw ``GLOB=PCT`` rules, validated by the option callback.
     folder_coverage_rules: tuple[str, ...] = ()
+    #: Hidden ``--source``: which setup instructions started the run.
+    source: str | None = None
 
 
 @dataclass

@@ -132,6 +132,24 @@ def _read(r: ChangeBlastRadiusResponse) -> _Reach:
     return _Reach(changed, files, tests)
 
 
+def _reached(r: ChangeBlastRadiusResponse, reach: _Reach) -> tuple[int, int, int]:
+    """``(source files, of them direct, test files)`` the change reaches.
+
+    A reply lists one page of the reached files; ``reach_summary`` counts all of them.
+    """
+    s = r.reach_summary
+    if s is not None:
+        return s.files, s.direct, s.tests
+    return len(reach.files), len(reach.direct), len(reach.tests)
+
+
+def _partners_total(r: ChangeBlastRadiusResponse) -> int:
+    """Files left out that usually change with a changed one; the reply lists the strongest pairs."""
+    if r.missing_partners_total is not None:
+        return r.missing_partners_total
+    return len(_partners(r))
+
+
 def _partners(r: ChangeBlastRadiusResponse) -> list[tuple[str, str]]:
     """Each file that usually changes with a changed one and is left out, once."""
     seen: dict[str, str] = {}
@@ -152,10 +170,10 @@ def _look_reason(r: ChangeBlastRadiusResponse, reach: _Reach) -> str | None:
             f"{plural(risky, 'changed file')} {_says(risky, 'changes', 'change')} often "
             f"or {_says(risky, 'has', 'have')} poor health."
         )
-    wide = len(reach.files)
+    wide = _reached(r, reach)[0]
     if r.structural_impact_band == "broad" or wide > _WIDE_REACH:
         return f"{plural(wide, 'source file')} {_says(wide, 'depends', 'depend')} on it."
-    partners = len(_partners(r))
+    partners = _partners_total(r)
     if partners:
         return (
             f"{plural(partners, 'file')} that usually {_says(partners, 'changes', 'change')} "
@@ -192,7 +210,8 @@ def _verdict(r: ChangeBlastRadiusResponse, reach: _Reach, total: int) -> tuple[s
     if reason:
         return "Look first", reason, "Read the files under Look at first, then run the tests."
     run_all, tests = _tests_plan(r)
-    word = "Small change" if total <= _SMALL_FILES and len(reach.files) <= _SMALL_REACH else "Contained"
+    small = total <= _SMALL_FILES and _reached(r, reach)[0] <= _SMALL_REACH
+    word = "Small change" if small else "Contained"
     if run_all:
         return (
             word,
@@ -219,12 +238,14 @@ def _change_name(change_id: str) -> str:
     return code(change_id)
 
 
-def _capped(rows: list[str], limit: int, noun: str) -> list[str]:
-    """The first *limit* rows, then how many were left out, after a blank line
-    so it reads as its own paragraph rather than part of the last item."""
+def _capped(rows: list[str], limit: int, noun: str, total: int | None = None) -> list[str]:
+    """The first *limit* rows, then how many of *total* (the rows by default)
+    were left out, after a blank line so it reads as its own paragraph rather
+    than part of the last item."""
     out = rows[:limit]
-    if len(rows) > limit:
-        out += ["", more_line(len(rows) - limit, noun).capitalize()]
+    left = (len(rows) if total is None else total) - len(out)
+    if left > 0:
+        out += ["", more_line(left, noun).capitalize()]
     return out
 
 
@@ -236,7 +257,7 @@ def _head(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     changed = plural(total, "file")
     if total > analyzed:
         changed += f" (the first {analyzed} analyzed)"
-    files = len(reach.files)
+    files, direct, _ = _reached(r, reach)
     scale = r.structural_impact_scale
     calibration = scale.calibration.status if scale.calibration else None
     impact = f"Structural impact: {r.structural_impact_band}, {r.structural_impact_score:.1f} of 10"
@@ -249,7 +270,7 @@ def _head(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
         f"Next: {next_step}",
         "",
         f"- Changed: {changed}",
-        f"- Source files that depend on it: {files}, {len(reach.direct)} directly",
+        f"- Source files that depend on it: {files}, {direct} directly",
         f"- Tests to run: {'the whole suite' if run_all else tests}",
         f"- {impact}",
     ]
@@ -386,12 +407,13 @@ def _missing_partners(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     ]
     if not rows:
         return []
-    return ["## Usually change with these", "", *_capped(rows, PARTNERS_LIMIT, "files")]
+    return ["## Usually change with these", "", *_capped(rows, PARTNERS_LIMIT, "files", _partners_total(r))]
 
 
 def _dependents(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
     out = ["## Files that depend on this", ""]
-    if not reach.files:
+    files, _, tests = _reached(r, reach)
+    if not files:
         out.append("No source file imports the changed files.")
     else:
         rows = []
@@ -402,9 +424,8 @@ def _dependents(r: ChangeBlastRadiusResponse, reach: _Reach) -> list[str]:
                 f"- {code(f.marks.path)}: {plural(f.depth, 'import')} away{via}"
                 + (f"; {', '.join(words)}" if words else "")
             )
-        out += _capped(rows, DEPENDENTS_LIMIT, "files")
-    if reach.tests:
-        tests = len(reach.tests)
+        out += _capped(rows, DEPENDENTS_LIMIT, "files", files)
+    if tests:
         out += [
             "",
             f"Not counted here: {plural(tests, 'test file')} that "

@@ -381,6 +381,16 @@ def agents_group(ctx: click.Context, fmt: str) -> None:
     metavar="OWNER/NAME",
     help="The repo on repowise.dev, with --hosted. Default: this checkout's GitHub origin.",
 )
+@click.option(
+    "--tools",
+    "tools",
+    default=None,
+    metavar="VALUE",
+    help="Which MCP tools the local server lists, saved as this repo's mcp.tools "
+    "(same as 'repowise config set mcp.tools'): core, lean, standard or all, "
+    "optionally followed by +name or -name. Unset: Claude Code lists standard, "
+    "other clients core.",
+)
 @format_option(help="Output format. json reports every file and what happened to it.")
 def agents_add(
     path: str | None,
@@ -389,6 +399,7 @@ def agents_add(
     yes: bool,
     hosted: bool,
     hosted_repo: str | None,
+    tools: str | None,
     fmt: str,
 ) -> None:
     """Wire one or more agents up to this repo.
@@ -406,12 +417,17 @@ def agents_add(
     """
     if hosted_repo is not None and not hosted:
         raise click.UsageError("--repo needs --hosted.")
+    if tools is not None and hosted:
+        raise click.UsageError("--tools sets the local server's tools; it does not apply to --hosted.")
     repo_path = _repo_path(path, fmt)
     if hosted:
         payload = _hosted_payload(repo_path, target_flag, hosted_repo, yes, fmt)
     else:
+        if tools is not None:
+            _save_tools(repo_path, tools)
         targets = _select_targets_for_add(repo_path, target_flag, yes, fmt)
         payload = _write_payload("add", repo_path, targets, scope, remove=False)
+        _note_tool_surface(payload, repo_path)
     if fmt == "json":
         emit_json(payload)
         return
@@ -419,6 +435,54 @@ def agents_add(
     for agent in payload["agents"]:
         if agent.get("next_step"):
             console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['next_step']}")
+        if agent.get("tools"):
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['tools']}")
+    if payload.get("tools_hint"):
+        console.print(f"  [dim]{payload['tools_hint']}[/dim]")
+
+
+def _save_tools(repo_path: Path, value: str) -> None:
+    """Save ``--tools`` as the repo's ``mcp.tools``, validated like ``config set``."""
+    from repowise.core.settings import registry
+    from repowise.core.settings.writers import parse_text, set_value
+
+    try:
+        set_value(repo_path, "mcp.tools", parse_text(registry.get("mcp.tools"), value))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--tools") from None
+
+
+def _note_tool_surface(payload: dict, repo_path: Path) -> None:
+    """Say which tool profile each wired agent's local server lists, and how to change it.
+
+    Read from the repo's ``mcp.tools``; with nothing set each agent gets its
+    own default (see ``repowise.core.registry.tool_selection.default_profile``).
+    """
+    from repowise.core.agents.identity import identity_for_target_id
+    from repowise.core.registry.tool_selection import (
+        default_profile,
+        normalize_override,
+        split_profile,
+    )
+    from repowise.core.repo_config import load_repo_config
+
+    try:
+        mcp_cfg = load_repo_config(str(repo_path)).get("mcp") or {}
+        tokens = normalize_override(mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None)
+    except Exception:
+        return
+    profile, rest = split_profile(tokens)
+    if tokens and profile is None and not all(t[0] in "+-" for t in rest):
+        return  # an exact list: the same tools for every agent, nothing per-agent to say
+    adjusted = f" {' '.join(rest)}" if rest else ""
+    for agent in payload["agents"]:
+        identity = identity_for_target_id(agent.get("id", ""))
+        chosen = profile or default_profile(identity.slug if identity else "unknown")
+        agent["tools"] = f"lists the {chosen} MCP tools{adjusted}"
+    payload["tools_hint"] = (
+        "Change with 'repowise config set mcp.tools <core|lean|standard|all>', "
+        "then restart the agent."
+    )
 
 
 def _hosted_url(repo_path: Path, hosted_repo: str | None) -> tuple[str, str]:

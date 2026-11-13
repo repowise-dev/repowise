@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 
+from repowise.core.agent_steer import AGENT_STEER
+
 from .sections import DEFAULT_SECTIONS
 
 
@@ -154,6 +156,11 @@ class EditorFileData:
     sections: frozenset[str] = DEFAULT_SECTIONS
 
     @property
+    def steer(self) -> str:
+        """The call-first line the block leads with, whatever sections are on."""
+        return AGENT_STEER
+
+    @property
     def keyless(self) -> bool:
         """Whether the index was built with no model: template prose, no semantic search."""
         scope = self.index_scope
@@ -231,3 +238,8 @@ class WorkspaceEditorFileData:
     package_deps: list[dict] = field(default_factory=list)  # package dep entries
     contract_links: list[dict] = field(default_factory=list)  # matched contract links
     contracts_by_type: dict[str, int] = field(default_factory=dict)  # {"http": 5, …}
+
+    @property
+    def steer(self) -> str:
+        """The call-first line, the same one each repo's own block leads with."""
+        return AGENT_STEER

@@ -62,6 +62,8 @@ _MAX_ENTRY_POINTS = 10
 _MAX_HOTSPOTS = 5
 #: Pinned decisions are the only ones listed by name; the rest are a pointer.
 _MAX_PINNED_DECISIONS = 5
+#: A pinned line is paid on every turn; the full record is one ``get_why`` away.
+_MAX_PIN_TITLE_CHARS = 80
 _MAX_FIX_FIRST = 3
 
 
@@ -385,7 +387,7 @@ class EditorFileDataFetcher:
         signatures = await decision_signatures(self._session, self._repo_id, pinned)
         summaries = [
             DecisionSummary(
-                title=rec.title,
+                title=_truncate_at_word(rec.title or "", _MAX_PIN_TITLE_CHARS),
                 status=rec.status,
                 rationale=_truncate_at_word(rec.rationale or "", 100),
                 decision=_truncate_at_word(rec.decision or "", 120),

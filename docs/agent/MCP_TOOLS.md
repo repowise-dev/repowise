@@ -4,7 +4,7 @@ repowise serves its codebase intelligence to AI coding assistants (Claude Code, 
 
 Two opt-in tools go further: `set_finding_status` records a triage verdict in the index, and `generate_refactoring_code` calls your LLM to draft a diff.
 
-18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible.
+18 tools are registered in total. A single-repo server advertises 10 by default: exactly the canonical tools. Workspace mode adds the `list_repos` discovery utility, for 11. 7 specialist tools are opt-in where eligible. That default is what Claude Code is listed; other clients, which load every schema up front, are listed the five core tools unless `mcp.tools` says otherwise ([Configuring the tool surface](#configuring-the-tool-surface)).
 
 This page says which tool to call and with what arguments. Response fields, the `_meta` envelope and truncation rules are in [MCP_RESPONSE_FIELDS.md](../reference/MCP_RESPONSE_FIELDS.md).
 
@@ -53,29 +53,53 @@ repowise mcp --transport sse --port 7338  # legacy SSE transport
 - **Default (single-repo):** 10 tools, exactly the canonical intelligence set.
 - **Default (workspace):** those 10 plus `list_repos`, the workspace discovery utility.
 
-Set `mcp.tools` in `.repowise/config.yaml`, or pass `--tools` per launch (it overrides the config):
+That default is what Claude Code is listed: it loads a tool's schema only when the model asks for it, so a larger surface costs only the tool names each turn. Every other client (Codex, Cursor, VS Code and Copilot, OpenCode, Windsurf, Kiro, Hermes, and any client that announces a name repowise does not recognise) sends every listed schema with every request, so with nothing configured it is listed the `core` profile instead. The server reads the client's name from the MCP handshake.
+
+**The `core` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase` and `get_why`, plus `list_repos` in workspace mode: about 1,800 tokens of schema against about 4,200 for the standard set.
+
+**The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so with `mcp.tools: lean` (or `core`), `repowise init` skips the Claude Code tool-search recommendation.
+
+| Value | Lists |
+|-------|-------|
+| unset | each client's default: `standard` on Claude Code, `core` elsewhere |
+| `core` | the core profile |
+| `lean` | the lean profile |
+| `standard` | the default set above, on every client |
+| `all` | every tool usable in this mode |
+| a profile, then `+name` / `-name` | that profile adjusted |
+| `+name` / `-name` alone | each client's default adjusted |
+| plain names | exactly those tools |
+
+One setting, `mcp.tools`, sets it for every client:
+
+```bash
+repowise config set mcp.tools standard            # Claude Code's set on every client
+repowise config set mcp.tools "core +get_health"  # core plus one specialist
+repowise config reset mcp.tools                   # back to each client's default
+repowise agents add --target cursor --tools core  # same setting, while wiring an agent
+```
 
 ```yaml
 mcp:
-  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust the default set
+  tools: ["+get_execution_flows", "-get_dead_code"]   # adjust each client's default
+# tools: ["core", "+get_health"]                       # a profile, adjusted
 # tools: ["get_answer", "get_context"]                 # explicit allowlist
 # tools: all                                           # every tool usable in this mode
-# tools: lean                                          # the agent-lean profile
 ```
 
+`repowise mcp --tools` in one client's server entry pins that client alone and wins over the setting:
+
 ```bash
-repowise mcp --tools "+get_execution_flows"   # default set plus one
+repowise mcp --tools "+get_execution_flows"   # each client's default plus one
 repowise mcp --tools "get_answer,get_context"  # explicit allowlist
 repowise mcp --tools lean                      # agent-lean profile
 repowise mcp --all                             # every tool usable in this mode
 ```
 
-- `+` or `-` tokens adjust the default set; a list without prefixes is an allowlist.
 - Unknown names are ignored with a warning, as are workspace-only tools outside workspace mode (no workspace graph to read).
-- Clients see the surface resolved at server start; restart after changing it.
-- The dashboard Settings page toggles each tool per repo and writes the same block. See [CONFIG.md](../reference/CONFIG.md#the-mcp-block).
-
-**The `lean` profile** is `get_answer`, `get_context`, `get_symbol`, `search_codebase`, `get_risk` and `get_why`, plus `list_repos` in workspace mode. It is small enough to keep every schema loaded, so with `mcp.tools: lean`, `repowise init` skips the Claude Code tool-search recommendation.
+- The server resolves the surface when it starts; restart it, or the agent, after a change.
+- A tool left out only by a client's default still answers if the agent calls it; one the setting removes is not served at all. When a client's default leaves out `get_risk` or `get_change_risk`, the server instructions carry one line naming the command that lists them.
+- The dashboard's Agents settings for a repository pick a profile, toggle each tool with its schema cost, and write the same setting. See [CONFIG.md](../reference/CONFIG.md#the-mcp-block).
 
 ---
 
@@ -205,11 +229,11 @@ get_symbol(symbol_id="repowise#a1b2c3d4e5f6", query="FAILED")
 
 ## `search_codebase`
 
-Hybrid search routed by query shape: identifiers hit the symbol index, paths resolve files, prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. Use it for ranked hits (enumerating matches, resolving an identifier to a `symbol_id`, scoping a `get_context`); for a question, use `get_answer`, which runs this retrieval.
+Hybrid search routed by query shape: identifiers hit the symbol index, paths resolve files (a query naming one directory leads with it), prose runs wiki-semantic search, and mixed queries run both, keeping only pages that name a file. A grep pattern is taken as written: `a|b|c` searches each alternative as its own query and serves its lines as one group, in query order; a regex (`enqueue\(`, `class \w+Analyzer\b`) serves the lines it matches. Use it for ranked hits (enumerating matches, resolving an identifier to a `symbol_id`, scoping a `get_context`); for a question, use `get_answer`, which runs this retrieval.
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `query` | string | `""` | Identifier, path or natural language. Required unless `pattern` is given |
+| `query` | string | `""` | Identifier, `a\|b` alternation, regex, path or natural language. Required unless `pattern` is given |
 | `pattern` | string | none | Alias for `query`; when both are given `query` wins and `pattern` lands in `ignored_arguments` |
 | `limit` | int | `5` | Max results; outside `symbol` mode, max distinct files |
 | `mode` | string | `"auto"` | `auto`, `concept`, `symbol`, `path`, `hybrid`; unknown runs as `auto` |
@@ -218,12 +242,15 @@ Hybrid search routed by query shape: identifiers hit the symbol index, paths res
 | `page_type` | string | none | One page type, usually `file_page` or `module_page` |
 | `repo` | string | default repo | Or `"all"` for every repo |
 
-**Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
+**Returns** `results`, `candidates` (openable file paths), and `lines` with `complete` for identifier, literal, alternation and regex queries ([fields](../reference/MCP_RESPONSE_FIELDS.md#search_codebase)). Before a Read, read `candidates`: some `results` are pages, not files.
 
 ```
 search_codebase(query="GitIndexer index_repo")
 search_codebase(query="login", mode="symbol", symbol_kind="method")
+search_codebase(query="short_code|share_code|public_code")
 ```
+
+On an index with no embedder, the first natural-language search with rows says once, in `_meta.keyless_note`, that its rows are keyword matches; `_meta.semantic_search: false` stays on every reply.
 
 ---
 

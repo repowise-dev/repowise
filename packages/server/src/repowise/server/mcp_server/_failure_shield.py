@@ -257,7 +257,7 @@ def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) ->
     from repowise.server.mcp_server._savings.interaction import note_error_reason
 
     reason = _exception_reason(exc)
-    note_error_reason(reason)
+    note_error_reason(reason, source="exception")
     return _SHAPES[reason](tool, exc, long_running)
 
 
