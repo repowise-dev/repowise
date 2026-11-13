@@ -27,7 +27,15 @@ Tree-sitter AST walker. Single AST pass per file computes:
 
 - **CCN** — McCabe cyclomatic complexity. Counts branching constructs
   (`if`, `for`, `while`, `case`, `catch`) plus boolean operators
-  (`&&`, `||`). In C / C++ the arms of a `#if` / `#ifdef` block with
+  (`&&`, `||`), with two deliberate differences from token-based
+  counters such as lizard: a comprehension `for` (`for_in_clause`)
+  adds no point — it is a generator, not a decision (its `if` filter
+  does) — and a `switch` / `when` whose arms hold no branch, loop or
+  nested switch counts 1 for the whole flat dispatch instead of 1 per
+  arm; a `finally` and TS/JS `??` add no point either. The full
+  construct list: `docs/architecture/code-health.md` § 5.6
+  ("What adds a CCN point"). In C / C++ the arms of a `#if` / `#ifdef`
+  block with
   `#elif` / `#else` alternatives are alternative builds, so CCN and
   cognitive take the **largest arm** (not the sum); an `#if` with no
   alternative is unchanged. Nested blocks and `#elif` chains follow the
