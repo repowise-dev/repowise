@@ -325,24 +325,6 @@ async def _cancel_task(task: asyncio.Task) -> None:
         await task
 
 
-async def _served_repository_id(factory: Any) -> str | None:
-    """The one row a repo-local store holds, else ``None``.
-
-    Same rule as the CLI's moved-repo lookup: identity is inferred only from
-    the served checkout's own store, and only when it holds one repository.
-    """
-    from sqlalchemy import select
-
-    from repowise.core.persistence.models import Repository
-
-    try:
-        async with factory() as session:
-            rows = (await session.scalars(select(Repository.id).limit(2))).all()
-    except OperationalError:
-        return None
-    return rows[0] if len(rows) == 1 else None
-
-
 async def _abort_startup(*tasks: asyncio.Task) -> None:
     """Undo the startup a lifespan raised out of, before it reached its teardown.
 
@@ -745,8 +727,7 @@ async def _lifespan(server: FastMCP):
         engine, expire_on_commit=False, class_=AsyncSession
     )
 
-    if _state._repo_path and configured_db_url is None:
-        _state._served_repo_id = await _served_repository_id(_state._session_factory)
+    await _state.publish_served_repo_id(_state._session_factory)
 
     _state._fts = FullTextSearch(engine)
     try:
@@ -874,16 +855,22 @@ class _RepowiseMCP(FastMCP):
 
 # Hosts that defer tool schemas show the model only tool names and this
 # string, so it says when to call; tests pin the key lines and a length cap.
-_INSTRUCTIONS = (
-    "repowise indexes this repository's code graph, git history and decisions.\n"
-    "- search_codebase(query) finds an identifier or literal: `lines` are read "
-    "from live files; `complete: true` means every match.\n"
-    '- get_context(targets=[symbol], include=["references"]) before a rename: a '
+# Every line or clause that names a tool is keyed by it and kept only when the
+# server serves that tool: a host calls a named tool even when it is unlisted.
+_TOOL_LINES = {
+    "search_codebase": "- search_codebase(query) finds an identifier or literal: `lines` are read "
+    "from live files; `complete: true` means every match.",
+    "get_context": '- get_context(targets=[symbol], include=["references"]) before a rename: a '
     '`complete` list is the whole edit set. include=["files"] on a directory '
-    "lists its files and tests.\n"
-    "- get_answer(question): one how/where/why question per call.\n"
-    "- get_risk before editing a widely imported file, get_change_risk before "
-    "committing, get_why before changing an established pattern.\n"
+    "lists its files and tests.",
+    "get_answer": "- get_answer(question): one how/where/why question per call.",
+}
+_CHECK_CLAUSES = {
+    "get_risk": "get_risk before editing a widely imported file",
+    "get_change_risk": "get_change_risk before committing",
+    "get_why": "get_why before changing an established pattern",
+}
+_NO_INDEX_LINE = (
     "No index: tell the user to run 'repowise init --yes --no-prose' (no "
     "API key or model calls). Suggest it, do not run it yourself."
 )
@@ -898,29 +885,41 @@ _WORKSPACE_TOOL_LINES = {
 #: Tools the instructions name that a client's default profile may leave out.
 _NAMED_TOOLS = ("get_risk", "get_change_risk")
 
-#: Said when some client is not listed every tool in :data:`_NAMED_TOOLS`. A
+#: Said when some client is not listed a served tool in :data:`_NAMED_TOOLS`. A
 #: host only calls listed tools, so this is how an agent learns to turn them on.
-_OFF_LINE = (
-    "get_risk or get_change_risk not listed? `repowise config set mcp.tools "
-    "standard`, then restart the server."
-)
+_OFF_LINE = "{names} not listed? `repowise config set mcp.tools standard`, then restart the server."
 
 
 def _instructions(
-    enabled: Iterable[str] = (), repo_line: str | None = None, *, all_listed: bool = True
+    enabled: Iterable[str] | None = None,
+    repo_line: str | None = None,
+    *,
+    all_listed: bool = True,
 ) -> str:
-    """The server instructions, naming a workspace tool only when it is served.
+    """The server instructions, naming a tool only when it is served.
 
+    *enabled* is the surface the server serves; ``None`` (before any
+    selection) names every core tool but no workspace tool.
     *repo_line* says what get_why holds for the served repository.
     *all_listed* is false when some client's default profile leaves out a tool
     in :data:`_NAMED_TOOLS`, which adds the line saying how to turn it on.
     """
-    text = _INSTRUCTIONS if all_listed else f"{_INSTRUCTIONS}\n{_OFF_LINE}"
-    text = f"{text}\n{repo_line}" if repo_line else text
-    lines = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in enabled]
-    if not lines:
-        return text
-    return f"{text}\nIn this workspace, use {' and '.join(lines)}."
+    served = set(enabled) if enabled is not None else set(_TOOL_LINES) | set(_CHECK_CLAUSES)
+    lines = ["repowise indexes this repository's code graph, git history and decisions."]
+    lines += [line for name, line in _TOOL_LINES.items() if name in served]
+    clauses = [clause for name, clause in _CHECK_CLAUSES.items() if name in served]
+    if clauses:
+        lines.append(f"- {', '.join(clauses)}.")
+    lines.append(_NO_INDEX_LINE)
+    off = [name for name in _NAMED_TOOLS if name in served]
+    if not all_listed and off:
+        lines.append(_OFF_LINE.format(names=" or ".join(off)))
+    if repo_line and "get_why" in served:
+        lines.append(repo_line)
+    workspace = [line for name, line in _WORKSPACE_TOOL_LINES.items() if name in served]
+    if workspace:
+        lines.append(f"In this workspace, use {' and '.join(workspace)}.")
+    return "\n".join(lines)
 
 
 mcp = _RepowiseMCP(

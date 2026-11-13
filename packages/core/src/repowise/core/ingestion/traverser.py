@@ -347,11 +347,15 @@ _ENTRY_POINT_NAME_SUFFIXES: tuple[str, ...] = tuple(
 # size is the only signal.
 _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
 
-# Ceiling for files a parser can read, so a repo's largest hand-written
-# modules are still indexed (#1237). It is a memory budget, not a preference:
-# tree-sitter peaks at roughly 95 MB of RSS per MB of source, and the parse
-# pool runs up to 8 workers, so 2 MB bounds the pool at about 1.8 GB.
-_SOURCE_MAX_FILE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2 MB
+# Ceiling for files parsed concurrently in the worker pool, bounding the pool's
+# memory budget (tree-sitter peaks at roughly 95 MB of RSS per MB of source,
+# times up to 8 workers, so 2 MB bounds the pool at about 1.8 GB).
+_SOURCE_POOL_MAX_FILE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2 MB
+
+# Hard ceiling for files a parser can read serially on their own, so a repo's largest
+# hand-written modules (Swift views, Kotlin screens, Java activities) are still
+# indexed (#1237, #5280). Above this ceiling, skip as over_max_size.
+_SOURCE_MAX_FILE_SIZE_BYTES: int = 8 * 1024 * 1024  # 8 MB
 
 # Mean line length that marks a minified bundle: hand-written source runs
 # 25-60 bytes per line, minified JavaScript 1,200+.

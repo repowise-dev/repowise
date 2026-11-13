@@ -9,6 +9,7 @@ index at all is a keyless repo, not a failure.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -235,3 +236,42 @@ def test_the_cli_bridge_does_not_open_the_store_for_other_tools(bridge_repo, mon
     assert isinstance(store, LanceDBVectorStore)
     assert connected == []
     assert {"search_codebase", "get_answer"} <= tool_bridge._VECTOR_TOOLS
+
+
+@pytest.mark.parametrize(("mode", "opens"), [("symbol", False), ("path", False), ("concept", True)])
+def test_cli_search_opens_the_store_only_for_a_mode_that_reads_it(monkeypatch, mode, opens):
+    """Symbol and path search are SQL lookups; opening the store costs ~2 s."""
+    from repowise.cli.commands import search_cmd
+
+    seen: dict = {}
+
+    def _run(repo_path, factory, tool_name, **kwargs):
+        seen.update(kwargs, tool_name=tool_name)
+        return {}
+
+    monkeypatch.setattr(search_cmd._ta, "run", _run)
+    search_cmd._run_search(Path("."), "q", 5, mode)
+
+    assert seen == {"tool_name": "search_codebase", "reads_vectors": opens}
+
+
+def test_the_cli_bridge_skips_the_store_when_told_the_call_reads_no_vectors(
+    bridge_repo, monkeypatch
+):
+    from repowise.cli import tool_bridge
+
+    connected: list[bool] = []
+
+    async def _spy(store):
+        connected.append(True)
+        return store
+
+    monkeypatch.setattr(tool_bridge, "_connect_or_degrade", _spy)
+
+    async def _tool():
+        return {"ok": True}
+
+    tool_bridge.call_tool(bridge_repo, _tool, "search_codebase", reads_vectors=False)
+    assert connected == []
+    tool_bridge.call_tool(bridge_repo, _tool, "search_codebase")
+    assert connected == [True]
