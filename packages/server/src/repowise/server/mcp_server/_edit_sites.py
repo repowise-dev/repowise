@@ -535,6 +535,8 @@ _ARGUMENT_BEFORE = re.compile(r"[(,]\s*$")
 _KEYWORD_AFTER = re.compile(r"\s*=(?!=)")
 _SLOT_BEFORE = re.compile(r"(?:^|[{(,])\s*$")
 _SLOT_AFTER = re.compile(r"\s*:(?!:)")
+# Object roots that are the caller's own instance or class, never a module.
+_OWN_RECEIVERS = frozenset({"self", "cls"})
 
 
 class _Foreign:
@@ -554,8 +556,11 @@ class _Foreign:
       spells the export by it.
 
     Only uses the tokenizer or mask reads as code are judged. Ceiling: a
-    module bound without an import (``m = importlib.import_module(...)``)
-    reads as a plain object; the dynamic-use reason already marks that set.
+    module bound without an import (``m = importlib.import_module(...)``,
+    ``m = load()`` returning one) reads as a plain object. The dynamic-use
+    reason marks the first; for the second, a Python use on such an object
+    sets ``on_object``, and the caller asks whether the file imports, as a
+    module, one that holds the name.
     """
 
     def __init__(
@@ -567,6 +572,7 @@ class _Foreign:
             _PY_STAR_IMPORT.search(lines[n - 1]) for n in imports
         )
         self._prose = prose
+        self.on_object = False
 
     def __call__(self, n: int, text: str, m: re.Match[str]) -> bool:
         if not self._prose.is_code(n, m):
@@ -574,7 +580,13 @@ class _Foreign:
         before, after = text[: m.start()], text[m.end() :]
         if _ON_OBJECT.search(before):
             root = _OBJECT_ROOT.search(before)
-            return root is None or root.group(1) not in self._words
+            if root is not None and root.group(1) in self._words:
+                return False
+            # Ceiling: ``load().name`` has no root name and is not counted: a
+            # call's result is mostly a value (``Path(p).resolve()``), rarely a module.
+            if self._python and root is not None and root.group(1) not in _OWN_RECEIVERS:
+                self.on_object = True
+            return True
         if _SLOT_BEFORE.search(before) and _SLOT_AFTER.match(after):
             return self._python
         if self._python and _ARGUMENT_BEFORE.search(before) and _KEYWORD_AFTER.match(after):
@@ -660,10 +672,12 @@ def _scan(
     dict[str, set[str]],
     dict[str, str],
     list[str],
+    list[str],
 ]:
     """``(sites, unreadable, stale call lines, files renaming it, default-exported,
     local import aliases per Python file, package declared per file, files
-    defining a member of their own by the name)``.
+    defining a member of their own by the name, Python files naming it on an
+    object no import binds)``.
 
     In a *dirty* file the graph's lines predate the edit, so a call is read
     from the text (the name followed by ``(``) instead. A plain reference
@@ -678,6 +692,7 @@ def _scan(
     python_aliases: dict[str, set[str]] = {}
     packages: dict[str, str] = {}
     own: list[str] = []
+    on_object: list[str] = []
     is_default = False
     for rel in files:
         lines = _read_lines(root, rel)
@@ -704,13 +719,15 @@ def _scan(
         )
         if own_lines:
             own.append(rel)
-        found, missed = _file_sites(
+        found, missed, through_object = _file_sites(
             rel, lines, imports, name, local, definition, graph_calls, live,
             _Judge(scope.member, own_lines),
         )
         sites += found
         stale += missed
-    return sites, unreadable, stale, renamed, is_default, python_aliases, packages, own
+        if through_object:
+            on_object.append(rel)
+    return sites, unreadable, stale, renamed, is_default, python_aliases, packages, own, on_object
 
 
 # Bound under any name by its importers, so no spelling can be scanned for.
@@ -735,8 +752,8 @@ def _file_sites(
     graph_calls: set[int],
     live: bool,
     judge: _Judge,
-) -> tuple[list[dict[str, Any]], int]:
-    """``(sites, stale graph call lines)`` of one read file.
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """``(sites, stale graph call lines, named on an object no import binds)`` of one read file.
 
     Uses that name something else are left out, except on the graph's call
     lines: for a symbol that is not a member, what an importing file binds
@@ -772,7 +789,7 @@ def _file_sites(
         site = _site(rel, n, kind, lines)
         _flag(site, word, text, prose(n, hits) if kind == "reference" else False)
         sites.append(site)
-    return sites, stale
+    return sites, stale, isinstance(foreign, _Foreign) and foreign.on_object
 
 
 def _calls_here(
@@ -1012,6 +1029,7 @@ class _ScanResult(NamedTuple):
     python_aliases: dict[str, set[str]]
     packages: dict[str, str]
     own_member: list[str]
+    on_object: list[str]
 
 
 async def _edges_into(session: AsyncSession, repo_id: str, node: GraphNode) -> list[Any]:
@@ -1040,9 +1058,11 @@ async def _edges_into(session: AsyncSession, repo_id: str, node: GraphNode) -> l
 
 async def _importer_files(
     session: AsyncSession, repo_id: str, def_file: str, name: str, edges: list[Any]
-) -> tuple[set[str], bool]:
-    """``(files, cut)``: the definition file, its importers, and files
-    re-exporting the name onward; *cut* when the walk stopped at its ceiling."""
+) -> tuple[set[str], set[str], bool]:
+    """``(files, holders, cut)``: the definition file, its importers, and files
+    re-exporting the name onward; *holders* the files the walk followed (the
+    definition and each file that may bind the name); *cut* when the walk
+    stopped at its ceiling."""
     # A package barrel's own importers are scanned too.
     files: set[str] = {def_file}
     files.update(row[0] for row in edges if row[2] == "imports")
@@ -1067,7 +1087,7 @@ async def _importer_files(
             if src not in seen and (not names or name in names or "*" in names):
                 seen.add(src)
                 frontier.append(src)
-    return files, bool(frontier)
+    return files, seen, bool(frontier)
 
 
 def _edge_facts(edges: list[Any], node: GraphNode, name: str, files: set[str]) -> _EdgeFacts:
@@ -1162,6 +1182,79 @@ async def _definition_span(
         # Indexed bounds predate the edit; re-parse as get_symbol does.
         return (def_file, *await asyncio.to_thread(_live_definition, root, node, name, language))
     return (def_file, node.start_line or 0, node.end_line or node.start_line or 0)
+
+
+def _module_names(path: str) -> set[str]:
+    """Names a Python import of the module at *path* binds: its stem, or its package's."""
+    p = PurePosixPath(path)
+    return {p.parent.name} if p.stem == "__init__" else {p.stem}
+
+
+def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
+    """Whether *rel* binds one of *module_paths* as a module object and hands
+    that binding on as a whole value: ``return mod``, ``yield mod``, ``m = mod``.
+
+    Ceiling: ``import pkg.mod`` binds ``pkg``, which is not followed; nor is
+    ``f(mod)``, which tests write for every ``monkeypatch.setattr(mod, ...)``.
+    """
+    lines = _read_lines(root, rel)
+    if lines is None:
+        return False
+    imports = _import_lines(lines)
+    local: set[str] = set()
+    for stem in {s for p in module_paths for s in _module_names(p)}:
+        esc = re.escape(stem)
+        aliased = re.compile(rf"(?<!\w){esc}\s+as\s+(\w+)")
+        plain = re.compile(rf"(?<![\w.]){esc}(?![\w.])(?!\s+as\b)")
+        for n in imports:
+            text = lines[n - 1]
+            local.update(m.group(1) for m in aliased.finditer(text))
+            if _outside_module(text, list(plain.finditer(text))):
+                local.add(stem)
+    if not local:
+        return False
+    alt = "|".join(re.escape(a) for a in sorted(local))
+    handed = re.compile(rf"(?:\b(?:return|yield)\s+|(?<![=!<>])=\s*)(?:{alt})\s*(?:[#;]|$)")
+    return any(handed.search(t) for n, t in enumerate(lines, 1) if n not in imports)
+
+
+async def _module_object_reasons(
+    session: AsyncSession,
+    repo_id: str,
+    root: Path,
+    on_object: list[str],
+    holders: set[str],
+) -> list[str]:
+    """Why uses on an object no import binds may be the symbol's.
+
+    A file that imports a module holding the name as a module object and
+    hands that object on (``def load(): import mod; return mod``, then
+    ``m = load(); m.name()``) reaches the symbol through a binding neither
+    the graph nor the scan follows, so such a use was left out.
+    """
+    if not on_object or not holders:
+        return []
+    rows = (
+        await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type == "imports",
+                GraphEdge.source_node_id.in_(on_object),
+                GraphEdge.target_node_id.in_(list(holders)),
+            )
+        )
+    ).all()
+    imported: dict[str, set[str]] = {}
+    for src, tgt in rows:
+        imported.setdefault(src, set()).add(tgt)
+    files = [
+        rel
+        for rel in sorted(imported)
+        if await asyncio.to_thread(_hands_on_module, root, rel, imported[rel])
+    ]
+    if not files:
+        return []
+    return [f"may be called through a module object outside an import: {', '.join(files[:3])}"]
 
 
 async def _python_alias_exports(
@@ -1369,7 +1462,7 @@ async def _edit_set(
     reasons: list[str] = []
 
     edges = await _edges_into(session, repo_id, node)
-    files, cut = await _importer_files(session, repo_id, node.file_path, name, edges)
+    files, holders, cut = await _importer_files(session, repo_id, node.file_path, name, edges)
     if cut:
         reasons.append(f"over {MAX_IMPORTERS} importing files")
     facts = _edge_facts(edges, node, name, files)
@@ -1416,6 +1509,7 @@ async def _edit_set(
             stale=scan.stale + _unread_call_lines(facts.call_lines, ordered, dirty)
         )
     await _python_alias_exports(session, repo_id, scan.python_aliases, scan.renamed_in)
+    reasons += await _module_object_reasons(session, repo_id, root, scan.on_object, holders)
 
     reasons += _evidence_reasons(scan, facts)
     scanned = set(ordered) - set(scan.unreadable)
