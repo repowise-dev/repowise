@@ -46,6 +46,7 @@ from .graph import (
     _prune_vanished_symbol_nodes,
     _stamp_betweenness_commit,
     _stored_edges_parser_fingerprint,
+    apply_stored_complexity,
     has_graph_edges,
     persist_graph_nodes,
     persist_incremental_edges,
@@ -53,7 +54,9 @@ from .graph import (
     persist_symbol_analysis,
     prune_absent_graph_rows,
     prune_absent_synthetic_nodes,
+    restore_stored_complexity,
     stamp_edges_parser_fingerprint,
+    stored_symbol_complexity,
 )
 from .health import (
     _analyzed_commit,
