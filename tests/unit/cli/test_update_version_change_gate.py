@@ -190,3 +190,127 @@ def test_failed_rescan_leaves_the_stamp_for_a_retry(
     _invoke_update(repo)
 
     assert "security_scanner_version" not in load_state(repo)
+
+
+def _upgraded_state(repo, **stamps) -> None:
+    """State an older release wrote: its ``state_only`` config fingerprint differs."""
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import config_dependency_fingerprints
+
+    dependency_fps = {**config_dependency_fingerprints(repo), "state_only": "older-release"}
+    save_state(
+        repo,
+        {
+            **load_state(repo),
+            "config_fingerprint": config_fingerprint(repo) + "-older-release",
+            "config_dependency_fingerprints": dependency_fps,
+            **stamps,
+        },
+    )
+
+
+def _assert_config_recorded(repo) -> None:
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import config_dependency_fingerprints
+
+    state = load_state(repo)
+    assert state["config_fingerprint"] == config_fingerprint(repo)
+    assert state["config_dependency_fingerprints"] == config_dependency_fingerprints(repo)
+
+
+def test_stale_analyzer_rescores_when_the_config_fingerprint_also_moved(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first update after an upgrade re-scores, not just records the new config."""
+    repo, c2 = _indexed_repo(tmp_path)
+    _upgraded_state(
+        repo,
+        health_analyzer_version=HEALTH_ANALYZER_VERSION - 1,
+        security_scanner_version=SECURITY_SCANNER_VERSION,
+    )
+    monkeypatch.setattr(upd_cmd, "parser_changed", lambda _p: False)
+
+    out = _invoke_update(repo)
+
+    assert "Health analyzer changed" in out
+    state = load_state(repo)
+    assert state["health_analyzer_version"] == HEALTH_ANALYZER_VERSION
+    assert state["last_sync_commit"] == c2
+    _assert_config_recorded(repo)
+    assert UP_TO_DATE in _invoke_update(repo)
+
+
+def test_parser_change_reparses_when_the_config_fingerprint_also_moved(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = _indexed_repo(tmp_path)
+    _upgraded_state(
+        repo,
+        health_analyzer_version=HEALTH_ANALYZER_VERSION,
+        security_scanner_version=SECURITY_SCANNER_VERSION,
+    )
+    monkeypatch.setattr(upd_cmd, "parser_changed", lambda _p: True)
+    rescored: list[int] = []
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.persistence.run_decay_health_rescore",
+        lambda *a, **k: rescored.append(1) or True,
+    )
+
+    out = _invoke_update(repo)
+
+    assert "Parser changed" in out
+    assert rescored
+    _assert_config_recorded(repo)
+
+
+def test_stale_scanner_rescans_when_the_config_fingerprint_also_moved(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = _indexed_repo(tmp_path)
+    _upgraded_state(repo, health_analyzer_version=HEALTH_ANALYZER_VERSION)
+    monkeypatch.setattr(upd_cmd, "parser_changed", lambda _p: False)
+    rescanned: list[int] = []
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.persistence.run_full_security_rescan",
+        lambda *a, **k: rescanned.append(1) or True,
+    )
+
+    out = _invoke_update(repo)
+
+    assert "Security scanner changed" in out
+    assert rescanned == [1]
+    assert load_state(repo)["security_scanner_version"] == SECURITY_SCANNER_VERSION
+    _assert_config_recorded(repo)
+
+
+def _config_edit_run(**flags):
+    from types import SimpleNamespace
+
+    from repowise.cli.commands.update_cmd.options import UpdateRun
+    from repowise.core.pipeline import PhaseTimings
+
+    run = UpdateRun(start=0.0, timings=PhaseTimings(), defer_docs=flags.pop("defer_docs", False))
+    run.config = SimpleNamespace(changed=True, git_changed=False, generation_changed=False)
+    for name, value in flags.items():
+        setattr(run, name, value)
+    return run
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        "analyzer_changed",
+        "extraction_changed",
+        "renderer_changed",
+        "wiki_rebuild",
+        "history_stale",
+        "refresh_git",
+    ],
+)
+def test_a_moved_stamp_keeps_a_config_edit_off_the_config_only_path(flag) -> None:
+    assert upd_cmd._config_change_only(_config_edit_run())
+    assert not upd_cmd._config_change_only(_config_edit_run(**{flag: True}))
+
+
+def test_deferred_docs_leave_a_renderer_change_to_a_later_run() -> None:
+    assert upd_cmd._config_change_only(_config_edit_run(renderer_changed=True, defer_docs=True))
