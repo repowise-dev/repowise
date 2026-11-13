@@ -129,11 +129,13 @@ def _print_network_startup(
     "--tools",
     default=None,
     help=(
-        "Override which tools are exposed. A comma-separated list is an "
-        "explicit allowlist; prefix names with + or - to adjust the default "
-        "set (e.g. '+get_dependency_path,-get_dead_code'); 'lean' selects "
-        "the six-tool agent-lean profile. Overrides the mcp.tools config "
-        "block."
+        "Override which tools this server entry lists, for its client. Name "
+        "a profile ('core', 'standard', 'all'), optionally followed by +name "
+        "or -name (e.g. 'core,+get_health'); +name or -name alone adjusts the "
+        "client's default (e.g. '+get_dependency_path,-get_dead_code'); plain "
+        "names are the exact list; 'lean' selects the "
+        "six-tool agent-lean profile. Overrides the mcp.tools config block. "
+        "Unset: Claude Code gets 'standard', other clients 'core'."
     ),
 )
 @click.option(
@@ -167,7 +169,9 @@ def mcp_command(
     Exposes a curated set of tools for querying the repowise wiki via the MCP
     protocol: ten by default in single-repo mode, plus one more by default
     in workspace mode. Seven more are opt-in via ``--tools`` or the
-    ``mcp.tools`` config block. Supports stdio
+    ``mcp.tools`` config block. Clients other than Claude Code, which load
+    every tool schema up front, are listed the five core tools unless a
+    profile is chosen. Supports stdio
     (for Claude Code, Codex, Cursor), streamable HTTP, and the deprecated
     SSE transport.
 
@@ -181,6 +185,7 @@ def mcp_command(
         repowise mcp /path/to/repo       # stdio, specific repo
         repowise mcp --tools +get_execution_flows  # default set plus one
         repowise mcp --tools lean        # six-tool agent-lean profile
+        repowise mcp --tools core,+get_health  # core profile plus one
         repowise mcp --all               # every available tool
         repowise mcp --no-workspace      # force single-repo mode
         repowise mcp --transport streamable-http  # HTTP on port 7338

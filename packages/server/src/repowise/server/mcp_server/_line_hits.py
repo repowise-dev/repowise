@@ -51,7 +51,7 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
     read_repo_file_text,
 )
-from repowise.server.mcp_server._meta import served_root
+from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, served_root
 from repowise.server.mcp_server._query_shape import (
     _MAX_ALTERNATIVES,
     _NL_QUESTION_TOKENS,
@@ -784,8 +784,27 @@ def _serve_lines(
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
+    else:
+        _drop_sweep_advice(response)
     if shown:
         _reconcile_symbol_miss(response, literal_scan=literal_scan)
+
+
+def _drop_sweep_advice(response: dict) -> None:
+    """Remove the advice to Grep for every usage once ``lines`` lists every one.
+
+    The advice exists for a search that could not be exhaustive. Beside
+    ``complete: true`` it contradicts the response, and on an empty result it
+    sends the agent to repeat a scan that already found nothing.
+    """
+    response.pop("grep_hint", None)
+    note = response.get("note")
+    if isinstance(note, str) and EXHAUSTIVE_SWEEP_HINT in note:
+        rest = note.replace(EXHAUSTIVE_SWEEP_HINT, "").strip()
+        if rest:
+            response["note"] = rest
+        else:
+            del response["note"]
 
 
 async def _attach_pattern(
