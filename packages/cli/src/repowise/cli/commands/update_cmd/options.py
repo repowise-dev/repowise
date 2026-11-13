@@ -113,6 +113,22 @@ class UpdateRun:
         return bool(config and config.generation_changed) or self.wiki_rebuild
 
 
+def rework_pending(run: UpdateRun) -> bool:
+    """Whether a moved version stamp or a forced re-read owes work no commit explains.
+
+    The one list every shortcut checks (nothing to do, config only, working
+    tree only, dead code reuse); a new recompute stamp joins here once.
+    """
+    return bool(
+        run.analyzer_changed
+        or run.extraction_changed
+        or run.renderer_changed
+        or run.wiki_rebuild
+        or run.history_stale
+        or run.refresh_git
+    )
+
+
 @dataclass
 class DocsPass:
     """State of the model-backed half of a docs update."""

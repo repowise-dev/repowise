@@ -70,7 +70,7 @@ from .incremental import (
     _run_partial_analysis,
 )
 from .mode import _resolve_index_only_mode
-from .options import DocsPass, UpdateOptions, UpdateRun
+from .options import DocsPass, UpdateOptions, UpdateRun, rework_pending
 from .page_generation import _generation_warning_handler as _generation_warning_handler
 from .page_generation import generate_pages, render_stale_structure
 from .persistence import (
@@ -1021,10 +1021,11 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     # Git rows written under older history rules force one full walk.
     run.history_stale = git_history_stale(state)
     run.refresh_git = opts.refresh_git
-    run.git_is_current = bool(
+    # Current but for a config edit: the run that would otherwise take the
+    # config-only path, which a parser change must also keep off.
+    current_but_config = bool(
         run.head
         and run.head == run.base_ref
-        and not run.config.changed
         and (not run.renderer_changed or opts.defer_docs)
         and not run.wiki_rebuild
         and not run.working_tree_diffs
@@ -1032,8 +1033,10 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         and not run.history_stale
         and not run.refresh_git
     )
-    # A store read, so only asked when the run would otherwise exit.
-    run.extraction_changed = run.git_is_current and parser_changed(run.repo_path)
+    run.git_is_current = current_but_config and not run.config.changed
+    # A store read, so only asked when the run would otherwise exit or take the
+    # config-only path.
+    run.extraction_changed = current_but_config and parser_changed(run.repo_path)
     if run.extraction_changed:
         run.git_is_current = False
     _announce_rework(run)
@@ -1379,12 +1382,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
     return not (
         run.file_diffs
         or run.config.changed
-        or run.renderer_changed
-        or run.wiki_rebuild
-        or run.analyzer_changed
-        or run.extraction_changed
-        or run.history_stale
-        or run.refresh_git
+        or rework_pending(run)
         or run.stale_db_paths
         or run.stale_deterministic_ids
         or run.fill_file_pages
@@ -1427,14 +1425,14 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
 
 def _config_change_only(run: UpdateRun) -> bool:
-    """A config edit with no commits to index; those fall through to the full path."""
+    """A config edit with nothing else to do; anything more falls through to the full path.
+
+    A moved version stamp (analyzer, parser, renderer, history) needs the full
+    path, which also records the new config; this one would only record it.
+    """
     config = run.config
     return config.changed and not (
-        run.file_diffs
-        or config.git_changed
-        or run.full_generation
-        or run.history_stale
-        or run.refresh_git
+        run.file_diffs or config.git_changed or run.full_generation or rework_pending(run)
     )
 
 
@@ -1445,6 +1443,11 @@ def _config_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         action = "health would be re-scored" if config.health_changed else "state would be updated"
         console.print(f"[yellow]Dry run: {action}. No changes made.[/yellow]")
         return _emit_done(run, UpdateOutcome.DRY_RUN)
+    # Stamps ``run.state``, which both branches below save.
+    if run.scanner_changed:
+        rescan_security_if_changed(
+            repo_path, run.state, list(run.cfg.get("exclude_patterns") or [])
+        )
     if config.health_changed:
         cfg = load_config(repo_path)
         exclude_patterns = list(cfg.get("exclude_patterns") or [])
@@ -1552,11 +1555,7 @@ def _working_tree_only(run: UpdateRun) -> bool:
         and not (
             run.config.health_changed
             or run.full_generation
-            or run.renderer_changed
-            or run.analyzer_changed
-            or run.extraction_changed
-            or run.history_stale
-            or run.refresh_git
+            or rework_pending(run)
         )
     )
 
@@ -1788,15 +1787,7 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
     consumes the report. (The knowledge graph takes the report but does not read it.)
     """
     config = run.config
-    if (
-        run.analyzer_changed
-        or run.extraction_changed
-        or run.renderer_changed
-        or run.wiki_rebuild
-        or run.history_stale
-        or run.refresh_git
-        or config.changed
-    ):
+    if rework_pending(run) or config.changed:
         return False
     changed = [path for fd in run.file_diffs for path in (fd.path, fd.old_path) if path]
     if not all(map(_is_prose, changed)):

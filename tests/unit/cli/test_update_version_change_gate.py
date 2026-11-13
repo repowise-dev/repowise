@@ -190,3 +190,94 @@ def test_failed_rescan_leaves_the_stamp_for_a_retry(
     _invoke_update(repo)
 
     assert "security_scanner_version" not in load_state(repo)
+
+
+def _upgraded_state(repo, **stamps) -> None:
+    """State an older release wrote: its ``state_only`` config fingerprint differs."""
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import config_dependency_fingerprints
+
+    dependency_fps = {**config_dependency_fingerprints(repo), "state_only": "older-release"}
+    save_state(
+        repo,
+        {
+            **load_state(repo),
+            "config_fingerprint": config_fingerprint(repo) + "-older-release",
+            "config_dependency_fingerprints": dependency_fps,
+            **stamps,
+        },
+    )
+
+
+def _assert_config_recorded(repo) -> None:
+    from repowise.cli.helpers import config_fingerprint
+    from repowise.core.repo_config import config_dependency_fingerprints
+
+    state = load_state(repo)
+    assert state["config_fingerprint"] == config_fingerprint(repo)
+    assert state["config_dependency_fingerprints"] == config_dependency_fingerprints(repo)
+
+
+def test_stale_analyzer_rescores_when_the_config_fingerprint_also_moved(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first update after an upgrade re-scores, not just records the new config."""
+    repo, c2 = _indexed_repo(tmp_path)
+    _upgraded_state(
+        repo,
+        health_analyzer_version=HEALTH_ANALYZER_VERSION - 1,
+        security_scanner_version=SECURITY_SCANNER_VERSION,
+    )
+    monkeypatch.setattr(upd_cmd, "parser_changed", lambda _p: False)
+
+    out = _invoke_update(repo)
+
+    assert "Health analyzer changed" in out
+    state = load_state(repo)
+    assert state["health_analyzer_version"] == HEALTH_ANALYZER_VERSION
+    assert state["last_sync_commit"] == c2
+    _assert_config_recorded(repo)
+    assert UP_TO_DATE in _invoke_update(repo)
+
+
+def test_parser_change_reparses_when_the_config_fingerprint_also_moved(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = _indexed_repo(tmp_path)
+    _upgraded_state(
+        repo,
+        health_analyzer_version=HEALTH_ANALYZER_VERSION,
+        security_scanner_version=SECURITY_SCANNER_VERSION,
+    )
+    monkeypatch.setattr(upd_cmd, "parser_changed", lambda _p: True)
+    rescored: list[int] = []
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.persistence.run_decay_health_rescore",
+        lambda *a, **k: rescored.append(1) or True,
+    )
+
+    out = _invoke_update(repo)
+
+    assert "Parser changed" in out
+    assert rescored
+    _assert_config_recorded(repo)
+
+
+def test_stale_scanner_rescans_when_the_config_fingerprint_also_moved(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = _indexed_repo(tmp_path)
+    _upgraded_state(repo, health_analyzer_version=HEALTH_ANALYZER_VERSION)
+    monkeypatch.setattr(upd_cmd, "parser_changed", lambda _p: False)
+    rescanned: list[int] = []
+    monkeypatch.setattr(
+        "repowise.cli.commands.update_cmd.persistence.run_full_security_rescan",
+        lambda *a, **k: rescanned.append(1) or True,
+    )
+
+    out = _invoke_update(repo)
+
+    assert "Security scanner changed" in out
+    assert rescanned == [1]
+    assert load_state(repo)["security_scanner_version"] == SECURITY_SCANNER_VERSION
+    _assert_config_recorded(repo)
