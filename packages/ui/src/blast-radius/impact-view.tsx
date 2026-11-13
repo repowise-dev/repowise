@@ -23,6 +23,7 @@ import { ChevronRight, Flame, Plus } from "lucide-react";
 import type {
   AffectedSignal,
   BlastRadiusResponse,
+  ChangeBlastRadiusResponse,
   ChangeCandidate,
   ChangeCandidatesResponse,
   ChangeReview,
@@ -37,7 +38,7 @@ import { ReviewDetails } from "./review-details";
 import { BlastRadiusSteps } from "./blast-radius-steps";
 import { BlastRadiusVerdict } from "./blast-radius-verdict";
 import { AffectedByModule, ChangedFilesList, type DependentsFocus } from "./affected-files";
-import { readReach, type Reach } from "./blast-map-model";
+import { appendPage, hasEdges, isPartial, readReach, type Reach } from "./blast-map-model";
 import {
   blockFocusPaths,
   buildStepMap,
@@ -66,6 +67,8 @@ interface Analysis {
   result: BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
   changedFiles: string[];
   changedTotal?: number;
+  /** The depth it was read at, so a later page is read at the same one. */
+  depth: number;
   /** A merge or pull request as the server resolved it: the forge's words, pinned to its commits. */
   change?: ChangeCandidate;
   /** A change's score and tests; undefined for picked files, null when the server had none. */
@@ -327,6 +330,13 @@ function useListHighlight(steps: StepMap) {
 function useStepSelection(steps: StepMap, reach: Reach) {
   const [pickedKey, setPickedKey] = useState<string | null>(() => defaultStepBlock(steps)?.key ?? null);
   const [bandKey, setBandKey] = useState<string | null>(null);
+  // A map read after the list (a server that pages) opens on its default block too.
+  const drawn = steps.blocks.length > 0;
+  const [wasDrawn, setWasDrawn] = useState(drawn);
+  if (drawn !== wasDrawn) {
+    setWasDrawn(drawn);
+    if (drawn) setPickedKey(defaultStepBlock(steps)?.key ?? null);
+  }
   const band = bandKey ? steps.bands.find((b) => b.key === bandKey) : undefined;
   // A band gone from the rebuilt map stays gone, rather than relighting if the map flips back.
   useEffect(() => {
@@ -361,16 +371,20 @@ function DependentsSection({
   focus,
   onClearFocus,
   onHoverPath,
+  more,
 }: {
   reach: Reach;
   fileHref: ((path: string) => string) | undefined;
   focus: DependentsFocus | undefined;
   onClearFocus: () => void;
   onHoverPath: (path: string | null) => void;
+  more: ReachPages;
 }) {
   const [filter, setFilter] = useState("");
+  const loaded = reach.files.length + reach.tests.length;
+  const total = reach.filesTotal + reach.testsTotal;
   return (
-    <Section title="Files that depend on this" hint={formatNumber(reach.files.length)}>
+    <Section title="Files that depend on this" hint={formatNumber(reach.filesTotal)}>
       <AffectedByModule
         reach={reach}
         fileHref={fileHref}
@@ -380,14 +394,151 @@ function DependentsSection({
         onClearFocus={onClearFocus}
         onHoverPath={onHoverPath}
       />
-      {reach.tests.length > 0 && (
+      {loaded < total && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-tertiary)]">
+          <span>
+            Listed by module from the nearest {formatNumber(loaded)} of {formatNumber(total)} files.
+          </span>
+          {more.onMore && (
+            <button type="button" onClick={more.onMore} disabled={more.loading} className={QUIET_BUTTON}>
+              {more.loading ? "Reading more..." : "Read more files"}
+            </button>
+          )}
+          {more.error && <span role="alert">{more.error}</span>}
+        </div>
+      )}
+      {reach.testsTotal > 0 && (
         <p className="text-xs text-[var(--color-text-tertiary)]">
-          Not counted here: {count(reach.tests.length, "test file")} that import the change. They are tests to run.
+          Not counted here: {count(reach.testsTotal, "test file")} that import the change. They are tests to run.
         </p>
       )}
     </Section>
   );
 }
+
+type ChangeResult = Analysis["result"] & Partial<ChangeBlastRadiusResponse>;
+/** Reads one more slice of the picked change; absent for a hand-picked file set, which is never paged. */
+type LoadPage = (input: { offset: number; limit?: number; withGraph?: boolean }) => Promise<ChangeResult>;
+
+/** Reached files on the map: enough to draw a wide change's nearest steps in one request. */
+const MAP_FILES = 5000;
+/** A change reaching up to this many files draws its map on arrival; a wider one when asked. */
+const AUTO_MAP_FILES = 2000;
+
+interface ReachPages {
+  onMore: (() => void) | undefined;
+  loading: boolean;
+  error: string | null;
+}
+
+/** A read the reader started: whether it is running, and its failure in words. */
+function useRead(failure: string) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = useCallback(
+    async (read: () => Promise<void>) => {
+      setLoading(true);
+      setError(null);
+      try {
+        await read();
+      } catch (err) {
+        setError(toFriendlyMessage(err, failure));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [failure],
+  );
+  return { run, loading, error };
+}
+
+/** The analysis with every page read so far; a new analysis starts from its first page. */
+function useReachPages(first: ChangeResult, loadPage: LoadPage | undefined): { result: ChangeResult; more: ReachPages } {
+  const [read, setRead] = useState<{ first: ChangeResult; result: ChangeResult } | null>(null);
+  const { run, loading, error } = useRead("Could not read more files.");
+  const result = read?.first === first ? read.result : first;
+  const next = result.next_offset;
+  const onMore =
+    loadPage && next != null
+      ? () => void run(async () => setRead({ first, result: appendPage(result, await loadPage({ offset: next })) }))
+      : undefined;
+  return { result, more: { onMore, loading, error } };
+}
+
+/** Whether the list already carries the map's edges, and whether the map is read on arrival. */
+function mapPlan(first: ChangeResult, loadPage: LoadPage | undefined): { inline: boolean; auto: boolean; total: number } {
+  const total = first.transitive_total ?? first.transitive_affected.length;
+  const inline = hasEdges(first) || !loadPage;
+  return { inline, auto: !inline && total > 0 && total <= AUTO_MAP_FILES, total };
+}
+
+/**
+ * The reach the map is drawn from. A server that pages leaves the edges out
+ * until asked; the map reads them once, on arrival for a change of ordinary
+ * reach and on request for a wide one. An older server sends them with the list.
+ */
+function useMapReach(first: ChangeResult, listReach: Reach, changedFiles: string[], loadPage: LoadPage | undefined) {
+  const [drawn, setDrawn] = useState<{ first: ChangeResult; result: ChangeResult } | null>(null);
+  const { run, loading, error } = useRead("Could not read the map.");
+  const { inline, auto, total } = mapPlan(first, loadPage);
+  const graph = drawn?.first === first ? drawn.result : null;
+  const reach = useMemo(() => {
+    if (inline) return listReach;
+    return graph ? readReach(graph, changedFiles) : null;
+  }, [inline, listReach, graph, changedFiles]);
+  const open = () => {
+    if (!inline && loadPage)
+      void run(async () => setDrawn({ first, result: await loadPage({ offset: 0, limit: MAP_FILES, withGraph: true }) }));
+  };
+  const openRef = useRef(open);
+  openRef.current = open;
+  // Once per analysis: a failed read waits for the reader rather than retrying in a loop.
+  const autoRead = useRef<ChangeResult | null>(null);
+  useEffect(() => {
+    if (!auto || autoRead.current === first) return;
+    autoRead.current = first;
+    openRef.current();
+  }, [first, auto]);
+  const partial = graph && isPartial(graph) ? { drawn: graph.transitive_affected.length, total } : null;
+  return { reach, open, loading, error, partial };
+}
+
+/** How the picked change reads one more slice of itself; none for a hand-picked file set, which is never paged. */
+function useLoadPage(adapter: ImpactAdapter, analysis: Analysis | null): LoadPage | undefined {
+  // The analysis on screen, not the depth picker: a page read while a new depth loads joins the list it extends.
+  // A merge request reads its pinned id, so a later page lists the same commits as the first.
+  const changeId = analysis?.selection.kind === "change" ? (analysis.change?.id ?? analysis.selection.id) : null;
+  const depth = analysis?.depth;
+  return useMemo(() => {
+    if (!changeId || depth == null || !adapter.analyzeChange) return undefined;
+    return (input) => adapter.analyzeChange!({ changeId, maxDepth: depth, ...input });
+  }, [changeId, depth, adapter]);
+}
+
+/** Where the map would be, for a change too wide to draw before the reader asks. */
+function MapPrompt({ files, loading, error, onOpen }: { files: number; loading: boolean; error: string | null; onOpen: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--color-text-secondary)]">
+      {loading ? (
+        <span className="flex items-center gap-2" role="status">
+          <Spinner size="xs" />
+          Reading the map...
+        </span>
+      ) : (
+        <>
+          <span>{formatNumber(files)} files depend on this change.</span>
+          <Button type="button" variant="outline" size="sm" onClick={onOpen}>
+            Draw the map
+          </Button>
+        </>
+      )}
+      {error && <span role="alert">{error}</span>}
+    </div>
+  );
+}
+
+/** No map drawn: nothing selected, nothing highlighted. */
+const NO_MAP: StepMap = { width: 0, height: 0, columns: [], blocks: [], bands: [], testsNotDrawn: 0, changedTestsNotDrawn: 0 };
 
 function ReviewBody({
   analysis,
@@ -398,6 +549,7 @@ function ReviewBody({
   fileHref,
   maxDepth,
   onDepth,
+  loadPage,
 }: {
   analysis: Analysis;
   change: ChangeCandidate | undefined;
@@ -407,14 +559,21 @@ function ReviewBody({
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
   onDepth: (depth: number) => void;
+  loadPage: LoadPage | undefined;
 }) {
-  const { result, changedFiles, changedTotal, review, reviewUnavailable } = analysis;
+  const { changedFiles, changedTotal, review, reviewUnavailable } = analysis;
+  const pages = useReachPages(analysis.result, loadPage);
+  const result = pages.result;
   const reach = useMemo(() => readReach(result, changedFiles), [result, changedFiles]);
+  const drawing = useMapReach(analysis.result, reach, changedFiles, loadPage);
   const columns = useExpandedColumns();
-  const steps = useMemo(() => buildStepMap(reach, columns.expanded), [reach, columns.expanded]);
-  const pick = useStepSelection(steps, reach);
+  const steps = useMemo(
+    () => (drawing.reach ? buildStepMap(drawing.reach, columns.expanded) : NO_MAP),
+    [drawing.reach, columns.expanded],
+  );
+  const pick = useStepSelection(steps, drawing.reach ?? reach);
   const { highlightKey, setHoverPath } = useListHighlight(steps);
-  const reaches = reach.files.length > 0;
+  const reaches = reach.filesTotal > 0;
   return (
     <>
       <BlastRadiusVerdict
@@ -434,22 +593,31 @@ function ReviewBody({
       {check && <HealthCheckPanel state={check.state} fileHref={fileHref} />}
       <FoldedSection
         title="Where it reaches"
-        hint={formatNumber(reach.files.length)}
+        hint={formatNumber(reach.filesTotal)}
         action={<DepthSelect value={maxDepth} onChange={onDepth} />}
       >
-        {reaches ? (
-          <BlastRadiusSteps
-            map={steps}
-            selectedKey={pick.selectedKey}
-            selectedBand={pick.bandKey}
-            highlightKey={highlightKey}
-            onSelect={pick.pickBlock}
-            onSelectBand={pick.pickBand}
-            onToggleColumn={columns.toggle}
-            onClear={pick.clear}
-          />
+        {!reaches ? (
+          <NoReach depth={maxDepth} tests={reach.testsTotal} />
+        ) : drawing.reach ? (
+          <>
+            <BlastRadiusSteps
+              map={steps}
+              selectedKey={pick.selectedKey}
+              selectedBand={pick.bandKey}
+              highlightKey={highlightKey}
+              onSelect={pick.pickBlock}
+              onSelectBand={pick.pickBand}
+              onToggleColumn={columns.toggle}
+              onClear={pick.clear}
+            />
+            {drawing.partial && (
+              <p className="text-xs text-[var(--color-text-tertiary)]">
+                Drawn from the nearest {formatNumber(drawing.partial.drawn)} of {formatNumber(drawing.partial.total)} files.
+              </p>
+            )}
+          </>
         ) : (
-          <NoReach depth={maxDepth} tests={reach.tests.length} />
+          <MapPrompt files={reach.filesTotal} loading={drawing.loading} error={drawing.error} onOpen={drawing.open} />
         )}
         {/* The list is the drawing's keyboard and screen-reader reading, so it folds with it. */}
         {reaches && (
@@ -459,6 +627,7 @@ function ReviewBody({
             focus={pick.focus}
             onClearFocus={pick.clear}
             onHoverPath={setHoverPath}
+            more={pages.more}
           />
         )}
       </FoldedSection>
@@ -514,10 +683,11 @@ async function analyzeSelection(adapter: ImpactAdapter, sel: Selection, depth: n
       ...(r.change ? { change: r.change } : {}),
       review: r.review ?? null,
       reviewUnavailable: r.review_unavailable ?? null,
+      depth,
     };
   }
   const r = await adapter.analyze({ changedFiles: sel.files, maxDepth: depth });
-  return { selection: sel, result: r, changedFiles: sel.files };
+  return { selection: sel, result: r, changedFiles: sel.files, depth };
 }
 
 /** Answers kept per page, and how long one for a moving change (work in progress, a branch, a merge request) stays good. */
@@ -726,6 +896,7 @@ function ResultPane({
   fileHref,
   maxDepth,
   onDepth,
+  loadPage,
 }: {
   state: ReturnType<typeof useAnalysis>;
   pickedName: string;
@@ -739,6 +910,7 @@ function ResultPane({
   fileHref: ((path: string) => string) | undefined;
   maxDepth: number;
   onDepth: (depth: number) => void;
+  loadPage: LoadPage | undefined;
 }) {
   const { analysis, error, loading, retry } = state;
   return (
@@ -760,6 +932,7 @@ function ResultPane({
             fileHref={fileHref}
             maxDepth={maxDepth}
             onDepth={onDepth}
+            loadPage={loadPage}
           />
         </div>
       )}
@@ -880,6 +1053,7 @@ export function ImpactView({
       : undefined;
   const healthState = healthLane(shownChange, Boolean(adapter.checkHealth), canCheck, check?.state);
   const fileHref = adapter.fileHref ? (p: string) => adapter.fileHref!(p) : undefined;
+  const loadPage = useLoadPage(adapter, state.analysis);
   const markdownHref = markdownHrefFor(adapter, shownChange, maxDepth, check);
   const pickChange = (id: string) => {
     setSelection({ kind: "change", id });
@@ -927,6 +1101,7 @@ export function ImpactView({
         fileHref={fileHref}
         maxDepth={maxDepth}
         onDepth={setMaxDepth}
+        loadPage={loadPage}
       />
     </div>
   );

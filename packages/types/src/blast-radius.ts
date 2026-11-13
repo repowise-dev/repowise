@@ -10,9 +10,9 @@ import type {
   RiskCompatibilityField,
   RiskScalarSemantics,
 } from "./risk-semantics.js";
-import type { ChangeReview } from "./generated/http.js";
+import type { ChangeReview, ReachSummary } from "./generated/http.js";
 
-export type { ChangeReview, ChangeRiskBlock, ChangeTestsBlock } from "./generated/http.js";
+export type { ChangeReview, ChangeRiskBlock, ChangeTestsBlock, ReachSummary } from "./generated/http.js";
 
 export interface DirectRiskEntry {
   path: string;
@@ -74,6 +74,8 @@ export interface TestRecommendation {
   /** Every retained evidence category; measured and inferred may both occur. */
   bases: TestRecommendationBasis[];
   source_files: string[];
+  /** Every changed file this test reaches, where a change reply's `source_files` names the first few. */
+  source_files_total?: number | null;
   evidence: TestImpactEvidence[];
   /** A measured row whose test file is gone or changed since the coverage run. */
   stale?: boolean;
@@ -244,6 +246,11 @@ export interface ChangeCandidatesResponse {
 export interface ChangeBlastRadiusRequest {
   change_id: string;
   max_depth?: number;
+  /** Also return `via` on each reached file, for drawing the map. */
+  with_graph?: boolean;
+  /** The page of `transitive_affected`: rows `offset` to `offset + limit` (server default 500, at most 5,000). */
+  offset?: number;
+  limit?: number;
 }
 
 export interface ChangeBlastRadiusResponse extends BlastRadiusResponse {
@@ -259,6 +266,17 @@ export interface ChangeBlastRadiusResponse extends BlastRadiusResponse {
   changed_files: string[];
   /** Every path the change touches, before the cap. */
   changed_files_total: number;
+  /**
+   * Every reached file; `transitive_affected` holds one page of them, and
+   * `affected_signals` and `test_gaps` cover the changed files and that page.
+   * Absent from older servers, which send every row.
+   */
+  transitive_total?: number;
+  /** The `offset` of the next page; null on the last. */
+  next_offset?: number | null;
+  reach_summary?: ReachSummary | null;
+  /** Files that usually change with a changed one and are left out; `cochange_warnings` lists the strongest pairs. */
+  missing_partners_total?: number | null;
   /**
    * The change's score and tests, as `repowise risk` and `get_change_risk`
    * give them; null when git could not be read here (`review_unavailable` says why).

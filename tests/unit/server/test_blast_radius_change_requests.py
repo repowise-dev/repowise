@@ -12,6 +12,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from repowise.core.analysis.change_candidates import UnknownChangeError, change_identity
 from repowise.core.repo_config import save_repo_config
 from tests.unit.server.conftest import create_test_repo
 
@@ -233,3 +236,17 @@ async def test_a_managed_checkout_fetches_the_published_ref(client, tmp_path, mo
     _git(bare, "fetch", "-q", str(seed), "+refs/merge-requests/5/head:refs/merge-requests/5/head")
     again = await client.post(url_change, json={"change_id": "mr:5"})
     assert again.json()["change_id"] == f"mr:5@{base}...{newer}"
+
+
+def test_a_pinned_request_keys_its_review_by_its_own_commits(tmp_path):
+    """The review cache keeps a pinned request's answer; a moving ``mr:<n>`` is never keyed."""
+    repo_dir = tmp_path / "test-repo"
+    base, head = _repo_with_request(
+        repo_dir, url="https://gitlab.com/group/project.git", ref="refs/merge-requests/7/head"
+    )
+    pinned = f"mr:7@{base}...{head}"
+    tip = _git(repo_dir, "rev-parse", "HEAD").strip()
+
+    assert change_identity(str(repo_dir), pinned) == (pinned, tip)
+    with pytest.raises(UnknownChangeError):
+        change_identity(str(repo_dir), "mr:7")

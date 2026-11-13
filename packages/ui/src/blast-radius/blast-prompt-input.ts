@@ -10,7 +10,7 @@ import { describeMarks, riskySpots, type Reach } from "./blast-map-model";
 import type { ReviewStatus } from "./review-status";
 import { riskLede, testsPlan } from "./change-review-model";
 
-type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
+type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[]; missing_partners_total?: number | null };
 
 /** An owner's display name: the git name when known, else the email's local part. */
 export function ownerName(r: { email: string; name?: string | null }): string {
@@ -21,6 +21,11 @@ export function ownerName(r: { email: string; name?: string | null }): string {
 export function testsLimited(impact: Result["test_impact"]): boolean {
   if (!impact) return true;
   return ["unavailable", "degraded"].includes(impact.coverage.status) || impact.analysis.partial || impact.analysis.stale;
+}
+
+/** How many files usually change with a changed one and are left out: the server's count when it lists only the strongest pairs. */
+export function missingPartnersTotal(result: Result): number {
+  return result.missing_partners_total ?? missingPartners(result).length;
 }
 
 /** Each file that usually changes with a changed one and is left out, once. */
@@ -124,10 +129,10 @@ export function blastPromptInput(
     status: `${status.word}: ${status.reason}`,
     risk: lede ? [lede.sentence, lede.drivers].filter(Boolean).join(" ") : undefined,
     reach: {
-      files: reach.files.length,
+      files: reach.filesTotal,
       modules: reach.modules,
       direct: reach.direct,
-      tests: reach.tests.length,
+      tests: reach.testsTotal,
       band: result.structural_impact_band,
     },
     lookFirst: riskySpots(reach, 8).map((n) => ({ path: n.path, changed: n.changed, signals: describeMarks(n) })),
