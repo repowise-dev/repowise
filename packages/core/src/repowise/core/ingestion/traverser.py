@@ -347,11 +347,15 @@ _ENTRY_POINT_NAME_SUFFIXES: tuple[str, ...] = tuple(
 # size is the only signal.
 _DEFAULT_MAX_FILE_SIZE_BYTES: int = 500 * 1024  # 500 KB
 
-# Ceiling for files a parser can read, so a repo's largest hand-written
-# modules are still indexed (#1237). It is a memory budget, not a preference:
-# tree-sitter peaks at roughly 95 MB of RSS per MB of source, and the parse
-# pool runs up to 8 workers, so 2 MB bounds the pool at about 1.8 GB.
-_SOURCE_MAX_FILE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2 MB
+# Ceiling for files parsed concurrently in the worker pool, bounding the pool's
+# memory budget (tree-sitter peaks at roughly 95 MB of RSS per MB of source,
+# times up to 8 workers, so 2 MB bounds the pool at about 1.8 GB).
+_SOURCE_POOL_MAX_FILE_SIZE_BYTES: int = 2 * 1024 * 1024  # 2 MB
+
+# Hard ceiling for files a parser can read serially on their own, so a repo's largest
+# hand-written modules (Swift views, Kotlin screens, Java activities) are still
+# indexed (#1237, #5280). Above this ceiling, skip as over_max_size.
+_SOURCE_MAX_FILE_SIZE_BYTES: int = 8 * 1024 * 1024  # 8 MB
 
 # Mean line length that marks a minified bundle: hand-written source runs
 # 25-60 bytes per line, minified JavaScript 1,200+.
@@ -491,6 +495,12 @@ class FileTraverser:
         # Repo-relative dir -> whether it holds a package manifest; asked only
         # about test-helper-named dirs (see :meth:`_is_package_root_dir`).
         self._package_root_cache: dict[str, bool] = {}
+        # Repo-relative POSIX dir -> whether it or an ancestor is pruned. Filled
+        # by :meth:`_walk` and :meth:`dir_chain_skipped`, so the manifest and
+        # package scans after the walk decide each directory once, not once per
+        # level of every path below it.
+        self._dir_skipped: dict[str, bool] = {}
+        self._root_cut = len(str(self.repo_root).rstrip(os.sep)) + 1
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
@@ -622,6 +632,9 @@ class FileTraverser:
 
     def _walk(self) -> Iterator[Path]:
         """Yield all absolute file paths, skipping blocked directories."""
+        # The walk decides every directory it reaches; a verdict asked for
+        # before it (``_ignored_tracked_dirs`` still empty) must not outlive it.
+        self._dir_skipped.clear()
         for dirpath, dirnames, filenames in os.walk(self.repo_root):
             dirpath_obj = Path(dirpath)
             rel_dir = dirpath_obj.relative_to(self.repo_root)
@@ -630,9 +643,14 @@ class FileTraverser:
             dir_ignore = self._get_dir_ignore(dirpath_obj)
 
             # Prune ignored directories in-place (affects os.walk recursion)
-            dirnames[:] = sorted(
-                d for d in dirnames if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
-            )
+            kept = []
+            for d in dirnames:
+                child = rel_dir / d
+                skipped = self._should_skip_dir(d, child, dir_ignore)
+                self._dir_skipped[child.as_posix()] = skipped
+                if not skipped:
+                    kept.append(d)
+            dirnames[:] = sorted(kept)
 
             for filename in sorted(filenames):
                 self.stats.total_paths_walked += 1
@@ -920,7 +938,9 @@ class FileTraverser:
             return None
 
         size_bytes = stat.st_size
-        rel_str = abs_path.relative_to(self.repo_root).as_posix()
+        # Every caller passes a path ``_walk`` joined onto the root, so slicing
+        # the root off is ``relative_to`` without a Path per file.
+        rel_str = str(abs_path)[self._root_cut :].replace(os.sep, "/")
 
         if self._skip_oversized(abs_path, rel_str, size_bytes):
             return None
@@ -1083,13 +1103,17 @@ class FileTraverser:
         nested ignore spec, so monorepo package detection has exactly the same
         boundary semantics as file traversal.
         """
-        cur = Path()
-        for part in rel_dir.parts:
-            parent_abs = self.repo_root / cur
-            cur = cur / part
-            if self._should_skip_dir(part, cur, self._get_dir_ignore(parent_abs)):
-                return True
-        return False
+        if not rel_dir.parts:
+            return False
+        key = rel_dir.as_posix()
+        skipped = self._dir_skipped.get(key)
+        if skipped is None:
+            parent = rel_dir.parent
+            skipped = self.dir_chain_skipped(parent) or self._should_skip_dir(
+                rel_dir.name, rel_dir, self._get_dir_ignore(self.repo_root / parent)
+            )
+            self._dir_skipped[key] = skipped
+        return skipped
 
 
 # ---------------------------------------------------------------------------

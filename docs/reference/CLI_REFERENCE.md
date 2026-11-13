@@ -4,7 +4,7 @@ Every `repowise` command and flag. For a guided introduction, see the [Quickstar
 
 Top-level commands (alphabetical): `agents`, `ask`, `attribution`, `augment`, `changes`, `check`, `ci-summary`, `components`,
 `config`, `context`, `corrections`, `costs`, `coverage`, `dead-code`, `decision`, `delete`, `distill`, `doc-drift`,
-`doctor`, `events`, `expand`, `export`, `generate`, `generate-claude-md`, `health`, `hook`, `impacted-tests`, `init`,
+`doctor`, `events`, `expand`, `export`, `generate`, `generate-claude-md`, `health`, `hook`, `hosted`, `impacted-tests`, `init`,
 `login`, `logout`, `mcp`, `next`, `overlap`, `packages`, `plugins`, `publish`, `reindex`, `report`, `restyle`, `risk`,
 `saved`, `savings`, `search`, `security`, `serve`, `status`, `suspects`, `symbol`, `telemetry`, `uninstall`, `update`,
 `watch`, `whats-new`, `whoami`, `why`, `wiki-styles`, `workspace`. `repowise --version` prints the version.
@@ -52,6 +52,7 @@ Grouped by task; `PATH` and flags are in each command's section.
 - **Maintenance:** [`doctor`](#repowise-doctor-path), [`grammars fetch`](#repowise-grammars-fetch-dir), [`whats-new`](#repowise-whats-new),
   [`telemetry`](#repowise-telemetry), [`plugins`](#repowise-plugins), [`config hints`](#repowise-config-hints-onoff),
   [`login`](#repowise-login), [`logout`](#repowise-logout), [`whoami`](#repowise-whoami),
+  [`hosted`](#repowise-hosted),
   [`publish`](#repowise-publish-path), [`delete`](#repowise-delete-repo_id), [`uninstall`](#repowise-uninstall-path),
   [`costs`](#repowise-costs), [`export`](#repowise-export-path)
 
@@ -235,7 +236,7 @@ repowise update --workspace --docs     # every stale repo, docs forced
 repowise update --repo backend         # one workspace repo
 repowise update --no-workspace --index-only --defer-docs   # facts now, docs later
 repowise update --no-workspace --index-only --defer-docs --refresh-git   # recover Git rows
-repowise update --full --provider anthropic   # fast index to full
+repowise update --full                 # leave nothing stale (fast index: upgrade to full)
 ```
 
 | Flag | What it does | Default |
@@ -252,7 +253,7 @@ repowise update --full --provider anthropic   # fast index to full
 | `--defer-docs` | With `--index-only` or `--no-docs`, persist facts and mark affected docs stale without rendering or embedding. Single repo only. | off |
 | `--refresh-git` | Re-read Git history at the current tier and commit cap, even at an unchanged HEAD. Requires `--index-only --defer-docs`; single repo only; not with `--full`. | off |
 | `--working-tree` | Also index staged, unstaged, untracked work; see notes. | off |
-| `--full` | Fast (`--mode fast`) index to full (below). Errors in workspace mode. | off |
+| `--full` | Leave nothing stale: catch a full index up, or upgrade a fast one (below). One repo at a time (`--repo <alias>` in a workspace). | off |
 | `--workspace` / `-w` | All stale workspace repos plus cross-repo analysis; see notes. | auto-detect |
 | `--repo` | One workspace repo by alias (implies `--workspace`). | |
 | `--no-cost-tracking` | Don't record spend; see notes. | tracking on |
@@ -270,7 +271,7 @@ repowise update --full --provider anthropic   # fast index to full
 
 - **`--working-tree`.** Uncommitted renames reach the graph. Off so hooks and plain runs stay commit-anchored. Workspace: uncommitted changes make a repo stale. `repowise watch` always does this.
 - **`--refresh-git`.** Requires `--index-only --defer-docs` to recover missing Git rows without rendering or embedding existing pages. It keeps the configured history scope and history-version stamp. The next ordinary update remains incremental. `--dry-run` previews the refresh without store writes. Use `--full` separately when the Git tier needs upgrading.
-- **`--defer-docs`.** Pass a repo path and `--no-workspace`. Existing page bodies and surviving vectors stay in place; deleted sources still follow the normal tombstone cleanup. Renderer changes mark every template page stale and retain the old renderer fingerprint. Generation config changes retain their old fingerprints until a rendering run completes. `status` reports `stale_pages`; the JSON `done` event also includes `docs_deferred: true` and `stale_pages` (null if the count is unreadable). Run `update --index-only` without this flag to render the pending template pages. Model-written stale pages still use `generate --stale`. This flag cannot be combined with `--docs` or `--full`, and does not force a Git history walk when its existing stamps say current.
+- **`--defer-docs`.** Pass a repo path and `--no-workspace`. Existing page bodies and surviving vectors stay in place; deleted sources still follow the normal tombstone cleanup. Renderer changes mark every template page stale and retain the old renderer fingerprint. Generation config changes retain their old fingerprints until a rendering run completes. `status` reports `stale_pages`; the JSON `done` event also includes `docs_deferred: true` and `stale_pages` (null if the count is unreadable). Run `update --index-only` without this flag to render the pending template pages. Model-written stale pages wait for `update --full`. This flag cannot be combined with `--docs` or `--full`, and does not force a Git history walk when its existing stamps say current.
 - **`--workspace`.** Each repo's `docs_mode` (`docs_enabled` beside it) plus `--docs` / `--no-docs` / `--index-only`
   picks docs or index-only. `--docs` needs each repo's provider and key (or `--provider`).
   - Docs repos run the full single-repo docs path (pages, diagrams, decisions); others the fast parallel index-only path.
@@ -281,6 +282,13 @@ repowise update --full --provider anthropic   # fast index to full
 choices, failed approaches replaced by working ones. Past deterministic gates and a verbatim-quote grounding check, 2+
 sessions (or one direct correction) promote a decision (`source: session`). Local only; **off by default**: `repowise
 decision source set session --on` ([CONFIG.md](CONFIG.md)).
+
+**Catching up a full index (`--full`).** On a repo a model documented, `update --full` leaves `repowise status` with no stale pages:
+
+- Brings the new commits in like a plain update, with no cascade cap for this run, so every dependent structural page (file, cycle, pages from an older renderer, files with no page yet) is rendered. Its model calls are the ones a plain update makes.
+- Has the model rewrite every stale page it wrote, through `generate --stale`'s planner with `--cascade full`: one cost preview for the rewrite, skipped by `--yes`. A stale page the code no longer yields is retired.
+- Renders any structural page still marked stale, then reports what is left.
+- `--dry-run` prints the update plan and the priced rewrite of the pages stale now, writing nothing.
 
 **Upgrading a fast index to full (`--full`).** A `--mode fast` index has the full graph and metrics, but *essential* git
 only (last commits, no per-file blame or co-change) and no model docs. `update --full` upgrades **incrementally**:
@@ -512,7 +520,7 @@ Plus the [shared options](#shared-options-ask-context-symbol-why).
 
 **`--include` values:** `full_doc`, `ownership`, `last_change`, `callers`, `callees`, `references`, `metrics`,
 `community`, `decisions`, `health`, `skeleton`, `skeleton+`, `doc_drift`, `symbols`, `changes`, `provenance`,
-`suspects`, `files` (on a directory: every file and its tests).
+`suspects`, `files` (on a directory: every file and its tests), `facts` (a symbol's fact row and tests).
 
 - Card: title, summary, layer, signatures with lines, hotspot and bug-fix history, doc freshness, skeleton shape.
   `--include skeleton` adds the file body-elided and line-verified; `--full` only then carries one.
@@ -602,6 +610,7 @@ repowise status --workspace --format json
 | `--format` | `table` or `json`. | `table` |
 
 - **Workspace:** a **Docs** column (page count) and per-repo **Docs status** with skip reasons (e.g. `cost gate declined`) and fix command.
+- **Single repo:** an **Update lock** row (JSON `stuck_update_lock`) when a live update has held the lock for more than 30 minutes.
 - **Single repo:** a **Next** block: count worth doing this week (or quarter if quiet) and the first; JSON `next_actions`; `repowise next` lists them.
 
 ---
@@ -859,7 +868,7 @@ repowise impacted-tests main...HEAD --format args --runner pytest --prioritize
 |------|--------------|---------|
 | `--path` | Repo path. | cwd / workspace primary |
 | `--staged` | Staged changes (`git diff --cached`). | on with no range outside CI (in CI: the pull request's change) |
-| `--format` | `table`, `json` (report + selection), `list` (an id per line), `args` (runner arguments or `:all`; reasons on stderr). | `table` |
+| `--format` | `table`, `json` (report + selection), `list` (an id per line; none, with the reason on stderr, when every test must run), `args` (runner arguments or `:all`; reasons on stderr). | `table` |
 | `--runner` | For `args`: `auto` (`files` when mixed), `pytest` (node ids or files), `go` (package dirs), `jest` (files; use `--runTestsByPath`), `files`. | `auto` |
 | `--explain` | Test file or node id: why (not) selected (changed file, evidence, import route, or rule), run-order place; JSON `explain`. | |
 | `--prioritize` | With `args`, `list`, `json`: whole suite, selected first; skips nothing; orders full runs. | off |
@@ -1007,6 +1016,7 @@ repowise decision health
 repowise decision status                # what capture did and cost, and what came into force this week
 repowise decision export                # decisions in force to .repowise/decisions.yaml
 repowise decision import                # reconcile the store to that file
+repowise decision import --force        # re-accept despite a stale base token
 repowise decision push                  # decisions recorded here, to this repo on repowise.dev
 repowise decision pull                  # decisions in force there that this store lacks
 repowise decision migrate               # classify pre-split rows (dry run unless --apply)
@@ -1030,6 +1040,12 @@ repowise decision llm --on|--off                # all decision-extraction model 
 ```
 
 Every subcommand takes `--format` (`table` default, or `json`) and an optional `[PATH]` last.
+
+`export` writes a per-entry `base_token`. Keep it when editing: `import` skips
+conflicting edits if the store changed after export and lists them in its
+summary. Entries without tokens keep the previous import behaviour.
+`import --dry-run` previews the result; `import --force` bypasses only the token
+check, preserving alias, duplicate and superseded-entry skips.
 
 **`add`**
 
@@ -2055,7 +2071,7 @@ repowise mcp --tools "+get_dependency_path,-get_dead_code"
 | `--transport` | `stdio` (editors), `streamable-http` (HTTP clients), or `sse` (legacy). | `stdio` |
 | `--port` | HTTP/SSE port. | `7338` |
 | `--host` | HTTP/SSE bind; `0.0.0.0` without `REPOWISE_API_KEY` warns that every tool is unauthenticated and network-accessible. | `REPOWISE_HOST`, else `127.0.0.1` |
-| `--tools` | Comma list = allowlist; `+`/`-` adjust defaults; `lean` selects the six-tool agent-lean profile. Overrides config. | `mcp.tools` config block |
+| `--tools` | A profile (`core`, `standard`, `all`) optionally followed by `+name`/`-name`; `+`/`-` alone adjust the client's default; comma list = allowlist; `lean` selects the six-tool agent-lean profile. Overrides config. | `mcp.tools`, else `standard` on Claude Code and `core` on other clients |
 | `--all` | Every tool, including opt-in and workspace. | off |
 | `--no-workspace` | Nested repo ignores the enclosing workspace's default. | auto-detect |
 
@@ -2082,8 +2098,8 @@ repowise generate-claude-md --stdout
 
 ### `repowise agents`
 
-Wire agents after `init`: Claude Code, Codex, VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI, Kiro, and any host
-via `print-config`. With no subcommand, lists each agent for the cwd repo: tier, installed or not, every wiring.
+Wire agents after `init`: Claude Code, Codex, VS Code, Cursor, OpenCode, Hermes, GitHub Copilot CLI, Kiro, Windsurf,
+and any host via `print-config`. With no subcommand, lists each agent for the cwd repo: tier, installed or not, every wiring.
 
 ```bash
 repowise agents --format json
@@ -2091,6 +2107,7 @@ repowise agents add [PATH] --target=opencode --scope=project
 repowise agents remove [PATH] --target=hermes --scope=user
 repowise agents refresh [PATH]
 repowise agents print-config claude-code [PATH]
+repowise agents add --hosted --target=auto --yes --format json
 ```
 
 | Flag | What it does | Default |
@@ -2099,11 +2116,34 @@ repowise agents print-config claude-code [PATH]
 | `--target` | `add`/`remove`: comma-separated ids or `auto`/`all`/`none`. Required for `remove` (destructive). | `add`: prompts, installed pre-ticked |
 | `--scope` | `add`/`remove`/`refresh`: `project` (repo), `user` (machine), `both`. | `both` |
 | `--yes` / `-y` | `add`: never prompt. | off |
+| `--hosted` | `add`: write the hosted server for this repo instead of the local one (see below). `--scope` is ignored. | off |
+| `--repo` | `add --hosted`: `owner/name` on repowise.dev. | the GitHub `origin` |
+| `--tools` | `add`: which MCP tools the local server lists, saved as this repo's `mcp.tools` (see [MCP Tools](../agent/MCP_TOOLS.md#configuring-the-tool-surface)). Each wired agent's row says which profile it gets. | `standard` on Claude Code, `core` on other clients |
 | `print-config --scope` | `project` or `user` snippet. | `project` |
 | `print-config --format` | `table`: bare paste-ready snippet; `json`: with target, scope, repo, docs URL. | `table` |
 
 - `refresh` only repoints wired agents (after an upgrade or repo move), never adds, so `repowise doctor --repair` calls it.
-- `print-config` prints the MCP entry, writing nothing, for hosts like Cline, Windsurf, Zed, Gemini CLI.
+- `print-config` prints the MCP entry, writing nothing, for hosts like Cline, Zed, Gemini CLI.
+
+**`agents add --hosted`** writes `https://api.repowise.dev/mcp/<owner>/<name>` as a remote entry: a URL only, no
+key, signed in with OAuth the first time the client connects. `--target=auto` (or no `--target`) picks the clients
+that look installed. The server is named `repowise`, or `repowise-hosted` when a local `repowise` server is already
+configured; a local entry is never overwritten, and a re-run changes nothing.
+
+| Client | Where the entry goes | Shape | Then a person |
+|--------|----------------------|-------|---------------|
+| Claude Code | `~/.claude.json`, this repo's local scope (as `claude mcp add` writes it) | `type: http`, `url` | restarts, runs `/mcp`, authenticates |
+| Cursor | `.cursor/mcp.json` | `url` | clicks "Needs login" in Settings > MCP |
+| VS Code | `.vscode/mcp.json` | `type: http`, `url` | clicks Start above the server |
+| Codex CLI | `.codex/config.toml` | `[mcp_servers.<name>] url` | runs `codex mcp login <name>` |
+| OpenCode | `opencode.json` | `type: remote`, `url` | runs `opencode mcp auth <name>` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `serverUrl` | approves it in Cascade's MCP servers |
+
+Hermes, GitHub Copilot CLI and Kiro are reported as skipped with the URL to add by hand. `--format json` lists, per
+client, every file and its outcome, the `server_name` used and the `next_step` for a person.
+
+`init` never converts a remote `repowise` entry it finds; it leaves it and suggests renaming it `repowise-hosted` so
+the local server can take the name.
 
 Support matrix: [Agent integrations](../agent/INTEGRATIONS.md).
 
@@ -2130,7 +2170,7 @@ repowise doctor --workspace --repair
 
 | Flag | What it does | Default |
 |------|--------------|---------|
-| `--repair` | Rebuild FTS, re-embed missing pages, sync workspace drift, drop dead workspace entries. | off |
+| `--repair` | Reset `config.yaml` values repowise cannot use, rebuild FTS, re-embed missing pages, sync workspace drift, drop dead workspace entries. | off |
 | `--workspace` / `-w`, `--no-workspace` | Workspace table (dir exists, git repo, state.json ↔ config drift) then per-repo checks / single repo. | auto-detect |
 | `--format` | `table` or `json`. | `table` |
 | `--quick` | Skip the slow checks: starting the MCP server (`mcp-responds`) and reconciling the vector and full-text stores (`vector-store-sync`, `fts-index-sync`, `coordinator-drift`). Not with `--repair`. | off |
@@ -2140,12 +2180,25 @@ repowise doctor --workspace --repair
   `fail`), a `detail` and a `fix`: the exact command that resolves it, or `null`. Match on `id`; names can change.
   A `warn` never changes the exit code. With `--workspace`, ids repeat once per repo and `name` starts with the
   repo's alias.
+- **Settings** checks `.repowise/config.yaml` and the environment variables repowise reads against the settings
+  registry, resolving each value the way the code does. A clean repo shows one `settings` row. Otherwise each
+  finding is its own row, `setting-<key or variable>`: a value repowise cannot use fails, naming the key, the value,
+  what it accepts and the fix (`repowise config reset <key>`, or `repowise config set <key> <value>`); an invalid
+  variable fails with the same detail and no fix command; a key no setting reads, or a block written as one value,
+  warns with the closest real key; a key repowise has retired is an `ok` row saying it is safe to remove
+  (`--repair` removes it); a variable that overrides the file, or is set but loses to it, is an `ok` row
+  saying so. `--repair` resets invalid file values to their defaults, except `decisions.*` and the provider
+  selection, whose writers rewrite their whole block (run the row's fix for those); it never touches the environment.
 - **Index data** (`index-data`, also under `--quick`) warns when the index is incomplete or the next `repowise update`
   would redo stored work: git history written by older rules, health or security results from an older analyzer or
   scanner, pages from an older page renderer, or empty git, graph, symbol or health tables. The detail names each
   problem and the row's fix is one command: `repowise init` when any table set is empty (an update at an unchanged
   HEAD does not refill them), `repowise update` when model-written pages need re-rendering, otherwise
   `repowise update --index-only` (no model calls).
+- **Index freshness** (`index-freshness`) compares `last_sync_commit` with HEAD, read from the ref files: a warn
+  with `repowise update` when HEAD has moved on, or with `repowise update --since <ref>` when the commit is not in
+  the repository's history. **Update lock** (`update-lock`) appears only when a live `repowise update` has held
+  `.repowise/.update.lock` for more than 30 minutes, and says what `update` says about it; `status` shows it too.
 - **Vector store** fails when `.repowise/lancedb` won't open, naming the error. An open store with no indexable pages
   reports all missing; `--repair` won't re-embed it with a paid embedder, it prints the count and points to `repowise
   reindex`.
@@ -2237,13 +2290,19 @@ Sign in to repowise.dev (browser OAuth with PKCE; tokens in `~/.repowise/credent
 repos, reindex from local tools and account status in `doctor`. Local features never need it.
 
 ```bash
+repowise login --device
 repowise login --with-token
 ```
 
 | Flag | What it does | Default |
 |------|--------------|---------|
+| `--device` | No browser here (SSH, container, cloud agent): prints a code to approve at `repowise.dev/device` from any device, then waits. Tokens are stored as with the browser sign-in and never printed. | off (browser) |
 | `--with-token` | Paste an API key (`rw_live_...`): stdin when piped, else prompt. For SSH/headless. | off (browser) |
 | `--device-name` | Machine label in connected apps. | hostname |
+
+`--device` polls at the interval the server asks for (slower on `slow_down`), stops when the code is denied or
+expires (10 minutes), and starts over once with a fresh code if the server no longer accepts the first. Approve a
+code only if you started the sign-in yourself, on a machine you control.
 
 ### `repowise logout`
 
@@ -2260,6 +2319,33 @@ Show the signed-in account.
 ```bash
 repowise whoami
 ```
+
+### `repowise hosted`
+
+Your repowise.dev account, from the terminal. Needs `repowise login`.
+
+```bash
+repowise hosted status --format json
+repowise hosted reviews on --repo acme/api
+repowise hosted coverage-pr --format json
+```
+
+| Command | What it does |
+|---------|--------------|
+| `status` | What is set up for a repo on repowise.dev (index, agent connection, PR bot, coverage) and what is left, with who does each step and its link. Reads only. |
+| `reviews on` | Turns on PR reviews for a repo the Repowise bot is installed on. |
+| `coverage-pr` | Has the bot open a draft PR adding the coverage upload workflow. Merging it is yours. |
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--repo` | `owner/name`. | the GitHub `origin`; for `status` without one, the most recently active repo |
+| `--format` | `table` or `json`. `status --format json` prints the platform's payload as it came. | `table` |
+
+Signed out, `status` reports `{"account": {"signed_in": false}, "error": "signed_out"}` and exits 0. Every other
+failure exits 1 with an `error` code: `offline`, `unsupported` (an older server), `not_installed` (the bot does not
+cover the repo; the message links the install), `needs_plan` (a private repo below a paid plan),
+`forbidden` (usually a sign-in without write access: sign in again), `permission_needed` (the bot needs a GitHub permission
+approved), `pending` (the bot is still working; run it again).
 
 ### `repowise publish [PATH]`
 

@@ -14,12 +14,21 @@ workers:
 |---|---:|---:|---:|---:|---:|
 | elastic/elasticsearch | 34,315 | 4.0M | 52 min | 7.8 GiB | 4.2 GiB |
 | dotnet/runtime | 58,924 | 15.0M | 120 min | 11.7 GiB | 7.7 GiB |
-<!-- ClickHouse/ClickHouse (C++, C, Python, 4.29M lines) row: fill from the scale run -->
+| ClickHouse/ClickHouse | 93,604 | 4.29M | 98 min | 25.0 GiB | 2.6 GiB |
+
+ClickHouse ran on a full clone with all 321,097 commits: 62,167 files indexed
+(C++, C, Python, SQL, shell), 249,188 symbols, a 742,968-edge graph. About
+15 GiB of its peak is a one-time `git commit-graph write` over that history,
+running beside the graph build. With PostgreSQL as the store the first index
+takes 94 min, with a 1.9 GiB database. MCP answers on the finished index,
+p50: `get_context` 0.24 s, `get_symbol` 0.29 s, `search_codebase` 2.3 s,
+`get_answer` 6.3 s (PostgreSQL: 0.16, 0.09, 1.2 and 5.9 s).
 
 More rows and the method: [BENCHMARKS.md](../BENCHMARKS.md#scale).
 
-A machine with 8 vCPUs, 32 GB of RAM and 50 GB of free disk runs a 4M-line
-index with room to spare. The first index is a one-time cost; after it,
+A machine with 8 vCPUs, 32 GB of RAM and 50 GB of free disk indexes a 4M-line
+repository with its full history; give it 64 GB of RAM when PostgreSQL runs on
+the same machine. The first index is a one-time cost; after it,
 `repowise update` re-analyses only what each commit changed.
 
 ## 1. Prepare the checkout
@@ -173,6 +182,12 @@ repowise init --mode fast ...                # index only; `repowise update --fu
 repowise init -x 'third_party/' ...          # exclude what you never edit
 repowise init --max-file-pages 2000 ...      # cap file pages, highest importance first
 ```
+
+After the first index, `repowise config list --suggested` reads what it
+stored and names the settings that fit this repository, each with its numbers
+and the command: a deeper `commit_limit` when many files have no commit in the
+window, `exclude_patterns` for directories holding only vendored or generated
+code, and every file page when the automatic cap left production files out.
 
 Related: [WORKSPACES.md](WORKSPACES.md) indexes the monorepo together with its
 smaller sibling repositories behind one MCP server.

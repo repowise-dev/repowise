@@ -1,6 +1,7 @@
 ---
 description: Work with architectural decisions; list, check health, record, pin, or put background records in force.
-allowed-tools: Bash(repowise decision:*), Read
+allowed-tools: Bash(repowise decision:*), Bash(repowise config list:*), Bash(repowise config explain:*), Read
+disable-model-invocation: true
 ---
 
 # Repowise Decisions
@@ -9,8 +10,9 @@ Repowise keeps architectural decisions (the *why* behind the code) next to
 the files they govern and tracks them for staleness. A decision an agent
 records comes into force when its commit merges; records mined from history
 are background until someone puts them in force. This command drives the
-`repowise decision` group. `repowise decision config show` prints the
-repository's mode (`full`, `read-only` or `off`) and every switch.
+`repowise decision` group. `repowise config list --area decisions` prints
+the repository's mode (`decisions.mode`: `full`, `read_only` or `off`) and
+every switch, with where each value came from.
 
 ## Steps
 
@@ -55,9 +57,9 @@ repository's mode (`full`, `read-only` or `off`) and every switch.
   puts records in force, signed as the agent (plus `--session <id>`
   if known); the acceptance is recorded as the agent's, not a person's.
   `--decision`, `--reason`, `--scope <path>` and `--evidence <commit|file|link>`
-  fill the blockers. The unsigned form is a person's. A repository that
-  ran `repowise decision config agent-acceptance --off` refuses it; then leave
-  acceptance to a person. `confirm` refuses a decision that is already
+  fill the blockers. The unsigned form is a person's. A repository with
+  `decisions.agent_acceptance` set to false refuses it; then leave acceptance
+  to a person. `confirm` refuses a decision that is already
   accepted; renew that one with `reaffirm`.
 - **reaffirm** — `repowise decision reaffirm <id>...` — after re-reading a
   `needs_review` decision that still holds, renew it so it counts as current
@@ -80,8 +82,10 @@ repository's mode (`full`, `read-only` or `off`) and every switch.
 - **status**: `repowise decision status` shows what is in force and pinned,
   what came into force in the last seven days and who signed, and what
   capture did.
-- **mode**: `repowise decision config mode off|read-only|full` when the user
-  asks to turn decisions off or make them read-only.
+- **mode**: `repowise config set decisions.mode off|read_only|full` when the
+  user asks to turn decisions off or make them read-only; it resets the finer
+  decision switches too, so relay what moved and the undo commands it prints.
+  `repowise config explain <key>` says what any other decision switch does.
 
 ## Notes
 

@@ -278,6 +278,34 @@ def _node_text(node: Node) -> str:
     return (node.text or b"").decode("utf-8", errors="replace")
 
 
+def function_start_line(fn_node: Node) -> int:
+    """1-indexed start line of *fn_node*, skipping preceding recovery errors.
+
+    In top-level statement contexts such as Razor ``@code`` blocks, an
+    attributed property before a method is not a valid statement, so
+    tree-sitter C# wraps its attribute/modifiers and an ``ERROR`` child into
+    the following ``local_function_statement``. Advancing past the last
+    pre-declarator ``ERROR`` aligns the start line with the method itself.
+    """
+    cutoff = fn_node.child_by_field_name("parameters")
+    if cutoff is None:
+        cutoff = fn_node.child_by_field_name("body")
+    cutoff_id = cutoff.id if cutoff is not None else None
+    decl: Node | None = None
+    saw_error = False
+    for child in fn_node.children:
+        if child.id == cutoff_id:
+            break
+        if child.type == "ERROR":
+            saw_error = True
+            decl = None
+            continue
+        if saw_error and decl is None and child.is_named and not is_comment(child):
+            decl = child
+    anchor = decl if decl is not None else fn_node
+    return anchor.start_point[0] + 1
+
+
 # Wrappers a lambda's binding is read through: ``(() => {})``, ``(() => {}) as T``.
 _TRANSPARENT_LAMBDA_PARENTS = frozenset(
     {"parenthesized_expression", "as_expression", "satisfies_expression"}
@@ -473,11 +501,13 @@ def is_misread_scope(node: Node, lmap: LanguageNodeMap) -> bool:
 
 def is_function_node(node: Node, lmap: LanguageNodeMap) -> bool:
     """True for a function definition, False for a scope the grammar misread as
-    one or a declaration with no body (abstract, interface, extern)."""
+    one, a declaration with no body (abstract, interface, extern) or a value
+    binding that shares a function's node type (F# ``let v = ...``)."""
     return (
         node.type in lmap.function_kinds
         and not is_misread_scope(node, lmap)
         and not (lmap.bodyless is not None and lmap.bodyless(node))
+        and not (lmap.local_value is not None and lmap.local_value(node))
     )
 
 
@@ -548,11 +578,9 @@ def _declares_only(statement: Node, declarator: Node) -> bool:
 
 
 def _is_nested_unit(node: Node, lmap: LanguageNodeMap) -> bool:
-    """A function unit that is no local value, or a named block-bodied lambda."""
+    """A function unit, or a named block-bodied lambda."""
     if is_function_node(node, lmap):
-        return _is_function_unit(node, lmap) and (
-            lmap.local_value is None or not lmap.local_value(node)
-        )
+        return _is_function_unit(node, lmap)
     return is_named_block_lambda(node, lmap)
 
 
@@ -638,7 +666,9 @@ def _dialect_parameter_list(fn_node: Node) -> Node | None:
     return holder if holder is not None and holder.type in _SWIFT_PARAMETER_HOLDERS else None
 
 
-_SWIFT_PARAMETER_HOLDERS = frozenset({"function_declaration", "init_declaration", "subscript_declaration"})
+_SWIFT_PARAMETER_HOLDERS = frozenset(
+    {"function_declaration", "init_declaration", "subscript_declaration"}
+)
 
 
 def _declarator_parameter_list(fn_node: Node) -> Node | None:
@@ -695,8 +725,12 @@ def _parameter_children(params: Node) -> Iterator[Node]:
 # ``**opts`` / ``&block``, JavaScript and TypeScript ``...rest``.
 _REST_PARAMETERS = frozenset(
     {
-        "list_splat_pattern", "dictionary_splat_pattern", "splat_parameter",
-        "hash_splat_parameter", "block_parameter", "rest_pattern",
+        "list_splat_pattern",
+        "dictionary_splat_pattern",
+        "splat_parameter",
+        "hash_splat_parameter",
+        "block_parameter",
+        "rest_pattern",
     }
 )
 
@@ -747,6 +781,13 @@ def _count_parameters(fn_node: Node) -> int:
     Returns 0 when no parameter list is found (apart from Swift's flat list).
     """
     params = _parameter_list(fn_node)
+    if params is None and fn_node.type == "method_definition":
+        # An Objective-C method has no list node either: each argument is a
+        # ``method_parameter`` after a selector keyword, and the keywords
+        # themselves are not parameters.
+        objc = sum(1 for child in fn_node.children if child.type == "method_parameter")
+        if objc:
+            return objc
     if params is None:
         # Swift has no list node: each ``parameter`` is a child of the function,
         # and a subscript's are on the ``subscript_declaration`` around its body.

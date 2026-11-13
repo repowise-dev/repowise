@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 from typing import Any
 
@@ -168,6 +169,7 @@ def _add_synthetic_edges(
                 dotnet_index=graph_builder.dotnet_index,
                 file_paths=[fi.path for fi in file_infos],
                 source_map=source_map or None,
+                cache_dir=getattr(graph_builder, "_cache_dir", None),
             )
             graph_builder.add_dynamic_edges(dynamic_edges)
         if dynamic_edges:
@@ -367,17 +369,23 @@ def _with_field_changes(graph_builder: Any, patch_plan: Any, resolutions: dict) 
     from .affected import changed_field_names
     from .surface import PatchPlan
 
-    names = changed_field_names(
-        graph_builder._parsed_files,
-        graph_builder._source_map,
-        (*patch_plan.scope, *patch_plan.removed),
-        resolutions,
+    parsed_files = graph_builder._parsed_files
+    paths = (*patch_plan.scope, *patch_plan.removed)
+    c_paths = [p for p in paths if p in parsed_files and parsed_files[p].file_info.language in ("c", "cpp")]
+    names = changed_field_names(parsed_files, graph_builder._source_map, c_paths, resolutions)
+    others = changed_field_names(
+        parsed_files, graph_builder._source_map, [p for p in paths if p not in c_paths], resolutions
     )
-    if names is None:
+    if names is None or others is None:
         return PatchPlan(False, reason="an edited file has no field record to compare")
-    if not names:
+    if not names and not others:
         return patch_plan
-    return replace(patch_plan, refresh=True, names=patch_plan.names | names)
+    # A C/C++ file's fields and facts are read through source text only by
+    # C/C++ files (see ``PatchPlan.include_only``).
+    include_only = (patch_plan.include_only | names) - others - (patch_plan.names - patch_plan.include_only)
+    return replace(
+        patch_plan, refresh=True, names=patch_plan.names | names | others, include_only=include_only
+    )
 
 
 def _refined_plan(
@@ -495,6 +503,20 @@ def _build_graph_with_plan(
         graph_builder.build()
 
 
+def _include_reach_refusal(graph_builder: Any, seed_edges: Any) -> str | None:
+    """Why a patched graph must be rebuilt in full (:mod:`.include_reach`), or ``None``.
+
+    A checker failure is a refusal: it costs a full build, not a wrong graph.
+    """
+    from .include_reach import include_reach_refusal
+
+    try:
+        return include_reach_refusal(graph_builder._graph, seed_edges, graph_builder._parsed_files)
+    except Exception as exc:
+        logger.warning("graph_patch_reach_check_failed", error=str(exc))
+        return f"include reach check failed: {exc}"
+
+
 def _traverse_repo(
     repo_path: Any,
     exclude_patterns: list[str],
@@ -525,8 +547,10 @@ def _traverse_repo(
             maybe_infos = list(pool.map(traverser._build_file_info, all_paths))
         file_infos = [file_info for file_info in maybe_infos if file_info is not None]
         repo_structure = traverser.get_repo_structure(file_infos)
-    root = traverser.repo_root
-    walked = [path.relative_to(root).as_posix() for path in all_paths]
+    # ``_walk`` joins every path onto the root, so slicing the root off is
+    # ``relative_to`` without building a Path per walked file.
+    cut = len(str(traverser.repo_root).rstrip(os.sep)) + 1
+    walked = [str(path)[cut:].replace(os.sep, "/") for path in all_paths]
     return traverser, file_infos, repo_structure, walked
 
 
@@ -615,10 +639,24 @@ def _build_update_graph(
     current_inputs: dict[str, Any] | None,
     timings: PhaseTimings | None,
     log: LogFn,
-) -> tuple[list[Any], dict[str, bytes], int]:
-    """Parse/build/resolve one update graph, preserving the patch/full timings."""
+    refusal: str | None = None,
+) -> tuple[list[Any], dict[str, bytes], int, str | None]:
+    """Parse/build/resolve one update graph, preserving the patch/full timings.
+
+    *refusal* skips the patch planning and builds in full for that reason.
+    The last value returned is why a patched graph must be rebuilt in full
+    after all (:mod:`.include_reach`), or ``None``.
+    """
     if timings is not None:
         timings.start("rebuild.graph")
+    # The cyclic collector is off for the build. What it allocates (nodes,
+    # edges, resolver indexes) lives past it, and every full collection its
+    # allocations trigger walks the seed snapshot and every parse again: 13-15 s
+    # of a 60-75 s patch on a 62k-file repository, with no cycle to free.
+    # Ceiling: cyclic garbage made during the build waits for the next
+    # collection after it; reference counting still frees everything else.
+    collecting = gc.isenabled()
+    gc.disable()
     try:
         parsed_files, source_map, unparsed = _add_parsed_files(
             graph_builder, file_bytes, merged, collect_sources
@@ -633,21 +671,26 @@ def _build_update_graph(
             source_map=source_map,
             pytest_roots=traverser.pytest_roots,
         )
-        patch_plan, resolutions = _plan_graph_patch(
-            repo_path,
-            graph_builder,
-            patch_requested=patch_requested,
-            seed_edges=seed_edges,
-            parse_cache=parse_cache,
-            parsed_files=parsed_files,
-            merged=merged,
-            to_parse=to_parse,
-            changed_paths=changed_paths,
-            traversed_paths=graph_builder.traversed_file_paths,
-            presence_changed=presence_changed,
-            current_inputs=current_inputs,
-            manifest_sources=_manifest_sources(file_bytes, merged),
-        )
+        if refusal is None:
+            patch_plan, resolutions = _plan_graph_patch(
+                repo_path,
+                graph_builder,
+                patch_requested=patch_requested,
+                seed_edges=seed_edges,
+                parse_cache=parse_cache,
+                parsed_files=parsed_files,
+                merged=merged,
+                to_parse=to_parse,
+                changed_paths=changed_paths,
+                traversed_paths=graph_builder.traversed_file_paths,
+                presence_changed=presence_changed,
+                current_inputs=current_inputs,
+                manifest_sources=_manifest_sources(file_bytes, merged),
+            )
+        else:
+            from .surface import PatchPlan
+
+            patch_plan, resolutions = PatchPlan(False, reason=refusal), None
         graph_builder.patch_plan = patch_plan
         _build_graph_with_plan(
             graph_builder,
@@ -658,8 +701,13 @@ def _build_update_graph(
             timings=timings,
             log=log,
         )
-        return parsed_files, source_map, unparsed
+        reach_refusal = (
+            _include_reach_refusal(graph_builder, seed_edges) if patch_plan.eligible else None
+        )
+        return parsed_files, source_map, unparsed, reach_refusal
     finally:
+        if collecting:
+            gc.enable()
         if timings is not None:
             timings.stop("rebuild.graph")
 
@@ -750,38 +798,42 @@ pass reads the sources.
         timings=timings,
         log=log,
     )
-    # Built after the read, which can still drop a document from file_infos.
-    graph_builder = _new_update_graph_builder(
-        repo_path,
-        exclude_patterns,
-        read_only=read_only,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-        traverser=traverser,
-        file_infos=file_infos,
-    )
-
-    skipped = len(file_infos) - len(fi_and_bytes)
-    parsed_files, source_map, unparsed = _build_update_graph(
-        repo_path,
-        graph_builder,
-        traverser,
-        fi_and_bytes,
-        merged,
-        to_parse,
-        collect_sources=collect_sources,
-        include_submodules=include_submodules,
-        include_nested_repos=include_nested_repos,
-        parse_cache=parse_cache,
-        patch_requested=patch_requested,
-        seed_edges=seed_edges,
-        changed_paths=changed_paths,
-        presence_changed=presence_changed,
-        current_inputs=current_inputs,
-        timings=timings,
-        log=log,
-    )
-    skipped += unparsed
+    refusal = None
+    while True:
+        # Built after the read, which can still drop a document from file_infos.
+        graph_builder = _new_update_graph_builder(
+            repo_path,
+            exclude_patterns,
+            read_only=read_only,
+            include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
+            traverser=traverser,
+            file_infos=file_infos,
+        )
+        parsed_files, source_map, unparsed, refusal = _build_update_graph(
+            repo_path,
+            graph_builder,
+            traverser,
+            fi_and_bytes,
+            merged,
+            to_parse,
+            collect_sources=collect_sources,
+            include_submodules=include_submodules,
+            include_nested_repos=include_nested_repos,
+            parse_cache=parse_cache,
+            patch_requested=patch_requested,
+            seed_edges=seed_edges,
+            changed_paths=changed_paths,
+            presence_changed=presence_changed,
+            current_inputs=current_inputs,
+            timings=timings,
+            log=log,
+            refusal=refusal,
+        )
+        # A patch whose include reach moved is redone as a full build, once.
+        if refusal is None:
+            break
+    skipped = len(file_infos) - len(fi_and_bytes) + unparsed
     if not read_only and cache_resolutions:
         from .resolution_cache import save_resolutions
 
@@ -1009,6 +1061,7 @@ async def rebuild_graph_and_git(
     log: LogFn | None = None,
     timings: PhaseTimings | None = None,
     patch_graph: bool = False,
+    fresh_communities: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -1111,6 +1164,8 @@ async def rebuild_graph_and_git(
 
     # Global metrics must reflect the patched graph; the persistence upsert gate
     # avoids rewriting unchanged rows, but the metric values must still be fresh.
+    # A full re-score detects communities afresh rather than reusing a drifted partition.
+    graph_builder.fresh_communities = fresh_communities
     await _prime_graph_metrics(graph_builder, timings, log)
 
     graph_builder.incremental_graph_decision = _graph_update_decision(

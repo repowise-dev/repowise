@@ -353,6 +353,7 @@ class CallResolver(
         return_type_chain_languages: frozenset[str] | None = None,
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
         csharp_project_usings: dict[str, frozenset[str]] | None = None,
+        cpp_index: Any | None = None,
     ) -> None:
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
@@ -519,6 +520,10 @@ class CallResolver(
         self._parsed_files = parsed_files
 
         self._init_workspace_indexes(repo_path)
+        if cpp_index is not None:
+            # The C/C++ workspace index the build's warmup already made over
+            # these files; without it one is built here on first use.
+            self._cpp_index, self._cpp_index_built = cpp_index, True
 
         self._build_indices(parsed_files)
         self._follow_barrel_exports()
@@ -1491,6 +1496,8 @@ class CallResolver(
         language: str,
     ) -> ResolvedCall | None:
         """Resolve a chain's inner call, remembered unless a cycle cut it short."""
+        matched = self._nested_receiver_site(file_path, call, inner, language)
+        nested = matched.receiver_call if matched is not None else None
         link = (file_path, call.line, inner.receiver_name, inner.target_name)
         inner_call = CallSite(
             target_name=inner.target_name,
@@ -1498,7 +1505,8 @@ class CallResolver(
             caller_symbol_id=caller_id,
             line=call.line,
             argument_count=inner.argument_count,
-            receiver_call=self._nested_receiver_call(file_path, call.line, inner, language),
+            receiver_call=nested,
+            start_byte=matched.start_byte if matched is not None else call.start_byte,
         )
         cycles = self._chain_cycle_hits
         self._chain_links_in_flight.add(link)
@@ -1524,7 +1532,7 @@ class CallResolver(
         if language == "java" and self._returns_java_self_type(callee_id):
             # A self-bounded ``B`` is the type of whatever the call was made on.
             # Ceiling: only a chained receiver is typed; ``b.name(x).w(1)`` stops.
-            nested = self._nested_receiver_call(file_path, call.line, inner, language)
+            nested = self._nested_receiver_call(file_path, call, inner, language)
             if nested is None:
                 return None
             nested_callee = self._chain_inner_callee(file_path, call, nested, caller_id, language)
@@ -1533,8 +1541,38 @@ class CallResolver(
             )
         return self._callee_return_type(callee_id, inner.argument_count, language)
 
+    def _chained_sites_for(
+        self, file_path: str
+    ) -> dict[tuple[int, str | None, str], list[CallSite]]:
+        sites = self._chained_sites.get(file_path)
+        if sites is None:
+            parsed = self._parsed_files.get(file_path)
+            sites = {}
+            for c in parsed.calls if parsed else ():
+                if c.receiver_call is not None:
+                    sites.setdefault((c.line, c.receiver_name, c.target_name), []).append(c)
+            _store_capped(self._chained_sites, file_path, sites, _SOURCE_CACHE_FILES)
+        return sites
+
+    def _nested_receiver_site(
+        self, file_path: str, call: CallSite, inner: CallReceiver, language: str
+    ) -> CallSite | None:
+        """The CallSite in the same chain that corresponds to `inner`."""
+        if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
+            return None
+        matches = self._chained_sites_for(file_path).get(
+            (call.line, inner.receiver_name, inner.target_name)
+        )
+        if not matches:
+            return None
+        candidates = [c for c in matches if c.start_byte < call.start_byte]
+        for c in reversed(candidates):
+            if inner.argument_count is None or c.argument_count == inner.argument_count:
+                return c
+        return None
+
     def _nested_receiver_call(
-        self, file_path: str, line: int, inner: CallReceiver, language: str
+        self, file_path: str, call: CallSite, inner: CallReceiver, language: str
     ) -> CallReceiver | None:
         """The call *inner* is itself chained onto: ``a()`` under ``a().b().c()``.
 
@@ -1542,20 +1580,10 @@ class CallResolver(
         as its own site on the chain's first line, so the hop below is read
         off the site *inner* names. Apex, C#, Dart, Go, Java and Kotlin read it, so a
         builder chain types each link from the one before; elsewhere an inner call
-        is still typed as if nothing were chained under it. A name repeated in
-        one chain (``a().b().b()``) keeps its first link, the innermost.
+        is still typed as if nothing were chained under it.
         """
-        if language not in ("apex", "csharp", "dart", "go", "java", "kotlin"):
-            return None
-        sites = self._chained_sites.get(file_path)
-        if sites is None:
-            parsed = self._parsed_files.get(file_path)
-            sites = {}
-            for c in parsed.calls if parsed else ():
-                if c.receiver_call is not None:
-                    sites.setdefault((c.line, c.receiver_name, c.target_name), c.receiver_call)
-            _store_capped(self._chained_sites, file_path, sites, _SOURCE_CACHE_FILES)
-        return sites.get((line, inner.receiver_name, inner.target_name))
+        matched = self._nested_receiver_site(file_path, call, inner, language)
+        return matched.receiver_call if matched is not None else None
 
     def _callee_return_type(
         self, callee_id: str, argument_count: int | None, language: str
@@ -1684,6 +1712,13 @@ class CallResolver(
             sym_id = self._partial_fragment_member(file_path, caller_id, target_name)
             if sym_id is not None:
                 return ResolvedCall(caller_id, sym_id, 0.95, call.line, "enclosing_class")
+
+        # In a Kotlin extension a bare name is a member of the extended type
+        # first: it beats every package, import and repo-wide match below.
+        if declared and not call.receiver_name:
+            hit = self._extension_receiver_member_call(file_path, call, caller_id)
+            if hit is not None:
+                return hit
 
         # A language may see names no import mentions (a package sibling, a
         # C/C++ build target), and those beat the import and global tiers.

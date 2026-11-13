@@ -129,11 +129,13 @@ def _print_network_startup(
     "--tools",
     default=None,
     help=(
-        "Override which tools are exposed. A comma-separated list is an "
-        "explicit allowlist; prefix names with + or - to adjust the default "
-        "set (e.g. '+get_dependency_path,-get_dead_code'); 'lean' selects "
-        "the six-tool agent-lean profile. Overrides the mcp.tools config "
-        "block."
+        "Override which tools this server entry lists, for its client. Name "
+        "a profile ('core', 'standard', 'all'), optionally followed by +name "
+        "or -name (e.g. 'core,+get_health'); +name or -name alone adjusts the "
+        "client's default (e.g. '+get_dependency_path,-get_dead_code'); plain "
+        "names are the exact list; 'lean' selects the "
+        "six-tool agent-lean profile. Overrides the mcp.tools config block. "
+        "Unset: Claude Code gets 'standard', other clients 'core'."
     ),
 )
 @click.option(
@@ -167,7 +169,9 @@ def mcp_command(
     Exposes a curated set of tools for querying the repowise wiki via the MCP
     protocol: ten by default in single-repo mode, plus one more by default
     in workspace mode. Seven more are opt-in via ``--tools`` or the
-    ``mcp.tools`` config block. Supports stdio
+    ``mcp.tools`` config block. Clients other than Claude Code, which load
+    every tool schema up front, are listed the five core tools unless a
+    profile is chosen. Supports stdio
     (for Claude Code, Codex, Cursor), streamable HTTP, and the deprecated
     SSE transport.
 
@@ -181,6 +185,7 @@ def mcp_command(
         repowise mcp /path/to/repo       # stdio, specific repo
         repowise mcp --tools +get_execution_flows  # default set plus one
         repowise mcp --tools lean        # six-tool agent-lean profile
+        repowise mcp --tools core,+get_health  # core profile plus one
         repowise mcp --all               # every available tool
         repowise mcp --no-workspace      # force single-repo mode
         repowise mcp --transport streamable-http  # HTTP on port 7338
@@ -216,30 +221,45 @@ def mcp_command(
         # stdio mode — no console output (it would corrupt the protocol)
         pass
 
+    tools_override: str | None = "all" if all_tools else tools
+    _serve_and_record(
+        transport=transport,
+        repo_path=str(repo_path),
+        host=resolved_host,
+        port=port,
+        tools=tools_override,
+        workspace_mode=not no_workspace,
+    )
+
+
+def _serve_and_record(*, transport: str, **run_kwargs: object) -> None:
+    """Run the MCP server and record how its session ended."""
     from repowise.server.mcp_server import run_mcp
     from repowise.server.mcp_server._server import StoreUnavailableError
-
-    tools_override: str | None = "all" if all_tools else tools
+    from repowise.server.mcp_server._transport import (
+        SERVER_FAULT,
+        SERVER_REFUSED,
+        SERVER_STOPPED,
+    )
 
     # Which of the ways a session can end this one was. Recorded in a finally
     # so a fault is reported as one: leaving the field off for every failed
     # session would make its absence mean either "faulted" or "older build".
-    outcome = "server_fault"
+    outcome = SERVER_FAULT
     try:
-        outcome = run_mcp(
-            transport=transport,
-            repo_path=str(repo_path),
-            host=resolved_host,
-            port=port,
-            tools=tools_override,
-            workspace_mode=not no_workspace,
-        )
+        outcome = run_mcp(transport=transport, **run_kwargs)
     except StoreUnavailableError as exc:
         # Only when even the empty in-memory store would not open; a store
         # that cannot open is otherwise served as every tool's answer. One
         # line on stderr and exit 1, not a traceback the host respawns on.
-        # The reason slug becomes the event's failure_reason.
+        # The reason slug becomes the event's failure_reason. A deliberate
+        # exit with a reason, so not counted as a fault.
+        outcome = SERVER_REFUSED
         raise reasoned_error(str(exc), reason=exc.reason) from exc
+    except KeyboardInterrupt:
+        # Ctrl-C, or a host stopping its server that way: a stop, not a fault.
+        outcome = SERVER_STOPPED
+        raise
     finally:
         from repowise.cli.platform import telemetry
         from repowise.server.mcp_server import _state

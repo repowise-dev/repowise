@@ -26,6 +26,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.code_origin import ship_rank
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
@@ -43,6 +44,7 @@ from repowise.server.mcp_server._edit_sites import (
     _read_lines,
     reference_edit_set,
 )
+from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -50,12 +52,16 @@ from repowise.server.mcp_server._helpers import (
     is_excluded,
     read_repo_file_text,
 )
-from repowise.server.mcp_server._meta import served_root
+from repowise.server.mcp_server._meta import EXHAUSTIVE_SWEEP_HINT, served_root
 from repowise.server.mcp_server._query_shape import (
+    _MAX_ALTERNATIVES,
     _NL_QUESTION_TOKENS,
+    NOT_THE_NAMED_SYMBOL,
     _canonical_symbol_query,
     _identifier_candidates,
     _qual_norm,
+    query_pattern,
+    required_literal,
 )
 from repowise.server.mcp_server._symbol_lookup import symbol_id_variants
 from repowise.server.mcp_server._verify import name_at_line
@@ -64,8 +70,9 @@ _log = logging.getLogger("repowise.mcp.search")
 
 MAX_LINES = 50
 # A multi-word query's page rows already rank files, so its lines are a short
-# lead-in (production first) and lines_omitted_by_file names the top files only.
+# lead-in (production first).
 MAX_LINES_MIXED = 15
+# Top directories a capped scan names as not scanned.
 MAX_OMITTED_FILES = 5
 OVER_LINES_MIXED = f"over {MAX_LINES_MIXED} lines for a multi-word query; search one name for more"
 MAX_LINES_PER_FILE = 5
@@ -151,6 +158,30 @@ def _matching_lines(text: str, pattern: re.Pattern[str]) -> list[tuple[int, str]
     return out
 
 
+# A regex query reads each line on its own, as grep does, and skips lines
+# longer than this (minified bundles), where a search can run quadratic.
+MAX_REGEX_LINE_CHARS = 4_000
+
+
+def _regex_lines(
+    lines: Any, pattern: re.Pattern[str], deadline: float
+) -> tuple[list[tuple[int, str]], int] | None:
+    """``(matching lines, long lines skipped)`` from an iterable of text
+    lines; ``None`` when the deadline passes first."""
+    out: list[tuple[int, str]] = []
+    skipped = 0
+    for n, line in enumerate(lines, 1):
+        if n % 2_000 == 0 and time.monotonic() > deadline:
+            return None
+        if len(line) > MAX_REGEX_LINE_CHARS:
+            skipped += 1
+        elif pattern.search(line):
+            out.append((n, line))
+            if len(out) > max(SMALL_SET_LINES, MAX_LINES_PER_FILE):
+                break
+    return out, skipped
+
+
 def _inside(rel: str) -> bool:
     """A relative path that cannot step out of the repo root."""
     p = Path(rel)
@@ -189,7 +220,7 @@ def _stream_contains(fh: Any, raw: bytes, chunk: int = 1 << 20) -> bool:
 
 
 def _stream_matching_lines(
-    fh: Any, raw: bytes, pattern: re.Pattern[str], deadline: float
+    fh: Any, raw: bytes | None, pattern: re.Pattern[str], deadline: float
 ) -> list[tuple[int, str]] | None:
     """:func:`_matching_lines` for a text file too big to read whole, line by
     line; ``None`` when the scan's deadline passes first."""
@@ -198,7 +229,7 @@ def _stream_matching_lines(
     for n, line in enumerate(fh, 1):
         if n % 10_000 == 0 and time.monotonic() > deadline:
             return None
-        if raw not in line:
+        if raw is not None and raw not in line:
             continue
         text = line.decode("utf-8", errors="replace").removesuffix("\n")
         if pattern.search(text):
@@ -249,9 +280,12 @@ def _listed_files(root: Path) -> list[str]:
     ]
 
 
-def _files_holding(root: Path, needle: str) -> list[str] | None:
+def _files_holding(
+    root: Path, needle: str, *, word: bool = False, globs: tuple[str, ...] = ()
+) -> list[str] | None:
     """The files :func:`_listed_files` would list whose bytes hold *needle*, via git grep.
 
+    With *word*, only as a whole word; with *globs*, only files they match.
     ``None`` when git cannot answer in time, for a needle that is not one plain
     argument, or for a non-ASCII one, whose misses in non-UTF-8 files only the
     Python scan can report.
@@ -259,7 +293,9 @@ def _files_holding(root: Path, needle: str) -> list[str] | None:
     if not needle.isascii() or "\n" in needle or "\0" in needle or needle.startswith("-"):
         return None
     args = ["-c", "grep.fullName=false", "grep", "-l", "-z", "--untracked", "--no-color", "-F"]
-    args += ["-e", needle]
+    args += ["-w", "-e", needle] if word else ["-e", needle]
+    if globs:
+        args += ["--", *globs]
     # Exit 1 is "no file matched".
     return _git_paths(root, args, _GIT_GREP_SECONDS, (0, 1))
 
@@ -271,7 +307,15 @@ def _scan_rank(rel: str) -> int:
 
 
 def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, Any]], list[str]]:
-    held = _files_holding(root, needle)
+    files, reasons = _scan_files(root, needle)
+    rows, scan_reasons = scan_literal(root, files, needle, word)
+    return rows, reasons + scan_reasons
+
+
+def _scan_files(root: Path, needle: str | None) -> tuple[list[str], list[str]]:
+    """The listed files to scan (those holding *needle* when git can say), source
+    first, and the reason excluded paths were left out."""
+    held = _files_holding(root, needle) if needle else None
     files = _listed_files(root) if held is None else held
     # Ordered so a scan that stops on a budget has read source before docs.
     files = sorted(files, key=lambda f: (_scan_rank(f), f))
@@ -286,7 +330,26 @@ def _scan_listed(root: Path, needle: str, word: bool) -> tuple[list[dict[str, An
             # A grep would still read these.
             reasons.append("excluded paths not scanned")
         files = kept
-    rows, scan_reasons = scan_literal(root, files, needle, word)
+    return files, reasons
+
+
+# A line declaring something, for a regex query's definition rows.
+_DECLARATION_LINE = re.compile(
+    rf"^\s*(?:export\s+|pub(?:\(\w+\))?\s+|async\s+|static\s+|default\s+)*(?:{_DECL_WORDS})\b"
+)
+
+
+def _scan_listed_regex(root: Path, pattern: re.Pattern[str]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lines matching a regex query in every listed file, declarations first.
+
+    git grep narrows the files to those holding the pattern's required text
+    when it has one; without one every listed file is read, inside the scan's
+    time budget, and the reasons say how far it got.
+    """
+    needle = required_literal(pattern)
+    files, reasons = _scan_files(root, needle)
+    raw = needle.encode("utf-8") if needle else None
+    rows, scan_reasons = _scan(root, files, pattern, _DECLARATION_LINE, raw, per_line=True)
     return rows, reasons + scan_reasons
 
 
@@ -363,127 +426,213 @@ def scan_literal(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Matching lines in *files*, definitions first, and why they may not be all."""
     pattern = re.compile(rf"(?<![\w$]){re.escape(needle)}(?![\w$])" if word else re.escape(needle))
-    definition = _definition_re(needle, word)
-    raw = needle.encode("utf-8")
-    reasons: list[str] = []
-    rows: list[dict[str, Any]] = []
-    scanned = 0
-    oversized: list[str] = []
-    unreadable: list[str] = []
-    per_file_capped = overflow = defs = 0
-    tails: list[tuple[str, list[tuple[int, str]]]] = []
-    deadline = time.monotonic() + MAX_SCAN_SECONDS
-    undecodable = binary_hits = 0
-    from repowise.core.ingestion.document_extractors import (
-        document_extractor_claims,
-        is_extracted_document,
-    )
+    return _scan(root, files, pattern, _definition_re(needle, word), needle.encode("utf-8"))
 
-    claims = document_extractor_claims()
+
+def _unscanned(files: list[str]) -> str:
+    """Where the files a scan never opened live, by top directory, largest first."""
+    tops = Counter(f.split("/", 1)[0] + ("/" if "/" in f else "") for f in files)
+    shown = ", ".join(f"{top} {n}" for top, n in tops.most_common(MAX_OMITTED_FILES))
+    more = len(tops) - MAX_OMITTED_FILES
+    return f"; not scanned: {shown}" + (f" and {more} more" if more > 0 else "")
+
+
+def _scan(
+    root: Path,
+    files: list[str],
+    pattern: re.Pattern[str],
+    definition: re.Pattern[str],
+    raw: bytes | None,
+    *,
+    per_line: bool = False,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Lines of *files* matching *pattern*, definitions first, and why they may
+    not be all. *raw* is bytes every match holds, read to skip a file cheaply;
+    ``None`` reads every file's text. *per_line* searches each line on its own
+    (a regex query), skipping over-long lines."""
+    run = _ScanRun(root, pattern, definition, raw, per_line)
     for i, rel in enumerate(files):
         if i >= MAX_SCAN_FILES:
-            reasons.append(f"over {MAX_SCAN_FILES} files")
+            run.reasons.append(f"over {MAX_SCAN_FILES} files")
             break
-        if time.monotonic() > deadline:
-            reasons.append(f"time budget: scanned {i} of {len(files)} files")
+        found = run.read(rel) if time.monotonic() <= run.deadline else _STOP_TIME
+        if found is _STOP_TIME:
+            run.reasons.append(
+                f"time budget: scanned {i} of {len(files)} files{_unscanned(files[i:])}"
+            )
             break
+        if found is _STOP_BYTES:
+            run.reasons.append(
+                f"over {MAX_SCAN_BYTES // 1_000_000} MB: scanned {i} of {len(files)}"
+                f" files, source first{_unscanned(files[i:])}"
+            )
+            break
+        if found is not None:
+            run.serve(rel, *found)
+    return run.finish()
+
+
+# What :meth:`_ScanRun.read` returns when the scan must stop at a file.
+_STOP_TIME = ("time",)
+_STOP_BYTES = ("bytes",)
+
+
+class _ScanRun:
+    """One scan's budget, rows and the tallies its reasons are written from."""
+
+    def __init__(
+        self,
+        root: Path,
+        pattern: re.Pattern[str],
+        definition: re.Pattern[str],
+        raw: bytes | None,
+        per_line: bool = False,
+    ) -> None:
+        from repowise.core.ingestion.document_extractors import document_extractor_claims
+
+        self.root, self.pattern, self.definition, self.raw = root, pattern, definition, raw
+        self.claims = document_extractor_claims()
+        self.deadline = time.monotonic() + MAX_SCAN_SECONDS
+        self.reasons: list[str] = []
+        self.rows: list[dict[str, Any]] = []
+        self.tails: list[tuple[str, list[tuple[int, str]]]] = []
+        self.oversized: list[str] = []
+        self.unreadable: list[str] = []
+        self.scanned = self.per_file_capped = self.overflow = self.defs = 0
+        self.undecodable = self.binary_hits = self.long_lines = 0
+        self.per_line = per_line
+
+    def read(self, rel: str) -> Any:
+        """``(lines, streamed)`` matching in *rel*, ``None`` to skip it, or a stop marker."""
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
         if not _inside(rel):
-            unreadable.append(rel)
-            continue
-        streamed: list[tuple[int, str]] | None = None
+            self.unreadable.append(rel)
+            return None
         try:
-            with open(root / rel, "rb") as fh:
+            with open(self.root / rel, "rb") as fh:
                 size = os.fstat(fh.fileno()).st_size
                 if size > _MAX_FILE_BYTES:
-                    if size > _MAX_STREAM_BYTES:
-                        oversized.append(rel)
-                        continue
-                    head = fh.read(_SNIFF_BYTES)
-                    if _looks_binary(head):
-                        binary_hits += _stream_contains(fh, raw)
-                        continue
-                    # Text past the whole-read cap is often the file the index
-                    # dropped on size, so only this scan finds what it holds.
-                    if is_extracted_document(root / rel, head, claims=claims):
-                        continue
-                    streamed = _stream_matching_lines(fh, raw, pattern, deadline)
-                    if streamed is None:
-                        reasons.append(f"time budget: scanned {i} of {len(files)} files")
-                        break
-                elif scanned + size > MAX_SCAN_BYTES:
-                    reasons.append(
-                        f"over {MAX_SCAN_BYTES // 1_000_000} MB: scanned {i} of {len(files)}"
-                        " files, source first"
-                    )
-                    break
-                else:
-                    scanned += size
-                    data = fh.read()
+                    return self._read_large(rel, fh, size)
+                if self.scanned + size > MAX_SCAN_BYTES:
+                    return _STOP_BYTES
+                self.scanned += size
+                data = fh.read()
         except FileNotFoundError:
-            continue  # deleted since indexing: nothing to match
+            return None  # deleted since indexing: nothing to match
         except OSError:
             # A graph file node can name a package directory; it holds no text.
-            if not (root / rel).is_dir():
-                unreadable.append(rel)
-            continue
-        if streamed is not None:
-            found = streamed
-        elif is_extracted_document(root / rel, data, claims=claims):
-            continue
-        elif b"\x00" in data:
+            if not (self.root / rel).is_dir():
+                self.unreadable.append(rel)
+            return None
+        if is_extracted_document(self.root / rel, data, claims=self.claims):
+            return None
+        return self._text_lines(data)
+
+    def _text_lines(self, data: bytes) -> Any:
+        """:meth:`read` for a file read whole: its matching lines, or ``None`` for
+        a binary or a file without the needle (counted when a grep would be)."""
+        raw = self.raw
+        if b"\x00" in data:
             # Binary: no lines to serve, but one holding the token is a match
             # a grep would report. UTF-16 text is not binary.
             if data.startswith((b"\xff\xfe", b"\xfe\xff")):
-                undecodable += 1
-            elif raw in data:
-                binary_hits += 1
-            continue
-        elif raw not in data:
+                self.undecodable += 1
+            elif raw is not None and raw in data:
+                self.binary_hits += 1
+            return None
+        if raw is not None and raw not in data:
             # An ASCII needle shows as the same bytes in any ASCII-compatible
             # encoding; a non-ASCII one is missed unless the file is UTF-8.
             if not raw.isascii() and not _is_utf8(data):
-                undecodable += 1
-            continue
-        else:
-            found = _matching_lines(data.decode("utf-8", errors="replace"), pattern)
+                self.undecodable += 1
+            return None
+        text = data.decode("utf-8", errors="replace")
+        if self.per_line:
+            # Lines end at "\n" only, as grep and the streamed reader count them.
+            lines = text.removesuffix("\n").split("\n")
+            return self._lines_each(line.removesuffix("\r") for line in lines)
+        return _matching_lines(text, self.pattern), False
+
+    def _lines_each(self, lines: Any, streamed: bool = False) -> Any:
+        """Matching lines searched one at a time, or the time stop marker."""
+        found = _regex_lines(lines, self.pattern, self.deadline)
+        if found is None:
+            return _STOP_TIME
+        self.long_lines += found[1]
+        return found[0], streamed
+
+    def _read_large(self, rel: str, fh: Any, size: int) -> Any:
+        """:meth:`read` for a file past the whole-read cap: streamed, or skipped."""
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
+        if size > _MAX_STREAM_BYTES:
+            self.oversized.append(rel)
+            return None
+        head = fh.read(_SNIFF_BYTES)
+        if _looks_binary(head):
+            self.binary_hits += self.raw is not None and _stream_contains(fh, self.raw)
+            return None
+        # Text past the whole-read cap is often the file the index dropped on
+        # size, so only this scan finds what it holds.
+        if is_extracted_document(self.root / rel, head, claims=self.claims):
+            return None
+        if self.per_line:
+            fh.seek(0)
+            text = (line.decode("utf-8", errors="replace").rstrip("\r\n") for line in fh)
+            return self._lines_each(text, streamed=True)
+        streamed = _stream_matching_lines(fh, self.raw, self.pattern, self.deadline)
+        return _STOP_TIME if streamed is None else (streamed, True)
+
+    def serve(self, rel: str, found: list[tuple[int, str]], streamed: bool) -> None:
+        """Add *rel*'s matching lines under the per-file and whole-scan caps."""
         tail = found[MAX_LINES_PER_FILE:]
-        per_file_capped += bool(tail)
-        del found[MAX_LINES_PER_FILE:]
-        hits = _hit_kinds(rel, found, definition)
-        if len(rows) >= MAX_LINES:
+        self.per_file_capped += bool(tail)
+        hits = _hit_kinds(rel, found[:MAX_LINES_PER_FILE], self.definition)
+        if len(self.rows) >= MAX_LINES:
             # Full: only definitions still earn a row, as they sort first.
-            kept = [h for h in hits if h[2] == "definition"] if defs < MAX_LINES else []
-            overflow += len(hits) - len(kept)
+            kept = [h for h in hits if h[2] == "definition"] if self.defs < MAX_LINES else []
+            self.overflow += len(hits) - len(kept)
             hits = kept
         if not hits:
-            continue
+            return
         # Only a file that serves lines pays for the guarded reader: its path
         # resolution is most of a scan's cost when paid for every file. A
         # streamed file gets the reader's containment check without the read.
-        if streamed is not None:
-            servable = _resolves_inside(root, rel)
+        if streamed:
+            servable = _resolves_inside(self.root, rel)
         else:
-            servable = read_repo_file_text(root, rel) is not None
+            servable = read_repo_file_text(self.root, rel) is not None
         if not servable:
-            unreadable.append(rel)
-            continue
-        defs += sum(h[2] == "definition" for h in hits)
-        rows += [_line_row(rel, n, line, k) for n, line, k in hits]
-        tails.append((rel, tail))
-    rows, per_file_capped = _with_tails(rows, tails, definition, per_file_capped)
-    if overflow:
-        reasons.append(OVER_LINES)
-    if oversized:
-        reasons.append(f"skipped as too large: {', '.join(oversized[:3])}")
-    if unreadable:
-        reasons.append(f"unreadable: {', '.join(unreadable[:3])}")
-    if undecodable:
-        reasons.append(f"{undecodable} non-UTF-8 text files not scanned")
-    if binary_hits:
-        reasons.append(f"{binary_hits} binary files contain the token")
-    if per_file_capped:
-        reasons.append(f"{_per_file_cap_reason()} {per_file_capped} files")
-    return rows, reasons
+            self.unreadable.append(rel)
+            return
+        self.defs += sum(h[2] == "definition" for h in hits)
+        self.rows += [_line_row(rel, n, line, k) for n, line, k in hits]
+        self.tails.append((rel, tail))
+
+    def finish(self) -> tuple[list[dict[str, Any]], list[str]]:
+        """The rows, cut files' tails folded in when small, and every reason."""
+        rows, per_file_capped = _with_tails(
+            self.rows, self.tails, self.definition, self.per_file_capped
+        )
+        reasons = self.reasons
+        if self.overflow:
+            reasons.append(OVER_LINES)
+        if self.oversized:
+            reasons.append(f"skipped as too large: {', '.join(self.oversized[:3])}")
+        if self.unreadable:
+            reasons.append(f"unreadable: {', '.join(self.unreadable[:3])}")
+        if self.undecodable:
+            reasons.append(f"{self.undecodable} non-UTF-8 text files not scanned")
+        if self.binary_hits:
+            reasons.append(f"{self.binary_hits} binary files contain the token")
+        if self.long_lines:
+            reasons.append(
+                f"{self.long_lines} lines over {MAX_REGEX_LINE_CHARS} characters not searched"
+            )
+        if per_file_capped:
+            reasons.append(f"{_per_file_cap_reason()} {per_file_capped} files")
+        return rows, reasons
 
 
 async def _exact_symbols(session, repo_id: str, query: str, candidates: list[str]) -> list[GraphNode]:
@@ -526,22 +675,37 @@ def _merge(sets: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]
 
 
 async def attach_line_hits(
-    response: dict, query: str, mode: str, names: Container[str] | None, repo: str | None
+    response: dict,
+    query: str,
+    mode: str,
+    names: Container[str] | None,
+    repo: str | None,
+    fed: Federation | None = None,
 ) -> None:
     """Add ``lines``/``complete``/``reasons`` for an identifier or literal query.
 
-    Additive: a failure here leaves the search response as it was.
+    With *fed* (``repo="all"``) every repo is read and each row names its
+    ``repo``; the rows share one cap. Additive: a failure here leaves the
+    search response as it was.
     """
     try:
-        await _attach(response, query, mode, names, repo)
+        await _attach(response, query, mode, names, repo, fed)
     except Exception:
         _log.warning("search_codebase: line hits failed", exc_info=True)
 
 
 async def _attach(
-    response: dict, query: str, mode: str, names: Container[str] | None, repo: str | None
+    response: dict,
+    query: str,
+    mode: str,
+    names: Container[str] | None,
+    repo: str | None,
+    fed: Federation | None,
 ) -> None:
-    if repo == "all":
+    if repo == "all" and fed is None:
+        return
+    if mode != "path" and (shape := query_pattern(query)):
+        await _attach_pattern(response, query, shape, repo, fed)
         return
     literal = _literal(query)
     if mode == "path" and (
@@ -557,7 +721,291 @@ async def _attach(
         candidates = [literal[0]]
     if not candidates and not literal:
         return
-    ctx = await _resolve_repo_context(repo)
+    found = await _served_rows(response, repo, fed, query, candidates, literal)
+    if found is None:
+        return
+    ctx, (rows, reasons, literal_scan) = found
+    mixed = not literal and len(query.split()) > 1
+    rows.sort(key=_row_order(mixed))
+    kept = _capped_per_file(rows, reasons)
+    cap, over = (MAX_LINES_MIXED, OVER_LINES_MIXED) if mixed else (MAX_LINES, OVER_LINES)
+    if len(kept) > cap and over not in reasons:
+        reasons.append(over)
+    _serve_lines(response, query, ctx, rows, kept[:cap], reasons, mixed, literal_scan)
+
+
+def _row_order(mixed: bool) -> Any:
+    """Sort key: shipped code before tools and tests within each kind group,
+    every kind for a mixed query, definitions against the rest otherwise."""
+    order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
+    return lambda r: (
+        order[r["kind"]] if mixed else r["kind"] != "definition",
+        ship_rank(r["path"]),
+        order[r["kind"]],
+        r.get("repo") or "",
+        r["path"],
+        r["line"],
+    )
+
+
+def _capped_per_file(rows: list[dict[str, Any]], reasons: list[str]) -> list[dict[str, Any]]:
+    """*rows* under the per-file reference cap, the cut counted in *reasons*."""
+    kept = _cap_references_per_file(rows)
+    if len(kept) < len(rows):
+        reasons.append(
+            f"{len(rows) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
+            " not shown: lines_omitted counts them; the full list is under _meta.omitted"
+        )
+    return kept
+
+
+def _serve_lines(
+    response: dict,
+    query: str,
+    ctx: Any,
+    rows: list[dict[str, Any]],
+    shown: list[dict[str, Any]],
+    reasons: list[str],
+    mixed: bool,
+    literal_scan: bool,
+) -> None:
+    """Serve *shown* as ``lines``, account for the rest of *rows*, and say
+    whether the lines are every match."""
+    response["lines"] = shown
+    if len(shown) < len(rows):
+        ids = {id(r) for r in shown}
+        hidden = [r for r in rows if id(r) not in ids]
+        collector = OmissionCollector("search_codebase", repo_root=ctx.path)
+        collector.add(f"{query} :: lines not shown", hidden)
+        collector.attach(response)
+        # A count, not a per-file map: the rows are under _meta.omitted, and a
+        # map of mostly test files stays in the caller's context unread.
+        response["lines_omitted"] = len(hidden)
+    response["complete"] = not reasons
+    if reasons:
+        response["reasons"] = reasons
+    else:
+        _drop_sweep_advice(response)
+    _drop_pages_beside_definitions(response, every_page=not mixed)
+    if shown:
+        _reconcile_symbol_miss(response, literal_scan=literal_scan)
+
+
+def _drop_pages_beside_definitions(response: dict, *, every_page: bool) -> None:
+    """Drop result pages once ``lines`` holds a definition; ``pages_omitted`` counts them.
+
+    The definition rows answer where the names live, and pages around them are
+    prose the caller does not follow. For an identifier, alternation or regex
+    query (*every_page*) every page goes and symbol rows stay; for a
+    multi-word question, whose pages rank the files it asks about, only the
+    pages labelled as not the named symbol go.
+    """
+    if not any(row["kind"] == "definition" for row in response["lines"]):
+        return
+    results = response.get("results")
+    if not isinstance(results, list):
+        return
+    kept = [
+        r for r in results
+        if not (
+            isinstance(r, dict)
+            and (r.get("type") == "page" if every_page else r.get("relation") == NOT_THE_NAMED_SYMBOL)
+        )
+    ]
+    if len(kept) < len(results):
+        response["pages_omitted"] = len(results) - len(kept)
+        response["results"] = kept
+        note = response.get("note")
+        pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}."
+        if isinstance(note, str) and pages in note:
+            response["note"] = note.replace(pages, "")
+
+
+def _drop_sweep_advice(response: dict) -> None:
+    """Remove the advice to Grep for every usage once ``lines`` lists every one.
+
+    The advice exists for a search that could not be exhaustive. Beside
+    ``complete: true`` it contradicts the response, and on an empty result it
+    sends the agent to repeat a scan that already found nothing.
+    """
+    response.pop("grep_hint", None)
+    note = response.get("note")
+    if isinstance(note, str) and EXHAUSTIVE_SWEEP_HINT in note:
+        rest = note.replace(EXHAUSTIVE_SWEEP_HINT, "").strip()
+        if rest:
+            response["note"] = rest
+        else:
+            del response["note"]
+
+
+async def _attach_pattern(
+    response: dict,
+    query: str,
+    shape: tuple[str, Any],
+    repo: str | None,
+    fed: Federation | None,
+) -> None:
+    """``lines`` for a grep-shaped query: each alternative searched as its own
+    query and served as its own group in query order, or a regex's matching
+    lines. ``matched_as`` says which reading was used."""
+    kind, value = shape
+    if kind == "regex":
+        found = await _regex_groups(response, repo, fed, value)
+    else:
+        found = await _alternation_groups(response, repo, fed, value)
+    if found is None:
+        return
+    ctx, rows, groups, reasons, literal_scan = found
+    caps = _fair_caps([len(g) for g in groups], MAX_LINES)
+    if any(len(g) > c for g, c in zip(groups, caps, strict=True)):
+        reasons.append(OVER_LINES)
+    # Tests leave each group's share after the caps, so no row takes their place.
+    shown = [
+        row
+        for g in _without_tests_beside_shipped(
+            [g[:c] for g, c in zip(groups, caps, strict=True)], reasons
+        )
+        for row in g
+    ]
+    response["matched_as"] = kind
+    _serve_lines(response, query, ctx, rows, shown, reasons, False, literal_scan)
+
+
+async def _regex_groups(
+    response: dict, repo: str | None, fed: Federation | None, pattern: re.Pattern[str]
+) -> tuple[Any, list[dict[str, Any]], list[list[dict[str, Any]]], list[str], bool] | None:
+    """``(context, rows, [rows to show], reasons, literal_scan)`` for a regex query."""
+    found = await _served(response, repo, fed, lambda ctx: _repo_regex_rows(ctx, pattern))
+    if found is None:
+        return None
+    ctx, (rows, reasons, _scan_only) = found
+    rows.sort(key=_row_order(False))
+    return ctx, rows, [_capped_per_file(rows, reasons)], reasons, True
+
+
+async def _alternation_groups(
+    response: dict, repo: str | None, fed: Federation | None, parts: list[str]
+) -> tuple[Any, list[dict[str, Any]], list[list[dict[str, Any]]], list[str], bool] | None:
+    """As :func:`_regex_groups`, one group per alternative, each read as its own query."""
+    ctx, rows, groups, reasons, literal_scan = None, [], [], [], True
+    unmatched: list[str] = []
+    if len(parts) > _MAX_ALTERNATIVES:
+        reasons.append(f"only the first {_MAX_ALTERNATIVES} of {len(parts)} alternatives searched")
+    for part in parts[:_MAX_ALTERNATIVES]:
+        literal = _literal(part) or (part, False)
+        found = await _served_rows(response, repo, fed, part, [part] if literal[1] else [], literal)
+        part_rows, part_reasons, scan = ([], [], True) if found is None else found[1]
+        ctx = ctx or (found[0] if found else None)
+        part_rows.sort(key=_row_order(False))
+        cut: list[str] = []
+        groups.append(_capped_per_file(part_rows, cut))
+        rows += part_rows
+        reasons += [f"{part}: {r}" for r in part_reasons + cut]
+        literal_scan = literal_scan and scan
+        if not part_rows:
+            unmatched.append(part)
+    if ctx is None:
+        return None
+    if unmatched:
+        # Read with ``complete``: true means these parts match nowhere.
+        response["unmatched"] = unmatched
+    return ctx, rows, groups, reasons, literal_scan
+
+
+def _without_tests_beside_shipped(
+    groups: list[list[dict[str, Any]]], reasons: list[str]
+) -> list[list[dict[str, Any]]]:
+    """Each group without its test rows when it has a row in shipped code.
+
+    A grep-shaped query names code to read; its tests are counted in
+    ``lines_omitted`` and kept under ``_meta.omitted``. A group found only in
+    tests keeps them.
+    """
+    out: list[list[dict[str, Any]]] = []
+    cut = 0
+    for group in groups:
+        ranks = [ship_rank(r["path"]) for r in group]
+        if 0 in ranks:
+            kept = [r for r, rank in zip(group, ranks, strict=True) if rank != 2]
+            cut += len(group) - len(kept)
+            group = kept
+        out.append(group)
+    if cut:
+        reasons.append(f"{cut} lines in tests not shown beside shipped code: lines_omitted counts them")
+    return out
+
+
+def _fair_caps(sizes: list[int], cap: int) -> list[int]:
+    """Rows each group may show: *cap* shared evenly, a small group's unused
+    share passed on to the larger ones."""
+    caps = [0] * len(sizes)
+    left = cap
+    while left > 0:
+        open_ = [i for i, size in enumerate(sizes) if caps[i] < size]
+        if not open_:
+            break
+        share = max(1, left // len(open_))
+        for i in open_:
+            add = min(share, sizes[i] - caps[i], left)
+            caps[i] += add
+            left -= add
+    return caps
+
+
+async def _repo_regex_rows(
+    ctx: Any, pattern: re.Pattern[str]
+) -> tuple[list[dict[str, Any]], list[str], bool]:
+    """One repo's lines matching *pattern*, read from its live files."""
+    async with get_session(ctx.session_factory) as session:
+        root = Path(served_root(await _get_repo(session), ctx.path))
+    rows, reasons = await asyncio.to_thread(_scan_listed_regex, root, pattern)
+    return rows, reasons, True
+
+
+async def _served_rows(
+    response: dict,
+    repo: str | None,
+    fed: Federation | None,
+    query: str,
+    candidates: list[str],
+    literal: tuple[str, bool] | None,
+) -> tuple[Any, tuple[list[dict[str, Any]], list[str], bool]] | None:
+    """``(context, (rows, reasons, literal_scan))`` from *repo*, or from every repo
+    with *fed* (the context is then the first repo's); ``None`` with nothing to read."""
+    return await _served(
+        response, repo, fed, lambda ctx: _repo_line_rows(ctx, query, candidates, literal, response)
+    )
+
+
+async def _served(
+    response: dict, repo: str | None, fed: Federation | None, one: Any
+) -> tuple[Any, tuple[list[dict[str, Any]], list[str], bool]] | None:
+    """What *one* reads from *repo*, or from every repo with *fed*, as for
+    :func:`_served_rows`."""
+    if fed is None:
+        ctx = await _resolve_repo_context(repo)
+        served = await one(ctx)
+        return None if served is None else (ctx, served)
+    answered = await fed.run(one)
+    served = _across_repos(answered, tag=fed.multi)
+    # Before the early return: a repo that failed here is named even when no other had lines.
+    fed.annotate(response, served[0] if served else ())
+    if served is None:
+        return None
+    if response.get("repos_failed"):
+        served[1].append("the repos in repos_failed were not read")
+    return answered[0][0], served
+
+
+async def _repo_line_rows(
+    ctx: Any,
+    query: str,
+    candidates: list[str],
+    literal: tuple[str, bool] | None,
+    response: dict,
+) -> tuple[list[dict[str, Any]], list[str], bool] | None:
+    """One repo's ``(rows, reasons, literal_scan)``; ``literal_scan`` is true when
+    no symbol's edit set gave the rows. ``None`` when there is nothing to read."""
     spec = _get_exclude_spec(ctx.path)
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
@@ -568,50 +1016,26 @@ async def _attach(
         sets = None if len(nodes) > MAX_SYMBOLS else [
             await reference_edit_set(session, repository.id, root, n) for n in nodes
         ]
-    served = await _line_rows(root, nodes, sets, literal, response)
-    if served is None:
-        return
-    rows, reasons = served
-    mixed = not literal and len(query.split()) > 1
-    order = _MIXED_KIND_ORDER if mixed else _KIND_ORDER
-    # Production before test within each kind group: every kind for a mixed
-    # query, definitions against the rest otherwise.
-    rows.sort(
-        key=lambda r: (
-            order[r["kind"]] if mixed else r["kind"] != "definition",
-            is_test_related_path(r["path"]),
-            order[r["kind"]],
-            r["path"],
-            r["line"],
-        )
-    )
-    kept = _cap_references_per_file(rows)
-    if len(kept) < len(rows):
-        reasons.append(
-            f"{len(rows) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
-            " not shown: lines_omitted_by_file; the full list is under _meta.omitted"
-        )
-    cap, over = (MAX_LINES_MIXED, OVER_LINES_MIXED) if mixed else (MAX_LINES, OVER_LINES)
-    if len(kept) > cap and over not in reasons:
-        reasons.append(over)
-    response["lines"] = kept[:cap]
-    if len(response["lines"]) < len(rows):
-        shown = {id(r) for r in response["lines"]}
-        hidden = [r for r in rows if id(r) not in shown]
-        collector = OmissionCollector("search_codebase", repo_root=ctx.path)
-        collector.add(f"{query} :: lines not shown", hidden)
-        collector.attach(response)
-        by_file = Counter(r["path"] for r in hidden)
-        if mixed and len(by_file) > MAX_OMITTED_FILES:
-            response["lines_omitted_by_file"] = dict(by_file.most_common(MAX_OMITTED_FILES))
-            response["lines_omitted_by_file_total"] = len(by_file)
-        else:
-            response["lines_omitted_by_file"] = dict(by_file)
-    response["complete"] = not reasons
-    if reasons:
-        response["reasons"] = reasons
-    if response["lines"]:
-        _reconcile_symbol_miss(response, literal_scan=not sets)
+    served = await _line_rows(root, nodes, sets, literal, response, ctx.alias)
+    return None if served is None else (*served, not sets)
+
+
+def _across_repos(
+    answered: list[tuple[Any, tuple[list[dict[str, Any]], list[str], bool] | None]],
+    *,
+    tag: bool,
+) -> tuple[list[dict[str, Any]], list[str], bool] | None:
+    """Every repo's rows, each naming its ``repo`` when *tag* (more than one repo,
+    as ``results`` does); ``None`` when no repo had any to read."""
+    served = [(ctx.alias, s) for ctx, s in answered if s is not None]
+    if not served:
+        return None
+    rows: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    for alias, (repo_rows, repo_reasons, _scan) in served:
+        rows += [{"repo": alias, **r} if tag else r for r in repo_rows]
+        reasons += [r for r in repo_reasons if r not in reasons]
+    return rows, reasons, all(scan for _a, (_r, _rs, scan) in served)
 
 
 async def _line_rows(
@@ -620,11 +1044,12 @@ async def _line_rows(
     sets: list[dict[str, Any]] | None,
     literal: tuple[str, bool] | None,
     response: dict,
+    alias: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]] | None:
     """``(rows, reasons)`` from the edit sets, a shared name's definitions, or a
     literal scan; ``None`` when there is nothing to read."""
     if sets is None:
-        return await asyncio.to_thread(_ambiguous_rows, root, nodes, response)
+        return await asyncio.to_thread(_ambiguous_rows, root, nodes, response, alias)
     if sets:
         return _merge(sets)
     if literal:
@@ -633,16 +1058,18 @@ async def _line_rows(
 
 
 def _ambiguous_rows(
-    root: Path, nodes: list[GraphNode], response: dict
+    root: Path, nodes: list[GraphNode], response: dict, alias: str | None = None
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Definition rows for the *nodes* ``results`` does not show, and the reason saying so.
 
-    Between them ``results`` and these rows name every definition, once.
+    Between them ``results`` and these rows name every definition, once. In a
+    workspace search only *alias*'s results count: a row naming another repo
+    is another file.
     """
     shown = {
         (r.get("path") or r.get("file"), r.get("start_line"))
         for r in response.get("results") or ()
-        if isinstance(r, dict) and r.get("type") == "symbol"
+        if isinstance(r, dict) and r.get("type") == "symbol" and r.get("repo", alias) == alias
     }
     rest = [n for n in nodes if (n.file_path, n.start_line) not in shown]
     reason = (

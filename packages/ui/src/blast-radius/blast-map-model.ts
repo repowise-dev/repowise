@@ -8,10 +8,12 @@
  * change read as "2,295 files reached", 2,095 of them tests.
  */
 
-import type { AffectedSignal, BlastRadiusResponse } from "@repowise-dev/types/blast-radius";
+import type { AffectedSignal, BlastRadiusResponse, ChangeBlastRadiusResponse } from "@repowise-dev/types/blast-radius";
 import { HEALTH_BAND_LABEL, formatScore, isWeakHealthBand, bandForScore } from "@repowise-dev/types/health";
 
-type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] };
+type Result = BlastRadiusResponse & { affected_signals?: AffectedSignal[] } & Partial<
+    Pick<ChangeBlastRadiusResponse, "transitive_total" | "reach_summary">
+  >;
 
 /** What the index knows about a file. `null` is unknown, never "fine". */
 export interface FileMarks {
@@ -40,9 +42,40 @@ export interface Reach {
   files: ReachedFile[];
   /** Test files that import the change at any depth: run them, never count them as reach. */
   tests: string[];
+  /** Every source file reached; more than `files.length` when the server sent one page of them. */
+  filesTotal: number;
+  /** Every test file reached; more than `tests.length` when the server sent one page. */
+  testsTotal: number;
   direct: number;
   modules: number;
   maxHop: number;
+  /** Changed files something imports directly. */
+  imported: Set<string>;
+}
+
+/** Whether a server sent one page of the reached files rather than all of them. */
+export function isPartial(result: Result): boolean {
+  return result.transitive_total != null && result.transitive_total > result.transitive_affected.length;
+}
+
+/**
+ * Whether the reached files carry the edge the map is drawn from. An older
+ * server always sends it; a paging one only when asked (`with_graph`).
+ */
+export function hasEdges(result: Result): boolean {
+  return result.transitive_total == null || result.transitive_affected.some((t) => t.via != null);
+}
+
+/** The next page of a change's reached files added to what is already read. */
+export function appendPage<R extends Result & { next_offset?: number | null }>(result: R, page: R): R {
+  const seen = new Set((result.affected_signals ?? []).map((s) => s.path));
+  return {
+    ...result,
+    transitive_affected: [...result.transitive_affected, ...page.transitive_affected],
+    affected_signals: [...(result.affected_signals ?? []), ...(page.affected_signals ?? []).filter((s) => !seen.has(s.path))],
+    test_gaps: [...new Set([...result.test_gaps, ...page.test_gaps])],
+    next_offset: page.next_offset ?? null,
+  };
 }
 
 /** A file's module: the index's own when health scored it, else its folder two levels down. */
@@ -127,13 +160,31 @@ export function readReach(result: Result, changedFiles: string[]): Reach {
     else
       files.push({ ...marks(t.path), untested: false, depth: t.depth, via: t.via ?? null, module: moduleOf(t.path, signal) });
   }
-  return {
+  const loaded = {
     changed: changedFiles.map(marks).sort(byAttentionThenPath),
     files,
     tests,
+    filesTotal: files.length,
+    testsTotal: tests.length,
     direct: files.filter((f) => f.depth === 1).length,
     modules: new Set(files.map((f) => f.module)).size,
     maxHop: files.reduce((m, f) => Math.max(m, f.depth), 0),
+    imported: new Set(files.filter((f) => f.depth === 1 && f.via).map((f) => f.via!)),
+  };
+  const all = result.reach_summary;
+  if (!all) return loaded;
+  // The server names them from every row's `via`, which a page without the map leaves out.
+  const imported = new Set(all.imported);
+  if (!isPartial(result)) return { ...loaded, imported };
+  // One page of a wide change: the counts are the server's, over every reached file.
+  return {
+    ...loaded,
+    filesTotal: all.files,
+    testsTotal: all.tests,
+    direct: all.direct,
+    modules: all.modules,
+    maxHop: all.max_depth,
+    imported,
   };
 }
 

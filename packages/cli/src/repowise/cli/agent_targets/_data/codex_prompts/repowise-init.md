@@ -1,5 +1,5 @@
 ---
-description: Set up Repowise for this codebase. Installs if needed, asks about your preferences, and runs the indexing.
+description: Set up Repowise for this codebase (install, options, indexing).
 ---
 
 # Repowise Init

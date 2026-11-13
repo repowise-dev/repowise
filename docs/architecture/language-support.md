@@ -567,10 +567,14 @@ remove. The distinctions that matter most when consuming the graph:
 | `type_use` | File → file, from a constructor / method / delegate / record parameter type reference | An import. Weighted lower, and its provenance is surfaced separately |
 | `reads` | A data reference, file → file (C# member access) | Anything symbol-level. Its former symbol → symbol producer now emits `framework_binds` |
 | `dynamic_*` | A dynamic-dispatch hint, prefixed by kind (`dynamic_url_route`, `dynamic_uses`, `dynamic_imports`) | A static edge. Note the prefix: a consumer matching bare `"dynamic"` matches none of these |
+| `documents` | Markdown document → a file it links to (`hint_source="doc_link"`, 1.0) or names in backticks (`doc_path`, 0.8), resolved by doc drift's `extract()`/`resolve()` | A dependency or a use. It is in none of the sets below |
 
 Three derived sets are what consumers should read rather than re-deriving their
 own filter: `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, and
-`REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`).
+`REACHABILITY_USE_EDGE_TYPES` (the symbol set plus `type_use`). For deny-lists,
+`NON_CODE_EDGE_TYPES` is `TEMPORAL_EDGE_TYPES` (`co_changes`) plus
+`DOCUMENTATION_EDGE_TYPES` (`documents`), and `NON_DEPENDENCY_EDGE_TYPES` adds
+containment to it.
 
 ### Flow termination
 
@@ -1325,7 +1329,7 @@ workspace/extractors/
   grpc/              #   proto.py + languages.py (one table of stub shapes)
   calls.py           #   call_sites / call_chain / decorated_member: the table reader every type shares
   topic/             #   dialect.py (TopicCall table) + kafka.py rabbitmq.py nats.py redis.py
-                     #   bullmq.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
+                     #   bullmq.py temporal.py aws.py nestjs.py laravel.py (a repo pass: dispatch <-> job class)
   socket/            #   dialect.py (SocketCall table) + dotnet.py python.py socketio.py broadcasting.py
   data/              #   table providers (DDL / ORM entities) <-> SQL consumers
 workspace/matching/  # shared exact pass + per-type passes (http.py, topic.py, data.py)
@@ -1360,7 +1364,7 @@ mislead the masker.
 |----------|-----------|-----------|
 | **HTTP** | Express, Hono, Fastify, Koa, Elysia, NestJS, Next.js, Remix, FastAPI, Flask, Django, Spring, JAX-RS, Micronaut, Laravel, Go, ASP.NET, Axum/Actix/Rocket, OpenAPI 3.x | Client calls in JS/TS, Python, PHP, Java, Kotlin, Go, C#, Ruby and Rust; JS/TS client instances carry their base URL across files |
 | **gRPC** | `.proto` IDL, Go, Java (bare or package-qualified `ImplBase`), Python, NestJS (`@GrpcMethod`), Node grpc-js (`server.addService(X.service)`), C# (gRPC-dotnet, primary-constructor impls too) | Go, Java, Python, C# (`new X.XClient(...)`, `AddGrpcClient<X.XClient>`, and the class the client is injected into) |
-| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub, BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Laravel job dispatch | The same libraries' consumers (including pattern subscriptions, and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
+| **Topic** | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub and streams (JS/TS, Python, PHP, Go, Java, C#), BullMQ / Bull, SQS / SNS, NestJS `ClientProxy`, Dapr `PublishEventAsync` (C#), Laravel job dispatch | The same libraries' consumers (including pattern subscriptions, Dapr `[Topic]` and `Subscription` manifests, and Laravel `ShouldQueue` classes), plus RabbitMQ queue bindings |
 | **Socket** | SignalR `MapHub`, FastAPI `@app.websocket`, `ws`, NestJS gateways; socket.io `emit`, Laravel broadcast events, Pusher `trigger` | ClientWebSocket, SignalR client, NativeWebSocket, WebSocketSharp, `new WebSocket(url)`; socket.io `on`, Laravel Echo, pusher-js |
 | **Data** | DDL `CREATE`/`ALTER`, Alembic `op.create_table`, Laravel `Schema::create`/`Schema::table`, Knex migrations, ORM models (SQLAlchemy, SQLModel, Django, JPA, EF Core, ActiveRecord, Eloquent, Prisma, TypeORM, Sequelize, Drizzle) | SQL string literals in app code (sqlglot-parsed, verb-anchored-regex fallback), Laravel `DB::table`, Knex queries |
 | **Topic (C# integration events)** | `IntegrationEvent` subclasses constructed and passed to a publish call, keyed by short type name | `AddSubscription<T, TH>`, `Subscribe<T, TH>`, `IIntegrationEventHandler<T>` |

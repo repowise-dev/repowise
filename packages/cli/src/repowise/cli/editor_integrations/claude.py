@@ -62,6 +62,7 @@ class ClaudeCodeSetup:
         code = register_with_claude_code(repo_path)
         if code:
             console_obj.print(f"  [{OK}]{glyph('ok')}[/] Claude Code MCP registered ({code})")
+        _suggest_hosted_rename(console_obj, repo_path)
 
         hooks = install_claude_code_hooks()
         if hooks:
@@ -71,7 +72,7 @@ class ClaudeCodeSetup:
 
         if _uses_lean_tool_surface(repo_path):
             console_obj.print(
-                "  [dim]Lean MCP tool surface configured; skipping tool-search"
+                "  [dim]Small MCP tool surface configured; skipping tool-search"
                 " deferral so the core schemas stay always loaded.[/dim]"
             )
         elif enable_tool_search_in_claude_code():
@@ -90,6 +91,36 @@ class ClaudeCodeSetup:
         if not _claude_md_enabled(repo_path):
             return
         run_async(_write_claude_md_async(repo_path))
+
+
+def _suggest_hosted_rename(console_obj: Any, repo_path: Path) -> None:
+    """One line when a ``repowise`` entry Claude Code loads here is a remote server.
+
+    Two places: the user-scope entry, which ``register_with_claude_code``
+    keeps (it is not ours to convert), so the local server is left without
+    its name; and this repo's local scope, which wins over user scope for the
+    same name and so hides the local server. Suggested, never done: renaming
+    someone's server is their call.
+    """
+    import click
+
+    from repowise.cli.agent_targets.formats.server_entry import (
+        LOCAL_NAME,
+        RENAME_HINT,
+        is_remote_entry,
+    )
+    from repowise.cli.editor_integrations.claude_config import _stored_repowise_entry
+
+    path = claude_target.user_mcp_config_path()
+    user_entry = _stored_repowise_entry(path)
+    try:
+        local_entry = claude_target.local_scope_servers(repo_path)[1].get(LOCAL_NAME)
+    except click.ClickException:
+        local_entry = None
+    for entry in (user_entry, local_entry):
+        if isinstance(entry, dict) and is_remote_entry(entry, local_type="stdio"):
+            console_obj.print(f"  [dim]{path}: {RENAME_HINT}.[/dim]")
+            return
 
 
 def _sync_project_mcp(console_obj: Any, repo_path: Path) -> list[Path]:
@@ -112,27 +143,30 @@ def _sync_project_mcp(console_obj: Any, repo_path: Path) -> list[Path]:
 
 
 def _uses_lean_tool_surface(repo_path: Path) -> bool:
-    """True when the repo's ``mcp.tools`` config selects the lean profile.
+    """True when the repo's ``mcp.tools`` config selects the lean or core profile.
 
-    The lean surface (~1.8k tokens of schema) is cheap enough to keep always
+    Those surfaces (under 2k tokens of schema) are cheap enough to keep always
     loaded, so init skips the tool-search (schema deferral) recommendation for
-    it; deferral would reintroduce the schema-load round trip the profile
-    exists to remove. Mirrors the "lean" token the selection layer resolves
-    (see ``repowise.core.registry.tool_selection.LEAN``), read here via
-    the lightweight config loader so init does not import the server stack.
+    them; deferral would reintroduce the schema-load round trip the profiles
+    exist to remove. Read via the lightweight config loader so init does not
+    import the server stack.
     """
+    from repowise.core.registry.tool_selection import (
+        CORE,
+        LEAN,
+        normalize_override,
+        split_profile,
+    )
+
     try:
         from repowise.core.repo_config import load_repo_config
 
         mcp_cfg = load_repo_config(str(repo_path)).get("mcp") or {}
         tools = mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None
+        profile, rest = split_profile(normalize_override(tools))
     except Exception:
         return False
-    if isinstance(tools, str):
-        return tools.strip().lower() == "lean"
-    if isinstance(tools, (list, tuple)) and len(tools) == 1:
-        return str(tools[0]).strip().lower() == "lean"
-    return False
+    return profile in (LEAN, CORE) and not rest
 
 
 def _claude_md_enabled(repo_path: Path) -> bool:

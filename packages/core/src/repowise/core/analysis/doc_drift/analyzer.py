@@ -27,6 +27,7 @@ from .constants import (
     MAX_DOC_BYTES,
     bucket_confidences,
 )
+from .extract_cache import ExtractCache
 from .extractor import (
     extract_with_suppressed,
     is_checkable_document,
@@ -84,6 +85,7 @@ class DocDriftAnalyzer:
         on_disk: Callable[[str], bool] | None = None,
         opaque_dirs: frozenset[str] | None = None,
         symbols: SymbolOptions | None = None,
+        cache_dir: Path | None = None,
     ) -> None:
         """
         Args:
@@ -112,6 +114,8 @@ class DocDriftAnalyzer:
             symbols: the index's symbol names and, on an update, what to
                 re-resolve. The ``symbol`` kind runs only with these and a
                 ``repo_root``; see :mod:`~.symbols`.
+            cache_dir: where each document's extracted references are kept
+                between runs (see :mod:`~.extract_cache`); ``None`` keeps none.
         """
         self._repo_id = repo_id
         self._source_map = source_map or {}
@@ -123,6 +127,7 @@ class DocDriftAnalyzer:
         self._rename_lookup = rename_lookup
         self._opaque_dirs = opaque_dirs
         self._symbols = symbols if self._repo_root is not None else None
+        self._cache_dir = cache_dir
 
     # -- input preparation ------------------------------------------------
 
@@ -199,11 +204,13 @@ class DocDriftAnalyzer:
 
         tally = _Tally()
         candidates = _SymbolCandidates(self._symbols.recheck if self._symbols else None)
+        extracted = ExtractCache(self._cache_dir)
         for rel, text in documents.items():
-            refs = tally.extract(text, rel, enabled)
+            refs = tally.extract(text, rel, enabled, extracted)
             if DriftKind.SYMBOL in enabled:
                 candidates.collect(rel, refs)
             tally.resolve_document(index, rel, refs, enabled)
+        extracted.save()
         self._resolve_symbols(candidates.refs, tally)
         step("resolve")
 
@@ -282,9 +289,16 @@ class _Tally:
     references_checked: int = 0
     suppressed: int = 0
 
-    def extract(self, text: str, rel: str, enabled: set[DriftKind]) -> list[DocReference]:
+    def extract(
+        self,
+        text: str,
+        rel: str,
+        enabled: set[DriftKind],
+        cache: ExtractCache | None = None,
+    ) -> list[DocReference]:
         """*rel*'s references, counting the enabled ones an inline marker silenced."""
-        refs, silenced = extract_with_suppressed(text, rel)
+        compute = partial(extract_with_suppressed, text, rel)
+        refs, silenced = cache.lookup(rel, text, compute) if cache is not None else compute()
         # A silenced symbol candidate is not known to be a reference at all.
         self.suppressed += sum(
             1 for ref in silenced if ref.kind in enabled and ref.kind is not DriftKind.SYMBOL

@@ -392,12 +392,13 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     is_flag=True,
     default=False,
     help=(
-        "Take an Index only (`--mode fast`) repo to a full index: backfill the "
-        "full git history and build the documentation. Works without a key: with "
-        "no model configured the documentation is built from code (no model calls, "
-        "no spend); with one, the model writes it after a cost preview. Reuses the "
-        "persisted graph and resumes from the last completed stage. One repo at a "
-        "time (in a workspace, pass --repo <alias>)."
+        "Leave nothing stale. On a full index: bring the new commits in with no "
+        "cascade cap, refresh every structural page, and have the model rewrite "
+        "every stale page it wrote, after one cost preview. On an Index only "
+        "(`--mode fast`) repo or one documented from code: backfill the full git "
+        "history and build the documentation; with no model configured it is "
+        "built from code (no model calls, no spend). One repo at a time (in a "
+        "workspace, pass --repo <alias>)."
     ),
 )
 @click.option(
@@ -793,7 +794,11 @@ def _update_workspace_target(opts: UpdateOptions, run: UpdateRun, target) -> Upd
 
 
 def _full_upgrade(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
-    """``--full``: upgrade the index in place from the persisted graph."""
+    """``--full``: catch a full index up, or upgrade a lesser one from the persisted graph."""
+    from .catch_up import catch_up, is_full_index
+
+    if is_full_index(run.repo_path):
+        return catch_up(opts, run.repo_path)
     if opts.dry_run:
         _render_full_upgrade_dry_run(
             run.repo_path,
@@ -1117,9 +1122,11 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
                 "[bold]repowise update --index-only[/bold].[/dim]"
             )
         else:
+            from .catch_up import catch_up_command
+
             console.print(
                 f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
-                "[bold]repowise generate --stale[/bold].[/dim]"
+                f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
             )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
@@ -1245,8 +1252,26 @@ def _tombstone_missing_stale_pages(run: UpdateRun) -> None:
 
 
 def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
-    """Take the single-flight lock, or leave HEAD pending for the update holding it."""
+    """Take the single-flight lock, or leave HEAD pending for the writer holding it."""
     repo_path, head = run.repo_path, run.head
+    # A running `init` indexes the same store without taking the update lock
+    # (#5512), so its marker is contention in its own right: taking the lock
+    # here would not stop this run writing the store an init is writing.
+    # Defer with the same pending HEAD a held lock leaves, so the next pass
+    # picks this run up once the init has finished.
+    from repowise.core.update_lock import read_init_lock
+
+    init_owner = read_init_lock(repo_path)
+    if init_owner is not None:
+        from repowise.cli.platform import telemetry
+
+        write_update_pending(repo_path, head)
+        console.print(
+            "[yellow]A `repowise init` is running on this repo; "
+            "deferring this update until it finishes.[/yellow]"
+        )
+        telemetry.add_command_outcome(outcome="deferred")
+        return _emit_done(run, UpdateOutcome.DEFERRED)
     existing_lock = try_acquire_update_lock(repo_path, head)
     if existing_lock is not None:
         _report_lock_held(run, existing_lock)
@@ -1267,9 +1292,10 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
 
 def _report_lock_held(run: UpdateRun, existing_lock: dict) -> None:
     from repowise.core.update_lock import (
-        UPDATE_LOCK_SUSPECT_AFTER_SECONDS,
         format_lock_age,
         lock_age_seconds,
+        lock_is_suspect,
+        stuck_lock_advice,
     )
 
     head = run.head
@@ -1282,13 +1308,11 @@ def _report_lock_held(run: UpdateRun, existing_lock: dict) -> None:
         f"holding the lock {format_lock_age(age)}).[/yellow]"
     )
     # A live owner is never evicted on age; say where to look instead.
-    if age is not None and age > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
-        console.print(
-            "[yellow]That is longer than an update normally takes. If "
-            "[bold].repowise/.update.log[/bold] has not been written to in "
-            f"that time, pid {existing_lock.get('pid')} is stuck and can be "
-            "stopped; this repo will update on the next run.[/yellow]"
+    if lock_is_suspect(age):
+        advice = stuck_lock_advice(
+            existing_lock.get("pid"), log="[bold].repowise/.update.log[/bold]"
         )
+        console.print(f"[yellow]{advice}[/yellow]")
     console.print(
         f"[dim]HEAD {head[:8] if head else 'HEAD'} marked as pending; "
         "the running update will roll forward to it. This run regenerated "
@@ -1487,6 +1511,8 @@ def _rebuild_index(run: UpdateRun) -> None:
         ),
         git_summary_sink=run.full_git_summaries,
         timings=run.timings,
+        # The update that re-scores every file detects communities afresh too.
+        fresh_communities=_full_rescore_this_run(run),
     )
     run.degraded.extend(_unavailable_grammar_entries(run.parsed_files))
     decision = getattr(run.graph_builder, "incremental_graph_decision", None)
@@ -1647,9 +1673,11 @@ def _widen_for_full_render(run: UpdateRun) -> None:
         affected.decay_only = list(dict.fromkeys([*affected.decay_only, *affected.regenerate]))
         split = load_cascade_overflow_split(run.repo_path, affected.regenerate)
         if split and split[0]:
+            from .catch_up import catch_up_command
+
             console.print(
                 f"  {split[0]} pages written by a model are marked stale: run "
-                "[cyan]repowise generate --stale[/cyan] to rewrite them "
+                f"[cyan]{catch_up_command(run.repo_path)}[/cyan] to rewrite them "
                 "(it estimates the cost first)."
             )
 
@@ -1657,6 +1685,7 @@ def _widen_for_full_render(run: UpdateRun) -> None:
 def _report_page_plan(run: UpdateRun) -> None:
     affected = run.affected
     if affected.stale_due_to_budget > 0:
+        from .catch_up import catch_up_command
         from .deterministic import load_cascade_overflow_split
         from .reporting import render_cascade_budget_warning
 
@@ -1666,6 +1695,7 @@ def _report_page_plan(run: UpdateRun) -> None:
             run.cascade_budget,
             affected.stale_due_to_budget,
             load_cascade_overflow_split(run.repo_path, skipped),
+            catch_up_command(run.repo_path),
         )
 
     console.print(f"Pages to regenerate: [cyan]{len(affected.regenerate)}[/cyan]")
@@ -2261,15 +2291,26 @@ def _persist_docs(run: UpdateRun, docs: DocsPass) -> None:
         )
 
 
+def _full_rescore_this_run(run: UpdateRun) -> bool:
+    """Whether this update re-scores every file: weekly, or forced by a config or parser change."""
+    from .persistence import full_rescore_due
+
+    return bool(
+        run.config.health_changed
+        or run.extraction_changed
+        or full_rescore_due(run.state, run.head_ts)
+    )
+
+
 def _rescore_after_persist(run: UpdateRun) -> None:
     """Re-score every file off this run's graph: weekly, or forced by a config or parser change."""
     from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
-    from .persistence import full_rescore_due, run_decay_health_rescore
+    from .persistence import run_decay_health_rescore
 
     health_changed = run.config.health_changed
     rescored = False
-    if health_changed or run.extraction_changed or full_rescore_due(run.state, run.head_ts):
+    if _full_rescore_this_run(run):
         with timed(run.timings, "rescore"):
             rescored = run_decay_health_rescore(
                 run.repo_path,

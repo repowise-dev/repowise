@@ -16,6 +16,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "TRUTHY",
     "Env",
+    "Proposal",
     "Resolved",
     "Setting",
     "SettingError",
@@ -130,6 +131,24 @@ class Env:
         return {"name": self.name, "wins": self.wins, "prefix": self.prefix}
 
 
+#: What a suggested value mostly buys: fewer tokens, less spend, or better answers.
+Benefit = Literal["tokens", "cost", "quality"]
+
+
+@dataclass(frozen=True, slots=True)
+class Proposal:
+    """A value one setting's ``suggest_when`` proposes, and why, in plain words."""
+
+    value: Any
+    #: What about this repository makes the value fit, with its numbers.
+    reason: str
+    #: What changes once it is set: tokens, spend or answer quality.
+    impact: str
+    benefit: Benefit
+    #: The command that applies it, when ``repowise config set`` is not enough.
+    command: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Setting:
     """One setting, declared next to the code that reads it.
@@ -161,6 +180,9 @@ class Setting:
     #: Test, debug or plumbing knobs: registered so nothing is unaccounted
     #: for, hidden from user listings.
     internal: bool = False
+    #: A credential: listings and the settings API say it is set, never
+    #: what it is.
+    secret: bool = False
     reload: Reload = "immediate"
     on_invalid: OnInvalid = "default"
     #: The value an unusable one reads as, when ``on_invalid="fallback"``.
@@ -179,9 +201,10 @@ class Setting:
     #: an area whose writes do more than set one key (decisions, the provider).
     #: ``None`` here means :func:`repowise.core.settings.writers.write_file_value`.
     writer: str | None = None
-    #: Whether this repository would benefit from a non-default value.
-    #: Takes facts about the repository, returns a reason or ``None``.
-    suggest_when: Callable[[Any], str | None] | None = field(default=None, compare=False)
+    #: Whether this repository would clearly benefit from another value.
+    #: Takes :class:`repowise.core.settings.suggest.RepoFacts`, returns a
+    #: :class:`Proposal` or ``None``. Pure and cheap: no I/O, no model call.
+    suggest_when: Callable[[Any], Proposal | None] | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         problem = _contradiction(self)
@@ -229,6 +252,9 @@ def _contradiction(s: Setting) -> str | None:
         return "a <placeholder> key and members come together"
     if s.scope == "env" and not _keyed_by_env(s):
         return "an env-scoped setting is keyed by its variable"
+    if s.secret and s.scope != "env":
+        # Listings hide its value, so an editable one would save the mask back.
+        return "a secret is read from the environment only"
     return None
 
 

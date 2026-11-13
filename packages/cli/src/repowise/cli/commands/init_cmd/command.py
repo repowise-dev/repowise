@@ -24,7 +24,11 @@ from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
-from repowise.core.update_lock import init_in_progress
+from repowise.core.update_lock import (
+    init_in_progress,
+    release_update_lock,
+    try_acquire_update_lock,
+)
 
 from ._agent_summary import init_output
 from ._exit import exit_interrupted
@@ -512,6 +516,12 @@ def _check_folder_coverage(
         "and next commands. Human text goes to stderr."
     ),
 )
+@click.option(
+    "--source",
+    default=None,
+    hidden=True,
+    help="Which setup instructions started this run, for anonymous usage stats.",
+)
 def init_command(**params: Any) -> None:
     """Index a codebase and build its documentation.
 
@@ -530,9 +540,26 @@ def init_command(**params: Any) -> None:
             exit_interrupted()
 
 
+#: What ``--source`` may report. Any other value is reported as ``other``, so
+#: the raw text never leaves the machine.
+INSTRUCTION_SOURCES = frozenset({"plugin_command", "setup_doc", "hosted_setup", "mcp_notice"})
+
+
+def _record_instruction_source(source: str | None) -> None:
+    """Attach which setup instructions started this run, when the caller said."""
+    if source is None:
+        return
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(
+        instruction_source=source if source in INSTRUCTION_SOURCES else "other"
+    )
+
+
 def _run_init(opts: InitOptions) -> None:
     """The whole init, one repo or a workspace; exits 2 when it finishes with gaps."""
     start = time.monotonic()
+    _record_instruction_source(opts.source)
     repo_path = resolve_repo_path(opts.path)
 
     if not repo_path.is_dir():
@@ -562,7 +589,19 @@ def _run_init(opts: InitOptions) -> None:
         suggest_workspace(repo_path)
 
     with init_in_progress(repo_path):
-        _run_single_repo(opts, repo_path, start)
+        # HOLD BOTH LOCKS (#5512): the init marker alone is not mutual exclusion,
+        # because `update` learns of it only in `_acquire_update_lock` — a run
+        # that already holds the update lock keeps writing the same store. Taking
+        # the update lock too is what makes the marker mean something.
+        if try_acquire_update_lock(repo_path, None) is not None:
+            raise click.ClickException(
+                "Another `repowise update` is already running on this repo. "
+                "Run `repowise init` again when it finishes."
+            )
+        try:
+            _run_single_repo(opts, repo_path, start)
+        finally:
+            release_update_lock(repo_path)
 
 
 def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:

@@ -39,11 +39,14 @@ registry in `repowise.core.settings`, so each lists every key or variable
 its block reads. Where an environment variable sets a key, the `Env var`
 column names it and says whether it or the file wins.
 
-> **Limited validation.** The file loads as a plain YAML dict, so unknown or
-> misspelled keys are silently ignored. Exceptions: they stop
-> `repowise security check` in the `security:` block; `max_tokens` must be a
-> positive integer when documentation is generated; `repowise doctor` validates
-> the `distill:` block. Check spelling and indentation first.
+> **Checking the file.** Commands read an unknown or misspelled key as nothing
+> and most bad values as the default. `repowise doctor` checks every key in
+> this file and every variable in these tables against the registry: a value
+> repowise cannot use fails with the form it accepts and the
+> `repowise config set` or `reset` command that fixes it, an unknown key warns
+> with the closest real key, and a variable that decides against the file is
+> named. `repowise doctor --repair` resets bad file values to their defaults
+> (outside `decisions:` and the provider selection, which take the row's command).
 
 ```yaml
 provider: anthropic
@@ -362,7 +365,8 @@ in single-repo mode, plus `list_repos` in workspace mode. `repowise mcp
 <!-- BEGIN GENERATED settings:mcp (python scripts/gen_config_docs.py) -->
 | Key | Default | What it does |
 |-----|---------|--------------|
-| `tools` | unset | Which MCP tools are offered: all, lean, +name or -name to adjust the default, or plain names as the exact list. Unset offers the default set. |
+| `tools` | unset | Which MCP tools are offered, for every client: a profile (core, lean, standard, all), optionally followed by +name or -name; +name or -name alone to adjust each client's default; or plain names as the exact list. Unset: Claude Code gets standard, clients that load every schema up front get core. |
+| `always_load` | `false` | Ask clients that defer tool schemas (Claude Code) to load get_answer, get_context, search_codebase and get_symbol up front: removes one tool-loading turn before the first call and costs about 2k tokens per turn. Other tools stay deferred. |
 <!-- END GENERATED settings:mcp -->
 
 | `tools` value | Effect |
@@ -396,16 +400,21 @@ editor_files:
 | `cursor_rules` | `true` | Write the Cursor rules file. |
 | `kiro_steering` | `true` | Write the Kiro steering file. |
 | `vscode_mcp` | `true` | Write the VS Code MCP entry. |
-| `sections` | `[architecture, decisions, entry_points, health, hotspots, how_to_work, key_modules]` | Sections of the generated agent block. +name or -name adjusts the default; plain names replace it. Extra: code_health, fix_first, commands, how_to_work_full, tools. |
+| `sections` | `[decisions, how_to_work]` | Sections of the generated agent block. +name or -name adjusts the default; plain names replace it. Extra: architecture, key_modules, entry_points, hotspots, health, code_health, fix_first, commands, how_to_work_full, tools. |
 <!-- END GENERATED settings:editor_files -->
 
 - `false` on a file key stops Repowise writing that file.
-- Default sections: `architecture`, `key_modules`, `entry_points`,
-  `hotspots`, `health` (score and worst file), `decisions` (top three titles),
-  `how_to_work` (which task goes to Grep and which to a Repowise call).
-- Opt-in: `code_health` (all health signals, replaces `health`), `fix_first`,
-  `commands` (build, test and lint from manifests), `how_to_work_full`,
-  `tools` (the MCP tool table).
+- Every block leads with one line telling the agent to call a Repowise tool
+  first for any question about the codebase.
+- Default sections: `how_to_work` (one line per moment: rename, edit, finish,
+  noisy commands, settings) and `decisions` (whether decisions govern files,
+  plus up to five pinned titles). The default block stays within about 250
+  tokens; a test holds it there.
+- Opt-in: `architecture`, `key_modules`, `entry_points`, `hotspots`, `health`
+  (score and worst file), `code_health` (all health signals, replaces
+  `health`), `fix_first`, `commands` (build, test and lint from manifests),
+  `how_to_work_full`, `tools` (the MCP tool table). For example
+  `sections: [+key_modules, +hotspots]`.
 
 ## The `decisions:` block
 
@@ -1405,7 +1414,7 @@ faster.
 <!-- END GENERATED settings:env-mcp -->
 
 `REPOWISE_ANSWER_TIMEOUT_S` defaults to 60s for remote API providers, 120s
-for `ollama` and `litellm`, and 180s for agent CLI providers (`claude_cli`,
+for `ollama` and `litellm`, and 50s for agent CLI providers (`claude_cli`,
 `codex_cli`, `copilot_cli`, `opencode`). Raise it for a slow model, lower it to
 fail fast. Your MCP client's own tool timeout sits underneath: a higher value
 yields a client error instead of Repowise's "synthesis exceeded its budget".

@@ -8,15 +8,77 @@ by a parity test.
 
 from __future__ import annotations
 
+from typing import Any
+
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.reasoning import REASONING_MODES
 from repowise.core.settings.areas._common import factory
-from repowise.core.settings.model import Env, Setting
+from repowise.core.settings.model import Env, Proposal, Setting
 
 AREA = "generation"
 _s = factory(AREA)
 _e = factory(AREA, scope="env")
 _FILE_SETTINGS_WRITER = "repowise.core.repo_config:write_file_setting"
+
+
+def _suggest_embedder(facts: Any) -> Proposal | None:
+    """A real embedder, when docs exist without semantic search and one is set up here."""
+    search = facts.search
+    if search.get("full_text") != "available" or search.get("semantic") != "unavailable":
+        return None
+    if facts.embedder_found is None or facts.values.get("embedder") not in (None, "mock"):
+        return None
+    from repowise.core.providers.llm.specs import PROVIDER_SPECS
+
+    name, why = facts.embedder_found
+    spec = PROVIDER_SPECS.get(name)
+    spend = (
+        f"Runs on your machine through {name}, no spend."
+        if spec is not None and spec.local
+        else f"One embedding pass over the wiki pages, billed to your {name} key."
+    )
+    return Proposal(
+        name,
+        f"Semantic search is off here, though the {name} embedder is ready: {why}.",
+        f"Search and get_answer match by meaning, not only exact words. {spend}",
+        "quality",
+        command=f"repowise reindex --embedder {name}",
+    )
+
+
+#: Every file page is suggested once at least this many production files
+#: have none. Below it the automatic ceiling only trims the tail.
+MIN_UNPAGED_PRODUCTION = 500
+#: A file page's average size with its metadata, measured over 1,961 pages
+#: (see ``FILE_PAGE_AUTO_CEILING`` in ``repowise.core.generation.selection``).
+_FILE_PAGE_KB = 8.8
+
+
+def _suggest_max_file_pages(facts: Any) -> Proposal | None:
+    """Every file, when the automatic ceiling left many production files without a page.
+
+    Only for pages written from code: there each page costs no model call.
+    """
+    pages = facts.file_pages
+    unpaged = facts.unpaged_production
+    if facts.values.get("max_file_pages") is not None or facts.content_provenance != "template":
+        return None
+    omitted = pages.get("omitted") or 0
+    # Both counts: files under the score floor have no page and never get one.
+    least = min(omitted, unpaged)
+    if not pages.get("effective_cap") or least < MIN_UNPAGED_PRODUCTION:
+        return None
+    size = omitted * _FILE_PAGE_KB / 1024
+    return Proposal(
+        0,
+        f"File pages stopped at {pages['effective_cap']:,} of {pages.get('eligible') or 0:,} "
+        f"eligible files, leaving {unpaged:,} production files without one.",
+        f"The next repowise update writes the other {omitted:,} pages from code, with no "
+        f"model calls, about {size:,.0f} MB. Search and answers can then find those files "
+        "by what they do.",
+        "quality",
+    )
+
 
 SETTINGS: tuple[Setting, ...] = (
     _s(
@@ -107,6 +169,7 @@ SETTINGS: tuple[Setting, ...] = (
         "Most per-file pages to write; 0 means every file. Unset lets the repo size decide.",
         minimum=0,
         parser="repowise.core.settings.parsers:int_like",
+        suggest_when=_suggest_max_file_pages,
     ),
     _s(
         "folder_coverage",
@@ -132,6 +195,7 @@ SETTINGS: tuple[Setting, ...] = (
         env=Env("REPOWISE_EMBEDDER", wins=True),
         parser="repowise.core.settings.parsers:folded",
         reload="reindex",
+        suggest_when=_suggest_embedder,
     ),
     _s(
         "embedding_model",

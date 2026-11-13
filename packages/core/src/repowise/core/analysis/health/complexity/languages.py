@@ -390,10 +390,9 @@ class LanguageNodeMap:
     # -- Local bindings ------------------------------------------------------
     #   * ``local_value`` -- truthy for a ``function_kinds`` node that binds a
     #     value and not a function (F#: ``let v = ...`` shares its node type
-    #     with ``let f x = ...``). Inside a function such a node is no unit of
-    #     its own, so it gets no entry there. None means every function-kind
-    #     node is a function. Checked only for nodes inside a collected
-    #     function; at module level the node keeps the entry it always had.
+    #     with ``let f x = ...``). Such a node is no unit and no class method,
+    #     at module level, in a type or inside a function. None means every
+    #     function-kind node is a function.
     local_value: Callable[[Node], object] | None = None
 
     # -- Early-exit guards (``complexity/dispatch.py``) -----------------------

@@ -9,7 +9,6 @@ write through the area's own writer.
 from __future__ import annotations
 
 import json
-import shlex
 from pathlib import Path
 from typing import Any
 
@@ -20,17 +19,17 @@ from rich.table import Table
 from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 from repowise.core.settings import AREAS, Resolved, Setting, Source
+from repowise.core.settings.views import (
+    APPLIES,
+    change_report,
+    path_flag,
+    requirement,
+    resolve_many,
+    view,
+)
+from repowise.core.settings.views import changed as _changed
 
 _PATH_HELP = "A path inside the repository (defaults to the current directory)."
-
-#: When a change takes effect, in the words ``set`` and ``explain`` print.
-_APPLIES = {
-    "immediate": "Takes effect the next time it is read.",
-    "update": "Takes effect on the next `repowise update`.",
-    "reindex": "Takes effect after `repowise reindex`.",
-    "restart": "Takes effect when the server or MCP process next starts.",
-}
-
 
 @click.group(name="config")
 def config_group() -> None:
@@ -78,38 +77,14 @@ def _setting(key: str, fmt: str) -> Setting:
 def _resolve_all(root: Path, settings: tuple[Setting, ...], fmt: str) -> list[Resolved]:
     """Each setting's value, reading each file once. A broken file is refused."""
     from repowise.core.repo_config import RepoConfigError
-    from repowise.core.settings.writers import current, read_config
 
-    files: dict[str | None, dict[str, Any]] = {}
-    out = []
     try:
-        for s in settings:
-            if s.path not in files:
-                files[s.path] = read_config(root, s)
-            out.append(current(root, s, config=files[s.path]))
+        return resolve_many(root, settings)
     except RepoConfigError as exc:
         emit_refusal(
             "config_unreadable", str(exc), fmt, remedy="Fix the file, then run this again."
         )
-    return out
-
-
-def _changed(s: Setting, r: Resolved) -> bool:
-    """Set somewhere, to something other than the default."""
-    return r.source is not Source.DEFAULT and r.value != s.default
-
-
-def _state(s: Setting, r: Resolved) -> dict[str, Any]:
-    """Where *s* stands: value, source, default, changed, problem, locked."""
-    state = r.to_dict()
-    state["default"] = s.to_dict()["default"]
-    state["changed"] = _changed(s, r)
-    return state
-
-
-def _view(s: Setting, r: Resolved) -> dict[str, Any]:
-    """The JSON object ``list``, ``get`` and ``explain`` give for one setting."""
-    return {**s.to_dict(), **_state(s, r)}
+        raise AssertionError("unreachable") from None
 
 
 def _text(value: Any) -> str:
@@ -141,16 +116,29 @@ def _note(s: Setting, r: Resolved) -> str:
 @config_group.command(name="list")
 @click.option("--area", type=click.Choice(list(AREAS)), default=None, help="Only this area.")
 @click.option("--changed", "only_changed", is_flag=True, help="Only settings not at their default.")
+@click.option(
+    "--suggested",
+    is_flag=True,
+    help="Only settings worth changing in this repository, with why and the command.",
+)
 @click.option("--all", "include_internal", is_flag=True, help="Include debug and test settings.")
 @click.option("--path", default=None, help=_PATH_HELP)
 @format_option()
 def config_list(
-    area: str | None, only_changed: bool, include_internal: bool, path: str | None, fmt: str
+    area: str | None,
+    only_changed: bool,
+    suggested: bool,
+    include_internal: bool,
+    path: str | None,
+    fmt: str,
 ) -> None:
     """List settings by area, with their values and where each came from."""
     from repowise.core.settings import all_settings, settings_in
 
     root = _repo(path, fmt)
+    if suggested:
+        _list_suggested(root, area, path, fmt)
+        return
     pool = settings_in(area) if area else all_settings()
     settings = tuple(s for s in pool if include_internal or not s.internal)
     rows = [
@@ -159,7 +147,7 @@ def config_list(
         if not only_changed or _changed(s, r)
     ]
     if fmt == "json":
-        emit_json({"repo": str(root), "settings": [_view(s, r) for s, r in rows]})
+        emit_json({"repo": str(root), "settings": [view(s, r) for s, r in rows]})
         return
     _print_list(rows)
 
@@ -187,6 +175,55 @@ def _print_list(rows: list[tuple[Setting, Resolved]]) -> None:
     )
 
 
+def suggested_line(count: int, path: str | None = None) -> str | None:
+    """The one line doctor, status and init print about suggestions; ``None`` for none."""
+    if not count:
+        return None
+    from repowise.cli.ui.result_panels import SUGGESTED_STEP
+
+    noun = "option fits" if count == 1 else "options fit"
+    return f"{count} {noun} this repo: {SUGGESTED_STEP}{path_flag(path)}"
+
+
+def suggested_for(root: Path) -> list[Any]:
+    """:func:`~repowise.core.settings.suggest.suggestions`, or none when they fail.
+
+    For commands whose job is something else: a suggestion is never worth
+    failing ``doctor``, ``status`` or ``init`` over.
+    """
+    try:
+        from repowise.core.settings.suggest import suggestions
+
+        return suggestions(root)
+    except Exception:
+        return []
+
+
+def _list_suggested(root: Path, area: str | None, path: str | None, fmt: str) -> None:
+    from repowise.core.settings import get
+    from repowise.core.settings.suggest import suggestions
+
+    found = [s for s in suggestions(root) if area is None or get(s.key).area == area]
+    if fmt == "json":
+        emit_json({"repo": str(root), "suggestions": [s.to_dict() for s in found]})
+        return
+    if not found:
+        scope = f"in the {area} area " if area else ""
+        console.print(f"[dim]Every setting {scope}fits this repository as it is.[/dim]")
+        return
+    for s in found:
+        command = s.command
+        if command.startswith("repowise config set "):
+            command += path_flag(path)
+        console.print(
+            f"\n[bold]{s.key}[/bold]: {escape(_text(s.current))} -> {escape(_text(s.value))}"
+        )
+        console.print(f"  {escape(s.reason)}")
+        console.print(f"  [dim]{escape(s.impact)}[/dim]")
+        console.print(f"  Run: [bold]{escape(command)}[/bold]")
+    console.print("")
+
+
 @config_group.command(name="get")
 @click.argument("key")
 @click.option("--path", default=None, help=_PATH_HELP)
@@ -197,47 +234,19 @@ def config_get(key: str, path: str | None, fmt: str) -> None:
     root = _repo(path, fmt)
     (resolved,) = _resolve_all(root, (setting,), fmt)
     if fmt == "json":
-        emit_json({"repo": str(root), **_view(setting, resolved)})
+        emit_json({"repo": str(root), **view(setting, resolved)})
         return
     line = f"{setting.key} = {escape(_text(resolved.value))}  [dim]({_source(resolved)})[/dim]"
     console.print(f"{line}  {_note(setting, resolved)}".rstrip())
 
 
-def _bounds(s: Setting) -> str:
-    low = None
-    if s.minimum is not None:
-        low = f"more than {s.minimum:g}" if s.exclusive_minimum else f"at least {s.minimum:g}"
-    high = None if s.maximum is None else f"at most {s.maximum:g}"
-    return " and ".join(b for b in (low, high) if b)
-
-
-def _requirement(s: Setting) -> str:
-    """What a value of *s* must be, in plain words."""
-    if s.choices:
-        lead = "one of" if s.type == "str" else "any of"
-        return f"{lead} {', '.join(s.choices)}"
-    if s.type in ("int", "float"):
-        kind = "a whole number" if s.type == "int" else "a number"
-        bounds = _bounds(s)
-        return f"{kind}, {bounds}" if bounds else kind
-    return {
-        "bool": "true or false",
-        "list": "a list: a,b or [a, b]",
-        "mapping": "a mapping: {key: value}",
-    }.get(s.type, "text")
-
-
-def _path_flag(path: str | None) -> str:
-    return f" --path {shlex.quote(path)}" if path else ""
-
-
 def _explain_extra(s: Setting, root: Path, path: str | None) -> dict[str, Any]:
-    extra: dict[str, Any] = {"applies": _APPLIES[s.reload], "accepts": _requirement(s)}
+    extra: dict[str, Any] = {"applies": APPLIES[s.reload], "accepts": requirement(s)}
     if s.scope == "env":
         extra["set_with"] = f"{s.key}=<value> in the environment"
     else:
-        extra["set_with"] = f"repowise config set {s.key} <value>{_path_flag(path)}"
-        extra["reset_with"] = f"repowise config reset {s.key}{_path_flag(path)}"
+        extra["set_with"] = f"repowise config set {s.key} <value>{path_flag(path)}"
+        extra["reset_with"] = f"repowise config reset {s.key}{path_flag(path)}"
     if s.key == "wiki_style":
         from repowise.core.generation.styles import list_styles
 
@@ -275,7 +284,7 @@ def config_explain(key: str, path: str | None, fmt: str) -> None:
     (resolved,) = _resolve_all(root, (setting,), fmt)
     extra = _explain_extra(setting, root, path)
     if fmt == "json":
-        emit_json({"repo": str(root), **_view(setting, resolved), **extra})
+        emit_json({"repo": str(root), **view(setting, resolved), **extra})
         return
     console.print(f"\n[bold]{setting.key}[/bold]\n  {escape(setting.description)}")
     if resolved.problem:
@@ -292,38 +301,6 @@ def config_explain(key: str, path: str | None, fmt: str) -> None:
 # ---------------------------------------------------------------------------
 # writing
 # ---------------------------------------------------------------------------
-
-
-def _cli_value(value: Any) -> str:
-    """*value* as ``repowise config set`` reads it back."""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (list, tuple)):
-        simple = bool(value) and all(
-            isinstance(v, str) and v and "," not in v and v.strip() == v for v in value
-        )
-        return shlex.quote(",".join(value) if simple else json.dumps(list(value)))
-    if isinstance(value, dict):
-        return shlex.quote(json.dumps(value))
-    return shlex.quote(str(value))
-
-
-def _undo(m: Any, path: str | None, *, main: bool) -> str | None:
-    """The command that puts the file back where it was, or ``None`` when none is needed.
-
-    Read from what the file spelled, not the effective value: an environment
-    variable that decides the value says nothing about what the file held. A
-    setting that moved only because another key did (the switches under a
-    mode) and was never in the file needs no command of its own.
-    """
-    from repowise.core.settings.resolve import MISSING
-
-    key = m.setting.key
-    if m.written_before is not MISSING:
-        return f"repowise config set {key} {_cli_value(m.written_before)}{_path_flag(path)}"
-    if main or m.written_after is not MISSING:
-        return f"repowise config reset {key}{_path_flag(path)}"
-    return None
 
 
 def _write(action: str, key: str, value: str | None, path: str | None, fmt: str) -> None:
@@ -347,44 +324,17 @@ def _write(action: str, key: str, value: str | None, path: str | None, fmt: str)
             remedy="Fix the file, then run this again.",
         )
     except ValueError as exc:
-        emit_refusal("invalid_value", str(exc), fmt, accepts=_requirement(setting))
+        emit_refusal("invalid_value", str(exc), fmt, accepts=requirement(setting))
     _report(action, change, root, path, fmt)
 
 
 def _report(action: str, change: Any, root: Path, path: str | None, fmt: str) -> None:
-    s = change.setting
-    moved = [m for m in (change.main, *change.also) if m.moved]
-    undo = [
-        line
-        for m in moved
-        if (line := _undo(m, path, main=m is change.main)) is not None
-    ]
-    effect = f"{s.description} {_APPLIES[s.reload]}"
-    override = s.env.name if change.after.source is Source.ENV and s.env else None
+    report = change_report(action, change, path)
     if fmt == "json":
-        emit_json(
-            {
-                "repo": str(root),
-                "action": action,
-                "key": s.key,
-                "changed": change.changed,
-                "before": _state(s, change.before),
-                "after": _state(s, change.after),
-                "also": [
-                    {
-                        "key": m.setting.key,
-                        "before": _state(m.setting, m.before),
-                        "after": _state(m.setting, m.after),
-                    }
-                    for m in change.also
-                ],
-                "effect": effect,
-                "undo": undo,
-                "env_override": override,
-            }
-        )
+        emit_json({"repo": str(root), **report})
         return
-    _print_report(change, moved, effect, override, undo)
+    moved = [m for m in (change.main, *change.also) if m.moved]
+    _print_report(change, moved, report["effect"], report["env_override"], report["undo"])
 
 
 def _written(value: Any) -> Any:

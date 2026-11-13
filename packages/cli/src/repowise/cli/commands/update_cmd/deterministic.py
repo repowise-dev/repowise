@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from repowise.cli.helpers import console, run_async
+from repowise.cli.helpers import console, resolve_max_file_pages, run_async
 from repowise.core.persistence import (
     load_stale_structural_file_paths as load_stale_structural_file_paths,
 )
@@ -264,6 +264,7 @@ def _render_pages(
             language=cfg.get("language", "en"),
             enable_onboarding=flag(cfg.get("enable_onboarding"), True),
             wiki_style=cfg.get("wiki_style", "comprehensive"),
+            max_file_pages=resolve_max_file_pages(config=cfg),
         )
 
         # Only build a store when there is a real embedder to build it with.
@@ -724,7 +725,13 @@ async def _load_cascade_overflow_split(
             rows = await session.execute(
                 sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
                     Page.page_type.in_(
-                        ["file_page", "module_page", "flow_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
+                        [
+                            "file_page",
+                            "module_page",
+                            "flow_page",
+                            "scc_page",
+                            *_REPO_WIDE_MODEL_TYPES,
+                        ]
                     ),
                     Page.freshness_status != "tombstone",
                 )

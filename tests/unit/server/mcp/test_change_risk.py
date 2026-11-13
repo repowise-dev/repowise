@@ -448,7 +448,9 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     assert it["why"] == {"tests/test_round_trips.py": "src/app.py changed (import-graph)"}
     assert "line_coverage" not in it
     # The only test file there is: a whole-suite selection never reads as targeted.
-    assert it["summary"] == "1 test(s) to run for this change, every test file there is."
+    assert it["summary"] == (
+        "1 test(s) to run for this change, every test file there is, listed likeliest to fail first."
+    )
 
 
 async def test_a_test_file_the_change_edits_leads_the_inferred_run_list(tmp_path, monkeypatch):
@@ -521,16 +523,18 @@ async def test_a_test_file_the_change_edits_leads_the_inferred_run_list(tmp_path
     [
         (
             ("tests/test_a.py",),
-            "2 test(s) to run for this change (1 of 4 test files); the rest can be skipped.",
+            "2 test(s) to run for this change (1 of 4 test files), listed likeliest to fail first; "
+            "the rest can be skipped.",
         ),
         (
             ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py"),
-            "2 test(s) to run for this change, every test file there is.",
+            "2 test(s) to run for this change, every test file there is, listed likeliest to fail first.",
         ),
         # As many files as the suite holds is not the suite: one is not a known test.
         (
             ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "other/test_x.py"),
-            "2 test(s) to run for this change (3 of 4 test files); the rest can be skipped.",
+            "2 test(s) to run for this change (3 of 4 test files), listed likeliest to fail first; "
+            "the rest can be skipped.",
         ),
     ],
 )
@@ -546,6 +550,29 @@ def test_a_selection_summary_says_how_much_of_the_suite_it_is(files, summary) ->
         known_tests=("tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py"),
     )
     assert _summary(selection, 2, 0, 10) == summary
+
+
+def test_a_summary_says_the_listed_tests_lead_with_the_likeliest_to_fail() -> None:
+    """``tests_to_run`` is in run order; an agent reading the bare list took it for
+    alphabetical. Only a summary over listed tests says so."""
+    from repowise.core.analysis.test_selection import Selection
+    from repowise.server.mcp_server._test_selection import ORDER, _summary
+
+    def summary(*, run_all: bool, total: int, listed: int) -> str:
+        selection = Selection(
+            run_all=run_all,
+            reasons=("no map",) if run_all else (),
+            tests=("t1", "t2")[:total],
+            test_files=("tests/test_a.py",)[: bool(total)],
+            known_tests=("tests/test_a.py", "tests/test_b.py"),
+        )
+        return _summary(selection, total, 0, listed)
+
+    assert ORDER in summary(run_all=False, total=2, listed=2)
+    assert ORDER in summary(run_all=False, total=2, listed=1)
+    assert ORDER not in summary(run_all=False, total=2, listed=0)
+    assert ORDER not in summary(run_all=False, total=0, listed=0)
+    assert ORDER not in summary(run_all=True, total=2, listed=2)
 
 
 @pytest.mark.asyncio

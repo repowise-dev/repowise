@@ -127,6 +127,7 @@ def test_codex_plugin_skills_have_metadata_and_neutral_wording() -> None:
         "codebase-exploration",
         "dead-code-cleanup",
         "pre-modification-check",
+        "settings",
     }
 
     for path in skill_paths:

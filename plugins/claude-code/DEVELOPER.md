@@ -35,7 +35,8 @@ repowise/                              # main repo root
     │   ├── change-review/SKILL.md
     │   ├── code-health/SKILL.md
     │   ├── architectural-decisions/SKILL.md
-    │   └── dead-code-cleanup/SKILL.md
+    │   ├── dead-code-cleanup/SKILL.md
+    │   └── settings/SKILL.md
     ├── CHANGELOG.md
     ├── DEVELOPER.md                   # this file
     └── README.md                      # user-facing docs

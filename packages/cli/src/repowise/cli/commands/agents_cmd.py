@@ -367,12 +367,39 @@ def agents_group(ctx: click.Context, fmt: str) -> None:
     help="Where to write: repo-local config, per-machine config, or both.",
 )
 @click.option("--yes", "-y", is_flag=True, default=False, help="Never prompt.")
+@click.option(
+    "--hosted",
+    is_flag=True,
+    default=False,
+    help="Connect the hosted Repowise server for this repo instead of the local one: "
+    "a URL entry each client signs in to with OAuth, no key. --scope is ignored.",
+)
+@click.option(
+    "--repo",
+    "hosted_repo",
+    default=None,
+    metavar="OWNER/NAME",
+    help="The repo on repowise.dev, with --hosted. Default: this checkout's GitHub origin.",
+)
+@click.option(
+    "--tools",
+    "tools",
+    default=None,
+    metavar="VALUE",
+    help="Which MCP tools the local server lists, saved as this repo's mcp.tools "
+    "(same as 'repowise config set mcp.tools'): core, lean, standard or all, "
+    "optionally followed by +name or -name. Unset: Claude Code lists standard, "
+    "other clients core.",
+)
 @format_option(help="Output format. json reports every file and what happened to it.")
 def agents_add(
     path: str | None,
     target_flag: str | None,
     scope: str,
     yes: bool,
+    hosted: bool,
+    hosted_repo: str | None,
+    tools: str | None,
     fmt: str,
 ) -> None:
     """Wire one or more agents up to this repo.
@@ -381,14 +408,185 @@ def agents_add(
     on a terminal you get a checklist with the installed agents pre-ticked.
     At user scope this is the one command that moves a per-machine entry
     serving another repo (Claude Desktop's) to this one; ``init`` never does.
+
+    ``--hosted`` writes the hosted server (``https://api.repowise.dev/mcp/
+    <owner>/<name>``) for each chosen client that takes a remote entry. It is
+    named ``repowise``, or ``repowise-hosted`` when a local ``repowise``
+    server is already there, which it never overwrites. Each agent's row
+    names the step left for a person (restart, sign in).
     """
+    if hosted_repo is not None and not hosted:
+        raise click.UsageError("--repo needs --hosted.")
+    if tools is not None and hosted:
+        raise click.UsageError("--tools sets the local server's tools; it does not apply to --hosted.")
     repo_path = _repo_path(path, fmt)
-    targets = _select_targets_for_add(repo_path, target_flag, yes, fmt)
-    payload = _write_payload("add", repo_path, targets, scope, remove=False)
+    if hosted:
+        payload = _hosted_payload(repo_path, target_flag, hosted_repo, yes, fmt)
+    else:
+        if tools is not None:
+            _save_tools(repo_path, tools)
+        targets = _select_targets_for_add(repo_path, target_flag, yes, fmt)
+        payload = _write_payload("add", repo_path, targets, scope, remove=False)
+        _note_tool_surface(payload, repo_path)
     if fmt == "json":
         emit_json(payload)
         return
     _render_writes(payload)
+    for agent in payload["agents"]:
+        if agent.get("next_step"):
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['next_step']}")
+        if agent.get("tools"):
+            console.print(f"  [cyan]{agent['display_name']}:[/cyan] {agent['tools']}")
+    if payload.get("tools_hint"):
+        console.print(f"  [dim]{payload['tools_hint']}[/dim]")
+
+
+def _save_tools(repo_path: Path, value: str) -> None:
+    """Save ``--tools`` as the repo's ``mcp.tools``, validated like ``config set``."""
+    from repowise.core.settings import registry
+    from repowise.core.settings.writers import parse_text, set_value
+
+    try:
+        set_value(repo_path, "mcp.tools", parse_text(registry.get("mcp.tools"), value))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--tools") from None
+
+
+def _note_tool_surface(payload: dict, repo_path: Path) -> None:
+    """Say which tool profile each wired agent's local server lists, and how to change it.
+
+    Read from the repo's ``mcp.tools``; with nothing set each agent gets its
+    own default (see ``repowise.core.registry.tool_selection.default_profile``).
+    """
+    from repowise.core.agents.identity import identity_for_target_id
+    from repowise.core.registry.tool_selection import (
+        default_profile,
+        normalize_override,
+        split_profile,
+    )
+    from repowise.core.repo_config import load_repo_config
+
+    try:
+        mcp_cfg = load_repo_config(str(repo_path)).get("mcp") or {}
+        tokens = normalize_override(mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None)
+    except Exception:
+        return
+    profile, rest = split_profile(tokens)
+    if tokens and profile is None and not all(t[0] in "+-" for t in rest):
+        return  # an exact list: the same tools for every agent, nothing per-agent to say
+    adjusted = f" {' '.join(rest)}" if rest else ""
+    for agent in payload["agents"]:
+        identity = identity_for_target_id(agent.get("id", ""))
+        chosen = profile or default_profile(identity.slug if identity else "unknown")
+        agent["tools"] = f"lists the {chosen} MCP tools{adjusted}"
+    payload["tools_hint"] = (
+        "Change with 'repowise config set mcp.tools <core|lean|standard|all>', "
+        "then restart the agent."
+    )
+
+
+def _hosted_url(repo_path: Path, hosted_repo: str | None) -> tuple[str, str]:
+    """``(owner/name, MCP URL)`` from ``--repo``, else from the GitHub origin."""
+    from repowise.cli.platform.publish import MCP_URL, parse_repo_slug, read_remote
+
+    if hosted_repo is not None:
+        parsed = parse_repo_slug(hosted_repo)
+        if parsed is None:
+            raise click.UsageError(f"--repo must be owner/name, got {hosted_repo!r}.")
+    else:
+        parsed = read_remote(repo_path)
+        if parsed is None:
+            raise click.UsageError(
+                "This checkout has no GitHub 'origin' remote. Pass --repo owner/name."
+            )
+    owner, name = parsed
+    return f"{owner}/{name}", MCP_URL.format(owner=owner, name=name)
+
+
+def _select_hosted_targets(
+    repo_path: Path, target_flag: str | None, yes: bool, fmt: str
+) -> list[Any]:
+    """``--target`` for ``--hosted``, where ``auto`` means installed or wired clients.
+
+    Plain ``auto`` means wired, which is the wrong question here: a hosted
+    user may have no local wiring at all. So ``auto`` (and no ``--target``)
+    picks the default selection among the clients that take a hosted entry.
+    """
+    from repowise.cli.agent_targets.registry import get_target
+
+    if target_flag is not None and target_flag.strip().lower() != "auto":
+        return _resolve_targets(target_flag, repo_path)
+    rows = [
+        row
+        for row in describe_agents(repo_path)
+        if (target := get_target(row["id"])) is not None and target.hosted is not None
+    ]
+    chosen = default_selection(rows) & {row["id"] for row in rows}
+    if _can_prompt(target_flag, yes) and fmt != "json":
+        answered = _prompt_for_agents(rows, chosen)
+        if answered is not None:
+            chosen = answered
+    return [t for row in rows if row["id"] in chosen and (t := get_target(row["id"]))]
+
+
+def _hosted_payload(
+    repo_path: Path, target_flag: str | None, hosted_repo: str | None, yes: bool, fmt: str
+) -> dict:
+    """Write the hosted entry for each chosen client; the record of what happened.
+
+    Same shape as :func:`_write_payload`, so one renderer serves both, plus
+    the hosted repo and URL, and per agent the server name used and the step
+    left for a person.
+    """
+    from repowise.cli.agent_targets.types import InstallOptions, Scope
+    from repowise.cli.editor_setup import is_editor_setup_disabled
+
+    full_name, url = _hosted_url(repo_path, hosted_repo)
+    targets = _select_hosted_targets(repo_path, target_flag, yes, fmt)
+    user_scope_disabled = is_editor_setup_disabled()
+    options = InstallOptions(hosted_url=url)
+
+    agents: list[dict] = []
+    for target in targets:
+        support = target.hosted
+        entry: dict = {
+            "id": target.id,
+            "display_name": target.display_name,
+            "method": "hosted",
+            "server_name": None,
+            "next_step": None,
+            "skips": {},
+            "writes": {},
+        }
+        if support is None:
+            entry["skips"]["hosted"] = (
+                f"no remote entry repowise writes for this client; add {url} by hand"
+            )
+        elif support.scope is Scope.USER and user_scope_disabled:
+            entry["skips"][support.scope.value] = "REPOWISE_SKIP_EDITOR_SETUP is set"
+        else:
+            result = target.install(support.scope, options, repo_path=repo_path)
+            entry["writes"][support.scope.value] = result.as_dict()
+            if result.server_name is not None:
+                entry["server_name"] = result.server_name
+                entry["next_step"] = support.next_step.format(name=result.server_name)
+        agents.append(entry)
+
+    changed = any(
+        f["action"] in ("created", "updated")
+        for agent in agents
+        for write in agent["writes"].values()
+        for f in write["files"]
+    )
+    return {
+        "action": "add",
+        "hosted": True,
+        "repo": str(repo_path),
+        "hosted_repo": full_name,
+        "url": url,
+        "changed": changed,
+        "agents": agents,
+    }
 
 
 def _select_targets_for_add(

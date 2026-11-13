@@ -15,8 +15,9 @@ from typing import Any, Protocol
 from ..models import REGISTRATION_HINT, is_dynamic_edge
 
 # Stamped on nodes by passes every build runs over every file (warmups,
-# always-run detection), so a seeded value could only be stale.
-_REBUILT_NODE_ATTRS = frozenset({"package_export", "always_run_reason"})
+# always-run detection, C/C++ declaration pairing), so a seeded value could
+# only be stale.
+_REBUILT_NODE_ATTRS = frozenset({"package_export", "always_run_reason", "defined_by"})
 # Stamped on a re-resolved file's own node by the type-reference pass, which
 # adds to whatever is there.
 _SCOPE_REBUILT_NODE_ATTRS = frozenset({"local_type_uses"})
@@ -51,6 +52,27 @@ def _fill_node_attrs(node: dict[str, Any], attrs: dict[str, Any], rescoped: bool
     for key, value in attrs.items():
         if key not in rebuilt:
             node.setdefault(key, value)
+
+
+# Import edges the build adds after it has read every file's import targets:
+# a seeded one must not reach the targets a full build would not have seen.
+# Ceiling: the scope-scan sibling passes (JVM, .NET, PHP, Swift) share hints
+# with import resolution and still count; upgrade by stamping an edge's pass.
+_LATE_IMPORT_HINTS = frozenset({"header_source_pair", "spec_mirror", "partial_class"})
+
+
+# The only edge types :func:`is_import_target_edge` can accept.
+IMPORT_TARGET_EDGE_TYPES = frozenset({"imports", "type_use"})
+
+
+def is_import_target_edge(data: dict[str, Any]) -> bool:
+    """Whether an edge stands in a file's import targets, as resolution reads them."""
+    edge_type = data.get("edge_type")
+    if edge_type not in IMPORT_TARGET_EDGE_TYPES:
+        return False
+    if edge_type == "imports":
+        return data.get("hint_source") not in _LATE_IMPORT_HINTS
+    return edge_type == "type_use" and not data.get("no_scope_widening")
 
 
 class _ScopedGraphHost(Protocol):
@@ -161,13 +183,7 @@ class ScopedBuildMixin:
             if path in scope:
                 continue
             import_targets[path] = {
-                target
-                for target, data in graph[path].items()
-                if data.get("edge_type") == "imports"
-                or (
-                    data.get("edge_type") == "type_use"
-                    and not data.get("no_scope_widening")
-                )
+                target for target, data in graph[path].items() if is_import_target_edge(data)
             }
 
     def _clear_global_pass_edges(self: _ScopedGraphHost) -> None:

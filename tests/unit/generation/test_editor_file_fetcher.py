@@ -26,6 +26,10 @@ from repowise.core.persistence.models import (
 # ---------------------------------------------------------------------------
 
 
+#: The opt-in orientation sections, for tests of their queries.
+_ORIENTATION = ["architecture", "key_modules", "entry_points", "hotspots", "health"]
+
+
 @pytest.fixture
 async def async_engine():
     engine = create_async_engine(
@@ -191,6 +195,21 @@ async def test_fetch_empty_db_returns_defaults(session, repo, tmp_path):
     assert data.avg_confidence == 0.0
 
 
+async def test_fetch_reads_the_mcp_tool_setting(session, repo, tmp_path):
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "mcp:\n  tools: core +get_risk\n", encoding="utf-8"
+    )
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    assert data.mcp_tools == "core +get_risk"
+    assert "get_risk" in data.listed_tools("codex")
+
+
+async def test_fetch_without_an_mcp_tool_setting(session, repo, tmp_path):
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    assert data.mcp_tools is None
+
+
 async def test_fetch_repo_name(session, repo, tmp_path):
     fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
     data = await fetcher.fetch()
@@ -215,7 +234,7 @@ async def test_fetch_architecture_summary(session, repo, tmp_path):
     await _add_page(session, repo.id, "repo_overview:.", "repo_overview", ".", content)
     await session.commit()
 
-    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION)
     data = await fetcher.fetch()
 
     assert data.architecture_summary != ""
@@ -228,7 +247,7 @@ async def test_fetch_entry_points(session, repo, tmp_path):
     await _add_graph_node(session, repo.id, "src/utils.py", is_entry_point=False)
     await session.commit()
 
-    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION)
     data = await fetcher.fetch()
 
     assert "src/main.py" in data.entry_points
@@ -248,7 +267,7 @@ async def test_fetch_entry_points_breaks_ties_on_pagerank(session, repo, tmp_pat
     await _add_graph_node(session, repo.id, "src/high.py", is_entry_point=True, pagerank=0.9)
     await session.commit()
 
-    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION)
     data = await fetcher.fetch()
 
     assert data.entry_points[0] == "src/high.py"
@@ -264,7 +283,7 @@ async def test_fetch_entry_points_ranks_execution_start_above_pagerank(session, 
     await _add_graph_node(session, repo.id, "src/main.py", is_entry_point=True, pagerank=0.01)
     await session.commit()
 
-    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION)
     data = await fetcher.fetch()
 
     assert data.entry_points == ["src/main.py", "src/types/index.ts"]
@@ -288,7 +307,7 @@ async def test_fetch_entry_points_prefers_curated_list(session, repo, tmp_path):
     )
     await session.commit()
 
-    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION)
     data = await fetcher.fetch()
 
     assert data.entry_points == ["src/cli/main.py"]
@@ -303,7 +322,7 @@ async def test_fetch_hotspots(session, repo, tmp_path):
     await _add_git_meta(session, repo.id, "src/utils.py", is_hotspot=False, churn_pct=0.10)
     await session.commit()
 
-    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path)
+    fetcher = EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION)
     data = await fetcher.fetch()
 
     assert len(data.hotspots) == 1
@@ -332,7 +351,7 @@ async def test_fetch_hotspots_admits_bug_magnets_that_are_not_churn_hotspots(
     )
     await session.commit()
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     paths = [h.path for h in data.hotspots]
     assert paths == ["src/broken.py", "src/busy.py"]  # fix evidence leads
@@ -349,7 +368,7 @@ async def test_fetch_hotspots_falls_back_to_churn_order_without_fix_data(session
     await _add_git_meta(session, repo.id, "src/high.py", is_hotspot=True, churn_pct=0.90)
     await session.commit()
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     assert [h.path for h in data.hotspots] == ["src/high.py", "src/low.py"]
     assert all(h.fix_count == 0 and h.last_fix_date is None for h in data.hotspots)
@@ -371,7 +390,7 @@ async def test_fetch_hotspots_drops_the_magnet_flag_when_recency_is_unknown(
     )
     await session.commit()
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     assert data.hotspots[0].bug_magnet is False
     assert data.hotspots[0].last_fix_date is None
@@ -607,7 +626,7 @@ async def test_fetch_hotspots_skips_files_no_longer_in_the_checkout(session, rep
     )
     await _add_git_meta(session, repo.id, "src/alive.py", is_hotspot=True, churn_pct=0.50)
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     assert [h.path for h in data.hotspots] == ["src/alive.py"]
 
@@ -622,7 +641,7 @@ async def _add_metric(session, repo_id, path, score):
 async def test_code_health_trend_is_absent_without_history(session, repo, tmp_path):
     await _add_metric(session, repo.id, "src/a.py", 7.0)
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     assert data.code_health is not None
     assert data.code_health.hotspot_trend is None
@@ -720,7 +739,7 @@ async def test_config_sections_add_commands_back(session, repo, tmp_path):
     data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
 
     assert data.build_commands == {"test": "npm run test"}
-    assert "hotspots" in data.sections and "commands" in data.sections
+    assert "how_to_work" in data.sections and "commands" in data.sections
 
 
 async def test_a_section_left_out_is_never_queried(session, repo, tmp_path):
@@ -736,10 +755,10 @@ async def test_a_section_left_out_is_never_queried(session, repo, tmp_path):
     assert data.decisions_in_force is False
 
 
-async def test_the_default_health_line_skips_the_detail_queries(session, repo, tmp_path):
+async def test_the_health_line_skips_the_detail_queries(session, repo, tmp_path):
     await _add_metric(session, repo.id, "src/a.py", 7.0)
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     assert data.code_health.average_health == 7.0
     assert data.code_health.worst_path == "src/a.py"
@@ -763,7 +782,7 @@ async def test_structure_only_module_purpose_has_no_metadata_and_no_newline(
     )
     await session.commit()
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     (module,) = data.key_modules
     assert "**Language:**" not in module.purpose
@@ -791,7 +810,7 @@ async def test_structure_only_overview_skips_the_preamble(session, repo, tmp_pat
     )
     await session.commit()
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     assert data.architecture_summary.startswith("fx2 is a python codebase of 19 files.")
     assert "Covers the whole" not in data.architecture_summary
@@ -807,7 +826,7 @@ async def test_model_written_module_keeps_its_opening_sentence(session, repo, tm
     await _add_page(session, repo.id, "module_page:billing", "module_page", "billing", content)
     await session.commit()
 
-    data = await EditorFileDataFetcher(session, repo.id, tmp_path).fetch()
+    data = await EditorFileDataFetcher(session, repo.id, tmp_path, sections=_ORIENTATION).fetch()
 
     assert data.key_modules[0].purpose == "billing covers 6 python files, exposing 5 public symbols"
 

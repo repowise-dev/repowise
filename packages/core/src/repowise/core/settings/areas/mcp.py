@@ -37,9 +37,24 @@ SETTINGS: tuple[Setting, ...] = (
         "mcp.tools",
         "list",
         None,
-        "Which MCP tools are offered: all, lean, +name or -name to adjust the "
-        "default, or plain names as the exact list. Unset offers the default set.",
+        "Which MCP tools are offered, for every client: a profile (core, lean, "
+        "standard, all), optionally followed by +name or -name; +name or -name "
+        "alone to adjust each client's default; or plain names as the exact list. "
+        "Unset: Claude Code gets standard, clients that load every schema up "
+        "front get core.",
         parser="repowise.core.registry.tool_selection:normalize_override",
+        # The server lists its tools once, when it starts.
+        reload="restart",
+    ),
+    _s(
+        "mcp.always_load",
+        "bool",
+        False,
+        "Ask clients that defer tool schemas (Claude Code) to load get_answer, "
+        "get_context, search_codebase and get_symbol up front: removes one "
+        "tool-loading turn before the first call and costs about 2k tokens per "
+        "turn. Other tools stay deferred.",
+        reload="restart",
     ),
     _e(
         "REPOWISE_ANSWER_TIMEOUT_S",
