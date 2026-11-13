@@ -314,7 +314,7 @@ def _surface_reindex_recommendation(repo_path, verdict, *, emitter: Any, dry_run
     "--dry-run", is_flag=True, default=False, help="Show affected pages without regenerating."
 )
 @click.option("--render-budget", type=click.IntRange(min=1), default=None,
-              help="Max stale template pages to render this run; resume on the next update.")
+              help="Max stale pages built from code to render this run; resume on the next update.")
 @click.option(
     "--workspace",
     "-w",
@@ -1923,7 +1923,7 @@ def _index_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
     """Index-only: re-render a template wiki (no model), persist, and finish."""
     docs_mode = resolve_docs_mode(run.state)
     if opts.render_budget is not None and (docs_mode != "deterministic" or opts.defer_docs):
-        raise reasoned_error("--render-budget requires an active template wiki without --defer-docs.",
+        raise reasoned_error("--render-budget requires documentation built from code without --defer-docs.",
                              reason="render_budget_needs_template_wiki")
     pages = _TemplatePages(
         docs_mode=docs_mode,
@@ -1978,7 +1978,7 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
         )
         complete_git_meta = with_stored_git_meta(run.repo_path, run.git_meta_map, paths)
         if complete_git_meta is None:
-            run.degraded.append("Template backlog retained: stored Git history unreadable")
+            run.degraded.append("Documentation backlog retained: stored Git history unreadable")
             out.renderer_render_ok = False
             return
         run.render_git_meta = complete_git_meta
@@ -2001,14 +2001,14 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
     )
     if opts.render_budget is not None:
         if "render_stale_ids" not in out.render_stats and not out.renderer_render_ok:
-            raise RuntimeError("Template render planning failed; completion was not recorded.")
+            raise RuntimeError("Documentation render planning failed; completion was not recorded.")
         selected = out.render_stats.get("render_stale_ids", set())
         out.render_stats["render_backlog"] = len(selected - {p.page_id for p in out.pages})
         out.renderer_render_ok = (out.render_stats["render_backlog"] == 0
                                  and len(degraded) == degraded_before_render)
         run.state["pending_render_pages"] = out.render_stats["render_backlog"]
         if not out.renderer_render_ok:
-            console.print(f"  Template pages still pending: {out.render_stats.get('render_backlog', 0)}")
+            console.print(f"  Pages built from code still pending: {out.render_stats.get('render_backlog', 0)}")
     elif out.renderer_render_ok:
         run.state.pop("pending_render_pages", None)
     if run.config.generation_changed and len(degraded) > degraded_before_render:
@@ -2661,7 +2661,7 @@ def run_update(
     if opts.render_budget is not None and (
         not run.index_only or resolve_docs_mode(run.state) != "deterministic"
     ):
-        raise reasoned_error("--render-budget requires a template wiki and --index-only or --no-docs.",
+        raise reasoned_error("--render-budget requires documentation built from code and --index-only or --no-docs.",
                              reason="render_budget_needs_template_wiki")
     if not opts.defer_docs:
         resolve_wiki_rebuild(opts, run)
