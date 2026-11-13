@@ -5,7 +5,23 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { SWRConfig } from "swr";
 import type { FixFirstQueue, FixItem } from "@repowise-dev/types/fix-first";
 import type { HealthOverviewResponse } from "@repowise-dev/types/health";
-import { TriageView, type CodeHealthAdapter } from "@repowise-dev/ui/health";
+import { TriageView, type CodeHealthAdapter, type FixFirstList } from "@repowise-dev/ui/health";
+
+type ListProps = Parameters<typeof FixFirstList>[0];
+// The list only offers triage for an item with findings, so the handler's
+// empty case is reached by calling the `onTriage` the section passes down.
+const listProps = vi.hoisted(() => ({ onTriage: undefined as ListProps["onTriage"] }));
+vi.mock("@repowise-dev/ui/health", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@repowise-dev/ui/health")>();
+  const { createElement } = await import("react");
+  return {
+    ...mod,
+    FixFirstList: (props: ListProps) => {
+      listProps.onTriage = props.onTriage;
+      return createElement(mod.FixFirstList, props);
+    },
+  };
+});
 
 const getFixFirst = vi.fn();
 const updateFindingStatus = vi.fn();
@@ -240,5 +256,17 @@ describe("FixFirstSection triage re-read", () => {
     expect(await screen.findByText(FAILED)).toBeTruthy();
     expect(updateFindingStatus).toHaveBeenCalledTimes(2);
     expect(getFixFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it("still re-reads when an item has no findings to write", async () => {
+    getFixFirst.mockReset().mockResolvedValue(queue([item({})]));
+    updateFindingStatus.mockReset().mockResolvedValue({});
+    renderSection();
+    await screen.findByRole("button", { name: /Extract lines 60-122/ });
+    expect(getFixFirst).toHaveBeenCalledTimes(1);
+    const empty = item({ source: { opportunity_id: "refop3_x", plan_ids: [], finding_ids: [] } });
+    await listProps.onTriage!(empty, "resolved");
+    expect(updateFindingStatus).not.toHaveBeenCalled();
+    await waitFor(() => expect(getFixFirst).toHaveBeenCalledTimes(2));
   });
 });

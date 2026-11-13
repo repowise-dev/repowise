@@ -51,13 +51,15 @@ export function FixFirstSection({ repoId }: { repoId: string }) {
       );
       // The queue and every health view that counts findings re-read. No data
       // argument: passing one, `undefined` included, would blank each key
-      // while it refetches. Whatever landed is re-read even if a write failed.
-      if (writes.some((w) => w.status === "fulfilled")) {
+      // while it refetches. Whatever landed is re-read even if a write failed;
+      // only a triage where every write failed skips it. An item with no
+      // finding ids writes nothing and still re-reads.
+      const failure = writes.find((w) => w.status === "rejected");
+      if (!failure || writes.some((w) => w.status === "fulfilled")) {
         await mutateAll(
           (k) => typeof k === "string" && k.startsWith("code-health") && k.includes(repoId),
         );
       }
-      const failure = writes.find((w) => w.status === "rejected");
       if (failure) throw failure.reason;
     },
     [repoId, mutateAll],
