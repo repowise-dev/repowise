@@ -304,7 +304,43 @@ def generate_command(
       repowise generate --page module_page:src/api --cascade none
     """
     configure_cli_logging(verbose=verbose)
+    run_generate(
+        path,
+        all_pages=all_pages,
+        unwritten=unwritten,
+        stale=stale,
+        path_globs=path_globs,
+        page_ids=page_ids,
+        cascade=cascade,
+        provider_name=provider_name,
+        model=model,
+        reasoning=reasoning,
+        concurrency=concurrency,
+        dry_run=dry_run,
+        yes=yes,
+    )
 
+
+def run_generate(
+    path: str | None,
+    *,
+    all_pages: bool = False,
+    unwritten: bool = False,
+    stale: bool = False,
+    path_globs: tuple[str, ...] = (),
+    page_ids: tuple[str, ...] = (),
+    cascade: str | None = None,
+    provider_name: str | None = None,
+    model: str | None = None,
+    reasoning: str | None = None,
+    concurrency: int = 12,
+    dry_run: bool = False,
+    yes: bool = False,
+) -> Any:
+    """The body of ``repowise generate``; ``update --full`` runs it with ``stale=True``.
+
+    Returns the run's outcome, or None when nothing was generated.
+    """
     repo_path = resolve_repo_path(path)
     load_dotenv(repo_path)
     state = load_state(repo_path)
@@ -341,7 +377,7 @@ def generate_command(
     if not run_async(has_documentation(repo_path)):
         console.print(NO_DOCUMENTATION_MESSAGE)
         record_refusal("no_documentation")
-        return
+        return None
 
     explicit_provider = provider_name is not None
     if provider_name is None:
@@ -418,7 +454,7 @@ def generate_command(
     )
 
     if outcome is None:
-        return  # nothing generated, dry run, or declined — messaging already printed
+        return None  # nothing generated, dry run, or declined — messaging already printed
 
     _write_state(repo_path, state, provider, outcome, embedder=embedder_name)
     # Telemetry never ends a run whose pages are already saved.
@@ -432,6 +468,7 @@ def generate_command(
         # A scheduled run must be able to tell "every page failed" (no sign-in,
         # a dead key) from success. Partial success keeps 0: its pages are kept.
         raise SystemExit(1)
+    return outcome
 
 
 def _record_provider(provider: Any) -> None:

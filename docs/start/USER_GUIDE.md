@@ -283,7 +283,7 @@ behind a cost estimate, put the key in `.repowise/.env` and run:
 ```bash
 repowise generate                  # the unwritten subsystem pages, behind one estimate
 repowise generate --path src/api   # or one area first
-repowise generate --stale          # refresh pages the last update marked stale
+repowise update --full             # refresh every stale page, behind one estimate
 repowise generate --all            # or rewrite every page
 ```
 

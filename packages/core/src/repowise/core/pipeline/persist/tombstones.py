@@ -260,6 +260,31 @@ async def tombstone_pages_outside_generation(
     return marked
 
 
+async def retire_page_ids(session: Any, repo_id: str, page_ids: Iterable[str]) -> list[str]:
+    """Retire these pages: the generator, asked for each by id, no longer yields it."""
+    ids = list(dict.fromkeys(page_ids))
+    if not ids:
+        return []
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+
+    pages = (
+        await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.id.in_(ids),
+                Page.freshness_status != "tombstone",
+            )
+        )
+    ).scalars()
+    marked: list[str] = []
+    for page in pages:
+        _tombstone(page, [], TOMBSTONE_RETIRED)
+        marked.append(page.id)
+    return marked
+
+
 async def tombstone_absent_file_pages(
     session: Any, repo_id: str, repo_path: Path | str
 ) -> list[str]:
