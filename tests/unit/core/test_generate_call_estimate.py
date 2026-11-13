@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from sqlalchemy import update
+
 from repowise.cli.commands.decision_lanes import with_lane_plan
 from repowise.cli.commands.generate_cmd.engine import run_scoped_generation
 from repowise.cli.helpers import get_db_url_for_repo
@@ -30,6 +32,7 @@ from repowise.core.persistence.crud import (
     upsert_git_metadata_bulk,
     upsert_page,
 )
+from repowise.core.persistence.models import Page
 
 _COMMIT = {
     "sha": "9a0b27a7",
@@ -57,28 +60,34 @@ def _write_repo(root: Path) -> None:
     (root / ".repowise" / "state.json").write_text(json.dumps(state), encoding="utf-8")
 
 
-async def _seed(root: Path) -> str:
+async def _seed(root: Path, *, graph: bool = True) -> str:
     engine = create_engine(get_db_url_for_repo(root))
     await init_db(engine)
     try:
         async with get_session(create_session_factory(engine)) as session:
             repo = await upsert_repository(session, name=root.name, local_path=str(root))
-            await batch_upsert_graph_nodes(
-                session,
-                repo.id,
-                [{"node_id": "pkg/hooks.py", "node_type": "file", "language": "python"}],
-            )
+            if graph:
+                await batch_upsert_graph_nodes(
+                    session,
+                    repo.id,
+                    [{"node_id": "pkg/hooks.py", "node_type": "file", "language": "python"}],
+                )
             await upsert_git_metadata_bulk(
                 session,
                 repo.id,
                 [{"file_path": "pkg/hooks.py", "significant_commits_json": json.dumps([_COMMIT])}],
             )
+            # (id, type, target, provider, metadata): a structural stub, two
+            # concept stubs, a model page with deterministic prose (still a
+            # stub to the planner) and a written page the user pinned.
             pages = [
-                ("file_page:pkg/hooks.py", "file_page", "pkg/hooks.py"),
-                ("module_page:pkg", "module_page", "pkg"),
-                ("repo_overview:" + root.name, "repo_overview", root.name),
+                ("file_page:pkg/hooks.py", "file_page", "pkg/hooks.py", "template", None),
+                ("module_page:pkg", "module_page", "pkg", "template", None),
+                ("repo_overview:" + root.name, "repo_overview", root.name, "template", None),
+                ("module_page:det", "module_page", "det", "mock", {"deterministic": True}),
+                ("module_page:pinned", "module_page", "pinned", "mock", None),
             ]
-            for page_id, page_type, target in pages:
+            for page_id, page_type, target, provider, metadata in pages:
                 await upsert_page(
                     session,
                     page_id=page_id,
@@ -89,9 +98,13 @@ async def _seed(root: Path) -> str:
                     summary="Page",
                     target_path=target,
                     source_hash="h",
-                    model_name="template",
-                    provider_name="template",
+                    model_name=provider,
+                    provider_name=provider,
+                    metadata=metadata,
                 )
+            await session.execute(
+                update(Page).where(Page.id == "module_page:pinned").values(pinned=True)
+            )
             return repo.id
     finally:
         await engine.dispose()
@@ -136,9 +149,10 @@ async def test_the_upgrade_line_counts_the_calls_generate_prices(tmp_path: Path)
     pages, shared = await _shared_count(tmp_path, repo_id)
     priced = await _generate_count(tmp_path)
 
-    # The pending lanes add calls on top of the two unwritten concept pages.
-    assert pages == 2
-    assert shared > pages
+    # Three unwritten concept pages; generate also rewrites the pinned one,
+    # and the pending lanes add their calls on top.
+    assert pages == 3
+    assert shared > pages + 1
     assert shared == priced
 
 
@@ -149,5 +163,15 @@ async def test_no_pending_lanes_counts_only_the_pages(tmp_path: Path) -> None:
 
     pages, shared = await _shared_count(tmp_path, repo_id)
 
-    assert shared == pages == 2
+    assert pages == 3
+    assert shared == pages + 1
     assert await _generate_count(tmp_path) == shared
+
+
+async def test_a_missing_graph_counts_the_pages_without_failing(tmp_path: Path) -> None:
+    _write_repo(tmp_path)
+    repo_id = await _seed(tmp_path, graph=False)
+
+    pages, shared = await _shared_count(tmp_path, repo_id)
+
+    assert shared == pages + 1
