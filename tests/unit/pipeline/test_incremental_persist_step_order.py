@@ -29,6 +29,7 @@ from tests.unit._persist_step_recorders import (
 HAPPY_ORDER = [
     "reconcile_full_index_scope",
     "tombstone_pages_outside_generation",
+    "restore_stored_complexity",
     "sweep_store_hygiene",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
@@ -183,6 +184,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
     assert rec.order == [
         "reconcile_full_index_scope",
         "tombstone_pages_outside_generation",
+        "restore_stored_complexity",
         "sweep_store_hygiene",
         "tombstone_candidates",
         "mark_tombstone_pages",
@@ -216,6 +218,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
             for step in (
                 "Config scope reconciliation",
                 "Generation scope reconciliation",
+                "Stored complexity restore",
                 "Retired page sweep",
                 "Tombstone marking",
                 "Page tree rebuild",

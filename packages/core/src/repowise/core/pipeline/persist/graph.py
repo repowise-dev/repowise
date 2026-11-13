@@ -280,6 +280,53 @@ async def persist_incremental_symbols(
     await reconcile_symbols_for_files(session, repo_id, reconcile_paths, symbols)
 
 
+async def stored_symbol_complexity(session: Any, repo_id: str) -> dict[str, int]:
+    """``{symbol_id: complexity_estimate}`` as the last health run stored it, zeros left out."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import WikiSymbol
+
+    rows = await session.execute(
+        select(WikiSymbol.symbol_id, WikiSymbol.complexity_estimate).where(
+            WikiSymbol.repository_id == repo_id
+        )
+    )
+    return {sid: int(value) for sid, value in rows if value}
+
+
+def apply_stored_complexity(
+    parsed_files: list[Any] | None, stored: dict[str, int], skip_paths: set[str] | frozenset = frozenset()
+) -> None:
+    """Set each symbol's ``complexity_estimate`` from *stored*, outside *skip_paths*.
+
+    A parse leaves every symbol at the parser default and only health analysis
+    measures complexity. An update analyses the changed files alone, so they go
+    in *skip_paths* and keep the values this run measured.
+    """
+    for pf in parsed_files or []:
+        if pf.file_info.path in skip_paths:
+            continue
+        for sym in pf.symbols:
+            sid = getattr(sym, "id", None) or f"{pf.file_info.path}::{sym.name}"
+            if value := stored.get(sid):
+                sym.complexity_estimate = value
+
+
+async def restore_stored_complexity(
+    session: Any, repo_id: str, parsed_files: list[Any] | None, changed_paths: list[str]
+) -> None:
+    """Give the unchanged files' symbols the complexity their last health run measured.
+
+    Left at the parser default, the update's parse ranks spotlights unlike
+    init (the deselection sweep retires pages init keeps), and a symbol write
+    widened to every file by a parser change stores the default over every
+    measured value.
+    """
+    if parsed_files:
+        stored = await stored_symbol_complexity(session, repo_id)
+        apply_stored_complexity(parsed_files, stored, set(changed_paths or ()))
+
+
 async def persist_symbol_analysis(
     session: Any,
     repo_id: str,

@@ -159,6 +159,10 @@ async def rescore_health_from_store(
             await _save_rescore(
                 session, repo, repo_path, graph_builder, report, coverage, stage_timings
             )
+            # The analysis stamped each symbol's complexity; store it as init does.
+            from repowise.core.pipeline.persist import persist_symbol_analysis
+
+            await persist_symbol_analysis(session, repo.id, parsed_files)
             # An empty report writes nothing (``save_full_health_report``).
             if snapshot and (report.metrics or report.findings):
                 from repowise.core.pipeline.persist import snapshot_health_from_store

@@ -106,6 +106,13 @@ async def reconcile_generation_scope(ctx: IncrementalPersist) -> None:
     )
 
 
+async def restore_complexity(ctx: IncrementalPersist) -> None:
+    # Before the sweep ranks spotlights and the symbol write stores them.
+    from repowise.core.pipeline.persist import restore_stored_complexity
+
+    await restore_stored_complexity(ctx.session, ctx.repo_id, ctx.parsed_files, ctx.changed_paths)
+
+
 async def sweep_retired(ctx: IncrementalPersist) -> None:
     # Delete rows of pages retired since this index was built. This path never
     # regenerates a repo-wide page, so nothing else here would ever visit one
@@ -480,6 +487,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
         reconcile_generation_scope,
         when=lambda ctx: ctx.full_generation_page_ids is not None,
     ),
+    Step("Stored complexity restore", restore_complexity, when=lambda ctx: bool(ctx.parsed_files)),
     Step("Retired page sweep", sweep_retired, when=lambda ctx: ctx.deferred_page_scope is None),
     Step(
         "Tombstone marking",
