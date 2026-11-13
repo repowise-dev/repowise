@@ -756,10 +756,13 @@ def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
     """Whether the graph holds every row the store does for the files it covers.
 
     Short when a synthetic-edge pass failed, or when a traversed file that
-    failed to parse had graph rows before: its symbols are missing, so every
-    caller's edge into it reads as gone. A file that has never parsed had no
-    rows to lose, as the last persisted graph (``previous_seed_edges``) shows;
-    without that snapshot any unparsed file counts as short.
+    failed to parse had graph rows before that the graph no longer holds: its
+    symbols are missing, so every caller's edge into it reads as gone. The
+    last persisted graph (``previous_seed_edges``) shows which rows a file
+    had. A file that never parsed had none, a bare file node with no edge
+    carries nothing a caller can lose, and rows the update restored
+    (``restore_unparsed_graph_rows``) are not lost; without that snapshot any
+    unparsed file counts as short.
     """
     if not getattr(graph_builder, "synthetic_edges_complete", True):
         return False
@@ -770,10 +773,30 @@ def _graph_is_complete(graph_builder: Any, parsed_files: list[Any]) -> bool:
     previous = getattr(graph_builder, "previous_seed_edges", None)
     if previous is None:
         return False
-    return not any(
-        node_id in unparsed or attrs.get("file_path") in unparsed
+    return not _lost_unparsed_rows(graph_builder.graph(), previous, unparsed)
+
+
+def _lost_unparsed_rows(graph: Any, previous: dict[str, list], unparsed: set[str]) -> bool:
+    """Whether an unparsed file had a symbol or an edge that *graph* no longer holds."""
+    owned = {
+        node_id
         for node_id, attrs in previous["nodes"]
+        if node_id in unparsed or attrs.get("file_path") in unparsed
+    }
+    if not owned:
+        return False
+    if any(node_id not in graph for node_id in owned - unparsed):
+        return True
+    return any(
+        (source in owned or target in owned)
+        and not _holds_edge(graph, source, target, attrs.get("edge_type", "imports"))
+        for source, target, attrs in previous["edges"]
     )
+
+
+def _holds_edge(graph: Any, source: str, target: str, edge_type: str) -> bool:
+    data = graph.get_edge_data(source, target)
+    return data is not None and data.get("edge_type", "imports") == edge_type
 
 
 async def _prune_vanished_symbol_nodes(

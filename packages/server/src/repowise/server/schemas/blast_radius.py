@@ -209,7 +209,8 @@ class BlastRadiusResponse(BaseModel):
 
 class ChangeCandidateModel(BaseModel):
     id: str
-    kind: Literal["working_tree", "branch", "commit"]
+    #: A ``change_request`` (merge or pull request) is never listed; a link opens one.
+    kind: Literal["working_tree", "branch", "commit", "change_request"]
     label: str
     title: str | None = None
     author: str | None = None
@@ -222,6 +223,12 @@ class ChangeCandidateModel(BaseModel):
     #: For a branch: whether it exists on the remote. A local-only branch is
     #: often scratch work, so the picker shows it quieter.
     pushed: bool | None = None
+    #: For a change request: its number on the forge.
+    number: int | None = None
+    #: For a change request: the commit it is compared against.
+    base_sha: str | None = None
+    #: For a change request: what its forge calls one ("merge request", "pull request").
+    change_term: str | None = None
 
 
 class ChangeCandidatesResponse(BaseModel):
@@ -350,7 +357,12 @@ class ChangeReview(BaseModel):
 
 
 class ChangeBlastRadiusResponse(BlastRadiusResponse):
+    #: The change analyzed. A merge or pull request asked for by number
+    #: (``mr:<n>``, ``pr:<n>``) comes back pinned to the two commits read
+    #: (``mr:<n>@<base sha>...<head sha>``), so a link built from it never moves.
     change_id: str
+    #: The merge or pull request, as the picker shows one; ``None`` for other kinds.
+    change: ChangeCandidateModel | None = None
     #: The paths analyzed, after the cap below.
     changed_files: list[str]
     #: Every path the change touches, before the cap.

@@ -263,7 +263,7 @@ describe("the step map", () => {
 describe("change links", () => {
   it("reads every picker id pasted as is, so ?change=commit:<sha> opens the commit", () => {
     const sha = "e".repeat(40);
-    for (const id of [`commit:${sha}`, "branch:feat/x", "working-tree"]) {
+    for (const id of [`commit:${sha}`, "branch:feat/x", "mr:7", "pr:9", "working-tree"]) {
       expect(changeIdFromLink(id)).toBe(id);
       expect(changeIdFromLink(changeLinkParam(id))).toBe(id);
     }
@@ -274,9 +274,64 @@ describe("change links", () => {
     expect(changeIdFromLink("commit:abc")).toBe("branch:commit:abc");
   });
 
-  it("knows no pull request kind: an unlisted pr:<n> id names nothing", async () => {
+  it("passes mr:<n>, pr:<n> and their pinned form through both ways, never as a branch", () => {
+    const pinned = `mr:7@${"a".repeat(40)}...${"b".repeat(40)}`;
+    for (const id of ["mr:7", "pr:123", pinned]) {
+      expect(changeIdFromLink(id)).toBe(id);
+      expect(changeLinkParam(id)).toBe(id);
+    }
+    // A branch literally named like a request number keeps the branch reading.
+    expect(changeIdFromLink("pr-123")).toBe("branch:pr-123");
+    expect(changeIdFromLink("mr:07")).toBe("branch:mr:07");
+  });
+
+  it("names an unlisted request from its link and a resolved one by the forge's reference and title", async () => {
     const { changeFor } = await import("../../src/blast-radius/impact-view.js");
-    expect(changeFor("pr:7", [])).toBeUndefined();
+    const { changeName, changeMeta } = await import("../../src/blast-radius/change-picker.js");
+    const unlisted = changeFor("mr:7", [])!;
+    expect([unlisted.kind, unlisted.label, unlisted.change_term]).toEqual(["change_request", "Merge request 7", "merge request"]);
+    const pinned = changeFor(`pr:3@${"a".repeat(40)}...${"b".repeat(40)}`, [])!;
+    expect([pinned.label, pinned.base_sha, pinned.head_sha]).toEqual(["Pull request 3", "a".repeat(40), "b".repeat(40)]);
+    const resolved = { ...unlisted, label: "!7", title: "Tune the core", author: "Dev", files_changed: 4 };
+    expect(changeName(resolved)).toBe("!7 Tune the core");
+    expect(changeMeta(resolved)).toContain("Dev");
+    expect(changeMeta(resolved)).toContain("4 files");
+  });
+});
+
+describe("a merge request opened from a link", () => {
+  it("shows the forge's name for it and pins the link to the commits read", async () => {
+    const base = "a".repeat(40);
+    const head = "b".repeat(40);
+    const pinned = `mr:7@${base}...${head}`;
+    const analyzeChange = vi.fn(async () => ({
+      ...changeResult(["src/core.ts"]),
+      change_id: pinned,
+      change: {
+        id: pinned,
+        kind: "change_request" as const,
+        label: "!7",
+        title: "Tune the core",
+        author: "Dev",
+        committed_at: null,
+        head_sha: head,
+        base: "origin/main",
+        base_sha: base,
+        number: 7,
+        change_term: "merge request",
+        ahead: null,
+        files_changed: 1,
+        is_current: false,
+      },
+    }));
+    const onChangePicked = vi.fn();
+    const adapter = makeAdapter({ listChanges: vi.fn(async () => CHANGES), analyzeChange });
+    renderView(<ImpactView adapter={adapter} initialChange="mr:7" onChangePicked={onChangePicked} />);
+
+    await waitFor(() => expect(analyzeChange).toHaveBeenCalledWith({ changeId: "mr:7", maxDepth: 3 }));
+    expect(await screen.findByRole("button", { name: /Change under review: !7 Tune the core/ })).toBeInTheDocument();
+    await waitFor(() => expect(onChangePicked).toHaveBeenCalledWith(pinned));
+    expect(onChangePicked).toHaveBeenCalledTimes(1);
   });
 });
 

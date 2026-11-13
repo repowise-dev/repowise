@@ -567,6 +567,7 @@ export interface ChangeBlastRadiusResponse {
   overall_risk_score: number;
   overall_risk_score_compatibility: RiskCompatibilityField;
   change_id: string;
+  change?: ChangeCandidateModel | null;
   changed_files: string[];
   changed_files_total: number;
   transitive_total?: number;
@@ -579,7 +580,7 @@ export interface ChangeBlastRadiusResponse {
 
 export interface ChangeCandidateModel {
   id: string;
-  kind: "working_tree" | "branch" | "commit";
+  kind: "working_tree" | "branch" | "commit" | "change_request";
   label: string;
   title?: string | null;
   author?: string | null;
@@ -590,6 +591,9 @@ export interface ChangeCandidateModel {
   files_changed?: number | null;
   is_current?: boolean;
   pushed?: boolean | null;
+  number?: number | null;
+  base_sha?: string | null;
+  change_term?: string | null;
 }
 
 /** The changes a reviewer can pick, and the one to open first. */

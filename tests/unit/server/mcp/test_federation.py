@@ -265,7 +265,7 @@ async def test_happy_path_shapes_unchanged(workspace_mcp):  # noqa: F811
     assert all("stale" not in r for r in overview["repos"])
 
     dead = await get_dead_code(repo="all")
-    assert set(dead) == {"workspace", "summary", "tiers", "impact", "_meta"}
+    assert set(dead) == {"headline", "workspace", "summary", "tiers", "impact", "_meta"}
     rows = [f for t in dead["tiers"].values() for f in t["findings"]]
     assert {f["repo"] for f in rows} == {"backend", "frontend"}
     assert all("stale" not in f for f in rows)

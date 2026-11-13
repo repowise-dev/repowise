@@ -52,8 +52,9 @@ export function ImpactTab({ repoId }: { repoId: string }) {
     fileHref: (path) => fileEntityPath(`/repos/${repoId}`, path),
   }), [repoId]);
 
-  // `?change=` (wip, a branch, a full sha) makes a review shareable: picking a
-  // change writes it, opening the link opens that change.
+  // `?change=` (wip, a branch, a full sha, `mr:<n>` / `pr:<n>`) makes a review
+  // shareable: picking a change writes it, opening the link opens that change,
+  // and a merge or pull request is rewritten to its pinned id once read.
   const router = useRouter();
   const pathname = usePathname();
   const onChangePicked = (change: string) => {
