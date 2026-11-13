@@ -88,33 +88,43 @@ def snapshot_full_surface(mcp: Any) -> None:
         _full_surface = dict(registered)
 
 
-def _read_config_override(repo_path: str | None) -> str | Sequence[str] | None:
-    """Read ``mcp.tools`` from ``.repowise/config.yaml`` if present."""
+def _read_repo_config(repo_path: str | None) -> dict[str, Any] | None:
+    """``.repowise/config.yaml`` as a mapping; None when unreadable or no repo.
+
+    A file that cannot be read or parsed logs a warning naming it, so a user
+    whose ``mcp.tools`` or ``mcp.always_load`` did nothing can see why. Any
+    other error is a bug and propagates.
+    """
     if not repo_path:
         return None
-    try:
-        from repowise.core.repo_config import load_repo_config
+    from repowise.core.repo_config import RepoConfigError, load_repo_config
 
-        mcp_cfg = load_repo_config(repo_path).get("mcp") or {}
-        if isinstance(mcp_cfg, dict):
-            return mcp_cfg.get("tools")
-    except Exception:
-        _log.debug("Failed to read mcp.tools from config", exc_info=True)
-    return None
+    try:
+        config = load_repo_config(repo_path)
+    except (RepoConfigError, OSError) as exc:
+        _log.warning("Ignoring the mcp settings in .repowise/config.yaml: %s", exc)
+        return None
+    return config
+
+
+def _read_config_override(repo_path: str | None) -> str | Sequence[str] | None:
+    """Read ``mcp.tools`` from ``.repowise/config.yaml`` if present."""
+    config = _read_repo_config(repo_path)
+    mcp_cfg = (config or {}).get("mcp") or {}
+    return mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None
 
 
 def _read_always_load(repo_path: str | None) -> bool:
     """Read ``mcp.always_load`` from ``.repowise/config.yaml``; off when unreadable."""
-    if not repo_path:
+    config = _read_repo_config(repo_path)
+    if config is None:
         return False
-    try:
-        from repowise.core.repo_config import load_repo_config
-        from repowise.core.settings import resolve
+    from repowise.core.settings import resolve
 
-        return bool(resolve("mcp.always_load", load_repo_config(repo_path)).value)
-    except Exception:
-        _log.debug("Failed to read mcp.always_load from config", exc_info=True)
-    return False
+    resolved = resolve("mcp.always_load", config)
+    if resolved.problem:
+        _log.warning("Ignoring %s", resolved.problem)
+    return bool(resolved.value)
 
 
 def _is_workspace(repo_path: str | None) -> bool:

@@ -80,3 +80,36 @@ async def test_unserved_tools_are_not_listed_or_marked(tmp_path, monkeypatch) ->
         tmp_path, monkeypatch, "mcp:\n  always_load: true\n", tools="get_answer,get_why"
     )
     assert {t["name"]: t.get("_meta") for t in wire} == {"get_answer": _HINT, "get_why": None}
+
+
+@pytest.mark.parametrize(
+    ("config", "logged"),
+    [
+        ("mcp: [always_load\n", ".repowise"),  # does not parse
+        ("mcp:\n  always_load: maybe\n", "mcp.always_load"),  # not a bool
+    ],
+)
+def test_unusable_config_warns_and_stays_off(tmp_path, caplog, config, logged) -> None:
+    from repowise.server.mcp_server._tool_selection import (
+        _read_always_load,
+        _read_config_override,
+    )
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(config, encoding="utf-8")
+    with caplog.at_level("WARNING", logger="repowise.mcp"):
+        assert _read_always_load(str(tmp_path)) is False
+    assert any(logged in r.getMessage() for r in caplog.records)
+    assert _read_config_override(str(tmp_path)) is None
+
+
+def test_unexpected_config_error_is_not_swallowed(tmp_path, monkeypatch) -> None:
+    from repowise.core import repo_config
+    from repowise.server.mcp_server._tool_selection import _read_always_load
+
+    def broken(_path: Any) -> dict:
+        raise TypeError("bug")
+
+    monkeypatch.setattr(repo_config, "load_repo_config", broken)
+    with pytest.raises(TypeError):
+        _read_always_load(str(tmp_path))
