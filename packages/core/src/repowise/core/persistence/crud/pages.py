@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from ..models import (
     Page,
@@ -322,6 +323,8 @@ async def load_prior_pages(
     session: AsyncSession,
     repository_id: str,
     page_ids: list[str] | None = None,
+    *,
+    include_content: bool = True,
 ) -> dict[str, Any]:
     """Return a ``page_id → PriorPage`` map for cross-run cache reuse.
 
@@ -332,7 +335,8 @@ async def load_prior_pages(
     nothing has been generated yet. Rows a model never wrote (``template``
     provider — keyless stubs, or stubs left by failed provider calls) carry
     their ``provider_name`` so the reuse gate can refuse to copy them
-    (issue #1089). *page_ids* narrows the read to those pages.
+    (issue #1089). *page_ids* narrows the read to those pages. Set
+    *include_content* to False for revision planning without reading bodies.
     """
     # Import lazily — keeps persistence independent of generation models at
     # module-load time.
@@ -340,7 +344,7 @@ async def load_prior_pages(
     from repowise.core.generation.page_generator import PriorPage
 
     prior: dict[str, Any] = {}
-    for row in await _prior_rows(session, repository_id, page_ids):
+    for row in await _prior_rows(session, repository_id, page_ids, include_content):
         try:
             metadata = json.loads(row.metadata_json or "{}")
         except (TypeError, ValueError):
@@ -354,11 +358,11 @@ async def load_prior_pages(
             source_hash=row.source_hash,
             content_hash=row.content_hash or "",
             model_name=row.model_name,
-            content=row.content,
-            digest=row.digest or "",
-            input_tokens=row.input_tokens,
-            output_tokens=row.output_tokens,
-            cached_tokens=row.cached_tokens,
+            content=row.content if include_content else "",
+            digest=(row.digest or "") if include_content else "",
+            input_tokens=row.input_tokens if include_content else 0,
+            output_tokens=row.output_tokens if include_content else 0,
+            cached_tokens=row.cached_tokens if include_content else 0,
             metadata=metadata,
             provider_name=row.provider_name,
             freshness_status=row.freshness_status or "",
@@ -367,9 +371,15 @@ async def load_prior_pages(
 
 
 async def _prior_rows(
-    session: AsyncSession, repository_id: str, page_ids: list[str] | None
+    session: AsyncSession, repository_id: str, page_ids: list[str] | None,
+    include_content: bool = True,
 ) -> list[Page]:
     query = select(Page).where(Page.repository_id == repository_id)
+    if not include_content:
+        query = query.options(load_only(
+            Page.id, Page.source_hash, Page.content_hash, Page.model_name,
+            Page.metadata_json, Page.provider_name, Page.freshness_status,
+        ))
     if page_ids is None:
         return list((await session.execute(query)).scalars())
     rows: list[Page] = []

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -103,7 +104,7 @@ class _GenerationRun:
         dead_code_report: Any | None,
         decision_report: Any | None,
         external_systems: list[dict] | None,
-        on_page_ready: Callable[[GeneratedPage], None] | None = None,
+        on_page_ready: Callable[[GeneratedPage], Awaitable[None] | None] | None = None,
         kg_modules: list[dict] | None = None,
         kg_data: dict | None = None,
         only_page_ids: set[str] | None = None,
@@ -112,6 +113,10 @@ class _GenerationRun:
         on_warning: Callable[[str], None] | None = None,
         persisted_page_ids: set[str] | None = None,
         on_embed: Callable[[int, bool], None] | None = None,
+        render_budget: int | None = None,
+        changed_paths: set[str] | None = None,
+        render_stats: dict | None = None,
+        on_render_plan: Callable[[set[str]], Any] | None = None,
     ) -> None:
         self.gen = gen
         self.config = gen._config
@@ -152,6 +157,11 @@ class _GenerationRun:
         self.on_subphase = on_subphase
         self.on_warning = on_warning
         self.on_embed = on_embed
+        self.render_budget = render_budget
+        self.changed_paths = changed_paths or set()
+        self.render_stats = render_stats
+        self.on_render_plan = on_render_plan
+        self.render_revisions: dict = {}
         self.git_meta_map = git_meta_map
         self.resume = resume
         self.repo_path = repo_path
@@ -683,6 +693,13 @@ class _GenerationRun:
                             result = await coro
 
                         if isinstance(result, GeneratedPage):
+                            if self.render_budget is not None:
+                                from .render_budget import RENDER_REVISION
+
+                                if STUB_FALLBACK_ERROR in result.metadata:
+                                    raise RuntimeError(result.metadata[STUB_FALLBACK_ERROR])
+                                self._finalize([result], checkpoint=True)
+                                result.metadata[RENDER_REVISION] = self.render_revisions[page_id]
                             # Sanitized before the streaming sink sees it, so the
                             # first stored version is the final text. Left to the
                             # post-generation pass alone, any page it changes was
@@ -717,8 +734,12 @@ class _GenerationRun:
                             # page or abort the level.
                             if self.on_page_ready is not None:
                                 try:
-                                    self.on_page_ready(result)
+                                    committed = self.on_page_ready(result)
+                                    if inspect.isawaitable(committed):
+                                        await committed
                                 except Exception as exc:
+                                    if self.render_budget is not None:
+                                        raise
                                     log.debug("on_page_ready.failed", error=str(exc))
                             # A page reused verbatim from the prior run already has an
                             # identical vector in any store that survives across runs;
@@ -759,6 +780,8 @@ class _GenerationRun:
                             level=level,
                             error=str(exc),
                         )
+                        if self.render_budget is not None and self.on_warning is not None:
+                            self.on_warning(f"Template page {page_id} failed: {exc}")
                         return exc  # return as value so gather works
                     except BaseException:
                         # Cancellation (Ctrl+C teardown): CancelledError is a
@@ -838,8 +861,21 @@ class _GenerationRun:
             self._setup_job()
             await self._seed_resume()
             await self._compute_selection()
-            self._announce_total()
             self._compute_ia()
+            if self.render_budget is not None:
+                if self.render_budget < 1 or not self.config.deterministic:
+                    raise ValueError("render_budget requires a positive deterministic page budget")
+                from .render_budget import select_render_batch
+
+                await select_render_batch(self, self.render_budget, self.changed_paths)
+                if self.render_stats is not None:
+                    self.render_stats["render_backlog"] = self.gen.render_backlog
+                    self.render_stats["render_page_ids"] = self.gen.render_page_ids
+                if self.on_render_plan is not None:
+                    committed = self.on_render_plan(self.gen.render_stale_ids)
+                    if inspect.isawaitable(committed):
+                        await committed
+            self._announce_total()
 
         all_pages: list[GeneratedPage] = []
 
@@ -920,15 +956,30 @@ class _GenerationRun:
 
         return self._finalize(all_pages)
 
-    def _finalize(self, all_pages: list[GeneratedPage]) -> list[GeneratedPage]:
+    def _finalize(
+        self, all_pages: list[GeneratedPage], *, checkpoint: bool = False
+    ) -> list[GeneratedPage]:
         """Run the post-generation passes and close out the job.
 
         Shared with the ``file_pages_only`` early return, so an incremental
         deterministic run still gets mermaid repair, interlinking, related
         pages and tour links over the pages it did produce.
         """
+        if self.render_budget is not None and not checkpoint:
+            # Each page was finalized before its commit. A second pass over
+            # the batch would make interrupted and uninterrupted text differ.
+            if self.job_system is not None and self.job_id is not None:
+                self.job_system.complete_job(self.job_id)
+            return all_pages
         with timed(self.timings, "generation.finalize"):
             _stamp_structural_keys(all_pages)
+            if checkpoint:
+                self.gen._tag_promoted_pages(all_pages)
+                for page in all_pages:
+                    if page.page_type == "repo_overview":
+                        page.metadata.update(guided_tour=self.tour_stops,
+                                             layer_order=self.layer_order,
+                                             layer_order_ids=self.layer_order_ids)
 
             # Place every page in the tree that MCP, the web app and the editor
             # extension all read, instead of each deriving its own from paths.
@@ -971,6 +1022,7 @@ class _GenerationRun:
                     # On incremental updates only the affected pages are in
                     # all_pages; the persisted ids keep resolution repo-wide.
                     prior_page_ids=list(self.gen._prior_pages or {}),
+                    index=getattr(self, "render_link_index", None),
                 )
             except Exception as exc:
                 log.debug("interlinking.failed", error=str(exc))
@@ -985,21 +1037,22 @@ class _GenerationRun:
             try:
                 from ..related_pages import attach_related_pages
 
-                attach_related_pages(
-                    all_pages,
-                    import_edges=self._file_import_edges(),
-                    git_meta_map=self.git_meta_map,
-                    module_groups=self.sel_module_groups,
-                    pagerank=self.pagerank,
-                    # On incremental updates only the affected pages are in
-                    # all_pages; the persisted ids keep resolution repo-wide.
-                    prior_page_ids=list(self.gen._prior_pages or {}),
-                )
+                if not checkpoint:
+                    attach_related_pages(
+                        all_pages,
+                        import_edges=self._file_import_edges(),
+                        git_meta_map=self.git_meta_map,
+                        module_groups=self.sel_module_groups,
+                        pagerank=self.pagerank,
+                        # On incremental updates only the affected pages are in
+                        # all_pages; the persisted ids keep resolution repo-wide.
+                        prior_page_ids=list(self.gen._prior_pages or {}),
+                    )
             except Exception as exc:
                 log.debug("related_pages.failed", error=str(exc))
 
             # Post-generation: link KG tour steps to wiki page IDs.
-            if self.kg_ctx.available and self.repo_path:
+            if self.kg_ctx.available and self.repo_path and not checkpoint:
                 try:
                     from ..kg_enrichment import enrich_tour_with_wiki_links
 
@@ -1012,15 +1065,16 @@ class _GenerationRun:
                 except Exception as exc:
                     log.debug("kg_enrichment.failed", error=str(exc))
 
-            if self.job_system is not None and self.job_id is not None:
+            if self.job_system is not None and self.job_id is not None and not checkpoint:
                 self.job_system.complete_job(self.job_id)
 
-            log.info(
-                "Generation complete",
-                total_pages=len(all_pages),
-                provider=self.gen._provider.provider_name,
-                model=self.gen._provider.model_name,
-            )
+            if not checkpoint:
+                log.info(
+                    "Generation complete",
+                    total_pages=len(all_pages),
+                    provider=self.gen._provider.provider_name,
+                    model=self.gen._provider.model_name,
+                )
             return all_pages
 
 

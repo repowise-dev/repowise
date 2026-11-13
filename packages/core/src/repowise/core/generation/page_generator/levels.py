@@ -142,19 +142,10 @@ async def _prefetch_dependency_summaries(run: _GenerationRun) -> None:
         log.debug("rag.batch_dep_prefetch_failed", error=str(exc))
 
 
-async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
-    """Level 2 (file_page): topo-ordered context assembly, then one renderer.
-
-    Context is assembled for ALL code files (module pages need it). Pages are
-    emitted only for files in the selection allow-set.
-
-    Known cost on a scoped run (``only_page_ids``): this still assembles every
-    code file's context even when the scope emits a handful of pages, because
-    ``run.file_page_contexts`` feeds the module/SCC/layer builders. It is pure
-    CPU, no LLM, and bounded by the reparse the caller already paid. Upgrade
-    path if it bites on a very large repo: restrict assembly to the emitted file
-    pages plus the member files of the emitted module/SCC/layer pages.
-    """
+async def assemble_file_contexts(run: _GenerationRun) -> None:
+    """Prepare the shared file contexts used by file and module pages once."""
+    if run.file_page_contexts:
+        return
     gen = run.gen
     _topo_order_code_files(run)
     await _prefetch_dependency_summaries(run)
@@ -165,7 +156,6 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
 
     symbol_index = build_symbol_index(run.graph)
 
-    items: list[tuple[Any, FilePageContext]] = []
     for p in run.code_files:
         kg_file_ctx = (
             run.kg_ctx.get_file_context(p.file_info.path) if run.kg_ctx.available else None
@@ -185,14 +175,22 @@ async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
             symbol_index=symbol_index,
         )
         run.file_page_contexts[p.file_info.path] = ctx
-        items.append((p, ctx))
+
+
+async def build_level2_coros(run: _GenerationRun) -> list[tuple[str, Any]]:
+    """Level 2: shared context assembly, then allow-set filtered file pages.
+
+    All code files still supply context for module/SCC pages, including a
+    bounded run. The page budget limits renders, not repository analysis.
+    """
+    await assemble_file_contexts(run)
 
     coros: list[tuple[str, Any]] = []
-    for p, ctx in items:
+    for p in run.code_files:
         path = p.file_info.path
         pid = compute_page_id("file_page", path)
         if path in run.sel_file_paths and run._emit(pid):
-            coros.append((pid, gen._render_file_page(p, ctx)))
+            coros.append((pid, run.gen._render_file_page(p, run.file_page_contexts[path])))
     return coros
 
 
