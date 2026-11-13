@@ -112,9 +112,9 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
 def _query_git_history_file_count(repo_path: Path) -> int | None:
     """Return the live number of indexed files with git history, if readable.
 
-    Counts the population the stored denominator counts: the code files the
+    Counts the population the stored denominator counts, the code files the
     Git indexer measured. ``history_only`` rows (docs, configs) carry commit
-    counts too, but are outside that population.
+    counts too, but are outside it.
     """
 
     async def _query() -> int:
@@ -126,6 +126,7 @@ def _query_git_history_file_count(repo_path: Path) -> int | None:
             create_session_factory,
             get_session,
         )
+        from repowise.core.persistence.crud import code_file_rows
         from repowise.core.persistence.models import GitMetadata, Repository
 
         url = get_db_url_for_repo(repo_path)
@@ -143,11 +144,7 @@ def _query_git_history_file_count(repo_path: Path) -> int | None:
                 result = await session.execute(
                     sa_select(sa_func.count())
                     .select_from(GitMetadata)
-                    .where(
-                        GitMetadata.repository_id == repo_id,
-                        GitMetadata.commit_count_total > 0,
-                        GitMetadata.history_only.is_(False),
-                    )
+                    .where(code_file_rows(repo_id), GitMetadata.commit_count_total > 0)
                 )
                 return int(result.scalar_one() or 0)
         finally:
