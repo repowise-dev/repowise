@@ -280,3 +280,26 @@ def test_deleted_paths_are_keyed_from_the_git_root(tmp_path: Path) -> None:
     )
 
     assert _deleted_paths(ctx) == {"pkg/gone.py", "pkg/old.py"}
+
+
+async def test_complexity_is_restored_outside_the_diffed_files(repo, monkeypatch):
+    # A traversal change persists every file, but partial health measured only the diff.
+    rec = StepRecorder(monkeypatch)
+    install_shared_steps(rec)
+
+    await persist_incremental_index(
+        repo,
+        graph_builder(),
+        dict(GIT_META),
+        dead_code_report(),
+        object(),
+        ["src/a.py", "src/b.py"],
+        file_diffs=file_diffs(),
+        parsed_files=parsed_files(),
+        log=lambda _msg: None,
+        degraded=[],
+        failed_steps=[],
+    )
+
+    [(args, _kwargs)] = rec.args_of("restore_stored_complexity")
+    assert args[-1] == ["src/a.py"]

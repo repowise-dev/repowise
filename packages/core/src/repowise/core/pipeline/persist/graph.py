@@ -313,9 +313,9 @@ def apply_stored_complexity(
 
 
 async def restore_stored_complexity(
-    session: Any, repo_id: str, parsed_files: list[Any] | None, changed_paths: list[str]
+    session: Any, repo_id: str, parsed_files: list[Any] | None, measured_paths: list[str]
 ) -> None:
-    """Give the unchanged files' symbols the complexity their last health run measured.
+    """Give the symbols outside *measured_paths* the complexity their last health run measured.
 
     Left at the parser default, the update's parse ranks spotlights unlike
     init (the deselection sweep retires pages init keeps), and a symbol write
@@ -324,7 +324,7 @@ async def restore_stored_complexity(
     """
     if parsed_files:
         stored = await stored_symbol_complexity(session, repo_id)
-        apply_stored_complexity(parsed_files, stored, set(changed_paths or ()))
+        apply_stored_complexity(parsed_files, stored, set(measured_paths or ()))
 
 
 async def persist_symbol_analysis(
