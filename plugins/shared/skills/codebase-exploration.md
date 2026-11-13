@@ -25,26 +25,53 @@ structure that plain file reads don't, usually in one round-trip instead of many
 | You want… | Call |
 |---|---|
 | An exact identifier, string or file name | Grep, Glob and Read. |
+{{only:claude-code}}
 | First orientation in an unfamiliar repo | `get_overview()`: architecture summary, key modules, entry points, git health, knowledge map. Skip it once you have the map. |
+{{end}}
+{{only:codex}}
+| First orientation in an unfamiliar repo | `get_answer(question="what are the main modules and entry points?")`. For the full map (architecture, git health, knowledge map), add `+get_overview` to `mcp.tools` in `.repowise/config.yaml` and restart the MCP server. |
+{{end}}
 | How X works or flows end to end | `get_answer(question="how does …")`, one question per call: synthesised answer with citations + one `confidence` trust signal. Collapses the search → read → reason loop. |
 | Callers before a rename or signature change | `get_context(targets=["<symbol>"], include=["references"])`: definition, imports and calls; a `complete` list is the whole edit set. |
+{{only:claude-code}}
 | What breaks if X changes | `get_risk(targets=["<file>"])`. |
+{{end}}
+{{only:codex}}
+| What breaks if X changes | `repowise risk --target <file>`. |
+{{end}}
 | Why X is shaped this way, before changing a pattern | `get_why(query="why …", targets=["<file>"])`. |
+{{only:claude-code}}
 | Before finishing a multi-file change | `get_change_risk(revspec="<base>..HEAD")`, then `get_health(targets=["<files you touched>"])`. |
+{{end}}
+{{only:codex}}
+| Before finishing a multi-file change | `repowise risk <base>..HEAD`, then `repowise health --score <file you touched> --against <base>`. |
+{{end}}
 | A fuzzy concept, or symbol ids and line bounds to feed `get_symbol` | `search_codebase(query="…")`: hybrid search. `mode="auto"` routes an identifier to indexed symbol hits (`symbol_id`/line bounds → pipe into `get_symbol`), a path to file pages (→ `get_context`), and prose to semantic wiki search (each hit reports `search_method`: `embedding` vs `bm25`). Force a branch with `mode=symbol\|path\|concept\|hybrid`; narrow symbols with `symbol_kind`. |
 | A triage card for specific files/symbols | `get_context(targets=[…])`: title, summary, signatures, hotspot bit, top callers, decision titles, symbol_ids (a row without one is `path::name`). Batch many targets in one call. |
 | The actual source of one symbol | `get_symbol("path/to/file.py::Name")`: exact bytes with line bounds. Cheaper than Read + offset math. Use a `symbol_id` from `get_context`. |
 
 ## Recommended flow
 
+{{only:claude-code}}
 1. New area you don't know → `get_overview()` once.
+{{end}}
+{{only:codex}}
+1. New area you don't know → one orientation `get_answer` call.
+{{end}}
 2. A specific question → `get_answer(question=…)` first.
    - High confidence → answer it, cite the paths.
    - `medium`/`low` confidence → follow `best_guesses[0].file` or
      `fallback_targets[0]` into `get_context`, then `get_symbol` for bytes.
+{{only:claude-code}}
 3. A named symbol or a path you only need to find → Grep, Glob or Read. When
    you need its callers, risk or history, pass it to `get_context`, `get_risk`
    or `get_why` instead.
+{{end}}
+{{only:codex}}
+3. A named symbol or a path you only need to find → Grep, Glob or Read. When
+   you need its callers or history, pass it to `get_context` or `get_why`
+   instead; for its risk, `repowise risk --target <path>`.
+{{end}}
 4. More files around a concept → `search_codebase`, then `get_context` on the
    hits (batched), then `get_symbol` only for the bodies you actually need.
 
