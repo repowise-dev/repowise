@@ -32,10 +32,9 @@ from ..models import (
 )
 from . import levels as _levels
 from .helpers import (
-    _CODE_LANGUAGES,
-    _is_infra_file,
     build_dead_code_map,
     build_decision_maps,
+    is_code_file,
     overview_summary,
 )
 
@@ -315,13 +314,7 @@ class _GenerationRun:
 
     async def _compute_selection(self) -> None:
         """Run the selection subsystem and derive the level allow-sets."""
-        code_files = [
-            p
-            for p in self.parsed_files
-            if not p.file_info.is_api_contract
-            and not _is_infra_file(p)
-            and p.file_info.language in _CODE_LANGUAGES
-        ]
+        code_files = [p for p in self.parsed_files if is_code_file(p)]
 
         from ..selection.selector import near_clone_paths
 

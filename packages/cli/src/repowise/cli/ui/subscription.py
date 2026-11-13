@@ -85,7 +85,7 @@ def model_call_count(plans: Iterable[object]) -> int:
     from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
 
     return sum(
-        int(getattr(plan, "count", 0))
+        int(getattr(plan, "count", 0)) - int(getattr(plan, "free", 0))
         for plan in plans
         if getattr(plan, "page_type", None) not in STRUCTURAL_PAGE_TYPES
     )
