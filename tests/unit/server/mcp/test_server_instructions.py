@@ -86,3 +86,43 @@ def test_handshake_reports_the_repowise_version_not_the_sdk_version() -> None:
     options = mcp._mcp_server.create_initialization_options()
     assert options.server_name == "repowise"
     assert options.server_version == __version__
+
+
+@pytest.mark.parametrize(
+    "override",
+    [None, "all", "core", "lean", "-get_answer", "-get_why", "get_context,search_codebase"],
+)
+def test_instructions_name_no_tool_the_server_does_not_serve(
+    tmp_path: Any, monkeypatch: Any, override: str | None
+) -> None:
+    # A host calls a tool it reads in the instructions even when it is not
+    # listed, and the call fails.
+    import re
+
+    from repowise.core.registry import mcp_tool_registry
+    from repowise.server.mcp_server import _state, _tool_selection, create_mcp_server
+
+    monkeypatch.setattr(_state, "_repo_path", _state._repo_path)
+    monkeypatch.setattr(_state, "_force_single_repo", _state._force_single_repo)
+    monkeypatch.setattr(mcp._mcp_server, "instructions", mcp.instructions)
+    try:
+        server = create_mcp_server(str(tmp_path), tools=override)
+        served = {t.name for t in server._tool_manager.list_tools()}
+        named = {
+            entry.name
+            for entry in mcp_tool_registry.entries()
+            if re.search(rf"\b{entry.name}\b", server.instructions)
+        }
+        assert named and named <= served
+    finally:
+        if _tool_selection._full_surface is not None:
+            mcp._tool_manager._tools = dict(_tool_selection._full_surface)
+        _tool_selection._selected_surface = None
+
+
+def test_the_decisions_line_is_dropped_without_get_why() -> None:
+    from repowise.server.mcp_server._server import _instructions
+
+    line = "- 3 decisions govern files here: get_why(targets=[file]) first."
+    assert line in _instructions({"get_why"}, line)
+    assert "get_why" not in _instructions({"get_answer", "get_risk"}, line)
