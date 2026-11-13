@@ -264,11 +264,12 @@ def test_the_stored_flag_decides_for_a_test_named_production_module() -> None:
 # --------------------------------------------------------------------------
 
 # Complexity 12: only the direct tier clears it (reach alone estimates CRAP 43).
+# The branches assign: a run of ``if flag: return i`` guards counts once.
 _FLAGS = "abcdefghijk"
 _BRANCHY = (
     f"def route({', '.join(_FLAGS)}):\n"
-    + "".join(f"    if {flag}:\n        return {i}\n" for i, flag in enumerate(_FLAGS, 1))
-    + "    return 0\n"
+    + "".join(f"    if {flag}:\n        out = {i}\n" for i, flag in enumerate(_FLAGS, 1))
+    + "    return out\n"
 )
 
 

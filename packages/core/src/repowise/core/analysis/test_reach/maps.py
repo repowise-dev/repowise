@@ -56,8 +56,8 @@ class ImportGraph:
     The import walk is unbounded on the selection path, so on a hub it runs
     dozens of levels; one bulk read replaces a query per level. Either source
     gives the same answer: the walk reaches a fixpoint, so edge order does not
-    matter. Ceiling: read per selection, not kept across calls; caching it per
-    index stamp is the upgrade path if the read shows up.
+    matter. Kept per index state (``cached_import_graphs``), so a reader never
+    changes it.
     """
 
     importers: Mapping[str, tuple[str, ...]]

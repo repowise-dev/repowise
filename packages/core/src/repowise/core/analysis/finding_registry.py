@@ -140,8 +140,6 @@ _FEW_PLANS = "Most judged plans were not acceptable as written."
 _NONE_SERVED = "No opportunity was served to judge."
 _IN_MEMORY = "In-memory lookups are read as database calls."
 _ONE_PLAN = "One judged plan was not acceptable as written."
-_NOT_WRONG = "not wrong"
-_VENDORED_HEADER = "A vendored single-header library is not classed vendored."
 
 # Each row covers a whole layer on one language (``kinds=None``). Precision is
 # the share of true positives in a judged sample (debatable counted as a miss)
@@ -157,8 +155,8 @@ _GateRow = (
 )
 _GATE_ROWS: tuple[_GateRow, ...] = (
     # Health ships on a not-wrong bar (debatable counts as not wrong): Java,
-    # C# and C cleared 0.90 on every corpus on 2026-10-15 and are ungated.
-    ("health", "cpp", 0.825, "the lower of 2 C++ repos, 40 judged each", _VENDORED_HEADER, _PREVIEW, _REAUDIT_DATE, _NOT_WRONG),
+    # C# and C cleared 0.90 on every corpus on 2026-10-15, C++ on 4 corpora
+    # on 2026-10-27, and all four are ungated.
     ("refactoring", "java", 0.22, "55 judged plans from 2 Java repos", _FEW_PLANS, _PREVIEW, _REAUDIT_DATE),
     ("refactoring", "csharp", 0.83, "6 judged plans from 1 C# repo", _ONE_PLAN, _PREVIEW, _REAUDIT_DATE),
     ("refactoring", "c", 0.0, "1 judged plan from 1 C repo", _NO_PLAN, _PREVIEW, _REAUDIT_DATE),

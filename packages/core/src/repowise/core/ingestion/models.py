@@ -102,6 +102,11 @@ LanguageTag = Literal[
     "unknown",
 ]
 
+# TypeScript, JavaScript and the single-file components whose script blocks
+# ``sfc_source`` projects into a TS buffer at identical offsets, so every TS/JS
+# code path applies to them verbatim.
+TS_JS_LANGUAGES: frozenset[str] = frozenset({"typescript", "javascript", "svelte", "vue", "astro"})
+
 # ---------------------------------------------------------------------------
 # Extension → language map (used by FileTraverser and ASTParser)
 #
@@ -158,6 +163,9 @@ SymbolKind = Literal[
     "property",
 ]
 
+#: Kinds that name a stored value rather than behaviour or a type.
+VALUE_SYMBOL_KINDS: frozenset[str] = frozenset({"constant", "variable", "property"})
+
 # ---------------------------------------------------------------------------
 # Core models
 # ---------------------------------------------------------------------------
@@ -187,6 +195,9 @@ class FileInfo:
     # Starts a framework application (``SpringApplication.run``): ranked with
     # the manifest entries, but not a public API the way those are.
     is_application_main: bool = False
+    # Plugin that extracts an otherwise unsupported source file as Markdown.
+    extractor_name: str | None = None
+    extractor_version: str | None = None
 
 
 @dataclass
@@ -287,6 +298,8 @@ class NamedBinding:
     is_module_alias: bool = False  # True for "import x" / "import * as ns"
     is_global: bool = False  # C# `global using` — applies to every file in the project
     is_static_import: bool = False  # C# `using static` / Java static import — pulls members
+    # Java ``import static a.B.m``: the type ``B`` that declares the member.
+    member_of: str | None = None
     # Position of the local name (1-based line, byte column), set where a
     # binding can sit inside a function body (``require``, ``import()``), so
     # it is not read as a shadowing local.
@@ -353,6 +366,10 @@ CallSiteEdgeType = Literal["calls", "references"]
 #: The ``receiver_name`` of a Kotlin call on a string literal (``"/".encodeUtf8()``):
 #: no name can be spelled this way, and receiver typing reads it as ``String``.
 STRING_LITERAL_RECEIVER = '""'
+
+#: The argument type of a C# unsuffixed integer constant, which converts to any
+#: numeric type its value fits, unlike an ``int`` value.
+CSHARP_INTEGER_CONSTANT = "int constant"
 
 
 @dataclass
@@ -491,6 +508,8 @@ EdgeType = Literal[
     # that something holds a handle to it, which is enough to make deleting it
     # unsafe.
     "references",
+    # A document links to or names a repository file; source is always a Markdown node.
+    "documents",
 ]
 
 # Runtime mirror of the Literal, for the places that must test membership
@@ -607,6 +626,12 @@ CONTAINMENT_EDGE_TYPES: frozenset[str] = frozenset({"defines", "has_method"})
 # look like an import of its own subject.
 TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 
+# Prose pointing at code: a document naming a file says nothing about what the file depends on.
+DOCUMENTATION_EDGE_TYPES: frozenset[str] = frozenset({"documents"})
+
+# Edges that are not code at all: history and prose.
+NON_CODE_EDGE_TYPES: frozenset[str] = TEMPORAL_EDGE_TYPES | DOCUMENTATION_EDGE_TYPES
+
 # Edge types that are *not* code dependencies, and so must be excluded by any
 # consumer answering "what depends on this?" about FILES.
 #
@@ -616,8 +641,8 @@ TEMPORAL_EDGE_TYPES: frozenset[str] = frozenset({"co_changes"})
 # ``calls`` / ``extends`` / ``implements``, and nothing points from a symbol
 # back to a file. Drop ``defines`` and a caller can no longer walk from a file
 # to the functions it declares, so anything traversing the graph wants
-# ``TEMPORAL_EDGE_TYPES`` and a ``node_type`` check instead.
-NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | TEMPORAL_EDGE_TYPES
+# ``NON_CODE_EDGE_TYPES`` and a ``node_type`` check instead.
+NON_DEPENDENCY_EDGE_TYPES: frozenset[str] = CONTAINMENT_EDGE_TYPES | NON_CODE_EDGE_TYPES
 
 # ---------------------------------------------------------------------------
 # The named views. Ask for the one that matches your question.
@@ -784,6 +809,9 @@ class ParsedFile:
     symbols: list[Symbol]
     imports: list[Import]
     exports: list[str]  # names exported by this file
+    # Go's package clause affects the names callers use after importing a
+    # directory, but it is not a Symbol. Store it for incremental surface checks.
+    module_name: str | None = None
     # ``{exported name: local name}`` where a TS/JS module publishes a symbol
     # it declares under a different name (``export { stringType as string }``).
     # Empty for every other language and for the far commoner clause that does

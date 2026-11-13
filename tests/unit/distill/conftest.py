@@ -2,11 +2,30 @@
 
 from __future__ import annotations
 
+import os
+import sys
+from functools import partial
 from pathlib import Path
 
 import pytest
 
 from repowise.core.distill.store import OmissionStore
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_agent_transcripts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep synchronous pricing scans out of the developer's agent sessions."""
+    from repowise.core.distill import session_model
+
+    monkeypatch.setattr(
+        session_model,
+        "resolve_session_model",
+        partial(
+            session_model.resolve_session_model,
+            projects_root=tmp_path / "agent-transcripts" / "claude",
+            codex_sessions_root=tmp_path / "agent-transcripts" / "codex",
+        ),
+    )
 
 
 @pytest.fixture(scope="session")
@@ -25,6 +44,26 @@ def load_fixture(distill_fixtures_dir: Path):
         return (distill_fixtures_dir / name).read_text(encoding="utf-8-sig")
 
     return _load
+
+
+@pytest.fixture(scope="session")
+def _repowise_stub_dir(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    stub_dir = tmp_path_factory.mktemp("repowise-on-path")
+    stub = stub_dir / ("repowise.exe" if sys.platform == "win32" else "repowise")
+    stub.write_text("")
+    stub.chmod(0o755)
+    return stub_dir
+
+
+@pytest.fixture(autouse=True)
+def _repowise_on_path(_repowise_stub_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``repowise`` resolvable on PATH, as a rewrite requires.
+
+    The rewrite hook passes commands through when ``repowise`` is not on
+    PATH, so tests that expect a rewrite would otherwise depend on how pytest
+    was launched. Tests of the pass-through set their own PATH.
+    """
+    monkeypatch.setenv("PATH", f"{_repowise_stub_dir}{os.pathsep}{os.environ.get('PATH', '')}")
 
 
 @pytest.fixture()

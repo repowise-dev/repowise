@@ -78,6 +78,23 @@ def resolve_indexed_repo(
     single-repo by construction (see ``tool_bridge``), so ``--repo <alias>``
     selects whose resources get wired and the primary repo is the default.
     """
+    return resolve_indexed_target(
+        path=path, repo_alias=repo_alias, no_workspace=no_workspace, fmt=fmt, command=command
+    )[0]
+
+
+def resolve_indexed_target(
+    *,
+    path: str | None,
+    repo_alias: str | None,
+    no_workspace: bool,
+    fmt: str,
+    command: str,
+) -> tuple[Path, Path | None]:
+    """:func:`resolve_indexed_repo`, and the root of the workspace around it.
+
+    The root is ``None`` with ``--no-workspace`` or outside a workspace.
+    """
     from repowise.cli.helpers import resolve_command_target
 
     target = resolve_command_target(
@@ -93,7 +110,7 @@ def resolve_indexed_repo(
         raise click.ClickException(
             f"{repo_path} is not indexed. Run 'repowise init' there first."
         )
-    return repo_path
+    return repo_path, target.ws_root
 
 
 def emit_full(payload: dict) -> None:
@@ -109,8 +126,17 @@ def emit_full(payload: dict) -> None:
         raise click.exceptions.Exit(1)
 
 
-def run(repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str) -> dict:
+def run(
+    repo_path: Path,
+    factory: Callable[[], Awaitable[dict]],
+    tool_name: str,
+    *,
+    workspace_root: Path | None = None,
+) -> dict:
     """Await one tool coroutine with this repo's resources published.
+
+    With *workspace_root*, the workspace's instead, as the MCP server serves
+    it (see ``tool_bridge.call_tool``).
 
     Logs are silenced here rather than on the format option, because these
     four commands need it at *every* format. ``format_option``'s callback only
@@ -125,7 +151,7 @@ def run(repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str)
     from repowise.cli.tool_bridge import call_tool
 
     with silence_logs_for_machine_output():
-        return call_tool(repo_path, factory, tool_name)
+        return call_tool(repo_path, factory, tool_name, workspace_root=workspace_root)
 
 
 #: MCP tool name -> the CLI command that now does the same thing.
@@ -258,6 +284,7 @@ __all__ = [
     "print_index_note",
     "resolve_format_for",
     "resolve_indexed_repo",
+    "resolve_indexed_target",
     "run",
     "target_options",
 ]

@@ -16,7 +16,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import networkx as nx
+import pytest
 
 from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 from repowise.core.ingestion.git_indexer import GitIndexer
@@ -110,6 +113,184 @@ async def test_update_graph_converges_with_init_graph(tmp_path: Path) -> None:
     )
 
 
+async def test_opt_out_update_does_not_touch_incremental_graph_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _build_git_repo(tmp_path)
+    index_dir = tmp_path / ".repowise"
+    index_dir.mkdir()
+    seed = index_dir / "graph_seed_edges.pkl"
+    resolutions = index_dir / "resolved_imports.pkl"
+    seed.write_bytes(b"existing seed snapshot")
+    resolutions.write_bytes(b"existing resolution snapshot")
+    monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "0")
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [SimpleNamespace(path="a.py", status="modified")],
+        cfg={},
+        exclude_patterns=[],
+        git_tier="full",
+    )
+
+    assert seed.read_bytes() == b"existing seed snapshot"
+    assert resolutions.read_bytes() == b"existing resolution snapshot"
+
+
+async def test_update_does_not_touch_incremental_caches_when_opted_out(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _build_git_repo(tmp_path)
+    index = tmp_path / ".repowise"
+    index.mkdir()
+    seed_path = index / "graph_seed_edges.pkl"
+    resolutions_path = index / "resolved_imports.pkl"
+    seed_path.write_bytes(b"existing seed is untouched when opt-out")
+    resolutions_path.write_bytes(b"existing resolutions are untouched when opt-out")
+    monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", "0")
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [SimpleNamespace(path="a.py", status="modified")],
+        cfg={},
+        exclude_patterns=[],
+        git_tier="full",
+    )
+
+    assert seed_path.read_bytes() == b"existing seed is untouched when opt-out"
+    assert resolutions_path.read_bytes() == b"existing resolutions are untouched when opt-out"
+
+
+async def test_missing_patch_seed_is_invalidated_before_full_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = tmp_path / ".repowise" / "graph_seed_edges.pkl"
+    cache.parent.mkdir()
+    cache.write_bytes(b"stale snapshot")
+    events: list[str] = []
+    messages: list[str] = []
+    graph_builder = SimpleNamespace(
+        compute_metrics_parallel=AsyncMock(),
+        update_co_change_edges=lambda _meta: None,
+    )
+
+    async def missing_seed(_repo_path: Path) -> None:
+        assert cache.is_file()
+        events.append("load_seed")
+        return None
+
+    def full_build(*_args, **kwargs):
+        events.append("build_graph")
+        assert kwargs["seed_edges"] is None
+        assert not cache.exists()
+        return [], {}, graph_builder, SimpleNamespace(), 0
+
+    async def no_changed_files(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph.build_repo_graph",
+        full_build,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges",
+        missing_seed,
+    )
+
+    async def no_previous_seed(_repo_path: Path) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges_for_reconciliation",
+        no_previous_seed,
+    )
+    monkeypatch.setattr(
+        "repowise.core.ingestion.git_indexer.GitIndexer.index_changed_files",
+        no_changed_files,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.phases.git.label_co_change_structure",
+        lambda *_args: None,
+    )
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [],
+        cfg={},
+        exclude_patterns=[],
+        patch_graph=True,
+        log=messages.append,
+    )
+
+    assert events == ["load_seed", "build_graph"]
+    assert not cache.exists()
+    assert any("no valid persisted edge snapshot" in message for message in messages)
+
+
+async def test_full_fallback_restores_unparsed_rows_before_metric_recompute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    graph = nx.DiGraph()
+    graph.add_node("b.py", file_path="b.py")
+    previous_snapshot = {
+        "nodes": [
+            ("a.py::run", {"file_path": "a.py"}),
+            ("b.py", {"file_path": "b.py"}),
+        ],
+        "edges": [("a.py::run", "b.py", {"edge_type": "calls"})],
+    }
+    builder = SimpleNamespace(
+        graph=lambda: graph,
+        traversed_file_paths={"a.py", "b.py"},
+        patch_plan=SimpleNamespace(eligible=False, reason="parser fingerprint mismatch"),
+    )
+    parsed_files = [SimpleNamespace(file_info=SimpleNamespace(path="b.py"))]
+
+    async def missing_seed(_repo_path: Path) -> None:
+        return None
+
+    async def prior_snapshot(_repo_path: Path) -> dict[str, list]:
+        return previous_snapshot
+
+    def full_build(*_args, **_kwargs):
+        return parsed_files, {}, builder, SimpleNamespace(), 2
+
+    async def no_git(*_args, **_kwargs) -> dict:
+        return {}
+
+    async def check_metrics(graph_builder, *_args, **_kwargs) -> None:
+        assert graph_builder.graph().has_edge("a.py::run", "b.py")
+
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph.build_repo_graph",
+        full_build,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges",
+        missing_seed,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph_seed.load_seed_edges_for_reconciliation",
+        prior_snapshot,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph._index_git_metadata",
+        no_git,
+    )
+    monkeypatch.setattr(
+        "repowise.core.pipeline.incremental.graph._prime_graph_metrics",
+        check_metrics,
+    )
+
+    await rebuild_graph_and_git(
+        tmp_path,
+        [],
+        cfg={},
+        exclude_patterns=[],
+        patch_graph=True,
+    )
+
+
 def test_dynamic_hint_failure_logs_warning_and_does_not_raise(tmp_path: Path) -> None:
     """Dynamic hint extraction errors must log a structured warning and continue best-effort."""
     logged_lines: list[str] = []
@@ -136,9 +317,25 @@ def test_dynamic_hint_failure_logs_warning_and_does_not_raise(tmp_path: Path) ->
     )
 
 
-def test_read_only_build_is_the_update_graph_and_writes_nothing(tmp_path: Path) -> None:
+@pytest.mark.parametrize("with_document", [False, True])
+def test_read_only_build_is_the_update_graph_and_writes_nothing(
+    tmp_path: Path, monkeypatch, with_document: bool
+) -> None:
     """The live commands' read-only build is the update path's graph, minus the writes."""
     _build_git_repo(tmp_path)
+    if with_document:
+        from repowise.core.ingestion.document_extractors import document_extractors
+        from repowise.core.registry import plugins
+        from tests.unit.ingestion.document_extractor_spawn_plugin import SpawnExtractor
+
+        monkeypatch.setattr(document_extractors, "_impls", {})
+        monkeypatch.setattr(document_extractors, "_chosen", None)
+        monkeypatch.setattr(plugins, "load_plugins", lambda: [])
+        monkeypatch.setenv(
+            "REPOWISE_PLUGINS", "tests.unit.ingestion.document_extractor_spawn_plugin:register"
+        )
+        document_extractors.register("spawn-test-extractor", SpawnExtractor())
+        (tmp_path / "spec.xyz").write_bytes(b"document source")
     index_dir = tmp_path / ".repowise"
     index_dir.mkdir()
 
@@ -146,6 +343,8 @@ def test_read_only_build_is_the_update_graph_and_writes_nothing(tmp_path: Path) 
         tmp_path, [], collect_sources=True, read_only=True
     )
     assert list(index_dir.iterdir()) == []
+    if with_document:
+        assert ro_src["spec.xyz"] == b"# Extracted document\n\ndocument source\n"
 
     pf, src, gb, _s, count = build_repo_graph(tmp_path, [], collect_sources=True)
     assert list(index_dir.iterdir()), "the update path keeps its caches"
@@ -154,3 +353,74 @@ def test_read_only_build_is_the_update_graph_and_writes_nothing(tmp_path: Path) 
     assert [p.file_info.path for p in ro_pf] == [p.file_info.path for p in pf]
     assert set(ro_gb.graph().nodes()) == set(gb.graph().nodes())
     assert _edge_set(ro_gb) == _edge_set(gb)
+    if with_document:
+        before = {p: p.read_bytes() for p in index_dir.rglob("*") if p.is_file()}
+        build_repo_graph(tmp_path, [], collect_sources=True, read_only=True)
+        assert before == {p: p.read_bytes() for p in index_dir.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize(("value", "expected"), [(None, True), ("1", True), ("0", False)])
+def test_incremental_graph_is_on_unless_turned_off(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool
+) -> None:
+    from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+
+    if value is None:
+        monkeypatch.delenv("REPOWISE_INCREMENTAL_GRAPH", raising=False)
+    else:
+        monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", value)
+    assert incremental_graph_enabled() is expected
+
+
+def _documents_edges(gb: GraphBuilder) -> set[tuple[str, str, str]]:
+    return {edge for edge in _edge_set(gb) if edge[2] == "documents"}
+
+
+_LINKED = ("README.md", "src/new.py", "documents")
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        # An unchanged doc gains its edge when the file it names appears.
+        pytest.param({}, {"src/new.py": "def new():\n    return 1\n"}, {_LINKED}, id="target-added"),
+        pytest.param({"src/new.py": "def new():\n    return 1\n"}, {"src/new.py": None}, set(), id="target-removed"),
+        pytest.param(
+            {"src/new.py": "def new():\n    return 1\n", "README.md": "# Demo\n"},
+            {"README.md": "# Demo\n\nSee [new](src/new.py).\n"},
+            {_LINKED},
+            id="doc-gains-link",
+        ),
+    ],
+)
+def test_patched_documents_edges_equal_a_full_rebuild(
+    tmp_path: Path, before: dict[str, str], after: dict[str, str | None], expected: set
+) -> None:
+    from tests.unit.pipeline.test_incremental_graph_patch import (
+        _assert_equals_full,
+        _patched,
+        _seed_rows,
+        _write,
+    )
+
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "src/main.py": "def main():\n    return 0\n",
+            "README.md": "# Demo\n\nSee [new](src/new.py).\n",
+            **before,
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    for rel, text in after.items():
+        if text is None:
+            (tree / rel).unlink()
+        else:
+            _write(tree, {rel: text})
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert _documents_edges(patched) == expected
+    _assert_equals_full(tree, patched, tmp_path)

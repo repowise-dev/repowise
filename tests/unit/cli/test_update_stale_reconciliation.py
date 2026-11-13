@@ -209,10 +209,9 @@ def test_doctor_stale_guidance_names_each_owner() -> None:
     )
 
     assert detail.startswith("10 stale (5 model-written, 5 structural)")
-    assert "repowise generate --stale" in detail
+    assert "repowise generate --stale" not in detail
     assert "repowise update --full" in detail
-    assert "still selected" in detail
-    assert "retires pages no longer selected" in detail
+    assert "pricing the model-written ones" in detail
     assert "current inputs or generation selection" in detail
     assert "cascade" not in detail
 
@@ -220,9 +219,9 @@ def test_doctor_stale_guidance_names_each_owner() -> None:
 def test_doctor_model_only_guidance_keeps_authoritative_fallback() -> None:
     detail = repo_checks._stale_page_guidance({"module_page": 2})
 
-    assert "repowise generate --stale" in detail
+    assert "repowise generate --stale" not in detail
     assert "repowise update --full" in detail
-    assert "retires pages no longer selected" in detail
+    assert "pricing the model-written ones" in detail
 
 
 def test_stale_structural_paths_scoped_to_repository(

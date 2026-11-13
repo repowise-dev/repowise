@@ -29,7 +29,7 @@ from repowise.core.analysis.dead_code.serving import (
 from repowise.core.analysis.finding_registry import excluded_types, served_previews
 from repowise.core.persistence.crud import get_dead_code_findings
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import GitMetadata
+from repowise.core.persistence.models import GitMetadata, GraphNode
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._basis import call_resolution_bases
 from repowise.server.mcp_server._budget import OmissionCollector
@@ -46,6 +46,7 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._meta import build_meta as _build_meta
+from repowise.server.mcp_server._savings.interaction import error_reply
 
 
 async def _get_dead_code_all_repos(
@@ -93,8 +94,10 @@ async def _get_dead_code_all_repos(
         merged_gated,
     )
     tiers = build_tiers(merged_findings, limit, tier)
+    _drop_empty_tier_descriptions(tiers)
 
     result_ws: dict[str, Any] = {
+        "headline": _headline(summary, tiers),
         "workspace": True,
         "summary": summary,
         "tiers": tiers,
@@ -167,30 +170,21 @@ async def get_dead_code(
 ) -> dict:
     """Unused exports, unreachable files, zombie packages — tiered by confidence.
 
-    Run before a cleanup sprint, not a targeted fix. Findings tier
-    high/medium/low with per-directory and per-owner rollups; workspace
-    mode withdraws safety on findings other repos may use.
+    For a cleanup sweep, not a targeted fix.
 
     Args:
-        repo: usually omitted.
         kind: unreachable_file | unused_export | unused_internal | zombie_package.
-            An unrecognised value is dropped and named in ignored_arguments,
-            never applied as a filter that matches nothing.
-        min_confidence: floor, default 0.4 (0.7 = cleanup-ready only). Also
-            accepts a tier name: "high" | "medium" | "low".
-        safe_only: deletion-ready findings only (no runtime-load risk).
-        limit: max findings per tier (clamped to 25).
-        tier: "high" | "medium" | "low", banded as min_confidence.
-        directory: path-prefix filter.
-        owner: primary-owner filter.
-        group_by: "directory" | "owner" rollup.
-        include_internals: also scan private symbols (more false positives).
-        include_zombie_packages: monorepo package findings (default true).
-        no_unreachable: skip file-level reachability findings.
-        no_unused_exports: skip public-export findings.
-        include_unverified: also show provisional kinds and languages held
-            back pending verification (``summary.gated`` counts them).
-        finding_id: stable ``id`` emitted by a dead-code finding.
+        min_confidence: default 0.4 (0.7 = cleanup-ready), or a tier name.
+        tier: "high" | "medium" | "low".
+        safe_only: deletion-ready findings only.
+        limit: max findings per tier (up to 25).
+        directory, owner: path-prefix or primary-owner filter.
+        group_by: "directory" | "owner".
+        include_internals: also scan private symbols.
+        include_zombie_packages, no_unreachable, no_unused_exports,
+            include_unverified: switch finding kinds on or off.
+        finding_id: one finding by its ``id``.
+        repo: usually omitted.
     """
     # MCP transport rejects payloads above ~25k tokens. A single serialized
     # finding is ~400 chars, so 3 tiers x ~25 findings keeps us under budget
@@ -277,9 +271,17 @@ async def get_dead_code(
 
         # Fetch all open findings for summary computation. Withheld kinds are
         # read too, so the summary can count what it leaves out.
-        every_shown_kind, withheld = filters.split_withheld(
-            await get_dead_code_findings(session, repository.id, include_withheld=True)
-        )
+        every_finding = await get_dead_code_findings(session, repository.id, include_withheld=True)
+        if directory and not await _knows_directory(session, repository.id, directory, every_finding):
+            # Without this, a mistyped directory reads as a clean one.
+            return error_reply(
+                "not_found",
+                {
+                    "error": f"No indexed file is under directory {directory!r}.",
+                    "hint": "Pass a repository-relative directory, such as 'packages/core'.",
+                },
+            )
+        every_shown_kind, withheld = filters.split_withheld(every_finding)
         # A lookup by id still answers for a gated finding; lists do not show it.
         all_findings, gated = filters.split_gated(every_shown_kind)
 
@@ -351,13 +353,64 @@ async def get_dead_code(
 
     # How much of the call graph these findings rest on, per language. A
     # reachability finding is only as strong as the edges that reached.
-    summary["call_resolution_basis"] = resolution_basis
+    _attach_resolution_basis(summary, resolution_basis)
+    _drop_empty_tier_descriptions(tiers)
+    result = {"headline": _headline(summary, tiers), **result}
 
     result["_meta"] = _build_meta(repository=repository)
     _attach_preview(result)
     attach_ignored_arguments(result, ignored)
     collector.attach(result)
     return result
+
+
+async def _knows_directory(
+    session: Any, repository_id: Any, directory: str, findings: list[Any]
+) -> bool:
+    """Whether a finding or an indexed file sits under *directory*, as the filter
+    matches it. An unreachable file can be a finding with no graph node."""
+    prefix = directory.rstrip("/") + "/"
+    if any(f.file_path.startswith(prefix) for f in findings):
+        return True
+    row = await session.execute(
+        select(GraphNode.node_id)
+        .where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+            GraphNode.node_id.startswith(prefix, autoescape=True),
+        )
+        .limit(1)
+    )
+    return row.first() is not None
+
+
+def _headline(summary: dict[str, Any], tiers: dict[str, Any]) -> str:
+    """One line on what the call shows and what it left out, so an empty list
+    beside withheld findings never reads as "no dead code"."""
+    shown = sum(len(t["findings"]) for t in tiers.values())
+    matching = sum(t["count"] for t in tiers.values())
+    line = f"{shown} shown" + (f" of {matching} matching" if matching > shown else "")
+    withheld = summary.get("withheld_types") or {}
+    held = sum(int(entry.get("count") or 0) for entry in withheld.values())
+    if held:
+        line += f", {held} withheld ({', '.join(sorted(withheld))}; see summary.withheld_types)"
+    return line + "."
+
+
+def _attach_resolution_basis(summary: dict[str, Any], bases: list[dict[str, Any]]) -> None:
+    """Per-language call-graph basis, with a note every language shares said once."""
+    notes = {entry.get("note") for entry in bases}
+    if len(notes) == 1 and None not in notes:
+        summary["call_resolution_note"] = notes.pop()
+        bases = [{k: v for k, v in entry.items() if k != "note"} for entry in bases]
+    summary["call_resolution_basis"] = bases
+
+
+def _drop_empty_tier_descriptions(tiers: dict[str, Any]) -> None:
+    """An empty tier keeps its counts; its description only explains findings it has none of."""
+    for block in tiers.values():
+        if isinstance(block, dict) and not block.get("count"):
+            block.pop("description", None)
 
 
 def _attach_preview(result: dict[str, Any]) -> None:

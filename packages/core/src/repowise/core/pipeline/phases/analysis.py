@@ -148,6 +148,7 @@ async def _run_doc_drift_analysis(
             symbols=(
                 SymbolOptions(graph_symbol_names(graph_builder.graph())) if graph_builder else None
             ),
+            cache_dir=Path(repo_path) / ".repowise" if repo_path else None,
         )
 
         def _step(_stage: str) -> None:

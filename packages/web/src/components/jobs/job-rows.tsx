@@ -1,7 +1,8 @@
 import Link from "next/link";
-import { formatRelativeTime } from "@repowise-dev/ui/lib/format";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 import type { JobResponse } from "@/lib/api/types";
 import { LiveJobProgress } from "@/components/jobs/live-job-progress";
+import { RelativeTime } from "@repowise-dev/ui/shared/relative-time";
 
 /** Status as a dot plus the word, on the success/error/neutral set only.
  *  A filled pill per row tiles into stripes down a list and outweighs the
@@ -61,7 +62,7 @@ export function JobRows({
                     initialTotal={job.total_pages}
                   />
                 ) : (
-                  `${job.total_pages.toLocaleString()} pages`
+                  `${formatNumber(job.total_pages)} pages`
                 )}
                 {job.model_name && (
                   <span className="text-[var(--color-text-tertiary)]"> · {job.model_name}</span>
@@ -69,7 +70,7 @@ export function JobRows({
               </span>
 
               <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">
-                {formatRelativeTime(job.updated_at)}
+                <RelativeTime date={job.updated_at} />
               </span>
             </Link>
           </li>

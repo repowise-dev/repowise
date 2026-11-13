@@ -31,19 +31,56 @@ def prose_text(content: str) -> str:
     Everything else is kept verbatim, including headings, list markers and
     table pipes, so line structure survives for callers that need it.
     """
-    kept: list[str] = []
+    lines = content.splitlines()
+    kept = [line for line, fenced in zip(lines, _fenced(lines), strict=True) if not fenced]
+    return _INLINE_CODE_RE.sub(" ", "\n".join(kept))
+
+
+def _fenced(lines: list[str]) -> list[bool]:
+    """Per line, whether it belongs to a fenced block (its fence lines included)."""
+    flags: list[bool] = []
     fence: str | None = None
-    for line in content.splitlines():
+    for line in lines:
         stripped = line.lstrip()
         if fence is None:
-            opener = next((f for f in _FENCE_PREFIXES if stripped.startswith(f)), None)
-            if opener is not None:
-                fence = opener
-                continue
-            kept.append(line)
-        elif stripped.startswith(fence):
-            fence = None
-    return _INLINE_CODE_RE.sub(" ", "\n".join(kept))
+            fence = next((f for f in _FENCE_PREFIXES if stripped.startswith(f)), None)
+            flags.append(fence is not None)
+        else:
+            flags.append(True)
+            if stripped.startswith(fence):
+                fence = None
+    return flags
+
+
+# An inline link to a relative target: not an image, not a web URL.
+_MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]\n]+)\]\((?!https?://)[^)\n]+\)")
+
+
+def unwrap_markdown_links(content: str) -> str:
+    """*content* with each inline link outside code fences replaced by its text.
+
+    For pages whose template has the wiki do the linking: a model-written link
+    carries a relative href that resolves only by accident, while the text
+    (usually a backticked path) is what the interlinking pass turns into a
+    working link.
+    """
+    lines = content.splitlines(keepends=True)
+    return "".join(
+        line if fenced else _unwrap_line(line)
+        for line, fenced in zip(lines, _fenced(lines), strict=True)
+    )
+
+
+def _unwrap_line(line: str) -> str:
+    """One line's links unwrapped, except a match that starts inside inline
+    code: ``handlers[name](event)`` is a call, not a link."""
+    code = [span.span() for span in _INLINE_CODE_RE.finditer(line)]
+
+    def text_unless_code(link: re.Match[str]) -> str:
+        inside = any(start < link.start() < end for start, end in code)
+        return link.group(0) if inside else link.group(1)
+
+    return _MARKDOWN_LINK_RE.sub(text_unless_code, line)
 
 
 def prose_word_count(content: str) -> int:

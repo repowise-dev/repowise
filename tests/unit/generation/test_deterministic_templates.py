@@ -20,15 +20,13 @@ from repowise.core.generation.context_assembler import (
     SymbolSpotlightContext,
 )
 from repowise.core.generation.models import GenerationConfig
+from repowise.core.generation.onboarding.docs import DocSection
 from repowise.core.generation.onboarding.subkinds.active_landscape import (
     ActiveLandscapeContext,
     HotDir,
     HotFile,
 )
-from repowise.core.generation.onboarding.subkinds.getting_started import (
-    GettingStartedContext,
-    ReadmeSection,
-)
+from repowise.core.generation.onboarding.subkinds.getting_started import GettingStartedContext
 from repowise.core.generation.page_generator import PageGenerator
 from repowise.core.generation.structural_labels import structural_page_title
 from repowise.core.providers.llm.template import TemplateProvider
@@ -70,7 +68,7 @@ def test_getting_started_renders(generator):
         package_managers=["uv"],
         runtime_dependencies=[{"name": "httpx", "version": "0.27"}],
         dev_dependencies=[{"name": "pytest", "version": "9.0"}],
-        readme_sections=[ReadmeSection(heading="Install", body="Run `uv sync`.")],
+        user_docs=[DocSection("README.md", "Install", 3, 5, "## Install\n\nRun `uv sync`.", ())],
         entry_points=["src/main.py"],
     )
     page = generator._stub_onboarding_page(
@@ -92,7 +90,6 @@ def test_active_landscape_renders(generator):
             HotFile(
                 path="src/core.py",
                 commit_count_90d=30,
-                primary_owner="Ada",
                 is_hotspot=True,
                 age_days=400,
             )
@@ -100,6 +97,7 @@ def test_active_landscape_renders(generator):
         hot_dirs=[HotDir(path="src", total_commits_90d=90, hotspot_count=2, file_count=20)],
         dead_code_in_hot_files=[{"symbol_name": "old_fn", "file_path": "src/core.py"}],
         stable_file_count=8,
+        as_of="2026-10-29",
     )
     page = generator._stub_onboarding_page(
         _onboarding_spec("active_landscape", "active_landscape.j2"),
@@ -107,9 +105,10 @@ def test_active_landscape_renders(generator):
         "onboarding/active_landscape",
     )
 
-    assert "120 commits touched 45 files" in page.content
+    assert "45 code files changed, 120 times in all" in page.content
     assert "`src/core.py`" in page.content
-    assert "Ada" in page.content
+    assert "up to 2026-10-29" in page.content
+    assert "Owner" not in page.content  # names no people
     assert "old_fn" in page.content
 
 
@@ -127,8 +126,7 @@ def test_symbol_spotlight_renders(generator):
         decorators=["@lru_cache"],
         is_async=False,
         complexity_estimate=7,
-        callers=["src/pipeline.py"],
-        source_body="def parse_file(self, fi, src):\n    return ...",
+        call_sites=[{"caller": "run", "caller_file": "src/pipeline.py"}],
     )
     page = generator._structural_symbol_spotlight(
         ctx, "src/parser.py::parse_file", "Symbol: parser.ASTParser.parse_file"
@@ -138,9 +136,9 @@ def test_symbol_spotlight_renders(generator):
     assert page.provider_name == "template"
     assert "Parse one file into an AST." in page.content
     assert "@lru_cache" in page.content
-    # Callers are module importers, not verified call sites. The page must
-    # not claim more than the graph knows.
-    assert "not confirmed call sites" in page.content
+    assert "Used in 1 resolved place." in page.content
+    assert "`run` in `src/pipeline.py`" in page.content
+    assert "## Implementation" not in page.content
 
 
 def test_symbol_spotlight_tolerates_missing_kind(generator):
@@ -156,7 +154,6 @@ def test_symbol_spotlight_tolerates_missing_kind(generator):
         decorators=[],
         is_async=False,
         complexity_estimate=0,
-        callers=[],
     )
     page = generator._structural_symbol_spotlight(ctx, "a.py::x", "Symbol: x")
     assert "is a symbol defined in" in page.content
@@ -519,8 +516,7 @@ def _symbol_ctx() -> SymbolSpotlightContext:
         decorators=["@lru_cache"],
         is_async=True,
         complexity_estimate=7,
-        callers=["src/pipeline.py"],
-        source_body="def parse_file(self):\n    return ...",
+        test_call_sites=3,
     )
 
 
@@ -551,7 +547,6 @@ def test_file_page_renders_german_headings_and_prose(german_generator):
         "## Öffentliche API",
         "## Abhängigkeiten",
         "## Wird verwendet von",
-        "## Fragen, die diese Seite beantwortet",
     ):
         assert heading in page.content, heading
     # The file vocabulary is embedded from metadata, never rendered.
@@ -561,7 +556,7 @@ def test_file_page_renders_german_headings_and_prose(german_generator):
     assert "Die Datei gehört zur Schicht ingestion." in page.content
     assert "Die Datei ist ein Einstiegspunkt." in page.content
     # Identifiers are never translated, in any language.
-    assert "`src/service/parser.py`" in page.content
+    assert "# src/service/parser.py" in page.content
     assert "`parse_file`" in page.content
     assert "| `src/models.py`" not in page.content and "- `src/models.py`" in page.content
 
@@ -574,10 +569,9 @@ def test_symbol_spotlight_renders_german(german_generator):
     )
 
     assert page.title == "Symbol: parser.ASTParser.parse_file"
-    assert "**Art:** method (asynchron)" in page.content
+    assert "**Geschätzte Komplexität:** 7" in page.content
     assert "## Wo es verwendet wird" in page.content
-    assert "## Implementierung" in page.content
-    assert "keine bestätigten Aufrufstellen" in page.content
+    assert "Nur Tests verwenden es (3 aufgelöste Stellen)." in page.content
 
 
 def test_infra_and_api_contract_pages_render_german(german_generator):
@@ -635,19 +629,6 @@ def test_scc_page_starts_at_its_heading(generator):
 
     assert page.content.startswith("# ")
     assert sanitize_pages([page]) == 0
-
-
-def test_the_footer_is_localized_on_every_structural_page(german_generator):
-    ctx = _file_ctx()
-    page = german_generator._structural_page(
-        page_type="file_page",
-        target_path=ctx.file_path,
-        title="x",
-        template="file_page.j2",
-        ctx=ctx,
-    )
-    assert "Erstellt aus geparstem Code" in page.content
-    assert "Generated from parsed code" not in page.content
 
 
 def test_an_unsupported_language_renders_exactly_what_english_does(generator, klingon_generator):

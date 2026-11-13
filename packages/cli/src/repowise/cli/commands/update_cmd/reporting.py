@@ -80,35 +80,27 @@ def render_changed_files(file_diffs: list, *, verbose: bool) -> None:
 
 
 def render_cascade_budget_warning(
-    budget: int, skipped_files: int, split: tuple[int, int] | None
+    budget: int, skipped_files: int, split: tuple[int, int] | None, command: str
 ) -> None:
-    """Warn that the cascade budget left pages stale, and how each kind catches up.
+    """Warn that the cascade budget left pages stale, and the one command that catches up.
 
     ``split`` is ``(model_pages, structural_pages)``; ``None`` prints the
-    unsplit warning.
+    unsplit warning. ``command`` is ``repowise update --full``, aimed at the
+    repo in a workspace.
     """
-    full = f"--cascade-budget {budget + skipped_files}"
     console.print(
         f"\n[yellow]⚠ Cascade budget of {budget} pages was reached. {skipped_files} "
         "dependent files were skipped and their pages marked stale.[/yellow]"
     )
-    if split is None:
-        console.print(f"[yellow]  Pass `{full}` to regenerate them all.[/yellow]\n")
-        return
-    model, structural = split
-    if structural:
-        console.print(
-            f"  {structural} structural pages (file / cycle) refresh on the next "
-            "[cyan]repowise update[/cyan], no model needed."
-        )
-    if model:
-        console.print(
-            f"  {model} pages written by a model: run [cyan]repowise generate --stale[/cyan] "
-            f"to rewrite them (it estimates the cost first), or pass `{full}` "
-            "to regenerate everything in this run."
-        )
-    else:
-        console.print(f"  Pass `{full}` to regenerate them in this run.")
+    model, structural = split or (0, 0)
+    kinds = [
+        f"{structural} structural pages (file / cycle), no model needed" if structural else "",
+        f"{model} pages written by a model, priced before they are rewritten" if model else "",
+    ]
+    detail = "; ".join(k for k in kinds if k)
+    console.print(
+        f"  Run [cyan]{command}[/cyan] to refresh them" + (f": {detail}." if detail else ".")
+    )
     console.print()
 
 
@@ -154,22 +146,25 @@ class JsonProgressEmitter:
         duration_s: float,
         degraded: list[str] | None = None,
         outcome: str | None = None,
+        docs_deferred: bool = False,
+        stale_pages: int | None = None,
     ) -> None:
         # ``outcome`` lets a supervising agent tell a real regeneration apart
         # from a run that only deferred to an in-flight update or found nothing
         # to do — all three otherwise emit ``ok=True, pages_generated=0``.
         # Mirrors the ``UpdateOutcome`` values in ``command.py``.
-        self._emit(
-            {
-                "event": "done",
-                "ok": ok,
-                "outcome": outcome,
-                "pages_generated": pages_generated,
-                "cost_usd": cost_usd,
-                "duration_s": duration_s,
-                "degraded": degraded or [],
-            }
-        )
+        event = {
+            "event": "done",
+            "ok": ok,
+            "outcome": outcome,
+            "pages_generated": pages_generated,
+            "cost_usd": cost_usd,
+            "duration_s": duration_s,
+            "degraded": degraded or [],
+        }
+        if docs_deferred:
+            event.update(docs_deferred=True, stale_pages=stale_pages)
+        self._emit(event)
 
     def error(self, message: str) -> None:
         self._emit({"event": "error", "message": message})

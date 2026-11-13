@@ -188,3 +188,36 @@ def test_stacked_when_selections_each_count() -> None:
     )
     # Two stacked selections (the literal 'WHEN' is not one) and WHEN OTHER.
     assert rows["P1"][2] == 4
+
+
+def test_multi_target_goto() -> None:
+    rows = _rows(
+        _program(
+            "       MAIN-P.",
+            "           GO TO P1 P2 P3 DEPENDING ON WS-A.",
+        )
+    )
+    # 3 targets add 3 CCN points to the initial 1, then CCN should be 4, cognitive complexity receives flat +1.
+    assert rows["MAIN-P"][2:5] == (4, 0, 1)     # (ccn, max_nesting, cognitive)
+
+
+def test_single_target_goto_depending_on() -> None:
+    rows = _rows(
+        _program(
+            "       MAIN-P.",
+            "           GO TO P1 DEPENDING ON WS-A.",
+        )
+    )
+    # DEPENDING ON with one target still branches: base 1 plus 1.
+    assert rows["MAIN-P"][2:5] == (2, 0, 1)
+
+
+def test_single_target_goto() -> None:
+    rows = _rows(
+        _program(
+            "       MAIN-P.",
+            "           GO TO P1.",
+        )
+    )
+    # Single target GO TO stays at base CCN 1.
+    assert rows["MAIN-P"][2:5] == (1, 0, 1)

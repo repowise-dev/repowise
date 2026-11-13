@@ -156,8 +156,14 @@ class AtomicStorageCoordinator:
         page drift even though nothing is wrong with the pages (issue #374).
 
         This compares like with like:
-          * ``wiki_pages``        <-> page vectors  -> ``page_drift``
+          * non-tombstoned ``wiki_pages`` <-> page vectors -> ``page_drift``
           * ``decision_records``  <-> decision vectors -> ``decision_drift``
+
+        Tombstoned pages are excluded from the page population: a retired file
+        keeps its row but loses its vector, because the pipeline drops
+        tombstoned page ids from the store. Counting them reported permanent
+        drift on any repo that ever retires a file. Reader-facing counts
+        exclude them for the same reason (``crud/pages.py``).
 
         ``drift`` is kept as an alias of ``page_drift`` for backwards
         compatibility. ``vector_count`` remains the total (page + decision) so
@@ -176,7 +182,12 @@ class AtomicStorageCoordinator:
             "decision_drift": None,
         }
         try:
-            res = await self._session.execute(text("SELECT COUNT(*) FROM wiki_pages"))
+            # Tombstoned pages keep their row but lose their vector (the
+            # pipeline drops tombstoned ids from the store), so counting them
+            # would report drift that no repair can clear.
+            res = await self._session.execute(
+                text("SELECT COUNT(*) FROM wiki_pages WHERE freshness_status != 'tombstone'")
+            )
             report["sql_pages"] = int(res.scalar() or 0)
         except Exception as e:
             report["sql_pages_error"] = str(e)

@@ -475,6 +475,12 @@ class LanceDBVectorStore(VectorStore):
         self._table = None
         self._db = None
 
+    async def holds_current_vectors(self) -> bool:
+        width = getattr(self._embedder, "dimensions", None)
+        return width is not None and read_recorded_vector_dim(
+            self._db_path, self._table_name
+        ) == width
+
     async def list_page_ids(self) -> set[str]:
         await self._ensure_connected()
         if self._table is None:

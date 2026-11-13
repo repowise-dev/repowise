@@ -61,6 +61,10 @@ repos and the primary repo (the default for MCP queries), and `m` adds a model.
 It then indexes each repo, runs the cross-repo analysis, and registers the MCP
 server with your editors.
 
+Run `repowise init` inside one repo whose folder holds other git repos and it
+indexes that repo alone, with a note naming `repowise init "<parent folder>"`
+for the workspace. `--no-workspace` hides the note.
+
 To skip the screen, `--repos api,web` indexes only those repos (by alias,
 directory name, or relative path). In a new workspace the first one listed is
 primary; an existing workspace keeps its primary. `--yes`, `--all` or a piped
@@ -168,10 +172,11 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Type | Providers | Consumers |
 |------|-----------|-----------|
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Topics | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, Dapr `DaprClient.PublishEventAsync` (C#), MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Dapr `[Topic]` and `kind: Subscription` manifests, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
+| Topics | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 | Topics: C# integration events | `new T(...)` of an `IntegrationEvent` subclass the repo declares, reaching `PublishAsync` / `Publish` or a repo method taking an `IntegrationEvent`; the id is the short type name, which the event bus routes by | `AddSubscription<T, TH>()`, `Subscribe<T, TH>()` on a declared event, and `IIntegrationEventHandler<T>` classes for events no registration subscribes |
 | Topics: JMS | Spring `JmsTemplate` / `JmsMessagingTemplate` `convertAndSend` / `send` / `sendAndReceive` / `convertSendAndReceive` on a receiver named for JMS (`jmsTemplate`, `orderJmsTemplate`, `getJmsTemplate()`) with a destination argument; ActiveMQ and IBM MQ `queue://` names read as the bare queue | `@JmsListener(destination = ...)`, `receive` / `receiveAndConvert`, `DefaultMessageListenerContainer.setDestinationName` |
+| Topics: Dapr | `DaprClient.PublishEventAsync` (C#), `publishEvent(pubsub, topic, data)` on a receiver the file declares as a `DaprClient` (Java), `pubsub.publish` on a receiver the file declares as a `DaprClient` (JS/TS), `publish_event(...)` on any receiver, with the topic as `topic_name=` or the second positional argument, read only in a file importing a `dapr.*` module or `flask_dapr` (Python), `PublishEvent` / `PublishEvents` `(ctx, pubsub, topic, data)` on any receiver, read only in a file importing `github.com/dapr/go-sdk` (Go) | `[Topic]` (C#), `@Topic(name = ...)` (Java), `pubsub.subscribe` on a receiver the file declares as a `DaprServer` (JS/TS), `@app.subscribe(...)` on any app object, with the topic as `topic=` or the second positional argument, read only in a file importing a `dapr.*` module or `flask_dapr` (Python), `<alias>.Subscription{PubsubName: ..., Topic: ...}` literals (each element of a `[]<alias>.Subscription` slice too), under any import alias, read only in a file importing `github.com/dapr/go-sdk/service/common` (Go), the `{pubsubname, topic}` objects a `/dapr/subscribe` route answers with (JS/TS, Python, Go), and `kind: Subscription` manifests |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
 A topic, queue or route name is resolved when it is a literal or a constant the
@@ -185,6 +190,9 @@ one an **exact** link. The exact naming and matching rules for each transport
 (socket scopes, pattern subscriptions, RabbitMQ bindings, Laravel queues, ORM
 table defaults, framework route prefixes, client base URLs) are in the
 [contract matching reference](../reference/WORKSPACE_CONTRACTS.md).
+
+Which brokers can link to each other is in
+[Topics and queues](../reference/WORKSPACE_CONTRACTS.md#topics-and-queues).
 
 Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in
 the [system graph](#system-graph). The consumer side (SQL string matching) is
@@ -575,6 +583,30 @@ Workspace init registers the MCP server with your editors (skip with `--no-edito
 - **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo. Four also accept `"all"` to query across the workspace: `get_overview` (the cross-repo topology), `search_codebase` (results from every repo), `get_dead_code` (findings from every repo) and `get_why` with a query (decisions from every repo). The other tools answer about one repo at a time; see [MCP_TOOLS.md](../agent/MCP_TOOLS.md#workspace-mode)
 - **Opt-in workspace tools**, off by default and enabled with `mcp.tools` in `.repowise/config.yaml`: `get_blast_radius` ([Cross-Repo Blast Radius](#cross-repo-blast-radius)), `get_conformance` ([Architecture Conformance](#architecture-conformance)) and `get_architecture` ([Architecture Metrics](#architecture-metrics))
 
+### One database for every repo (PostgreSQL)
+
+On a server, every repo can be indexed into one database. With `REPOWISE_DB_URL` set, the workspace MCP server reads every member from that database instead of each repo's `.repowise/wiki.db`. Each member is matched to its row by checkout path, and each call reads only that repo's rows. A member not in the database yet answers "not indexed" until its first index lands, with no restart.
+
+The workspace file is the whole declaration. Put it in a directory above the checkouts, index each checkout with the same `REPOWISE_DB_URL`, and start the server in the default repo:
+
+```yaml
+# /srv/repowise/.repowise-workspace.yaml
+version: 1
+default_repo: app
+repos:
+  - {path: repos/app, alias: app}
+  - {path: docs-mirror, alias: docs}
+```
+
+```bash
+export REPOWISE_DB_URL=postgresql+asyncpg://repowise:secret@db:5432/repowise
+repowise init /srv/repowise/repos/app --no-prose --yes --no-editor-setup
+repowise init /srv/repowise/docs-mirror --no-prose --yes --no-editor-setup
+repowise mcp /srv/repowise/repos/app --transport streamable-http --host 0.0.0.0
+```
+
+Scoped tokens hold per repo: a token whose `repos` lists `app` (by alias or repository id) reaches `app` and is refused on `docs`.
+
 ---
 
 ## File Layout
@@ -617,6 +649,8 @@ Add these to your `.gitignore`:
 
 The workspace config and data are local: they can reference absolute paths and contain generated analysis that should be rebuilt per-machine.
 
+When the workspace folder is a git repo or sits inside one, `repowise init .` adds `.repowise-workspace.yaml` and `.repowise-workspace/` (anchored to the folder) to that repo's `.git/info/exclude`, so `git status` stays clean without a shared `.gitignore` change. A path your `.gitignore` already covers is left alone. To share conformance rules with CI, commit the config once with `git add -f .repowise-workspace.yaml`; git then tracks it despite the exclude line.
+
 ---
 
 ## FAQ
@@ -655,7 +689,7 @@ Cross-repo analysis runs during `repowise init .` and `repowise update --workspa
 
 ### Does the MCP server handle multiple repos?
 
-Yes. A single MCP server instance serves all workspace repos. It uses lazy-loading with LRU eviction (max 5 repos loaded simultaneously) to manage memory. The default repo is always kept in memory.
+Yes. A single MCP server instance serves all workspace repos. It uses lazy-loading with LRU eviction (max 5 repos loaded simultaneously) to manage memory. The default repo is always kept in memory. On a server where every repo lives in one database, see [One database for every repo](#one-database-for-every-repo-postgresql).
 
 ### Can I use `repowise` with git worktrees?
 

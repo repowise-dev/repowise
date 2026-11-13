@@ -99,9 +99,13 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     await init_db(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-    # --- Load all pages ---
+    # --- Load all live pages ---
+    # A tombstone's file is gone or its page is no longer selected; update takes
+    # it out of both indexes, and doctor counts its vector as an orphan that
+    # ``--repair`` deletes. Embedding it here put every tombstone back, so a
+    # reindex followed by ``doctor --repair`` never converged.
     async with factory() as session:
-        result = await session.execute(select(Page))
+        result = await session.execute(select(Page).where(Page.freshness_status != "tombstone"))
         pages = list(result.scalars().all())
 
     # --- Load decision records ---

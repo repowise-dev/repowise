@@ -41,13 +41,14 @@ function setup(overrides: Partial<SetupResponse> = {}): SetupResponse {
     index: { state: "up_to_date" },
     agents_available: true,
     agents: [
-      { id: "claude-code", display_name: "Claude Code", installed: true, connected: true },
+      { id: "claude-code", display_name: "Claude Code", installed: true, connected: true, default_profile: "standard" },
       {
         id: "cursor",
         display_name: "Cursor",
         installed: true,
         connected: false,
         config_files: { repo: [".cursor/mcp.json"] },
+        default_profile: "core",
       },
     ],
     calls_available: true,
@@ -179,6 +180,29 @@ describe("WelcomeDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Turn off" }));
     await waitFor(() => expect(mocks.setSetupHook).toHaveBeenCalledWith("r1", "post-commit", false));
     await waitFor(() => expect(toggle.getAttribute("aria-checked")).toBe("false"));
+  });
+
+  it("says which agents are listed the core tools, and asks questions every client can answer", () => {
+    renderDialog();
+    fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
+    const core = screen.getAllByText(/Lists the core repowise tools by default/);
+    expect(core).toHaveLength(1);
+    expect(core[0]!.closest("li")?.textContent).toContain("Cursor");
+    expect(screen.getByText("How does the main flow in this repo work, end to end?")).toBeTruthy();
+    expect(screen.queryByText(/riskiest/)).toBeNull();
+  });
+
+  it("says agent answers are ranked evidence until a model is added", () => {
+    renderDialog();
+    fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next: make it yours" }));
+    expect(screen.getByText(/answers are ranked evidence from the index/)).toBeTruthy();
+    cleanup();
+
+    renderDialog({ setup: setup({ model: { docs_mode: "deterministic", active_provider: "anthropic" } }) });
+    fireEvent.click(screen.getByRole("button", { name: "Next: your agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Next: make it yours" }));
+    expect(screen.queryByText(/ranked evidence/)).toBeNull();
   });
 
   it("opens the model sheet from the plum box", () => {

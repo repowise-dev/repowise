@@ -184,8 +184,8 @@ class _HealthGroup(click.Group):
     type=click.Choice(list(SCOPES)),
     help=(
         "Which files to report on. 'production' leaves out tests, tooling, "
-        "vendored and generated files, which tend to score higher, so it "
-        "lowers every figure without a defect being found."
+        "build, vendored, generated and docs example files, which tend to "
+        "score higher, so it lowers every figure without a defect being found."
     ),
 )
 @click.option(

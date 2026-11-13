@@ -1,11 +1,12 @@
-"""Startup failures exit once with a named cause instead of respawning.
+"""Startup failures serve a named cause instead of respawning.
 
 An MCP host restarts a stdio server that dies at startup. Two failures used
 to escape as bare tracebacks and loop that way: an index directory the
 process cannot create or open, and a tool module whose optional dependency
-is missing. The first now raises a message naming the path and the fix; the
-second is skipped so the rest of the surface still serves. A directory that
-was never indexed is not a failure: the server starts and its tools say so.
+is missing. The first is served: every tool answers with a message naming the
+path and the fix. The second is skipped so the rest of the surface still
+serves. A directory that was never indexed is not a failure either: the server
+starts and its tools say so.
 """
 
 from __future__ import annotations
@@ -23,27 +24,81 @@ from repowise.server.mcp_server import _server, _state
 from repowise.server.mcp_server._server import StoreUnavailableError
 
 
+async def _no_warm() -> None:
+    return None
+
+
+def _single_repo(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
+    for name in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(_state, "_repo_path", str(repo))
+    monkeypatch.setattr(_server, "_warm_lancedb", _no_warm)
+    monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (None, None, None))
+
+
+async def _tool_answer() -> dict:
+    from repowise.server.mcp_server import get_symbol
+    from repowise.server.mcp_server._failure_shield import shield
+
+    return await shield(get_symbol)("pkg/mod.py::alpha")
+
+
 @pytest.mark.asyncio
-async def test_lifespan_names_the_path_when_the_store_cannot_be_opened(
+async def test_a_store_that_cannot_open_is_served_with_the_path_and_the_fix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Served, not exited: a host respawns a server that exits at startup."""
+    (tmp_path / ".repowise").write_text("not a directory\n")
+    _single_repo(monkeypatch, tmp_path)
+
+    async with _server._lifespan(_server.mcp):
+        result = await _tool_answer()
+        assert _state._store_error.reason == "store_open_failed"
+
+    assert str(tmp_path / ".repowise") in result["error"]
+    assert "repowise init" in result["error"]
+    assert "restart the MCP server" in result["remedy"]
+    assert _state._serving_no_index is True
+    assert _state._lancedb_ready is None
+
+
+@pytest.mark.asyncio
+async def test_a_store_served_as_unavailable_does_not_outlive_its_lifespan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The next lifespan in the process opens its own store afresh."""
+    (tmp_path / ".repowise").write_text("not a directory\n")
+    _single_repo(monkeypatch, tmp_path)
+    async with _server._lifespan(_server.mcp):
+        pass
+
+    unindexed = tmp_path / "other"
+    unindexed.mkdir()
+    monkeypatch.setattr(_state, "_repo_path", str(unindexed))
+    async with _server._lifespan(_server.mcp):
+        result = await _tool_answer()
+
+    assert _state._store_error is None
+    assert "no repowise index" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_raises_when_even_the_empty_store_cannot_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / ".repowise").write_text("not a directory\n")
-    for name in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    _single_repo(monkeypatch, tmp_path)
 
-    async def _no_warm() -> None:
-        return None
+    async def _refuse(_engine) -> None:
+        raise OSError("out of memory")
 
-    monkeypatch.setattr(_server, "_warm_lancedb", _no_warm)
-    monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (None, None, None))
+    monkeypatch.setattr(_server, "init_db", _refuse)
 
     with pytest.raises(StoreUnavailableError) as raised:
         async with _server._lifespan(_server.mcp):
             pass
     message = str(raised.value)
     assert str(tmp_path / ".repowise") in message
-    assert "repowise init" in message
     assert raised.value.reason == "store_open_failed"
     # The failure path never reaches the teardown, so it has to leave the
     # warmup event cleared itself. A leaked event stays bound to this test's
@@ -113,24 +168,59 @@ async def test_configured_database_failure_names_the_url_not_the_directory(
 ) -> None:
     monkeypatch.setenv("REPOWISE_DB_URL", f"sqlite:///{(tmp_path / 'elsewhere.db').as_posix()}")
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    real_init_db = _server.init_db
 
-    async def _no_warm() -> None:
-        return None
-
-    async def _refuse(_engine) -> None:
-        raise OSError("connection refused")
+    async def _refuse(engine) -> None:
+        if ":memory:" not in str(engine.url):
+            raise OSError("connection refused")
+        await real_init_db(engine)
 
     monkeypatch.setattr(_server, "_warm_lancedb", _no_warm)
     monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (None, None, None))
     monkeypatch.setattr(_server, "init_db", _refuse)
 
-    with pytest.raises(StoreUnavailableError) as raised:
-        async with _server._lifespan(_server.mcp):
+    async with _server._lifespan(_server.mcp):
+        result = await _tool_answer()
+        assert _state._store_error.reason == "db_url_unreachable"
+
+    assert "REPOWISE_DB_URL" in result["error"]
+    assert "repowise init" not in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_workspace_default_store_failure_is_served(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _Registry:
+        def __init__(self, **_kw) -> None:
             pass
-    message = str(raised.value)
-    assert "REPOWISE_DB_URL" in message
-    assert "repowise init" not in message
-    assert raised.value.reason == "db_url_unreachable"
+
+        async def get_default(self):
+            raise OSError("permission denied")
+
+        async def close(self) -> None:
+            pass
+
+    class _Config:
+        repos: ClassVar[list] = []
+
+        def get_repo(self, _alias):
+            return None
+
+    for name in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    monkeypatch.setattr(_server, "_warm_lancedb", _no_warm)
+    monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (tmp_path, _Config(), None))
+    monkeypatch.setattr("repowise.core.workspace.registry.RepoRegistry", _Registry)
+
+    async with _server._lifespan(_server.mcp):
+        result = await _tool_answer()
+        assert _state._registry is None
+        assert _state._store_error.reason == "workspace_default_failed"
+
+    assert "permission denied" in result["error"]
+    assert not (tmp_path / ".repowise").exists()
 
 
 @pytest.mark.asyncio

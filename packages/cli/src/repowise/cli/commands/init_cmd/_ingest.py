@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.helpers import console, load_state, run_async
+from repowise.cli.providers import flush_cost_tracker, run_cost_tracker
 from repowise.cli.ui import progress_steps
 
 from ._options import InitRun
@@ -49,6 +50,30 @@ def _index_vector_store(run: InitRun) -> Any:
 #: What the long-step line tells a user to run after Ctrl-C.
 RESUME_COMMAND = "repowise init --resume"
 
+#: Printed on the first Ctrl-C, which stops the run at the next step rather than at once.
+STOPPING_NOTICE = "Stopping after the current step. Press Ctrl-C again to quit now."
+
+
+class _StopAtStepStart:
+    """Progress wrapper that ends the run at the next step after a first Ctrl-C.
+
+    Every step starts with ``on_phase_start``. A checkpoint step still runs: it
+    saves what the steps before it finished, which is what ``--resume`` reads.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def on_phase_start(self, phase: str, total: int | None) -> None:
+        if not phase.startswith("checkpoint."):
+            from repowise.core.cancellation import check_cancelled
+
+            check_cancelled()
+        self._inner.on_phase_start(phase, total)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
 
 async def _index_with_resume(
     run: InitRun,
@@ -82,6 +107,7 @@ async def _index_with_resume(
             include_submodules=opts.include_submodules,
             generate_docs=False,
             llm_client=llm_client,
+            cost_tracker=run.cost_tracker,
             vector_store=vector_store,
             concurrency=opts.concurrency,
             test_run=opts.test_run,
@@ -116,6 +142,9 @@ def index_repository(run: InitRun) -> None:
     run.total_phases = 3 if opts.run_mode == "fast" else 4
     # None on a dry run: analysis would call it before generation's dry-run exit.
     llm_client = decision_llm_client(run)
+    run.cost_tracker = run_cost_tracker(
+        run.repo_path, llm_client, no_cost_tracking=opts.no_cost_tracking
+    )
 
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.pipeline.modes import OrchestratorMode
@@ -132,7 +161,7 @@ def index_repository(run: InitRun) -> None:
         resume_command=RESUME_COMMAND,
         total_phases=run.total_phases,
     ) as steps:
-        callback = PhaseTimingRecorder(steps)
+        callback = _StopAtStepStart(PhaseTimingRecorder(steps))
         # Whole-run total: phases nest and overlap, so their sum can exceed it.
         callback.table.start("run")
 
@@ -145,7 +174,9 @@ def index_repository(run: InitRun) -> None:
         from repowise.core.cancellation import PipelineCancelled, cancellation_scope
 
         try:
-            with cancellation_scope():
+            with cancellation_scope(
+                on_first_interrupt=lambda: callback.on_message("notice", STOPPING_NOTICE)
+            ):
                 result = run_async(
                     _index_with_resume(
                         run,
@@ -162,6 +193,10 @@ def index_repository(run: InitRun) -> None:
 
             exit_interrupted()
 
+    # Persist the mining spend now: generation may never run (fast mode, a
+    # declined cost gate), and it flushes only what it adds after this.
+    if run.cost_tracker is not None:
+        flush_cost_tracker(run.cost_tracker)
     run.result = result
     run.recorder = callback
     run.run_warnings = list(steps.warnings)

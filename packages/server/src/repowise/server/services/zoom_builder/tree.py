@@ -13,10 +13,9 @@ zoom folder by folder.
 
 A folder whose path is one a module page documents takes that page's title and
 summary instead of its directory name. The nesting is unchanged; only the label
-is. Below the layer rung every card used to read as a path segment (``core``,
-``resolvers``, ``src``) while the docs reader, working off the same repository,
-called those same directories "Repository Ingestion" and "Symbol Resolution".
-Two names for one thing, on two pages of one product.
+is. So a card below the layer rung reads "Repository Ingestion" or "Symbol
+Resolution", as the docs reader calls the directory, not a bare path segment
+(``core``, ``resolvers``, ``src``): one name for one thing across the product.
 
 Pure and framework-agnostic: inputs are plain specs, output is a dict of frozen
 ``ZoomNode``. Importance and metrics are filled by later passes.
@@ -26,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .dirs import Dir, compress, insert
 from .models import ZoomNode
 
 
@@ -47,6 +47,8 @@ class LayerSpec:
     display_order: int
     node_ids: list[str]  # repo-relative file paths (every file in the layer)
     sub_groups: list[GroupSpec] = field(default_factory=list)
+    # The curated layer description; becomes the layer card's summary.
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -105,62 +107,6 @@ def file_id(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Directory trie (mutable during construction)
-# ---------------------------------------------------------------------------
-
-
-class _Dir:
-    __slots__ = ("files", "name", "path", "subdirs")
-
-    def __init__(self, name: str, path: str) -> None:
-        self.name = name
-        self.path = path
-        self.subdirs: dict[str, _Dir] = {}
-        self.files: list[str] = []
-
-
-def _insert(root: _Dir, path: str) -> None:
-    parts = path.split("/")
-    *dirs, _fname = parts
-    if not _fname:
-        # Malformed (empty or trailing-slash) path: skip rather than mint a
-        # blank-named leaf. The architecture view never emits these.
-        return
-    cur = root
-    acc: list[str] = []
-    for d in dirs:
-        acc.append(d)
-        key = "/".join(acc)
-        nxt = cur.subdirs.get(d)
-        if nxt is None:
-            nxt = _Dir(name=d, path=key)
-            cur.subdirs[d] = nxt
-        cur = nxt
-    cur.files.append(path)
-
-
-def _compress(node: _Dir) -> tuple[str, _Dir, list[str]]:
-    """Collapse single-child folder chains.
-
-    Returns ``(joined-name, deepest folder, every path the chain swallowed)``
-    so ``a/(only)b/(only)c`` becomes one node named ``a/b/c``. The path list is
-    ordered shallowest-first and is what lets a caller ask whether *any* rung of
-    the chain is a directory something knows about: the collapsed rungs are real
-    directories that simply have no branch of their own, and a repository whose
-    source sits under `packages/x/src/pkg/name` collapses most of its documented
-    directories into exactly such a chain.
-    """
-    name = node.name
-    covered = [node.path]
-    while len(node.subdirs) == 1 and not node.files:
-        (only,) = node.subdirs.values()
-        name = f"{name}/{only.name}"
-        node = only
-        covered.append(node.path)
-    return name, node, covered
-
-
-# ---------------------------------------------------------------------------
 # Builder
 # ---------------------------------------------------------------------------
 
@@ -212,8 +158,8 @@ class _Builder:
                 return module
         return None
 
-    def emit_dir(self, dnode: _Dir, parent_id: str, level: int, scope: str) -> str:
-        name, node, covered = _compress(dnode)
+    def emit_dir(self, dnode: Dir, parent_id: str, level: int, scope: str) -> str:
+        name, node, covered = compress(dnode)
         fid = folder_id(scope, node.path)
         children: list[str] = []
         for sub in sorted(node.subdirs.values(), key=lambda d: d.name):
@@ -246,9 +192,9 @@ class _Builder:
         the parent's own level attach as file leaves; everything else nests under
         compressed folder nodes.
         """
-        root = _Dir(name="", path="")
+        root = Dir(name="", path="")
         for path in file_paths:
-            _insert(root, path)
+            insert(root, path)
         children: list[str] = []
         for sub in sorted(root.subdirs.values(), key=lambda d: d.name):
             children.append(self.emit_dir(sub, parent_id, child_level, scope))
@@ -316,6 +262,7 @@ def build_tree(
                 level=1,
                 kind="layer",
                 name=layer.name,
+                summary=layer.description,
                 children=tuple(layer_children),
             )
         )

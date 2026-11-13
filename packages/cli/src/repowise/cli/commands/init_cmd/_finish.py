@@ -23,9 +23,14 @@ from repowise.cli.ui.glyphs import glyph
 from repowise.core.decision_lanes import record_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields
 from repowise.core.generation.styles import DEFAULT_STYLE
+from repowise.core.settings.model import flag
 
 from ._ingest import decision_llm_client
-from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._interactive import (
+    offer_distill_rewrite_hook,
+    offer_hook_install,
+    warn_unresolved_hooks,
+)
 from ._options import InitRun
 from .persistence import (
     apply_git_history_coverage_state,
@@ -47,8 +52,20 @@ def persist_index(run: InitRun) -> None:
         persist_callback = recorder.rebind(steps)
         # Indeterminate, announced so the stage is never silent.
         persist_callback.on_phase_start("persist", None)
+        from repowise.core.pipeline.incremental.feature import incremental_graph_enabled
+
+        cache_incremental_graph = incremental_graph_enabled()
+        if cache_incremental_graph:
+            from repowise.core.pipeline.incremental.graph_seed import invalidate_seed_edge_cache
+
+            invalidate_seed_edge_cache(run.repo_path)
         run_async(persist_result(run.result, run.repo_path, persist_callback, recorder.table))
         persist_callback.on_phase_done("persist")
+        # Seed the incremental graph update from a sealed sequential cache.
+        if cache_incremental_graph and run.result.graph_builder is not None:
+            from repowise.core.pipeline.incremental.graph_seed import save_seed_edge_cache
+
+            run_async(save_seed_edge_cache(run.repo_path, run.result.graph_builder))
         # Persistence has its own callback; fold its warnings into the run record.
         run.run_warnings.extend(persist_callback.warnings)
         # Read last: every stage writes into the one table.
@@ -103,6 +120,13 @@ def save_run_config(run: InitRun) -> None:
 
     if opts.commit_limit is not None:
         save_config_partial(repo_path, commit_limit=run.resolved_commit_limit)
+
+    # Written only when the run's choice differs from the file's (#5367): a
+    # prompt answered with the default leaves the file alone.
+    if opts.follow_renames is not None and opts.follow_renames != flag(
+        run.config.get("follow_renames"), False
+    ):
+        save_config_partial(repo_path, follow_renames=opts.follow_renames)
 
 
 def register_clients(run: InitRun) -> None:
@@ -192,9 +216,7 @@ def _stamp_scope(run: InitRun, base_state: dict[str, Any], docs_mode: str) -> No
         base_state,
         {"commit_limit": run.resolved_commit_limit, "max_file_pages": run.max_file_pages},
         run_mode=run_mode,
-        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[
-            docs_mode
-        ],
+        content_provenance={"none": "none", "deterministic": "template", "llm": "model"}[docs_mode],
         git_tier=git_tier_for_run_mode(run_mode),
         git_commit_cap=run.resolved_commit_limit,
         dropped_files=dropped_files_scope(getattr(result, "traversal_stats", None)),
@@ -255,6 +277,9 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     )
     keep_prior_documentation(base_state, prior_state, run_mode)
     base_state["include_submodules"] = run.opts.include_submodules
+    from repowise.core.pipeline.incremental.feature import stamp_graph_update
+
+    stamp_graph_update(base_state)
     if run.phase_timings:
         base_state["phase_timings"] = run.phase_timings
     # Never inherit the previous run's degradation report.
@@ -281,7 +306,9 @@ def _save_index_only_state(run: InitRun, base_state: dict[str, Any]) -> None:
         exclude_patterns=run.exclude_patterns if run.exclude_patterns else None,
         commit_limit=run.resolved_commit_limit if run.opts.commit_limit is not None else None,
         embedder=embedder,
-        embedding_model=resolve_embedding_model(embedder) if embedder else None,
+        embedding_model=resolve_embedding_model(embedder, repo_path=repo_path)
+        if embedder
+        else None,
     )
     # After the config writes, so the first update doesn't false-positive.
     stamp_fresh_index(base_state, repo_path, run.result)
@@ -434,6 +461,7 @@ def complete_setup(run: InitRun) -> None:
         yes=opts.yes,
         no_editor_setup=not opts.editor_setup,
     )
+    warn_unresolved_hooks(console, [repo_path], no_editor_setup=not opts.editor_setup)
 
     # Last, so the panel reflects what setup did. `interactive` mirrors the
     # offers' gate: when they were skipped the panel names their hooks.
@@ -471,7 +499,7 @@ def _gaps(run: InitRun) -> list[str]:
 
     result = run.result
     return run.gaps + run_gaps(
-        failed_pages=len(getattr(result, "failed_page_ids", None) or []),
+        failed_page_ids=list(getattr(result, "failed_page_ids", None) or []),
         embed_error=embed_failure_message(
             run.scope_embedder, getattr(result, "embed_failed_pages", 0)
         ),

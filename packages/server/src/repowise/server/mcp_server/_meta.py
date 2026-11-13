@@ -19,22 +19,30 @@ Rules of thumb baked into the hint generators:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from repowise.core.git_head import read_head_commit
+from repowise.core.git_head import read_head_commit, same_path
 from repowise.core.index_scope import (
     CANONICAL_INDEX_SCOPE_PROJECTION,
     INDEX_SCOPE_ENV,
+    FreeRoute,
+    answers_upgrade_line,
     compact_index_scope,
     index_scope_fingerprint,
     load_index_scope,
+    upgrade_line,
 )
+from repowise.server.mcp_server import _checkout, _code_drift
 from repowise.server.mcp_server._rounding import round_float
+
+_log = logging.getLogger(__name__)
 
 # 2: index_scope carries the compact projection on routine responses. The key
 # and its version field are unchanged, so a consumer reading the old shape has
@@ -43,7 +51,10 @@ from repowise.server.mcp_server._rounding import round_float
 # 3: the lean envelope. Diagnostics (this version, timing, budget accounting,
 # an uncapped completeness block, a complete index_scope digest, savings) leave
 # routine responses; get_overview and REPOWISE_MCP_DEBUG_META=1 keep them.
-MCP_CONTRACT_VERSION = 3
+# 4: one wire vocabulary (see lean_response): no empty or false-status fields,
+# `_meta.omitted` plus `<x>_total` on cut lists for truncation, `stale_warning`
+# alone for freshness, one `_meta.degraded` list.
+MCP_CONTRACT_VERSION = 4
 
 #: Restores the diagnostic ``_meta`` fields on every response, for diagnosis.
 DEBUG_META_ENV = "REPOWISE_MCP_DEBUG_META"
@@ -84,6 +95,11 @@ def served_root(repository: Any, ctx_path: str | Path | None = None) -> str | No
     """
     from repowise.server.mcp_server import _state
 
+    caller = _checkout.current()
+    local = getattr(repository, "local_path", None)
+    if caller is not None and caller.own_index and local and same_path(local, caller.served):
+        # A worktree index seeded from this one keeps its repository id.
+        return str(caller.served)
     served = _state._repo_path
     if (
         served
@@ -139,29 +155,12 @@ def _canonical_scope_requested() -> bool:
     )
 
 
-def _full_scope_hint() -> str:
-    """The call that returns the whole scope, as this server is running.
-
-    The overview carries the whole scope only when asked for it. In workspace
-    mode ``get_overview(repo="all")`` returns the repo listing and carries no
-    scope at all, so a digest pointing there would send an agent somewhere
-    the rest of the answer is not. The argument is named rather than filled in
-    because the alias belongs to the caller's own request, not to the
-    repository row this envelope was built from.
-    """
-    from repowise.server.mcp_server import _state
-
-    if getattr(_state, "_registry", None) is not None:
-        return 'get_overview(repo=..., include=["scope"])'
-    return 'get_overview(include=["scope"])'
-
-
 def index_scope_for_response(local_path: str | None) -> dict[str, Any] | None:
     """The scope an ordinary response carries: the digest, unless asked."""
     scope = read_index_scope(local_path)
     if scope is None or _canonical_scope_requested():
         return scope
-    return compact_index_scope(scope, full_hint=_full_scope_hint())
+    return compact_index_scope(scope)
 
 
 def resolve_indexed_commit(head_commit: str | None, local_path: str | None) -> str | None:
@@ -451,7 +450,11 @@ def reverted_targets(local_path: str | None, targets: list[str] | None) -> list[
 
 
 def freshness_from_repo(
-    repository: Any | None, targets: list[str] | None = None, root: str | None = None
+    repository: Any | None,
+    targets: list[str] | None = None,
+    root: str | None = None,
+    *,
+    repo_level: bool = False,
 ) -> dict[str, Any]:
     """Return a minimal freshness dict for the given Repository row.
 
@@ -460,8 +463,8 @@ def freshness_from_repo(
 
       1. **Git HEAD comparison** (preferred). If the repo is a checkout on
          disk, compare ``repository.head_commit`` to the live HEAD. They
-         match → silence. They differ → ``stale_warning`` plus the live SHA
-         so the agent can decide whether to call ``repowise update``.
+         match → silence. They differ → ``stale_warning``, a fact naming both
+         SHAs (never a command), so the agent decides what to re-read.
       2. **Age fallback** (only when git is unreachable). Warn only past 90
          days; under that, just emit ``index_age_days`` for the agent to
          consult on its own terms.
@@ -473,8 +476,10 @@ def freshness_from_repo(
     "Silence means current" only trains trust if the warning fires only when
     the served content is actually affected — a repo-wide warning after every
     unrelated commit teaches the agent to ignore the field. ``targets=None``
-    (repo-level tools like get_overview) keeps the repo-level warning;
-    ``targets=[]`` means "no file content served" and never warns.
+    (repo-level tools like get_overview) and ``targets=[]`` (no file content
+    served) carry ``index_behind`` and never warn. ``repo_level=True`` asks for
+    the repo-wide verdict instead (HEAD moved with real file changes), for a
+    caller that names which repository of a workspace is behind.
 
     Always-emitted fields:
       * ``index_age_days``  — informational, never a directive
@@ -523,6 +528,11 @@ def freshness_from_repo(
     if indexed_full:
         out["indexed_commit"] = indexed_full[:12] if isinstance(indexed_full, str) else indexed_full
 
+    borrowed = _checkout.borrowed_checkout(local_path)
+    if borrowed is not None:
+        out.update(_borrowed_freshness(borrowed, indexed_full, targets, local_path, repo_level))
+        return out
+
     live_full = read_live_head(local_path)
     if live_full:
         out["live_head"] = live_full[:12]
@@ -547,25 +557,27 @@ def freshness_from_repo(
                 # because it holds for repo-level responses too, which are
                 # exactly the ones that previously always warned.
                 pass
-            elif targets is not None and changed is not None:
-                if targets_hit_by_changes(targets, changed):
-                    out["stale_warning"] = (
-                        "A file this response serves changed after indexing — "
-                        "verify against source or run `repowise update`."
-                    )
-            else:
-                # The two SHAs are already in ``indexed_commit`` / ``live_head`` —
-                # don't repeat them in prose. Just the directive.
-                out["stale_warning"] = "Index is behind live HEAD — run `repowise update`."
+            elif targets and changed is not None and targets_hit_by_changes(targets, changed):
+                out["stale_warning"] = _checkout.stale_fact(
+                    indexed_full[:12],
+                    f"a file this response serves differs at HEAD {live_full[:12]}",
+                )
+            elif repo_level:
+                # The SHA repeats ``indexed_commit`` on purpose: lean replies
+                # drop that key and keep only this line.
+                out["stale_warning"] = _checkout.stale_fact(indexed_full[:12], "HEAD has moved")
+            # Otherwise ``index_behind`` alone says HEAD moved. A response that
+            # names no file that differs gets no warning: the same "HEAD has
+            # moved" line on every call until the next update is a constant the
+            # agent learns to skip.
         else:
             # Match. No prose, since silence is the signal, but the comparison
             # did run and its answer is "not behind", so say so explicitly.
             out["index_behind"] = False
     elif live_full is None and age_days is not None and age_days > _STALE_AGE_FLOOR_DAYS:
         # No git signal available and the index is genuinely old.
-        out["stale_warning"] = (
-            f"Index is {age_days} days old and live HEAD is unreachable — "
-            "results may be stale. Run `repowise update`."
+        out["stale_warning"] = _checkout.stale_fact(
+            f"an index {age_days} days old", "HEAD is unreadable"
         )
 
     # Freshness above is commit-anchored, so an uncommitted edit to a served
@@ -577,16 +589,72 @@ def freshness_from_repo(
             out["working_tree_dirty"] = len(modified)
             out.setdefault(
                 "stale_warning",
-                "A file this response serves has uncommitted edits: source reads are live, "
-                "but graph and index facts for it predate the edit. "
-                "Run `repowise update --working-tree`.",
+                _checkout.stale_fact(
+                    out.get("indexed_commit", "the last index"),
+                    "a file this response serves differs in the working tree "
+                    "(source reads are live)",
+                ),
             )
         elif live_full and live_full == indexed_full and reverted_targets(local_path, targets):
-            out["stale_warning"] = (
-                "A file this response serves was indexed from uncommitted edits that are "
-                "no longer in the working tree. Run `repowise update --working-tree`."
+            out["stale_warning"] = _checkout.stale_fact(
+                "uncommitted edits to a file this response serves",
+                "the working tree no longer has them",
             )
 
+    return out
+
+
+def _borrowed_hit(
+    local_path: str | None,
+    indexed_full: str,
+    head: str,
+    targets: list[str] | None,
+    repo_level: bool = False,
+) -> str | None:
+    """``"file"`` when a served file differs between the two commits, ``"repo"``
+    when *repo_level* asks and they differ (or the diff is unknown), else ``None``.
+
+    Otherwise a response that names no file that differs gets no warning;
+    ``index_behind`` says the commits differ.
+    """
+    if head == indexed_full:
+        return None
+    changed = _changed_files_between(local_path, indexed_full, head) if local_path else None
+    if changed and targets and targets_hit_by_changes(targets, changed):
+        return "file"
+    if repo_level and (changed is None or changed):
+        return "repo"
+    return None
+
+
+def _borrowed_freshness(
+    caller: Any,
+    indexed_full: str | None,
+    targets: list[str] | None,
+    local_path: str | None,
+    repo_level: bool = False,
+) -> dict[str, Any]:
+    """Freshness of this index for another checkout of the repo, as a fact.
+
+    The caller's HEAD stands in for live HEAD, and its working tree for the
+    uncommitted edits. The warning names both checkouts and commits instead
+    of an update command: updating this index does not describe the caller's.
+    """
+    out: dict[str, Any] = {}
+    head = read_live_head(str(caller.caller))
+    if head:
+        out["live_head"] = head[:12]
+    dirty = uncommitted_targets(str(caller.caller), targets)
+    if dirty:
+        out["working_tree_dirty"] = len(dirty)
+    hit = None
+    if head and indexed_full:
+        out["index_behind"] = head != indexed_full
+        hit = _borrowed_hit(local_path, indexed_full, head, targets, repo_level)
+    if hit or dirty:
+        out["stale_warning"] = _checkout.checkout_fact(
+            caller, indexed_full, head, served_file=bool(dirty) or hit == "file"
+        )
     return out
 
 
@@ -609,9 +677,8 @@ def build_meta(
     :func:`freshness_from_repo`.
 
     ``index_scope`` carries the compact projection (the run mode, the
-    provenance, the git tier, one word for whether the index is whole, and a
-    fingerprint identifying the canonical object), and only when that word is
-    not ``complete``. See :func:`build_meta_with_full_scope` for the calls that are
+    provenance, the git tier, and one word for whether the index is whole),
+    and only when that word is not ``complete``. See :func:`build_meta_with_full_scope` for the calls that are
     worth the whole thing.
 
     Stable shape:
@@ -709,6 +776,11 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
         meta.setdefault("runtime_breakage_proven", False)
     elif evidence_kind == "generated":
         meta.setdefault("existing_verified_code", False)
+    # Here, not in build_meta, so every tool and every shielded error carries it.
+    meta.update(_checkout.checkout_meta())
+    server_stale = _code_drift.stale_line()
+    if server_stale:
+        meta["server_stale"] = server_stale
 
     state: dict[str, Any] = {}
     combined = {**result, **meta}
@@ -739,6 +811,151 @@ def finalize_trust_envelope(result: Any, *, evidence_kind: str | None = None) ->
             state = {**existing, **state}
         meta["state"] = state
     return result
+
+
+#: Freshness detail behind ``stale_warning``; the hashes and age are debug data.
+_DEBUG_FRESHNESS_KEYS = (
+    "index_age_days",
+    "indexed_commit",
+    "live_head",
+    "index_behind",
+    "working_tree_dirty",
+)
+#: Accounting a reader gets from ``_meta.omitted`` and ``<x>_total`` instead.
+_DEBUG_ACCOUNTING_KEYS = ("completeness", "response_budget", "floor", "reductions", "state")
+#: Stamped by middleware layers for debug output; ``timed`` and the savings
+#: layer drop them on a lean call too, and listing them here keeps the lean
+#: shape the one place that says what a lean reply leaves out.
+_DEBUG_LAYER_KEYS = ("timing_ms", "replaced_tokens", "tokens_saved")
+#: A ``false`` under these names says nothing happened, so it is not sent.
+_STATUS_FLAGS = ("degraded", "truncated", "capped", "partial")
+#: Siblings of a capped ``<x>`` that ``<x>_total`` already says.
+_CAP_COUNTERS = ("_emitted", "_reduced_reason", "_omitted", "_truncated")
+
+
+def lean_response(result: Any) -> Any:
+    """The delivered shape of a tool result: only fields an agent can act on.
+
+    The one owner of the wire vocabulary, run outermost on MCP responses;
+    ``get_overview`` and ``REPOWISE_MCP_DEBUG_META`` skip it.
+
+    * No ``None`` or empty string; no empty container below the top level
+      unless a ``<key>_basis`` sibling explains it; no ``false`` status flag.
+    * Truncation is ``_meta.omitted`` plus ``<x>_total`` on a list actually cut.
+    * Freshness is ``stale_warning`` alone.
+    * Degradation is one ``_meta.degraded`` list of reasons.
+    """
+    if not isinstance(result, dict):
+        return result
+    meta = result.get("_meta")
+    if isinstance(meta, dict):
+        if result.get("degraded") and meta.get("degraded") == result["degraded"]:
+            del meta["degraded"]  # Already said at the top level.
+        _lean_meta(meta)
+    collapse_omission(result)
+    _prune(result, top=True)
+    return result
+
+
+def collapse_omission(result: Any) -> Any:
+    """One omission entry per response: ``_meta.omitted``, never a marker beside it.
+
+    The response budget runs it on every MCP response, including the tools that
+    keep their full ``_meta``. The marker restates the refs ``_meta.omitted``
+    lists and names only the CLI route.
+    """
+    if isinstance(result, dict) and (result.get("_meta") or {}).get("omitted"):
+        result.pop("omission_marker", None)
+    return result
+
+
+def drop_false_status_flags(result: Any) -> Any:
+    """Remove ``false`` status flags from *result*'s ``_meta``, keeping the rest.
+
+    For a full-meta tool: its diagnostics stay, but ``embedder_degraded: false``
+    says nothing happened, as on every lean response. Telemetry reads the flag
+    before this runs, so it still sees both values.
+    """
+    meta = result.get("_meta") if isinstance(result, dict) else None
+    if isinstance(meta, dict):
+        for key in [k for k, v in meta.items() if v is False and _is_status_flag(k)]:
+            del meta[key]
+    return result
+
+
+def _lean_meta(meta: dict[str, Any]) -> None:
+    for key in (*_DEBUG_FRESHNESS_KEYS, *_DEBUG_ACCOUNTING_KEYS, *_DEBUG_LAYER_KEYS, "embedder"):
+        meta.pop(key, None)
+    existing = meta.pop("degraded", None)
+    reasons = [existing] if isinstance(existing, str) else list(existing or [])
+    for key in sorted(k for k in meta if k.endswith("_degraded")):
+        reasons.extend(_degraded_reasons(key.removesuffix("_degraded"), meta.pop(key)))
+    if reasons:
+        meta["degraded"] = reasons
+
+
+def _degraded_reasons(stem: str, value: Any) -> list[str]:
+    if isinstance(value, (list, dict)):
+        return [f"{stem}:{leg}" for leg in value]
+    if isinstance(value, str) and value:
+        return [f"{stem}:{value}"]
+    return [stem] if value else []
+
+
+def _is_status_flag(key: str) -> bool:
+    return any(key == flag or key.endswith(f"_{flag}") for flag in _STATUS_FLAGS)
+
+
+def _prune(node: Any, *, top: bool = False) -> None:
+    if isinstance(node, list):
+        for item in node:
+            _prune(item)
+        return
+    if not isinstance(node, dict):
+        return
+    _drop_cap_counters(node)
+    for key in list(node):
+        value = node[key]
+        _prune(value)
+        if _is_noise(node, key, value, top):
+            del node[key]
+
+
+def _is_noise(node: dict[str, Any], key: str, value: Any, top: bool) -> bool:
+    if value is None or value == "" or (value is False and _is_status_flag(key)):
+        return True
+    # An empty top-level list is the tool's answer; a ``_basis`` explains one.
+    return value in ([], {}) and not top and f"{key}_basis" not in node
+
+
+def _drop_cap_counters(node: dict[str, Any]) -> None:
+    """Keep ``<x>_total`` only where ``<x>`` was cut; drop the other counters."""
+    counted = {k.removesuffix("_emitted") for k in node if k.endswith("_emitted")}
+    counted.update(k.removesuffix("_total") for k in node if k.endswith("_total"))
+    for key in [k for k in node if k.endswith("_total") and _uncut_total(node, k)]:
+        del node[key]
+    for key in [k for k in node if _counter_stem(node, k) in counted]:
+        del node[key]
+
+
+def _counter_stem(node: dict[str, Any], key: str) -> str | None:
+    """The ``<x>`` a cap counter key describes; ``None`` for any other key."""
+    suffix = next((s for s in _CAP_COUNTERS if key.endswith(s)), None)
+    if suffix is None or (suffix == "_truncated" and not isinstance(node[key], bool)):
+        return None
+    return key.removesuffix(suffix)
+
+
+def _uncut_total(node: dict[str, Any], key: str) -> bool:
+    """A ``<x>_total`` that says nothing: ``<x>`` arrived whole, or not at all."""
+    stem = key.removesuffix("_total")
+    total, kept = node[key], node.get(stem)
+    if not isinstance(total, int) or isinstance(total, bool):
+        return False
+    if isinstance(kept, (list, dict)):
+        return len(kept) >= total
+    # A list projected away whole: its counts describe nothing served.
+    return f"{stem}_emitted" in node
 
 
 def semantic_search_state() -> bool | None:
@@ -840,26 +1057,138 @@ def _release_meta() -> dict[str, Any]:
     }
 
 
-def keyless_note_meta() -> dict[str, Any]:
-    """Name what a key or a local model would add, once per process, the
-    first time ``get_answer`` degrades with ``no-llm-provider`` (#3105).
+#: How long the first response on a path waits for the agent-CLI probe. Past
+#: it the line names the fallback route; a later ``get_answer`` names what was
+#: found (the overview names its line once, whatever it held then).
+_ROUTE_WAIT_S = 2.0
 
-    The agent reading a keyless answer is told synthesis is missing, but
-    nothing says how to get it. Same once-per-process shape as
-    :func:`_release_meta`: a fact the caller only needs once, not charged
-    against every later response's budget.
+# The signed-in agent CLI a keyless line names, probed once per served path in
+# a daemon thread (the probe is a subprocess), and the model calls ``generate``
+# makes, which size its minutes, per repository. Both hold for the process: the line itself
+# says to restart once a model is set up.
+_route_lock = threading.Lock()
+_route_probes: dict[str, threading.Thread] = {}
+_routes: dict[str, FreeRoute | None] = {}
+_generate_calls: dict[str, int] = {}
+#: Served paths whose overview already named the upgrade this process.
+_overview_upgrade_named: set[str] = set()
+
+
+def _detect_route(local_path: str | None) -> FreeRoute | None:
+    from repowise.core.providers.llm.subscription import detect_free_route
+
+    return detect_free_route(local_path)
+
+
+def _probe_route(key: str) -> None:
+    try:
+        _routes[key] = _detect_route(key or None)
+    except Exception:
+        _log.debug("repowise MCP: agent CLI probe failed", exc_info=True)
+        _routes[key] = None
+
+
+def _probed_route(local_path: str | None, wait: float) -> FreeRoute | None:
+    """The route for *local_path*, starting its one probe and waiting up to *wait* s."""
+    key = local_path or ""
+    with _route_lock:
+        probe = _route_probes.get(key)
+        started = probe is None
+        if started:
+            probe = threading.Thread(
+                target=_probe_route, args=(key,), name="repowise-route-probe", daemon=True
+            )
+            _route_probes[key] = probe
+            probe.start()
+    # Only the response that started the probe waits: a slow CLI must not
+    # charge every later response on the path its wait again.
+    if started:
+        probe.join(wait)
+    return _routes.get(key)
+
+
+async def _upgrade_route(
+    local_path: str | None, session_factory: Any = None, repo_id: str | None = None
+) -> FreeRoute | None:
+    """The free route for this index, timed by the calls ``generate`` makes when they can be counted."""
+    import asyncio
+
+    route = await asyncio.to_thread(_probed_route, local_path, _ROUTE_WAIT_S)
+    # The lanes are read from the checkout's state.json: no path, no minutes.
+    if route is None or session_factory is None or not repo_id or not local_path:
+        return route
+    calls = _generate_calls.get(repo_id)
+    if calls is None:
+        from repowise.core.generation.scope import generate_model_calls
+        from repowise.core.persistence import get_session
+
+        try:
+            # Ceiling: pending decision lanes load the stored graph once per
+            # process, seconds on a very large repo; caching the planned count
+            # in state.json at index time is the upgrade if that shows up.
+            async with get_session(session_factory) as session:
+                calls = await generate_model_calls(session, repo_id, local_path)
+        except Exception:
+            _log.debug("repowise MCP: generate call count failed", exc_info=True)
+            return route
+        _generate_calls[repo_id] = calls
+    from repowise.core.providers.llm.subscription import route_minutes
+
+    return route_minutes(route, calls)
+
+
+async def prose_upgrade_meta(
+    local_path: str | None, *, session_factory: Any = None, repo_id: str | None = None
+) -> dict[str, Any]:
+    """``keyless_note`` naming the upgrade, once per process, on an index no model wrote prose for.
+
+    The orientation call is made once per session, so repeating the line on a
+    second overview would charge for a fact the agent already has.
+    """
+    scope = read_index_scope(local_path)
+    key = local_path or ""
+    if answers_upgrade_line(scope) is None or key in _overview_upgrade_named:
+        return {}
+    _overview_upgrade_named.add(key)
+    route = await _upgrade_route(local_path, session_factory, repo_id)
+    return {"keyless_note": answers_upgrade_line(scope, route)}
+
+
+async def keyless_note_meta(
+    local_path: str | None, *, session_factory: Any = None, repo_id: str | None = None
+) -> dict[str, Any]:
+    """What a model would add, on a ``get_answer`` that degrades with ``no-llm-provider``.
+
+    Not once per process: an agent that starts a conversation on a server
+    another conversation already used would never learn how to upgrade. The
+    caller sends it only when the reply is weak (low confidence or no body).
+    """
+    route = await _upgrade_route(local_path, session_factory, repo_id)
+    return {"keyless_note": upgrade_line(read_index_scope(local_path), route)}
+
+
+#: For a natural-language search on an index with no embedder (#5049).
+KEYLESS_SEARCH_NOTE = (
+    "keyword match only (no embedder): rows share words, not meaning; "
+    "mode=symbol or mode=path is exact"
+)
+
+
+def keyless_search_note_meta() -> dict[str, Any]:
+    """``keyless_note`` for the first natural-language search with rows on an
+    index with no embedder, once per server process.
+
+    Once, not per call: ``semantic_search: false`` already rides on every
+    reply, and a sentence on each would grow every keyless search. A server
+    shared by several conversations tells only the first; the flag still
+    tells the rest.
     """
     from repowise.server.mcp_server import _state
 
-    if _state._keyless_note_announced:
+    if semantic_search_state() is not False or _state._keyless_search_noted:
         return {}
-    _state._keyless_note_announced = True
-    return {
-        "keyless_note": (
-            "no model is configured, so answers are not synthesized; set a provider "
-            "key (or a provider in .repowise/config.yaml) and restart the MCP server"
-        )
-    }
+    _state._keyless_search_noted = True
+    return {"keyless_note": KEYLESS_SEARCH_NOTE}
 
 
 def symbol_hint(symbol_id: str, end_line: int, start_line: int) -> str | None:
@@ -885,10 +1214,9 @@ EXHAUSTIVE_SWEEP_HINT = (
 )
 
 # Appended to a get_answer hint when the answer graded low and the index is
-# behind live HEAD; the one place holding both signals says what to do.
+# behind live HEAD while no file it cites changed (else stale_warning says so).
 INDEX_BEHIND_LOW_CONFIDENCE_HINT = (
-    "The index is behind HEAD, so run `repowise update` and ask again before "
-    "trusting a low-confidence answer."
+    "The index is behind HEAD; no file this answer cites changed since."
 )
 
 

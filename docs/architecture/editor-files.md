@@ -116,25 +116,40 @@ which the placeholder comment warns against.
 ## 4. What goes into the Repowise section
 
 The block is read into the agent's context on every turn, so it is lean by
-default. `editor_files.sections` picks the sections (see
+default: about 250 tokens, held there by a test
+(`tests/unit/generation/test_editor_file_sections.py`). `editor_files.sections`
+picks the sections (see
 [CONFIG.md](../reference/CONFIG.md#the-editor_files-block)); the fetcher runs
 only the queries the chosen sections render. Both templates include the shared
-`_editor_block.j2` and differ only in the pre-edit sentence.
+`_editor_block.j2`; they differ in the pre-edit sentence of the full protocol
+and in which tools they may name. `AGENTS.md` is read by clients that load
+every tool schema up front, which the MCP server lists the core tools by
+default, so its block names only the tools such a client is listed under the
+repository's `mcp.tools` setting (resolved by
+`registry.tool_selection.listed_default_tools`); a moment line whose tool is
+not listed is left out. `CLAUDE.md` names every default tool.
+
+Every block leads with one imperative line, `repowise.core.agent_steer.AGENT_STEER`:
+call a Repowise tool first for any question about the codebase, naming the tool
+for each question kind. In measured agent runs that line made the agent call a
+tool first in every run, while a block that listed the tools without saying so
+moved almost none. The same line leads the shared instruction block that Cursor,
+Copilot, Kiro, opencode and Hermes receive (`agent_targets/instructions.py`).
 
 | Section | Default | Source | Cap |
 |---------|---------|--------|-----|
-| Header | always | Date and commit; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
-| `architecture` | on | First 4 sentences from the `repo_overview` wiki page | 4 sentences |
-| `key_modules` | on | `module_page` pages by PageRank desc | Top 10 |
-| `entry_points` | on | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
-| `hotspots` | on | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
-| `health` | on | Health score, band and worst file | 1 line |
+| Header | always | Date and commit, then the call-first line; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
+| `how_to_work` | on | Static: one line per moment (rename, edit, finish), distill, settings, the record-a-decision command | 6 lines |
+| `decisions` | on | Whether accepted decisions govern files (folded into the edit line), then the pinned ones by title | 5 pins, 80 chars each |
+| `architecture` | off | Lead sentence of the `repo_overview` wiki page | 1 sentence |
+| `key_modules` | off | `module_page` pages by PageRank desc | Top 6 |
+| `entry_points` | off | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
+| `hotspots` | off | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
+| `health` | off | Health score, band and worst file | 1 line |
 | `code_health` | off | Every health signal (replaces `health`) | 1 line |
 | `fix_first` | off | The Fix-first queue | Top 3 |
-| `decisions` | on | Accepted active `decision_records`, titles only, by `staleness_score` asc | Top 3 |
-| `how_to_work` | on | Static: pre-edit, distill, decision capture; a keyless bullet when the index has no model | 3-4 bullets |
 | `how_to_work_full` | off | The long protocol (replaces `how_to_work`) | — |
-| `tools` | on | `tool_table.py`, the MCP tool table | All tools |
+| `tools` | off | `tool_table.py`, the MCP tool table | All tools |
 | `commands` | off | Manifest scan: `package.json` scripts, `Makefile`, `pyproject.toml` | All detected |
 
 ---
@@ -282,7 +297,7 @@ EditorFileDataFetcher.fetch()
     │  AsyncSession + repo_id + repo_path
     │
     ├── crud.get_repository()          → repo.name
-    ├── _get_architecture_summary()    → str (2-4 sentences)
+    ├── _get_architecture_summary()    → str (lead sentence)
     ├── _get_key_modules()             → list[KeyModule]
     ├── _get_entry_points()            → list[str]
     ├── detect_tech_stack()            → list[TechStackItem]
@@ -357,8 +372,8 @@ prompt-gated in an interactive run. Only `.repowise/mcp.json` and the root
 *Machine-wide*, outside the repo, one shared copy for every repo you index, all
 written by `register_editor_clients()` in `editor_setup.py`:
 
-- the `repowise` MCP entry in `~/.claude/settings.json` and in Claude Desktop's
-  config
+- the `repowise` MCP entry in `~/.claude.json` (Claude Code's user scope) and in
+  Claude Desktop's config
 - the Claude Code PostToolUse and SessionStart hooks
 - `env.ENABLE_TOOL_SEARCH` in `~/.claude/settings.json` (skipped for repos on
   the lean MCP tool profile, and never overwritten if you already set it)

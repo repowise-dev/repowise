@@ -155,6 +155,14 @@ class TestFingerprintDeterminism:
         )
         assert compute_kg_fingerprint(gb1) == compute_kg_fingerprint(gb2)
 
+    def test_file_order_does_not_move_the_fingerprint(self):
+        # An update builds the graph in a different file order than init; past
+        # 100 files the sampled keys must not depend on it.
+        paths = [f"f{i:03}.py" for i in range(150)]
+        gb1 = self._make_graph_builder(paths, [], dict.fromkeys(paths, 0))
+        gb2 = self._make_graph_builder(paths, [], dict.fromkeys(reversed(paths), 0))
+        assert compute_kg_fingerprint(gb1) == compute_kg_fingerprint(gb2)
+
     def test_different_nodes_different_fingerprint(self):
         gb1 = self._make_graph_builder(
             ["a.py", "b.py"], [("a.py", "b.py")], {"a.py": 0, "b.py": 0}
@@ -210,7 +218,7 @@ class TestFingerprintDeterminism:
         one: whoever bumps the constant updates this line and sees, in the
         diff, that they are asking every existing store to re-curate.
         """
-        assert knowledge_graph.KG_BUILDER_VERSION == "7"
+        assert knowledge_graph.KG_BUILDER_VERSION == "8"
 
 
 # ---------------------------------------------------------------------------

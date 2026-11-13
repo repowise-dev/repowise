@@ -1,0 +1,46 @@
+swagger: "2.0"
+info:
+  title: Orders
+  version: "1"
+basePath: /v1
+paths:
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          type: string
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/Order'
+  /orders:
+    post:
+      operationId: createOrder
+      parameters:
+        - name: body
+          in: body
+          required: true
+          schema:
+            $ref: '#/definitions/OrderCreate'
+      responses:
+        '201':
+          description: created
+          schema:
+            $ref: '#/definitions/Order'
+definitions:
+  OrderCreate:
+    type: object
+    required: [sku]
+    properties:
+      sku: {type: string}
+      priority: {type: string, enum: [standard, express]}
+  Order:
+    type: object
+    required: [id, status]
+    properties:
+      id: {type: string}
+      status: {type: string, enum: [pending, complete]}

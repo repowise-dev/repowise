@@ -36,6 +36,11 @@ class FakeSymbol:
     end_line: int = 10
     qualified_name: str = "main.my_func"
     signature: str = "def my_func():"
+    id: str = ""
+    docstring: str | None = "Do one thing. Then another."
+    language: str = "python"
+    parent_name: str | None = None
+    complexity_estimate: int = 1
 
 
 @dataclass
@@ -70,6 +75,7 @@ def _make_graph_builder(files: list[FakeParsedFile]):
     builder.pagerank.return_value = {f.file_info.path: 1.0 / max(len(files), 1) for f in files}
     builder.betweenness_centrality.return_value = {f.file_info.path: 0.0 for f in files}
     builder.strongly_connected_components.return_value = []
+    builder.symbol_uses.return_value = {}
     return builder
 
 
@@ -192,7 +198,7 @@ class TestEstimateCost:
         assert est.estimated_output_tokens > 0
 
     def test_structural_page_types_cost_nothing(self):
-        # The six types rendered from structure make no provider call, so
+        # The five types rendered from structure make no provider call, so
         # however many are produced they price to zero. Counted as pages,
         # billed as nothing.
         plans = [
@@ -201,10 +207,9 @@ class TestEstimateCost:
             PageTypePlan("api_contract", 20, 0),
             PageTypePlan("infra_page", 10, 7),
             PageTypePlan("scc_page", 5, 3),
-            PageTypePlan("layer_page", 8, 5),
         ]
         est = estimate_cost(plans, "anthropic", "claude-sonnet-4-6")
-        assert est.total_pages == 843
+        assert est.total_pages == 835
         assert est.estimated_cost_usd == 0.0
         assert est.estimated_input_tokens == 0
         assert est.estimated_output_tokens == 0

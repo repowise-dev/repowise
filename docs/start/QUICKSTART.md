@@ -67,6 +67,13 @@ Node.js 20+, and its first run downloads the UI (about 50 MB, cached in
 [Docker image](../../docker/README.md) avoids installing Node. View by view:
 [Dashboard](DASHBOARD.md).
 
+After a first index, the dashboard opens on a three-step welcome: what stood
+out in your repo, connecting your agent, and what to add next. Setup
+(Settings > Setup) keeps the same list for later: agents, sync, coverage and a
+model, each with a prompt you can copy to your agent. The free index stays the
+default; add a model whenever you like from the dashboard or with
+`repowise generate`.
+
 ### 4. Connect your agent
 
 `init` wires your editors unless you pass `--no-editor-setup` (or set
@@ -76,7 +83,7 @@ Node.js 20+, and its first run downloads the UI (about 50 MB, cached in
 |---|---|---|
 | MCP server entry | `.mcp.json`, `.vscode/mcp.json` (plus `.vscode/extensions.json`) | by default |
 | Agent context files | `.claude/CLAUDE.md`, `AGENTS.md`, Copilot instructions under `.github/` | by default |
-| Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude/settings.json` and the Claude Desktop config | by default; when it points at another repo the plan screen shows the move and `s` keeps it; `--yes` points it here and prints the old and new repo |
+| Global repowise MCP entry for Claude Code and Claude Desktop | `~/.claude.json` and the Claude Desktop config | by default; when it points at another repo the plan screen shows the move and `s` keeps it; `--yes` points it here and prints the old and new repo |
 | Claude Code hooks (session briefing, post-edit context) | `~/.claude/settings.json` | with the global entry |
 | Post-commit hook that runs `repowise update` | the repo's git `post-commit` hook | by default; `e` turns it off, `--no-hook` skips it |
 
@@ -97,6 +104,7 @@ Other hosts need one more command, run after `init`:
 | Hermes | `repowise agents add --target=hermes --yes` |
 | GitHub Copilot CLI | `repowise agents add --target=copilot --yes` |
 | Kiro | `repowise agents add --target=kiro --yes` |
+| Windsurf | `repowise agents add --target=windsurf --yes` |
 | Any other MCP client | `repowise agents print-config claude-code`, then paste the entry into its MCP config |
 
 `repowise agents` lists every supported host and whether it is wired.
@@ -153,8 +161,8 @@ That runbook follows the steps below. An agent can also follow them directly.
    repowise init --yes --no-prose
    ```
 
-   It points the global repowise MCP entry at this repo and prints the old and
-   new target. Add `--no-editor-setup` in CI, in a sandbox, or on a repo the
+   It adds the global repowise MCP entry when there is none and never moves
+   one that serves another repo. Add `--no-editor-setup` in CI, in a sandbox, or on a repo the
    person only wants to try: then only `.repowise/` is written.
 3. **Run it in the background.** A small repo takes under a minute; a few
    thousand files can take several minutes, longer than many tool timeouts.

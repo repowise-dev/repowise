@@ -18,13 +18,17 @@ The artifact stores:
   rows. Multiset, not set: ``_merge_adjacent_pairs`` accumulates
   ``token_count`` per merged pair, so multiplicity matters.
 * ``total_windows`` plus the guard flags, so the incremental path can
-  re-evaluate the repo-wide window budget and refuse to splice a
-  truncated state.
+  re-evaluate the repo-wide window budget.
+* ``budget_stop`` and ``unread`` for a run the window budget cut short:
+  the file collection stopped at and the files after it, so a splice can
+  check that the same cut would fall in the same place.
 
-Validity is keyed on (version, window size, limits fingerprint); any
-mismatch -- or any load/save error -- degrades to a full re-detect,
+Validity is keyed on (version, window size, limits fingerprint, analyzer
+stamp); any mismatch -- or any load/save error -- degrades to a full re-detect,
 which rewrites the artifact. Best-effort by design, like the token
-cache next to it.
+cache next to it. The analyzer stamp stands in for the clone verifier's
+code: the pairs depend on it, and the token cache no longer goes cold when
+the stamp moves.
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ from .limits import DuplicationLimits
 
 log = structlog.get_logger(__name__)
 
-_INDEX_VERSION = 3
+_INDEX_VERSION = 4
 _INDEX_FILENAME = "duplication_pairs.pkl"
 
 # One raw-pair multiset entry as a path-id row:
@@ -49,6 +53,13 @@ _INDEX_FILENAME = "duplication_pairs.pkl"
 # geometry) always merge together downstream, so multiplicity is all the
 # merge stage needs from them.
 PairRow = tuple[int, int, int, int, int, int, int]
+
+
+def _analyzer_version() -> int:
+    # Imported at call time: engine imports the duplication package.
+    from ..engine import HEALTH_ANALYZER_VERSION
+
+    return HEALTH_ANALYZER_VERSION
 
 
 def limits_fingerprint(limits: DuplicationLimits) -> tuple:
@@ -78,11 +89,19 @@ class DuplicationPairIndex:
     total_windows: int = 0
     window_budget_hit: bool = False
     timed_out: bool = False
+    # Where a window-budget cut fell; ``None`` when the run was not cut.
+    budget_stop: str | None = None
+    unread: set[str] = field(default_factory=set)
+    # path -> content key of each non-survivor ("" when unreadable), so a
+    # whole-repo run can tell which files moved; ``None`` when not recorded.
+    nonsurvivor_keys: dict[str, str] | None = None
 
     @property
     def spliceable(self) -> bool:
-        """A truncated or deadline-cut state cannot be spliced safely."""
-        return not (self.window_budget_hit or self.timed_out)
+        """A deadline-cut state, or a budget cut with no recorded position, cannot be spliced."""
+        if self.timed_out:
+            return False
+        return not self.window_budget_hit or self.budget_stop is not None
 
 
 def load_pair_index(
@@ -98,6 +117,7 @@ def load_pair_index(
             payload.get("version") != _INDEX_VERSION
             or payload.get("window_tokens") != window_tokens
             or tuple(payload.get("limits_key", ())) != limits_fingerprint(limits)
+            or payload.get("analyzer_version") != _analyzer_version()
         ):
             return None
         return DuplicationPairIndex(
@@ -110,6 +130,9 @@ def load_pair_index(
             total_windows=payload["total_windows"],
             window_budget_hit=payload["window_budget_hit"],
             timed_out=payload["timed_out"],
+            budget_stop=payload["budget_stop"],
+            unread=payload["unread"],
+            nonsurvivor_keys=payload.get("nonsurvivor_keys"),
         )
     except FileNotFoundError:
         return None
@@ -126,6 +149,7 @@ def save_pair_index(cache_dir: Path, index: DuplicationPairIndex) -> None:
             "version": _INDEX_VERSION,
             "window_tokens": index.window_tokens,
             "limits_key": index.limits_key,
+            "analyzer_version": _analyzer_version(),
             "files": index.files,
             "nonsurvivors": index.nonsurvivors,
             "paths": index.paths,
@@ -133,6 +157,9 @@ def save_pair_index(cache_dir: Path, index: DuplicationPairIndex) -> None:
             "total_windows": index.total_windows,
             "window_budget_hit": index.window_budget_hit,
             "timed_out": index.timed_out,
+            "budget_stop": index.budget_stop,
+            "unread": index.unread,
+            "nonsurvivor_keys": index.nonsurvivor_keys,
         }
         dump_sealed_pickle(path, payload, domain=_INDEX_FILENAME)
     except Exception as exc:

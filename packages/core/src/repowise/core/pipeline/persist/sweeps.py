@@ -11,8 +11,9 @@ from repowise.core.generation.models import (
     STRUCTURALLY_KEYED_PAGE_TYPES,
     STUB_FALLBACK_ERROR,
 )
+from repowise.core.persistence.crud.page_archive import purge_retired_pages
 
-from .prune import _PRUNE_CHUNK
+from .prune import delete_pages
 
 logger = structlog.get_logger("repowise.core.pipeline.persist")
 
@@ -64,14 +65,18 @@ async def sweep_retired_pages(session: Any, repo_id: str) -> list[str]:
     than one never swept: search still answers from the FTS copy, with the full
     title and snippet of a page the reader can no longer open.
     """
-    from sqlalchemy import delete, or_, select
+    from sqlalchemy import or_, select
 
     from repowise.core.generation.page_redirects import (
         RETIRED_IDS,
         SUPERSEDED_TO_REPO_WIDE,
         SUPERSEDED_TYPES,
     )
-    from repowise.core.persistence.models import Page, PageVersion
+    from repowise.core.persistence.models import Page
+
+    # This sweep runs on every full/scoped persistence path, even when there
+    # are no obsolete live rows. Retention belongs to that existing pass.
+    await purge_retired_pages(session, repo_id)
 
     retired_types = sorted(set(SUPERSEDED_TYPES) | set(SUPERSEDED_TO_REPO_WIDE))
     retired_ids = sorted(RETIRED_IDS)
@@ -94,10 +99,7 @@ async def sweep_retired_pages(session: Any, repo_id: str) -> list[str]:
         .scalars()
         .all()
     )
-    for i in range(0, len(stale), _PRUNE_CHUNK):
-        batch = stale[i : i + _PRUNE_CHUNK]
-        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
-        await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
+    await delete_pages(session, repo_id, stale, "retired")
     if stale:
         logger.info(
             "retired_pages_swept",
@@ -139,9 +141,9 @@ async def _sweep_stale_generated_pages(
     (issue #1089). A preserved id is as current as a produced one: the id did
     not drift, which is the only thing this sweep exists to catch.
     """
-    from sqlalchemy import delete, select
+    from sqlalchemy import select
 
-    from repowise.core.persistence.models import Page, PageVersion
+    from repowise.core.persistence.models import Page
 
     produced: dict[str, set[str]] = {}
     for page in generated_pages or []:
@@ -177,12 +179,7 @@ async def _sweep_stale_generated_pages(
             .all()
         )
         stale = [pid for pid in existing if pid not in current]
-        for i in range(0, len(stale), _PRUNE_CHUNK):
-            batch = stale[i : i + _PRUNE_CHUNK]
-            await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
-            await session.execute(
-                delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
-            )
+        await delete_pages(session, repo_id, stale, "stale_generation")
         swept.extend(stale)
 
     if swept:
@@ -194,14 +191,14 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
     """Delete ``scc_page`` rows whose cycle no longer exists in the graph.
 
     The other sweeps ask "did this run *produce* this page?", which a scoped run
-    cannot answer: ``repowise update`` runs with ``file_pages_only`` and never
-    reaches level 3, so it emits no ``scc_page`` at all and every prior row
-    looks stale to that question. ``_sweep_stale_generated_pages`` therefore
+    cannot answer: ``repowise update`` runs with ``file_pages_only`` and renders
+    only the cycles whose page is stale or missing, so most prior rows look
+    stale to that question. ``_sweep_stale_generated_pages`` therefore
     gates on the run declaring itself authoritative, and only a keyless
     (``deterministic``) run does.
 
     Between them those two rules leave a cycle page immortal on the paths that
-    matter: an update never regenerates it, and a keyed full re-index of a repo
+    matter: an update never regenerates a live one, and a keyed full re-index of a repo
     whose cycles all disappeared never claims authority to retire it. A user
     upgrading into a build that fixes a cycle-detection bug keeps being served
     the cycles it fixed.
@@ -216,21 +213,18 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
     Returns the deleted page ids so the caller can drop them from FTS and the
     vector store after the session closes.
     """
-    from sqlalchemy import delete, select
+    from sqlalchemy import select
 
-    from repowise.core.generation.models import compute_page_id, scc_page_slug
-    from repowise.core.persistence.models import Page, PageVersion
+    from repowise.core.generation.selection.selector import (
+        graph_cycles,
+        selected_cycle_page_ids,
+    )
+    from repowise.core.persistence.models import Page
 
-    if graph_builder is None:
+    sccs = graph_cycles(graph_builder)
+    if sccs is None:
         return []
-    try:
-        sccs = graph_builder.strongly_connected_components()
-    except Exception:  # a released graph has no cycles to speak for
-        return []
-
-    valid = {
-        compute_page_id("scc_page", scc_page_slug(sorted(scc))) for scc in sccs if len(scc) > 1
-    }
+    valid = selected_cycle_page_ids(sccs)
     existing = (
         (
             await session.execute(
@@ -241,10 +235,7 @@ async def sweep_absent_cycle_pages(session: Any, repo_id: str, graph_builder: An
         .all()
     )
     stale = [pid for pid in existing if pid not in valid]
-    for i in range(0, len(stale), _PRUNE_CHUNK):
-        batch = stale[i : i + _PRUNE_CHUNK]
-        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
-        await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
+    await delete_pages(session, repo_id, stale, "cycle_absent")
     if stale:
         logger.info("absent_cycle_pages_swept", repo_id=repo_id, count=len(stale))
     return stale
@@ -291,9 +282,9 @@ async def sweep_absent_symbol_spotlights(
     Returns the deleted page ids so the caller can drop them from FTS and the
     vector store after the session closes.
     """
-    from sqlalchemy import delete, select
+    from sqlalchemy import select
 
-    from repowise.core.persistence.models import Page, PageVersion
+    from repowise.core.persistence.models import Page
 
     names_by_file = _symbol_names_by_file(graph_builder)
     if not names_by_file:
@@ -314,10 +305,7 @@ async def sweep_absent_symbol_spotlights(
         names = names_by_file.get(path)
         if sep and names is not None and name not in names:
             stale.append(page_id)
-    for i in range(0, len(stale), _PRUNE_CHUNK):
-        batch = stale[i : i + _PRUNE_CHUNK]
-        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
-        await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
+    await delete_pages(session, repo_id, stale, "symbol_absent")
     if stale:
         logger.info("absent_symbol_spotlights_swept", repo_id=repo_id, count=len(stale))
     return stale
@@ -341,7 +329,7 @@ async def sweep_deselected_pages(
     files in this run's parse are judged; model-written pages are left alone.
     *git_meta_map* (this run's rows) overrides the stored hotspot flags.
     """
-    from sqlalchemy import delete, select
+    from sqlalchemy import select
 
     from repowise.core.generation.page_generator.helpers import _select_clone_representatives
     from repowise.core.generation.selection.selector import (
@@ -350,7 +338,7 @@ async def sweep_deselected_pages(
         file_page_eligible,
         rank_symbol_candidates,
     )
-    from repowise.core.persistence.models import GitMetadata, Page, PageVersion
+    from repowise.core.persistence.models import GitMetadata, Page
 
     parsed_by_path = {p.file_info.path: p for p in parsed_files or []}
     if not parsed_by_path or graph_builder is None:
@@ -416,6 +404,7 @@ async def sweep_deselected_pages(
                 sccs=[],
                 git_meta_map={},
                 config=config,
+                symbol_uses=graph_builder.symbol_uses(),
             )
         )
         kept = {target for _, target in ranked[: int(keep * SPOTLIGHT_RETIRE_MARGIN)]}
@@ -424,13 +413,96 @@ async def sweep_deselected_pages(
             if sep and path in parsed_by_path and (path, name) not in kept:
                 retired.append(pid)
 
-    for i in range(0, len(retired), _PRUNE_CHUNK):
-        batch = retired[i : i + _PRUNE_CHUNK]
-        await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
-        await session.execute(delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch)))
+    await delete_pages(session, repo_id, retired, "deselected")
     if retired:
         logger.info("deselected_pages_swept", repo_id=repo_id, count=len(retired))
     return retired
+
+
+async def sweep_deselected_file_keyed_pages(
+    session: Any, repo_id: str, parsed_files: list[Any] | None
+) -> list[str]:
+    """Delete ``api_contract`` and ``infra_page`` rows the selection no longer picks.
+
+    The counterpart of :func:`sweep_deselected_pages` for the pages one file
+    earns by what it is rather than by rank: a classifier fix (a test file is
+    not an API surface, a lint script is not infrastructure) has to retire the
+    pages the old classifier wrote, and nothing else ever revisits them. Only
+    files in this run's parse are judged, so it is safe on every path.
+
+    Returns the deleted page ids so the caller can drop them from FTS and the
+    vector store after the session closes.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.generation.selection.selector import selected_file_keyed_paths
+    from repowise.core.persistence.models import Page
+
+    parsed = list(parsed_files or [])
+    if not parsed:
+        return []
+    judged = {p.file_info.path for p in parsed}
+    selected = selected_file_keyed_paths(parsed)
+    rows = (
+        await session.execute(
+            select(Page.id, Page.page_type, Page.target_path).where(
+                Page.repository_id == repo_id,
+                Page.page_type.in_(tuple(selected)),
+                Page.freshness_status != "tombstone",
+            )
+        )
+    ).all()
+    retired = [
+        pid for pid, kind, path in rows if path in judged and path not in selected[kind]
+    ]
+    await delete_pages(session, repo_id, retired, "deselected")
+    if retired:
+        logger.info("deselected_file_keyed_pages_swept", repo_id=repo_id, count=len(retired))
+    return retired
+
+
+async def sweep_store_hygiene(
+    session: Any, repo_id: str, parsed_files: list[Any] | None
+) -> list[str]:
+    """The sweeps that hold on every persist path, full or incremental.
+
+    Each asks a question the store and this run's parse answer on their own,
+    whatever generation emitted: retired page types and ids, file-keyed pages
+    the classifiers no longer pick, expired tombstones, and model names on
+    template pages. Returns the deleted page ids for the FTS and vector drops.
+    """
+    from .tombstones import sweep_expired_tombstones
+
+    swept = await sweep_retired_pages(session, repo_id)
+    swept += await sweep_deselected_file_keyed_pages(session, repo_id, parsed_files)
+    swept += await sweep_expired_tombstones(session, repo_id)
+    await clear_template_model_names(session, repo_id)
+    return swept
+
+
+async def clear_template_model_names(session: Any, repo_id: str) -> int:
+    """Blank the model name on every page a template rendered.
+
+    ``provider_name='template'`` means no model wrote the page, so a model name
+    beside it credits a model with work it never did. Renders have stamped an
+    empty name for a long time, but rows an older build wrote and nothing has
+    re-rendered since keep the old one. One idempotent UPDATE, so it runs on
+    every persist rather than once.
+    """
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import Page
+
+    result = await session.execute(
+        update(Page)
+        .where(
+            Page.repository_id == repo_id,
+            Page.provider_name == "template",
+            Page.model_name != "",
+        )
+        .values(model_name="")
+    )
+    return result.rowcount or 0
 
 
 async def sweep_superseded_generated_pages(
@@ -464,12 +536,13 @@ async def sweep_superseded_generated_pages(
     Returns the swept page ids so the caller can drop them from FTS after the
     session closes.
     """
-    from sqlalchemy import delete, select
+    from sqlalchemy import select
 
-    from repowise.core.persistence.models import Page, PageVersion
+    from repowise.core.persistence.models import Page
 
     produced_ids: dict[str, set[str]] = {}
     covered: dict[str, set[str]] = {}
+    coverage: dict[str, dict[str, set[str]]] = {}
     for page in generated_pages or []:
         page_type = page.page_type
         if page_type not in _SWEPT_GENERATED_PAGE_TYPES:
@@ -484,7 +557,9 @@ async def sweep_superseded_generated_pages(
         produced_ids.setdefault(page_type, set()).add(page.page_id)
         metadata = getattr(page, "metadata", None) or {}
         members = metadata.get("file_paths") or metadata.get("files") or []
-        covered.setdefault(page_type, set()).update(m for m in members if isinstance(m, str))
+        files = {m for m in members if isinstance(m, str)}
+        covered.setdefault(page_type, set()).update(files)
+        coverage.setdefault(page_type, {})[page.page_id] = files
 
     swept: list[str] = []
     for page_type, current in produced_ids.items():
@@ -501,6 +576,7 @@ async def sweep_superseded_generated_pages(
             )
         ).all()
         stale: list[str] = []
+        successors: dict[str, str] = {}
         for page_id, raw in rows:
             if page_id in current:
                 continue
@@ -517,12 +593,11 @@ async def sweep_superseded_generated_pages(
             # full index to retire.
             if members and members <= union:
                 stale.append(page_id)
-        for i in range(0, len(stale), _PRUNE_CHUNK):
-            batch = stale[i : i + _PRUNE_CHUNK]
-            await session.execute(delete(PageVersion).where(PageVersion.page_id.in_(batch)))
-            await session.execute(
-                delete(Page).where(Page.repository_id == repo_id, Page.id.in_(batch))
-            )
+                successors[page_id] = min(
+                    coverage[page_type],
+                    key=lambda pid: (-len(members & coverage[page_type][pid]), pid),
+                )
+        await delete_pages(session, repo_id, stale, "superseded", successors)
         swept.extend(stale)
 
     if swept:

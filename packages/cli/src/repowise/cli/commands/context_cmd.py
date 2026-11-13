@@ -15,6 +15,7 @@ _INCLUDE_BLOCKS = (
     "callers",
     "callees",
     "references",
+    "references+",
     "metrics",
     "community",
     "decisions",
@@ -23,9 +24,11 @@ _INCLUDE_BLOCKS = (
     "skeleton+",
     "doc_drift",
     "symbols",
+    "facts",
     "changes",
     "provenance",
     "suspects",
+    "files",
 )
 
 #: Card keys the projection replaces or drops. Everything else passes through.

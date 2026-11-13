@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.generation.entry_points import orientation_entry_points_view
+from repowise.core.generation.nav_titles import page_nav_title
 from repowise.core.persistence.crud import (
     get_kg_project_meta as _get_kg_project_meta,
 )
@@ -28,13 +29,37 @@ def _compact_overview_content(content: str) -> str:
     """Leading section of the overview essay — the summary paragraph, not the walkthrough.
 
     The full essay repeats what ``key_modules`` and ``architecture.layers``
-    already carry, so compact mode (the default) keeps only the first H2
-    section. Callers who want the whole thing pass ``include=["content"]``.
+    already carry, so compact mode (the default) keeps only the first section
+    that says something. Callers who want the whole thing pass
+    ``include=["content"]``.
     """
     text = (content or "").strip()
     if not text:
         return text
-    return _H2_SPLIT_RE.split(text, maxsplit=1)[0].strip()
+    sections = _H2_SPLIT_RE.split(text, maxsplit=2)
+    lead = sections[0].strip()
+    # The page built without a model opens with its title and a bold stats
+    # line, and its summary paragraph sits under the first heading after them.
+    if not _has_prose(lead) and len(sections) > 1:
+        lead = re.sub(r"\n{3,}", "\n\n", f"{lead}\n\n{sections[1].strip()}")
+    return lead
+
+
+def _has_prose(section: str) -> bool:
+    return any(_is_prose_line(line) for line in section.splitlines())
+
+
+def _is_prose_line(line: str) -> bool:
+    """Not blank, a heading, a table row, a list item, a quote, a code fence or
+    a ``**Field:** value`` line."""
+    text = line.strip()
+    if _FIELD_LINE_RE.match(text):
+        return False
+    return bool(text) and not text.startswith(("#", "|", "- ", "* ", "```", ">"))
+
+
+# "**Files:** 128 | ..." opens with a bold label ending in a colon.
+_FIELD_LINE_RE = re.compile(r"\*\*[^*]+:\*\*")
 
 
 def _overview_content(overview_page: Page | None, want_full: bool) -> tuple[str, str | None]:
@@ -118,7 +143,10 @@ async def _load_module_pages(
     rows = []
     for head in heads:
         path = head.target_path or ""
-        row = {"name": head.title, "path": head.target_path, "section": head.section_number}
+        name = page_nav_title("module_page", head.title or "", head.metadata_json)
+        row = {"name": name, "path": head.target_path}
+        if head.section_number is not None:
+            row["section"] = head.section_number
         package = next((r for r in roots if _under(path, r)), path)
         if package != path:
             row["package"] = package
@@ -147,21 +175,33 @@ def _topmost(pages: list[Any]) -> list[Any]:
 
 
 def _key_module_heads(pages: list[Any]) -> list[Any]:
-    heads = _topmost(pages)
+    heads = _one_per_path(_topmost(pages))
+    opened: set[str] = set()
+
+    def beneath(head: Any) -> list[Any]:
+        path = head.target_path or ""
+        return [
+            p for p in pages if (p.target_path or "") != path and _under(p.target_path or "", path)
+        ]
+
     while len(heads) < _MODULE_FLOOR:
         # Open the head with the most pages beneath it into its own top layer.
-        def beneath(head: Any) -> list[Any]:
-            path = head.target_path or ""
-            return [
-                p for p in pages if (p.target_path or "") != path and _under(p.target_path or "", path)
-            ]
-
-        widest = max(heads, key=lambda h: len(beneath(h)), default=None)
+        # The opened head stays: it is still the module its own files belong to.
+        closed = [h for h in heads if (h.target_path or "") not in opened]
+        widest = max(closed, key=lambda h: len(beneath(h)), default=None)
         if widest is None or not beneath(widest):
             break
-        gone = widest.target_path or ""
-        heads = [h for h in heads if (h.target_path or "") != gone] + _topmost(beneath(widest))
+        opened.add(widest.target_path or "")
+        heads = _one_per_path(heads + _topmost(beneath(widest)))
     return sorted(heads, key=_module_order_key)[:_MODULE_CAP]
+
+
+def _one_per_path(pages: list[Any]) -> list[Any]:
+    """*pages* with one page per target path, the first one seen."""
+    by_path: dict[str, Any] = {}
+    for page in pages:
+        by_path.setdefault(page.target_path or "", page)
+    return list(by_path.values())
 
 
 def _drop_fixtures(ids: list[str], exclude_spec: Any) -> list[str]:
