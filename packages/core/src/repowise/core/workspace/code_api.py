@@ -222,12 +222,12 @@ def _flit_module_dirs(data: dict[str, Any]) -> list[str]:
     such as ``acme-providers-ftp`` shipping ``acme.providers.ftp`` has no
     top-level directory a guess from the name could find.
     """
-    return _module_paths(_table(data, "tool", "flit", "module").get("name"), ("src", ""))
+    return _module_paths(toml_table(data, "tool", "flit", "module").get("name"), ("src", ""))
 
 
 def _uv_build_module_dirs(data: dict[str, Any]) -> list[str]:
     """uv_build's ``module-name``, under its ``module-root``."""
-    backend = _table(data, "tool", "uv", "build-backend")
+    backend = toml_table(data, "tool", "uv", "build-backend")
     root = backend.get("module-root")
     roots = (root, "") if isinstance(root, str) else ("src", "")
     return _module_paths(backend.get("module-name"), roots)
