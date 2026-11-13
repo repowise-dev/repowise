@@ -32,6 +32,8 @@ from repowise.core.pipeline.incremental.persist_index import (
     rebuild_tree,
     reconcile_generation_scope,
     reconcile_scope,
+    refresh_git_rollups,
+    save_graph_snapshot,
     sweep_retired,
 )
 from repowise.core.pipeline.index_persistence import publish_index_persistence
@@ -379,6 +381,7 @@ FULL_UPDATE_STEPS: tuple[Step, ...] = (
     # Last of the store writes: the steps above upsert rows for deleted paths
     # too. Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
+    Step("Git rollups", refresh_git_rollups, when=_has_git_input),
     Step("Generation job record", record_generation_job),
     Step("Page count", count_pages),
     Step("Config rebuild check", check_config_rebuild, guarded=False),
@@ -495,6 +498,7 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
             await refresh_planner_stats(ctx.engine)
     finally:
         await ctx.engine.dispose()
+    await save_graph_snapshot(ctx)
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))
     return ctx.total_pages
 

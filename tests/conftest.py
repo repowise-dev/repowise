@@ -150,25 +150,6 @@ def _isolate_db_url_env():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_embedder_env():
-    """Stop one test's embedder configuration from leaking into later tests.
-
-    ``serve_cmd._load_local_provider_config`` assigns ``REPOWISE_EMBEDDER``
-    and ``REPOWISE_EMBEDDING_MODEL`` directly on ``os.environ``, which is
-    right for a real ``serve`` process and wrong inside pytest: a test that
-    drives that helper leaves those variables pinned for every later test in the
-    same worker.
-    """
-    saved = {k: os.environ.get(k) for k in ("REPOWISE_EMBEDDER", "REPOWISE_EMBEDDING_MODEL")}
-    yield
-    for key, value in saved.items():
-        if value is None:
-            os.environ.pop(key, None)
-        else:
-            os.environ[key] = value
-
-
-@pytest.fixture(autouse=True)
 def _isolate_tokens_file(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory):
     """Keep a developer's ``~/.repowise/tokens.yaml`` from turning server auth on."""
     missing = tmp_path_factory.getbasetemp() / "no-tokens.yaml"

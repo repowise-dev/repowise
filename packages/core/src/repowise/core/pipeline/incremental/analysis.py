@@ -368,6 +368,7 @@ def run_doc_drift_partial(
                 tracked_paths=tracked_paths,
                 repo_root=root,
                 symbols=_drift_symbol_options(graph_builder, root, update or DocDriftUpdate()),
+                cache_dir=root / ".repowise" if root is not None else None,
             ).analyze()
             report.authoritative_paths = report.documents
             if report.total_findings:

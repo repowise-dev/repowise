@@ -57,9 +57,14 @@ async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any
     leaves a resumable, persisted index behind.
     """
     from repowise.core.pipeline.resume import ResumeController
+    from repowise.core.update_lock import holds_init_lock
 
     engine, sf, repo_id = await open_repo_db(repo_path)
-    return ResumeController(sf, repo_id, resume=resume), engine
+    # An overlapping init that lost the lock must not reap the owner's live rows.
+    controller = ResumeController(
+        sf, repo_id, resume=resume, reap_abandoned=holds_init_lock(repo_path)
+    )
+    return controller, engine
 
 
 # Chunk size for the preserved-page FTS backfill — keeps the IN (...) below
@@ -383,7 +388,9 @@ def keep_prior_documentation(
     _restore_docs_scope(state["index_scope"], prior_state, prior_mode)
 
 
-def _restore_docs_scope(scope: dict[str, Any], prior_state: dict[str, Any], prior_mode: str) -> None:
+def _restore_docs_scope(
+    scope: dict[str, Any], prior_state: dict[str, Any], prior_mode: str
+) -> None:
     """Put the prior run's documentation sections back into this run's *scope*."""
     from repowise.core.index_scope import resolve_index_scope
 
@@ -603,7 +610,7 @@ def save_full_state_and_config(
         provider.provider_name,
         provider.model_name,
         embedder_name_resolved,
-        embedding_model=resolve_embedding_model(embedder_name_resolved),
+        embedding_model=resolve_embedding_model(embedder_name_resolved, repo_path=repo_path),
         exclude_patterns=exclude_patterns if exclude_patterns else None,
         commit_limit=resolved_commit_limit if commit_limit is not None else None,
         reasoning=resolved_reasoning,

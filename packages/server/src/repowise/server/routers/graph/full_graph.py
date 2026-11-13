@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import load_only
 
 from repowise.core.analysis.execution_graph import is_walkable_execution_edge
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.persistence.sql import LIKE_ESCAPE, escape_like
@@ -180,7 +181,13 @@ async def export_graph(
     total_node_count = len(all_nodes)
     truncated = total_node_count > limit
 
-    edge_result = await session.execute(select(GraphEdge).where(GraphEdge.repository_id == repo_id))
+    # The canvas has no doc-link edge kind yet.
+    edge_result = await session.execute(
+        select(GraphEdge).where(
+            GraphEdge.repository_id == repo_id,
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
+        )
+    )
     edges = list(edge_result.scalars().all())
 
     # Repo-wide signals: needed for the *_total counts and, when truncating,

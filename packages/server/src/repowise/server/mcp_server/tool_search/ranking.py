@@ -69,6 +69,12 @@ def _downweight_test_pages(output: list[dict], query: str) -> None:
             item["relevance_score"] = round(item["relevance_score"] * _TEST_DOWNWEIGHT, 4)
 
 
+_REPO_WIDE_PAGE_TYPES = frozenset({"repo_overview", "architecture_diagram", "onboarding"})
+_REPO_WIDE_QUERY = re.compile(
+    r"\b(?:overview|architecture|onboarding|getting\s+started|how\s+it\s+works)\b", re.IGNORECASE
+)
+
+
 def _sort_demoting_noise(
     output: list[dict], query: str, minor: Container[str] = frozenset()
 ) -> None:
@@ -86,16 +92,21 @@ def _sort_demoting_noise(
     - *minor* spotlight page ids (:func:`_minor_spotlights`) — a page about one
       constant or one-line symbol that only full-text search matched shares the
       query's words, not its subject.
+    - repo-wide pages (overview, getting started) on an index with no embedder:
+      they hold most of the repo's common words, so keyword matching ranks them
+      on any question (#5049). A query asking for an overview ranks them naturally.
     """
     why = _is_why_shaped(query)
     test_focused = _is_test_query(query)
+    repo_wide_noise = _pkg.semantic_search_state() is False and not _REPO_WIDE_QUERY.search(query)
 
     def key(item: dict) -> tuple:
         pt = item.get("page_type")
         is_decision = (not why) and pt == "decision_record"
         is_test = (not test_focused) and _is_test_page(item)
         is_minor = item.get("page_id") in minor
-        noise = is_decision or is_test or is_minor
+        is_repo_wide = repo_wide_noise and pt in _REPO_WIDE_PAGE_TYPES
+        noise = is_decision or is_test or is_minor or is_repo_wide
         return (1 if noise else 0, -(item.get("relevance_score") or 0.0))
 
     output.sort(key=key)

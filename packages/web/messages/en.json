@@ -479,7 +479,7 @@
         "contracts": "{touched, plural, =0 {No workspace contract touched} one {# workspace contract touched} other {# workspace contracts touched}}; {breaking, plural, =0 {no breaking signature change} one {# breaking signature change} other {# breaking signature changes}}",
         "contracts_unchecked": "{touched, plural, =0 {No workspace contract touched} one {# workspace contract touched} other {# workspace contracts touched}}; signatures not compared",
         "cross_repo_consumers": "{links, plural, =0 {No consumer in another repo} one {# consumer in {names}{more, plural, =0 {} other { and # more}}} other {# consumers in {names}{more, plural, =0 {} other { and # more}}}}",
-        "decisions_crossed": "{accepted, plural, one {# accepted decision} other {# accepted decisions}}, {candidate, plural, one {# candidate} other {# candidates}}",
+        "decisions_crossed": "{accepted, plural, one {# decision in force} other {# decisions in force}}, {candidate, number} background",
         "decisions_none": "No decision crossed",
         "health_delta": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved",
         "health_delta_partial": "Findings: {introduced} introduced, {worsened} worsened, {resolved} resolved (partial comparison)",
@@ -675,17 +675,17 @@
     "decisions": {
       "title": "Decisions",
       "description": "What this codebase has settled on and what is true of the checkout you are standing in: the constraints, the tradeoffs, and the facts that catch people out.",
-      "ledeAccepted": "Accepted",
+      "ledeAccepted": "In force",
       "ledeConfirmed": "Confirmed",
       "ledeEmpty": "Decisions land here as the indexer mines them from pull requests, commit messages, code comments and your own sessions, and as you record them yourself — below, or with <code>repowise decision add</code>. Each one keeps the quote it was drawn from and the files it governs.",
-      "ledeNoGovernance": "Nothing here governs yet. A record governs only once somebody accepts it, naming the files it covers and why — mining it, seeing it recur, and scoring it confident all stop short of that.",
-      "ledeCandidates": "{count, plural, one {# candidate is} other {# candidates are}} waiting below, and {count, plural, one {it is} other {they are}} all still here: nothing was deleted and every id still resolves. If this page used to show confirmed decisions, those are the records now in Candidates. Accepting one takes a click and changes no code.",
-      "ledeAcceptedRecords": "{count, plural, one {# record is} other {# records are}} accepted: somebody read {count, plural, one {it} other {them}} and marked {count, plural, one {it} other {them}} as something the team stands behind, which is what makes {count, plural, one {it} other {them}} worth quoting back to an agent later.",
-      "ledeAcceptedMore": "{count, plural, one {# more is a candidate} other {# more are candidates}} the indexer mined and nobody has accepted. Until one is accepted it is a guess about your codebase rather than a rule for it, and no agent is ever given one. Open the Candidates lane below to work through them; accepting or dismissing one takes a click and changes no code.",
+      "ledeNoGovernance": "Nothing is in force yet. A decision an agent records comes into force when the commit it cites merges to the default branch.",
+      "ledeCandidates": "{count, plural, one {# background record is} other {# background records are}} below, mined from pull requests, commits, comments and sessions. {count, plural, one {It is} other {They are}} not in force; agents ask about {count, plural, one {it} other {them}} through get_why for the why behind the code.",
+      "ledeAcceptedRecords": "{count, plural, one {# decision is} other {# decisions are}} in force. A decision an agent records comes into force when the commit it cites merges to the default branch.",
+      "ledeAcceptedMore": "{count, plural, one {# more is a background record} other {# more are background records}} mined from history. Not in force; agents ask about them through get_why for the why.",
       "checkoutTitle": "About this checkout",
       "checkoutDescription": "Facts about the working tree rather than claims anybody made about it, derived at index time with no model call and no history. These are the ones that trip up a newcomer, human or agent.",
-      "reviewTitle": "Review",
-      "reviewDescription": "Split by what each record's acceptance amounts to, not by a status word. Every record is in exactly one lane and the counts add up: what governs, what nobody has reviewed, what has drifted from the code it names, what names nothing at all, and what has been retired."
+      "reviewTitle": "Records",
+      "reviewDescription": "What is in force, with pinned decisions first; what your agents decided this week; background mined from history; and what has been retired. Hand any one to your agent to pin, veto or change it."
     },
     "contributors": {
       "title": "Ownership",
@@ -893,7 +893,7 @@
       "syncDescription": "Pull recent commits into the existing index, or rebuild it from scratch.",
       "providerDescription": "A model key lets this repository's documentation be written with AI. Keys are stored with the repository and used by generation from the UI or the CLI.",
       "captureTitle": "Decision capture",
-      "captureDescription": "What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only ever produces candidates: nothing here can accept a decision on your behalf.",
+      "captureDescription": "What mines architectural decisions from this repository, and whether any of it may send prose to your configured model. Capture only adds background records; nothing it mines is put in force.",
       "refactoringTitle": "Refactoring code generation",
       "refactoringDescription": "Opt in to turning refactoring plans into reviewable diffs with your configured model.",
       "healthTitle": "Index health",
@@ -1107,11 +1107,20 @@
     },
     "mcpTools": {
       "title": "Tool surface",
-      "description": "Which tools the MCP server offers an agent. Saved to the repo's .repowise/config.yaml and applied the next time you start repowise mcp for it.",
+      "description": "Which tools the MCP server lists to an agent. Saved to the repo's .repowise/config.yaml as mcp.tools, the same setting as repowise config set mcp.tools and repowise mcp --tools.",
       "workspaceOnly": "workspace only",
-      "summary": "{on} of {total} tools exposed. {mode}",
-      "summaryWorkspace": "Workspace mode, so workspace-only tools are available.",
-      "summarySingleRepo": "Single-repo mode, so workspace-only tools are unavailable here.",
+      "profile": "Tools listed",
+      "perClient": "Per client (recommended)",
+      "profileCore": "Core: answer, context, search, symbol, why",
+      "profileLean": "Lean: core plus get_risk",
+      "profileStandard": "Standard: Claude Code's default set",
+      "profileAll": "All: every tool available here",
+      "perClientHint": "Claude Code loads tool schemas only when needed, so it lists {standard} tools. Other clients load every schema each turn, so they list the {core} core tools. Switches below add or remove tools for every client.",
+      "summary": "{on} tools on, about {tokens, number} schema tokens per turn on clients that load schemas up front.",
+      "summaryPerClient": "Claude Code lists {standard} tools. Other clients list {others}, about {tokens, number} schema tokens per turn.",
+      "restart": "Applies when the MCP server next starts: restart it, or your agent.",
+      "coreBadge": "core",
+      "tokens": "~{n} tokens",
       "perRepoLabel": "Tools per repository",
       "perRepoHint": "Which tools the MCP server offers is saved per repository, in its Agents settings.",
       "chooseTools": "Choose tools",
@@ -1155,6 +1164,10 @@
       },
       "display": {
         "title": "Display"
+      },
+      "all": {
+        "title": "All settings",
+        "description": "Every repowise setting for this repository: its value, where it came from, and what it does. Changes save to .repowise/config.yaml, the same file repowise config set writes."
       }
     },
     "advanced": "Advanced",
@@ -1169,6 +1182,60 @@
       "defaultModelHint": "Repositories without their own model use the server default.",
       "webhooksLabel": "Webhooks",
       "webhooksHint": "A push on GitHub or GitLab can start a sync. The addresses are the same for every repository."
+    },
+    "registry": {
+      "search": "Search settings",
+      "searchPlaceholder": "Search by name or what it does",
+      "changedOnly": "Changed only",
+      "showInternal": "Show internal settings",
+      "countAll": "{total, plural, one {# setting} other {# settings}}",
+      "count": "{shown} of {total} settings",
+      "noMatches": "No setting matches these filters.",
+      "suggestionsTitle": "Suggested for this repository",
+      "suggestionsDescription": "Values that fit this repository better than the current ones.",
+      "apply": "Apply",
+      "applyAria": "Apply the suggested value for {key}",
+      "suggested": "Suggested: {value}",
+      "changed": "Changed",
+      "defaultValue": "default {value}",
+      "sources": {
+        "default": "Default",
+        "env": "Environment",
+        "repo_file": "Repo file",
+        "user_file": "User file"
+      },
+      "envOverride": "{name} is set in the environment and wins over the file.",
+      "envOnly": "Read from {name} in the server's environment.",
+      "userSetting": "Saved for your user, not this repository. Change it with repowise config set {key} in a terminal.",
+      "lockedReason": "Set above this repository, so it cannot be changed here.",
+      "reset": "Reset",
+      "resetAria": "Reset {key} to its default",
+      "copyPrompt": "Copy prompt",
+      "promptTitle": "Change {key} with your agent",
+      "promptDescription": "Your agent explains the setting, asks before changing it, and gives you the undo command.",
+      "saveFailed": "Could not save",
+      "unset": "unset",
+      "none": "(none)",
+      "listPlaceholder": "a, b",
+      "loading": "Loading settings…",
+      "loadFailed": "Could not load settings.",
+      "retry": "Try again",
+      "moreOn": "More options on the {page} page",
+      "areas": {
+        "account": "Account",
+        "attribution": "AI attribution",
+        "decisions": "Decisions",
+        "distill": "Command output",
+        "editor": "Editor files",
+        "events": "Change events",
+        "generation": "Documentation",
+        "health": "Code health",
+        "hooks": "Agent hooks",
+        "indexing": "Indexing",
+        "mcp": "MCP",
+        "providers": "Model providers",
+        "server": "Server"
+      }
     }
   },
   "repos": {
@@ -1653,6 +1720,8 @@
     "pages": "{count, plural, one {# page to write} other {# pages to write}}",
     "counting": "Counting pages",
     "signedInNote": "Uses your {name} sign-in.",
+    "planNote": "Uses your {name} sign-in and plan quota.",
+    "planNoteTimed": "Uses your {name} sign-in and plan quota, about {minutes, plural, one {# minute} other {# minutes}}.",
     "costNote": "About {cost} with this key, shown before anything runs.",
     "pricing": "Pricing with this key",
     "keyNote": "The price shows before anything runs.",
@@ -1714,9 +1783,9 @@
       },
       "decisions": {
         "label": "Decisions",
-        "unit": "to review",
-        "caption": "Candidates mined from PRs, commits and comments.",
-        "open": "Review"
+        "unit": "background records",
+        "caption": "Mined from pull requests, commits and comments; agents ask about them for the why.",
+        "open": "Open"
       },
       "docs": {
         "label": "Documentation",
@@ -1738,6 +1807,7 @@
       "lede": "It asks repowise first, so it reads less and guesses less.",
       "none": "No agents found on this machine yet. Setup lists every one repowise supports.",
       "connected": "Connected. Restart it to load the tools.",
+      "coreTools": "Lists the core repowise tools by default. Agents & editors in Settings turns on more.",
       "waiting": "Waiting for its first call",
       "firstCall": "First call {when}",
       "installed": "Installed on this machine. Writes <mono>{file}</mono>.",
@@ -1750,7 +1820,7 @@
       "listLabel": "Agents on this machine",
       "moreAgents": "{count, plural, one {# more agent} other {# more agents}} found. Setup lists them all.",
       "askLabel": "Ask it something",
-      "askRisk": "Which files are riskiest to change, and why?",
+      "askFlow": "How does the main flow in this repo work, end to end?",
       "askHotspot": "Why does {path} change so often?",
       "askStart": "Where should I start reading this repo?",
       "copy": "Copy",
@@ -1769,6 +1839,7 @@
         "local": "Your key or sign-in stays here"
       },
       "detected": "Found on this machine: {names}.",
+      "keyless": "Until you add a model, your agent's answers are ranked evidence from the index.",
       "syncTitle": "Keep the index in sync",
       "syncBody": "Updates after each commit through a git hook.",
       "syncFailed": "Couldn't change sync",
@@ -1906,6 +1977,15 @@
     "regenFailed": "Couldn't start regeneration"
   },
   "decisions": {
+    "agent": {
+      "discover": "Check background records with your agent",
+      "agreements": "Move working agreements to CLAUDE.md",
+      "review": "Check with your agent",
+      "edit": "Change with your agent",
+      "veto": "Veto with your agent",
+      "pin": "Pin with your agent",
+      "unpin": "Unpin with your agent"
+    },
     "add": {
       "trigger": "Record a decision",
       "title": "Record a decision",
@@ -1916,16 +1996,20 @@
       "saveFailed": "Couldn't save capture settings."
     },
     "review": {
-      "accepted": "Accepted. It governs the files it names.",
-      "dismissed": "Dismissed. Reindexing will not propose it again.",
-      "acceptFailed": "Couldn't accept: {message}",
+      "accepted": "In force. It governs the files it names.",
+      "dismissed": "Dismissed. Reindexing will not mine it again.",
+      "acceptFailed": "Couldn't put it in force: {message}",
       "dismissFailed": "Couldn't dismiss: {message}",
       "reaffirmed": "Reaffirmed. It is current again for the files it names.",
       "reaffirmFailed": "Couldn't reaffirm: {message}",
-      "bulkDismissed": "Dismissed {count, plural, one {# candidate} other {# candidates}}.",
-      "actionFailed": "The review action failed.",
+      "bulkDismissed": "Dismissed {count, plural, one {# record} other {# records}}.",
+      "actionFailed": "That action failed.",
       "previous": "Previous",
-      "next": "Next"
+      "next": "Next",
+      "pinned": "Pinned. An agent asks a person before replacing it.",
+      "unpinned": "Unpinned. It stays in force.",
+      "pinFailed": "Couldn't pin: {message}",
+      "unpinFailed": "Couldn't unpin: {message}"
     }
   },
   "files": {
@@ -2050,7 +2134,7 @@
       "ownershipSole": "sole-owned {files, plural, one {file} other {files}}: one author, no second reader",
       "architectureModules": "{modules, plural, one {module} other {modules}}, {entryPoints, number} entry points",
       "decisionsEmpty": "No decisions recorded yet",
-      "decisionsRecorded": "recorded, of which {accepted, number} accepted and {candidates, number} awaiting review",
+      "decisionsRecorded": "recorded, of which {accepted, number} in force and {candidates, number} background",
       "refactoringEmpty": "No refactoring analysis yet",
       "refactoringOpen": "open {count, plural, one {opportunity} other {opportunities}}, one per file",
       "testsCoverage": "line coverage from the latest report",
@@ -2112,8 +2196,7 @@
       "securityUnit": "in shipped source",
       "securityElsewhere": "{count, number} more in tests and docs",
       "refactoringUnit": "open opportunities",
-      "decisionsUnit": "to review",
-      "decisionsDetail": "{awaiting, number} awaiting review, {drifting, number} drifting from the code",
+      "decisionsUnit": "drifting from the code",
       "ownershipUnit": "sole-owned files",
       "ownershipDetail": "One author, no second reader"
     },
@@ -2873,6 +2956,7 @@
         "detailUpToDate": "{files} files indexed at {commit}.",
         "detailIncomplete": "There's no complete index for this repository yet.",
         "detailBehind": "Indexed at {indexed}. HEAD has moved on to {live}.",
+        "detailMissing": "Indexed at {indexed}, a commit this history no longer has (rebased or reset), so pass a commit the index covers with --since.",
         "detailSkipped": "{count, plural, one {# file could not be parsed, so its symbols are missing from the graph.} other {# files could not be parsed, so their symbols are missing from the graph.}}"
       },
       "agent": {
@@ -2887,6 +2971,7 @@
         "detailWaitingOther": "{count, plural, one {{agents} is registered.} other {{agents} are registered.}} This ticks on its first call. {other} is installed, not connected.",
         "detailInstalled": "{agent} is installed. Connecting writes its MCP config.",
         "detailNone": "No coding agent found on this machine. Install one, then connect it here.",
+        "coreTools": "{count, plural, one {{agents} lists} other {{agents} list}} the core repowise tools by default. Agents & editors in Settings turns on more.",
         "detailNoCalls": "{agent} is registered but hasn't reached this index. If it opened a different folder, open {repo} in it or run repowise init there."
       },
       "sync": {
@@ -2904,7 +2989,7 @@
         "statusBuilt": "Built from index",
         "detailActive": "Using {provider}.",
         "detailReady": "{providers} ready on this machine.",
-        "detailNone": "Docs are built from the index. A model writes fuller docs and answers in chat."
+        "detailNone": "Docs are built from the index, and your agent's answers are ranked evidence until you add a model."
       },
       "coverage": {
         "title": "Test coverage",

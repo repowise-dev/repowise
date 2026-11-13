@@ -37,6 +37,7 @@ class UpdateOptions:
     skip_cross_repo_hooks: bool = False
     include_working_tree: bool = False
     defer_docs: bool = False
+    refresh_git: bool = False
 
 
 @dataclass
@@ -67,6 +68,7 @@ class UpdateRun:
     working_tree_diffs: list = field(default_factory=list)
     analyzer_changed: bool = False
     history_stale: bool = False
+    refresh_git: bool = False
     git_is_current: bool = False
     extraction_changed: bool = False
     scanner_changed: bool = False
@@ -101,6 +103,8 @@ class UpdateRun:
     doc_drift_report: Any = None
     persisted_git_meta: Any = None
     knowledge_graph_result: Any = None
+    # The graph kept its shape: the refresh patches only the changed files' nodes.
+    knowledge_graph_shape_unchanged: bool = False
 
     @property
     def full_generation(self) -> bool:
@@ -120,6 +124,9 @@ class DocsPass:
     session_decisions: list = field(default_factory=list)
     # Decision records touched by evolution, surfaced in the completion panel.
     decisions_evolved: int = 0
+    # Git archaeology was re-mined in full for a history-window change, so its
+    # earlier mined records may be replaced and the persist must not fail.
+    git_history_remined: bool = False
     decision_vector_store: Any = None
     prior_pages: dict = field(default_factory=dict)
     generated_pages: list = field(default_factory=list)

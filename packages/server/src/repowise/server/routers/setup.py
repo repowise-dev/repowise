@@ -45,6 +45,9 @@ class SetupIndex(BaseModel):
     state: Literal["up_to_date", "behind", "incomplete"]
     indexed_commit: str | None = None
     live_head: str | None = None
+    #: ``behind`` because the indexed commit was rebased or reset away: plain
+    #: ``repowise update`` refuses it, so the page offers ``--since`` instead.
+    indexed_commit_missing: bool = False
     indexed_at: str | None = None
     file_count: int = 0
     #: Files whose parse reported errors, so some symbols may be missing.
@@ -74,6 +77,9 @@ class SetupAgent(BaseModel):
     #: This agent's calls to this repo's index, from the local savings ledger.
     first_call_at: str | None = None
     last_call_at: str | None = None
+    #: The MCP tool profile this agent is listed when ``mcp.tools`` is unset:
+    #: ``standard`` for a client that defers schemas, else ``core``.
+    default_profile: str = "core"
 
 
 class SetupCalls(BaseModel):
