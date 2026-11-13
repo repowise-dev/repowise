@@ -33,6 +33,8 @@ scan; higher false-positive rate), `--include-zombie-packages` /
 
 For per-directory or per-owner rollups, use the `get_dead_code` MCP tool with
 `group_by="directory"` or `group_by="owner"` (these are tool params, not CLI flags).
+If your client does not list `get_dead_code`, add `+get_dead_code` to `mcp.tools`
+in `.repowise/config.yaml` and restart the MCP server.
 
 ## Before suggesting any deletion
 
@@ -40,5 +42,5 @@ For per-directory or per-owner rollups, use the `get_dead_code` MCP tool with
 - Recently-touched "dead" code is more likely a false positive — flag it.
 - Dynamically-loaded patterns (plugins, handlers, adapters, framework routes)
   can look unused but aren't. Repowise filters the common cases; edge cases remain.
-- Double-check blast radius with `get_risk(targets=[...])` before removing files
+- Double-check blast radius with `repowise risk --target <path>` before removing files
   or exported symbols.
