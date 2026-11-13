@@ -17,7 +17,7 @@ from pathlib import Path
 
 import structlog
 
-from repowise.core.persistence.database import DB_FILENAME, REPOWISE_DIRNAME, get_repo_db_path
+from repowise.core.persistence.database import get_repo_db_path
 
 log = structlog.get_logger(__name__)
 
@@ -28,12 +28,7 @@ def load_telemetry_averages(repo_path: Path | str) -> dict[str, tuple[float, flo
     Returns an empty dict when no telemetry is available — the caller
     falls back to static heuristics.
     """
-    try:
-        db_path = get_repo_db_path(repo_path)
-    except Exception as exc:
-        log.debug("cost_estimator.telemetry_path_failed", error=str(exc))
-        return {}
-
+    db_path = get_repo_db_path(repo_path)
     if not db_path.exists():
         return {}
 
