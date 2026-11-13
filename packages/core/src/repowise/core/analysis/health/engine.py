@@ -110,12 +110,21 @@ log = structlog.get_logger(__name__)
 # Not a licence to move a calibrated scoring weight — those are frozen
 # independently of this stamp.
 #
-# v45: Astro joins the TypeScript family in constant-flag gating, Extract Method
-# plans (render and helper naming) and the move-destination language family. The
-# Astro projection the walker parses changed too: a string or comment in a markup
-# ``{expr}`` (``{"<style>"}``) no longer blanks a later ``<script>`` function. The
-# walk cache keys on file bytes, so unchanged ``.astro`` files re-score only on
-# this stamp.
+# v45 (released in 0.61.0): Astro joins the TypeScript family in constant-flag
+# gating, Extract Method plans (render and helper naming) and the
+# move-destination language family. The Astro projection the walker parses
+# changed too: a string or comment in a markup ``{expr}`` (``{"<style>"}``) no
+# longer blanks a later ``<script>`` function. The walk cache keys on file bytes,
+# so unchanged ``.astro`` files re-score only on this stamp.
+#
+# The same stamp carries the cycle's other scoring changes: markers advisory per
+# language from the blind precision review, ``low_cohesion`` advisory everywhere,
+# cold-path loop markers unscored (#5426, #5434, #5436, #5463); guard runs,
+# literal data and view trees counted once or as data, and per-language
+# parameter and god-class rules (#5427 to #5471); Fix first gains priced with the
+# hidden findings (#5453); and the contributor rules for Ruby, Swift, Dart and
+# Scala catches, C++ out-of-line methods, F#, Objective-C, Razor and Dart loops
+# (#4832, #5258, #5486, #5487, #5489, #5490, #5494, #5544, #5547).
 #
 # Earlier bumps and their reasons: ``git log -S"HEALTH_ANALYZER_VERSION =" -p``
 # on this file.

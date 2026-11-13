@@ -22,7 +22,7 @@ structure that plain file reads don't, usually in one round-trip instead of many
 | What breaks if X changes | `repowise risk --target <file>`. |
 | Why X is shaped this way, before changing a pattern | `get_why(query="why …", targets=["<file>"])`. |
 | Before finishing a multi-file change | `repowise risk <base>..HEAD`, then `repowise health --score <file you touched> --against <base>`. |
-| A fuzzy concept, or symbol ids and line bounds to feed `get_symbol` | `search_codebase(query="…")`: hybrid search. `mode="auto"` routes an identifier to indexed symbol hits (`symbol_id`/line bounds → pipe into `get_symbol`), a path to file pages (→ `get_context`), and prose to semantic wiki search (each hit reports `search_method`: `embedding` vs `bm25`). Force a branch with `mode=symbol\|path\|concept\|hybrid`; narrow symbols with `symbol_kind`. |
+| A fuzzy concept, or symbol ids and line bounds to feed `get_symbol` | `search_codebase(query="…")`: hybrid search. `mode="auto"` routes an identifier to indexed symbol hits (`symbol_id`/line bounds → pipe into `get_symbol`), a path to file pages (→ `get_context`), and prose to semantic wiki search (each hit's `sources` lists what matched it: `fts`, `symbol` or `vector`). Force a branch with `mode=symbol\|path\|concept\|hybrid`; narrow symbols with `symbol_kind`. |
 | A triage card for specific files/symbols | `get_context(targets=[…])`: title, summary, signatures, hotspot bit, top callers, decision titles, symbol_ids (a row without one is `path::name`). Batch many targets in one call. |
 | The actual source of one symbol | `get_symbol("path/to/file.py::Name")`: exact bytes with line bounds. Cheaper than Read + offset math. Use a `symbol_id` from `get_context`. |
 
@@ -45,7 +45,7 @@ Read source directly for details the indexed context doesn't cover.
 
 - `_meta.stale_warning` is present (the index has diverged from HEAD), or
 - `confidence` is `medium`/`low`, or
-- a result's `search_method` is `bm25`.
+- a concept result's `sources` is only `fts` (a keyword match, no semantic hit).
 
 Otherwise the response is current — act on it.
 
