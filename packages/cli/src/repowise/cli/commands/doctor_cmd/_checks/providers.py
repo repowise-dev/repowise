@@ -46,15 +46,10 @@ def _stale_page_guidance(counts: dict[str, int]) -> str:
         f"{total} stale ({', '.join(categories)}) — content no longer matches its "
         "current inputs or generation selection."
     )
+    detail += " `repowise update --full` refreshes them"
     if model_written:
-        detail += (
-            " `repowise generate --stale` is the cheaper refresh for model-written "
-            "pages that are still selected."
-        )
-    detail += (
-        " `repowise update --full` performs the authoritative reconciliation and "
-        "retires pages no longer selected."
-    )
+        detail += ", pricing the model-written ones before it rewrites them"
+    detail += "."
     return detail + " `--repair` only fixes store drift."
 
 

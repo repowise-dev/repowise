@@ -21,7 +21,7 @@ import networkx as nx
 import structlog
 
 from ..cohesion import cannot_close_cycle
-from ..models import SYMBOL_USE_EDGE_TYPES, TEMPORAL_EDGE_TYPES
+from ..models import NON_CODE_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
 from ..symbol_use import SymbolUse, symbol_use_counts
 
 log = structlog.get_logger(__name__)
@@ -49,6 +49,14 @@ _CHURN_BUDGET_MIN_COST = 1e6
 def is_test_to_test_edge(g: nx.DiGraph, u: str, v: str) -> bool:
     """Whether both ends are test material; such edges carry no centrality."""
     return bool(g.nodes[u].get("is_test") and g.nodes[v].get("is_test"))
+
+
+def without_non_code_edges(g: nx.DiGraph) -> nx.DiGraph:
+    """Read-only view of *g* minus doc links and ``co_changes``: the edges no code dependency runs on."""
+    return nx.subgraph_view(
+        g,
+        filter_edge=lambda u, v: g.edges[u, v].get("edge_type") not in NON_CODE_EDGE_TYPES,
+    )
 
 
 def _exact_symbol_betweenness(g: nx.DiGraph) -> dict[str, float]:
@@ -173,7 +181,7 @@ class MetricsMixin:
             edges_to_remove = [
                 (u, v)
                 for u, v, d in sub.edges(data=True)
-                if u == v or d.get("edge_type") in TEMPORAL_EDGE_TYPES
+                if u == v or d.get("edge_type") in NON_CODE_EDGE_TYPES
             ]
             sub.remove_edges_from(edges_to_remove)
             self._file_subgraph_cache = sub

@@ -164,6 +164,7 @@ In workspace mode, `get_context`, `get_symbol`, `get_risk` and `get_health` serv
 | `grounding` | No-synthesis answers: `exact_symbol` or `extracted` |
 | `note`, `next_action_hint` | How the answer was built; on weak retrieval, which `best_guesses` row to start from |
 | `next_actions` | Up to 3 `get_symbol('<id>')` calls for functions the answer names whose bodies it does not serve; with a `flow_path`, the first is `get_symbol('<id>', depth=2)`, which also returns the bodies it calls |
+| `call_path`, `call_path_from` | Keyless, when the question asks how a call travels (reach, dispatch, end up, what happens when) and names a symbol: up to 12 hops out of that symbol, or into it when the question names it as the destination, one row each as `caller file:call line -> callee file:definition line`, shipped code only. Served in place of that symbol's body and `code_rationale` |
 
 Notes:
 
@@ -171,9 +172,10 @@ Notes:
 - **`confidence`:** `high` is content-grounded on a top hit covering the question, or states the value on the verified definition line of a constant the question names, wherever that line ranked. A why-answer whose mechanism is absent from the source drops to `medium`.
 - **`retrieval_quality`:** `weak` when the top hit leaves out most of the question.
 - **`candidate_files`:** served at every confidence; absent when retrieval resolved no file.
-- **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; `include=["evidence"]` restores it.
+- **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; on a keyed reply `include=["evidence"]` restores it.
 - **`degraded`:** built from retrieval and mined rationale with no LLM; `confidence` is `medium` on a dominant covering top hit, else `low`, never `high`. With `weak` retrieval too, the reply is `best_guesses`, `candidate_files` and one guidance line, with no `citations`.
 - **`grounding`:** `exact_symbol` serves the bodies of an exactly named symbol; `extracted` quotes a live source line verbatim.
+- **Keyless replies** (`degraded: no-llm-provider`) have one shape: `include=["evidence"]` is listed under `_meta.ignored_arguments` and no recovery is offered.
 - **Evidence by grade** (`include=["evidence"]` skips this): `high` keeps one quote, plus one body when not already grounded; `medium` one body, two quotes, top two rows; `low` two bodies, top three rows.
 - **Retrieval** fuses full-text and vector search over wiki pages with the symbol index (keyed on the question's content words) by reciprocal rank. The symbol leg reaches private helpers a page's symbol table omits.
 
@@ -308,7 +310,7 @@ A file with no symbol bounds is served whole (`mode: "raw"`). A Markdown or reSt
 
 - `references`: documents naming this file that still resolve to it.
 - `documents_with_drift`: a listed document has some stale assertion somewhere, not necessarily about this file. Do not merge the two claims.
-- `mentions`: live documentation lines naming the file by basename or `folder/stem`, which `references` cannot resolve; `mentions_basis` says to check each.
+- `mentions`: live documentation lines naming the file by basename or `folder/stem`, which `references` cannot resolve. `mentions_basis` says to check each. These are unresolved text hits, unrelated to the graph's `documents` edge.
 - `references_basis` states the limits; `references_excluded` counts documents dropped by exclude rules.
 - Refusals: `{"unavailable": "not_computed"}` (pass not run), `"index_predates_doc_drift"`, `"drift_read_failed"`.
 
@@ -375,8 +377,10 @@ Row notes:
 `lines` notes:
 
 - The `get_context` [references](#references) of one to three exact symbols, else a live token scan (kind `definition` or `match`).
-- Past 3 plain `reference` lines per file in a set over 20 lines, or 50 total, rows go to `lines_omitted_by_file`, recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Test files sort last.
-- A multi-word query caps `lines` at 15 (definitions, calls, imports) and lists the 5 files with most omitted rows; `lines_omitted_by_file_total` counts all.
+- Past 3 plain `reference` lines per file in a set over 20 lines, or 50 total, rows are counted in `lines_omitted` and recoverable from `_meta.omitted`. A set of 20 lines or fewer is served whole (a multi-word query still stops at 15). Shipped code sorts first, test files last.
+- A multi-word query caps `lines` at 15 (definitions, calls, imports).
+- When `lines` holds a definition, result pages are dropped and counted in `pages_omitted`: every page for an identifier, alternation or regex query, only pages labelled `related, not the named symbol` for a multi-word question. Symbol rows stay.
+- An alternation or regex group with a line in shipped code leaves out its test lines, after the shared cap; `lines_omitted` counts them.
 
 Ranking:
 

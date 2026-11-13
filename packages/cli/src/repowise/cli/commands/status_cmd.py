@@ -1176,6 +1176,13 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
             "code and fills in the full git history (no key needed).[/dim]"
         )
 
+    if stale_pages:
+        from repowise.cli.commands.update_cmd.catch_up import catch_up_command
+
+        console.print(
+            f"[dim]{stale_pages} stale page(s): {catch_up_command(repo_path)} refreshes them.[/dim]"
+        )
+
     if not has_db:
         console.print(f"[yellow]Database not found at {db_path}.[/yellow]")
         return
