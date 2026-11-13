@@ -23,9 +23,13 @@ log = structlog.get_logger(__name__)
 def enrich_tour_with_wiki_links(
     kg_json_path: Path,
     generated_pages: list[Any],
+    *,
+    preserve_existing: bool = False,
 ) -> int:
     """Add ``wikiPageIds`` to tour steps in the KG JSON file.
 
+    Partial checkpoints preserve links written by earlier batches. Full
+    generation replaces the link set, including removal of retired pages.
     Returns the number of tour steps that gained at least one wiki link.
     """
     try:
@@ -47,12 +51,12 @@ def enrich_tour_with_wiki_links(
 
     enriched_count = 0
     for step in tour:
-        wiki_ids: list[str] = []
+        wiki_ids: list[str] = list(step.get("wikiPageIds", [])) if preserve_existing else []
         for nid in step.get("nodeIds", []):
             if nid.startswith("file:"):
                 path = nid[5:]
                 pid = page_id_map.get(path)
-                if pid:
+                if pid and pid not in wiki_ids:
                     wiki_ids.append(pid)
         step["wikiPageIds"] = wiki_ids
         if wiki_ids:

@@ -1995,9 +1995,10 @@ def _render_template_pages(opts: UpdateOptions, run: UpdateRun, out: _TemplatePa
     degraded_before_render = len(degraded)
     with timed(run.timings, "render"):
         out.pages = _render_template_page_set(opts, run, out, prior_ids, full_scope)
-    out.renderer_render_ok = len(degraded) == degraded_before_render and (
-        not (run.renderer_changed or run.wiki_rebuild or run.state.get("pending_render_pages"))
-        or bool(out.pages)
+    out.renderer_render_ok = not (
+        run.renderer_changed or run.wiki_rebuild or run.state.get("pending_render_pages")
+    ) or (
+        bool(out.pages) and len(degraded) == degraded_before_render
     )
     if opts.render_budget is not None:
         if "render_stale_ids" not in out.render_stats and not out.renderer_render_ok:

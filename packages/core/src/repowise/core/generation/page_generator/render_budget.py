@@ -11,6 +11,7 @@ from typing import Any
 from .. import onboarding
 from ..interlinking import LinkIndex
 from ..models import compute_page_id
+from ..related_pages import attach_related_pages
 from ..scope import selection_page_ids
 from . import levels
 from .reuse import files_digest
@@ -127,10 +128,19 @@ def _record_plan(run: Any, candidates: set[str], stale: list, budget: int) -> No
     run.gen.render_stale_ids = {pid for _, pid in stale}
     for pid in candidates:
         prior_pages.setdefault(pid, None)
+    members = {compute_page_id("module_page", group.key): list(group.file_paths)
+               for group in run.sel_module_groups}
     links = [SimpleNamespace(page_id=pid, page_type=pid.split(":", 1)[0],
-                             target_path=pid.split(":", 1)[1]) for pid in sorted(candidates)]
+                             target_path=pid.split(":", 1)[1], title=pid.split(":", 1)[1],
+                             metadata={"file_paths": members.get(pid, [])})
+             for pid in sorted(candidates)]
     run.render_link_index = LinkIndex.build(links, run.parsed_files)
     run.render_link_index.add_prior_page_ids(prior_pages)
+    attach_related_pages(links, import_edges=run._file_import_edges(),
+                         git_meta_map=run.git_meta_map, module_groups=run.sel_module_groups,
+                         pagerank=run.pagerank, prior_page_ids=prior_pages)
+    run.render_related_pages = {page.page_id: page.metadata.get("related_pages", [])
+                                for page in links}
     if run.render_stats is not None:
         run.render_stats["render_stale_ids"] = run.gen.render_stale_ids
 
