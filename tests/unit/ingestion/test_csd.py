@@ -54,3 +54,18 @@ def test_csd_definition_line_ranges(
     assert [(s.name, s.start_line, s.end_line) for s in parsed.symbols] == expected
     assert parsed.exports == [name for name, _, _ in expected]
     assert parsed.parse_errors == []
+
+
+def test_a_pgmlist_adds_no_symbol_and_keeps_its_neighbours_spans() -> None:
+    source = (
+        b"DEFINE PROGRAM(A) GROUP(G)\n"
+        b"       DESCRIPTION(FIRST)\n"
+        b"DEFINE _PGMLIST(PI) GROUP(G)\n"
+        b"       _PGMPH(UBNKPLT1,1)\n"
+        b"DEFINE PROGRAM(B) GROUP(G)\n"
+    )
+    parsed = parse_csd_file(_make_file_info("region.csd", "csd"), source)
+    assert [(s.qualified_name, s.start_line, s.end_line) for s in parsed.symbols] == [
+        ("PROGRAM:A", 1, 4),
+        ("PROGRAM:B", 5, 5),
+    ]
