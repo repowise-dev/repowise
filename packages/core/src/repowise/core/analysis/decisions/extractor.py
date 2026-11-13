@@ -721,7 +721,7 @@ class DecisionExtractor:
             return []
         from repowise.core.ingestion.graph._metrics import without_non_code_edges
 
-        # A co-change partner is not a dependency vote.
+        # A README linking to every file, or a co-change partner, is not a dependency vote.
         scores = _centrality_scores(without_non_code_edges(self._graph))
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         out: list[str] = []
@@ -926,7 +926,7 @@ class DecisionExtractor:
             return []
         from repowise.core.ingestion.graph._metrics import without_non_code_edges
 
-        # A file that changes with it is not one the decision affects.
+        # A doc naming the file, or a file that changes with it, is not one the decision affects.
         graph = without_non_code_edges(self._graph)
         neighbors: set[str] = set()
         if file_path in graph:

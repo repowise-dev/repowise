@@ -32,7 +32,7 @@ def limit_to_top_pagerank(
     cannot drift between two copies of the same truncation.
     """
     try:
-        # The builder's file PageRank, which skips co-change edges.
+        # The builder's file PageRank, which skips doc links and co-change edges.
         ranks = graph_builder.pagerank()
     except Exception:
         ranks = {}

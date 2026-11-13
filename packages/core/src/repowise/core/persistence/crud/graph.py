@@ -845,7 +845,7 @@ async def get_cross_community_edges(
     Returns a list of ``{"target_community_id": int, "edge_count": int}``.
     Uses a join through ``graph_nodes`` to resolve target community.
     """
-    from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
+    from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
 
     # Alias for the target node lookup
     target_node = GraphNode.__table__.alias("tn")
@@ -876,8 +876,8 @@ async def get_cross_community_edges(
             # Only count file-level edges for meaningful community crossing
             source_node.c.node_type == "file",
             target_node.c.node_type == "file",
-            # A co-change into another community is not coupling to it.
-            GraphEdge.__table__.c.edge_type.not_in(TEMPORAL_EDGE_TYPES),
+            # A doc link or co-change into another community is not coupling to it.
+            GraphEdge.__table__.c.edge_type.not_in(NON_CODE_EDGE_TYPES),
         )
         .group_by(target_node.c.community_id)
         .order_by(func.count().desc())

@@ -252,6 +252,8 @@ _EDGE_TYPE_MAP: dict[str, str] = {
     "framework_binds": "depends_on",
     "reads": "depends_on",
     "references": "depends_on",
+    # Its own relation, not `depends_on`: a doc naming a file is prose, not a code reference.
+    "documents": "documents",
 }
 
 

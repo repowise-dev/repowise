@@ -309,13 +309,17 @@ class TestGetAffectedPages:
         for p in result.rename_patch:
             assert p in result.regenerate
 
-    def test_empty_diffs_returns_empty_pages(self, tmp_path: Path) -> None:
+    def test_documents_edge_is_not_a_cascade(self, tmp_path: Path) -> None:
+        """A doc linking to a changed file is not regenerated; real predecessors still are."""
         d = self._detector(tmp_path)
-        g = nx.DiGraph()
-        result = d.get_affected_pages([], graph=g)
-        assert result.regenerate == []
-        assert result.rename_patch == []
-        assert result.decay_only == []
+        g: nx.DiGraph[str] = nx.DiGraph()
+        g.add_edge("b.py", "a.py", edge_type="imports")
+        g.add_edge("c.py", "a.py", edge_type="co_changes")
+        g.add_edge("README.md", "a.py", edge_type="documents")
+
+        result = d.get_affected_pages([self._simple_file_diff("a.py")], graph=g)
+        assert set(result.regenerate) == {"a.py", "b.py"}
+        assert result.decay_only == ["c.py"]
 
     def test_co_change_partner_decays_whichever_way_it_sorts(self, tmp_path: Path) -> None:
         """The edge is stored once, ``a.py -> b.py``; either file changing only decays the other (#5472)."""
@@ -327,6 +331,35 @@ class TestGetAffectedPages:
             result = d.get_affected_pages([self._simple_file_diff(changed)], graph=g)
             assert result.regenerate == [changed]
             assert result.decay_only == [partner]
+
+    def test_documents_edge_is_not_a_rename_cascade(self, tmp_path: Path) -> None:
+        """The 2-hop rename cascade walks importers of importers, never doc links."""
+        from repowise.core.ingestion.change_detector import SymbolRename
+
+        d = self._detector(tmp_path)
+        g: nx.DiGraph[str] = nx.DiGraph()
+        g.add_edge("b.py", "a.py", edge_type="imports")
+        g.add_edge("c.py", "b.py", edge_type="imports")
+        g.add_edge("README.md", "b.py", edge_type="documents")
+        g.add_edge("GUIDE.md", "a.py", edge_type="documents")
+        sym_diff = SymbolDiff(
+            added=[],
+            removed=[],
+            renamed=[SymbolRename("add", "calculate_add", "function", 0.9)],
+            modified=[],
+        )
+
+        result = d.get_affected_pages([self._simple_file_diff("a.py", symbol_diff=sym_diff)], graph=g)
+        assert set(result.regenerate) == {"a.py", "b.py"}
+        assert result.decay_only == ["c.py"]
+
+    def test_empty_diffs_returns_empty_pages(self, tmp_path: Path) -> None:
+        d = self._detector(tmp_path)
+        g = nx.DiGraph()
+        result = d.get_affected_pages([], graph=g)
+        assert result.regenerate == []
+        assert result.rename_patch == []
+        assert result.decay_only == []
 
 
 class TestAffectedPagesPagerankParam:

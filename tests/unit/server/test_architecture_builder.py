@@ -456,8 +456,8 @@ def test_a_layer_whose_node_ids_are_not_a_list_is_skipped() -> None:
     assert layers[0]["node_ids"] == []
 
 
-async def test_co_changes_are_not_architecture_edges(client: AsyncClient, app) -> None:
-    """A co-change is not an arrow or a degree in the file view (#5472)."""
+async def test_doc_links_and_co_changes_are_not_architecture_edges(client: AsyncClient, app) -> None:
+    """Neither is an arrow or a degree in the file view (#5472)."""
     repo = await _create_repo(client)
     await _seed_graph(app, repo["id"])
     async with app.state.session_factory() as session:
@@ -465,15 +465,11 @@ async def test_co_changes_are_not_architecture_edges(client: AsyncClient, app) -
             session,
             repo["id"],
             [
-                {
-                    "source_node_id": "lib/index.ts",
-                    "target_node_id": "src/models.py",
-                    "edge_type": t,
-                }
-                for t in ("co_changes",)
+                {"source_node_id": "lib/index.ts", "target_node_id": "src/models.py", "edge_type": t}
+                for t in ("co_changes", "documents")
             ],
         )
         await session.commit()
         view = await build_architecture_view(session, repo["id"])
 
-    assert not {e.edge_type for e in view.edges} & {"co_changes"}
+    assert not {e.edge_type for e in view.edges} & {"co_changes", "documents"}

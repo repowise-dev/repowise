@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 from repowise.core.support_paths import is_config_path
 from repowise.core.test_paths import is_test_related_path
 
@@ -47,7 +48,8 @@ def roll_up_edges(
         return dropped[path]
 
     for src, tgt, etype in edges:
-        if etype == "co_changes" and not include_co_changes:
+        # A doc naming a file is not an architectural relation, whatever include_co_changes says.
+        if etype in DOCUMENTATION_EDGE_TYPES or (etype == "co_changes" and not include_co_changes):
             continue
         src_box = file_to_box.get(src)
         if src_box is None:
