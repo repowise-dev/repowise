@@ -234,31 +234,22 @@ async def indexed_names(contexts: list, query: str) -> set[str]:
     names: set[str] = set()
     if not keys:
         return names
+    lower_keys = sorted({k.lower() for k in keys})
     for ctx in contexts:
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-            # Exact case match first using ix_wiki_symbols_repo_name index
             res = await session.execute(
                 select(WikiSymbol.name)
                 .distinct()
                 .where(
                     WikiSymbol.repository_id == repository.id,
-                    WikiSymbol.name.in_(sorted(keys)),
+                    or_(
+                        WikiSymbol.name.in_(sorted(keys)),
+                        func.lower(WikiSymbol.name).in_(lower_keys),
+                    ),
                 )
             )
-            found = {name for (name,) in res.all() if name}
-            missing_keys = {k.lower() for k in keys if k not in found}
-            if missing_keys:
-                res_lower = await session.execute(
-                    select(WikiSymbol.name)
-                    .distinct()
-                    .where(
-                        WikiSymbol.repository_id == repository.id,
-                        func.lower(WikiSymbol.name).in_(sorted(missing_keys)),
-                    )
-                )
-                found.update(name for (name,) in res_lower.all() if name)
-            names.update(found)
+            names.update(name for (name,) in res.all() if name)
     return names | {name.lower() for name in names}
 
 
@@ -316,24 +307,17 @@ async def _traced_files(session, repo_id: str, frames: list) -> list[str]:
 
 
 async def _defining_files(session, repo_id: str, idents: list[str]) -> list[str]:
-    # Exact case match first using ix_wiki_symbols_repo_name index
+    lower_idents = sorted({i.lower() for i in idents})
     res = await session.execute(
         select(WikiSymbol.name, WikiSymbol.file_path).where(
             WikiSymbol.repository_id == repo_id,
-            WikiSymbol.name.in_(idents),
+            or_(
+                WikiSymbol.name.in_(sorted(idents)),
+                func.lower(WikiSymbol.name).in_(lower_idents),
+            ),
         )
     )
     rows = list(res.all())
-    found_idents = {name for name, _ in rows}
-    missing_idents = [i for i in idents if i not in found_idents]
-    if missing_idents:
-        res_lower = await session.execute(
-            select(WikiSymbol.name, WikiSymbol.file_path).where(
-                WikiSymbol.repository_id == repo_id,
-                func.lower(WikiSymbol.name).in_({i.lower() for i in missing_idents}),
-            )
-        )
-        rows.extend(res_lower.all())
     out: list[str] = []
     for ident in idents:
         files = sorted({fp for name, fp in rows if fp and _names_symbol(ident, {name, name.lower()})})
