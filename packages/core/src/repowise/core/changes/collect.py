@@ -559,11 +559,7 @@ async def list_needing_attention(
     """Changes matching *where* whose kept checklist flags attention, newest
     merged first, and their total. Reads kept checklists only, never builds one.
     """
-    from repowise.core.persistence.crud import (
-        ChangeFilter,
-        list_attention_candidates,
-        list_changes,
-    )
+    from repowise.core.persistence.crud import get_changes_by_ids, list_attention_candidates
 
     # Checklists are built on first view, so the prefiltered set stays small;
     # confirm on the parsed evidence, then page here. Ceiling: if checklists
@@ -571,8 +567,7 @@ async def list_needing_attention(
     candidates = await list_attention_candidates(session, repo_id, where)
     ids = [r.change_id for r in candidates if (evidence_summary(r) or {}).get("attention")]
     page = ids[offset:] if limit is None else ids[offset : offset + limit]
-    rows, _ = await list_changes(session, repo_id, ChangeFilter(change_ids=page), limit=None)
-    return rows, len(ids)
+    return await get_changes_by_ids(session, repo_id, page), len(ids)
 
 
 # -- inputs -------------------------------------------------------------------

@@ -105,41 +105,42 @@ def _read_changes(
             repo.close()
 
 
-# Deepest change window. ``commit_limit`` has no upper bound, but the change
-# filters bind matching change ids as one ``IN`` list, and SQLite allows 32k
-# bind variables. 10,000 is the window ``commit_limit`` used to cap at; going
-# deeper means moving those filters into SQL over a stored per-change rollup.
-_CHANGE_WINDOW_CEILING = 10_000
-
-
 async def refresh_changes(
-    session: Any, repo_id: str, repo_path: Path | str, *, rebuild: bool
+    session: Any,
+    repo_id: str,
+    repo_path: Path | str,
+    *,
+    rebuild: bool,
+    commit_limit: int | None = None,
 ) -> int:
     """Rebuild (full index) or extend (update) the repository's changes.
 
-    The window is the repo's ``commit_limit`` first-parent commits, like the
-    commit table, up to :data:`_CHANGE_WINDOW_CEILING`. An update reads only changes after the newest stored one and
+    The window is *commit_limit* first-parent commits, the limit the run's own
+    commit walk used, so it matches the commit table; without one, the repo's
+    configured ``commit_limit``. An update reads only changes after the newest stored one and
     rebuilds when that one is no longer on HEAD's history. Provenance is read
     from the stored commit labels, so it runs after those are written, and is
     left out while attribution is off. Returns how many rows were written;
     failures are logged and leave the table as it was.
     """
     from repowise.core.attribution import attribution_enabled
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
     from repowise.core.persistence.crud import (
         delete_changes,
         get_change_heads,
         get_commit_labels,
         get_newest_change_head,
+        link_unlinked_changes,
         upsert_changes,
     )
     from repowise.core.repo_config import load_repo_config
 
     repo_path = Path(repo_path)
     try:
-        limit = min(
-            int(load_repo_config(repo_path).get("commit_limit") or _DEFAULT_COMMIT_LIMIT),
-            _CHANGE_WINDOW_CEILING,
+        limit = clamp_commit_limit(
+            commit_limit
+            if commit_limit is not None
+            else load_repo_config(repo_path).get("commit_limit")
         )
         since = None if rebuild else await get_newest_change_head(session, repo_id)
         taken = {} if since is None else await get_change_heads(session, repo_id)
@@ -171,6 +172,7 @@ async def refresh_changes(
             await delete_changes(session, repo_id)
         if rows:
             await upsert_changes(session, repo_id, rows)
+        await link_unlinked_changes(session, repo_id)
         return len(rows)
     except Exception as exc:
         logger.warning("changes_refresh_failed", repo_id=repo_id, error=str(exc))

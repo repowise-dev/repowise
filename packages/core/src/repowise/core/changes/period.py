@@ -205,13 +205,9 @@ async def _build_page(
 
 async def _page_rows(run: _Pass, ids: list[str]) -> list[Any]:
     """The rows of *ids*, in that order, read in one query; one deleted meanwhile drops out."""
-    from repowise.core.persistence.crud import ChangeFilter, list_changes
+    from repowise.core.persistence.crud import get_changes_by_ids
 
-    found, _ = await list_changes(
-        run.session, run.repo_id, ChangeFilter(change_ids=ids), limit=None
-    )
-    by_id = {r.change_id: r for r in found}
-    return [by_id[cid] for cid in ids if cid in by_id]
+    return await get_changes_by_ids(run.session, run.repo_id, ids)
 
 
 async def _read_kept(
