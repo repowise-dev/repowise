@@ -49,6 +49,17 @@ NO_DOCUMENTATION_MESSAGE = (
     "Run `repowise init --no-prose` or `repowise update --full` first."
 )
 
+#: Why a run wrote nothing without failing, as ``generate`` reports it.
+REFUSAL_REASONS = frozenset({"no_documentation", "nothing_selected", "declined"})
+
+
+def record_refusal(reason: str) -> None:
+    """Report a run that stopped before writing, and the fixed reason why."""
+    from repowise.cli.platform import telemetry
+
+    if reason in REFUSAL_REASONS:
+        telemetry.add_command_outcome(outcome="refused", refusal_reason=reason)
+
 
 async def has_documentation(repo_path: Path) -> bool:
     """Whether the index holds any page, checked before a provider is resolved.
@@ -177,6 +188,7 @@ async def run_scoped_generation(
         )
         if rehydrated is None:
             console.print(NO_DOCUMENTATION_MESSAGE)
+            record_refusal("no_documentation")
             return None
 
         console.print(
@@ -195,6 +207,7 @@ async def run_scoped_generation(
                 deps=rehydrated.deps,
             )
             if choice is None:
+                record_refusal("declined")
                 return None
             cascade_mode = choice.cascade_mode
 
@@ -218,6 +231,7 @@ async def run_scoped_generation(
         if not plan.generate_ids:
             console.print("[yellow]Nothing to generate for that selection.[/yellow]")
             if lane_plan is None:
+                record_refusal("nothing_selected")
                 return None
         else:
             _report_plan(plan, cascade_mode)
