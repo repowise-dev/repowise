@@ -7,9 +7,17 @@ with no LLM; body selection matches the question's identifiers, not prose.
 
 from __future__ import annotations
 
+import contextlib
 import time
 
+from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server._code_rationale import can_lead_answer
+from repowise.server.mcp_server._entry_trace import (
+    call_path,
+    is_call_path_question,
+    names_destination,
+    symbol_at,
+)
 from repowise.server.mcp_server._meta import _normalize_target_path, served_root
 from repowise.server.mcp_server._meta import answer_hint as _answer_hint
 from repowise.server.mcp_server._meta import build_meta as _build_meta
@@ -132,6 +140,9 @@ async def _degraded_payload(
     )
     # Inlined bodies are citations in the ordinary sense.
     citations = list(dict.fromkeys(b["path"] for b in symbol_bodies))
+    path_from, hops = await _call_path_from_named(
+        reason, question, question_ids or set(), symbol_bodies, ctx, repository, exclude_spec
+    )
 
     summary = _degraded_summary(reason, symbol_bodies if served_named_body else [], len(hits))
 
@@ -208,6 +219,8 @@ async def _degraded_payload(
             f"Start from {best_guesses[0]['file']} — it ranked highest, and "
             "best_guesses says why each candidate is in the running."
         )
+    if hops:
+        _serve_call_path(payload, path_from, hops)
     payload["_meta"] = {
         **_build_meta(
             timing_ms=(time.perf_counter() - t0) * 1000,
@@ -233,6 +246,59 @@ async def _degraded_payload(
             )
         )
     return _with_candidates(payload, resolved_pool if resolved_pool is not None else hits)
+
+
+def _named_body(symbol_bodies: list[dict], question_ids: set[str]) -> dict | None:
+    """The first served body whose symbol the question names."""
+    wanted = {q.lower() for q in question_ids} | {q.rsplit(".", 1)[-1].lower() for q in question_ids}
+    for body in symbol_bodies:
+        name = str(body.get("name") or "")
+        if name.lower() in wanted or name.rsplit(".", 1)[-1].lower() in wanted:
+            return body
+    return None
+
+
+async def _call_path_from_named(
+    reason: str, question: str, question_ids: set[str], symbol_bodies: list[dict],
+    ctx, repository, exclude_spec,
+) -> tuple[dict | None, list[str]]:
+    """``(named body, hops)`` for a keyless question about how a named call travels on.
+
+    Without a model, the body of the symbol the question starts from answers
+    "what is it", not "where does it go"; the hops out of it do. Empty unless
+    the question has that shape, names a served symbol, and the graph has at
+    least two hops out of it.
+    """
+    if reason != "no-llm-provider" or ctx is None or not is_call_path_question(question):
+        return None, []
+    body = _named_body(symbol_bodies, question_ids)
+    if body is None or not isinstance(body.get("lines"), list):
+        return None, []
+    with contextlib.suppress(Exception):
+        async with get_session(ctx.session_factory) as session:
+            root = await symbol_at(session, repository.id, body["path"], body["lines"][0])
+            if root is not None:
+                upstream = names_destination(question, str(body.get("name") or ""))
+                hops = await call_path(
+                    session, repository.id, root, exclude_spec, upstream=upstream,
+                    question=question,
+                )
+                if len(hops) >= 2:
+                    return {**body, "upstream": upstream}, hops
+    return None, []
+
+
+def _serve_call_path(payload: dict, body: dict, hops: list[str]) -> None:
+    """Serve the hops around the named symbol in place of its body and the rationale."""
+    way = "into" if body.get("upstream") else "out of"
+    start = f"{way} {body['name']} {body['path']}:{body['lines'][0]}"
+    payload["call_path"] = hops
+    for key in ("symbol_bodies", "code_rationale", "grounding"):
+        payload.pop(key, None)
+    payload["call_path_from"] = start
+    # The answer line says what call_path holds; the shared note named the bodies.
+    payload.pop("note", None)
+    payload["next_action_hint"] = "Read the hops the question asks about at their lines."
 
 
 async def _degraded_next_action(symbol_bodies: list[dict], ctx, repository, exclude_spec) -> str:

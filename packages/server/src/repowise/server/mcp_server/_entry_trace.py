@@ -132,8 +132,22 @@ async def _callees(
     session: Any, repo_id: str, sources: list[str]
 ) -> dict[str, list[tuple[int, str]]]:
     """``{source: [(first call line, target), ...]}`` over walkable execution edges."""
-    if not sources:
+    return await _calls(session, repo_id, sources, upstream=False)
+
+
+async def _callers(
+    session: Any, repo_id: str, targets: list[str]
+) -> dict[str, list[tuple[int, str]]]:
+    """``{target: [(first call line in the caller, caller), ...]}``, as :func:`_callees`."""
+    return await _calls(session, repo_id, targets, upstream=True)
+
+
+async def _calls(
+    session: Any, repo_id: str, nodes: list[str], *, upstream: bool
+) -> dict[str, list[tuple[int, str]]]:
+    if not nodes:
         return {}
+    keyed = GraphEdge.target_node_id if upstream else GraphEdge.source_node_id
     res = await session.execute(
         select(
             GraphEdge.source_node_id,
@@ -144,12 +158,14 @@ async def _callees(
             GraphEdge.call_lines_json,
         ).where(
             GraphEdge.repository_id == repo_id,
-            GraphEdge.source_node_id.in_(sources),
+            keyed.in_(nodes),
             GraphEdge.edge_type.in_(sorted(EXECUTION_EDGE_TYPES)),
         )
     )
     out: dict[str, dict[str, int]] = {}
     for src, tgt, etype, origin, conf, lines_json in res.all():
+        if upstream:
+            src, tgt = tgt, src
         if not tgt or tgt == src or is_excluded_execution_path(node_to_file(tgt)):
             continue
         if not is_walkable_execution_edge(etype, origin, conf):
@@ -326,3 +342,131 @@ async def _place_files(
             hit.setdefault("_sources", set()).add("call_trace")
     hits.sort(key=lambda h: h.get("score", 0.0), reverse=True)
     return hits
+
+
+# How something gets somewhere: the calls out of the symbol the question names
+# answer it. Words of motion along a call chain, not of any one codebase.
+_PATH_RE = re.compile(
+    r"\b(?:reach(?:es|ed)?|ends? up|gets? (?:to|into|back)|flows?|dispatch(?:es|ed)?"
+    r"|routed?|routes|propagat\w*|pass(?:es|ed)? (?:to|into|through)|hands? (?:off|over)"
+    r"|trac(?:e|es|ed))\b",
+    re.IGNORECASE,
+)
+# Sized to a reply of about 1-2 KB: three levels of call, the four heaviest
+# callees per symbol, the three heaviest of those walked on.
+_PATH_DEPTH = 3
+_PATH_FANOUT = 4
+_PATH_EXPAND = 3
+_PATH_MAX_ROWS = 12
+
+
+def is_call_path_question(question: str) -> bool:
+    """True when the question asks how a call travels on, not what one symbol is."""
+    if not question or _FAILURE_RE.search(question):
+        return False
+    return is_sequence_question(question) or bool(_PATH_RE.search(question))
+
+
+async def _symbol_starts(session: Any, repo_id: str, node_ids: list[str]) -> dict[str, int]:
+    """Definition line per indexed symbol; a call into a library has none."""
+    if not node_ids:
+        return {}
+    res = await session.execute(
+        select(GraphNode.node_id, GraphNode.start_line).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_id.in_(node_ids),
+            GraphNode.node_type == "symbol",
+        )
+    )
+    return {node_id: start for node_id, start in res.all() if start}
+
+
+async def symbol_at(session: Any, repo_id: str, path: str, line: int) -> str | None:
+    """The callable symbol defined at *path*:*line*, if the graph has one."""
+    res = await session.execute(
+        select(GraphNode.node_id, GraphNode.kind).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.file_path == path,
+            GraphNode.start_line == line,
+            GraphNode.node_type == "symbol",
+        )
+    )
+    rows = res.all()
+    callable_ = [node_id for node_id, kind in rows if kind in _ENTRY_KINDS]
+    return (callable_ or [node_id for node_id, _kind in rows] or [None])[0]
+
+
+def _hop_row(caller: str, call_line: int, callee: str, start: int) -> str:
+    at = f":{call_line}" if call_line < 1 << 30 else ""
+    return f"{_leaf(caller)} {node_to_file(caller)}{at} -> {_leaf(callee)} {node_to_file(callee)}:{start}"
+
+
+def names_destination(question: str, name: str) -> bool:
+    """True when *name* comes after the question's motion word: the call ends there."""
+    motion = _PATH_RE.search(question)
+    at = question.lower().find(name.rsplit(".", 1)[-1].lower())
+    return motion is not None and at > motion.start()
+
+
+def _picked(
+    steps: list[tuple[int, str]], fanout: dict[str, int], words: dict[str, float]
+) -> list[str]:
+    """The :data:`_PATH_FANOUT` neighbours the question's words name most, then the
+    heaviest, returned in call order."""
+    def rank(step: tuple[int, str]) -> tuple:
+        line, node = step
+        return (-_name_score(node.replace("/", " ").replace(".", " "), words), -fanout.get(node, 0), line)
+
+    return [node for _line, node in sorted(sorted(steps, key=rank)[:_PATH_FANOUT])]
+
+
+async def call_path(
+    session: Any, repo_id: str, root: str, exclude_spec: Any = None, *,
+    upstream: bool = False, question: str = "",
+) -> list[str]:
+    """Hops out of *root* (or into it, *upstream*) over walkable call edges, one row each.
+
+    A row reads ``caller file:call line -> callee file:definition line``. Only
+    hops through shipped code are kept (``code_origin``), so tests, tools and
+    libraries do not take the rows a chain needs. Each level keeps the
+    heaviest neighbours, the ones with calls of their own, and walks on from those.
+    """
+    from repowise.core.code_origin import path_origin
+
+    words = _question_words(question) if question else {}
+    rows: list[str] = []
+    seen = {root}
+    frontier = [root]
+    for _depth in range(_PATH_DEPTH):
+        calls = await (_callers if upstream else _callees)(session, repo_id, frontier)
+        targets = [t for src in frontier for _line, t in calls.get(src, []) if t not in seen]
+        starts = await _symbol_starts(session, repo_id, [*targets, *frontier])
+        fanout = await _fanout(session, repo_id, list(starts))
+        walked: list[str] = []
+        for src in frontier:
+            steps = [
+                (line, t)
+                for line, t in calls.get(src, [])
+                if t in starts and t not in seen
+                and path_origin(node_to_file(t)) == "production"
+                and not is_excluded(node_to_file(t), exclude_spec)
+            ]
+            line_of = {t: line for line, t in steps}
+            for target in _picked(steps, fanout, words):
+                if target in seen:
+                    continue
+                seen.add(target)
+                rows.append(
+                    _hop_row(target, line_of[target], src, starts.get(src, 0))
+                    if upstream
+                    else _hop_row(src, line_of[target], target, starts[target])
+                )
+                walked.append(target)
+                if len(rows) >= _PATH_MAX_ROWS:
+                    return rows
+        frontier = sorted(
+            (t for t in walked if fanout.get(t)), key=lambda t: -fanout[t]
+        )[:_PATH_EXPAND]
+        if not frontier:
+            break
+    return rows

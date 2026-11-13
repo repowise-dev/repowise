@@ -295,7 +295,14 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     reason = payload.get("degraded")
     if not reason:
         return
-    if payload.get("symbol_bodies") and payload.get("grounding"):
+    if payload.get("call_path"):
+        payload["answer"] = (
+            f"Synthesis is unavailable ({reason}). call_path: the calls "
+            f"{payload.get('call_path_from')} in source order, one per row as caller "
+            "file:call line -> callee file:definition line, shipped code only; a call "
+            "may sit on a branch that does not always run."
+        )
+    elif payload.get("symbol_bodies") and payload.get("grounding"):
         payload["answer"] = (
             f"Synthesis is unavailable ({reason}), but symbol_bodies contains live source "
             "for the named code. Use that evidence directly."
@@ -541,6 +548,7 @@ def _ranked_list_only(payload: dict[str, Any]) -> bool:
         and payload.get("retrieval_quality") == "weak"
         and payload.get("confidence") == "low"
         and not payload.get("symbol_bodies")
+        and not payload.get("call_path")
         and _first_guess(payload) is not None
     )
 
