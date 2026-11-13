@@ -163,14 +163,18 @@ def test_the_hops_replace_the_named_body_and_the_rationale():
     bodies = [{"name": "Jobs.dispatch", "path": _CORE, "lines": [5, 9], "source": "def dispatch(): ..."}]
     body = _named_body(bodies, {"dispatch"})
     assert body is bodies[0]
+    from repowise.server.mcp_server.tool_answer.degraded import _BODY_NOTE, _RATIONALE_NOTE
+
     payload = {"symbol_bodies": bodies, "code_rationale": [{"path": _CORE}], "grounding": "symbol_body",
-               "note": "symbol_bodies carries the body"}
+               "note": "No model is set." + _RATIONALE_NOTE + _BODY_NOTE}
 
     _serve_call_path(payload, {**body, "upstream": True}, ["a -> b", "b -> c"])
 
     assert payload["call_path"] == ["a -> b", "b -> c"]
     assert payload["call_path_from"] == f"into Jobs.dispatch {_CORE}:5"
-    assert not {"symbol_bodies", "code_rationale", "grounding", "note"} & set(payload)
+    assert not {"symbol_bodies", "code_rationale", "grounding"} & set(payload)
+    # The caller's note stays; only the sentences about what the hops replaced go.
+    assert payload["note"] == "No model is set."
 
 
 def test_a_qualified_mention_of_the_name_counts():

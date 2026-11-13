@@ -53,6 +53,15 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
 
 _log = logging.getLogger("repowise.mcp.answer")
 
+_RATIONALE_NOTE = (
+    " code_rationale carries rationale comments mined from the candidate "
+    "source — they may already answer the question."
+)
+_BODY_NOTE = (
+    " symbol_bodies carries the live body of the symbol(s) you named, so "
+    "answer from that rather than re-reading the file."
+)
+
 
 def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> str:
     """The ``answer`` sentence a synthesis-less payload states about itself.
@@ -196,10 +205,7 @@ async def _degraded_payload(
     attach_graph_callers(payload, graph_callers)
     if code_rationale:
         payload["code_rationale"] = code_rationale
-        payload["note"] += (
-            " code_rationale carries rationale comments mined from the candidate "
-            "source — they may already answer the question."
-        )
+        payload["note"] += _RATIONALE_NOTE
     if symbol_bodies:
         payload["symbol_bodies"] = symbol_bodies
     if served_named_body:
@@ -207,10 +213,7 @@ async def _degraded_payload(
         payload["next_action_hint"] = await _degraded_next_action(
             symbol_bodies, ctx, repository, exclude_spec
         )
-        payload["note"] += (
-            " symbol_bodies carries the live body of the symbol(s) you named, so "
-            "answer from that rather than re-reading the file."
-        )
+        payload["note"] += _BODY_NOTE
     elif best_guesses and retrieval_quality != "weak":
         # Not on a weak retrieval, where `_meta.hint` says to refine the query
         # and two disagreeing hints are worse than one.
@@ -330,8 +333,11 @@ def _serve_call_path(payload: dict, body: dict, hops: list[str]) -> None:
     for key in ("symbol_bodies", "code_rationale", "grounding"):
         payload.pop(key, None)
     payload["call_path_from"] = start
-    # The answer line says what call_path holds; the shared note named the bodies.
-    payload.pop("note", None)
+    # The caller's note stays; the sentences about what the hops replaced go.
+    note = str(payload.get("note") or "")
+    for gone in (_RATIONALE_NOTE, _BODY_NOTE):
+        note = note.replace(gone, "")
+    payload["note"] = note
     payload["next_action_hint"] = "Read the hops the question asks about at their lines."
 
 
