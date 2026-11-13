@@ -868,7 +868,7 @@ repowise impacted-tests main...HEAD --format args --runner pytest --prioritize
 |------|--------------|---------|
 | `--path` | Repo path. | cwd / workspace primary |
 | `--staged` | Staged changes (`git diff --cached`). | on with no range outside CI (in CI: the pull request's change) |
-| `--format` | `table`, `json` (report + selection), `list` (an id per line), `args` (runner arguments or `:all`; reasons on stderr). | `table` |
+| `--format` | `table`, `json` (report + selection), `list` (an id per line; none, with the reason on stderr, when every test must run), `args` (runner arguments or `:all`; reasons on stderr). | `table` |
 | `--runner` | For `args`: `auto` (`files` when mixed), `pytest` (node ids or files), `go` (package dirs), `jest` (files; use `--runTestsByPath`), `files`. | `auto` |
 | `--explain` | Test file or node id: why (not) selected (changed file, evidence, import route, or rule), run-order place; JSON `explain`. | |
 | `--prioritize` | With `args`, `list`, `json`: whole suite, selected first; skips nothing; orders full runs. | off |
@@ -1016,6 +1016,7 @@ repowise decision health
 repowise decision status                # what capture did and cost, and what came into force this week
 repowise decision export                # decisions in force to .repowise/decisions.yaml
 repowise decision import                # reconcile the store to that file
+repowise decision import --force        # re-accept despite a stale base token
 repowise decision push                  # decisions recorded here, to this repo on repowise.dev
 repowise decision pull                  # decisions in force there that this store lacks
 repowise decision migrate               # classify pre-split rows (dry run unless --apply)
@@ -1039,6 +1040,12 @@ repowise decision llm --on|--off                # all decision-extraction model 
 ```
 
 Every subcommand takes `--format` (`table` default, or `json`) and an optional `[PATH]` last.
+
+`export` writes a per-entry `base_token`. Keep it when editing: `import` skips
+conflicting edits if the store changed after export and lists them in its
+summary. Entries without tokens keep the previous import behaviour.
+`import --dry-run` previews the result; `import --force` bypasses only the token
+check, preserving alias, duplicate and superseded-entry skips.
 
 **`add`**
 

@@ -226,6 +226,7 @@ async def execute_scoped_generation(
         mark_page_ids_stale,
         sweep_retired_pages,
         sweep_superseded_generated_pages,
+        sweep_unyielded_module_pages,
     )
 
     # Bill this run's LLM calls to the caller's tracker. run_generation reads the
@@ -272,7 +273,10 @@ async def execute_scoped_generation(
         # delete every page of a type this run did not reproduce, which on a
         # scoped run is nearly all of them.
         swept_page_ids = await sweep_superseded_generated_pages(
-            session, repo_id, generated_pages
+            session,
+            repo_id,
+            generated_pages,
+            existing_files={p.file_info.path for p in rehydrated.parsed_files},
         )
         # Rows of a page type that no longer exists. Safe on a scoped run
         # precisely because it does not ask what the run produced: nothing can
@@ -280,6 +284,17 @@ async def execute_scoped_generation(
         # Here rather than only on the full path because an index that is only
         # ever updated incrementally is exactly the one still serving them.
         swept_page_ids += await sweep_retired_pages(session, repo_id)
+        # A module page this run planned that the whole-repository plan no
+        # longer yields (its files were regrouped, deleted or left in no
+        # group) can never be written again. Retire it rather than let it
+        # stay stale and be planned, and reported as unproducible, on every run.
+        swept_page_ids += await sweep_unyielded_module_pages(
+            session,
+            repo_id,
+            plan.generate_ids,
+            rehydrated.deps.module_page_of,
+            {p.page_id for p in generated_pages},
+        )
         # A scoped run holds only the pages it was asked for, so it cannot
         # work out where they sit. Placement comes from the store, which has
         # the whole set; without this the pages it touched lose their place.

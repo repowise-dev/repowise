@@ -71,6 +71,7 @@ def _print_structural_plan(
         skip_tests,
         skip_infra,
         kg_modules=kg_modules,
+        git_meta_map=result.git_meta_map,
     )
 
     table = Table(title="Generation Plan (dry run)", border_style=BRAND)
