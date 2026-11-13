@@ -296,6 +296,13 @@ def test_set_api_key_rejects_newline_in_value(clean_env, tmp_path):
         pc.set_api_key("anthropic", "sk-ant\nEVIL=1", repo_path=str(repo))
 
 
+def test_set_api_key_rejects_line_break_characters_in_value(clean_env, tmp_path):
+    # All line boundaries recognized by splitlines (e.g. \x0b) must be rejected to prevent .env injection.
+    repo = _make_repo(tmp_path / "repo", config="embedder: mock\n")
+    with pytest.raises(ValueError, match="newline"):
+        pc.set_api_key("anthropic", "sk-ant\x0bEVIL_KEY=injected", repo_path=str(repo))
+
+
 def test_config_path_defaults_to_home(monkeypatch, tmp_path):
     # No REPOWISE_CONFIG_DIR: the store lives in ~/.repowise, not the CWD.
     monkeypatch.setattr(pc.os, "environ", {})
