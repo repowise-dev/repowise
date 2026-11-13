@@ -15,13 +15,8 @@ _e = factory(AREA, scope="env")
 
 #: ``repowise.core.generation.editor_files.sections.DEFAULT_SECTIONS``, sorted.
 DEFAULT_SECTIONS: tuple[str, ...] = (
-    "architecture",
     "decisions",
-    "entry_points",
-    "health",
-    "hotspots",
     "how_to_work",
-    "key_modules",
 )
 
 _FILES: dict[str, str] = {
@@ -54,8 +49,8 @@ SETTINGS: tuple[Setting, ...] = (
         "list",
         list(DEFAULT_SECTIONS),
         "Sections of the generated agent block. +name or -name adjusts the default; "
-        "plain names replace it. Extra: code_health, fix_first, commands, "
-        "how_to_work_full, tools.",
+        "plain names replace it. Extra: architecture, key_modules, entry_points, "
+        "hotspots, health, code_health, fix_first, commands, how_to_work_full, tools.",
     ),
     _e(
         "REPOWISE_SKIP_EDITOR_SETUP",

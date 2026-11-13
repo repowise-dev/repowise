@@ -21,11 +21,11 @@ def _data() -> EditorFileData:
 def test_agents_md_routes_tasks_to_tools() -> None:
     rendered = AgentsMdGenerator().render(_data())
 
-    assert "Grep, Glob and Read are faster" in rendered
-    assert 'get_answer(question="how does ...")' in rendered
+    assert "Grep, Glob and Read are faster" not in rendered
+    assert "call a Repowise tool first (get_answer for how/where/why questions" in rendered
     assert 'get_context(targets=["<symbol>"], include=["references"])' in rendered
     assert 'get_risk(targets=["<file>"])' in rendered
-    assert "get_why(query=" in rendered
+    assert 'get_why(targets=["<file>"])' in rendered
     # Codex and other AGENTS.md readers name tools their own way.
     assert "mcp__" not in rendered
     assert "| Tool | When and why |" not in rendered

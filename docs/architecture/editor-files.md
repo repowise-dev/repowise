@@ -116,26 +116,33 @@ which the placeholder comment warns against.
 ## 4. What goes into the Repowise section
 
 The block is read into the agent's context on every turn, so it is lean by
-default. `editor_files.sections` picks the sections (see
+default: about 250 tokens, held there by a test
+(`tests/unit/generation/test_editor_file_sections.py`). `editor_files.sections`
+picks the sections (see
 [CONFIG.md](../reference/CONFIG.md#the-editor_files-block)); the fetcher runs
 only the queries the chosen sections render. Both templates include the shared
-`_editor_block.j2` and differ only in the pre-edit sentence and in how tools
-are named: CLAUDE.md says Claude Code calls them `mcp__repowise__<tool>`
-(`mcp__plugin_repowise_repowise__<tool>` under the plugin), AGENTS.md names the
-`repowise` MCP server and leaves the naming to the client.
+`_editor_block.j2`; they differ only in the pre-edit sentence of the full
+protocol.
+
+Every block leads with one imperative line, `repowise.core.agent_steer.AGENT_STEER`:
+call a Repowise tool first for any question about the codebase, naming the tool
+for each question kind. In measured agent runs that line made the agent call a
+tool first in every run, while a block that listed the tools without saying so
+moved almost none. The same line leads the shared instruction block that Cursor,
+Copilot, Kiro, opencode and Hermes receive (`agent_targets/instructions.py`).
 
 | Section | Default | Source | Cap |
 |---------|---------|--------|-----|
-| Header | always | Date and commit; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
-| `architecture` | on | Lead sentence of the `repo_overview` wiki page | 1 sentence |
-| `key_modules` | on | `module_page` pages by PageRank desc | Top 6 |
-| `entry_points` | on | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
-| `hotspots` | on | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
-| `health` | on | Health score, band and worst file | 1 line |
+| Header | always | Date and commit, then the call-first line; a `Scope:` line only when the index lacks a model, has essential Git history only, or has a model upgrade pending | — |
+| `how_to_work` | on | Static: one line per moment (rename, edit, finish), distill, settings, the record-a-decision command | 6 lines |
+| `decisions` | on | Whether accepted decisions govern files (folded into the edit line), then the pinned ones by title | 5 pins, 80 chars each |
+| `architecture` | off | Lead sentence of the `repo_overview` wiki page | 1 sentence |
+| `key_modules` | off | `module_page` pages by PageRank desc | Top 6 |
+| `entry_points` | off | The curated `kg_project_meta` list, else `is_entry_point` nodes ranked on execution-start evidence | Top 6 |
+| `hotspots` | off | `git_metadata` bug magnets and hotspots, fix history first: the 6-month fix count with the last fix date | Top 5 |
+| `health` | off | Health score, band and worst file | 1 line |
 | `code_health` | off | Every health signal (replaces `health`) | 1 line |
 | `fix_first` | off | The Fix-first queue | Top 3 |
-| `decisions` | on | Accepted active `decision_records`, titles only, by `staleness_score` asc | Top 3 |
-| `how_to_work` | on | Static: task routing (exact names to Grep/Read; flow, callers, risk, why and finishing checks to one Repowise call each), distill, decision capture; a keyless bullet when the index has no model | 10-11 lines |
 | `how_to_work_full` | off | The long protocol (replaces `how_to_work`) | — |
 | `tools` | off | `tool_table.py`, the MCP tool table | All tools |
 | `commands` | off | Manifest scan: `package.json` scripts, `Makefile`, `pyproject.toml` | All detected |
