@@ -58,11 +58,12 @@ def test_import_edge_makes_a_file_reachable():
     assert is_file_reachable("src/service.py", g, _rescued(g)) is True
 
 
-def test_co_change_edge_is_not_an_importer():
-    """Committed together is a historical association, not a path code takes."""
+@pytest.mark.parametrize("edge_type", ["co_changes", "documents"])
+def test_non_code_edge_is_not_an_importer(edge_type: str):
+    """Committed together, or named by a doc: an association, not a path code takes."""
     g = _graph(
         {"src/orphan.py": {}, "docs/notes.md": {"language": "markdown"}},
-        [("docs/notes.md", "src/orphan.py", "co_changes")],
+        [("docs/notes.md", "src/orphan.py", edge_type)],
     )
     assert has_dependency_importer(g, "src/orphan.py") is False
     assert is_file_reachable("src/orphan.py", g, _rescued(g)) is False

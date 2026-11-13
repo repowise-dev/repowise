@@ -2,12 +2,15 @@
 
 Every command here reads and writes the one resolved policy in
 ``repowise.core.analysis.decisions.policy``, so the CLI cannot disagree with
-what the index pipeline and the server report.
+what the index pipeline and the server report. Each change goes through
+:meth:`DecisionPolicy.with_setting`, the same step ``repowise config set
+decisions.<key>`` takes, so the two spellings cannot drift apart.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import click
 from rich.table import Table
@@ -16,11 +19,12 @@ from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.core.analysis.decisions.policy import (
     DISCOVERY_BOUNDS,
+    MODES,
     PRESET_NAMES,
     SOURCE_SPECS,
     DecisionPolicy,
 )
-from repowise.core.analysis.decisions.policy_store import load_policy, write_policy
+from repowise.core.analysis.decisions.policy_store import load_policy
 
 
 def _load(repo_path: Path):
@@ -60,6 +64,53 @@ def _provider_available(repo_path: Path) -> bool:
     return provider_available_for_repo(repo_path)
 
 
+def _emit_sync(policy: DecisionPolicy) -> None:
+    """One line when sync is on; nothing at all when it is off."""
+    # ``sends`` implies ``pulls``: one line, read from the predicates sync runs on.
+    if policy.pulls:
+        console.print(
+            "  [dim]Sync: on. `update` sends decisions recorded here to this repo on "
+            "repowise.dev and brings down the ones in force there.[/dim]"
+            if policy.sends
+            else "  [dim]Sync: pull only. `update` brings down the decisions in force on "
+            "repowise.dev and sends nothing.[/dim]"
+        )
+
+
+def _emit_update_mining(policy: DecisionPolicy) -> None:
+    if policy.update_mining:
+        console.print(
+            "  [dim]Update mining: on. Each update reads new pull requests and commits "
+            "with the model.[/dim]"
+        )
+    else:
+        console.print(
+            "  [dim]Update mining: off. History is read at init; updates make no "
+            "model calls for decisions. On: repowise decision config update-mining --on[/dim]"
+        )
+
+
+def _emit_session_start(policy: DecisionPolicy) -> None:
+    if policy.session_start_on:
+        console.print(
+            "  [dim]Session start: on. A new session opens with the decisions that "
+            "govern what it is about to touch.[/dim]"
+        )
+    else:
+        console.print(
+            "  [dim]Session start: off. Decisions reach an agent when it edits the code "
+            "they govern. On: repowise decision config session-start --on[/dim]"
+        )
+
+
+def _emit_upkeep_prompt(policy: DecisionPolicy) -> None:
+    if policy.commit_upkeep:
+        console.print(
+            "  [dim]Upkeep prompt: on. A commit that changes governed code names up to "
+            "three of its decisions and asks the agent to settle each.[/dim]"
+        )
+
+
 def _emit(repo_path: Path, resolution, fmt: str) -> None:
     """Render a resolved policy, plus any warnings, in the requested format."""
     policy = resolution.policy
@@ -78,10 +129,12 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
         )
         return
 
-    header = "on" if policy.enabled else "off"
+    header = "on" if policy.captures else "off"
     llm = "on" if policy.llm else "off"
+    mode = policy.mode.replace("_", "-")
     console.print(
-        f"\n  Decision capture [bold]{header}[/bold]  ·  "
+        f"\n  Mode [bold]{mode}[/bold]  ·  "
+        f"Decision capture [bold]{header}[/bold]  ·  "
         f"LLM extraction [bold]{llm}[/bold]  ·  preset [bold]{policy.preset_name()}[/bold]"
     )
     if not provider_available:
@@ -110,7 +163,7 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     # Named even at the default: this is the one setting that widens whose
     # transcripts are read, and a reader cannot check a line that is absent.
     console.print(f"  [dim]Harnesses read: {', '.join(policy.harnesses)}.[/dim]")
-    if policy.agent_acceptance:
+    if policy.agent_may_accept:
         console.print(
             "  [dim]Agent acceptance: on. An agent may accept a decision, signed as "
             "the agent's, never yours.[/dim]"
@@ -120,6 +173,15 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             "  [yellow]Agent acceptance: off. Agents withdraw authority; only a "
             "person grants it.[/yellow]"
         )
+    if policy.require_approval:
+        console.print(
+            "  [yellow]Approval: required. A new decision waits for a person, even "
+            "after its commit lands.[/yellow]"
+        )
+    _emit_sync(policy)
+    _emit_update_mining(policy)
+    _emit_session_start(policy)
+    _emit_upkeep_prompt(policy)
     if policy.capture_prompt:
         from repowise.cli.editor_integrations.claude_config import (
             _claude_code_settings_path,
@@ -130,10 +192,10 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
             "  [dim]Capture prompt: on. After a commit that states a choice, the "
             "agent is asked once a session to record it.[/dim]"
         )
-        if not policy.enabled:
+        if not policy.commit_prompt:
             console.print(
-                "  [yellow]  ...but decision capture is off for this repository, "
-                "so it stays silent. `decision config enable` to use it.[/yellow]"
+                "  [yellow]  ...but decisions are off or read-only for this repository, "
+                "so it stays silent.[/yellow]"
             )
         elif not claude_code_capture_hook_installed():
             if not _claude_code_settings_path().is_file():
@@ -156,49 +218,71 @@ def _emit(repo_path: Path, resolution, fmt: str) -> None:
     if resolution.legacy_keys:
         notices.print(
             "[dim]Legacy keys still honoured: "
-            f"{', '.join(resolution.legacy_keys)}. Any write here replaces them.[/dim]"
+            f"{', '.join(resolution.legacy_keys)}. Applying a preset replaces them.[/dim]"
         )
 
 
-def _apply(repo_path: Path, policy: DecisionPolicy, fmt: str, dry_run: bool) -> None:
-    """Persist *policy*, or show the diff it would make under ``--dry-run``."""
-    from repowise.core.analysis.decisions.policy_store import PolicyConflictError
+def _apply(repo_path: Path, changes: list[tuple[str, Any]], fmt: str, dry_run: bool) -> None:
+    """Write each ``decisions.<name>`` change, or show the diff under ``--dry-run``.
+
+    Each change is written by the same call ``repowise config set`` makes,
+    so the file each spelling leaves is the same file.
+    """
+    from repowise.core.repo_config import RepoConfigError
+    from repowise.core.settings.writers import set_value
 
     before = _load(repo_path).policy
-    if dry_run:
-        changes = _diff(before, policy)
-        if fmt == "json":
-            emit_json(
-                {
-                    "repo": str(repo_path),
-                    "dry_run": True,
-                    "changes": changes,
-                    "policy": policy.to_dict(provider_available=_provider_available(repo_path)),
-                }
-            )
-            return
-        if not changes:
-            console.print("[dim]No change.[/dim]")
-            return
-        console.print("\n  Would change:")
-        for change in changes:
-            console.print(f"    {change['key']}: {change['from']} -> {change['to']}")
-        console.print("")
-        return
-
     try:
-        resolution = write_policy(repo_path, policy)
-    except PolicyConflictError as exc:
+        policy = before
+        for name, value in changes:
+            policy = policy.with_setting(name, value)
+    except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    _emit(repo_path, resolution, fmt)
+    if dry_run:
+        _show_dry_run(repo_path, before, policy, fmt)
+        return
+    try:
+        for name, value in changes:
+            set_value(repo_path, f"decisions.{name}", value)
+    except (RepoConfigError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _emit(repo_path, _load(repo_path), fmt)
+
+
+def _show_dry_run(repo_path: Path, before: DecisionPolicy, policy: DecisionPolicy, fmt: str) -> None:
+    changes = _diff(before, policy)
+    if fmt == "json":
+        emit_json(
+            {
+                "repo": str(repo_path),
+                "dry_run": True,
+                "changes": changes,
+                "policy": policy.to_dict(provider_available=_provider_available(repo_path)),
+            }
+        )
+        return
+    if not changes:
+        console.print("[dim]No change.[/dim]")
+        return
+    console.print("\n  Would change:")
+    for change in changes:
+        console.print(f"    {change['key']}: {change['from']} -> {change['to']}")
+    console.print("")
+
+
+def _switch_changes(
+    before: DecisionPolicy, after: DecisionPolicy, keys: tuple[str, ...]
+) -> list[dict[str, str]]:
+    """One change row per boolean switch in *keys* that differs."""
+    return [
+        {"key": key, "from": str(getattr(before, key)), "to": str(getattr(after, key))}
+        for key in keys
+        if getattr(before, key) != getattr(after, key)
+    ]
 
 
 def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]:
-    changes: list[dict[str, str]] = []
-    if before.enabled != after.enabled:
-        changes.append({"key": "enabled", "from": str(before.enabled), "to": str(after.enabled)})
-    if before.llm != after.llm:
-        changes.append({"key": "llm", "from": str(before.llm), "to": str(after.llm)})
+    changes = _switch_changes(before, after, ("mode", "enabled", "llm"))
     for key in _TOGGLABLE:
         old, new = before.sources.get(key), after.sources.get(key)
         if old == new:
@@ -217,22 +301,19 @@ def _diff(before: DecisionPolicy, after: DecisionPolicy) -> list[dict[str, str]]
             changes.append(
                 {"key": f"discovery.{key}", "from": str(old_value), "to": str(new_value)}
             )
-    if before.agent_acceptance != after.agent_acceptance:
-        changes.append(
-            {
-                "key": "agent_acceptance",
-                "from": str(before.agent_acceptance),
-                "to": str(after.agent_acceptance),
-            }
-        )
-    if before.capture_prompt != after.capture_prompt:
-        changes.append(
-            {
-                "key": "capture_prompt",
-                "from": str(before.capture_prompt),
-                "to": str(after.capture_prompt),
-            }
-        )
+    changes += _switch_changes(
+        before,
+        after,
+        (
+            "agent_acceptance",
+            "require_approval",
+            "capture_prompt",
+            "sync",
+            "update_mining",
+            "session_start",
+            "upkeep_prompt",
+        ),
+    )
     if before.harnesses != after.harnesses:
         changes.append(
             {
@@ -272,27 +353,34 @@ def config_show(path: str | None, fmt: str) -> None:
 @format_option()
 def config_preset(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
     """Apply a named preset: default, off, local_only, balanced, full."""
-    from dataclasses import replace
-
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
-    from repowise.core.analysis.decisions.policy import preset_policy
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    # A preset names source membership. The harness list and the two agent
-    # switches are not membership, so applying one leaves them as the caller
-    # set them.
-    current = _load(repo_path).policy
-    _apply(
-        repo_path,
-        replace(
-            preset_policy(name),
-            harnesses=current.harnesses,
-            agent_acceptance=current.agent_acceptance,
-            capture_prompt=current.capture_prompt,
-        ),
-        fmt,
-        dry_run,
-    )
+    _apply(repo_path, [("preset", name)], fmt, dry_run)
+
+
+@config_group.command("mode")
+@click.argument(
+    "name",
+    # Both spellings, as `repowise config set decisions.mode` takes them.
+    type=click.Choice(sorted({*MODES, *(m.replace("_", "-") for m in MODES)})),
+)
+@click.argument("path", required=False, default=None)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_mode(name: str, path: str | None, dry_run: bool, fmt: str) -> None:
+    """Set the one switch for the decisions layer: off, read-only or full.
+
+    full (the default) records and shows decisions. read-only shows the
+    decisions this repository already holds and records nothing: no mining,
+    no prompt to record, no agent putting a decision in force, nothing sent
+    to repowise.dev. off shows nothing and records nothing. Setting a mode
+    resets the finer switches to its defaults; set one afterwards to differ.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    _apply(repo_path, [("mode", name.replace("-", "_"))], fmt, dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -338,11 +426,7 @@ def config_discovery(
     if not fields:
         _emit(repo_path, _load(repo_path), fmt)
         return
-    try:
-        policy = _load(repo_path).policy.with_discovery(**fields)
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    _apply(repo_path, policy, fmt, dry_run)
+    _apply(repo_path, [(f"discovery.{k}", v) for k, v in fields.items()], fmt, dry_run)
 
 
 @config_group.command("agent-acceptance")
@@ -362,8 +446,117 @@ def config_agent_acceptance(
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_agent_acceptance(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("agent_acceptance", bool(enabled))], fmt, dry_run)
+
+
+@config_group.command("approval")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Make new decisions wait."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_approval(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """Make every new decision wait for a person before it governs.
+
+    Off by default: a decision an agent records governs once the commit it
+    cites lands on the default branch. On, landing grants nothing and an
+    agent's own acceptance is refused; a person accepts with
+    `repowise decision confirm`.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    _apply(repo_path, [("require_approval", bool(enabled))], fmt, dry_run)
+
+
+@config_group.command("sync")
+@click.argument("path", required=False, default=None)
+@click.option("--on/--off", "enabled", default=None, required=True, help="Sync during update.")
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_sync(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """Keep this repo's decisions in step with its copy on repowise.dev.
+
+    Off by default, and only for a repository you have published there. On,
+    every `update` sends the decisions recorded on this machine and brings
+    down the ones in force there; `decision push` and `decision pull` do the
+    same on request. No model runs, and a network failure never fails an update.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    _apply(repo_path, [("sync", bool(enabled))], fmt, dry_run)
+
+
+@config_group.command("update-mining")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Mine new history on update."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_update_mining(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """Let `repowise update` read new pull requests and commits with the model.
+
+    Off by default: init reads the history once, and an update keeps
+    decisions current without calling a model. On, each update also mines the
+    new range, structures new inline markers and checks whether a change
+    replaced a decision it touches, using the configured provider.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    _apply(repo_path, [("update_mining", bool(enabled))], fmt, dry_run)
+
+
+@config_group.command("session-start")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Show decisions at session start."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_session_start(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """Open each agent session with the decisions relevant to its working set.
+
+    Off by default. An agent still sees a decision when it edits a file the
+    decision governs, and `get_why` answers for any path. On, the session
+    start hook also lists the decisions that govern the files a session is
+    likely to touch (changed, staged, or edited last session).
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    _apply(repo_path, [("session_start", bool(enabled))], fmt, dry_run)
+
+
+@config_group.command("upkeep-prompt")
+@click.argument("path", required=False, default=None)
+@click.option(
+    "--on/--off", "enabled", default=None, required=True, help="Ask the agent to settle them."
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Show the change; write nothing.")
+@format_option()
+def config_upkeep_prompt(path: str | None, enabled: bool | None, dry_run: bool, fmt: str) -> None:
+    """After a commit that changes governed code, ask the agent to settle each decision.
+
+    Off by default. On, the commit hook names up to three decisions in force
+    over the files the commit changed, once per decision a session, with the
+    one command for each outcome: it still holds (`decision reaffirm`), this
+    change replaced it, or this change knowingly breaks it (`decision
+    deprecate`). Every firing is logged so `repowise hook stats` can show
+    whether agents act on it.
+    """
+    from repowise.cli.commands.decision_cmd import _resolve_decision_repo
+
+    repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
+    _apply(repo_path, [("upkeep_prompt", bool(enabled))], fmt, dry_run)
+    if enabled and not dry_run:
+        # Fired from the same per-install shell entry as the capture prompt.
+        from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
+
+        set_claude_code_capture_hook(True)
 
 
 @config_group.command("capture-prompt")
@@ -390,8 +583,7 @@ def config_capture_prompt(
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_capture_prompt(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("capture_prompt", bool(enabled))], fmt, dry_run)
     if dry_run:
         return
     # The flag is per repository; the hook it fires from is a per-install
@@ -473,8 +665,12 @@ def source_set(
         raise click.ClickException("Pass --on/--off or --llm/--no-llm.")
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_source(source, enabled=enabled, llm=llm), fmt, dry_run)
+    changes = [
+        (f"sources.{source}.{field}", value)
+        for field, value in (("enabled", enabled), ("llm", llm))
+        if value is not None
+    ]
+    _apply(repo_path, changes, fmt, dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -497,5 +693,4 @@ def llm_command(path: str | None, enabled: bool | None, dry_run: bool, fmt: str)
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
     repo_path = _resolve_decision_repo(path, fmt, needs_store=False)
-    current = _load(repo_path).policy
-    _apply(repo_path, current.with_llm(bool(enabled)), fmt, dry_run)
+    _apply(repo_path, [("llm", bool(enabled))], fmt, dry_run)

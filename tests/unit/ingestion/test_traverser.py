@@ -1650,10 +1650,10 @@ class TestUnknownLanguageFileRecording:
         assert traverser.stats.skipped_unknown_language == 2
         assert traverser.stats.unknown_language_files == []
 
-    def test_does_not_consume_the_size_skip_budget(self, tmp_path: Path) -> None:
-        # The two lists are separate so hundreds of unparsed docs cannot
-        # truncate the oversized-source records, which are shown to the user.
-        for i in range(traverser_mod._MAX_SKIPPED_SOURCE_PATHS + 5):
+    def test_stays_off_the_size_skip_list(self, tmp_path: Path) -> None:
+        # The two lists are separate so unparsed docs never crowd the
+        # oversized-source records, which are shown to the user.
+        for i in range(55):
             (tmp_path / f"doc{i}.rst").write_text("text\n")
         big = tmp_path / "huge.py"
         big.write_bytes(b"x = 1\n" * 1_500_000)  # over the 8 MB source ceiling
@@ -1662,7 +1662,6 @@ class TestUnknownLanguageFileRecording:
         list(traverser.traverse())
 
         assert [s.path for s in traverser.stats.skipped_source_files] == ["huge.py"]
-        assert traverser.stats.skipped_source_files_truncated is False
         assert len(traverser.stats.unknown_language_files) == 55
 
     def test_caps_the_list_and_flags_truncation(

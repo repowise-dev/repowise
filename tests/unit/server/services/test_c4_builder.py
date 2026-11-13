@@ -353,7 +353,12 @@ async def _seed_two_containers_with_edges(session, edges):
 @pytest.mark.asyncio
 async def test_l2_excludes_cochange(async_session):
     repo = await _seed_two_containers_with_edges(
-        async_session, [("packages/a/index.ts", "packages/b/index.ts", "co_changes")]
+        async_session,
+        [
+            ("packages/a/index.ts", "packages/b/index.ts", "co_changes"),
+            # A doc link stays off L2 even with the co-change overlay on.
+            ("packages/a/index.ts", "packages/b/index.ts", "documents"),
+        ],
     )
     assert (await c4_builder.build_l2(async_session, repo.id)).relations == []
     # The shared roll-up drops history everywhere, the export included.
@@ -361,8 +366,9 @@ async def test_l2_excludes_cochange(async_session):
     assert model.container_relations == [] and model.component_relations == []
 
     overlay = await c4_builder.build_l2(async_session, repo.id, include_co_changes=True)
-    assert [(r.source_id, r.target_id, r.label) for r in overlay.relations] == [
-        ("pkg:packages/a", "pkg:packages/b", "co-changes")
+    # edge_count 1: a doc edge folded into the co-change box pair would still read "co-changes".
+    assert [(r.source_id, r.target_id, r.label, r.edge_count) for r in overlay.relations] == [
+        ("pkg:packages/a", "pkg:packages/b", "co-changes", 1)
     ]
 
 
@@ -429,6 +435,36 @@ async def test_container_view_and_dependencies_agree_without_tests(async_session
         if not r.target_id.startswith("ext:")
     ]
     assert in_view == internal
+
+
+@pytest.mark.asyncio
+async def test_edges_are_read_between_files_only(async_session):
+    """Symbol edges are most of the table and never reach a box, so they are not read."""
+    from repowise.server.services.c4_builder.relations import load_edges
+
+    repo = await _seed_monorepo(async_session)
+    before = await c4_builder.build_l2(async_session, repo.id)
+    symbol = "packages/web/lib/api.ts::fetchModel"
+    await batch_upsert_graph_nodes(
+        async_session,
+        repo.id,
+        [{"node_id": symbol, "node_type": "symbol", "language": "typescript", "symbol_count": 0}],
+    )
+    await batch_upsert_graph_edges(
+        async_session,
+        repo.id,
+        [
+            {"source_node_id": "packages/web/lib/api.ts", "target_node_id": symbol, "edge_type": "defines"},
+            {"source_node_id": symbol, "target_node_id": "packages/core/persistence/models.py", "edge_type": "calls"},
+        ],
+    )
+    await async_session.commit()
+
+    edges = await load_edges(async_session, repo.id)
+    assert all(symbol not in (src, tgt) for src, tgt, _ in edges)
+    assert ("packages/core/ingestion/parser.py", "external:fastapi", "imports") in edges
+    after = await c4_builder.build_l2(async_session, repo.id)
+    assert after.relations == before.relations
 
 
 @pytest.mark.asyncio

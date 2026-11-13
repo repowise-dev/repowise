@@ -364,13 +364,16 @@ def _python_package_dirs(
     from repowise.core.workspace.code_api import _pypi_package_dirs
 
     module = name.replace("-", "_").replace(".", "_")
-    candidates = _pypi_package_dirs(data) or [
-        f"src/{module}",
-        module,
-        f"src/{module.lower()}",
-        module.lower(),
-    ]
-    return [d for d in (_join(rel_dir, c) for c in candidates) if d in facts.tree]
+    # A name that is already lower case spells the same dir twice.
+    guess = list(dict.fromkeys([f"src/{module}", module, f"src/{module.lower()}", module.lower()]))
+    declared = _pypi_package_dirs(data)
+    if declared:
+        existing = [d for d in (_join(rel_dir, c) for c in declared) if d in facts.tree]
+        if existing:
+            return existing
+        # The declared directories are stale, so the name guess stays the
+        # fallback rather than leaving the project unread.
+    return [d for d in (_join(rel_dir, c) for c in guess) if d in facts.tree]
 
 
 def _private_name(name: str) -> bool:

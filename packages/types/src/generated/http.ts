@@ -546,6 +546,9 @@ export interface ChangeAuthor {
 export interface ChangeBlastRadiusRequest {
   change_id: string;
   max_depth?: number;
+  with_graph?: boolean;
+  offset?: number;
+  limit?: number;
 }
 
 export interface ChangeBlastRadiusResponse {
@@ -564,13 +567,20 @@ export interface ChangeBlastRadiusResponse {
   overall_risk_score: number;
   overall_risk_score_compatibility: RiskCompatibilityField;
   change_id: string;
+  change?: ChangeCandidateModel | null;
   changed_files: string[];
   changed_files_total: number;
+  transitive_total?: number;
+  next_offset?: number | null;
+  reach_summary?: ReachSummary | null;
+  missing_partners_total?: number | null;
+  review?: ChangeReview | null;
+  review_unavailable?: string | null;
 }
 
 export interface ChangeCandidateModel {
   id: string;
-  kind: "working_tree" | "branch" | "commit" | "pull_request";
+  kind: "working_tree" | "branch" | "commit" | "change_request";
   label: string;
   title?: string | null;
   author?: string | null;
@@ -583,7 +593,7 @@ export interface ChangeCandidateModel {
   pushed?: boolean | null;
   number?: number | null;
   base_sha?: string | null;
-  pr_review?: PrReviewSummary | null;
+  change_term?: string | null;
 }
 
 /** The changes a reviewer can pick, and the one to open first. */
@@ -766,6 +776,73 @@ export interface ChangeRecord {
   metadata: ChangeForgeMetadata;
   evidence?: ChangeEvidence | null;
   evidence_building?: boolean;
+}
+
+/**
+ * The change's score and tests, from the functions ``repowise risk`` and
+ * ``get_change_risk`` use, so all three give the same answer.
+ */
+export interface ChangeReview {
+  revspec: string | null;
+  risk: ChangeRiskBlock;
+  tests: ChangeTestsBlock;
+  test_commands?: string[];
+}
+
+/**
+ * ``repowise risk <revspec> --format json`` for the change, field for field.
+ *
+ * ``fix_history`` says how often the touched files needed fixes;
+ * ``risk_percentile`` ranks the diff's size and spread against the
+ * repository's recent commits (``score`` is the 0-10 model score it ranks).
+ * Neither is a probability that the change breaks something.
+ */
+export interface ChangeRiskBlock {
+  ref: string;
+  working_tree: boolean;
+  fix_history: FixHistoryResponse;
+  risk_authority: RiskAuthority;
+  score: number;
+  score_measures: string;
+  score_unit: string;
+  risk_percentile: number | null;
+  review_priority: string | null;
+  classification: string | null;
+  fallback_band: string | null;
+  baseline_sample_size: number;
+  exclude_patterns: string[];
+  is_fix: boolean;
+  features: ChangeFeaturesResponse;
+  drivers: RiskDriverResponse[];
+}
+
+/**
+ * The tests the change needs: ``get_change_risk``'s ``impacted_tests``, longer.
+ *
+ * ``run_all`` true means run the whole suite, for ``reasons``; false with an
+ * empty ``tests_to_run`` means no test needs to run. ``status`` is
+ * ``selected``, ``run_all``, ``degraded`` (the index lags the checkout and the
+ * list holds most of the suite), or why no selection was made (``no_index``,
+ * ``unknown``, ``timeout``, ``busy``, ``config_invalid``).
+ */
+export interface ChangeTestsBlock {
+  status: string;
+  run_all: boolean;
+  reasons: string[];
+  reasons_total?: number | null;
+  basis: string;
+  map_present?: boolean | null;
+  tests_to_run: string[];
+  tests_to_run_kind?: string | null;
+  total: number;
+  truncated: boolean;
+  always_run_total?: number | null;
+  broadcast_total?: number | null;
+  import_closure_total?: number | null;
+  summary: string;
+  why?: Record<string, string> | null;
+  basis_by_file?: Record<string, string> | null;
+  basis_by_file_total?: number | null;
 }
 
 /** Who owns some of the changed files, by primary authorship. */
@@ -1539,6 +1616,20 @@ export interface DeadCodeSummaryResponse {
   gated?: Record<string, unknown>;
 }
 
+/**
+ * A decision prompt for the reader's agent, as ``repowise decision discover`` prints it.
+ *
+ * ``kind`` is the prompt served: ``discover`` asked with no background
+ * records to check comes back as ``add``. ``text`` is empty only for
+ * ``agreements`` with none stored, and then a surface offers nothing.
+ */
+export interface DecisionAgentPromptResponse {
+  kind: "discover" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
+  text: string;
+  ids: string[];
+  count: number;
+}
+
 /** A link from a decision to a governed file or module. */
 export interface DecisionCodeEdge {
   decision_id: string;
@@ -1637,7 +1728,7 @@ export interface DecisionGraphResponse {
   code_edges: DecisionCodeEdge[];
 }
 
-/** Governance rollup: what is stale, awaiting review, and ungoverned. */
+/** Governance rollup: what is stale, what is background, and what is ungoverned. */
 export interface DecisionHealthResponse {
   summary?: Record<string, number>;
   stale_decisions?: DecisionRecordResponse[];
@@ -1660,6 +1751,9 @@ export interface DecisionLaneCountsResponse {
   history: number;
   governing: number;
   total: number;
+  in_force?: number | null;
+  pinned?: number | null;
+  recent?: number | null;
 }
 
 /** One node in a decision lineage chain (root → … → current). */
@@ -1674,6 +1768,21 @@ export interface DecisionLineageEntry {
 /** The supersedes/refines chain, root first. */
 export interface DecisionLineageResponse {
   lineage?: DecisionLineageEntry[];
+}
+
+/** POST body for /decisions/{id}/pin and /unpin. Both fields optional. */
+export interface DecisionPinUpdate {
+  reason?: string | null;
+}
+
+/** How a decision came into force, for the ``recent`` lane's rows. */
+export interface DecisionRecentInfo {
+  at: string;
+  signer: string;
+  signer_kind: string;
+  signer_session?: string;
+  commit?: string;
+  landed_on?: string;
 }
 
 export interface DecisionRecordResponse {
@@ -1710,7 +1819,11 @@ export interface DecisionRecordResponse {
   accepter_kind?: string | null;
   accepter_session?: string | null;
   blockers?: string[] | null;
+  pinned?: boolean | null;
+  recent?: DecisionRecentInfo | null;
   decision_text_missing?: boolean;
+  delivered_count?: number | null;
+  last_delivered_at?: string | null;
 }
 
 /** The resolved decision capture policy for one repository. */
@@ -2916,6 +3029,7 @@ export interface McpToolInfo {
   presentation: string;
   safety: string;
   evidence_basis: string;
+  schema_tokens?: number;
 }
 
 export interface McpToolRecipeInfo {
@@ -2929,6 +3043,8 @@ export interface McpToolSurfaceResponse {
   repo_id?: string | null;
   is_workspace: boolean;
   override?: string[] | string | null;
+  profile?: string | null;
+  profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
 }
 
@@ -3537,6 +3653,13 @@ export interface PlanRiskResponse {
   ref?: string | null;
 }
 
+/** A signed-in agent CLI on a paid plan: a model with no new spend. */
+export interface PlanRoute {
+  provider: string;
+  cli_name: string;
+  minutes?: number | null;
+}
+
 /**
  * What the map is counting.
  *
@@ -3552,18 +3675,6 @@ export interface PopulationBreakdown {
   include_tests?: boolean;
   include_examples?: boolean;
   include_docs?: boolean;
-}
-
-/**
- * What the PR bot stored for a pull request: code health before and after, and new findings.
- *
- * A host that runs the bot fills it; a local server never does.
- */
-export interface PrReviewSummary {
-  health_before?: number | null;
-  health_after?: number | null;
-  introduced?: number | null;
-  url?: string | null;
 }
 
 /** One provider in the catalog, as the settings picker renders it. */
@@ -3605,6 +3716,7 @@ export interface ProviderStatusResponse {
   providers?: ProviderEntry[];
   flag_only_providers?: string[];
   embedders?: EmbedderEntry[];
+  plan_route?: PlanRoute | null;
 }
 
 /**
@@ -3650,6 +3762,16 @@ export interface QuietOwner {
   last_commit_at: string | null;
   files_owned: number;
   changing_files_owned: number;
+}
+
+/** Counts over every file a change reaches, not only the page sent. */
+export interface ReachSummary {
+  files: number;
+  tests: number;
+  direct: number;
+  modules: number;
+  max_depth: number;
+  imported: string[];
 }
 
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */
@@ -4257,6 +4379,97 @@ export interface SetApiKeyRequest {
   repo_id?: string | null;
 }
 
+export interface SettingAlsoMoved {
+  key: string;
+  before: SettingState;
+  after: SettingState;
+}
+
+export interface SettingArea {
+  area: string;
+  settings: SettingView[];
+}
+
+/** What one write did, as ``repowise config set --format json`` reports it. */
+export interface SettingChangeResponse {
+  action: "set" | "reset";
+  key: string;
+  changed: boolean;
+  before: SettingState;
+  after: SettingState;
+  also: SettingAlsoMoved[];
+  effect: string;
+  undo: string[];
+  env_override?: string | null;
+}
+
+/** The environment variable that also sets a setting. */
+export interface SettingEnvVar {
+  name: string;
+  wins: boolean;
+  prefix: boolean;
+}
+
+/** Where one setting stands. */
+export interface SettingState {
+  value?: unknown;
+  source: string;
+  problem?: string | null;
+  locked?: boolean;
+  default?: unknown;
+  changed: boolean;
+}
+
+/** A value that fits this repository better than the current one. */
+export interface SettingSuggestion {
+  key: string;
+  current_value?: unknown;
+  suggested_value?: unknown;
+  reason: string;
+  impact?: string | null;
+  benefit?: string | null;
+  command: string;
+}
+
+/** Set one setting to ``value``, or ``reset`` it to its default. */
+export interface SettingUpdate {
+  key: string;
+  value?: unknown;
+  reset?: boolean;
+}
+
+/** One setting: what it is and where it stands. */
+export interface SettingView {
+  value?: unknown;
+  source: string;
+  problem?: string | null;
+  locked?: boolean;
+  default?: unknown;
+  changed: boolean;
+  key: string;
+  type: "bool" | "int" | "float" | "str" | "list" | "mapping";
+  default_note?: string | null;
+  description: string;
+  area: string;
+  scope: "repo" | "user" | "env";
+  file?: string | null;
+  choices?: string[];
+  minimum?: number | null;
+  maximum?: number | null;
+  exclusive_minimum?: boolean;
+  env?: SettingEnvVar | null;
+  internal?: boolean;
+  reload: "immediate" | "update" | "reindex" | "restart";
+  accepts: string;
+  applies: string;
+  writable: boolean;
+}
+
+export interface SettingsResponse {
+  areas: SettingArea[];
+  suggestions?: SettingSuggestion[];
+}
+
 export interface SetupAgent {
   id: string;
   display_name: string;
@@ -4268,6 +4481,7 @@ export interface SetupAgent {
   config_files?: Record<string, string[]>;
   first_call_at?: string | null;
   last_call_at?: string | null;
+  default_profile?: string;
 }
 
 /** Every call to this repo's index, whichever agent made it. */
@@ -4308,6 +4522,7 @@ export interface SetupIndex {
   state: "up_to_date" | "behind" | "incomplete";
   indexed_commit?: string | null;
   live_head?: string | null;
+  indexed_commit_missing?: boolean;
   indexed_at?: string | null;
   file_count?: number;
   parse_error_count?: number;
@@ -4569,6 +4784,7 @@ export interface TestRecommendation {
   basis: "measured" | "inferred";
   bases: ("measured" | "inferred")[];
   source_files: string[];
+  source_files_total?: number | null;
   evidence: TestImpactEvidence[];
   stale?: boolean;
   stale_reason?: "test_file_missing" | "test_file_changed" | null;
@@ -4594,8 +4810,9 @@ export interface UnclusteredFiles {
  * Persist a new ``mcp.tools`` override for a repo.
  *
  * ``tools`` accepts the same shapes as the config block: a list of explicit
- * names or ``+``/``-`` deltas, the string ``"all"``, or ``null``/empty to
- * clear the override and fall back to the default surface.
+ * names, a profile name optionally followed by ``+``/``-`` deltas, deltas
+ * alone, or ``null``/empty to clear the override and fall back to each
+ * client's default.
  */
 export interface UpdateMcpToolsRequest {
   repo_id: string;

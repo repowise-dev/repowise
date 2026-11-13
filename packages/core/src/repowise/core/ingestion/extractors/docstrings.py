@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from tree_sitter import Node
 
+from ..models import TS_JS_LANGUAGES
 from .helpers import (
     clean_jsdoc,
     clean_string_literal,
@@ -283,12 +284,11 @@ def _block_doc_reader(
     return lambda root, src: _leading_block_doc(root, src, comment_kinds, skip_kinds)
 
 
-_JS_LIKE = ("typescript", "javascript", "svelte", "vue", "astro")
 _C_LIKE = ("cpp", "c", "objectivec")
 
 _MODULE_DOC: dict[str, Callable[[Node, str], str | None]] = {
     "python": _python_module_doc,
-    **dict.fromkeys(_JS_LIKE, _block_doc_reader(("comment",), ("comment",))),
+    **dict.fromkeys(TS_JS_LANGUAGES, _block_doc_reader(("comment",), ("comment",))),
     "go": _go_module_doc,
     "fsharp": _fsharp_module_doc,
     "rust": _rust_module_doc,
@@ -380,9 +380,7 @@ def _rust_symbol_doc(def_node: Node, src: str) -> str | None:
     prev = def_node.prev_sibling
     while prev is not None and prev.type == "attribute_item":
         prev = prev.prev_sibling
-    if prev is None:
-        return None
-    if prev.type == "block_comment":
+    if prev is not None and prev.type == "block_comment":
         text = node_text(prev, src).strip()
         if text.startswith("/**"):
             return clean_jsdoc(text)
@@ -413,14 +411,17 @@ def _elixir_symbol_doc(def_node: Node, src: str) -> str | None:
     # @doc is a preceding sibling, with no AST link to the def it
     # documents. Other attributes (@impl, @spec) may sit between the two,
     # so walk back over attributes and stop at the first real statement.
-    prev = def_node.prev_named_sibling
-    while prev is not None:
-        if prev.type != "unary_operator":
+    parent = def_node.parent
+    if parent is None:
+        return None
+    siblings = list(parent.named_children)
+    index = next((i for i, s in enumerate(siblings) if s.id == def_node.id), -1)
+    for previous in reversed(siblings[:index]):
+        if previous.type != "unary_operator":
             return None
-        doc = _elixir_attribute_doc(prev, src, ("doc",))
+        doc = _elixir_attribute_doc(previous, src, ("doc",))
         if doc:
             return doc
-        prev = prev.prev_named_sibling
     return None
 
 
@@ -459,7 +460,7 @@ def _luau_symbol_doc(def_node: Node, src: str) -> str | None:
 
 _SYMBOL_DOC: dict[str, Callable[[Node, str], str | None]] = {
     "python": _python_symbol_doc,
-    **dict.fromkeys(_JS_LIKE, find_preceding_jsdoc),
+    **dict.fromkeys(TS_JS_LANGUAGES, find_preceding_jsdoc),
     "go": _go_symbol_doc,
     "fsharp": _fsharp_symbol_doc,
     "rust": _rust_symbol_doc,

@@ -24,12 +24,12 @@ from repowise.core.persistence.crud.authority import resolve_decision_id
 from repowise.core.persistence.crud.decisions import derive_decision_id
 from repowise.core.persistence.decision_graph import sync_decision_node_links
 from repowise.core.persistence.decision_id_migration import (
-    ALIAS_REASON,
-    FOLD_REASON,
     apply_id_migration,
     plan_id_migration,
 )
 from repowise.core.persistence.models import (
+    MERGED_REASON,
+    REKEYED_REASON,
     DecisionAlias,
     DecisionCandidateMeta,
     DecisionEvidence,
@@ -361,7 +361,7 @@ async def test_the_old_id_still_resolves_afterwards(async_session):
 
     alias = await async_session.get(DecisionAlias, old_id)
     assert alias is not None
-    assert alias.reason == ALIAS_REASON
+    assert alias.reason == REKEYED_REASON
     # The point of the alias: an id written down elsewhere keeps working.
     assert await resolve_decision_id(async_session, old_id) == alias.decision_id
 
@@ -449,7 +449,7 @@ async def test_two_records_with_one_identity_fold_into_one(async_session):
     ) == {kept}
     # And the id that went away still resolves.
     alias = await async_session.get(DecisionAlias, "b" * 32)
-    assert alias is not None and alias.reason == FOLD_REASON
+    assert alias is not None and alias.reason == MERGED_REASON
     assert await resolve_decision_id(async_session, "b" * 32) == kept
 
 
@@ -798,7 +798,7 @@ async def _assert_settled_in_one_run(session, repo_id: str, seats: dict[str, str
         assert evidence == final
         # Straight from the original id to the final one, never via a parking id.
         alias = await session.get(DecisionAlias, old_id)
-        assert (alias.decision_id, alias.reason) == (final, ALIAS_REASON)
+        assert (alias.decision_id, alias.reason) == (final, REKEYED_REASON)
     ids = (await session.execute(select(DecisionRecord.id))).scalars().all()
     assert sorted(ids) == sorted(_occupant_id(repo_id, q) for q in seats)
     aliases = (await session.execute(select(DecisionAlias.decision_id))).scalars().all()

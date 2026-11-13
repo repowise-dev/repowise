@@ -1,6 +1,7 @@
 ---
 description: Search the Repowise wiki using natural language, full-text, or symbol search.
 allowed-tools: Bash(repowise search:*), Read
+disable-model-invocation: true
 ---
 
 # Repowise Search

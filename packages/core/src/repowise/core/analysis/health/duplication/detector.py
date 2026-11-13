@@ -258,6 +258,7 @@ def detect_clones(
     cache_dir: Path | None = None,
     changed_files: set[str] | None = None,
     source_reader: Any | None = None,
+    splice: bool = True,
 ) -> DuplicationReport:
     """Run the duplication pipeline over the supplied parsed files.
 
@@ -282,50 +283,30 @@ def detect_clones(
     it, a working-tree run takes the files whose bytes differ from what the
     index read, and any other reader recomputes in full.
     Any validity miss falls back to this full pipeline, which rewrites the
-    artifact.
+    artifact. *splice* false skips the attempt, for a caller that already
+    made it through :func:`splice_clones`.
     """
     meta_map = git_meta_map or {}
     lim = limits or DuplicationLimits()
     diag = DuplicationDiagnostics()
-
-    cache = None
-    if cache_dir is not None:
-        from .token_cache import DuplicationTokenCache
-
-        cache = DuplicationTokenCache(cache_dir, window_tokens)
-        cache.load()
-
+    cache = _load_token_cache(cache_dir, window_tokens)
     parsed_list = list(parsed_files)
 
-    if cache is not None:
-        from .pair_index import load_pair_index
-
-        index = load_pair_index(cache_dir, window_tokens, lim)
-        moved = None
-        if index is not None and changed_files is not None:
-            moved = set(changed_files)
-        elif index is not None and reads_working_tree(source_reader):
-            # The index keys the working tree's bytes; another revision's
-            # reader recomputes in full rather than compare against them.
-            moved = _moved_since_index(index, parsed_list, source_reader)
-        if moved is not None:
-            report = _detect_clones_incremental(
-                parsed_list,
-                meta_map,
-                moved,
-                window_tokens,
-                min_lines,
-                lim,
-                diag,
-                cache,
-                index,
-                cache_dir,
-                source_reader,
-            )
-            if report is not None:
-                return report
+    if cache is not None and splice:
+        report = _splice_from_index(
+            parsed_list,
+            meta_map,
+            changed_files,
+            window_tokens,
+            min_lines,
+            lim,
+            cache,
+            cache_dir,
+            source_reader,
+        )
+        if report is not None:
+            return report
         # Fall through to the full pipeline; it refreshes the artifact.
-        diag = DuplicationDiagnostics()
 
     content_keys: dict[str, str] = {}
     per_file_streams, per_file_nloc, windows_by_grammar, per_file_hash = _collect_windows(
@@ -393,6 +374,99 @@ def detect_clones(
     )
 
 
+def splice_clones(
+    parsed_files: Iterable[Any],
+    git_meta_map: dict[str, dict[str, Any]] | None,
+    cache_dir: Path,
+    *,
+    window_tokens: int = DEFAULT_WINDOW_TOKENS,
+    min_lines: int = DEFAULT_MIN_LINES,
+    limits: DuplicationLimits | None = None,
+    changed_files: set[str] | None = None,
+    source_reader: Any | None = None,
+) -> DuplicationReport | None:
+    """The incremental splice of :func:`detect_clones` alone.
+
+    The report :func:`detect_clones` returns when its splice succeeds, with
+    the same writes to *cache_dir*; ``None`` when only the full pipeline can
+    answer, with nothing written.
+    """
+    return _splice_from_index(
+        list(parsed_files),
+        git_meta_map or {},
+        changed_files,
+        window_tokens,
+        min_lines,
+        limits or DuplicationLimits(),
+        None,
+        cache_dir,
+        source_reader,
+    )
+
+
+def splice_may_apply(changed_count: int, file_count: int) -> bool:
+    """Whether *changed_count* moved files out of *file_count* are few enough to splice.
+
+    A floor of the bound the splice applies, which also counts deleted files.
+    """
+    return changed_count <= max(_CHANGED_COUNT_FLOOR, _MAX_CHANGED_FRACTION * file_count)
+
+
+def _load_token_cache(cache_dir: Path | None, window_tokens: int) -> Any | None:
+    if cache_dir is None:
+        return None
+    from .token_cache import DuplicationTokenCache
+
+    cache = DuplicationTokenCache(cache_dir, window_tokens)
+    cache.load()
+    return cache
+
+
+def _splice_from_index(
+    parsed_list: list[Any],
+    meta_map: dict[str, dict[str, Any]],
+    changed_files: set[str] | None,
+    window_tokens: int,
+    min_lines: int,
+    lim: DuplicationLimits,
+    cache: Any | None,
+    cache_dir: Path,
+    source_reader: Any | None,
+) -> DuplicationReport | None:
+    """Splice the persisted pair index, or ``None`` when it cannot be.
+
+    *cache* ``None`` loads the token cache only once the index validates.
+    """
+    from .pair_index import load_pair_index
+
+    index = load_pair_index(cache_dir, window_tokens, lim)
+    if index is None or not index.spliceable:
+        return None  # checked before the token cache, the expensive load
+    if changed_files is not None:
+        moved = set(changed_files)
+    elif reads_working_tree(source_reader):
+        # The index keys the working tree's bytes; another revision's
+        # reader recomputes in full rather than compare against them.
+        moved = _moved_since_index(index, parsed_list, source_reader)
+    else:
+        return None
+    if moved is None:
+        return None
+    return _detect_clones_incremental(
+        parsed_list,
+        meta_map,
+        moved,
+        window_tokens,
+        min_lines,
+        lim,
+        DuplicationDiagnostics(),
+        cache if cache is not None else _load_token_cache(cache_dir, window_tokens),
+        index,
+        cache_dir,
+        source_reader,
+    )
+
+
 def clones_against_index(
     parsed_files: Iterable[Any],
     git_meta_map: dict[str, dict[str, Any]] | None,
@@ -412,14 +486,12 @@ def clones_against_index(
     another analyzer version, truncated, or too many files moved).
     """
     from .pair_index import load_pair_index
-    from .token_cache import DuplicationTokenCache
 
     lim = limits or DuplicationLimits()
     index = load_pair_index(cache_dir, window_tokens, lim)
     if index is None:
         return None
-    cache = DuplicationTokenCache(cache_dir, window_tokens)
-    cache.load()
+    cache = _load_token_cache(cache_dir, window_tokens)
     parsed_list = list(parsed_files)
     return _detect_clones_incremental(
         parsed_list,

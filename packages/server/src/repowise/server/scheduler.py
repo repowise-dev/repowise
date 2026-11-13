@@ -26,11 +26,21 @@ logger = logging.getLogger(__name__)
 def _inspect_repository(repo_path: str) -> tuple[str | None, str] | None:
     """Read the persisted baseline and current HEAD for one repository.
 
+    For a managed checkout the current HEAD is the tracked branch's head on
+    its remote, read without fetching; the sync job fetches. ``None`` when it
+    cannot be read, so nothing is enqueued.
+
     This helper is intentionally synchronous so the scheduler can offload the
     complete filesystem + Git inspection as one unit with ``asyncio.to_thread``.
     """
     import json
     import subprocess
+
+    from repowise.server.managed_checkout import (
+        ManagedCheckoutError,
+        is_managed_checkout,
+        remote_head,
+    )
 
     state_path = Path(repo_path) / ".repowise" / "state.json"
     stored_commit = None
@@ -40,6 +50,16 @@ def _inspect_repository(repo_path: str) -> tuple[str | None, str] | None:
             stored_commit = state_data.get("last_sync_commit")
         except Exception:
             pass
+
+    if is_managed_checkout(repo_path):
+        try:
+            return stored_commit, remote_head(repo_path)
+        except ManagedCheckoutError as exc:
+            logger.warning(
+                "managed_checkout_remote_unreadable",
+                extra={"repo_path": repo_path, "reason": str(exc)},
+            )
+            return None
 
     try:
         head_result = subprocess.run(

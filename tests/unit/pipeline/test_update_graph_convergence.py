@@ -370,3 +370,57 @@ def test_incremental_graph_is_on_unless_turned_off(
     else:
         monkeypatch.setenv("REPOWISE_INCREMENTAL_GRAPH", value)
     assert incremental_graph_enabled() is expected
+
+
+def _documents_edges(gb: GraphBuilder) -> set[tuple[str, str, str]]:
+    return {edge for edge in _edge_set(gb) if edge[2] == "documents"}
+
+
+_LINKED = ("README.md", "src/new.py", "documents")
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "expected"),
+    [
+        # An unchanged doc gains its edge when the file it names appears.
+        pytest.param({}, {"src/new.py": "def new():\n    return 1\n"}, {_LINKED}, id="target-added"),
+        pytest.param({"src/new.py": "def new():\n    return 1\n"}, {"src/new.py": None}, set(), id="target-removed"),
+        pytest.param(
+            {"src/new.py": "def new():\n    return 1\n", "README.md": "# Demo\n"},
+            {"README.md": "# Demo\n\nSee [new](src/new.py).\n"},
+            {_LINKED},
+            id="doc-gains-link",
+        ),
+    ],
+)
+def test_patched_documents_edges_equal_a_full_rebuild(
+    tmp_path: Path, before: dict[str, str], after: dict[str, str | None], expected: set
+) -> None:
+    from tests.unit.pipeline.test_incremental_graph_patch import (
+        _assert_equals_full,
+        _patched,
+        _seed_rows,
+        _write,
+    )
+
+    tree = tmp_path / "repo"
+    _write(
+        tree,
+        {
+            "src/main.py": "def main():\n    return 0\n",
+            "README.md": "# Demo\n\nSee [new](src/new.py).\n",
+            **before,
+        },
+    )
+    seed = _seed_rows(build_repo_graph(tree, [], collect_sources=True)[2])
+    for rel, text in after.items():
+        if text is None:
+            (tree / rel).unlink()
+        else:
+            _write(tree, {rel: text})
+
+    patched = _patched(tree, seed)
+
+    assert patched.patch_plan.eligible, patched.patch_plan.reason
+    assert _documents_edges(patched) == expected
+    _assert_equals_full(tree, patched, tmp_path)

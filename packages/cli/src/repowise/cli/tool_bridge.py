@@ -20,11 +20,11 @@ here loads synchronously before it calls anything, so there is nothing to wait
 for. ``tool_search._wait_for_vector_state`` skips the wait when they are
 ``None``, which is the state a fresh process is already in.
 
-Ceiling: single-repo only. The tools take a ``repo=`` alias resolved through a
-workspace registry the CLI does not build; ``--repo`` on these commands picks
-*which repo's* resources get wired instead, which answers the same question
-without a registry. A tool that needs cross-repo fan-out (``repo="all"``) is
-still MCP-only.
+Single-repo by default: ``--repo`` on these commands picks *which repo's*
+resources get wired. A caller passing ``workspace_root`` gets the MCP server's
+workspace registry instead, defaulting to that repo, so a tool reading the
+other members (``get_answer``'s document leg) sees them. A tool that needs
+cross-repo fan-out (``repo="all"``) is still MCP-only.
 """
 
 from __future__ import annotations
@@ -39,7 +39,10 @@ from repowise.cli.helpers import run_async
 
 
 async def _acall_tool(
-    repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str
+    repo_path: Path,
+    factory: Callable[[], Awaitable[dict]],
+    tool_name: str,
+    workspace_root: Path | None = None,
 ) -> dict:
     """Wire tool state for *repo_path*, await ``factory()``, then tear down."""
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -53,6 +56,7 @@ async def _acall_tool(
 
     engine = None
     store = None
+    registry = None
     # The MCP surface composes every tool as
     # ``_savings_instrument(_failure_shield(fn))`` at ``apply()`` time, so an
     # MCP client never sees a raw exception: a repo with a ``.repowise/``
@@ -66,31 +70,39 @@ async def _acall_tool(
     # opening the store and building the embedder all touch config and disk,
     # and a failure there is the same condition from the caller's side.
     try:
-        db_url = get_db_url_for_repo(repo_path)
-        # Mirrors the MCP server's lifespan (``_server.py``), which every tool
-        # reached through MCP already gets. Every tool's first query is
-        # ``select(Repository)``, so without this the whole CLI tool surface —
-        # ask, context, symbol, why, search, risk — fails on a raw
-        # ``no such column`` before it reads a single page.
-        await reconcile_schema_best_effort(db_url)
-        engine = create_engine(db_url)
-        session_factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
-        store = await _open_vector_store(repo_path)
-        if tool_name in _VECTOR_TOOLS:
-            store = await _connect_or_degrade(store)
-        init_tool_state(
-            session_factory,
-            FullTextSearch(engine),
-            store,
-            # The server points both at one store: decisions live in the same
-            # table under a "decision:" namespace rather than a separate one.
-            decision_store=store,
-            repo_path=str(repo_path),
-        )
+        registry = await _open_workspace(repo_path, workspace_root) if workspace_root else None
+        if registry is None:
+            db_url = get_db_url_for_repo(repo_path)
+            # Mirrors the MCP server's lifespan (``_server.py``), which every
+            # tool reached through MCP already gets. Every tool's first query
+            # is ``select(Repository)``, so without this the whole CLI tool
+            # surface — ask, context, symbol, why, search, risk — fails on a
+            # raw ``no such column`` before it reads a single page.
+            await reconcile_schema_best_effort(db_url)
+            engine = create_engine(db_url)
+            session_factory = async_sessionmaker(
+                engine, expire_on_commit=False, class_=AsyncSession
+            )
+            store = await _open_vector_store(repo_path)
+            if tool_name in _VECTOR_TOOLS:
+                store = await _connect_or_degrade(store)
+            init_tool_state(
+                session_factory,
+                FullTextSearch(engine),
+                store,
+                # The server points both at one store: decisions live in the
+                # same table under a "decision:" namespace, not a separate one.
+                decision_store=store,
+                repo_path=str(repo_path),
+            )
         return _budgeted(tool_name, await factory())
     except Exception as exc:
         return _shape_exception(tool_name, exc, long_running=False)
     finally:
+        if registry is not None:
+            with contextlib.suppress(Exception):
+                await registry.close()
+            _close_workspace()
         close = getattr(store, "close", None)
         if close is not None:
             # Teardown of a store the tool already answered from must not turn
@@ -100,6 +112,53 @@ async def _acall_tool(
         if engine is not None:
             with contextlib.suppress(Exception):
                 await engine.dispose()
+
+
+async def _open_workspace(repo_path: Path, ws_root: Path) -> Any:
+    """Serve the workspace at *ws_root* the way the MCP server does, or ``None``.
+
+    The registry defaults to *repo_path*, so the tool answers about that repo
+    and reads the other members where it reads across a workspace. ``None``
+    when *repo_path* is not a member, and when its store cannot open, where
+    the single-repo wiring reports why as it always has.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    from repowise.core.persistence.database import get_configured_db_url
+    from repowise.core.workspace import WorkspaceConfig
+    from repowise.server.mcp_server import _state
+    from repowise.server.mcp_server._server import publish_workspace_state, workspace_registry
+
+    ws_config = WorkspaceConfig.load(ws_root)
+    here = repo_path.resolve()
+    alias = next(
+        (e.alias for e in ws_config.repos if (ws_root / e.path).resolve() == here), None
+    )
+    if alias is None:
+        return None
+    # The registry's embedder resolves its configuration from this repo.
+    _state._repo_path = str(repo_path)
+    registry = workspace_registry(ws_root, ws_config, alias, get_configured_db_url())
+    try:
+        default_ctx = await registry.get_default()
+    except BaseException as exc:
+        with contextlib.suppress(Exception):
+            await registry.close()
+        # The lifespan's "store cannot open" set: served without the workspace.
+        if isinstance(exc, (OSError, OperationalError, LookupError)):
+            return None
+        raise
+    publish_workspace_state(registry, default_ctx, ws_root)
+    return registry
+
+
+def _close_workspace() -> None:
+    """Back to single-repo state, which is what the next call in a process expects."""
+    from repowise.server.mcp_server import _state
+
+    _state._registry = None
+    _state._workspace_root = None
+    _state._vector_store_ready = None
 
 
 def _budgeted(tool_name: str, result: dict) -> dict:
@@ -214,7 +273,13 @@ def _publish_embedder_status(requested: str, embedder: Any) -> None:
     _state._embedder_status = status
 
 
-def call_tool(repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name: str) -> dict:
+def call_tool(
+    repo_path: Path,
+    factory: Callable[[], Awaitable[dict]],
+    tool_name: str,
+    *,
+    workspace_root: Path | None = None,
+) -> dict:
     """Run one MCP tool coroutine against *repo_path* and return its dict.
 
     *factory* is called (not awaited) inside the event loop after the tool
@@ -224,8 +289,12 @@ def call_tool(repo_path: Path, factory: Callable[[], Awaitable[dict]], tool_name
 
     *tool_name* names the tool in a shaped internal-error response, matching
     what the MCP failure shield would have said.
+
+    *workspace_root* serves the tool with that workspace, defaulting to
+    *repo_path*, as the MCP server would, so a tool that reads across members
+    sees them all.
     """
-    return run_async(_acall_tool(repo_path, factory, tool_name))
+    return run_async(_acall_tool(repo_path, factory, tool_name, workspace_root))
 
 
 __all__ = ["call_tool"]

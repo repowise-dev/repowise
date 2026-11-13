@@ -251,6 +251,7 @@ async def _incremental_repo_update(
         # Same switch as the CLI update: it also invalidates the seed snapshot
         # before persistence rewrites the graph rows the snapshot mirrors.
         patch_graph=incremental_graph_enabled(),
+        fresh_communities=rescore_health,
         timings=timings,
     )
 
@@ -281,6 +282,7 @@ async def _incremental_repo_update(
             git_meta_map,
             dead_code_report,
             prior_fingerprint=(state.get("knowledge_graph") or {}).get("fingerprint"),
+            changed_paths=[fd.path for fd in file_diffs],
             log=_log.info,
         )
 
@@ -600,8 +602,11 @@ async def update_single_repo_index(
     base_ref = state.get("last_sync_commit")
     merged_excludes = await _merged_repo_excludes(repo_path, exclude_patterns)
     repo_config = load_repo_config(repo_path)
-    repo_commit_depth = int(repo_config.get("commit_limit", commit_depth))
-    repo_follow_renames = bool(repo_config.get("follow_renames", False))
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
+    from repowise.core.settings.model import flag
+
+    repo_commit_depth = clamp_commit_limit(repo_config.get("commit_limit", commit_depth))
+    repo_follow_renames = flag(repo_config.get("follow_renames"), False)
 
     drift = _drift_requirements(*_config_changes(repo_path, state, repo_config))
     has_persisted_index = await _has_persisted_repo_index(repo_path)

@@ -56,6 +56,7 @@ class Forge(Protocol):
     kind: ForgeKind
     label: str  # "GitHub", "GitLab", "Azure DevOps", "Bitbucket", "Git"
     change_term: str  # "pull request" | "merge request"
+    change_head_ref: str  # "refs/pull/{number}/head"; "" when the forge publishes none
 
     def commit_url(self, ref: RemoteRef, sha: str) -> str: ...
     def change_url(self, ref: RemoteRef, number: int) -> str: ...
@@ -202,6 +203,9 @@ class BaseForge:
     kind: ForgeKind
     label: str
     change_term: str = "pull request"
+    #: The ref the forge publishes a change's head commit under, with a
+    #: ``{number}`` field; ``""`` when it publishes none a clone can fetch.
+    change_head_ref: str = ""
     #: The CI system this forge runs, if it has one.
     ci: CiSystem | None = None
     #: Path segments that start a web route on this forge and never name a

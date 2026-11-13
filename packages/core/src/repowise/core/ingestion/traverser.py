@@ -101,7 +101,9 @@ class SkippedSourceFile(NamedTuple):
 
     path: str
     size_kb: int
-    reason: str  # "over_max_size" | "minified" | "unreadable" | "extracted_over_max_size"
+    # "over_max_size" | "minified" | "unreadable" | "extracted_over_max_size"
+    # | "no_parser_over_max_size"
+    reason: str
 
 
 class _DirIgnore(NamedTuple):
@@ -157,23 +159,24 @@ class TraversalStats:
     skipped_source_files: list[SkippedSourceFile] = field(default_factory=list)
     """Parseable source files dropped on size — the subset worth naming.
 
-    Mirrors :attr:`nested_repo_paths`: capped at
-    :data:`_MAX_SKIPPED_SOURCE_PATHS` so a pathological tree cannot grow this
-    without bound, while ``skipped_oversized`` stays exact.
+    Uncapped, like :attr:`generated_files`: one short record per dropped file,
+    and the skipped-files report has to name every one of them.
     """
-    skipped_source_files_truncated: bool = False
-    """True once the cap above dropped a name, so a reader can say "at least"."""
+    oversized_unparsed_files: list[SkippedSourceFile] = field(default_factory=list)
+    """Files with no parser dropped on size (fixtures, dumps, media).
+
+    Kept off :attr:`skipped_source_files`: those are named on the console and
+    read by dead-code analysis, and a 40 MB fixture belongs in neither. Only
+    the skipped-files report lists these.
+    """
     unknown_language_files: list[SkippedSourceFile] = field(default_factory=list)
     """Reference-bearing files dropped for having no language spec.
 
-    Kept apart from :attr:`skipped_source_files` rather than folded into it,
-    for two reasons that both cut the same way. That list is capped at 50 and
-    these run to hundreds per repo, so sharing it would truncate the size-skip
-    records instantly and destroy the signal they exist for; and it is rendered
-    to the user file by file during ingestion, where naming every unparsed
-    `.rst` would bury the one dropped entry point it was built to surface.
-    So this list is fed to the dead-code analyzer and deliberately not to that
-    report.
+    Kept apart from :attr:`skipped_source_files` rather than folded into it:
+    that list is rendered to the user file by file during ingestion, where
+    naming every unparsed `.rst` would bury the one dropped entry point it was
+    built to surface. So this list is fed to the dead-code analyzer and
+    deliberately not to that report.
     """
     unknown_language_files_truncated: bool = False
     """True once the cap above dropped a name, so a reader can say "at least"."""
@@ -192,12 +195,15 @@ class TraversalStats:
         never read" (#1237). Generated files count too: they are skipped for
         being generated, not for naming nothing, so a header function called
         only from a jnigen ``.c`` is used. Sorted, so a read budget that runs
-        out skips the same generated files every run.
+        out skips the same files every run.
         """
         return [
             *(
                 (s.path, s.reason)
-                for s in (*self.skipped_source_files, *self.unknown_language_files)
+                for s in sorted(
+                    (*self.skipped_source_files, *self.unknown_language_files),
+                    key=lambda s: s.path,
+                )
             ),
             *((path, "generated") for path in sorted(self.generated_files)),
         ]
@@ -210,9 +216,6 @@ REPOWISE_IGNORE_FILENAME = ".repowiseIgnore"
 
 #: Cap on the nested-repo names retained in :class:`TraversalStats`.
 _MAX_NESTED_REPO_PATHS = 50
-
-#: Cap on the skipped-source records retained in :class:`TraversalStats`.
-_MAX_SKIPPED_SOURCE_PATHS = 50
 
 #: Cap on the unknown-language records retained in :class:`TraversalStats`.
 #: Larger than the one above because this list is machine-read, not printed.
@@ -492,6 +495,12 @@ class FileTraverser:
         # Repo-relative dir -> whether it holds a package manifest; asked only
         # about test-helper-named dirs (see :meth:`_is_package_root_dir`).
         self._package_root_cache: dict[str, bool] = {}
+        # Repo-relative POSIX dir -> whether it or an ancestor is pruned. Filled
+        # by :meth:`_walk` and :meth:`dir_chain_skipped`, so the manifest and
+        # package scans after the walk decide each directory once, not once per
+        # level of every path below it.
+        self._dir_skipped: dict[str, bool] = {}
+        self._root_cut = len(str(self.repo_root).rstrip(os.sep)) + 1
         log.info(
             "FileTraverser initialised",
             repo_root=str(self.repo_root),
@@ -623,6 +632,9 @@ class FileTraverser:
 
     def _walk(self) -> Iterator[Path]:
         """Yield all absolute file paths, skipping blocked directories."""
+        # The walk decides every directory it reaches; a verdict asked for
+        # before it (``_ignored_tracked_dirs`` still empty) must not outlive it.
+        self._dir_skipped.clear()
         for dirpath, dirnames, filenames in os.walk(self.repo_root):
             dirpath_obj = Path(dirpath)
             rel_dir = dirpath_obj.relative_to(self.repo_root)
@@ -631,9 +643,14 @@ class FileTraverser:
             dir_ignore = self._get_dir_ignore(dirpath_obj)
 
             # Prune ignored directories in-place (affects os.walk recursion)
-            dirnames[:] = sorted(
-                d for d in dirnames if not self._should_skip_dir(d, rel_dir / d, dir_ignore)
-            )
+            kept = []
+            for d in dirnames:
+                child = rel_dir / d
+                skipped = self._should_skip_dir(d, child, dir_ignore)
+                self._dir_skipped[child.as_posix()] = skipped
+                if not skipped:
+                    kept.append(d)
+            dirnames[:] = sorted(kept)
 
             for filename in sorted(filenames):
                 self.stats.total_paths_walked += 1
@@ -805,12 +822,18 @@ class FileTraverser:
             return False
         with self._count_lock:
             self.stats.skipped_oversized += 1
-            if reason.is_source and not self._record_skipped_source(
-                self.stats.skipped_source_files,
-                _MAX_SKIPPED_SOURCE_PATHS,
-                SkippedSourceFile(rel_str, size_bytes // 1024, reason.reason),
-            ):
-                self.stats.skipped_source_files_truncated = True
+            records = (
+                self.stats.skipped_source_files
+                if reason.is_source
+                else self.stats.oversized_unparsed_files
+            )
+            records.append(
+                SkippedSourceFile(
+                    rel_str,
+                    size_bytes // 1024,
+                    reason.reason if reason.is_source else "no_parser_over_max_size",
+                )
+            )
         log.debug(
             "Skipping oversized file",
             path=rel_str,
@@ -915,7 +938,9 @@ class FileTraverser:
             return None
 
         size_bytes = stat.st_size
-        rel_str = abs_path.relative_to(self.repo_root).as_posix()
+        # Every caller passes a path ``_walk`` joined onto the root, so slicing
+        # the root off is ``relative_to`` without a Path per file.
+        rel_str = str(abs_path)[self._root_cut :].replace(os.sep, "/")
 
         if self._skip_oversized(abs_path, rel_str, size_bytes):
             return None
@@ -1078,13 +1103,17 @@ class FileTraverser:
         nested ignore spec, so monorepo package detection has exactly the same
         boundary semantics as file traversal.
         """
-        cur = Path()
-        for part in rel_dir.parts:
-            parent_abs = self.repo_root / cur
-            cur = cur / part
-            if self._should_skip_dir(part, cur, self._get_dir_ignore(parent_abs)):
-                return True
-        return False
+        if not rel_dir.parts:
+            return False
+        key = rel_dir.as_posix()
+        skipped = self._dir_skipped.get(key)
+        if skipped is None:
+            parent = rel_dir.parent
+            skipped = self.dir_chain_skipped(parent) or self._should_skip_dir(
+                rel_dir.name, rel_dir, self._get_dir_ignore(self.repo_root / parent)
+            )
+            self._dir_skipped[key] = skipped
+        return skipped
 
 
 # ---------------------------------------------------------------------------

@@ -88,7 +88,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         repo_names=split_repo_names(opts.repos),
         exclude_patterns=list(opts.exclude),
         commit_limit=opts.commit_limit,
-        follow_renames=opts.follow_renames,
+        follow_renames=bool(opts.follow_renames),
         no_claude_md=opts.no_claude_md,
         agents_md=opts.agents_md,
         codex_setup=opts.codex_setup,
@@ -267,14 +267,13 @@ def _check_folder_coverage(
 )
 @click.option(
     "--commit-limit",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
-    help="Max commits to analyze per file and for co-change detection (default: 5000, max: 10000). Saved to config.",
+    help="Newest commits to analyze for file history and co-change (default: 5000). Set it above the repo's commit count to read the full history. Saved to config.",
 )
 @click.option(
-    "--follow-renames",
-    is_flag=True,
-    default=False,
+    "--follow-renames/--no-follow-renames",
+    default=None,
     help="Use git log --follow to track files across renames (slower but more accurate history). Saved to config.",
 )
 @click.option(
@@ -513,6 +512,12 @@ def _check_folder_coverage(
         "and next commands. Human text goes to stderr."
     ),
 )
+@click.option(
+    "--source",
+    default=None,
+    hidden=True,
+    help="Which setup instructions started this run, for anonymous usage stats.",
+)
 def init_command(**params: Any) -> None:
     """Index a codebase and build its documentation.
 
@@ -531,9 +536,26 @@ def init_command(**params: Any) -> None:
             exit_interrupted()
 
 
+#: What ``--source`` may report. Any other value is reported as ``other``, so
+#: the raw text never leaves the machine.
+INSTRUCTION_SOURCES = frozenset({"plugin_command", "setup_doc", "hosted_setup", "mcp_notice"})
+
+
+def _record_instruction_source(source: str | None) -> None:
+    """Attach which setup instructions started this run, when the caller said."""
+    if source is None:
+        return
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(
+        instruction_source=source if source in INSTRUCTION_SOURCES else "other"
+    )
+
+
 def _run_init(opts: InitOptions) -> None:
     """The whole init, one repo or a workspace; exits 2 when it finishes with gaps."""
     start = time.monotonic()
+    _record_instruction_source(opts.source)
     repo_path = resolve_repo_path(opts.path)
 
     if not repo_path.is_dir():

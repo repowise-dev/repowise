@@ -150,7 +150,13 @@ async def _branch_overlap_block(
     if scan is None:
         scan = _start_overlap_scan(ctx, changed, current)
     block = await _scan_answer(scan)
-    if block is None or not block["branches"]:
+    if block is None:
+        if scan is not None and not scan.cancelled() and isinstance(
+            scan.exception(), (TimeoutError, subprocess.TimeoutExpired)
+        ):
+            return {"status": "timed_out"}
+        return None
+    if not block["branches"]:
         return None
     # Branches first: an entry the cap drops goes to the store whole, and only
     # the entries that survive can carry an index the reader can find.

@@ -77,6 +77,9 @@ async def test_rest_and_shared_analyzer_return_identical_test_impact(client, ses
 
     assert response.status_code == 200
     external = response.json()
+    # The schema's optional ``source_files_total`` is filled only by a change reply that cuts the list.
+    recs = external["test_impact"]["recommendations"]
+    assert all(rec.pop("source_files_total") is None for rec in recs)
     assert external["test_impact"] == internal["test_impact"]
     assert external["structural_impact_score"] == external["overall_risk_score"]
     assert external["structural_impact_band"] in {"localized", "moderate", "broad"}

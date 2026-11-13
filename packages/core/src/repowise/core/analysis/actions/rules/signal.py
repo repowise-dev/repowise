@@ -11,14 +11,12 @@ from datetime import timedelta
 from ..context import RepoContext
 from ..facts import RepoFacts
 from ..model import Action, RuleOutcome, WhyFact, fingerprint
-from ._text import plural
 
 #: Below this many production files, a coverage report is not worth asking for.
 COVERAGE_MIN_FILES = 20
 #: Coverage is stale once measured at an earlier commit than the index's
 #: (``build.build_coverage``); a refresh is asked for only once it is this old.
 COVERAGE_STALE_AFTER = timedelta(days=14)
-DECISIONS_REVIEW_MIN = 5
 
 
 def coverage_missing(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
@@ -87,34 +85,5 @@ def coverage_stale(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
         done_when="A report from the current commit is ingested.",
         command="repowise coverage add <report>",
         fingerprint=fingerprint(age.days // 14),
-    )
-    return RuleOutcome(rule, "evaluated", "", (action,))
-
-
-def decisions_unreviewed(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
-    rule = "decisions_unreviewed"
-    if "decisions" in facts.unavailable:
-        return RuleOutcome(rule, "unavailable", facts.unavailable["decisions"])
-    n = facts.proposed_decisions
-    if facts.accepted_decisions > 0 or n < DECISIONS_REVIEW_MIN:
-        return RuleOutcome(rule, "evaluated", "Decisions are reviewed, or too few are proposed.")
-    action = Action(
-        rule=rule,
-        tier="improve_signal",
-        horizons=("quarter",),
-        severity="low",
-        title=f"Review the {plural(n, 'proposed decision')}",
-        impact=(
-            "None is accepted yet, so nothing can drift from one and agents get no "
-            "enforced guidance from them."
-        ),
-        why=(WhyFact("proposed", str(n)), WhyFact("accepted", "0")),
-        target_kind="repo",
-        target_path="",
-        surface="decisions",
-        effort="M",
-        confidence="high",
-        done_when="The decisions that hold are accepted.",
-        fingerprint=fingerprint(n // 25),
     )
     return RuleOutcome(rule, "evaluated", "", (action,))

@@ -25,6 +25,7 @@ from repowise.cli.helpers import (
     resolve_max_file_pages,
     resolve_reasoning,
 )
+from repowise.cli.platform import telemetry
 from repowise.cli.providers import resolve_embedder_choice
 from repowise.cli.providers.embedders import embedder_was_requested as _embedder_was_requested
 from repowise.cli.ui import WARN, load_dotenv
@@ -84,6 +85,7 @@ def _start_run(opts: InitOptions, repo_path: Path, start: float) -> InitRun:
         yes=opts.yes,
         resume=opts.resume,
     )
+    telemetry.add_command_outcome(interactive=is_interactive)
 
     if opts.resume:
         console.print(
@@ -143,19 +145,23 @@ def _resolve_settings(run: InitRun) -> None:
     run.exclude_patterns = list(config.get("exclude_patterns") or []) + list(opts.exclude)
 
     # Commit limit: CLI flag → config.yaml → default.
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+    # The flag's range is checked by click; the file's value reads the way
+    # update reads it.
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
+    from repowise.core.settings.model import flag
 
-    commit_limit = opts.commit_limit or config.get("commit_limit") or _DEFAULT_COMMIT_LIMIT
-    run.resolved_commit_limit = max(1, min(commit_limit, 10000))
     if opts.commit_limit is not None:
-        config["commit_limit"] = run.resolved_commit_limit
+        run.resolved_commit_limit = opts.commit_limit
+    else:
+        run.resolved_commit_limit = clamp_commit_limit(config.get("commit_limit"))
 
     # follow_renames: CLI flag → config.yaml.
-    run.resolved_follow_renames = opts.follow_renames or config.get("follow_renames", False)
-    if opts.follow_renames:
-        config["follow_renames"] = True
+    if opts.follow_renames is not None:
+        run.resolved_follow_renames = opts.follow_renames
+    else:
+        run.resolved_follow_renames = flag(config.get("follow_renames"), False)
 
-    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(opts.embedder_name)
+    run.embedder_name_resolved, run.embedder_reason = resolve_embedder_choice(opts.embedder_name, repo_path=run.repo_path)
     run.embedder_was_requested = _embedder_was_requested(opts.embedder_name, config.get("embedder"))
 
 

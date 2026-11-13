@@ -2,6 +2,7 @@
 frontmatter: |
     description: Ingest or inspect test-coverage reports (LCOV, Cobertura, Clover, Go cover profiles, JaCoCo, Salesforce Apex JSON, or repowise JSON; a coverage.py .coverage builds the per-test map only), or gate a change on its patch coverage in CI.
     allowed-tools: Bash(repowise coverage:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Coverage

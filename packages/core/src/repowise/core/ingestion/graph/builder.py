@@ -27,13 +27,15 @@ from ..languages.apex_namespace import spell_apex_names
 from ..languages.pascal_names import spell_pascal_names
 from ..languages.python_modules import dotted_module_for
 from ..models import Import, ParsedFile, Symbol, combine_load_kinds
-from ..resolvers import ResolverContext, resolve_import
+from ..resolvers import ResolverContext
+from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.go_workspace import cached_go_index, go_package_files
 from ..resolvers.typescript import detect_platform_files
 from ..symbol_identity import has_overload_identity
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
+from ._import_targets import resolve_import_targets
 from ._metrics import MetricsMixin
 from ._rehydrate import RehydrateMixin
 from ._resolvers import ResolveMixin
@@ -110,6 +112,10 @@ class GraphBuilder(
         self.console_scripts: frozenset[str] = frozenset()
         self._pytest_roots: Any | None = None
         self._built = False
+        # What every resolver context of this file set shares, made once:
+        # the stem map and the Go modules, which walk the tree. Reset by
+        # ``add_file``.
+        self._context_inputs: tuple[dict[str, list[str]], Any, str | None] | None = None
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
@@ -139,6 +145,8 @@ class GraphBuilder(
         # expensive metric kernel). Opt-in via *centrality_cache_dir* — the
         # ingest paths pass ``<repo>/.repowise``; ad-hoc builders are unchanged.
         self._centrality_cache: Any | None = None
+        # The framework scan cache lives beside it, under the same opt-in.
+        self._cache_dir: Path | str | None = centrality_cache_dir
         if centrality_cache_dir is not None:
             try:
                 from ._centrality_cache import CentralityCache
@@ -152,6 +160,9 @@ class GraphBuilder(
         self._head_commit: str | None = head_commit
         # kind -> BetweennessScoring, read by persistence to stamp each node.
         self._betweenness_scoring: dict[str, Any] = {}
+        # Set by an update that re-scores every file: communities are detected
+        # afresh instead of reusing a partition the graph has drifted from.
+        self.fresh_communities: bool = False
 
         import pathspec
 
@@ -181,6 +192,12 @@ class GraphBuilder(
         # Shared import-name maps (built once per build(), injected into the
         # call + heritage resolvers; reset whenever files change).
         self._import_name_maps: Any | None = None
+        # {path: the targets each of its imports resolved to, in order}. A
+        # patch compares these to decide which files an edit re-routes.
+        self.import_resolutions: dict[str, list[tuple[str, ...]]] = {}
+        # ``co_changes`` edges a refreshing patch set aside; see
+        # ``restore_co_change_edges``.
+        self._stashed_co_changes: list[tuple[str, str, dict[str, Any]]] = []
 
     def __getstate__(self) -> dict:
         # GraphBuilder is pickled to hand a fully-built graph (structure +
@@ -207,6 +224,7 @@ class GraphBuilder(
         # than let the first cycle_subgraph() call raise AttributeError.
         self.__dict__.setdefault("_cycle_subgraph_cache", None)
         self.__dict__.setdefault("_centrality_subgraph_cache", None)
+        self.__dict__.setdefault("fresh_communities", False)
 
     def set_tsconfig_resolver(self, resolver: Any) -> None:
         """Attach a :class:`TsconfigResolver` for TS/JS path-alias resolution."""
@@ -277,11 +295,48 @@ class GraphBuilder(
         """Hand the builder where pytest collects (the traverser's ``pytest_roots``)."""
         self._pytest_roots = roots
 
+    def resolver_context(self, graph: nx.DiGraph) -> ResolverContext:
+        """The import-resolution context :meth:`build` resolves against.
+
+        *graph* receives the external nodes resolvers create; a caller that
+        only wants answers passes a throwaway graph.
+        """
+        path_set = set(self._parsed_files.keys())
+        if self._context_inputs is None:
+            go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
+            go_module_path = go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
+            self._context_inputs = (build_stem_map(path_set), go_modules, go_module_path)
+        stem_map, go_modules, go_module_path = self._context_inputs
+        return ResolverContext(
+            path_set=path_set,
+            stem_map=stem_map,
+            graph=graph,
+            repo_path=self._repo_path,
+            prune_nested_git=self._prune_nested_git,
+            tsconfig_resolver=self._tsconfig_resolver,
+            go_module_path=go_module_path,
+            go_modules=go_modules,
+            has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
+            has_platform_files=detect_platform_files(path_set),
+            parsed_files=self._parsed_files,
+            source_map=self._source_map,
+        )
+
+    def _shared_cpp_index(self, ctx: ResolverContext) -> Any | None:
+        """The warmup's C/C++ workspace index, when the call resolver would build the same.
+
+        The call resolver's own index walks the tree pruning nested git
+        repositories; the warmup's is that index only when this build prunes
+        them too.
+        """
+        return getattr(ctx, CPP_INDEX_KEY, None) if self._prune_nested_git else None
+
     def add_file(self, parsed: ParsedFile) -> None:
         """Register one parsed file and its symbols in the graph."""
         path = parsed.file_info.path
         self._parsed_files[path] = parsed
         self._built = False  # invalidate cached metrics
+        self._context_inputs = None
 
         # --- File node ---
         self._graph.add_node(
@@ -401,7 +456,11 @@ class GraphBuilder(
                     self._graph.nodes[sym.id]["qualified_name"] = sym.qualified_name
 
     def build(
-        self, progress: Any | None = None, *, scope: Collection[str] | None = None
+        self,
+        progress: Any | None = None,
+        *,
+        scope: Collection[str] | None = None,
+        refresh_global: bool = False,
     ) -> nx.DiGraph:
         """Resolve imports and calls, add edges. Returns the finalized graph.
 
@@ -414,9 +473,16 @@ class GraphBuilder(
         must have been seeded with every other file's resolved edges
         (:meth:`seed_resolved_edges`), and only the files named here have their
         outgoing import, call and reference edges re-resolved. It is only
-        correct when the edit left every scoped file's cross-file surface
-        unchanged (see ``pipeline.incremental.surface``); the caller owns that
-        check. ``None`` is the full build.
+        correct when every file the edit can make resolve differently is in
+        scope (see ``pipeline.incremental.surface`` and ``.affected``); the
+        caller owns that check. ``None`` is the full build.
+
+        *refresh_global* is for a scoped patch whose edit changed what other
+        files can see (added or removed files, a changed surface). The passes
+        a scoped build otherwise leaves to the seed (registration edges,
+        override dispatch, public API) re-run over the whole graph, and seeded
+        nodes nothing points at any more are dropped, as a full build would
+        never create them.
         """
         self._invalidate_metric_caches()
         self._qualify_python_symbols()
@@ -434,31 +500,22 @@ class GraphBuilder(
                 if d.get("edge_type") not in ("defines", "has_method")
             ]
             self._graph.remove_edges_from(edges_to_remove)
+            self.import_resolutions = {}
         else:
+            if refresh_global:
+                self._clear_global_pass_edges()
+            else:
+                self._clear_dispatch_edges()
             self._clear_scope_edges(scope_set)
+        # Passes that run over every file: a full build, or a patch whose edit
+        # can change what they read (``refresh_global``).
+        run_global = scope_set is None or refresh_global
+        if scope_set is not None and refresh_global:
+            # Before the warmups and resolvers, which re-create every node a
+            # full build has, linked or not.
+            self._drop_unreferenced_seed_nodes()
 
-        # Build lookup tables for import resolution
-        path_set = set(self._parsed_files.keys())
-        stem_map = build_stem_map(path_set)
-
-        # Construct resolver context
-        go_modules = read_go_modules(self._repo_path, prune_nested_git=self._prune_nested_git)
-        ctx = ResolverContext(
-            path_set=path_set,
-            stem_map=stem_map,
-            graph=self._graph,
-            repo_path=self._repo_path,
-            prune_nested_git=self._prune_nested_git,
-            tsconfig_resolver=self._tsconfig_resolver,
-            go_module_path=(
-                go_modules[-1][1] if go_modules else read_go_module_path(self._repo_path)
-            ),
-            go_modules=go_modules,
-            has_sfc_files=any(p.endswith((".vue", ".svelte", ".astro")) for p in path_set),
-            has_platform_files=detect_platform_files(path_set),
-            parsed_files=self._parsed_files,
-            source_map=self._source_map,
-        )
+        ctx = self.resolver_context(self._graph)
 
         # --- Phase 1 prelude: language-specific warmups ---
         # Some languages need an expensive one-time index built before any
@@ -506,62 +563,16 @@ class GraphBuilder(
             # repowise.core.ingestion.cohesion.
             _unit_fanout = _lang in UNIT_FANOUT_LANGUAGES
             _own_dir = PurePosixPath(path).parent.as_posix() if _unit_fanout else ""
+            resolved: list[tuple[str, ...]] = []
             for imp in parsed.imports:
-                # Go and JVM imports name a package *directory*; fan the edge
-                # out to every file in the resolved package so sibling files
-                # share importers (otherwise they look unreachable).
-                if _lang == "go":
-                    from ..resolvers.go import resolve_go_import_all
-
-                    targets = resolve_go_import_all(imp.module_path, path, ctx)
-                elif _lang == "java":
-                    from ..resolvers.java import resolve_java_import_all
-
-                    targets = resolve_java_import_all(imp.module_path, path, ctx)
-                elif _lang == "kotlin":
-                    from ..resolvers.kotlin import resolve_kotlin_import_all
-
-                    targets = resolve_kotlin_import_all(imp.module_path, path, ctx)
-                elif _lang == "scala":
-                    from ..resolvers.scala import resolve_scala_import_all
-
-                    targets = resolve_scala_import_all(imp.module_path, path, ctx)
-                elif _lang in ("cpp", "c"):
-                    # Fan-out across sibling TUs in the same CMake/Bazel
-                    # target so a public header reached by one ``.cc`` is
-                    # also marked imported by the other ``.cc`` files in
-                    # the library — rescues every public-header symbol
-                    # whose only declared import lives in one sibling
-                    # without the workspace edge.
-                    from ..resolvers.cpp import resolve_cpp_import_all
-
-                    targets = resolve_cpp_import_all(imp.module_path, path, ctx)
-                elif _lang == "python":
-                    # ``from pkg import submodule`` must also edge into the
-                    # submodule file, not just ``pkg/__init__.py`` (#666).
-                    from ..resolvers.python import resolve_python_import_all
-
-                    targets = resolve_python_import_all(imp, path, ctx)
-                elif _lang in ("typescript", "javascript"):
-                    # React Native: ``./Button`` also means ``Button.ios.tsx`` /
-                    # ``Button.android.tsx`` (Metro platform extensions). A repo
-                    # with no such files resolves exactly as before (#3603).
-                    from ..resolvers.typescript import resolve_ts_js_import_all
-
-                    targets = resolve_ts_js_import_all(imp.module_path, path, ctx)
-                elif _lang == "pascal":
-                    # Same-named platform units: one edge per project variant.
-                    from ..resolvers.pascal import resolve_pascal_import_all
-
-                    targets = resolve_pascal_import_all(imp.module_path, path, ctx)
-                else:
-                    single = resolve_import(imp.module_path, path, _lang, ctx)
-                    targets = (single,) if single else ()
+                targets = resolve_import_targets(imp, path, _lang, ctx)
+                resolved.append(targets)
                 if targets:
                     imp.resolved_file = targets[0]
                 for target in targets:
                     file_imports.add(target)
                     self._add_import_edge(path, target, imp, _unit_fanout, _own_dir)
+            self.import_resolutions[path] = resolved
             import_targets[path] = file_imports
             lang_import_time[_lang] = lang_import_time.get(_lang, 0.0) + (_t.monotonic() - _t0)
             check_cancelled()
@@ -597,9 +608,9 @@ class GraphBuilder(
 
         # --- C/C++ header ↔ implementation pairing ---
         # foo.h -> foo.c (same stem, same dir): consumers including the
-        # header must be able to reach the implementation.
-        if scope_set is None:
-            self._resolve_cpp_header_pairs(progress=progress)
+        # header must be able to reach the implementation. Read off paths
+        # alone and cheap, so a patch re-derives the pairs its scope cleared.
+        self._resolve_cpp_header_pairs(progress=progress)
 
         # --- C# / VB.NET partial-class co-fragments ---
         # Fragments of one partial type across files are literally one
@@ -646,7 +657,13 @@ class GraphBuilder(
             self._resolve_go_interface_satisfaction(progress=progress)
 
         # --- Phase 3: Resolve symbol-level calls ---
-        self._resolve_calls(import_targets, progress=progress, scope=scope_set)
+        self._resolve_calls(
+            import_targets,
+            progress=progress,
+            scope=scope_set,
+            registrations=run_global,
+            cpp_index=self._shared_cpp_index(ctx),
+        )
 
         # --- Pascal property -> the read/write methods it runs ---
         self._resolve_pascal_property_accessors()
@@ -657,13 +674,15 @@ class GraphBuilder(
 
         # --- Phase 4: Base method → the implementations that answer for it ---
         # Post-pass: needs heritage resolved and reads only the graph.
-        if scope_set is None:
-            self._resolve_override_dispatch(progress=progress)
+        # Reads only the graph and is cheap, so every build re-derives it: a
+        # seeded edge cannot tell whether a call now holds its pair.
+        self._resolve_override_dispatch(progress=progress)
+        self._resolve_document_edges()  # global: a scoped build can make a seeded doc's link resolve
 
         # Which symbols a package exports, read off the imports just resolved.
         try:
-            go_index = None if scope_set is not None else cached_go_index(ctx)
-            if scope_set is None:
+            go_index = cached_go_index(ctx) if run_global else None
+            if run_global:
                 stamp_public_api(
                     self._graph,
                     self._parsed_files,
@@ -710,7 +729,9 @@ class GraphBuilder(
         # Aggregate imported_names on parallel edges
         if self._graph.has_edge(path, target):
             existing = self._graph[path][target].get("imported_names", [])
-            merged = list(set(existing + imp.imported_names))
+            # First-seen order: a set's order changes with the hash seed, so
+            # the same import was stored differently on every run.
+            merged = list(dict.fromkeys(existing + imp.imported_names))
             self._graph[path][target]["imported_names"] = merged
             if not imp.is_module_declaration:
                 withdraw_declaration_hint(self._graph[path][target])

@@ -47,10 +47,22 @@ async def backfill_full_tier(
     duration of the backfill and restores the original tier afterwards. When
     *job_store* is provided the run is bracketed by a resumable job record.
     """
-    from repowise.core.persistence._interfaces.job_store import JobState
+    from repowise.core.persistence._interfaces.job_store import (
+        JobState,
+        reap_abandoned_jobs,
+    )
+    from repowise.core.update_lock import holding_update_lock
 
     job_id: str | None = None
     if job_store is not None:
+        # An open backfill row is from a dead run only while no other run holds
+        # the update lock (an upgrade backfills before it takes the lock), so
+        # reap under it and otherwise leave the rows to the lock's owner.
+        with holding_update_lock(indexer.repo_path) as held:
+            if held:
+                await reap_abandoned_jobs(
+                    job_store, repository_id=repo_id, phases=(BACKFILL_PHASE,)
+                )
         job = await job_store.create_job(
             repository_id=repo_id,
             phase=BACKFILL_PHASE,

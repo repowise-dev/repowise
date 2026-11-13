@@ -20,8 +20,8 @@ from repowise.core.generation.page_selection import PageSelectionIntent
 from repowise.core.generation.scope import (
     ScopePlan,
     build_cost_plans,
-    load_page_records,
     resolve_scope,
+    unwritten_model_page_count,
 )
 
 # The page types a model writes. Everything else is structural and refreshes on
@@ -48,6 +48,17 @@ NO_DOCUMENTATION_MESSAGE = (
     "[yellow]This repo has no documentation yet.[/yellow] "
     "Run `repowise init --no-prose` or `repowise update --full` first."
 )
+
+#: Why a run wrote nothing without failing, as ``generate`` reports it.
+REFUSAL_REASONS = frozenset({"no_documentation", "nothing_selected", "declined"})
+
+
+def record_refusal(reason: str) -> None:
+    """Report a run that stopped before writing, and the fixed reason why."""
+    from repowise.cli.platform import telemetry
+
+    if reason in REFUSAL_REASONS:
+        telemetry.add_command_outcome(outcome="refused", refusal_reason=reason)
 
 
 async def has_documentation(repo_path: Path) -> bool:
@@ -177,6 +188,7 @@ async def run_scoped_generation(
         )
         if rehydrated is None:
             console.print(NO_DOCUMENTATION_MESSAGE)
+            record_refusal("no_documentation")
             return None
 
         console.print(
@@ -195,6 +207,7 @@ async def run_scoped_generation(
                 deps=rehydrated.deps,
             )
             if choice is None:
+                record_refusal("declined")
                 return None
             cascade_mode = choice.cascade_mode
 
@@ -218,6 +231,7 @@ async def run_scoped_generation(
         if not plan.generate_ids:
             console.print("[yellow]Nothing to generate for that selection.[/yellow]")
             if lane_plan is None:
+                record_refusal("nothing_selected")
                 return None
         else:
             _report_plan(plan, cascade_mode)
@@ -240,7 +254,7 @@ async def run_scoped_generation(
         embedder = None
         vector_store = None
         try:
-            embedder = build_embedder(resolve_embedder(embedder_name), repo_path)
+            embedder = build_embedder(resolve_embedder(embedder_name, repo_path=repo_path), repo_path)
             vector_store = build_vector_store(repo_path, embedder)
         except Exception as exc:
             # Null BOTH on any failure. If the embedder built but the store did
@@ -334,19 +348,7 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
                 )
             ).scalar_one()
         )
-        stub_rows = (
-            await session.execute(
-                sa_select(Page).where(
-                    Page.repository_id == repo_id,
-                    Page.provider_name == "template",
-                    Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
-                )
-            )
-        ).scalars()
-        # The planner's own predicate, so a ``model_free`` page (written by a
-        # deterministic subkind) is not reported as unwritten when ``generate
-        # --unwritten`` would never select it.
-        stubs = sum(1 for record in load_page_records(list(stub_rows)) if record.is_template)
+        stubs = await unwritten_model_page_count(session, repo_id)
         stale_ids = set(
             (
                 await session.execute(

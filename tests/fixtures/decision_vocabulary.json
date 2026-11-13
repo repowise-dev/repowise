@@ -54,7 +54,9 @@
     "superseded",
     "dismissed",
     "returned_to_review",
-    "deprecated"
+    "deprecated",
+    "pinned",
+    "unpinned"
   ],
   "accepter_kinds": [
     "person",

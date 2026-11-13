@@ -114,6 +114,37 @@ def plan_decision_lanes(
     return DecisionLanePlan(lanes, _extractor(repo_path, inputs).planned_model_calls(lanes))
 
 
+async def planned_lane_calls(session: Any, repo_id: str, repo_path: Path) -> int:
+    """The model calls :func:`plan_decision_lanes` plans for ``generate``, from the store alone.
+
+    The planner reads only the graph and git history, both stored, so this
+    skips the re-parse ``generate`` runs first and still plans the same calls.
+    """
+    import asyncio
+
+    from repowise.core.pipeline.resume.rehydrate import rehydrate_git_meta_map
+    from repowise.core.pipeline.upgrade import rehydrate_graph_builder
+    from repowise.core.workspace.update.state import read_repo_state
+
+    state = read_repo_state(repo_path)
+    if not pending_decision_lanes(state, repo_path):
+        return 0
+    try:
+        graph_builder = await rehydrate_graph_builder(session, repo_id, repo_path)
+    except ValueError:
+        # No stored graph: nothing generate could run the lanes against either.
+        return 0
+    inputs = types.SimpleNamespace(
+        graph_builder=graph_builder,
+        git_meta_map=await rehydrate_git_meta_map(session, repo_id),
+        parsed_files=None,
+        source_map=None,
+    )
+    # Centrality and file reads: off the loop, since the MCP server calls this.
+    plan = await asyncio.to_thread(plan_decision_lanes, state, repo_path, inputs)
+    return plan.calls if plan else 0
+
+
 @dataclass(frozen=True)
 class DecisionLaneOutcome:
     """What a lane run found, and the lanes still pending after it."""

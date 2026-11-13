@@ -66,7 +66,25 @@ async def test_a_governed_target_gets_one_line_naming_the_decision_and_the_call(
 
     line = await why_pointer(_ctx(factory), [f"{_FILE}::AuthService", "src/other.py"])
 
-    assert line == f'Decision "Tokens expire after one hour" governs {_FILE}: get_why(targets=["{_FILE}"])'
+    assert line == 'Decision "Tokens expire after one hour" governs service.py: get_why(targets=["src/auth/service.py"])'
+    assert "needs review" not in line
+
+
+@pytest.mark.asyncio
+async def test_the_line_says_when_the_decision_needs_review(
+    session, factory, repo_id, monkeypatch
+):
+    await _accept(session, repo_id, "Tokens expire after one hour", [_FILE])
+
+    async def needs_review(_session, _repo, records):
+        return {r.id: "needs_review" for r in records}
+
+    monkeypatch.setattr(_why_pointer, "decision_currencies", needs_review)
+
+    line = await why_pointer(_ctx(factory), [_FILE])
+
+    assert line is not None
+    assert 'governs service.py, needs review: get_why(' in line
 
 
 @pytest.mark.asyncio
@@ -157,4 +175,17 @@ def test_the_startup_line_is_none_for_an_unreadable_store(tmp_path):
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "wiki.db").write_bytes(b"not a database")
 
+    assert decisions_line(str(tmp_path)) is None
+
+
+@pytest.mark.asyncio
+async def test_no_pointer_when_decisions_are_off(session, factory, repo_id, tmp_path):
+    await _accept(session, repo_id, "Tokens expire after one hour", [_FILE])
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  mode: 'off'\n", encoding="utf-8"
+    )
+    ctx = SimpleNamespace(session_factory=factory, alias=None, path=tmp_path)
+
+    assert await why_pointer(ctx, [_FILE]) is None
     assert decisions_line(str(tmp_path)) is None

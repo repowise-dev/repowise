@@ -39,7 +39,7 @@ def test_composes_from_plain_records() -> None:
                 (_health("src/a.py", "critical", 9.0), _health("src/b.py", "low", 0.5)), 40
             ),
             "decisions": decision_source(
-                [DecisionAttentionInput(id="d1", title="Stale one")], [], ["src/hot.py"]
+                [DecisionAttentionInput(id="d1", title="Stale one")], ["src/hot.py"]
             ),
             "knowledge_silo": silo_source(
                 [{"file_path": "src/a.py", "owner_pct": 0.9, "commit_count_90d": 3}]
@@ -71,17 +71,16 @@ def test_decision_lanes_truncate_without_reordering() -> None:
     n = PER_SOURCE_CAP + 3
     records = [DecisionAttentionInput(id=f"d{i}", title=f"t{i}") for i in range(n)]
     paths = [f"src/{i}.py" for i in range(n)]
-    result = decision_source(records, records, paths)
+    result = decision_source(records, paths)
     kept = [d.id for d in records[:PER_SOURCE_CAP]]
     by_type: dict[str, list[str]] = {}
     for item in result.items:
         by_type.setdefault(item["type"], []).append(item["target_id"])
     assert by_type == {
         "stale_decision": kept,
-        "proposed_decision": kept,
         "ungoverned_hotspot": paths[:PER_SOURCE_CAP],
     }
-    assert result.total == 3 * n
+    assert result.total == 2 * n
 
 
 def test_every_item_type_is_ranked_and_rolled_up() -> None:
@@ -96,25 +95,3 @@ def test_every_item_type_is_ranked_and_rolled_up() -> None:
 )
 def test_file_score_maps_every_band(score: float, severity: str) -> None:
     assert severity_of_file_score(score) == severity
-
-
-def test_proposed_wording_names_a_hand_recorded_decision() -> None:
-    """``source="cli"`` is a manual entry (``SOURCE_RANK``): it is not a proposal.
-
-    The attention list's wording is what the Overview page, the dashboard and
-    agent prompts repeat, so a human-recorded decision must not be described
-    as auto-proposed (#3993).
-    """
-    result = decision_source(
-        [],
-        [
-            DecisionAttentionInput(id="d-manual", title="Manual", source="cli"),
-            DecisionAttentionInput(id="d-auto", title="Auto", source="inferred"),
-            DecisionAttentionInput(id="d-agent", title="Agent", source="agent"),
-        ],
-        [],
-    )
-    descriptions = {item["target_id"]: item["description"] for item in result.items}
-    assert descriptions["d-manual"] == "Decision recorded by hand, awaiting review"
-    assert descriptions["d-agent"] == "Decision recorded by an agent, awaiting review"
-    assert descriptions["d-auto"] == "Auto-proposed decision awaiting review"
