@@ -11,7 +11,9 @@ from click.testing import CliRunner
 from repowise.cli.commands import status_cmd
 
 
-def _seed_git_metadata(repo_path: Path, history_counts: tuple[int, ...] = ()) -> None:
+def _seed_git_metadata(
+    repo_path: Path, history_counts: tuple[int, ...] = (), history_only_files: int = 0
+) -> None:
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
@@ -41,6 +43,16 @@ def _seed_git_metadata(repo_path: Path, history_counts: tuple[int, ...] = ()) ->
                             repository_id=repo.id,
                             file_path=f"src/file_{index}.py",
                             commit_count_total=commit_count,
+                        )
+                    )
+                for index in range(history_only_files):
+                    session.add(
+                        GitMetadata(
+                            id=_new_uuid(),
+                            repository_id=repo.id,
+                            file_path=f"docs/page_{index}.md",
+                            commit_count_total=3,
+                            history_only=True,
                         )
                     )
         finally:
@@ -129,6 +141,24 @@ def test_status_counts_only_git_metadata_rows_with_commits(tmp_path: Path, monke
 
     assert result.exit_code == 0, result.output
     assert "1/36 files (last 5,000 commits)" in result.output
+
+
+def test_status_does_not_count_history_only_rows_against_code_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _seed_git_metadata(tmp_path, history_counts=(4,) * 36, history_only_files=20)
+    _write_state(tmp_path)
+    _prepare_status(monkeypatch)
+
+    result = CliRunner().invoke(
+        status_cmd.status_command,
+        [str(tmp_path), "--no-workspace"],
+        terminal_width=200,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "36/36 files (last 5,000 commits)" in result.output
+    assert "56/36" not in result.output
 
 
 def test_status_marks_stored_git_coverage_when_live_query_fails(

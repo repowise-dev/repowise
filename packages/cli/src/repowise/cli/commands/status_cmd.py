@@ -110,7 +110,12 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
 
 
 def _query_git_history_file_count(repo_path: Path) -> int | None:
-    """Return the live number of indexed files with git history, if readable."""
+    """Return the live number of indexed files with git history, if readable.
+
+    Counts the population the stored denominator counts: the code files the
+    Git indexer measured. ``history_only`` rows (docs, configs) carry commit
+    counts too, but are outside that population.
+    """
 
     async def _query() -> int:
         from sqlalchemy import func as sa_func
@@ -141,6 +146,7 @@ def _query_git_history_file_count(repo_path: Path) -> int | None:
                     .where(
                         GitMetadata.repository_id == repo_id,
                         GitMetadata.commit_count_total > 0,
+                        GitMetadata.history_only.is_(False),
                     )
                 )
                 return int(result.scalar_one() or 0)
