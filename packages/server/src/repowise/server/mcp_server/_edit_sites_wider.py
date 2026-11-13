@@ -93,6 +93,7 @@ async def same_name_sites(
                 GraphNode.name == name,
                 GraphNode.node_id != node.node_id,
             )
+            .order_by(GraphNode.file_path, GraphNode.node_id)
             .limit(MAX_SAME_NAME + 1)
         )
     ).all()

@@ -496,6 +496,7 @@ async def lookup_by_name(
             WikiSymbol.repository_id == repo_id,
             WikiSymbol.name.ilike(f"%{escape_like(name)}%", escape=LIKE_ESCAPE),
         )
+        .order_by(WikiSymbol.file_path, WikiSymbol.name)
         .limit(10)
     )
     fuzzy = result.scalars().all()

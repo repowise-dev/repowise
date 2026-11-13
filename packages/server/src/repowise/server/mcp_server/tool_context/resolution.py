@@ -278,6 +278,7 @@ async def _symbol_rows(q: TargetQuery) -> Any:
                 WikiSymbol.repository_id == q.repo_id,
                 WikiSymbol.name.ilike(f"%{escape_like(q.target)}%", escape=LIKE_ESCAPE),
             )
+            .order_by(WikiSymbol.file_path, WikiSymbol.name)
             .limit(10)
         )
         sym_matches = list(res.scalars().all())
