@@ -780,6 +780,117 @@ def test_full_in_the_fan_out_exits_one_when_no_repo_answered(monkeypatch, tmp_pa
     assert "error" in json.loads(capsys.readouterr().out)
 
 
+def test_the_fan_out_fuses_lines_and_tags_repo(monkeypatch, tmp_path, capsys):
+    per_repo = {
+        "api": {
+            "results": [_hit("api/a.py", 1.0)],
+            "lines": [{"path": "api/a.py", "line": 10, "kind": "definition", "text": "def persist_result():"}],
+            "complete": True,
+            "lines_omitted": 0,
+        },
+        "web": {
+            "results": [_hit("web/b.py", 1.0)],
+            "lines": [{"path": "web/b.py", "line": 20, "kind": "call", "text": "persist_result()"}],
+            "complete": True,
+            "lines_omitted": 0,
+        },
+    }
+    _fan(monkeypatch, tmp_path, per_repo, fmt="json")
+    out = json.loads(capsys.readouterr().out)
+    assert "lines" in out
+    assert len(out["lines"]) == 2
+    assert out["lines"][0]["repo"] == "api"
+    assert out["lines"][1]["repo"] == "web"
+    assert out["complete"] is True
+    assert "lines_omitted" not in out
+
+
+def test_the_fan_out_renders_lines_in_table_format(monkeypatch, tmp_path, capsys):
+    per_repo = {
+        "api": {
+            "results": [_hit("api/a.py", 1.0)],
+            "lines": [{"path": "api/a.py", "line": 10, "kind": "definition", "text": "def persist_result():"}],
+            "complete": True,
+        },
+        "web": {
+            "results": [_hit("web/b.py", 1.0)],
+            "lines": [{"path": "web/b.py", "line": 20, "kind": "call", "text": "persist_result()"}],
+            "complete": True,
+        },
+    }
+    _fan(monkeypatch, tmp_path, per_repo, fmt="table")
+    out = capsys.readouterr().out
+    assert "Lines" in out
+    assert "api: api/a.py:10" in out
+    assert "web: web/b.py:20" in out
+
+
+def test_the_fan_out_caps_lines_for_mixed_and_literal_queries(monkeypatch, tmp_path, capsys):
+    from repowise.cli.commands import search_cmd
+
+    paths = []
+    for name in ("api", "web"):
+        p = tmp_path / name
+        (p / ".repowise").mkdir(parents=True)
+        paths.append(p)
+
+    per_repo = {
+        "api": {
+            "results": [],
+            "lines": [{"path": f"api/{i}.py", "line": i, "kind": "match", "text": f"hit {i}"} for i in range(10)],
+            "complete": True,
+            "lines_omitted": 2,
+        },
+        "web": {
+            "results": [],
+            "lines": [{"path": f"web/{i}.py", "line": i, "kind": "match", "text": f"hit {i}"} for i in range(10)],
+            "complete": False,
+            "lines_omitted": 3,
+        },
+    }
+    monkeypatch.setattr(search_cmd, "_run_search", lambda rp, q, lim, tm: per_repo[rp.name])
+
+    notices = _Notices()
+    # Mixed query has cap = MAX_LINES_MIXED (15)
+    search_cmd._fan_out(paths, "where is user order", 10, "auto", "concept", "json", False, notices)
+    out = json.loads(capsys.readouterr().out)
+    assert len(out["lines"]) == 15
+    assert out["lines_omitted"] == 10
+    assert out["complete"] is False
+
+    # Literal/identifier query has cap = MAX_LINES (50)
+    search_cmd._fan_out(paths, "user_order", 10, "auto", "concept", "json", False, notices)
+    out2 = json.loads(capsys.readouterr().out)
+    assert len(out2["lines"]) == 20
+    assert out2["lines_omitted"] == 5
+    assert out2["complete"] is False
+
+
+def test_the_fan_out_table_renders_lines_omitted(monkeypatch, tmp_path, capsys):
+    from repowise.cli.commands import search_cmd
+
+    paths = []
+    for name in ("api", "web"):
+        p = tmp_path / name
+        (p / ".repowise").mkdir(parents=True)
+        paths.append(p)
+
+    per_repo = {
+        "api": {
+            "results": [],
+            "lines": [{"path": "api/a.py", "line": 1, "kind": "match", "text": "hit"}],
+            "complete": False,
+            "lines_omitted": 7,
+        },
+        "web": {"results": []},
+    }
+    monkeypatch.setattr(search_cmd, "_run_search", lambda rp, q, lim, tm: per_repo[rp.name])
+    notices = _Notices()
+    search_cmd._fan_out(paths, "persist_result", 10, "auto", "symbol", "table", False, notices)
+    out = capsys.readouterr().out
+    assert "... 7 more lines omitted" in out
+
+
 # --------------------------------------------------------------------------
 # risk --target
 # --------------------------------------------------------------------------
