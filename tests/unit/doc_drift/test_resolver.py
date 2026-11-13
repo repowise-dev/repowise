@@ -160,6 +160,68 @@ def test_multiple_basename_matches_are_ambiguous():
     assert "basename-multi" in res.detail
 
 
+@pytest.mark.parametrize(
+    "destination, filename",
+    [
+        ("my%20guide.md", "my guide.md"),
+        ("caf%C3%A9.md", "café.md"),
+        ("my%23guide.md", "my#guide.md"),
+        ("my%2520guide.md", "my%20guide.md"),
+        ("literal+plus.md", "literal+plus.md"),
+    ],
+)
+def test_local_link_decodes_url_path_once(destination: str, filename: str):
+    doc = "docs/index.md"
+    ref = next(r for r in extract(f"[guide]({destination})", doc) if r.kind is DriftKind.LINK)
+    idx = _index(tree={doc, f"docs/{filename}"})
+
+    res = resolve(idx, ref)
+
+    assert ref.target == destination
+    assert (res.verdict, res.resolved_target) == (DriftVerdict.RESOLVED, f"docs/{filename}")
+
+
+def test_invalid_utf8_link_keeps_literal_target_without_crashing():
+    doc = "docs/index.md"
+    ref = next(r for r in extract("[guide](bad%FF.md)", doc) if r.kind is DriftKind.LINK)
+    idx = _index(tree={doc, "docs/bad%FF.md"})
+
+    res = resolve(idx, ref)
+
+    assert (res.verdict, res.resolved_target) == (DriftVerdict.RESOLVED, "docs/bad%FF.md")
+
+
+def test_prose_path_keeps_percent_escape_literal():
+    ref = _ref("src/my%20guide.py")
+    idx = _index(tree={"src/my%20guide.py", "src/my guide.py"})
+
+    res = resolve(idx, ref)
+
+    assert (res.verdict, res.resolved_target) == (DriftVerdict.RESOLVED, "src/my%20guide.py")
+
+
+def test_same_document_anchor_does_not_decode_literal_percent_in_document_path():
+    doc = "docs/my%20guide.md"
+    ref = next(r for r in extract("[top](#intro)", doc) if r.kind is DriftKind.ANCHOR)
+    idx = _index(tree={doc}, docs={doc: "# Intro\n"})
+
+    res = resolve(idx, ref)
+
+    assert anchor_host(ref) == doc
+    assert res.verdict is DriftVerdict.RESOLVED
+
+
+def test_encoded_hash_filename_and_fragment_resolve_to_same_document():
+    doc = "docs/index.md"
+    refs = extract("[guide](my%23guide.md#topic)", doc)
+    idx = _index(tree={doc, "docs/my#guide.md"}, docs={"docs/my#guide.md": "## Topic\n"})
+
+    link = next(r for r in refs if r.kind is DriftKind.LINK)
+    anchor = next(r for r in refs if r.kind is DriftKind.ANCHOR)
+    assert resolve(idx, link).resolved_target == "docs/my#guide.md"
+    assert resolve(idx, anchor).verdict is DriftVerdict.RESOLVED
+
+
 def test_relative_link_resolves_against_its_own_document():
     ref = DocReference(DriftKind.LINK, "../guide.md", "../guide.md",
                        "docs/architecture/ARCHITECTURE.md", 1, "ctx")
