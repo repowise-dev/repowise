@@ -22,7 +22,6 @@ import inspect
 import json
 import logging
 from collections.abc import Iterable, Sequence
-from pathlib import Path
 from typing import Any
 
 from repowise.core.agents.identity import UNKNOWN_AGENT
@@ -128,12 +127,22 @@ def _read_always_load(repo_path: str | None) -> bool:
 
 
 def _is_workspace(repo_path: str | None) -> bool:
+    """Whether the server serves *repo_path* in workspace mode.
+
+    The rule the lifespan serves by (``_detect_workspace``, plus
+    ``--no-workspace``), so the listed surface never offers workspace-only
+    tools to a server that answers as a single repo.
+    """
     if not repo_path:
         return False
-    try:
-        from repowise.core.workspace.config import find_workspace_root
+    from repowise.server.mcp_server import _state
 
-        return find_workspace_root(Path(repo_path)) is not None
+    if _state._force_single_repo:
+        return False
+    try:
+        from repowise.server.mcp_server._server import _detect_workspace
+
+        return _detect_workspace(repo_path)[0] is not None
     except Exception:
         _log.debug("Workspace detection failed during tool selection", exc_info=True)
         return False
