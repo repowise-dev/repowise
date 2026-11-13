@@ -41,7 +41,7 @@ def _repository(tmp_path: Path):
     return parsed, source, builder, structure
 
 
-def _render(tmp_path: Path, prior: dict, *, budget: int, changed=(), stats=None, cap=None):
+def _render(tmp_path: Path, prior: dict, *, budget: int, changed=(), stats=None, cap=None, git_meta=None):
     parsed, source, builder, structure = _repository(tmp_path)
     config = GenerationConfig(deterministic=True, max_concurrency=1, enable_onboarding=False,
                               max_file_pages=cap)
@@ -51,6 +51,7 @@ def _render(tmp_path: Path, prior: dict, *, budget: int, changed=(), stats=None,
     return run_async(generator.generate_all(
         parsed, source, builder, structure, tmp_path.name,
         render_budget=budget, changed_paths=set(changed), render_stats=stats,
+        git_meta_map=git_meta,
     ))
 
 
@@ -105,6 +106,19 @@ def test_template_upgrade_does_not_reuse_old_revision(tmp_path, monkeypatch):
     stats = {}
     assert len(_render(tmp_path, prior, budget=1, stats=stats)) == 1
     assert stats["render_backlog"] > 0
+
+
+def test_changed_history_refreshes_template_content_with_unchanged_source(tmp_path):
+    prior = {}
+    _remember(prior, _render(tmp_path, prior, budget=100))
+    pages = _render(tmp_path, prior, budget=100, git_meta={
+        "a.py": {"commit_count_total": 7, "bug_fix_count": 2, "bus_factor": 1},
+    })
+    assert "file_page:a.py" in {page.page_id for page in pages}
+    _remember(prior, pages)
+    assert _render(tmp_path, prior, budget=100, git_meta={
+        "a.py": {"commit_count_total": 7, "bug_fix_count": 2, "bus_factor": 1},
+    }) == []
 
 
 def test_budget_preserves_model_written_page(tmp_path):
