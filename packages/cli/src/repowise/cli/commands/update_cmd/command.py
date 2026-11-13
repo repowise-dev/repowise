@@ -34,6 +34,7 @@ from repowise.cli.helpers import (
     load_config,
     load_state,
     release_update_lock,
+    release_workspace_lock,
     resolve_command_target,
     resolve_provider_or_prompt,
     resolve_reasoning,
@@ -42,6 +43,7 @@ from repowise.cli.helpers import (
     save_state,
     silence_logs_for_machine_output_until_close,
     try_acquire_update_lock,
+    try_acquire_update_locks,
     write_update_pending,
 )
 from repowise.cli.ui.mode_names import scope_line
@@ -1245,11 +1247,20 @@ def _tombstone_missing_stale_pages(run: UpdateRun) -> None:
 
 
 def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
-    """Take the single-flight lock, or leave HEAD pending for the update holding it."""
+    """Take the single-flight lock, or leave HEAD pending for the update holding it.
+
+    One lock domain (#5341): a workspace member takes the workspace lock in
+    addition to its own per-repo lock, so this run can no longer race a
+    workspace pass — or a ``workspace add`` — holding it. The cross-repo
+    hooks at the end of this run then execute under the same guard.
+    """
     repo_path, head = run.repo_path, run.head
-    existing_lock = try_acquire_update_lock(repo_path, head)
-    if existing_lock is not None:
-        _report_lock_held(run, existing_lock)
+    locks = try_acquire_update_locks(repo_path, head)
+    if locks.blocking_owner is not None:
+        if locks.blocking_scope == "workspace":
+            _report_workspace_lock_held(run, locks.blocking_owner)
+        else:
+            _report_lock_held(run, locks.blocking_owner)
         from repowise.cli.platform import telemetry
 
         # Not a failure: another update holds the lock and this run defers to it.
@@ -1262,7 +1273,45 @@ def _acquire_update_lock(run: UpdateRun) -> UpdateOutcome | None:
     clear_update_queued(repo_path)
     atexit.register(release_update_lock, repo_path)
     atexit.register(clear_update_queued, repo_path)
+    if locks.workspace_root is not None:
+        atexit.register(release_workspace_lock, locks.workspace_root)
     return None
+
+
+def _report_workspace_lock_held(run: UpdateRun, existing_lock: dict) -> None:
+    """Defer to the workspace update in flight, leaving HEAD pending for it.
+
+    Mirrors :func:`_report_lock_held`: the member's HEAD is written to the
+    pending marker, so the running workspace update rolls forward to it (or
+    the next run picks it up) instead of this run racing it.
+    """
+    from repowise.core.update_lock import (
+        UPDATE_LOCK_SUSPECT_AFTER_SECONDS,
+        format_lock_age,
+        lock_age_seconds,
+    )
+
+    head = run.head
+    age = lock_age_seconds(existing_lock)
+    write_update_pending(run.repo_path, head)
+    console.print(
+        f"[yellow]A workspace update is already running "
+        f"(pid {existing_lock.get('pid')}, holding the workspace lock "
+        f"{format_lock_age(age)}).[/yellow]"
+    )
+    # A live owner is never evicted on age; say where to look instead.
+    if age is not None and age > UPDATE_LOCK_SUSPECT_AFTER_SECONDS:
+        console.print(
+            "[yellow]That is longer than a workspace update normally takes. "
+            "If the workspace's repos have not advanced in that time, "
+            f"pid {existing_lock.get('pid')} is stuck and can be stopped; "
+            "this repo will update on the next run.[/yellow]"
+        )
+    console.print(
+        f"[dim]HEAD {head[:8] if head else 'HEAD'} marked as pending; "
+        "the running workspace update will roll forward to it. This run regenerated "
+        "nothing.[/dim]"
+    )
 
 
 def _report_lock_held(run: UpdateRun, existing_lock: dict) -> None:
