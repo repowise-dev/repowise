@@ -61,9 +61,15 @@ def _fill_node_attrs(node: dict[str, Any], attrs: dict[str, Any], rescoped: bool
 _LATE_IMPORT_HINTS = frozenset({"header_source_pair", "spec_mirror", "partial_class"})
 
 
+# The only edge types :func:`is_import_target_edge` can accept.
+IMPORT_TARGET_EDGE_TYPES = frozenset({"imports", "type_use"})
+
+
 def is_import_target_edge(data: dict[str, Any]) -> bool:
     """Whether an edge stands in a file's import targets, as resolution reads them."""
     edge_type = data.get("edge_type")
+    if edge_type not in IMPORT_TARGET_EDGE_TYPES:
+        return False
     if edge_type == "imports":
         return data.get("hint_source") not in _LATE_IMPORT_HINTS
     return edge_type == "type_use" and not data.get("no_scope_widening")
