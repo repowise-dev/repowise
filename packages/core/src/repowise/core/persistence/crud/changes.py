@@ -18,6 +18,9 @@ from .history import author_clause
 
 _update_change = _row_updater("change_id")
 
+#: Stay under SQLite's default 999 bind-variable ceiling.
+_MAX_IN = 900
+
 #: The one JSON layout ``changes.evidence_json`` is written in. The attention
 #: filter below matches text in this layout, so both read it from here.
 _EVIDENCE_SEPARATORS = (", ", ": ")
@@ -145,6 +148,37 @@ def _filters(repository_id: str, where: ChangeFilter) -> list[Any]:
     return clauses
 
 
+async def _list_changes_by_ids(
+    session: AsyncSession,
+    repository_id: str,
+    where: ChangeFilter,
+    *,
+    limit: int | None,
+    offset: int,
+) -> tuple[list[Change], int]:
+    """Read a long ``change_ids`` filter a chunk at a time, under the bind ceiling."""
+    ids = list(dict.fromkeys(where.change_ids or ()))
+    rows: list[Change] = []
+    for start in range(0, len(ids), _MAX_IN):
+        found, _ = await list_changes(
+            session,
+            repository_id,
+            replace(where, change_ids=ids[start : start + _MAX_IN]),
+            limit=None,
+            offset=0,
+        )
+        rows.extend(found)
+    rows.sort(key=lambda row: row.change_id)
+    rows.sort(
+        key=lambda row: row.merged_at.timestamp() if row.merged_at else float("-inf"),
+        reverse=True,
+    )
+    rows.sort(key=lambda row: row.merged_at is None)
+    total = len(rows)
+    page = rows[offset:] if limit is None else rows[offset : offset + limit]
+    return page, total
+
+
 async def list_changes(
     session: AsyncSession,
     repository_id: str,
@@ -155,6 +189,8 @@ async def list_changes(
 ) -> tuple[list[Change], int]:
     """A page of changes matching *where*, newest merged first, and the total
     that matched; ``limit=None`` returns every match."""
+    if where is not None and where.change_ids is not None and len(where.change_ids) > _MAX_IN:
+        return await _list_changes_by_ids(session, repository_id, where, limit=limit, offset=offset)
     clauses = _filters(repository_id, where or ChangeFilter())
     total = (await session.execute(select(func.count()).select_from(Change).where(*clauses))).scalar_one()
     rows = await session.execute(
