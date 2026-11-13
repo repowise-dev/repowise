@@ -21,6 +21,7 @@ async def prune_deleted_files(
     skip: Callable[[str, Exception], None],
     log: LogFn,
     degraded: list[str] | None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None,
     pruned: set[str] | None = None,
     left_index: set[str] | None = None,
@@ -64,6 +65,12 @@ async def prune_deleted_files(
             log(f"[yellow]{refusal}[/yellow]")
             if degraded is not None:
                 degraded.append(refusal)
+            if prune_refusals is not None:
+                # A refusal is not a failure to try: the prune ran and decided
+                # the change looked like a broken run rather than a commit. It
+                # is a stopped prune, which is exactly the case the sync
+                # pointer must not advance past (#5410).
+                prune_refusals.append(refusal)
     except Exception as exc:
         skip("Deleted-file prune", exc)
 

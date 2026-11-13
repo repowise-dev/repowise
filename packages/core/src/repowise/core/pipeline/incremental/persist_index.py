@@ -68,6 +68,9 @@ class IncrementalPersist(PersistRun):
     deselected_page_ids: list[str] = field(default_factory=list)
     fts_cleanup_ids: set[str] = field(default_factory=set)
     vector_cleanup_ids: set[str] = field(default_factory=set)
+    # Refusals from the deleted-file prune: the prune ran and stopped rather
+    # than failing. The caller uses them to hold the sync pointer (#5410).
+    prune_refusals: list[str] = field(default_factory=list)
 
 
 # --- Steps inside the session -------------------------------------------------
@@ -416,6 +419,7 @@ async def prune_deleted(ctx: IncrementalPersist) -> None:
         skip=ctx.skip,
         log=ctx.log,
         degraded=ctx.degraded,
+        prune_refusals=ctx.prune_refusals,
         timings=ctx.timings,
     )
 
@@ -671,6 +675,7 @@ async def persist_incremental_index(
     log: LogFn | None = None,
     degraded: list[str] | None = None,
     failed_steps: list[str] | None = None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist an incremental index refresh (graph + symbols + git + dead-code + health).
@@ -727,6 +732,7 @@ async def persist_incremental_index(
         deferred_page_paths=deferred_page_paths,
         log=log or _noop_log,
         degraded=[] if degraded is None else degraded,
+        prune_refusals=[] if prune_refusals is None else prune_refusals,
         failed_steps=failed_steps,
         timings=timings,
     )
