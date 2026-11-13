@@ -263,7 +263,11 @@ agent and when last. Code health reports `ungoverned_hotspot`,
 
 `repowise decision export` writes the decisions in force to
 `.repowise/decisions.yaml`, a file you commit; `repowise decision import`
-reads it back, and on `import` the file wins. Once the file exists,
+reads it back. Each entry carries a `base_token` for the exported content:
+on `import`, edits apply unless the store has changed since that export,
+conflicting entries are skipped and listed in the summary, and
+`import --force` overrides the check. Older files without tokens still
+apply, and the summary marks those entries as not checked for staleness. Once the file exists,
 `repowise update` keeps it current. `update` never creates it, and leaves it
 alone when it holds something the index has not read (a colleague's committed
 edit, say), with one line saying `decision import` reconciles it. Format and

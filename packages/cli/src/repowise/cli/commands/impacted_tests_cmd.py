@@ -83,8 +83,10 @@ def _resolve_repo_path(path: str | None, fmt: str):
     "fmt",
     default="table",
     type=click.Choice(["table", "json", "list", "args"]),
-    help="table (human), json (full report and selection), list (test ids, one per line), "
-    "or args (one line of runner arguments, or :all for a full run; reasons on stderr).",
+    help="table (human), json (full report and selection), list (test ids, one per line; "
+    "nothing on stdout when every test must run, so `| xargs pytest` runs the suite, with "
+    "the reason on stderr), or args (one line of runner arguments, or :all for a full run; "
+    "reasons on stderr).",
 )
 @click.option(
     "--runner",
@@ -149,7 +151,7 @@ def _read_change(repo_path, revspec: str | None, staged: bool, fmt: str, explain
     """``(change set, selection config or None)``, or :class:`CannotEvaluateError`."""
     from repowise.core.ci.base import in_ci
 
-    config = _selection_config(repo_path) if explain or fmt in ("json", "args") else None
+    config = _selection_config(repo_path) if explain or fmt in ("json", "args", "list") else None
     if revspec is None and not staged and in_ci():
         # In CI the change to test is the pull request's, not the staged index.
         revspec = ci_revspec(str(repo_root(str(repo_path))), None)
@@ -242,6 +244,15 @@ def _render(
     if fmt == "list" and prioritize:
         for test in _run_list(result, True).tests:
             click.echo(test)
+        return
+
+    selection = result.get("selection")
+    if fmt == "list" and selection is not None and selection.run_all:
+        # One line, not a partial list: piped to `xargs pytest`, an empty stdout
+        # runs the whole suite, which is the selection's verdict.
+        more = len(selection.reasons) - 1
+        extra = f" (and {more} more reason(s); --format json lists them)" if more > 0 else ""
+        click.echo(f"Run every test: {selection.reasons[0]}{extra}", err=True)
         return
 
     if fmt == "list":
