@@ -420,10 +420,15 @@ async def _warm_lancedb() -> None:
     ``_failure_shield``), so the two never overlap.
 
     A keyless embedder never runs the vector leg, so nothing reads LanceDB and
-    the import is skipped: no tool call waits on it.
+    only numpy is imported here. Tool bodies still reach it (graph centrality
+    through networkx, on a worker thread), and on Windows numpy's first import
+    from a worker thread in the middle of a tool call never returned: the
+    keyless get_overview and get_answer hung on it. Loaded here, it is loaded
+    before any handler body runs.
     """
     try:
         if _is_keyless_name(_configured_embedder_name()):
+            await asyncio.to_thread(__import__, "numpy")
             return
         await asyncio.to_thread(__import__, "lancedb")
     except ImportError:

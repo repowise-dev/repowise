@@ -165,6 +165,35 @@ def test_a_keyless_server_never_imports_or_opens_lancedb(tmp_path, no_lancedb_op
     assert build_meta(timing_ms=1.0)["embedder_degraded"] is False
 
 
+def test_a_keyless_server_loads_numpy_before_any_tool_body(monkeypatch):
+    """Keyless tool bodies reach numpy (networkx centrality) on a worker thread.
+
+    On Windows that first import, made mid-call, never returned. The warmup
+    every handler waits on loads it instead, and still skips lancedb.
+    """
+    imported = []
+    real_to_thread = asyncio.to_thread
+
+    async def _to_thread(fn, *args, **kwargs):
+        if fn is __import__:
+            imported.append(args[0])
+        return await real_to_thread(fn, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+    monkeypatch.setattr(_server, "_configured_embedder_name", lambda: "mock")
+
+    async def _go():
+        _state._lancedb_ready = asyncio.Event()
+        try:
+            await _server._warm_lancedb()
+            assert _state._lancedb_ready.is_set()
+        finally:
+            _state._lancedb_ready = None
+
+    asyncio.run(_go())
+    assert imported == ["numpy"]
+
+
 def test_the_workspace_registry_skips_a_keyless_store(tmp_path, no_lancedb_open):
     from repowise.core.providers.embedding.base import KeylessEmbedder
     from repowise.core.workspace.registry import RepoRegistry
