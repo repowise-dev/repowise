@@ -223,7 +223,7 @@ def _local_server_loaded(repo_path: Path) -> bool:
 
     from ..formats.server_entry import is_remote_entry
 
-    if claude_code_plugin_installed():
+    if claude_code_plugin_installed(repo_path):
         return True
     for path in (user_mcp_config_path(), project_mcp_config_path(repo_path)):
         stored = _stored_repowise_entry(path)
@@ -376,8 +376,8 @@ def retire_project_mcp_entry(repo_path: Path) -> FileWrite:
 # ---------------------------------------------------------------------------
 
 
-def _plugin_installs() -> list[dict]:
-    """Records the host holds for the repowise plugin, or an empty list.
+def _plugin_installs(repo_path: Path | None = None) -> list[dict]:
+    """Records the host holds for the enabled repowise plugin, or an empty list.
 
     Reads the host's own manifest (``installed_plugins.json``, schema version 2:
     a ``plugins`` map from ``"<plugin>@<marketplace>"`` to a list of installs,
@@ -385,7 +385,15 @@ def _plugin_installs() -> list[dict]:
     mode degrades to "no plugin": a manifest we cannot read is not evidence of
     absence, but treating it as presence would make us report a registration
     that may not exist.
+
+    A plugin the user turned off (``enabledPlugins`` false in settings.json)
+    loads nothing, so it has no installs. With *repo_path*, an install pinned
+    to a project (its ``projectPath``) counts only for that project.
     """
+    import click
+
+    from repowise.cli.mcp_config import load_existing_config
+
     manifest = plugin_manifest_path()
     if not manifest.exists():
         return []
@@ -399,7 +407,25 @@ def _plugin_installs() -> list[dict]:
     installs = plugins.get(PLUGIN_KEY)
     if not isinstance(installs, list):
         return []
-    return [entry for entry in installs if isinstance(entry, dict)]
+    try:
+        enabled = load_existing_config(settings_path()).get("enabledPlugins")
+    except click.ClickException:  # absent or unreadable settings: no opt-out
+        enabled = None
+    if isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False:
+        return []
+    return [
+        entry
+        for entry in installs
+        if isinstance(entry, dict) and (repo_path is None or _install_serves(entry, repo_path))
+    ]
+
+
+def _install_serves(entry: dict, repo_path: Path) -> bool:
+    """Whether a plugin install loads in *repo_path*: user-wide, or pinned to it."""
+    from repowise.cli._helpers.paths import _same_path
+
+    pinned = entry.get("projectPath")
+    return not isinstance(pinned, str) or not pinned or _same_path(Path(pinned), repo_path)
 
 
 #: What the host, not repowise, has to run to update the plugin.
@@ -492,7 +518,7 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
     """
     found: list[Registration] = []
 
-    for entry in _plugin_installs():
+    for entry in _plugin_installs(repo_path):
         scope = Scope.USER if entry.get("scope") != "project" else Scope.PROJECT
         found.append(
             Registration(
