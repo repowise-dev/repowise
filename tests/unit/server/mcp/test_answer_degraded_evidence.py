@@ -676,9 +676,8 @@ async def test_degraded_does_not_ship_the_excerpt_twice(tmp_path):
     hits[0]["excerpt"] = "x" * 1500
     payload = await _degraded(ctx, hits, {"Blueprint"})
 
-    external = project_answer_payload(
-        payload, question="what is Blueprint", include=["evidence"]
-    )
+    keyed = {**payload, "degraded": "synthesis-failed"}
+    external = project_answer_payload(keyed, question="what is Blueprint", include=["evidence"])
     assert external["best_guesses"][0]["excerpt"] == "x" * 1500
     # The default low shape serves the guess without its excerpt.
     compact = project_answer_payload(payload, question="what is Blueprint")

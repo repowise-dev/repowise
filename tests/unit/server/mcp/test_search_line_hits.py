@@ -481,9 +481,10 @@ async def test_mock_heavy_python_test_collapses_into_recoverable_counts(tree, se
         ("tests/test_widget.py", 1, "import"),
         *(("tests/test_widget.py", n, "reference") for n in range(2, 2 + cap)),
     ]
-    assert out["lines_omitted_by_file"] == {"tests/test_widget.py": 20 - cap}
+    assert out["lines_omitted"] == 20 - cap
+    assert "lines_omitted_by_file" not in out
     assert out["complete"] is False
-    assert any("lines_omitted_by_file" in r for r in out["reasons"])
+    assert any("lines_omitted counts them" in r for r in out["reasons"])
     assert out["_meta"]["omitted"]["refs"]
 
 
@@ -539,9 +540,7 @@ async def test_mock_heavy_typescript_test_sorts_after_the_real_user(tree, sessio
     assert ("web/b.ts", 2, "reference") in _rows(out)
     assert paths.index("web/b.ts") < paths.index("web/a.test.ts")
     assert paths.count("web/a.test.ts") == 1 + _edit_sites.MAX_REFERENCES_PER_FILE
-    assert out["lines_omitted_by_file"] == {
-        "web/a.test.ts": 30 - _edit_sites.MAX_REFERENCES_PER_FILE
-    }
+    assert out["lines_omitted"] == 30 - _edit_sites.MAX_REFERENCES_PER_FILE
     assert out["complete"] is False
 
 
@@ -606,21 +605,19 @@ def _recording_collector(monkeypatch):
 
 
 def _assert_mixed_bound(out, hidden, n_files):
-    cap, top = _line_hits.MAX_LINES_MIXED, _line_hits.MAX_OMITTED_FILES
-    assert len(out["lines"]) == cap
+    assert len(out["lines"]) == _line_hits.MAX_LINES_MIXED
     assert out["complete"] is False
     assert _line_hits.OVER_LINES_MIXED in out["reasons"]
     assert out["_meta"]["omitted"]["refs"]
-    by_file = out["lines_omitted_by_file"]
-    assert len(by_file) == top
     ranks = [_line_hits._MIXED_KIND_ORDER[r["kind"]] for r in out["lines"]]
     assert ranks == sorted(ranks)
-    assert out["lines_omitted_by_file_total"] == n_files
-    assert list(by_file.values()) == sorted(by_file.values(), reverse=True)
+    # A count, not a per-file map; the rows themselves are in the omission chunk.
+    assert out["lines_omitted"] == len(hidden)
+    assert "lines_omitted_by_file" not in out
+    assert len({r["path"] for r in hidden}) == n_files
     # Everything not shown is in the omission chunk, nothing twice.
     shown = {(r["path"], r["line"]) for r in out["lines"]}
     assert not shown & {(r["path"], r["line"]) for r in hidden}
-    assert all(by_file[p] == sum(r["path"] == p for r in hidden) for p in by_file)
 
 
 @pytest.mark.asyncio
@@ -674,15 +671,14 @@ async def test_mixed_typescript_query_bounds_lines_and_omitted_files(
 
 
 @pytest.mark.asyncio
-async def test_single_name_keeps_the_full_cap_and_every_omitted_file(tree, session, setup_mcp):
+async def test_single_name_keeps_the_full_cap_and_counts_the_omitted(tree, session, setup_mcp):
     await _mocking_tests(tree, session, setup_mcp, "pkg/catalog.py", "backend_of", "py", "python")
 
     out = await search_codebase("backend_of", mode="symbol")
 
     cap = _edit_sites.MAX_REFERENCES_PER_FILE
     assert len(out["lines"]) == 3 + 8 * (1 + cap)
-    assert len(out["lines_omitted_by_file"]) == 8
-    assert "lines_omitted_by_file_total" not in out
+    assert out["lines_omitted"] == 8 * (6 - cap)
     assert not any(r == _line_hits.OVER_LINES_MIXED for r in out["reasons"])
 
 
@@ -1001,3 +997,59 @@ def test_a_regex_scan_counts_lines_at_newlines_only(tmp_path):
 
     assert [(r["line"], r["kind"]) for r in rows] == [(2, "definition")]
     assert reasons == []
+
+
+def test_pages_beside_definition_lines_are_dropped():
+    from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL
+
+    named = {"type": "symbol", "path": "pkg/a.py", "name": "run"}
+    response = {
+        "results": [named, {"type": "page", "path": "pkg/b.py", "relation": NOT_THE_NAMED_SYMBOL}],
+        "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
+        "note": f"No indexed symbol is named 'go'. Any page here is {NOT_THE_NAMED_SYMBOL}.",
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=False)
+    assert response["results"] == [named]
+    assert response["pages_omitted"] == 1
+    assert response["note"] == "No indexed symbol is named 'go'."
+
+
+def test_an_identifier_query_drops_every_page_beside_definition_lines():
+    named = {"type": "symbol", "path": "pkg/a.py", "name": "run"}
+    page = {"type": "page", "page_type": "file_page", "path": "pkg/b.py"}
+    response = {
+        "results": [named, page],
+        "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=True)
+    assert response["results"] == [named]
+    assert response["pages_omitted"] == 1
+    # A multi-word question keeps the pages that rank its files.
+    response = {"results": [named, page], "lines": response["lines"]}
+    _line_hits._drop_pages_beside_definitions(response, every_page=False)
+    assert response["results"] == [named, page]
+
+
+def test_pages_stay_when_lines_hold_no_definition():
+    from repowise.server.mcp_server._query_shape import NOT_THE_NAMED_SYMBOL
+
+    page = {"type": "page", "path": "pkg/b.py", "relation": NOT_THE_NAMED_SYMBOL}
+    response = {
+        "results": [page],
+        "lines": [{"path": "pkg/a.py", "line": 9, "kind": "call", "text": "run()"}],
+    }
+    _line_hits._drop_pages_beside_definitions(response, every_page=True)
+    assert response["results"] == [page]
+    assert "pages_omitted" not in response
+
+
+def test_a_group_drops_its_tests_only_beside_shipped_code():
+    shipped = {"path": "pkg/a.py", "line": 1, "kind": "definition", "text": "def run():"}
+    test_row = {"path": "tests/test_a.py", "line": 4, "kind": "call", "text": "run()"}
+    only_tests = [{"path": "tests/test_b.py", "line": 2, "kind": "call", "text": "go()"}]
+    reasons: list[str] = []
+
+    groups = _line_hits._without_tests_beside_shipped([[shipped, test_row], only_tests], reasons)
+
+    assert groups == [[shipped], only_tests]
+    assert reasons == ["1 lines in tests not shown beside shipped code: lines_omitted counts them"]
