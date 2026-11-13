@@ -114,12 +114,25 @@ async def unwritten_model_page_count(session: Any, repo_id: str) -> int:
         await session.execute(
             select(Page).where(
                 Page.repository_id == repo_id,
-                Page.provider_name == "template",
                 Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
             )
         )
     ).scalars()
     return sum(1 for record in load_page_records(list(rows)) if record.is_template)
+
+
+async def generate_model_calls(session: Any, repo_id: str, repo_path: Any) -> int:
+    """Model calls a default ``generate`` makes: the unwritten pages plus the pending decision lanes.
+
+    The count any "about N minutes" for that run is sized by, so an estimate
+    made before the run matches the one ``generate`` prints.
+    """
+    from pathlib import Path
+
+    from repowise.core.decision_lanes import planned_lane_calls
+
+    pages = await unwritten_model_page_count(session, repo_id)
+    return pages + await planned_lane_calls(session, repo_id, Path(repo_path))
 
 
 def _selection_inputs(

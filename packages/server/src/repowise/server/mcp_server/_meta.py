@@ -1043,13 +1043,13 @@ def _release_meta() -> dict[str, Any]:
 _ROUTE_WAIT_S = 2.0
 
 # The signed-in agent CLI a keyless line names, probed once per served path in
-# a daemon thread (the probe is a subprocess), and the unwritten page count that
-# sizes its minutes, per repository. Both hold for the process: the line itself
+# a daemon thread (the probe is a subprocess), and the model calls ``generate``
+# makes, which size its minutes, per repository. Both hold for the process: the line itself
 # says to restart once a model is set up.
 _route_lock = threading.Lock()
 _route_probes: dict[str, threading.Thread] = {}
 _routes: dict[str, FreeRoute | None] = {}
-_unwritten_pages: dict[str, int] = {}
+_generate_calls: dict[str, int] = {}
 #: Served paths whose overview already named the upgrade this process.
 _overview_upgrade_named: set[str] = set()
 
@@ -1090,24 +1090,27 @@ def _probed_route(local_path: str | None, wait: float) -> FreeRoute | None:
 async def _upgrade_route(
     local_path: str | None, session_factory: Any = None, repo_id: str | None = None
 ) -> FreeRoute | None:
-    """The free route for this index, timed by its unwritten pages when they can be counted."""
+    """The free route for this index, timed by the calls ``generate`` makes when they can be counted."""
     import asyncio
 
     route = await asyncio.to_thread(_probed_route, local_path, _ROUTE_WAIT_S)
     if route is None or session_factory is None or not repo_id:
         return route
-    calls = _unwritten_pages.get(repo_id)
+    calls = _generate_calls.get(repo_id)
     if calls is None:
-        from repowise.core.generation.scope import unwritten_model_page_count
+        from repowise.core.generation.scope import generate_model_calls
         from repowise.core.persistence import get_session
 
         try:
+            # Ceiling: pending decision lanes load the stored graph once per
+            # process, seconds on a very large repo; caching the planned count
+            # in state.json at index time is the upgrade if that shows up.
             async with get_session(session_factory) as session:
-                calls = await unwritten_model_page_count(session, repo_id)
+                calls = await generate_model_calls(session, repo_id, local_path or ".")
         except Exception:
-            _log.debug("repowise MCP: unwritten page count failed", exc_info=True)
+            _log.debug("repowise MCP: generate call count failed", exc_info=True)
             return route
-        _unwritten_pages[repo_id] = calls
+        _generate_calls[repo_id] = calls
     from repowise.core.providers.llm.subscription import route_minutes
 
     return route_minutes(route, calls)

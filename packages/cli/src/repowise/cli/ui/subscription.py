@@ -142,10 +142,10 @@ def subscription_note(
 
 
 def upgrade_route(repo_path: Path) -> FreeRoute | None:
-    """The plan-billed agent CLI ``repo_path`` can add a model with, timed by its stubs.
+    """The plan-billed agent CLI ``repo_path`` can add a model with, timed by ``generate``'s calls.
 
     ``None`` when a provider already resolves or no CLI on a paid plan is
-    signed in. The time is left out when the page count cannot be read.
+    signed in. The time is left out when the call count cannot be read.
     """
     from repowise.core.providers.llm.subscription import detect_free_route, route_minutes
 
@@ -155,15 +155,15 @@ def upgrade_route(repo_path: Path) -> FreeRoute | None:
     from repowise.cli.helpers import run_async
 
     try:
-        calls = run_async(_unwritten_pages(repo_path))
+        calls = run_async(_generate_calls(repo_path))
     except Exception:
         return route
     return route_minutes(route, calls)
 
 
-async def _unwritten_pages(repo_path: Path) -> int:
+async def _generate_calls(repo_path: Path) -> int:
     from repowise.cli.helpers import get_db_url_for_repo
-    from repowise.core.generation.scope import unwritten_model_page_count
+    from repowise.core.generation.scope import generate_model_calls
     from repowise.core.persistence import (
         create_engine,
         create_session_factory,
@@ -175,7 +175,7 @@ async def _unwritten_pages(repo_path: Path) -> int:
     try:
         async with get_session(create_session_factory(engine)) as session:
             repo = await get_repository_by_path(session, str(repo_path))
-            return await unwritten_model_page_count(session, repo.id) if repo else 0
+            return await generate_model_calls(session, repo.id, repo_path) if repo else 0
     finally:
         await engine.dispose()
 
