@@ -66,3 +66,18 @@ def fresh_test_map_cache():
     clear_test_map_cache()
     clear_area_cache()
     clear_coupling_cache()
+
+
+@pytest.fixture(scope="session")
+def cobol_grammar():
+    """Skip at run time when the COBOL grammar cannot load (first use may download it).
+
+    A module-level skip runs during collection, where xdist workers racing on a
+    cold grammar cache can disagree and abort the session (#5408)."""
+    grammar_pack = pytest.importorskip(
+        "tree_sitter_language_pack", reason="run `uv sync --all-packages`"
+    )
+    try:
+        grammar_pack.get_language("cobol")
+    except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
+        pytest.skip(f"COBOL grammar unavailable: {exc}")
