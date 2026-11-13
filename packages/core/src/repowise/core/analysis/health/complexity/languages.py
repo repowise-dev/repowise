@@ -1561,7 +1561,7 @@ _FSHARP = LanguageNodeMap(
     function_kinds=frozenset({"function_or_value_defn", "member_defn"}),
     lambda_kinds=frozenset(),
     local_value=_fsharp_binds_a_value,
-    branch_kinds=frozenset({"if_expression"}),
+    branch_kinds=frozenset({"if_expression", "elif_expression"}),
     loop_kinds=frozenset({"for_expression", "while_expression"}),
     foreach_kinds=frozenset({"for_expression"}),
     try_kinds=frozenset({"try_expression"}),
@@ -1582,7 +1582,7 @@ _FSHARP = LanguageNodeMap(
     member_access_kinds=frozenset(),
     assert_call_kinds=frozenset({"application_expression"}),
     call_kinds=frozenset({"application_expression"}),
-    if_kinds=frozenset({"if_expression"}),
+    if_kinds=frozenset({"if_expression", "elif_expression"}),
 )
 
 
