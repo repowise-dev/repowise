@@ -287,7 +287,11 @@ async def test_code_health_read_failure_degrades_to_an_empty_block(
     async def boom(*_a, **_k):
         raise RuntimeError("health tables unreadable")
 
-    monkeypatch.setattr(ov.health, "_get_health_metrics", boom)
+    # Import the health submodule explicitly so the test is independent of
+    # import side-effects from other tests (lazy exports in tool_overview).
+    from repowise.server.mcp_server.tool_overview import health as health_mod
+
+    monkeypatch.setattr(health_mod, "_get_health_metrics", boom)
     repo = SimpleNamespace(id=populated_db)
     assert await ov._build_code_health(session, repo) == {}
 
