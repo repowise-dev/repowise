@@ -171,7 +171,7 @@ Notes:
 - **`confidence`:** `high` is content-grounded on a top hit covering the question, or states the value on the verified definition line of a constant the question names, wherever that line ranked. A why-answer whose mechanism is absent from the source drops to `medium`.
 - **`retrieval_quality`:** `weak` when the top hit leaves out most of the question.
 - **`candidate_files`:** served at every confidence; absent when retrieval resolved no file.
-- **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; `include=["evidence"]` restores it.
+- **`best_guesses`:** at `low` or `degraded` a row swaps its `excerpt` for `functions` (up to 3 `{name, line}`), `lines` and `size_bytes`; on a keyed reply `include=["evidence"]` restores it.
 - **`degraded`:** built from retrieval and mined rationale with no LLM; `confidence` is `medium` on a dominant covering top hit, else `low`, never `high`. With `weak` retrieval too, the reply is `best_guesses`, `candidate_files` and one guidance line, with no `citations`.
 - **`grounding`:** `exact_symbol` serves the bodies of an exactly named symbol; `extracted` quotes a live source line verbatim.
 - **Keyless replies** (`degraded: no-llm-provider`) have one shape: `include=["evidence"]` is listed under `_meta.ignored_arguments` and no recovery is offered.

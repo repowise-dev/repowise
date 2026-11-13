@@ -903,10 +903,12 @@ def test_pages_beside_definition_lines_are_dropped():
     response = {
         "results": [named, {"type": "page", "path": "pkg/b.py", "relation": NOT_THE_NAMED_SYMBOL}],
         "lines": [{"path": "pkg/a.py", "line": 3, "kind": "definition", "text": "def run():"}],
+        "note": f"No indexed symbol is named 'go'. Any page here is {NOT_THE_NAMED_SYMBOL}.",
     }
     _line_hits._drop_pages_beside_definitions(response)
     assert response["results"] == [named]
     assert response["pages_omitted"] == 1
+    assert response["note"] == "No indexed symbol is named 'go'."
 
 
 def test_pages_stay_when_lines_hold_no_definition():

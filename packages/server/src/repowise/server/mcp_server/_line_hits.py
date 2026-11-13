@@ -640,6 +640,10 @@ def _drop_pages_beside_definitions(response: dict) -> None:
     if len(kept) < len(results):
         response["pages_omitted"] = len(results) - len(kept)
         response["results"] = kept
+        note = response.get("note")
+        pages = f" Any page here is {NOT_THE_NAMED_SYMBOL}."
+        if isinstance(note, str) and pages in note:
+            response["note"] = note.replace(pages, "")
 
 
 def _drop_sweep_advice(response: dict) -> None:

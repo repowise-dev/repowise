@@ -408,7 +408,8 @@ def _first_guess(payload: dict[str, Any]) -> dict[str, Any] | None:
 def _slim_best_guesses(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     """Swap each low-confidence guess's page excerpt for compact facts about its file.
 
-    Rows, keys and order stay; ``excerpt`` returns with ``include=["evidence"]``.
+    Rows, keys and order stay; ``excerpt`` returns with ``include=["evidence"]``
+    on a keyed reply.
     The row's own ``why_relevant`` and ``score`` win: they come from the same hit.
     Returns whether there were rows to slim, so sizes are stamped on those only.
     """
@@ -549,7 +550,7 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
 
     A rationale row from the top guess, or one opening with its file's
     ``why_relevant``, adds nothing; one other row survives, shortened.
-    ``include=["evidence"]`` restores everything.
+    A keyless reply has no expanded shape, so this list is the whole reply.
     """
     top = _nav_path(_first_guess(payload))
     why = {

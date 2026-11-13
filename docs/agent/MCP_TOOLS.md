@@ -162,7 +162,7 @@ Answers a how, where or why question in one call: hybrid retrieval over the wiki
 |-----------|------|---------|---------|
 | `question` | string | required | The question, in plain language |
 | `scope` | string | none | Path prefix to restrict retrieval, e.g. `"src/auth/"` |
-| `include` | list[string] | none | `evidence` (full evidence, larger budget), `diagnostics` (adds `retrieval_quality`) |
+| `include` | list[string] | none | `evidence` (full evidence, larger budget; a keyless reply has one shape and ignores it), `diagnostics` (adds `retrieval_quality`) |
 | `repo` | string | default repo | `"all"` not supported |
 
 **Returns** `answer`, `confidence`, `citations`, `symbol_bodies`, `candidate_files`, `best_guesses` ([fields](../reference/MCP_RESPONSE_FIELDS.md#get_answer)). On `low`, read the named rows, then `candidate_files`, before searching again. Without an LLM provider it answers from retrieval, marked `degraded`.
