@@ -404,6 +404,10 @@ class GraphNode(Base):
         # seeking. Additive, so ``_reconcile_schema`` creates it on existing
         # databases at the next ``init_db``.
         Index("ix_graph_nodes_repo_file", "repository_id", "file_path"),
+        # Exact symbol lookups by name (e.g. resolution.py, call_graph.py,
+        # callers.py) filter on ``name``, which previously scanned every row
+        # for the repository.
+        Index("ix_graph_nodes_repo_name", "repository_id", "name"),
     )
 
 
@@ -641,6 +645,10 @@ class WikiSymbol(Base):
         # order the chosen index walks. ``augment_cmd``'s symbol rescue had two
         # such queries and now orders explicitly — see ``symbols_named``.
         Index("ix_wiki_symbols_repo_path", "repository_id", "file_path"),
+        # Name lookups on hot MCP paths (resolution, symbols, pointers, flows)
+        # filter on ``name``, which previously scanned the entire repository's
+        # symbols.
+        Index("ix_wiki_symbols_repo_name", "repository_id", "name"),
     )
 
 
