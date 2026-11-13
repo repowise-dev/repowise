@@ -14,8 +14,14 @@ from pathlib import Path
 import structlog
 
 from repowise.core.ids import file_path_of
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 
 logger = structlog.get_logger(__name__)
+
+
+def _caller_edges(kg: dict) -> list[dict]:
+    """A doc naming a file is not a caller: it must not demote an entry point."""
+    return [e for e in kg.get("edges", []) if e.get("type") not in DOCUMENTATION_EDGE_TYPES]
 
 
 @dataclass
@@ -46,6 +52,9 @@ class KnowledgeGraphContext:
         data: dict | None = None,
     ):
         self._file_to_layer: dict[str, dict] = {}
+        # id(layer) -> its node ids as a set, built on first use: a set per
+        # lookup made scoring every file quadratic in the layer size.
+        self._layer_node_sets: dict[int, frozenset[str]] = {}
         self._file_to_tour: dict[str, dict] = {}
         self._file_to_node: dict[str, dict] = {}
         self._layers: list[dict] = []
@@ -119,7 +128,7 @@ class KnowledgeGraphContext:
                 if (repo_root / fp).exists():
                     self._file_to_tour[fp] = step
 
-        for edge in kg.get("edges", []):
+        for edge in _caller_edges(kg):
             src = edge.get("source", "")
             tgt = edge.get("target", "")
             self._edges_by_source.setdefault(src, []).append(edge)
@@ -141,7 +150,10 @@ class KnowledgeGraphContext:
         node_id = f"file:{file_path}"
 
         incoming = self._edges_by_target.get(node_id, [])
-        layer_node_ids = set(layer.get("nodeIds", []))
+        layer_node_ids = self._layer_node_sets.get(id(layer))
+        if layer_node_ids is None:
+            layer_node_ids = frozenset(layer.get("nodeIds", []))
+            self._layer_node_sets[id(layer)] = layer_node_ids
         cross_layer_in = [
             e for e in incoming
             if e.get("type") == "imports" and e["source"] not in layer_node_ids

@@ -1,10 +1,6 @@
 ---
 name: change-review
-description: >
-  Use when reviewing a set of changes before they merge — a PR, a branch diff, or the working-tree
-  changes you just made — in a Repowise-indexed codebase (.repowise/ directory exists). Activates
-  for "review this PR", "is this safe to merge", "what's the blast radius of these changes", "did I
-  miss anything", or "what else should change with this".
+description: Review a PR, branch or local diff before it merges.
 user-invocable: false
 ---
 

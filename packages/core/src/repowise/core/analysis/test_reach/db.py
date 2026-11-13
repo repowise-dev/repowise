@@ -510,6 +510,7 @@ async def tests_reaching_by_tier(
     import_graph: ImportGraph | None = None,
     hubs: Collection[str] = frozenset(),
     helpers: bool = False,
+    groups: Mapping[str, Collection[str]] | None = None,
 ) -> dict[str, ReachedBy]:
     """:func:`tests_reaching`, also saying which tier answered each target.
 
@@ -534,6 +535,9 @@ async def tests_reaching_by_tier(
     *avoid* names files the call walk does not pass reach through, except
     into a target's own symbols. The import tier is
     one hop, so it never passes through anything.
+
+    *groups* names targets that stand for a set of files, walked as one unit
+    and answered once (:func:`~.walk.tier_walk`).
 
     *import_graph* (:func:`load_import_graph`) answers the import tier's
     levels from memory, for a caller that walks deep or more than once.
@@ -564,6 +568,7 @@ async def tests_reaching_by_tier(
         avoid=avoid,
         helpers=helpers,
         hubs=hubs,
+        groups=groups,
     )
     return await drive(walk, session, repo_id, import_graph=import_graph)
 

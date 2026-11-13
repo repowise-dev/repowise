@@ -24,6 +24,7 @@ def build_generation_plan(
     skip_tests: bool = False,
     skip_infra: bool = False,
     kg_modules: list[dict] | None = None,
+    git_meta_map: dict[str, dict] | None = None,
 ) -> list[PageTypePlan]:
     """Return the per-page-type plan that ``generate_all`` will execute.
 
@@ -42,6 +43,9 @@ def build_generation_plan(
         steers which adjacent directories merge into a concept group, so its
         absence changes which pages exist rather than how many, and the
         estimate holds either way.
+    git_meta_map:
+        Per-file git metadata, including hotspot flags, matching the map
+        passed to generation so both select the same file pages.
     """
     files = parsed_files
     if skip_tests:
@@ -73,7 +77,7 @@ def build_generation_plan(
             community=community,
             community_info=community_info_map,
             sccs=sccs,
-            git_meta_map=None,
+            git_meta_map=git_meta_map,
             config=config,
             kg_modules=kg_modules,
             symbol_uses=graph_builder.symbol_uses(),

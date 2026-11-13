@@ -479,7 +479,7 @@
         "contracts": "{touched, plural, =0 {未涉及工作区契约} other {涉及 # 个工作区契约}}；{breaking, plural, =0 {无破坏性签名变更} other {# 个破坏性签名变更}}",
         "contracts_unchecked": "{touched, plural, =0 {未涉及工作区契约} other {涉及 # 个工作区契约}}；未比较签名",
         "cross_repo_consumers": "{links, plural, =0 {其他仓库中没有使用方} other {# 个使用方，位于 {names}{more, plural, =0 {} other {等另外 # 个仓库}}}}",
-        "decisions_crossed": "{accepted} 个已接受的决策，{candidate} 个候选决策",
+        "decisions_crossed": "{accepted} 个生效中的决策，{candidate} 条背景记录",
         "decisions_none": "未涉及决策",
         "health_delta": "发现：新增 {introduced}，恶化 {worsened}，解决 {resolved}",
         "health_delta_partial": "发现：新增 {introduced}，恶化 {worsened}，解决 {resolved}（部分比较）",
@@ -675,17 +675,17 @@
     "decisions": {
       "title": "决策",
       "description": "这个代码库已经定下来的事，以及你脚下这份检出的真实状况：约束、权衡，以及那些容易让人踩坑的事实。",
-      "ledeAccepted": "已接受",
+      "ledeAccepted": "生效中",
       "ledeConfirmed": "已确认",
       "ledeEmpty": "索引器从拉取请求、提交信息、代码注释和你自己的会话里挖掘出决策，你亲手记录时它们也会落到这里——在下方记录，或者用 <code>repowise decision add</code>。每条决策都会保留它出处的那段引用，以及它所约束的文件。",
-      "ledeNoGovernance": "这里还没有任何有约束力的记录。一条记录只有在有人接受它、并指明它覆盖哪些文件以及为什么之后才有约束力——被挖掘出来、反复出现、被判定为可信，这些都还达不到这一步。",
-      "ledeCandidates": "下方有 {count} 条候选记录等待处理，而且它们都还在：没有任何东西被删除，每个 id 仍然可以解析。如果这个页面过去显示的是已确认的决策，那些记录现在就在「Candidates」分区里。接受一条只需点一下，不会改动任何代码。",
-      "ledeAcceptedRecords": "已有 {count} 条记录被接受：有人读过它，并把它标记为团队认可的东西，这正是它日后值得被引用给智能体的原因。",
-      "ledeAcceptedMore": "还有 {count} 条是索引器挖掘出来、无人接受的候选。在被接受之前，它只是关于你代码库的一个猜测，而不是一条规则，也永远不会被交给任何智能体。打开下方的「Candidates」分区逐条处理；接受或驳回一条只需点一下，不会改动任何代码。",
+      "ledeNoGovernance": "还没有任何决策生效。智能体记录的决策会在它引用的提交合并到默认分支时生效。",
+      "ledeCandidates": "下方有 {count} 条背景记录，挖掘自拉取请求、提交、注释和会话。它们不生效；智能体通过 get_why 询问它们，了解代码背后的原因。",
+      "ledeAcceptedRecords": "已有 {count} 条决策生效。智能体记录的决策会在它引用的提交合并到默认分支时生效。",
+      "ledeAcceptedMore": "另有 {count} 条是从历史中挖掘出的背景记录。它们不生效；智能体通过 get_why 询问它们，了解背后的原因。",
       "checkoutTitle": "关于这份检出",
       "checkoutDescription": "这些是关于工作区本身的事实，而不是谁对它的声明；它们在索引时推导得出，不调用模型、无需历史记录。正是这些事实最容易绊倒新来的人，无论他是人还是智能体。",
-      "reviewTitle": "评审",
-      "reviewDescription": "按每条记录的「被接受」实际意味着什么来划分，而不是按状态词划分。每条记录只落在一个分区里，计数可以相加：有约束力的、无人评审过的、与所指向代码已脱节的、什么都指不到的，以及已退役的。"
+      "reviewTitle": "记录",
+      "reviewDescription": "生效中的决策（置顶的排在最前）、你的智能体本周做出的决策、从历史挖掘出的背景记录，以及已退役的决策。任何一条都可以交给智能体去置顶、否决或修改。"
     },
     "contributors": {
       "title": "代码所有权",
@@ -893,7 +893,7 @@
       "syncDescription": "把最近的提交拉进现有索引，或者从零重建索引。",
       "providerDescription": "有了模型密钥，这个代码仓库的文档就可以用 AI 撰写。密钥随仓库一起保存，供界面或 CLI 触发的生成使用。",
       "captureTitle": "决策采集",
-      "captureDescription": "从哪些来源为这个代码仓库挖掘架构决策，以及其中是否有任何环节会把正文发送给你配置的模型。采集只会产生候选：这里没有任何操作能替你接受一条决策。",
+      "captureDescription": "从哪些来源为这个代码仓库挖掘架构决策，以及其中是否有任何环节会把正文发送给你配置的模型。采集只会添加背景记录：它挖掘出的任何内容都不会生效。",
       "refactoringTitle": "重构代码生成",
       "refactoringDescription": "选择是否用你配置的模型把重构计划变成可评审的差异。",
       "healthTitle": "索引健康",
@@ -1109,9 +1109,18 @@
       "title": "工具集",
       "description": "MCP 服务器向智能体提供哪些工具。会保存到代码仓库的 .repowise/config.yaml，并在你下次为它启动 repowise mcp 时生效。",
       "workspaceOnly": "仅工作区",
-      "summary": "已开放 {on}/{total} 个工具。{mode}",
-      "summaryWorkspace": "当前为工作区模式，因此仅限工作区的工具可用。",
-      "summarySingleRepo": "当前为单仓库模式，因此仅限工作区的工具在此不可用。",
+      "profile": "列出的工具",
+      "perClient": "按客户端（推荐）",
+      "profileCore": "核心：answer、context、search、symbol、why",
+      "profileLean": "精简：核心加 get_risk",
+      "profileStandard": "标准：Claude Code 的默认工具集",
+      "profileAll": "全部：此处可用的所有工具",
+      "perClientHint": "Claude Code 只在需要时加载工具结构，因此列出 {standard} 个工具。其他客户端每轮加载全部结构，因此只列出 {core} 个核心工具。下方开关会为所有客户端增减工具。",
+      "summary": "已开启 {on} 个工具，对预先加载结构的客户端每轮约 {tokens, number} 个结构 token。",
+      "summaryPerClient": "Claude Code 列出 {standard} 个工具。其他客户端列出 {others} 个，每轮约 {tokens, number} 个结构 token。",
+      "restart": "在 MCP 服务器下次启动时生效：重启服务器或你的智能体。",
+      "coreBadge": "核心",
+      "tokens": "约 {n} token",
       "perRepoLabel": "每个仓库的工具",
       "perRepoHint": "MCP 服务器提供哪些工具按仓库保存，在该仓库的智能体设置中选择。",
       "chooseTools": "选择工具",
@@ -1155,6 +1164,10 @@
       },
       "display": {
         "title": "显示"
+      },
+      "all": {
+        "title": "全部设置",
+        "description": "此仓库的所有 repowise 设置：当前值、来源和作用。修改会保存到 .repowise/config.yaml，与 repowise config set 写入的是同一个文件。"
       }
     },
     "advanced": "高级",
@@ -1169,6 +1182,60 @@
       "defaultModelHint": "没有单独设置模型的仓库使用服务器默认模型。",
       "webhooksLabel": "Webhook",
       "webhooksHint": "GitHub 或 GitLab 上的推送可以触发同步。所有仓库使用相同的地址。"
+    },
+    "registry": {
+      "search": "搜索设置",
+      "searchPlaceholder": "按名称或作用搜索",
+      "changedOnly": "仅显示已修改",
+      "showInternal": "显示内部设置",
+      "countAll": "{total, plural, other {# 项设置}}",
+      "count": "{total} 项设置中的 {shown} 项",
+      "noMatches": "没有符合筛选条件的设置。",
+      "suggestionsTitle": "为此仓库推荐",
+      "suggestionsDescription": "比当前值更适合此仓库的取值。",
+      "apply": "应用",
+      "applyAria": "为 {key} 应用推荐值",
+      "suggested": "推荐：{value}",
+      "changed": "已修改",
+      "defaultValue": "默认 {value}",
+      "sources": {
+        "default": "默认",
+        "env": "环境变量",
+        "repo_file": "仓库文件",
+        "user_file": "用户文件"
+      },
+      "envOverride": "环境中设置了 {name}，它优先于文件中的值。",
+      "envOnly": "从服务器环境中的 {name} 读取。",
+      "userSetting": "按用户保存，而非按仓库保存。请在终端中使用 repowise config set {key} 修改。",
+      "lockedReason": "由此仓库之上的层级设定，无法在此修改。",
+      "reset": "重置",
+      "resetAria": "将 {key} 重置为默认值",
+      "copyPrompt": "复制提示词",
+      "promptTitle": "让你的智能体修改 {key}",
+      "promptDescription": "你的智能体会解释这项设置，修改前先征求你的同意，并告诉你撤销命令。",
+      "saveFailed": "无法保存",
+      "unset": "未设置",
+      "none": "（无）",
+      "listPlaceholder": "a, b",
+      "loading": "正在加载设置…",
+      "loadFailed": "无法加载设置。",
+      "retry": "重试",
+      "moreOn": "更多选项见“{page}”页面",
+      "areas": {
+        "account": "账户",
+        "attribution": "AI 归属",
+        "decisions": "决策",
+        "distill": "命令输出",
+        "editor": "编辑器文件",
+        "events": "变更事件",
+        "generation": "文档",
+        "health": "代码健康",
+        "hooks": "智能体钩子",
+        "indexing": "索引",
+        "mcp": "MCP",
+        "providers": "模型提供方",
+        "server": "服务器"
+      }
     }
   },
   "repos": {
@@ -1653,6 +1720,8 @@
     "pages": "{count, plural, other {需撰写 # 个页面}}",
     "counting": "正在统计页面",
     "signedInNote": "使用你的 {name} 登录。",
+    "planNote": "使用你的 {name} 登录和套餐额度。",
+    "planNoteTimed": "使用你的 {name} 登录和套餐额度，约 {minutes} 分钟。",
     "costNote": "使用此密钥约需 {cost}，运行前会先显示。",
     "pricing": "正在按此密钥估价",
     "keyNote": "运行前会先显示价格。",
@@ -1714,9 +1783,9 @@
       },
       "decisions": {
         "label": "决策",
-        "unit": "待审阅",
-        "caption": "从 PR、提交和注释中挖掘出的候选项。",
-        "open": "审阅"
+        "unit": "条背景记录",
+        "caption": "挖掘自拉取请求、提交和注释；智能体会询问它们以了解原因。",
+        "open": "打开"
       },
       "docs": {
         "label": "文档",
@@ -1738,6 +1807,7 @@
       "lede": "它会先询问 repowise，因此读得更少，猜得更少。",
       "none": "本机暂未发现智能体。设置页列出了 repowise 支持的全部智能体。",
       "connected": "已连接。重启它以加载工具。",
+      "coreTools": "默认列出 repowise 核心工具。可在设置的智能体与编辑器中开启更多。",
       "waiting": "等待首次调用",
       "firstCall": "首次调用：{when}",
       "installed": "已安装在本机。将写入 <mono>{file}</mono>。",
@@ -1750,7 +1820,7 @@
       "listLabel": "本机上的智能体",
       "moreAgents": "还找到 {count} 个智能体。设置页列出了全部。",
       "askLabel": "问它一个问题",
-      "askRisk": "哪些文件改动风险最高？为什么？",
+      "askFlow": "这个仓库的主要流程从头到尾是怎样运作的？",
       "askHotspot": "为什么 {path} 改动如此频繁？",
       "askStart": "我应该从哪里开始阅读这个仓库？",
       "copy": "复制",
@@ -1769,6 +1839,7 @@
         "local": "你的密钥或登录信息保留在本机"
       },
       "detected": "在本机找到：{names}。",
+      "keyless": "添加模型之前，你的智能体得到的回答是索引中按相关度排序的证据。",
       "syncTitle": "保持索引同步",
       "syncBody": "每次提交后通过 git 钩子更新。",
       "syncFailed": "无法更改同步设置",
@@ -1906,6 +1977,15 @@
     "regenFailed": "无法启动重新生成"
   },
   "decisions": {
+    "agent": {
+      "discover": "让智能体核查背景记录",
+      "agreements": "把工作约定移到 CLAUDE.md",
+      "review": "交给智能体核查",
+      "edit": "交给智能体修改",
+      "veto": "交给智能体否决",
+      "pin": "交给智能体置顶",
+      "unpin": "交给智能体取消置顶"
+    },
     "add": {
       "trigger": "记录一条决策",
       "title": "记录一条决策",
@@ -1916,16 +1996,20 @@
       "saveFailed": "保存采集设置失败。"
     },
     "review": {
-      "accepted": "已接受。它将约束其指定的文件。",
-      "dismissed": "已忽略。重新索引不会再提出它。",
-      "acceptFailed": "接受失败：{message}",
+      "accepted": "已生效。它将约束其指定的文件。",
+      "dismissed": "已忽略。重新索引不会再挖掘它。",
+      "acceptFailed": "未能生效：{message}",
       "dismissFailed": "忽略失败：{message}",
       "reaffirmed": "已重新确认。它对所涉及的文件重新生效。",
       "reaffirmFailed": "重新确认失败：{message}",
-      "bulkDismissed": "已忽略 {count} 条候选。",
-      "actionFailed": "审阅操作失败。",
+      "bulkDismissed": "已忽略 {count} 条记录。",
+      "actionFailed": "操作失败。",
       "previous": "上一页",
-      "next": "下一页"
+      "next": "下一页",
+      "pinned": "已置顶。智能体在替换它之前会先询问人。",
+      "unpinned": "已取消置顶。它仍然生效。",
+      "pinFailed": "置顶失败：{message}",
+      "unpinFailed": "取消置顶失败：{message}"
     }
   },
   "files": {
@@ -2050,7 +2134,7 @@
       "ownershipSole": "个文件只有一位作者，没有第二个人熟悉",
       "architectureModules": "个模块，{entryPoints, number} 个入口点",
       "decisionsEmpty": "还没有记录任何决策",
-      "decisionsRecorded": "条已记录，其中 {accepted, number} 条已接受，{candidates, number} 条待审阅",
+      "decisionsRecorded": "条已记录，其中 {accepted, number} 条生效中，{candidates, number} 条为背景记录",
       "refactoringEmpty": "还没有重构分析",
       "refactoringOpen": "条待处理的重构机会，每个文件一条",
       "testsCoverage": "最新报告中的行覆盖率",
@@ -2112,8 +2196,7 @@
       "securityUnit": "处位于发布代码中",
       "securityElsewhere": "另有 {count, number} 处位于测试和文档中",
       "refactoringUnit": "条待处理的重构机会",
-      "decisionsUnit": "条待审阅",
-      "decisionsDetail": "{awaiting, number} 条待审阅，{drifting, number} 条与代码不一致",
+      "decisionsUnit": "条与代码不一致",
       "ownershipUnit": "个单一作者文件",
       "ownershipDetail": "只有一位作者，没有第二个人熟悉"
     },
@@ -2873,6 +2956,7 @@
         "detailUpToDate": "已在 {commit} 索引 {files} 个文件。",
         "detailIncomplete": "此仓库还没有完整的索引。",
         "detailBehind": "索引位于 {indexed}，HEAD 已前进到 {live}。",
+        "detailMissing": "索引位于 {indexed}，该提交已不在当前历史中（已变基或重置），请用 --since 指定索引覆盖的提交。",
         "detailSkipped": "有 {count} 个文件无法解析，因此图中缺少它们的符号。"
       },
       "agent": {
@@ -2887,6 +2971,7 @@
         "detailWaitingOther": "{agents} 已注册，首次调用后此项即完成。{other} 已安装，但尚未连接。",
         "detailInstalled": "已安装 {agent}。连接时会写入它的 MCP 配置。",
         "detailNone": "此电脑上没有找到编程智能体。安装一个后，在这里连接即可。",
+        "coreTools": "{agents} 默认列出 repowise 核心工具。可在设置的智能体与编辑器中开启更多。",
         "detailNoCalls": "{agent} 已注册，但还没有访问此索引。如果它打开的是其他文件夹，请在其中打开 {repo}，或在那个文件夹中运行 repowise init。"
       },
       "sync": {
@@ -2904,7 +2989,7 @@
         "statusBuilt": "基于索引生成",
         "detailActive": "正在使用 {provider}。",
         "detailReady": "此电脑上可用：{providers}。",
-        "detailNone": "文档目前基于索引生成。模型能写出更完整的文档，并在对话中回答问题。"
+        "detailNone": "文档基于索引生成；添加模型之前，你的智能体得到的回答是按相关度排序的证据。"
       },
       "coverage": {
         "title": "测试覆盖率",

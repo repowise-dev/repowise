@@ -263,3 +263,101 @@ def test_pages_for_a_missing_symbol_are_labelled_and_capped() -> None:
     _mark_not_the_named_symbol(items)
     assert {item["relation"] for item in items} == {"related, not the named symbol"}
     assert [item.get("confidence_score") for item in items] == [0.45, 0.2, None]
+
+
+@pytest.mark.parametrize(
+    "query, parts",
+    [
+        ("short_code|share_code|public_code", ["short_code", "share_code", "public_code"]),
+        (r"\b(path_origin|code_origin)\b", ["path_origin", "code_origin"]),
+        ("(?:a_b|c_d)", ["a_b", "c_d"]),
+        ("def run|def stop", ["def run", "def stop"]),
+        (r"enqueue\(|dequeue\(", ["enqueue(", "dequeue("]),
+        ("config.yaml|setup.py", ["config.yaml", "setup.py"]),
+        ("a|a|b", ["a", "b"]),
+    ],
+)
+def test_an_alternation_is_split_into_literal_parts(query, parts) -> None:
+    from repowise.server.mcp_server._query_shape import alternation_parts, query_pattern
+
+    assert alternation_parts(query) == parts
+    assert query_pattern(query) == ("alternation", parts)
+
+
+@pytest.mark.parametrize("query", ["a|b(c|d)", r"\w+|foo", "a||b", "a|", "plain words", "x ||"])
+def test_a_query_that_is_not_a_literal_alternation_is_not_split(query) -> None:
+    from repowise.server.mcp_server._query_shape import alternation_parts
+
+    assert alternation_parts(query) is None
+
+
+@pytest.mark.parametrize(
+    "query, needle",
+    [
+        (r"enqueue_index\(", "enqueue_index("),
+        (r"_NON_READY_GRACE\s*=", "_NON_READY_GRACE"),
+        (r"class \w+Analyzer\b", "Analyzer"),
+        (r"^from app\.core import", "from app.core import"),
+        (r"[a-z]+_origin", "_origin"),
+        (r"\bfoo\b", "foo"),
+        (r"(?i)retry_limit\s*=", None),
+        (r"x\d+", None),
+    ],
+)
+def test_a_regex_query_compiles_with_its_required_text(query, needle) -> None:
+    from repowise.server.mcp_server._query_shape import query_pattern, required_literal
+
+    kind, pattern = query_pattern(query)
+    assert kind == "regex"
+    assert required_literal(pattern) == needle
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "scan_literal",
+        "how does the cache work?",
+        r"packages\server\src\app.py",
+        r"packages\server\src\repowise",
+        "packages/web/src/app/repos/[id]/page.tsx",
+        "user authentication session tokens",
+        "(a+)+b",  # backtracks without bound: not run as a regex
+        r"([a-z]*)*x",
+        r"(a|aa)+$",
+        r"src\.github\workflows",  # a Windows path, though \. is an escape
+    ],
+)
+def test_names_paths_prose_and_runaway_patterns_are_not_regexes(query) -> None:
+    from repowise.server.mcp_server._query_shape import query_pattern
+
+    assert query_pattern(query) is None
+
+
+def test_a_regex_is_searched_one_line_at_a_time() -> None:
+    from repowise.server.mcp_server._line_hits import _regex_lines
+    from repowise.server.mcp_server._query_shape import regex_query
+
+    lines = ["x = 1", "import os", "foo", "bar = 2"]
+    assert _regex_lines(lines, regex_query(r"^import os$"), float("inf")) == ([(2, "import os")], 0)
+    # A class that could match a newline never joins two lines.
+    assert _regex_lines(lines, regex_query(r"foo\s+bar"), float("inf")) == ([], 0)
+
+
+def test_an_over_long_line_is_counted_not_searched() -> None:
+    from repowise.server.mcp_server._line_hits import MAX_REGEX_LINE_CHARS, _regex_lines
+    from repowise.server.mcp_server._query_shape import regex_query
+
+    lines = ["a" * (MAX_REGEX_LINE_CHARS + 1) + " def x(", "def y("]
+    assert _regex_lines(lines, regex_query(r"def \w+\("), float("inf")) == ([(2, "def y(")], 1)
+
+
+def test_every_alternative_is_returned_for_the_caller_to_cap() -> None:
+    from repowise.server.mcp_server._query_shape import _MAX_ALTERNATIVES, alternation_parts
+
+    names = [f"name_{i}" for i in range(_MAX_ALTERNATIVES + 2)]
+    assert alternation_parts("|".join(names)) == names
+
+
+def test_a_regex_with_backslashes_is_not_a_path() -> None:
+    assert _resolve_mode(r"_MAX_\w+_BYTES", None) == "concept"
+    assert _resolve_mode(r"src\app\main.py", None) == "path"

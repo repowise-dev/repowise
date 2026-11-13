@@ -64,6 +64,7 @@ from repowise.server.job_state import (
     _stamp_last_sync_commit,
     newer_health_analyzer,
 )
+from repowise.server.managed_checkout import sync_managed_checkout
 from repowise.server.services.areas import warm_area_model
 from repowise.server.services.coupling import warm_coupling_model
 
@@ -626,6 +627,9 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
         return
     try:
         await asyncio.to_thread(_refuse_older_analyzer, repo_path)
+        # A checkout the server owns moves to its remote head first; any
+        # other checkout is indexed as it stands.
+        await asyncio.to_thread(sync_managed_checkout, repo_path)
         await _run_locked_index_job(run, app_state)
     finally:
         release_update_lock(repo_path)

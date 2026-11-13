@@ -143,7 +143,7 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Language | Providers (routes served) | Consumers (calls made) |
 |----------|---------------------------|------------------------|
 | JS / TS | Express, Hono, Fastify, Koa, hapi, Elysia; NestJS controllers; Next.js App Router and `pages/api`; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; AngularJS `$http`; request, superagent, needle; HTTP-named wrappers |
-| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms); Locust user `client` calls |
+| Python | FastAPI, Flask, Django, Django REST framework routers, aiohttp | requests, httpx (aiohttp through wrappers the index confirms); Locust user `client` calls |
 | PHP | Laravel | Guzzle, Laravel `Http` |
 | Java / Kotlin | Spring, JAX-RS, Micronaut, Ktor server routing (Kotlin), Javalin (`app.get`, v7 `config.routes`, `ApiBuilder` paths) | Feign (`@RequestLine`, and `@FeignClient` with Spring MVC annotations, its `name` read as the host), Spring `@HttpExchange` interfaces, Spring `WebClient` and `RestClient`, `RestTemplate` (also through a getter or a `RequestEntity`), `java.net.http`, Apache HttpClient (`new HttpPost(url)`, with a base URL passed to a helper's constructor in another file), MicroProfile `@RegisterRestClient` interfaces, Ktor (Kotlin) |
 | Go | gin, echo, chi, fiber, gorilla/mux, net/http (Go 1.22 method patterns) | net/http |
@@ -583,6 +583,30 @@ Workspace init registers the MCP server with your editors (skip with `--no-edito
 - **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo. Four also accept `"all"` to query across the workspace: `get_overview` (the cross-repo topology), `search_codebase` (results from every repo), `get_dead_code` (findings from every repo) and `get_why` with a query (decisions from every repo). The other tools answer about one repo at a time; see [MCP_TOOLS.md](../agent/MCP_TOOLS.md#workspace-mode)
 - **Opt-in workspace tools**, off by default and enabled with `mcp.tools` in `.repowise/config.yaml`: `get_blast_radius` ([Cross-Repo Blast Radius](#cross-repo-blast-radius)), `get_conformance` ([Architecture Conformance](#architecture-conformance)) and `get_architecture` ([Architecture Metrics](#architecture-metrics))
 
+### One database for every repo (PostgreSQL)
+
+On a server, every repo can be indexed into one database. With `REPOWISE_DB_URL` set, the workspace MCP server reads every member from that database instead of each repo's `.repowise/wiki.db`. Each member is matched to its row by checkout path, and each call reads only that repo's rows. A member not in the database yet answers "not indexed" until its first index lands, with no restart.
+
+The workspace file is the whole declaration. Put it in a directory above the checkouts, index each checkout with the same `REPOWISE_DB_URL`, and start the server in the default repo:
+
+```yaml
+# /srv/repowise/.repowise-workspace.yaml
+version: 1
+default_repo: app
+repos:
+  - {path: repos/app, alias: app}
+  - {path: docs-mirror, alias: docs}
+```
+
+```bash
+export REPOWISE_DB_URL=postgresql+asyncpg://repowise:secret@db:5432/repowise
+repowise init /srv/repowise/repos/app --no-prose --yes --no-editor-setup
+repowise init /srv/repowise/docs-mirror --no-prose --yes --no-editor-setup
+repowise mcp /srv/repowise/repos/app --transport streamable-http --host 0.0.0.0
+```
+
+Scoped tokens hold per repo: a token whose `repos` lists `app` (by alias or repository id) reaches `app` and is refused on `docs`.
+
 ---
 
 ## File Layout
@@ -665,7 +689,7 @@ Cross-repo analysis runs during `repowise init .` and `repowise update --workspa
 
 ### Does the MCP server handle multiple repos?
 
-Yes. A single MCP server instance serves all workspace repos. It uses lazy-loading with LRU eviction (max 5 repos loaded simultaneously) to manage memory. The default repo is always kept in memory.
+Yes. A single MCP server instance serves all workspace repos. It uses lazy-loading with LRU eviction (max 5 repos loaded simultaneously) to manage memory. The default repo is always kept in memory. On a server where every repo lives in one database, see [One database for every repo](#one-database-for-every-repo-postgresql).
 
 ### Can I use `repowise` with git worktrees?
 

@@ -25,9 +25,13 @@ _served_repo_id: str | None = None
 # When set, the server skips workspace auto-detection even if the path is
 # inside a workspace root. This backs the CLI's `--no-workspace` escape hatch.
 _force_single_repo: bool = False
-# Set by _lifespan when the directory has no .repowise/ and the server is
-# serving the empty in-memory store. Read by the mcp command for telemetry.
+# Set by _lifespan when the directory has no .repowise/, or its store cannot
+# open, and the server is serving the empty in-memory store. Read by the mcp
+# command for telemetry.
 _serving_no_index: bool = False
+# The StoreUnavailableError the server is serving in place of a store that
+# would not open, or ``None``. Every tool answers with its message.
+_store_error: Any = None
 # Set to an asyncio.Event by _lifespan; signals that vector stores are loaded.
 # tool_search awaits this before searching to avoid racing a background load.
 _vector_store_ready: asyncio.Event | None = None
@@ -79,6 +83,8 @@ _vector_store_errors: dict[str, str] = {}
 # each newer release is surfaced once per process rather than on every call.
 _release_check: Any = None
 _release_announced: str | None = None
+# Whether a search reply already said its rows are keyword matches only.
+_keyless_search_noted = False
 
 
 def init_tool_state(

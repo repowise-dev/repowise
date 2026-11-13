@@ -5,6 +5,10 @@ PKCE against the hosted platform: the CLI binds an ephemeral loopback port,
 opens the consent page in the browser, exchanges the returned code, and
 persists the token pair via :mod:`repowise.cli.platform.credentials`.
 
+The device flow (``repowise login --device``) is RFC 8628, for a machine with
+no browser: the CLI asks for a code, a person approves it on any device, and
+the CLI polls the same token endpoint. Its tokens are stored the same way.
+
 :func:`auth_headers` is the fail-soft read side consumed by
 ``PlatformClient._auth_headers``: it transparently refreshes an expired
 access token (single-flight across processes) and returns ``{}`` whenever
@@ -18,6 +22,7 @@ import base64
 import hashlib
 import secrets
 import time
+from collections.abc import Callable
 from typing import Any
 
 from repowise.cli.platform import credentials
@@ -102,6 +107,70 @@ def exchange_code(
         return body, None
     detail = body.get("error_description") or body.get("error") or f"HTTP {status or 'error'}"
     return None, f"Token exchange failed: {detail}"
+
+
+#: RFC 8628 grant type for the device authorization flow.
+DEVICE_CODE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
+
+#: RFC 8628 section 3.5: a ``slow_down`` adds this many seconds to the interval.
+SLOW_DOWN_SECONDS = 5
+
+
+def request_device_code(device_name: str | None) -> tuple[int, dict[str, Any]]:
+    """``POST /oauth/device/code`` for the CLI client: ``(status, body)``.
+
+    The device name is sent plain ASCII (the server shows it on the approval
+    page and in connected apps). No answer at all is ``(0, {})``.
+    """
+    from repowise.cli.platform.client import default_client
+
+    form = {"client_id": CLIENT_ID, "scope": SCOPES}
+    ascii_name = (device_name or "").encode("ascii", "ignore").decode("ascii").strip()
+    if ascii_name:
+        form["device_name"] = ascii_name[:80]
+    return default_client.post_form("oauth/device/code", form, timeout=15.0)
+
+
+def poll_device_token(
+    device_code: str,
+    *,
+    interval: int,
+    expires_in: int,
+    sleep: Callable[[float], None] | None = None,
+    clock: Callable[[], float] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Poll the token endpoint until the device grant settles (RFC 8628 3.4, 3.5).
+
+    Returns ``("ok", token_response)``, or ``(error, body)`` for a terminal
+    answer: ``access_denied``, ``expired_token``, ``invalid_grant``,
+    ``unauthorized_client``, ``unsupported_grant_type`` or any other error the
+    server names. ``authorization_pending`` keeps polling at *interval*;
+    ``slow_down`` adds :data:`SLOW_DOWN_SECONDS` to it for the rest of the
+    flow, as does an HTTP 429. A request that gets no answer, a 5xx, or a reply
+    that names no OAuth error is retried until the code expires, which is
+    reported as ``expired_token``.
+    """
+    sleep = sleep or time.sleep
+    clock = clock or time.monotonic
+    deadline = clock() + max(expires_in, 1)
+    while clock() < deadline:
+        sleep(interval)
+        status, body = _token_request(
+            {"grant_type": DEVICE_CODE_GRANT, "device_code": device_code, "client_id": CLIENT_ID}
+        )
+        if status == 200 and body.get("access_token"):
+            return "ok", body
+        error = body.get("error")
+        if error == "slow_down" or status == 429:
+            interval += SLOW_DOWN_SECONDS
+        elif error == "authorization_pending" or status == 0 or status >= 500 or not error:
+            # No answer, a server or proxy blip, or a reply that is not an
+            # OAuth error: the code may still be approved, so keep polling
+            # until it expires rather than throwing it away.
+            continue
+        else:
+            return str(error), body
+    return "expired_token", {}
 
 
 def credentials_from_token_response(

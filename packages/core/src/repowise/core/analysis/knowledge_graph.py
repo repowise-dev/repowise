@@ -222,7 +222,9 @@ def _slugify(text: str) -> str:
 # longer a test, moving its ``test`` tag.
 # "7": a JavaScript-family file under a ``tests/`` folder inside a ``src`` tree
 # is not a test by that folder alone, moving its ``test`` tag.
-KG_BUILDER_VERSION = "7"
+# "8": `documents` joined the map as its own relation, so a doc linking to a
+# file reaches the export instead of being dropped.
+KG_BUILDER_VERSION = "8"
 
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be
@@ -252,6 +254,8 @@ _EDGE_TYPE_MAP: dict[str, str] = {
     "framework_binds": "depends_on",
     "reads": "depends_on",
     "references": "depends_on",
+    # Its own relation, not `depends_on`: a doc naming a file is prose, not a code reference.
+    "documents": "documents",
 }
 
 

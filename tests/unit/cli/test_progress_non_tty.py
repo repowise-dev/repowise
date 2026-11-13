@@ -317,7 +317,6 @@ def test_size_skipped_files_do_not_reach_state_degraded() -> None:
             SkippedSourceFile("src/TestData.g.cs", 9745, "over_max_size"),
             SkippedSourceFile("src/hw.h", 520, "minified"),
         ]
-        skipped_source_files_truncated = True
 
     console, buf = _non_tty_console()
     with Progress(TextColumn("{task.description}"), console=console) as bar:

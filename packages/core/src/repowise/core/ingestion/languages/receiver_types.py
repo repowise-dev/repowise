@@ -1504,6 +1504,43 @@ def scan_call_assignments(text: str, language: str) -> tuple[CallAssignment, ...
     return tuple(found)
 
 
+class Destructuring(NamedTuple):
+    """``val (a, b) = source`` at one line: ``names`` by position, ``None`` for ``_``."""
+
+    line: int
+    names: tuple[str | None, ...]
+    source: str
+
+
+# ``val (a, b) = p`` where the right-hand side is one bare name ending the
+# statement. A component with its own type (``val (a: Int, b) = p``) or a
+# generic one is not read, so the list holds names and ``_`` only.
+_KT_DESTRUCTURING = re.compile(
+    r"(?<![\w.])va[lr]\s*\(\s*(?P<names>(?:_|[a-z_]\w*)(?:\s*,\s*(?:_|[a-z_]\w*))*)\s*\)"
+    r"\s*=\s*(?P<source>[A-Za-z_]\w*)(?=[ \t]*(?:[;}]|$))",
+    re.MULTILINE,
+)
+
+
+def scan_destructurings(text: str, language: str) -> tuple[Destructuring, ...]:
+    """Every Kotlin destructuring declaration in *text* that reads one bare name."""
+    if language != "kotlin":
+        return ()
+    cleaned = _without_comments(text, language)
+    starts = [0, *(newline.end() for newline in _NEWLINE.finditer(cleaned))]
+    return tuple(
+        Destructuring(
+            bisect_right(starts, match.start()),
+            tuple(
+                None if name == "_" else name
+                for name in re.split(r"\s*,\s*", match.group("names"))
+            ),
+            match.group("source"),
+        )
+        for match in _KT_DESTRUCTURING.finditer(cleaned)
+    )
+
+
 def record_type(types: dict[str, str | None], name: str, type_name: str) -> None:
     """``_record`` for a type found outside ``scan_declarations``."""
     _record(types, Declaration(0, name, type_name))

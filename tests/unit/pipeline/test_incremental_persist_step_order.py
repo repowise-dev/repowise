@@ -118,7 +118,7 @@ async def test_every_step_runs_in_the_pinned_order(repo, monkeypatch):
     assert git_kwargs == {"keep_commit_health": True, "gone_paths": set()}
 
 
-async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(repo, monkeypatch):
+async def test_full_history_walk_skips_commit_capture_and_keeps_archaeology(repo, monkeypatch):
     rec = StepRecorder(monkeypatch)
     install_shared_steps(rec)
 
@@ -127,9 +127,9 @@ async def test_full_history_walk_skips_commit_capture_and_drains_archaeology(rep
     assert "persist_incremental_commits" not in rec.order
     ((_args, git_kwargs),) = rec.args_of("persist_git_refresh")
     assert git_kwargs == {"keep_commit_health": False, "gone_paths": set()}
+    # Nothing on this path re-mines git archaeology, so its records stay.
     assert [a[2] for a, _k in rec.args_of("purge_proposed_decisions_by_source")] == [
-        "code_comment",
-        "git_archaeology",
+        "code_comment"
     ]
 
 

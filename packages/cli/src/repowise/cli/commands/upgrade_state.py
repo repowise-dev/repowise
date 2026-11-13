@@ -67,7 +67,9 @@ def _start_transition(
     save_state(repo_path, state)
 
 
-def _upgrade_checkpoint(repo_path: Path, cfg: dict[str, Any], provider_block: dict[str, Any]) -> Any:
+def _upgrade_checkpoint(
+    repo_path: Path, cfg: dict[str, Any], provider_block: dict[str, Any]
+) -> Any:
     """A callback that records each completed stage in state.json."""
 
     def _checkpoint(stage: str, **fields: Any) -> None:
@@ -184,3 +186,19 @@ def _finish_upgrade_state(
         provider=dict(provider_block),
         search=outcome["search"],
     )
+
+
+def _stamp_upgrade_inputs(repo_path: Path, state: dict[str, Any], *, head: str | None) -> None:
+    """Record completed generation after the upgrade's final config write."""
+    from repowise.cli.commands.update_cmd.command import _current_renderer_fingerprint
+    from repowise.cli.commands.update_cmd.config_changes import classify_config_changes
+    from repowise.cli.helpers import load_config
+
+    changes = classify_config_changes(repo_path, state, load_config(repo_path))
+    # The upgrade reuses the graph; traversal changes still need a rebuild.
+    if not changes.traversal_changed:
+        state["config_fingerprint"] = changes.curr_fingerprint
+        state["config_dependency_fingerprints"] = changes.curr_dependency_fps
+    state["renderer_fingerprint"] = _current_renderer_fingerprint(repo_path)
+    if head is not None:
+        state["last_docs_commit"] = head

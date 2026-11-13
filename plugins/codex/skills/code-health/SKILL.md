@@ -14,49 +14,42 @@ not just *bigger*.
 
 ## Pick the mode by what you pass
 
-- **Dashboard**: `get_health()` (no targets): `fix_first`, the ranked list of
-  what to fix first, then repo-level KPIs and the lowest-scoring files. Start here for "how
-  healthy is this codebase?" or "what should we clean up?".
-- **Targeted** — `get_health(targets=["src/x.py", "src/y.py"])`: per-file score
-  and the specific marker findings driving it. Use before/after a refactor,
-  or to explain *why* a file is flagged.
+- **Dashboard**: `repowise health`: the ranked list of what to fix first, then
+  repo-level KPIs and the lowest-scoring files. Start here for "how healthy is
+  this codebase?" or "what should we clean up?".
+- **Targeted** — `repowise health --file src/x.py`: one file's score and the
+  specific marker findings driving it, to explain *why* a file is flagged.
+  `repowise health --score src/x.py --score src/y.py` scores files as they are
+  on disk now; add `--against <rev>` for a before/after read around a refactor.
 
-## Useful `include` flags
+## Useful flags
 
-`get_health(targets=[...], include=[...])`:
-- `"biomarkers"` — always return the findings list (what's wrong, where).
-- `"refactoring"` — deterministic, ranked refactoring suggestions (by impact/effort).
-- `"coverage"` — surface coverage data when it's been ingested.
-- `"trend"` — recent health snapshots + declining / predicted-decline signal.
-
-`include` adds blocks; `only=[...]` subtracts them.
+- `--refactoring-targets` — deterministic, ranked refactoring suggestions (by impact/effort).
+- `--plan <ID>` — one stored refactoring plan: its preconditions, steps and checks.
+- `--trend` — recent health snapshots + declining signal.
+- `--scope production` — leave tests, tooling and generated files out.
+- `--format json` — machine output.
 
 ## How to use the results
 
-1. For "what should I refactor?" → dashboard mode, lead with `fix_first`; open
-   an item with `get_health(fix_id=...)` for its steps and the tests to run,
-   and present the plan, not just the scores.
+1. For "what should I refactor?" → dashboard mode, lead with what to fix first;
+   `repowise health --refactoring-targets` ranks the queue and
+   `repowise health --plan <ID>` prints one plan's steps. Present the plan, not
+   just the scores.
 2. Rank by `weighted_deficit`, not `score` — the score floors at 1.0.
 3. For a specific file → report the score, the top 2–3 marker findings, and
    what each one means in plain language. Avoid dumping the raw payload.
-4. Check `unresolved` before calling a file clean: a target listed there matched
-   nothing, and `not_indexed` means run `repowise update`.
-5. Before editing a flagged file → cross-check `get_risk(targets=[...])`; a file
-   that is both low-health *and* a churn hotspot deserves the most care.
+4. Check a file was scored at all before calling it clean; one the index does
+   not have yet needs `repowise update`.
+5. Before editing a flagged file → cross-check `repowise risk --target <path>`;
+   a file that is both low-health *and* a churn hotspot deserves the most care.
 6. Untested-hotspot / coverage questions → tell the user coverage markers
    light up once they ingest a report: `repowise coverage add cov.lcov`
    (LCOV / Cobertura / Clover; a coverage.py `.coverage` also builds the
    per-test map), then `repowise health --recompute` to fold it into the scores.
 
-## CLI equivalents
-
-- `repowise health` — KPIs + lowest-scoring files
-- `repowise health --refactoring-targets` — ranked by impact / effort
-- `repowise health --trend` — snapshots + declining alerts
-- `repowise coverage add <file>` — ingest coverage, light up untested-hotspot
-
 ## Error handling
 
-If `get_health` reports no repository, suggest `/prompts:repowise-init`. Code health is
+If `repowise health` reports no repository, suggest `/prompts:repowise-init`. Code health is
 computed even with a template-rendered wiki (no LLM needed), so it should be available
 whenever the repo is indexed.
