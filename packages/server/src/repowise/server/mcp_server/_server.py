@@ -891,8 +891,9 @@ _WORKSPACE_TOOL_LINES = {
 #: Tools the instructions name that a client's default profile may leave out.
 _NAMED_TOOLS = ("get_risk", "get_change_risk")
 
-#: Said when some client is not listed a served tool in :data:`_NAMED_TOOLS`. A
-#: host only calls listed tools, so this is how an agent learns to turn them on.
+#: Said when some client's default is not listed a served tool in
+#: :data:`_NAMED_TOOLS`. Each session's text names only its own listed tools,
+#: so only a client listed them reads this line.
 _OFF_LINE = "{names} not listed? `repowise config set mcp.tools standard`, then restart the server."
 
 
@@ -985,10 +986,15 @@ class _ClientSession(ServerSession):
         ):
             from repowise.core.agents.identity import resolve_client_identity
 
-            client = resolve_client_identity(request.params.clientInfo.name)
-            self._init_options = self._init_options.model_copy(
-                update={"instructions": _client_instructions(client)}
-            )
+            # This leans on SDK internals; if they move, the boot text goes out
+            # rather than the handshake failing.
+            try:
+                client = resolve_client_identity(request.params.clientInfo.name)
+                self._init_options = self._init_options.model_copy(
+                    update={"instructions": _client_instructions(client)}
+                )
+            except Exception:
+                _log.warning("repowise MCP: sending the boot instructions", exc_info=True)
         await super()._received_request(responder)
 
 

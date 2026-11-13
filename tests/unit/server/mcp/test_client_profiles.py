@@ -35,7 +35,7 @@ async def _session(
     """What one client session is listed, the boot text, and the text it is sent."""
     from mcp.shared.memory import create_connected_server_and_client_session
 
-    from repowise.server.mcp_server import _state, _tool_selection, create_mcp_server, mcp
+    from repowise.server.mcp_server import _server, _state, _tool_selection, create_mcp_server, mcp
 
     monkeypatch.setattr(_tool_selection, "_is_workspace", lambda _path: workspace)
     # The session runs the server lifespan, which records process state (the
@@ -44,6 +44,7 @@ async def _session(
         if name.startswith("_") and not name.startswith("__") and not callable(value):
             monkeypatch.setattr(_state, name, value)
     monkeypatch.setattr(mcp._mcp_server, "instructions", mcp.instructions)
+    monkeypatch.setattr(_server, "_client_instructions", _server._client_instructions)
     info = Implementation(name=client, version="1") if client else None
     try:
         server = create_mcp_server(str(tmp_path), tools=tools)
@@ -148,3 +149,20 @@ async def test_a_core_client_is_not_sent_the_standard_checks(tmp_path, monkeypat
     assert "mcp.tools standard" not in sent
     assert "get_why before changing an established pattern" in sent
     assert len(sent) < len(boot)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_per_client_text_falls_back_to_the_boot_text(tmp_path, monkeypatch) -> None:
+    from repowise.server.mcp_server import _server
+
+    def broken(_select: Any):
+        def select(repo_path: Any, tools: Any) -> set[str]:
+            enabled = _select(repo_path, tools)
+            monkeypatch.setattr(_server, "_client_instructions", lambda _client: 1 / 0)
+            return enabled
+
+        return select
+
+    monkeypatch.setattr(_server, "_select_surface", broken(_server._select_surface))
+    _, boot, sent = await _session(tmp_path, monkeypatch, "cursor-vscode", None)
+    assert sent == boot
