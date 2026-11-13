@@ -81,6 +81,7 @@ def cat_file_batch(
                                 ["git", "ls-tree", rev, path],
                                 cwd=repo_path,
                                 capture_output=True,
+                                stdin=subprocess.DEVNULL,
                                 timeout=5.0,
                                 text=True,
                             )
