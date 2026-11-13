@@ -10,13 +10,8 @@ from repowise.core.ingestion.parser import ASTParser
 
 from ._helpers import _make_file_info
 
-grammar_pack = pytest.importorskip(
-    "tree_sitter_language_pack", reason="run `uv sync --all-packages`"
-)
-try:
-    grammar_pack.get_language("cobol")
-except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
-    pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
+# A fixture, not a module-level skip: every xdist worker collects the same tests.
+pytestmark = pytest.mark.usefixtures("cobol_grammar")
 
 
 MAIN_SOURCE = b"""       IDENTIFICATION DIVISION.
