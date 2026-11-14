@@ -16,21 +16,25 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_SECTIONS: frozenset[str] = frozenset(
+#: What an agent acts on: the call-first line (always rendered), one line per
+#: moment, and the decision pointer. Orientation (architecture, modules, entry
+#: points, hotspots, health) is one ``get_answer`` or ``get_overview`` call
+#: away, so it is opt-in rather than paid on every turn.
+DEFAULT_SECTIONS: frozenset[str] = frozenset({"decisions", "how_to_work"})
+
+OPT_IN_SECTIONS: frozenset[str] = frozenset(
     {
         "architecture",
         "key_modules",
         "entry_points",
         "hotspots",
         "health",
-        "decisions",
-        "how_to_work",
+        "code_health",
+        "fix_first",
+        "commands",
+        "how_to_work_full",
         "tools",
     }
-)
-
-OPT_IN_SECTIONS: frozenset[str] = frozenset(
-    {"code_health", "fix_first", "commands", "how_to_work_full"}
 )
 
 ALL_SECTIONS: frozenset[str] = DEFAULT_SECTIONS | OPT_IN_SECTIONS

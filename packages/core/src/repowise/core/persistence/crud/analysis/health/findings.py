@@ -21,6 +21,7 @@ from .....analysis.health.governance import GOVERNANCE_BIOMARKERS
 from .....analysis.health.rows import detail_map
 from .....analysis.health.scoring import ADVISORY_DIMENSION
 from .....analysis.health.worth import LowPriority, finding_priorities
+from ....batches import chunked
 from ....models import HealthFinding, _new_uuid, _now_utc
 from ..._shared import _BATCH_SIZE
 from ...graph import get_test_file_paths
@@ -218,33 +219,34 @@ async def upsert_health_findings(
     Used by the incremental ``repowise update`` path so unchanged files
     keep their findings instead of being wiped on every partial re-index.
     """
-    if not file_paths:
-        return
-    predicates = [
-        HealthFinding.repository_id == repository_id,
-        HealthFinding.file_path.in_(file_paths),
-    ]
-    if dimension is not None:
-        predicates.append(HealthFinding.dimension == dimension)
-    await _delete_open(session, predicates)
+    # One pass per piece of the paths. A finding's public id carries its file,
+    # so it only ever folds into a triaged row of its own piece.
+    for chunk in chunked(sorted(set(file_paths))):
+        predicates = [
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.file_path.in_(chunk),
+        ]
+        if dimension is not None:
+            predicates.append(HealthFinding.dimension == dimension)
+        await _delete_open(session, predicates)
 
-    allowed = set(file_paths)
-    scoped = [
-        finding
-        for finding in findings
-        if (finding.file_path if hasattr(finding, "file_path") else finding.get("file_path"))
-        in allowed
-        and (
-            dimension is None
-            or (
-                getattr(finding, "dimension", None)
-                if hasattr(finding, "dimension")
-                else finding.get("dimension")
+        allowed = set(chunk)
+        scoped = [
+            finding
+            for finding in findings
+            if (finding.file_path if hasattr(finding, "file_path") else finding.get("file_path"))
+            in allowed
+            and (
+                dimension is None
+                or (
+                    getattr(finding, "dimension", None)
+                    if hasattr(finding, "dimension")
+                    else finding.get("dimension")
+                )
+                == dimension
             )
-            == dimension
-        )
-    ]
-    await _insert_keeping_triage(session, repository_id, scoped, predicates)
+        ]
+        await _insert_keeping_triage(session, repository_id, scoped, predicates)
 
 
 async def update_health_finding_status(

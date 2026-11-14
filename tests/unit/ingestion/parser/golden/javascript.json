@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -62,6 +64,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -72,7 +75,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "javascript/route.js": {
     "file_info": {
@@ -85,7 +89,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -175,6 +181,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": 1,
             "column": 6
           }
@@ -186,6 +193,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -195,6 +203,7 @@
         "line": 2,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 59,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -211,6 +220,7 @@
         "line": 5,
         "argument_count": 4,
         "receiver_call": null,
+        "start_byte": 110,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -227,6 +237,7 @@
         "line": 11,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 238,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -242,7 +253,12 @@
         "caller_symbol_id": null,
         "line": 11,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
+        "start_byte": 250,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -259,6 +275,7 @@
         "line": 13,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 312,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -275,6 +292,7 @@
         "line": 15,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 355,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -291,6 +309,7 @@
         "line": 17,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 407,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -306,7 +325,12 @@
         "caller_symbol_id": null,
         "line": 17,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
+        "start_byte": 419,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -323,6 +347,7 @@
         "line": 23,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 514,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -339,6 +364,7 @@
         "line": 24,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 543,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -355,6 +381,7 @@
         "line": 29,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 631,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -370,7 +397,12 @@
         "caller_symbol_id": "lang_samples/javascript/route.js::validateRequest",
         "line": 29,
         "argument_count": 1,
-        "receiver_call": null,
+        "receiver_call": {
+          "target_name": "status",
+          "receiver_name": "res",
+          "argument_count": 1
+        },
+        "start_byte": 643,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -387,6 +419,7 @@
         "line": 31,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 677,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -412,6 +445,7 @@
         "line": 6,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 0,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -428,6 +462,7 @@
         "line": 7,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 0,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -444,6 +479,7 @@
         "line": 15,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 0,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -460,6 +496,7 @@
         "line": 17,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 0,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -476,6 +513,7 @@
         "line": 23,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 0,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -492,6 +530,7 @@
         "line": 23,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 0,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -502,6 +541,7 @@
         "argument_names": null
       }
     ],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

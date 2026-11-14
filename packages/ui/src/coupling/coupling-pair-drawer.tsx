@@ -230,7 +230,7 @@ export function CouplingPairDrawer({
                       role="presentation"
                     >
                       <div
-                        className="h-full rounded-full bg-[var(--color-accent-primary)]"
+                        className="h-full rounded-full bg-[var(--color-progress-fill)]"
                         style={{ width: share ?? "0%" }}
                       />
                     </div>

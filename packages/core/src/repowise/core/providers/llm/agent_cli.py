@@ -143,10 +143,12 @@ class AgentCliProvider(BaseProvider):
     error_tail_chars: ClassVar[int] = 2_000
 
     # A process spawn plus a full agent turn: the floor is tens of seconds, so
-    # an interactive caller must budget in minutes or it cancels every call
-    # (#1119). Stays under the exec timeout so the caller gives up first and
-    # the error names the real cause.
-    interactive_timeout_s: float = 180.0
+    # 30s cancelled every call (#1119). 50s keeps the whole get_answer call
+    # inside the 60s tool timeout common among MCP clients, so a slow turn
+    # comes back as an evidence-only answer, not the client's bare transport
+    # error. Stays under the exec timeout so the caller gives up first and the
+    # error names the real cause.
+    interactive_timeout_s: float = 50.0
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

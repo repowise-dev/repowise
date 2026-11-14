@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from ...code_origin import code_origin
 from ...ingestion import compute_content_hash
 from ...ingestion.graph.builder import GraphBuilder
 from ...ingestion.models import (
@@ -27,7 +28,6 @@ from ...ingestion.parse_cache import ParseCache
 from ...ingestion.parser import parse_file
 from ...test_paths import is_test_related_path
 from ..health import (
-    HEALTH_ANALYZER_VERSION,
     HealthAnalyzer,
     HealthFileMetricData,
     HealthFindingData,
@@ -41,8 +41,6 @@ if TYPE_CHECKING:
 
 #: Files above this size are skipped rather than parsed on both sides.
 MAX_FILE_BYTES = 1_500_000
-
-_GENERATED_MARKERS = (b"GENERATED CODE", b"AUTO-GENERATED", b"@generated", b"DO NOT EDIT")
 
 
 def language_of(path: str) -> str | None:
@@ -62,12 +60,6 @@ def language_for(path: str) -> str | None:
     """
     language = language_of(path)
     return language if has_health_dialect(language) else None
-
-
-def is_generated(source: bytes) -> bool:
-    """True when the file announces itself as generated in its header."""
-    header = source[:512].upper()
-    return any(marker.upper() in header for marker in _GENERATED_MARKERS)
 
 
 def is_binary(source: bytes) -> bool:
@@ -96,9 +88,7 @@ class AnalysisCaches:
     @classmethod
     def open(cls, cache_dir: str | Path) -> AnalysisCaches:
         directory = Path(cache_dir)
-        caches = cls(
-            directory, ParseCache(directory), HealthWalkCache(directory, HEALTH_ANALYZER_VERSION)
-        )
+        caches = cls(directory, ParseCache(directory), HealthWalkCache(directory))
         caches.parse.load()
         caches.walk.load()
         return caches
@@ -184,7 +174,11 @@ class RevisionHealthAnalyzer:
             package_roots=_package_roots(self.repo_root, usable),
             **(_index_kwargs(index) if index is not None else {}),
         )
-        report = analyzer.analyze(config=self.config, changed_files=set(usable))
+        # Only findings and metrics are read, so skip building suggestions.
+        report = analyzer.analyze(
+            config={**(self.config or {}), "refactoring_enabled": False},
+            changed_files=set(usable),
+        )
         result.findings = list(report.findings)
         result.analyzed = set(usable)
         result.dependents = analyzer.file_dependents()
@@ -223,7 +217,9 @@ class RevisionHealthAnalyzer:
             return "too_large"
         if is_binary(raw):
             return "binary"
-        if is_generated(raw):
+        # The classifier the index stores ``code_origin`` from, read from this
+        # revision's bytes: the stored row describes the indexed revision.
+        if code_origin(path, raw) == "generated":
             return "generated"
         return None
 

@@ -108,36 +108,65 @@ def print_completion_panel(
         console.print(line)
 
 
-def serve_step(target: str = "dashboard") -> tuple[str, str]:
+def serve_step(target: str = "dashboard", gloss: str | None = None) -> tuple[str, str]:
     """The ``repowise serve`` row every completion panel leads with.
 
     The port is the one serve tries first; serve moves to the next free port
-    when it is taken, so the row says so rather than promising an exact URL.
+    when it is taken, so the row says so instead of promising an exact URL.
+    *gloss* is a first line saying what serve is for, above the address.
     """
     from repowise.cli.commands.serve_cmd._ports import DEFAULT_UI_PORT
     from repowise.cli.commands.serve_cmd._web_assets import _NODE_MIN_MAJOR
 
+    where = f"http://localhost:{DEFAULT_UI_PORT} or the next free port"
+    where = f"{gloss}\n{where}" if gloss else f"{target} at {where}"
     return (
         "repowise serve",
-        f"{target} at http://localhost:{DEFAULT_UI_PORT} or the next free port\n"
-        f"(needs Node {_NODE_MIN_MAJOR}+; the first run downloads the UI)",
+        f"{where}\n(needs Node {_NODE_MIN_MAJOR}+; the first run downloads the UI)",
     )
 
+
+#: What ``repowise serve`` is for at the end of ``init``.
+TOUR_GLOSS = "a guided tour of all this in your browser"
+
+
+#: Prints the agent's pass over the decisions on the busiest files.
+DISCOVER_COMMAND = "repowise decision discover"
+
+#: Lists the settings that fit this repository. Doctor and status name it too.
+SUGGESTED_STEP = "repowise config list --suggested"
 
 #: Rows after ``repowise serve``.
 _MAX_FOLLOW_UPS = 2
 
 
+def _discover_step(records: int | None, hotspot_count: int) -> list[tuple[str, str]]:
+    """The agent's pass over the decisions on the busiest files, as zero or one row."""
+    if records:
+        noun = "record" if records == 1 else "records"
+        return [
+            (
+                DISCOVER_COMMAND,
+                f"a prompt for your agent: check {records} background {noun} on the busiest files",
+            )
+        ]
+    if records == 0 and hotspot_count > 0:
+        return [
+            (DISCOVER_COMMAND, "a prompt for your agent: record the decisions behind the busiest files")
+        ]
+    return []
+
+
 def build_contextual_next_steps(
     *,
-    index_only: bool,
     fast_mode: bool = False,
     dead_unreachable: int = 0,
     dead_unused: int = 0,
     hotspot_count: int = 0,
-    decision_count: int = 0,
     top_hotspot: str = "",
+    discovery_records: int | None = None,
     setup: Any = None,
+    suggested: int = 0,
 ) -> list[tuple[str, str]]:
     """The dashboard, then the two moves that most need making.
 
@@ -151,24 +180,32 @@ def build_contextual_next_steps(
 
     1. nothing wired an MCP client, so no agent can reach any of this yet
        (``--no-editor-setup``, the CI shape, has no Connected line to say so);
-    2. the index is deliberately partial (fast, or index-only);
-    3. the largest concrete finding, or a search row when there is none.
+    2. the index is deliberately partial (fast);
+    3. settings that fit this repository better than their defaults
+       (``suggested``, counted by ``repowise config list --suggested``);
+    4. the agent's pass over the decisions on the busiest files: the
+       background records to check, or with none (a keyless index mines
+       none), the decisions nobody recorded. Left out when the store could not
+       be read (``discovery_records`` is None) or nothing is busy;
+    5. the largest concrete finding, or a search row when there is none.
     """
     candidates: list[tuple[str, str]] = []
     if setup is not None and getattr(setup, "editor_setup_disabled", False):
         candidates.append(("repowise mcp .", "connect an MCP client (Cursor, Codex, Claude Code)"))
-    from repowise.core.index_scope import FAST_TO_FULL_COMMAND, MODEL_COMMAND
+    from repowise.core.index_scope import FAST_TO_FULL_COMMAND
 
+    # Documentation built from the index gets the panel's "add a model" block
+    # instead of a step, so the model command is not named twice.
     if fast_mode:
         candidates.append(
             (FAST_TO_FULL_COMMAND, "build documentation from code and the full git history (no key)")
         )
-    elif index_only:
-        # `generate` is the scoped, cost-gated upgrade: a coverage, a directory
-        # or one page at a time, each behind an estimate.
+    if suggested:
+        noun = "setting fits" if suggested == 1 else "settings fit"
         candidates.append(
-            (MODEL_COMMAND, "write the documentation with a model (needs a key)")
+            (SUGGESTED_STEP, f"{suggested} {noun} this repo, each with why and the command")
         )
+    candidates.extend(_discover_step(discovery_records, hotspot_count))
     dead = dead_unreachable + dead_unused
     if dead > 0:
         noun = "finding" if dead == 1 else "findings"
@@ -177,14 +214,10 @@ def build_contextual_next_steps(
         candidates.append(
             (f"repowise risk {escape(top_hotspot)}", "assess risk for the top hotspot")
         )
-    elif decision_count > 0:
-        candidates.append(
-            ("repowise decision list", f"browse {decision_count} architectural decisions")
-        )
     elif not fast_mode:
         candidates.append(('repowise search "<query>"', "search the documentation"))
 
-    return [serve_step(), *candidates[:_MAX_FOLLOW_UPS]]
+    return [serve_step(gloss=TOUR_GLOSS), *candidates[:_MAX_FOLLOW_UPS]]
 
 
 def keyless_upgrade_note(semantic_available: bool, reindex_command: str | None = None) -> str:

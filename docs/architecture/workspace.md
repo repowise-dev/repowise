@@ -105,7 +105,10 @@ After the dialects, `code_api.py` adds published-package contracts,
 `merge_openapi_providers` folds an OpenAPI operation into the code route it
 describes, `bind_symbol_ids` binds each contract to a symbol in the repo's index,
 and `network_probe.count_unrecognised_call_files` counts the files that call out
-with no consumer contract read from them.
+with no consumer contract read from them. It runs again over `MESSAGE_PROBE_ROWS`
+for files on a messaging SDK with no topic contract, kept apart from the HTTP
+figure. A topic dialect that locates a call but cannot settle its name records it
+with `ScanContext.note_unresolved`, summed into `topic_names_unresolved`.
 
 ### Matching
 
@@ -127,19 +130,23 @@ links are appended after it.
    internal DNS name such as `catalog.svc.cluster.local`), and the service-name map.
    The consumer's `meta` records `target_repo`, `target_via` (the source) and, for a
    map entry, `target_evidence` (the file). A public dotted host nothing maps is
-   `external` and never linked.
+   `external` and never linked. So is a call whose base token and path match a
+   `matching/third_party.py` row (`${SUPABASE_URL}/rest/v1/...`) and that nothing
+   above placed.
 3. **Exact pass** (`matching/__init__.py::_exact_pass`): normalized ids, HTTP method
    and gRPC service wildcards included. Strategy `exact_id`, `pattern_matched` for a
    pattern subscription, `service_mapped` when the provider sits in the consumer's
    resolved target. A target the map placed does not fall back to another repo that
-   serves the same path (`common.prefer_target_repo`).
+   serves the same path (`common.prefer_target_repo`). An HTTP or gRPC call whose id
+   two or more repos serve, with nothing placing it in one, links to none of them
+   (`MatchState.refuse`, `meta['ambiguous_provider']`); the HTTP passes keep that rule.
    A package-less gRPC stub id (`grpc::CurrencyService/*`) meets the package-qualified
    proto id (`grpc::shop.CurrencyService/Convert`) on the service's last segment. A proto
    declared in 2+ repos is served only by the repo that registers the service in code
    (`common.shared_idl`); the other copies are vendored IDL, never linked or listed as
    orphans. A .NET project's `<Protobuf GrpcServices="Client">` proto provides nothing.
 4. **Type passes**, in `MATCHERS` order: HTTP `gateway_pass` (`gateway_route`),
-   `base_resolved_pass`, `candidate_pass` (`unique_path`, `ambiguous_path`, `prefix_stripped`) and `service_pass`; topic
+   `base_resolved_pass`, `candidate_pass` (`unique_path`, `ambiguous_path`, `prefix_stripped`), `segment_pass` (`param_segment`) and `service_pass`; topic
    `binding_pass` (`binding_routed`); data `shared_table_pass` (`shared_table`).
    HTTP's `accepts` (`matching/http.py`) holds every pass to one rule: a generic
    operational path (`/health`, `/metrics`, the root) links only to the consumer's
@@ -176,7 +183,7 @@ both ways).
 
 | Consumer | Reads | Output |
 |----------|-------|--------|
-| `cycles.detect_cycles` | `adjacency()` | Cycles with `leg_kinds` per leg and `async_legs`; an event leg still closes a cycle; capped at `MAX_CYCLES` |
+| `cycles.detect_cycles` | `adjacency()` | Cycles with `leg_kinds` per leg and `async_legs`; an event leg still closes a cycle; capped at `MAX_CYCLES`; enumeration stops at `MAX_ENUMERATED_CYCLES`, then the total is a floor (`total_capped`) and the listed cycles come from a length-bounded pass (up to `MAX_CYCLE_LENGTH`) |
 | `architecture_metrics.compute_architecture_metrics` | `adjacency()`, `detect_cycles` | Propagation cost, core, roles, 1-10 score |
 | `conformance.build_conformance_report` | Structural edges, declared rules | Violations, cycles, `cycles_determined` |
 | `blast_radius.cross_repo_blast_radius` | `adjacency(impact=True)`, co-change at `BEHAVIORAL_EDGE_WEIGHT` | Impacted services by distance, `undetermined_targets` |
@@ -235,7 +242,7 @@ Everything lives in `.repowise-workspace/`:
 | `conformance.json` | Violations, cycles, `evidence` | |
 | `analysis_config.json` | The `contracts:` and `conformance:` settings the last analysis ran with | `WorkspaceConfig.analysis_fingerprint()` |
 | `member_refresh.json` | One digest per member repo | `update_cmd/member_refresh.py::member_fingerprint` |
-| `workspace.db` | Path and symbol lookup, components, recent changes, health, freshness | Each repo's `state.json`; safe to delete |
+| `workspace.db` | Path and symbol lookup, components, recent changes, health, freshness, the per-repo figures `GET /api/workspace` and `/graph` serve | Each repo's `state.json`; the figures also by `wiki.db` stat, read live when it moved; safe to delete |
 
 `member_refresh.py` lives in `packages/cli/src/repowise/cli/commands/update_cmd/`.
 Each repo's own `wiki.db` also carries a schema stamp in `PRAGMA user_version`
@@ -287,6 +294,7 @@ Details the table compresses:
 | Service-name sources | `service_names/__init__.py` `SOURCES`, sorted by name | `name`, `filenames`, optional `under` and `marker`, `read` | `test_service_names.py` |
 | Evidence rules | `graph_evidence.py` `_RULES` | One function returning a reason or `None` | `test_graph_evidence.py` |
 | Network probe | `network_probe.py` `PROBE_ROWS`, sorted by language | `language`, `extensions`, `tokens`, `hash_comments` | `test_network_probe.py` |
+| Third-party services | `matching/third_party.py` `THIRD_PARTY_SERVICES`, sorted by name | `name`, `base_words`, `paths` | `test_third_party_services.py` |
 | Edge kinds | `system_graph.py` `_CONTRACT_TYPE_TO_EDGE_KIND` | Contract type to edge kind | `test_system_graph.py::test_contract_type_to_edge_kind` |
 | Package ecosystems | `manifests.py` `ECOSYSTEMS` | Service markers and an optional manifest scanner | `test_manifests.py` |
 
@@ -317,7 +325,7 @@ Rules that follow from them:
 - A dialect picks an existing origin; it never sets a number. A new way of
   establishing a contract adds one `ContractOrigin` row.
 - `match_type` is derived from the strategy, never set on its own. Candidate
-  strategies are `ambiguous_path`, `prefix_stripped` and `host_only`.
+  strategies are `ambiguous_path`, `prefix_stripped`, `param_segment` and `host_only`.
 - A system-graph edge carries the strategy of the link that gave it its confidence,
   `manifest` for a package edge, and none for co-change.
 - A stored link without a strategy is read through `legacy_strategy`; that store's
@@ -418,7 +426,10 @@ add its case to `test_graph_evidence.py`.
 
 ## Limits
 
-- Ruby, VB and SQL files have no comment mask, so a commented-out match there is
+- Only Python, JS/TS, Java, Kotlin, Go, C#, Rust, PHP, Apex, Proto and
+  `.prisma` files have a comment mask (see [`_SLASH_COMMENT_SUFFIXES` and
+  `_comment_mask`](../../../packages/core/src/repowise/core/workspace/extractors/base.py));
+  every other suffix is read as written, so a commented-out match there is
   read. A Python docstring example is read, because the mask keeps strings.
 - A gate is a substring test: it keeps a dialect off files it can find nothing in,
   not off every file that mentions its token.

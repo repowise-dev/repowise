@@ -164,11 +164,14 @@ class DialectExtractor:
 
     Subclasses set ``dialects``. ``identity``, when set, keeps the first
     contract per key within a file, for contract types whose many call sites
-    of one name are one fact.
+    of one name are one fact. ``unresolved_stat``, when set, is the *stats*
+    key that counts the calls a dialect located but could not name
+    (:meth:`..base.ScanContext.note_unresolved`).
     """
 
     dialects: tuple[ContractDialect, ...] = ()
     identity: Callable[[Contract], Hashable] | None = None
+    unresolved_stat: str | None = None
 
     @classmethod
     def source_extensions(cls) -> frozenset[str]:
@@ -181,9 +184,14 @@ class DialectExtractor:
         repo_alias: str = "",
         exclude: Callable[[str], bool] | None = None,
         files: Sequence[SourceFile] | None = None,
+        stats: dict[str, int] | None = None,
     ) -> list[Contract]:
-        """Scan *repo_path* (or the already-walked *files*) for contracts."""
+        """Scan *repo_path* (or the already-walked *files*) for contracts.
+
+        *stats* is an optional out-dict that ``unresolved_stat`` is added to.
+        """
         contracts: list[Contract] = []
+        unresolved = 0
         passes: dict[int, RepoPass] = {
             id(d): d.repo_pass() for d in self.dialects if hasattr(d, "repo_pass")
         }
@@ -201,6 +209,9 @@ class DialectExtractor:
                     repo_pass.scan(ctx)
                     passed[rel_path] = ctx
             contracts.extend(found if self.identity is None else dedupe(found, self.identity))
+            unresolved += ctx.unresolved_calls
+        if stats is not None and self.unresolved_stat and unresolved:
+            stats[self.unresolved_stat] = stats.get(self.unresolved_stat, 0) + unresolved
         for repo_pass in passes.values():
             found = [
                 c for c in repo_pass.finish()

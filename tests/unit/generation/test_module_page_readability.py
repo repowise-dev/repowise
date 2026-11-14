@@ -29,7 +29,7 @@ _GENERIC_HEADINGS = {
     "introduction",
     "components",
 }
-_REQUIRED_TAIL = ["Where to start reading", "How it connects"]
+_REQUIRED_TAIL = ["Where to start reading"]
 
 
 def table_line_share(markdown: str) -> float:
@@ -148,7 +148,10 @@ async def test_post_processing_keeps_the_shape_and_moves_agent_material(sample_c
     assert table_line_share(page.content) == 0
     assert generic_headings(page.content) == []
     headings = re.findall(r"^##\s+(.+?)\s*$", page.content, re.M)
-    assert headings[-2:] == _REQUIRED_TAIL
+    assert headings[-1:] == _REQUIRED_TAIL
+    # The model's neighbour paragraph is replaced from the import graph, which
+    # here has no neighbours, so the section goes.
+    assert "How it connects" not in page.content
 
 
 @pytest.mark.parametrize("style", ["comprehensive", "caveman", "reference", "tutorial"])

@@ -2,6 +2,7 @@
 frontmatter: |
     description: Why the code is shaped this way — decisions, rationale, and git archaeology (question, path, or decision-health dashboard).
     allowed-tools: Bash(repowise why:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Why

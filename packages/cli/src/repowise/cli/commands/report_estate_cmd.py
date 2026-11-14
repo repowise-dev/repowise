@@ -2,8 +2,8 @@
 
 The ``estate`` report sections, which read the workspace's stored cross-repo
 artifacts (system graph, contracts, diagnostics) once, with every member
-repository's indexed commit listed. Built and rendered the way
-``report assessment`` builds its document.
+repository's indexed commit listed. Built by the same function the web
+server's estate route calls, and rendered the way ``report assessment`` renders.
 """
 
 from __future__ import annotations
@@ -34,13 +34,8 @@ def estate_command(path: str | None, wanted: str | None, fmt: str, out_path: str
     the evidence behind them, contracts and the calls that reached no provider, health
     and churn per repo, the riskiest seams and where to start."""
     from repowise.cli._helpers.target import WorkspaceNotFound
-    from repowise.cli.commands.report_assessment_cmd import (
-        _build,
-        _emit,
-        _pick_sections,
-        _renderer,
-        _targets,
-    )
+    from repowise.cli.commands.report_assessment_cmd import _emit, _pick_sections, _renderer
+    from repowise.core.report.estate import build_estate_document
 
     if not out_path:
         silence_logs_for_machine_output_until_close()  # stdout carries only the report
@@ -54,7 +49,5 @@ def estate_command(path: str | None, wanted: str | None, fmt: str, out_path: str
             "at or above this directory. Run 'repowise init <workspace-dir>' first."
         ) from exc
     target.notice(err_console, command="report estate")
-    scope = {"kind": "workspace", "name": target.ws_root.name}
-    document = run_async(_build(_targets(target), sections, scope, ws_root=target.ws_root))
-    document["kind"] = "estate"
+    document = run_async(build_estate_document(target.ws_root, sections))
     _emit(render(document), fmt, out_path, document)

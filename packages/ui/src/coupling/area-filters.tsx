@@ -9,7 +9,7 @@ const RECENCY_STEPS = [90, 365];
 const DEPTHS = [1, 2, 3, 4];
 
 const CONTROL =
-  "h-8 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-xs text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]";
+  "h-8 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2 text-xs text-[var(--color-text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]";
 
 function Toggle({
   label,
@@ -29,7 +29,7 @@ function Toggle({
         CONTROL,
         "px-2.5",
         pressed
-          ? "bg-[var(--color-bg-selected)] font-medium shadow-[inset_0_-2px_0_var(--color-accent-primary)]"
+          ? "bg-[var(--color-bg-selected)] font-medium shadow-[inset_0_-2px_0_var(--color-tab-active)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
       )}
     >

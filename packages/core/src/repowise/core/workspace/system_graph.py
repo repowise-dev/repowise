@@ -37,7 +37,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from repowise.core.fsutils import atomic_write_text
 from repowise.core.workspace.config import (
@@ -53,7 +53,11 @@ from repowise.core.workspace.extractors.service_boundary import (
     assign_service,
     detect_service_boundaries,
 )
+from repowise.core.workspace.grouping import ServiceGroup, group_services
 from repowise.core.workspace.origins import LinkStrategy, legacy_strategy
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 _log = logging.getLogger("repowise.workspace.system_graph")
 
@@ -76,9 +80,26 @@ _CONTRACT_TYPE_TO_EDGE_KIND: dict[str, str] = {
     "code": "package",
 }
 
-#: All edge kinds the graph can carry. ``db`` carries the shared-table
-#: (``data``) contracts; the taxonomy is fixed so views render consistently.
+#: Every edge kind the graph can carry, mapped to its family: ``runtime`` (a
+#: call or message at run time), ``data`` (a shared store; ``db`` carries the
+#: ``data`` contracts), ``build`` (a manifest or package reference) or
+#: ``history`` (correlated change). The one owner of kind-to-family: views read
+#: the ``family`` each edge carries, and grouping clusters on it.
+EDGE_KIND_FAMILY: dict[str, str] = {
+    "http": "runtime",
+    "grpc": "runtime",
+    "socket": "runtime",
+    "event": "runtime",
+    "db": "data",
+    "package": "build",
+    "co_change": "history",
+}
+
+#: All edge kinds the graph can carry; the taxonomy is fixed so views render consistently.
 EDGE_KINDS: tuple[str, ...] = ("http", "grpc", "socket", "event", "package", "co_change", "db")
+
+#: Families in display order.
+EDGE_FAMILIES: tuple[str, ...] = ("runtime", "data", "build", "history")
 
 #: ``match_type`` precedence when several links collapse onto one edge — the most
 #: authoritative wins for display. Higher is stronger.
@@ -97,13 +118,25 @@ MAX_EDGE_REFS = 50
 #: Structural edges assert a real dependency; behavioral (co-change) edges only
 #: assert correlated change. Kept distinct so reachability and the map never
 #: conflate "call each other" with "change together".
-_STRUCTURAL_KINDS: frozenset[str] = frozenset({"http", "grpc", "socket", "event", "package", "db"})
+_STRUCTURAL_KINDS: frozenset[str] = frozenset(
+    kind for kind, family in EDGE_KIND_FAMILY.items() if family != "history"
+)
 
 #: Structural kinds whose dependency is asynchronous: the subscriber depends on
 #: the message shape, not on the publisher answering. Still a dependency (a
 #: cycle through one couples schemas and deploy order), so every view walks it;
 #: this set is what lets a view say which legs of a path are async.
 ASYNC_EDGE_KINDS: frozenset[str] = frozenset({"event"})
+
+
+def edge_family(kind: str) -> str:
+    """The family of an edge *kind*.
+
+    A kind missing from :data:`EDGE_KIND_FAMILY` is ``history``: the builder
+    already treats a kind outside :data:`_STRUCTURAL_KINDS` as non-structural
+    (undirected, never walked), so it is never drawn or grouped as a dependency.
+    """
+    return EDGE_KIND_FAMILY.get(kind, "history")
 
 
 def edge_kind_for_contract_type(contract_type: str) -> str:
@@ -131,9 +164,12 @@ class SystemNode:
     is_orphan_provider: bool = False  # exposes providers nobody consumes
     is_orphan_consumer: bool = False  # consumes contracts that never matched
     is_isolated: bool = False  # participates in no edges
+    #: Id of the :class:`.grouping.ServiceGroup` this service belongs to; None
+    #: when ungrouped, which every node is on an estate too small to group.
+    group: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "id": self.id,
             "repo": self.repo,
             "service_path": self.service_path,
@@ -146,6 +182,9 @@ class SystemNode:
             "is_orphan_consumer": self.is_orphan_consumer,
             "is_isolated": self.is_isolated,
         }
+        if self.group is not None:
+            data["group"] = self.group
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SystemNode:
@@ -161,6 +200,7 @@ class SystemNode:
             is_orphan_provider=data.get("is_orphan_provider", False),
             is_orphan_consumer=data.get("is_orphan_consumer", False),
             is_isolated=data.get("is_isolated", False),
+            group=data.get("group"),
         )
 
 
@@ -181,12 +221,18 @@ class SystemEdge:
     #: confidence. None on a co-change edge, which no link made.
     strategy: str | None = None
 
+    @property
+    def family(self) -> str:
+        """``runtime`` | ``data`` | ``build`` | ``history``; see :func:`edge_family`."""
+        return edge_family(self.kind)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "source": self.source,
             "target": self.target,
             "kind": self.kind,
+            "family": self.family,
             "match_type": self.match_type,
             "confidence": self.confidence,
             "weight": self.weight,
@@ -227,9 +273,11 @@ class SystemGraph:
     edges: list[SystemEdge] = field(default_factory=list)
     diagnostics: ExtractionDiagnostics = field(default_factory=ExtractionDiagnostics)
     repo_provenance: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Service groups (see :mod:`.grouping`); empty on an estate too small to group.
+    groups: list[ServiceGroup] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "version": self.version,
             "generated_at": self.generated_at,
             "repo_provenance": self.repo_provenance,
@@ -237,6 +285,9 @@ class SystemGraph:
             "edges": [e.to_dict() for e in self.edges],
             "diagnostics": self.diagnostics.to_dict(),
         }
+        if self.groups:
+            data["groups"] = [g.to_dict() for g in self.groups]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SystemGraph:
@@ -247,6 +298,7 @@ class SystemGraph:
             nodes=[SystemNode.from_dict(n) for n in data.get("nodes", [])],
             edges=[SystemEdge.from_dict(e) for e in data.get("edges", [])],
             diagnostics=ExtractionDiagnostics.from_dict(data.get("diagnostics", {})),
+            groups=[ServiceGroup.from_dict(g) for g in data.get("groups", [])],
         )
 
     def adjacency(
@@ -290,6 +342,48 @@ def _node_id(repo: str, service_path: str | None) -> str:
     return repo if service_path is None else f"{repo}::{service_path}"
 
 
+def resolve_service_id(
+    repo: str,
+    file_path: str | None,
+    boundaries_by_repo: dict[str, list[ServiceBoundary]],
+) -> str:
+    """The node id *file_path* in *repo* belongs to: its deepest service, else the repo root.
+
+    ``file_path is None`` resolves to the repo-root node (repo-level facts
+    like a package dependency on a whole repo). The builder and every read
+    that maps a file to a service call this, so they cannot disagree.
+    """
+    return _node_id(repo, _service_path(repo, file_path, boundaries_by_repo))
+
+
+def _service_path(
+    repo: str, file_path: str | None, boundaries_by_repo: dict[str, list[ServiceBoundary]]
+) -> str | None:
+    if file_path is None:
+        return None
+    return assign_service(file_path, boundaries_by_repo.get(repo, []))
+
+
+def boundaries_from_nodes(nodes: Iterable[dict[str, Any]]) -> dict[str, list[ServiceBoundary]]:
+    """The service boundaries a stored graph's nodes stand for, by repo.
+
+    The graph does not persist boundary detection, but it does not need to:
+    every link end the builder resolved became a node, so the deepest boundary
+    holding that end is among the nodes, and longest-prefix matching against
+    the nodes alone resolves the same end to the same id.
+    That holds for nodes and links written by the same build, which a
+    workspace update always does.
+    """
+    out: dict[str, list[ServiceBoundary]] = {}
+    for node in nodes:
+        path = node.get("service_path")
+        if path:
+            out.setdefault(node["repo"], []).append(
+                ServiceBoundary(service_path=path, service_name=path.rsplit("/", 1)[-1])
+            )
+    return out
+
+
 class _GraphBuilder:
     """Accumulates nodes and aggregated edges as contracts/edges are walked.
 
@@ -311,11 +405,7 @@ class _GraphBuilder:
         ``file_path is None`` resolves to the repo-root node (repo-level facts
         like a package dependency on a whole repo).
         """
-        service = (
-            assign_service(file_path, self._boundaries.get(repo, []))
-            if file_path is not None
-            else None
-        )
+        service = _service_path(repo, file_path, self._boundaries)
         nid = _node_id(repo, service)
         if nid not in self._nodes:
             self._nodes[nid] = SystemNode(
@@ -422,6 +512,7 @@ def build_system_graph(
     generated_at: str = "",
     repo_provenance: dict[str, dict[str, str]] | None = None,
     service_links: list[ContractLink] | None = None,
+    repo_tags: dict[str, list[str]] | None = None,
 ) -> SystemGraph:
     """Assemble the service-granular system graph (pure, no I/O).
 
@@ -429,7 +520,8 @@ def build_system_graph(
     contract links (consumer→provider), service-level links (a consumer to the
     repo its host names, no route known; :attr:`.origins.LinkStrategy.HOST_ONLY`),
     package dependencies (dependent→dependency), and cross-repo co-changes
-    (undirected, behavioral).
+    (undirected, behavioral). Services are then grouped (:mod:`.grouping`),
+    reading declared groups from *repo_tags* (repo alias to its tags).
     """
     if diagnostics is None:
         diagnostics = build_diagnostics(contracts, links)
@@ -487,6 +579,9 @@ def build_system_graph(
         )
 
     nodes, edges = builder.finalize(diagnostics)
+    assignment, groups = group_services(nodes, edges, repo_tags)
+    for node in nodes:
+        node.group = assignment.get(node.id)
     return SystemGraph(
         version=version,
         generated_at=generated_at,
@@ -494,6 +589,7 @@ def build_system_graph(
         nodes=nodes,
         edges=edges,
         diagnostics=diagnostics,
+        groups=groups,
     )
 
 
@@ -573,6 +669,7 @@ async def run_system_graph_build(
         generated_at=datetime.now(UTC).isoformat(),
         repo_provenance=store.repo_provenance,
         service_links=store.service_links,
+        repo_tags={entry.alias: entry.tags for entry in ws_config.repos},
     )
 
     out_path = save_system_graph(graph, workspace_root)

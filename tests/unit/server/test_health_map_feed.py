@@ -355,6 +355,22 @@ async def test_production_code_is_admitted_before_tests_and_examples(app, client
     assert feed["files"][0]["code_origin"] == "production"
 
 
+async def test_production_scope_draws_the_production_average_file_set(app, client):
+    repo_id = await _seed_rows(
+        app,
+        client,
+        [
+            _metric("src/a.py", 10, "src", origin="production"),
+            _metric("scripts/build.py", 700, "scripts", origin="tooling"),
+            _metric("tests/test_x.py", 800, "tests", origin="test"),
+        ],
+    )
+    narrowed = await _feed(client, repo_id, cap=100, scope="production")
+    assert [f["file_path"] for f in narrowed["files"]] == ["src/a.py"]
+    everything = await _feed(client, repo_id, cap=100, scope="all")
+    assert "scripts/build.py" in [f["file_path"] for f in everything["files"]]
+
+
 async def test_an_unhealthy_file_outranks_a_bigger_clean_one(app, client):
     repo_id = await _seed_rows(
         app,

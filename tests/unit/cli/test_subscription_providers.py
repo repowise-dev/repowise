@@ -18,6 +18,7 @@ from repowise.cli.ui import subscription
 from repowise.cli.ui.brand import THEME
 from repowise.core.cost_estimator import approximate_generation_plan, estimate_cost
 from repowise.core.providers.llm import resolve
+from repowise.core.providers.llm import subscription as core_subscription
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
 
 from ._provider_picker import pick_default
@@ -140,7 +141,11 @@ def test_spend_phrase_prices_api_providers_and_estimates_subscriptions() -> None
 
 
 def _run(**overrides: Any) -> SimpleNamespace:
-    opts = SimpleNamespace(provider_name=overrides.pop("provider_name", None), index_only=True)
+    opts = SimpleNamespace(
+        provider_name=overrides.pop("provider_name", None),
+        index_only=True,
+        run_mode=overrides.pop("run_mode", "standard"),
+    )
     fields: dict[str, Any] = {"is_interactive": False, "config": {}, "no_provider": False}
     return SimpleNamespace(opts=opts, **{**fields, **overrides})
 
@@ -156,7 +161,9 @@ def test_yes_run_names_the_logged_in_cli_and_stays_free(monkeypatch: Any) -> Non
     _logged_in(monkeypatch, "claude_cli")
     out = _note(monkeypatch, _run())
     assert "Claude Code is signed in (Claude team plan: uses your plan quota)" in out
-    assert "repowise update --full --provider claude_cli" in out
+    # A run built from code has pages, so generate is the step; an Index only run is not.
+    assert "repowise generate --provider claude_cli" in out
+    assert "repowise update --full --provider claude_cli" in _note(monkeypatch, _run(run_mode="fast"))
 
 
 @pytest.mark.parametrize(
@@ -184,10 +191,28 @@ def test_note_spawns_no_agent_cli_when_network_is_off(monkeypatch: Any, var: str
     def _boom(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("agent CLI probed with an off switch set")
 
-    monkeypatch.setattr(subscription, "logged_in_agent_providers", _boom)
-    monkeypatch.setattr(subscription.subprocess, "run", _boom)
+    monkeypatch.setattr(core_subscription.subprocess, "run", _boom)
     monkeypatch.setenv(var, "1")
     assert _note(monkeypatch, _run()) == ""
+
+
+@pytest.mark.parametrize("var", ["REPOWISE_OFFLINE", "DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED"])
+def test_every_probe_caller_spawns_no_agent_cli_when_network_is_off(
+    monkeypatch: Any, var: str
+) -> None:
+    from repowise.core.agents.identity import AgentIdentity
+
+    def _boom(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("agent CLI probed with an off switch set")
+
+    monkeypatch.setattr(AgentIdentity, "which", lambda self: self.executable)
+    monkeypatch.setattr(core_subscription.subprocess, "run", _boom)
+    monkeypatch.setenv(var, "1")
+    found = subscription.logged_in_agent_providers()
+    # Installed CLIs stay pickable by hand, but nothing offers them unchecked.
+    assert "claude_cli" in found
+    assert not [auth for auth in found.values() if auth.offer]
+    assert subscription.ready_agent_providers() == ()
 
 
 def test_note_is_quiet_without_a_logged_in_cli(monkeypatch: Any) -> None:
@@ -255,7 +280,9 @@ def test_status_output_maps_to_billing(
     monkeypatch.setattr(
         subprocess, "run", lambda args, **_k: subprocess.CompletedProcess(args, 0, output, "")
     )
-    assert subscription.agent_cli_auth(name) == subscription.CliAuth(billing, offer)
+    # Only a named paid plan is a plan quota; every other login bills elsewhere.
+    plan_quota = billing.endswith("uses your plan quota")
+    assert subscription.agent_cli_auth(name) == subscription.CliAuth(billing, offer, plan_quota)
 
 
 @pytest.mark.parametrize(

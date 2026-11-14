@@ -37,6 +37,10 @@ def _index_line(repo: dict[str, Any]) -> tuple[str, str, str]:
     name = repo.get("alias") or repo.get("name") or ""
     if repo.get("indexed") is False:
         return name, "not indexed", "none"
+    if repo.get("index_state") == "behind":
+        return name, "index behind this version, run repowise update", "none"
+    if repo.get("index_state") == "unreadable":
+        return name, "index could not be read", "none"
     commit = (repo.get("head_commit") or "")[:12]
     taken = f"{snap['taken_at'][:10]} ({snap['stamp']})" if snap else "none"
     return name, commit, taken

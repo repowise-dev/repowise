@@ -13,7 +13,8 @@ COBOL programs to BMS mapsets and to the programs their TRANSIDs run.
   when every definition of T names the same one.
 
 A job member is an entry point. Names fold case; two equally near candidates
-bind neither, and a utility (``IDCAMS``, ``SORT``) the repo does not hold links
+bind neither unless exactly one nearest mapset is under a ``cobol`` directory.
+A utility (``IDCAMS``, ``SORT``) the repo does not hold links
 to nothing. A program returning to its own transaction gets no edge.
 """
 
@@ -123,7 +124,30 @@ def _add_mainframe_edges(
             code = code_view(raw)
             for use in mapset_uses(code):
                 for name in use.targets:
-                    target = nearest(mapsets.get(name, []), path)
+                    candidates = mapsets.get(name, [])
+                    target = nearest(candidates, path)
+                    if target is None and candidates:
+                        # Apply the language preference only within the nearest tie.
+                        ref = PurePosixPath(path).parts
+                        scores = {}
+                        for candidate in candidates:
+                            shared = 0
+                            for left, right in zip(PurePosixPath(candidate).parts, ref, strict=False):
+                                if left != right:
+                                    break
+                                shared += 1
+                            scores[candidate] = shared
+                        closest = max(scores.values())
+                        cobol = [
+                            candidate
+                            for candidate in candidates
+                            if scores[candidate] == closest
+                            and "cobol" in {
+                                part.lower() for part in PurePosixPath(candidate).parts[:-1]
+                            }
+                        ]
+                        if len(cobol) == 1:
+                            target = cobol[0]
                     if target:
                         count += _file_edge(graph, path, target, set())
             for use in transid_uses(code):

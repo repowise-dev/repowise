@@ -295,3 +295,24 @@ def test_cli_estate_reads_the_stored_artifacts(tmp_path: Path, monkeypatch) -> N
     assert [r.get("indexed", True) for r in doc["repos"]] == [False] * 4  # no member is indexed
     md = CliRunner().invoke(cli, ["report", "estate", str(ws), "--sections", "estate-map"])
     assert md.exit_code == 0 and "# Estate: ws" in md.output and "## Estate summary" not in md.output
+
+
+async def test_topic_calls_name_what_the_messaging_probe_missed(tmp_path):
+    from repowise.core.workspace.system_graph import load_system_graph
+
+    root = _workspace(tmp_path)
+    assert "topic-calls" not in (await _estate(_ctx(root)))["estate-contracts"]  # older artifact
+    graph = load_system_graph(root)
+    graph.diagnostics.repo_breakdown.append(
+        RepoDiagnostics("worker", providers_by_type={"topic": 1}, provider_count=1)
+    )
+    graph.diagnostics.topic_names_unresolved = 2
+    graph.diagnostics.unrecognised_message_files = {"photos": 3, "web": 0}
+    save_system_graph(graph, root)
+    topics = (await _estate(_ctx(root)))["estate-contracts"]["topic-calls"]
+    assert topics["reason"] == (
+        "1 topic publish or subscribe call(s) read as contracts, 2 located but the name not "
+        "resolvable, 3 file(s) using a messaging SDK no extractor reads"
+    )
+    assert topics["details"] == ["photos: 3 file(s)"]
+    assert topics["data"] == {"read": 1, "unresolved": 2, "unrecognised_message_files": 3}

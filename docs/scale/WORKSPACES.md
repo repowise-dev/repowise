@@ -61,6 +61,10 @@ repos and the primary repo (the default for MCP queries), and `m` adds a model.
 It then indexes each repo, runs the cross-repo analysis, and registers the MCP
 server with your editors.
 
+Run `repowise init` inside one repo whose folder holds other git repos and it
+indexes that repo alone, with a note naming `repowise init "<parent folder>"`
+for the workspace. `--no-workspace` hides the note.
+
 To skip the screen, `--repos api,web` indexes only those repos (by alias,
 directory name, or relative path). In a new workspace the first one listed is
 primary; an existing workspace keeps its primary. `--yes`, `--all` or a piped
@@ -139,12 +143,12 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Language | Providers (routes served) | Consumers (calls made) |
 |----------|---------------------------|------------------------|
 | JS / TS | Express, Hono, Fastify, Koa, hapi, Elysia; NestJS controllers; Next.js App Router and `pages/api`; Remix | `fetch`; axios, ky, got, ofetch and their instances; Angular `HttpClient`; AngularJS `$http`; request, superagent, needle; HTTP-named wrappers |
-| Python | FastAPI, Flask, Django | requests, httpx (aiohttp through wrappers the index confirms); Locust user `client` calls |
+| Python | FastAPI, Flask, Django, Django REST framework routers, aiohttp | requests, httpx (aiohttp through wrappers the index confirms); Locust user `client` calls |
 | PHP | Laravel | Guzzle, Laravel `Http` |
-| Java / Kotlin | Spring, JAX-RS, Micronaut | Feign (`@RequestLine`, and `@FeignClient` with Spring MVC annotations, its `name` read as the host), Spring `@HttpExchange` interfaces, Spring `WebClient` and `RestClient`, `RestTemplate` (also through a getter or a `RequestEntity`), `java.net.http`, Apache HttpClient (`new HttpPost(url)`, with a base URL passed to a helper's constructor in another file), MicroProfile `@RegisterRestClient` interfaces, Ktor (Kotlin) |
+| Java / Kotlin | Spring, JAX-RS, Micronaut, Ktor server routing (Kotlin), Javalin (`app.get`, v7 `config.routes`, `ApiBuilder` paths) | Feign (`@RequestLine`, and `@FeignClient` with Spring MVC annotations, its `name` read as the host), Spring `@HttpExchange` interfaces, Spring `WebClient` and `RestClient`, `RestTemplate` (also through a getter or a `RequestEntity`), `java.net.http`, Apache HttpClient (`new HttpPost(url)`, with a base URL passed to a helper's constructor in another file), MicroProfile `@RegisterRestClient` interfaces, Ktor (Kotlin) |
 | Go | gin, echo, chi, fiber, gorilla/mux, net/http (Go 1.22 method patterns) | net/http |
 | C# | ASP.NET (attribute and minimal API) | HttpClient (`GetAsync`, `GetFromJsonAsync`, `PostAsJsonAsync`, `GetStringAsync`, `new HttpRequestMessage(HttpMethod.X, url)`; a URL held in a local or a `const` / `readonly` field; `new Uri(base, path)` and `CombineUri` joins; typed, named and Refit client `BaseAddress`; HttpClient wrapper methods), Refit attributes, YARP `MapForwarder`, UnityWebRequest, Best.HTTP |
-| Ruby | | HTTParty, RestClient, Faraday, Net::HTTP |
+| Ruby | Rails (`config/routes.rb`), Sinatra, Grape | HTTParty, RestClient, Faraday, Net::HTTP |
 | Rust | Axum, Actix, Rocket | reqwest |
 | Apex | `@RestResource` classes (`/services/apexrest` + `urlMapping`) | `HttpRequest` callouts (literal endpoint and verb) |
 | C# (Azure Functions) | `[HttpTrigger]` routes under the default `/api` prefix; the function name when no `Route` is set | |
@@ -168,10 +172,11 @@ Scans source files for HTTP routes, gRPC services, database tables, message topi
 | Type | Providers | Consumers |
 |------|-----------|-----------|
 | gRPC | `.proto` service definitions, plus per-language dialects (Go, Java, Python, C#, TypeScript, NestJS `@GrpcMethod`) | gRPC client stubs |
-| Topics | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS, Redis pub/sub (ioredis/node-redis, redis-py, Laravel `Redis::publish`), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
+| Topics | Kafka (Spring `KafkaTemplate` under any name, kafka-clients `ProducerRecord`, kafkajs, kafka-python, aiokafka, confluent-kafka for Python and .NET, Go sarama, segmentio/kafka-go and franz-go), RabbitMQ (Spring AMQP, amqplib, pika, php-amqplib), NATS (nats.go, jnats, nats.js, nats-py; read only in a file importing one), Redis pub/sub and streams (ioredis/node-redis, redis-py, Laravel `Redis::publish`, go-redis, Lettuce, Jedis, Spring Data Redis, StackExchange.Redis; `XADD` is a provider and `XREAD`/`XREADGROUP` a consumer, each read only in a file importing the client), BullMQ / Bull (`new Queue`, `@InjectQueue`, flows), Temporal task queues (`workflow.start`, `StartWorkflowOptions`, `setTaskQueue`, `start_workflow`, `WorkflowOptions`; TypeScript, Go, Java, Python, .NET), SQS and SNS (AWS SDK v2/v3, boto3), NestJS `ClientProxy.emit`/`send`, Dapr `DaprClient.PublishEventAsync` (C#), MassTransit `Publish`/`Send`/`IRequestClient` (C#, VB.NET), Laravel job dispatch (`X::dispatch()->onQueue()`, `dispatch()`, `Queue::push*`, scheduled jobs) | The corresponding consumers (`new Worker`, Temporal workers (`Worker.create`, `worker.New`, `newWorker`, `Worker(task_queue=)`, `TemporalWorkerOptions`), `@Processor`, `ReceiveMessageCommand`, sqs-consumer, `subscribe`/`psubscribe`, `@EventPattern`/`@MessagePattern`, Dapr `[Topic]` and `kind: Subscription` manifests, Laravel `ShouldQueue` classes on the queues they run on, MassTransit `IConsumer<T>`, open-generic consumers and saga events), plus RabbitMQ queue bindings (`bindQueue`, `queue_bind`) |
 | Socket / WebSocket | SignalR `MapHub<T>("/path")`, FastAPI `@app.websocket("/path")`, `ws` `WebSocketServer({ path })`, NestJS `@WebSocketGateway`; events: socket.io `emit` (server and client), Laravel broadcast events (`broadcastOn` / `broadcastAs`), `Broadcast::on`, Pusher `trigger` | ClientWebSocket `ConnectAsync`, SignalR `HubConnectionBuilder.WithUrl`, NativeWebSocket and WebSocketSharp `new WebSocket(...)`, browser/Node `new WebSocket(url)`; events: socket.io `on` / `@SubscribeMessage`, Laravel Echo `listen` and `useEcho`, pusher-js `bind` |
 | Topics: C# integration events | `new T(...)` of an `IntegrationEvent` subclass the repo declares, reaching `PublishAsync` / `Publish` or a repo method taking an `IntegrationEvent`; the id is the short type name, which the event bus routes by | `AddSubscription<T, TH>()`, `Subscribe<T, TH>()` on a declared event, and `IIntegrationEventHandler<T>` classes for events no registration subscribes |
 | Topics: JMS | Spring `JmsTemplate` / `JmsMessagingTemplate` `convertAndSend` / `send` / `sendAndReceive` / `convertSendAndReceive` on a receiver named for JMS (`jmsTemplate`, `orderJmsTemplate`, `getJmsTemplate()`) with a destination argument; ActiveMQ and IBM MQ `queue://` names read as the bare queue | `@JmsListener(destination = ...)`, `receive` / `receiveAndConvert`, `DefaultMessageListenerContainer.setDestinationName` |
+| Topics: Dapr | `DaprClient.PublishEventAsync` (C#), `publishEvent(pubsub, topic, data)` on a receiver the file declares as a `DaprClient` (Java), `pubsub.publish` on a receiver the file declares as a `DaprClient` (JS/TS), `publish_event(...)` on any receiver, with the topic as `topic_name=` or the second positional argument, read only in a file importing a `dapr.*` module or `flask_dapr` (Python), `PublishEvent` / `PublishEvents` `(ctx, pubsub, topic, data)` on any receiver, read only in a file importing `github.com/dapr/go-sdk` (Go) | `[Topic]` (C#), `@Topic(name = ...)` (Java), `pubsub.subscribe` on a receiver the file declares as a `DaprServer` (JS/TS), `@app.subscribe(...)` on any app object, with the topic as `topic=` or the second positional argument, read only in a file importing a `dapr.*` module or `flask_dapr` (Python), `<alias>.Subscription{PubsubName: ..., Topic: ...}` literals (each element of a `[]<alias>.Subscription` slice too), under any import alias, read only in a file importing `github.com/dapr/go-sdk/service/common` (Go), the `{pubsubname, topic}` objects a `/dapr/subscribe` route answers with (JS/TS, Python, Go), and `kind: Subscription` manifests |
 
 Socket detection is toggled by `detect_socket` in the `contracts:` block below.
 A topic, queue or route name is resolved when it is a literal or a constant the
@@ -185,6 +190,9 @@ one an **exact** link. The exact naming and matching rules for each transport
 (socket scopes, pattern subscriptions, RabbitMQ bindings, Laravel queues, ORM
 table defaults, framework route prefixes, client base URLs) are in the
 [contract matching reference](../reference/WORKSPACE_CONTRACTS.md).
+
+Which brokers can link to each other is in
+[Topics and queues](../reference/WORKSPACE_CONTRACTS.md#topics-and-queues).
 
 Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in
 the [system graph](#system-graph). The consumer side (SQL string matching) is
@@ -229,6 +237,9 @@ A route or topic that exists only in a test is a fixture, not a service contract
 Calls to a literal
 third-party host (Stripe, Formspree, ...) that is not a workspace service are
 excluded from matching and reported under the `external_host` diagnostics reason.
+So is a call through a base variable that names a well-known service, on that
+service's API paths (`${SUPABASE_URL}/rest/v1/...`), unless the workspace maps the
+variable to one of its repos.
 
 **MassTransit.** A message is routed by its .NET type, so its contract id is
 `topic::<namespace>:<type>` (lowercased), not a string. A type counts as a message
@@ -314,10 +325,13 @@ The contracts, package dependencies, and co-changes above are each a flat list. 
 - a `kind`, `http`, `grpc`, `event`, `package`, `co_change`, or `db`;
 - a `match_type`, `exact`, `candidate`, `manual`, or `inferred`;
 - a `strategy`, the [matching rule](../reference/WORKSPACE_CONTRACTS.md#how-a-contract-and-a-link-were-made) of the link that gave the edge its confidence (`manifest` for a package dependency, none for co-change);
+- a `family`, `runtime` (http, grpc, socket, event), `data` (db), `build` (package) or `history` (co-change); a kind outside that table is `history`, so it is never walked as a dependency;
 - a `confidence` and a `weight` (how many underlying contracts / deps / co-changes it aggregates);
 - `contract_refs` back-pointers so any view can drill from an edge to its evidence.
 
 Edge direction is uniform: **`source` depends on / calls `target`.** A consumer points to the provider it calls; a dependent repo points to the repo it imports. Structural edges (contracts, package deps) are flagged distinctly from behavioral co-change edges, repowise never conflates "these change together" with "these call each other".
+
+**Large estates are grouped into systems.** Past 40 services, each service joins at most one group, recorded as `group` on the node and summarised in a top-level `groups` list (`id`, `label`, `source`, `member_count`). Groups come from, in order: an explicit `group:<name>` repo tag (`tags: [group:checkout]`; other tags such as `backend` serve conformance rules and never form a group), a shared alias prefix across 2+ repos and under half the estate (`ordering.api`, `ordering.worker`), then seeded community detection over runtime and data edges (a linked group's id names its smallest member, its label the member most services call). A group needs 2+ services, and groups are written only when at least two form; smaller estates carry no `group` or `groups` keys.
 
 Fetch it over REST with `GET /api/workspace/system-graph`, or explore it visually in the [Live System Map](#live-system-map).
 
@@ -338,10 +352,11 @@ The report covers:
   - `no_provider`, a dangling call: no provider anywhere declares a matching route/service/topic/table.
   - `unlinked`, a cross-service provider with a matching id exists, but no link formed (a candidate worth inspecting).
   - `external_host`, the call targets a literal third-party host (Stripe, Formspree, ...) that is not a workspace service, so it is intentionally excluded from matching.
+  - `ambiguous_provider`, two or more repos serve the call's route and neither its host nor its base names one, so it links to none of them. A `contracts.service_bases` entry for its host or base, or a `manual_links` entry, places it.
 - **In-service consumers** (`in_service_consumers`, reason `internal_only`): the only matching provider is in the same repo + service. They are served, so they are counted apart and never listed as unmatched.
 - **Orphan providers**, endpoints declared but never consumed by any repo. One row per repo, service and id; a table declared in a model and a migration lists the second file under `other_files`.
 - **Weak links**, matched links below the confidence threshold.
-- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located, plus one per file that makes a network call (a client library, channel or raw request) no dialect read, so an unsupported client lowers the figure instead of dropping out of it. Each such file counts once, so it is a floor on what was missed, not total recall. It is the figure that turns a large orphan-provider count from alarming into explained. A call read is not a call linked, so the headline leads with the HTTP calls that linked to another service (`http_consumers_linked`, `http_link_coverage`, same denominator) and then says where the read but unlinked calls went.
+- **Extraction coverage**: how many contracts came from the parsed symbol table (`index`) versus a text dialect (`regex`), and how many HTTP client calls were located but could not be resolved to an endpoint. The HTTP coverage percentage is calls resolved over calls located, plus one per file that makes a network call (a client library, channel or raw request) no dialect read, so an unsupported client lowers the figure instead of dropping out of it. Each such file counts once, so it is a floor on what was missed, not total recall. Files classed as tooling or build (`scripts/`, `.github/`, migrations, build configs) are left out of the probe, and a call from one that linked nothing is left out of every count, since it is not a call of the running system. It is the figure that turns a large orphan-provider count from alarming into explained. A call read is not a call linked, so the headline leads with the HTTP calls that linked to another service (`http_consumers_linked`, `http_link_coverage`, same denominator) and then says where the read but unlinked calls went.
 
 The same data is available over REST at `GET /api/workspace/diagnostics` and is embedded in the system graph artifact's `diagnostics` block.
 
@@ -568,6 +583,30 @@ Workspace init registers the MCP server with your editors (skip with `--no-edito
 - **Repo parameter**, most tools accept an optional `repo` parameter to target a specific repo. Four also accept `"all"` to query across the workspace: `get_overview` (the cross-repo topology), `search_codebase` (results from every repo), `get_dead_code` (findings from every repo) and `get_why` with a query (decisions from every repo). The other tools answer about one repo at a time; see [MCP_TOOLS.md](../agent/MCP_TOOLS.md#workspace-mode)
 - **Opt-in workspace tools**, off by default and enabled with `mcp.tools` in `.repowise/config.yaml`: `get_blast_radius` ([Cross-Repo Blast Radius](#cross-repo-blast-radius)), `get_conformance` ([Architecture Conformance](#architecture-conformance)) and `get_architecture` ([Architecture Metrics](#architecture-metrics))
 
+### One database for every repo (PostgreSQL)
+
+On a server, every repo can be indexed into one database. With `REPOWISE_DB_URL` set, the workspace MCP server reads every member from that database instead of each repo's `.repowise/wiki.db`. Each member is matched to its row by checkout path, and each call reads only that repo's rows. A member not in the database yet answers "not indexed" until its first index lands, with no restart.
+
+The workspace file is the whole declaration. Put it in a directory above the checkouts, index each checkout with the same `REPOWISE_DB_URL`, and start the server in the default repo:
+
+```yaml
+# /srv/repowise/.repowise-workspace.yaml
+version: 1
+default_repo: app
+repos:
+  - {path: repos/app, alias: app}
+  - {path: docs-mirror, alias: docs}
+```
+
+```bash
+export REPOWISE_DB_URL=postgresql+asyncpg://repowise:secret@db:5432/repowise
+repowise init /srv/repowise/repos/app --no-prose --yes --no-editor-setup
+repowise init /srv/repowise/docs-mirror --no-prose --yes --no-editor-setup
+repowise mcp /srv/repowise/repos/app --transport streamable-http --host 0.0.0.0
+```
+
+Scoped tokens hold per repo: a token whose `repos` lists `app` (by alias or repository id) reaches `app` and is refused on `docs`.
+
 ---
 
 ## File Layout
@@ -610,6 +649,8 @@ Add these to your `.gitignore`:
 
 The workspace config and data are local: they can reference absolute paths and contain generated analysis that should be rebuilt per-machine.
 
+When the workspace folder is a git repo or sits inside one, `repowise init .` adds `.repowise-workspace.yaml` and `.repowise-workspace/` (anchored to the folder) to that repo's `.git/info/exclude`, so `git status` stays clean without a shared `.gitignore` change. A path your `.gitignore` already covers is left alone. To share conformance rules with CI, commit the config once with `git add -f .repowise-workspace.yaml`; git then tracks it despite the exclude line.
+
 ---
 
 ## FAQ
@@ -648,7 +689,7 @@ Cross-repo analysis runs during `repowise init .` and `repowise update --workspa
 
 ### Does the MCP server handle multiple repos?
 
-Yes. A single MCP server instance serves all workspace repos. It uses lazy-loading with LRU eviction (max 5 repos loaded simultaneously) to manage memory. The default repo is always kept in memory.
+Yes. A single MCP server instance serves all workspace repos. It uses lazy-loading with LRU eviction (max 5 repos loaded simultaneously) to manage memory. The default repo is always kept in memory. On a server where every repo lives in one database, see [One database for every repo](#one-database-for-every-repo-postgresql).
 
 ### Can I use `repowise` with git worktrees?
 

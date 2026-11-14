@@ -42,8 +42,9 @@ ProvenanceKind = Literal[
 ]
 
 _HUMAN_SOURCES = frozenset({"adr", "cli", "session"})
+# ``agent`` is rationale its author stated, but the author is not a person.
 _RATIONALE_SOURCES = frozenset(
-    {"code_comment", "comment", "inline_marker", "rationale_comment"}
+    {"agent", "code_comment", "comment", "inline_marker", "rationale_comment"}
 )
 _HISTORICAL_SOURCES = frozenset(
     {"changelog", "commit", "git_archaeology", "pr", "readme_mining"}
@@ -369,12 +370,16 @@ def decision_evidence_refs(
     )
 
 
-def decision_collapse_key(record: Any) -> tuple[object, ...] | None:
+def decision_collapse_key(
+    record: Any, resolved_commits: Mapping[str, str] | None = None
+) -> tuple[object, ...] | None:
     """Conservative local restatement key, independent of public evidence ids.
 
     The raw extractor source remains part of this compatibility merge.  All
     commits participate, and only full commit ids or exact source points are
     safe enough to collapse.  Missing ranges therefore retain both records.
+    An abbreviated commit counts as full only through *resolved_commits*, the
+    map git itself produced (see :func:`resolve_record_commits`).
     """
 
     source = (getattr(record, "source", None) or "").strip().lower()
@@ -382,7 +387,7 @@ def decision_collapse_key(record: Any) -> tuple[object, ...] | None:
         record, "superseded_by", None
     ):
         return None
-    commits = [_full_commit(commit) for commit in _decision_commits(record)]
+    commits = [_full_commit(commit, resolved_commits) for commit in _decision_commits(record)]
     if commits and all(commits):
         return ("commits", source, *sorted(set(commits)))
     evidence_file = getattr(record, "evidence_file", None)

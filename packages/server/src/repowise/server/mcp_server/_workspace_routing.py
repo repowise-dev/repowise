@@ -130,13 +130,18 @@ def one_repo_refusal(tool: str, routes: list[Route]) -> dict[str, Any]:
             for alias, rs in groups.items()
         )
         error = f"The targets span several workspace repos; {tool} reads one per call: {calls}."
-    return {
-        "error": error,
-        "routes": {
-            r.target: {"candidates": list(r.candidates)} if r.candidates else {"repo": r.repo}
-            for r in routes
+    from repowise.server.mcp_server._savings.interaction import error_reply
+
+    return error_reply(
+        "not_found" if unresolved else "invalid_args",
+        {
+            "error": error,
+            "routes": {
+                r.target: {"candidates": list(r.candidates)} if r.candidates else {"repo": r.repo}
+                for r in routes
+            },
         },
-    }
+    )
 
 
 def settle_missing(routes: list[Route], changed: Collection[str]) -> list[Route]:

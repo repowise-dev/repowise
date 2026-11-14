@@ -19,14 +19,20 @@ Performance risk is one of the three signals in [Code Health](CODE_HEALTH.md).
 | Quadratic or wasteful data work | `string_concat_in_loop`, `nested_loop_quadratic`, `membership_test_against_list_in_loop`, `list_insert_zero_in_loop`, `array_spread_in_reduce`, `pd_concat_in_loop`, `pandas_iterrows_in_loop` |
 | Over-fetch | `unbounded_read_reduced_in_memory`, `sql_cartesian_join` |
 
-That is 21 performance detectors plus `sql_cartesian_join`. They move only the
-performance signal, never the defect score.
+That is 21 performance detectors plus `sql_cartesian_join`. They never move the
+defect score, and six of them are listed without moving any score: `io_in_loop`, `nested_loop_with_io`, `lock_in_loop`, `string_concat_in_loop`,
+`membership_test_against_list_in_loop` and `list_insert_zero_in_loop`. In a blind
+study of 705 findings on 64 repositories, 1 in 10 or fewer were worth acting on:
+the code was real but sat on a cold path (setup, once per connection, the error
+path), which a static read cannot tell from a hot one.
 
 A few shapes are deliberately quiet:
 
 - A loop that appends to one string several times is one `string_concat_in_loop`
   finding that lists every append line. TypeScript and JavaScript never get this
   finding, because JavaScript engines make repeated `+=` linear.
+- A `+=` onto the name the loop header binds each pass (`for p in ps: p += "/32"`)
+  is not flagged, because each pass grows a different string.
 - A TypeScript or JavaScript `includes` check against a short `const` table of
   literals that the file never changes is not flagged, because a table of fixed
   size costs the same at any scale.

@@ -24,9 +24,13 @@ def extract_java_bindings(stmt_node: Node, src: str) -> tuple[list[str], list[Na
             if local == "*":
                 return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
             names = [local]
-            if names_member and owner:
-                names.append(owner.rpartition(".")[2])
-            return names, [NamedBinding(local_name=local, exported_name=local, source_file=None)]
+            member_of = owner.rpartition(".")[2] if names_member and owner else None
+            if member_of:
+                names.append(member_of)
+            binding = NamedBinding(
+                local_name=local, exported_name=local, source_file=None, member_of=member_of
+            )
+            return names, [binding]
         if child.type == "asterisk":
             return ["*"], [NamedBinding(local_name="*", exported_name=None, source_file=None)]
     return [], []

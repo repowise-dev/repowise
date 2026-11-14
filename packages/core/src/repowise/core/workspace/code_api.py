@@ -151,11 +151,11 @@ def _pypi(text: str, root: str) -> tuple[str, frozenset[str], frozenset[str]] | 
     project = data.get("project")
     name = project.get("name") if isinstance(project, dict) else None
     if not isinstance(name, str):
-        name = _table(data, "tool", "poetry").get("name")
+        name = toml_table(data, "tool", "poetry").get("name")
     if not isinstance(name, str) or not name:
         return None
     prefix = f"{root}/" if root else ""
-    dirs = _pypi_package_dirs(data)
+    dirs = pypi_package_dirs(data)
     if not dirs:
         # PEP 503 allows `-`/`.` in a distribution name where the module needs
         # an identifier, and the two often differ beyond that. A guess, used
@@ -165,7 +165,7 @@ def _pypi(text: str, root: str) -> tuple[str, frozenset[str], frozenset[str]] | 
     return name, frozenset(f"{prefix}{d}/__init__.py" for d in dirs), frozenset()
 
 
-def _table(data: Any, *keys: str) -> dict[str, Any]:
+def toml_table(data: Any, *keys: str) -> dict[str, Any]:
     """Walk a chain of TOML tables, yielding {} the moment one is not a table."""
     for key in keys:
         if not isinstance(data, dict):
@@ -174,7 +174,7 @@ def _table(data: Any, *keys: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
+def pypi_package_dirs(data: dict[str, Any]) -> list[str]:
     """Package directories the build backend declares, newest layouts first.
 
     Every read is shape-checked: a hand-edited ``pyproject.toml`` must not be
@@ -185,16 +185,52 @@ def _pypi_package_dirs(data: dict[str, Any]) -> list[str]:
     def strings(value: Any) -> list[str]:
         return [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
 
-    dirs: list[str] = strings(_table(data, "tool", "hatch", "build", "targets", "wheel").get("packages"))
+    dirs: list[str] = strings(toml_table(data, "tool", "hatch", "build", "targets", "wheel").get("packages"))
     dirs += [
-        p.replace(".", "/") for p in strings(_table(data, "tool", "setuptools").get("packages"))
+        p.replace(".", "/") for p in strings(toml_table(data, "tool", "setuptools").get("packages"))
     ]
-    for entry in _table(data, "tool", "poetry").get("packages") or []:
+    for entry in toml_table(data, "tool", "poetry").get("packages") or []:
         include = entry.get("include") if isinstance(entry, dict) else None
         if isinstance(include, str):
             source = entry.get("from")
             dirs.append(f"{source}/{include}" if isinstance(source, str) else include)
+    dirs += _flit_module_dirs(data)
+    dirs += _uv_build_module_dirs(data)
     return [d.strip("/") for d in dirs if isinstance(d, str) and d.strip("/")]
+
+
+def _module_paths(module: Any, roots: tuple[str, ...]) -> list[str]:
+    """A dotted module name as package paths, one per *root* it may sit under.
+
+    ``acme.providers.ftp`` is the import path of a namespace package; the
+    directory a build backend ships for it is the dots spelled as separators,
+    ``acme/providers/ftp``, under whichever root that backend uses.
+    """
+    if not isinstance(module, str):
+        return []
+    path = module.strip().replace(".", "/").strip("/")
+    if not path:
+        return []
+    return [f"{root.strip('/')}/{path}" if root.strip("/") else path for root in roots]
+
+
+def _flit_module_dirs(data: dict[str, Any]) -> list[str]:
+    """``[tool.flit.module] name``, under ``src/`` or beside the manifest.
+
+    flit names the import package in the TOML, which is the only reliable
+    source when the distribution name does not spell it - a namespace package
+    such as ``acme-providers-ftp`` shipping ``acme.providers.ftp`` has no
+    top-level directory a guess from the name could find.
+    """
+    return _module_paths(toml_table(data, "tool", "flit", "module").get("name"), ("src", ""))
+
+
+def _uv_build_module_dirs(data: dict[str, Any]) -> list[str]:
+    """uv_build's ``module-name``, under its ``module-root``."""
+    backend = toml_table(data, "tool", "uv", "build-backend")
+    root = backend.get("module-root")
+    roots = (root, "") if isinstance(root, str) else ("src", "")
+    return _module_paths(backend.get("module-name"), roots)
 
 
 def dunder_all(path: Path) -> frozenset[str] | None:
@@ -235,8 +271,12 @@ def _dunder_all(repo_path: Path, entry_files: frozenset[str]) -> frozenset[str]:
     return frozenset(name for rel in entry_files for name in dunder_all(repo_path / rel) or ())
 
 
-def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
-    """``[package].name`` and the crate root, which is the whole public surface."""
+def _cargo(text: str, root: str, crate_dir: Path) -> tuple[str, frozenset[str]] | None:
+    """``[package].name`` and the crate root, which is the whole public surface.
+
+    A crate with no ``[lib]`` table and no ``src/lib.rs`` is bin-only: a
+    program, not a library, so it publishes nothing.
+    """
     import tomllib
 
     try:
@@ -248,6 +288,8 @@ def _cargo(text: str, root: str) -> tuple[str, frozenset[str]] | None:
     if not isinstance(name, str) or not name:
         return None
     lib = data.get("lib")
+    if not isinstance(lib, dict) and not (crate_dir / "src" / "lib.rs").is_file():
+        return None
     path = lib.get("path") if isinstance(lib, dict) else None
     entry = path if isinstance(path, str) else "src/lib.rs"
     return name, frozenset({f"{root}/{entry}" if root else entry})
@@ -293,7 +335,7 @@ def find_published_packages(
                 text = manifest.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            parsed = _read_manifest(ecosystem, text, root)
+            parsed = _read_manifest(ecosystem, text, root, dirpath)
             if parsed is None:
                 counts["code_unpublished_manifest"] = (
                     counts.get("code_unpublished_manifest", 0) + 1
@@ -340,7 +382,7 @@ def find_published_packages(
 
 
 def _read_manifest(
-    ecosystem: str, text: str, root: str
+    ecosystem: str, text: str, root: str, manifest_dir: Path
 ) -> tuple[str, frozenset[str], frozenset[str]] | None:
     if ecosystem == "npm":
         try:
@@ -353,7 +395,7 @@ def _read_manifest(
         return (npm[0], npm[1], frozenset()) if npm else None
     if ecosystem == "pypi":
         return _pypi(text, root)
-    cargo = _cargo(text, root)
+    cargo = _cargo(text, root, manifest_dir)
     return (cargo[0], cargo[1], frozenset()) if cargo else None
 
 

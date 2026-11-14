@@ -197,7 +197,8 @@ def _resolve_embedder_from_state(app_state):
     against LanceDB stores built with the mock embedder during tests.
     """
     primary_vs = getattr(app_state, "vector_store", None)
-    embedder = getattr(primary_vs, "_embedder", None) if primary_vs else None
+    # ``is not None``: an empty InMemoryVectorStore defines ``__len__``, so it is falsy.
+    embedder = getattr(primary_vs, "_embedder", None) if primary_vs is not None else None
     if embedder is None:
         from repowise.core.providers.embedding.base import KeylessEmbedder
 

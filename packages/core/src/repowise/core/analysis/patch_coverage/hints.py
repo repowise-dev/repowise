@@ -264,9 +264,22 @@ async def _read_test_hints(
     working_tree: bool,
 ) -> dict[str, tuple[TestHint, ...]]:
     """Batched reads for the whole change: symbols, per-test rows, the reverse test walk."""
+    from repowise.core.analysis.test_reach import cached_file_paths
     from repowise.core.persistence.crud.analysis.coverage_map import tests_covering_files
 
-    files = [f for f in pc.with_status("measured") if f.uncovered_ranges]
+    # A file the index has not seen (one the change adds) gets no hint: the
+    # graph cannot say which test reaches it, so "no test reaches this" would
+    # be a guess (``pr_blast.file_tests`` calls it ``new``). No file nodes at
+    # all is no index to judge by, and every file keeps its hint.
+    try:
+        known = await cached_file_paths(session, repository_id)
+    except Exception:
+        known = frozenset()
+    files = [
+        f
+        for f in pc.with_status("measured")
+        if f.uncovered_ranges and (not known or f.file_path in known)
+    ]
     if not files:
         return {}
     paths = sorted(f.file_path for f in files)
@@ -339,10 +352,10 @@ async def _walk_tests(
     symbol, then the import tier for only the files a range still needs it
     for. The test-file set is read once for both.
     """
-    from ..test_reachability import cached_hub_files, load_test_files, tests_reaching_by_tier
+    from ..test_reachability import cached_hub_files, cached_test_files, tests_reaching_by_tier
 
     symbol_ids = sorted({s.symbol_id for syms in placed.values() for s in syms if s})[:MAX_SEEDS]
-    test_files = await load_test_files(session, repository_id)
+    test_files = await cached_test_files(session, repository_id)
     reached: dict[str, ReachedBy] = {}
     if symbol_ids:
         reached.update(
@@ -362,9 +375,16 @@ async def _walk_tests(
         if any(s is None or s.symbol_id not in reached for s in placed[path])
     ][:MAX_SEEDS]
     if unanswered:
+        # With the package hops: a range no tier answers reads "no test
+        # reaches this", the claim ``pr_blast.file_tests`` makes on the same bar.
         reached.update(
             await tests_reaching_by_tier(
-                session, repository_id, unanswered, call_depth=0, test_files=test_files
+                session,
+                repository_id,
+                unanswered,
+                call_depth=0,
+                test_files=test_files,
+                helpers=True,
             )
         )
     return reached

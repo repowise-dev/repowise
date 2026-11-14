@@ -10,6 +10,29 @@ import { FilePath } from "../shared/file-path";
 import { isFileNodeId } from "./node-id";
 import type { GraphPath, NodeSearchResult } from "@repowise-dev/types/graph";
 
+/** The panel's words; the defaults name files, a host searching other nodes (services) names those. */
+export interface PathFinderCopy {
+  title: string;
+  fromPlaceholder: string;
+  toPlaceholder: string;
+  /** Heading over the suggestions shown before anything is typed. */
+  topHeading: string;
+  submit: string;
+  noPath: string;
+}
+
+const DEFAULT_COPY: PathFinderCopy = {
+  title: "Find Path",
+  fromPlaceholder: "From file...",
+  toPlaceholder: "To file...",
+  topHeading: "Top files by importance",
+  submit: "Find Path",
+  noPath: "No path found between these nodes.",
+};
+
+/** How a suggestion reads: a label and a short detail on the right. */
+export type PathFinderOptionDescriber = (r: NodeSearchResult) => { label: string; detail: string };
+
 export interface PathFinderPanelProps {
   /** Inject the autocomplete searcher. Returns the top-N nodes for a query. */
   searchNodes: (query: string, limit: number) => Promise<NodeSearchResult[]>;
@@ -24,6 +47,10 @@ export interface PathFinderPanelProps {
   /** Pre-fill values driven by the parent's context-menu. */
   initialFrom?: string;
   initialTo?: string;
+  /** Override any of the panel's words. */
+  copy?: Partial<PathFinderCopy>;
+  /** Label suggestions yourself; by default a file path and its language. */
+  describeOption?: PathFinderOptionDescriber;
 }
 
 interface NodeAutocompleteProps {
@@ -31,6 +58,8 @@ interface NodeAutocompleteProps {
   value: string;
   onChange: (v: string) => void;
   placeholder: string;
+  topHeading: string;
+  describeOption?: PathFinderOptionDescriber | undefined;
   onSubmit?: () => void;
 }
 
@@ -39,6 +68,8 @@ function NodeAutocomplete({
   value,
   onChange,
   placeholder,
+  topHeading,
+  describeOption,
   onSubmit,
 }: NodeAutocompleteProps) {
   const [results, setResults] = useState<NodeSearchResult[]>([]);
@@ -103,25 +134,32 @@ function NodeAutocomplete({
         <div className="absolute top-full left-0 mt-1 w-full max-h-52 overflow-auto z-[var(--z-dropdown)] rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] shadow-xl shadow-black/30 py-1">
           {results.length === 0 && topNodes.length > 0 && (
             <div className="px-3 py-1 text-[10px] text-[var(--color-text-tertiary)] uppercase tracking-wider">
-              Top files by importance
+              {topHeading}
             </div>
           )}
-          {displayResults.map((r) => (
-            <button
-              key={r.node_id}
-              className="w-full px-3 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] transition-colors flex items-center gap-2"
-              onMouseDown={() => handleSelect(r.node_id)}
-            >
-              {isFileNodeId(r.node_id) ? (
-                <FilePath path={r.node_id} fold className="flex-1 text-[var(--color-text-primary)]" />
-              ) : (
-                <span className="flex-1 truncate font-mono text-[var(--color-text-primary)]">{r.node_id}</span>
-              )}
-              <span className="text-[10px] text-[var(--color-text-tertiary)] capitalize shrink-0 tabular-nums">
-                {r.language}
-              </span>
-            </button>
-          ))}
+          {displayResults.map((r) => {
+            const described = describeOption?.(r);
+            return (
+              <button
+                key={r.node_id}
+                className="w-full px-3 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] transition-colors flex items-center gap-2"
+                onMouseDown={() => handleSelect(r.node_id)}
+              >
+                {described ? (
+                  <span className="flex-1 truncate font-mono text-[var(--color-text-primary)]">{described.label}</span>
+                ) : isFileNodeId(r.node_id) ? (
+                  <FilePath path={r.node_id} fold className="flex-1 text-[var(--color-text-primary)]" />
+                ) : (
+                  <span className="flex-1 truncate font-mono text-[var(--color-text-primary)]">{r.node_id}</span>
+                )}
+                <span
+                  className={`text-[10px] text-[var(--color-text-tertiary)] shrink-0 tabular-nums ${described ? "" : "capitalize"}`}
+                >
+                  {described ? described.detail : r.language}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
@@ -136,7 +174,10 @@ export function PathFinderPanel({
   onClose,
   initialFrom = "",
   initialTo = "",
+  copy: copyOverrides,
+  describeOption,
 }: PathFinderPanelProps) {
+  const copy = { ...DEFAULT_COPY, ...copyOverrides };
   const [from, setFrom] = useState(initialFrom);
   const [to, setTo] = useState(initialTo);
   const [loading, setLoading] = useState(false);
@@ -164,14 +205,14 @@ export function PathFinderPanel({
       if (res.path && res.path.length > 0) {
         onPathFound(res.path);
       } else {
-        setError("No path found between these nodes.");
+        setError(copy.noPath);
       }
     } catch {
-      setError("No path found between these nodes.");
+      setError(copy.noPath);
     } finally {
       setLoading(false);
     }
-  }, [from, to, findPath, onPathFound, onClear]);
+  }, [from, to, findPath, onPathFound, onClear, copy.noPath]);
 
   const handleClear = useCallback(() => {
     setFrom("");
@@ -187,7 +228,7 @@ export function PathFinderPanel({
       <div className="flex items-center gap-2">
         <Route className="w-3.5 h-3.5 text-[var(--color-accent-graph)]" />
         <span className="text-xs font-semibold text-[var(--color-text-primary)]">
-          Find Path
+          {copy.title}
         </span>
         <div className="ml-auto flex items-center gap-1">
           {(result || error) && (
@@ -221,14 +262,18 @@ export function PathFinderPanel({
           searchNodes={searchNodes}
           value={from}
           onChange={setFrom}
-          placeholder="From file..."
+          placeholder={copy.fromPlaceholder}
+          topHeading={copy.topHeading}
+          describeOption={describeOption}
           onSubmit={handleFind}
         />
         <NodeAutocomplete
           searchNodes={searchNodes}
           value={to}
           onChange={setTo}
-          placeholder="To file..."
+          placeholder={copy.toPlaceholder}
+          topHeading={copy.topHeading}
+          describeOption={describeOption}
           onSubmit={handleFind}
         />
       </div>
@@ -239,17 +284,13 @@ export function PathFinderPanel({
         onClick={handleFind}
         disabled={!from.trim() || !to.trim() || loading}
         className="w-full h-7 text-xs font-medium gap-1.5"
-        style={{
-          background: "var(--color-accent-graph)",
-          color: "var(--color-text-on-accent)",
-        }}
       >
         {loading ? (
           <Spinner size="sm" />
         ) : (
           <Route className="h-3.5 w-3.5" />
         )}
-        Find Path
+        {copy.submit}
       </Button>
 
       {/* Result */}

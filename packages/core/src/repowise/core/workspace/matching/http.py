@@ -13,6 +13,7 @@ from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.contracts import ContractLink, normalize_contract_id
+from repowise.core.workspace.extractors.http.paths import LOCALHOST_HOSTS
 from repowise.core.workspace.origins import (
     ORIGIN_CONFIDENCE,
     ContractOrigin,
@@ -28,7 +29,7 @@ from repowise.core.workspace.service_names import (
     ServiceNameMap,
 )
 
-from .common import find_matching_keys, internal, prefer_target_repo
+from .common import find_matching_keys, internal, prefer_target_repo, spans_repos
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -49,6 +50,9 @@ if TYPE_CHECKING:
 # they double as legitimate route segments and would conflate unrelated routes.
 _MOUNT_PREFIX_SEGMENTS = frozenset({"api", "rest"})
 _VERSION_SEGMENT_RE = re.compile(r"^v\d+$")
+
+# What every parameter style (``:id``, ``{id}``, ``[id]``, ``${expr}``) normalizes to.
+_PARAM = "{param}"
 
 # Segments of the operational endpoints nearly every service serves (health,
 # readiness, liveness, metrics, version, Spring's actuator). A path made only of
@@ -107,11 +111,6 @@ _STATIC_ASSET_SUFFIXES = (
     ".wasm",
 )
 
-# Hosts that name the local machine, not a specific service. A consumer URL
-# pointing here carries no service identity, so it is resolved by path uniqueness
-# rather than excluded as third-party.
-_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
-
 # Internal-DNS suffixes whose leading label names a service (k8s / mesh / LAN).
 # Only for these do we map ``<label>.<suffix>`` to a repo alias; a public host
 # like ``backend.stripe.com`` must never be mistaken for the ``backend`` repo.
@@ -155,7 +154,8 @@ def _resolve_consumer_target(
     if host:
         if host in service_bases:
             return service_bases[host], False, ServiceName(host, HOST, service_bases[host], VIA_SERVICE_BASES, "")
-        if host in _LOCALHOST_HOSTS:
+        if host in LOCALHOST_HOSTS:
+            # No service identity: resolved by path uniqueness, not excluded as third-party.
             return None, False, None
         internal_dns = host not in repo_aliases and host.endswith(_INTERNAL_HOST_SUFFIXES)
         label = host.split(".")[0] if internal_dns else host
@@ -335,6 +335,12 @@ def _methods_compatible(consumer_method: str, provider_method: str) -> bool:
     return consumer_method == provider_method or consumer_method == "*" or provider_method == "*"
 
 
+def _method_fits(method: str, provider: Contract) -> bool:
+    """Whether *provider*'s method serves a call made with *method*."""
+    split = _split_http_id(normalize_contract_id(provider.contract_id))
+    return split is not None and _methods_compatible(method, split[0])
+
+
 def is_deferred(consumer: Contract) -> bool:
     """A base-stripped or gateway-routed consumer skips the exact pass; its own pass owns it."""
     return bool(consumer.meta.get("base_stripped") or "route_path" in consumer.meta)
@@ -401,7 +407,9 @@ def base_resolved_pass(state: MatchState) -> None:
     The strategy names how the target service was settled: a host or
     ``service_bases`` target that narrows to a provider (``service_mapped``),
     the only service serving the path (``unique_path``), or neither, linking
-    every service that serves it (``ambiguous_path``, a candidate).
+    every service that serves it (``ambiguous_path``, a candidate) when they
+    share one repo. Services in two or more repos link to none
+    (:meth:`.common.MatchState.refuse`).
     """
     for consumer in state.unmatched("http"):
         if not consumer.meta.get("base_stripped") or "route_path" in consumer.meta:
@@ -421,19 +429,31 @@ def base_resolved_pass(state: MatchState) -> None:
         target = consumer.meta.get("target_repo")
         narrowed = [p for p in providers if p.repo == target] if target else []
         if narrowed:
-            providers = narrowed
-        if narrowed:
-            strategy = LinkStrategy.SERVICE_MAPPED
-        elif len({(p.repo, p.service) for p in providers}) == 1:
-            strategy = LinkStrategy.UNIQUE_PATH
+            providers, strategy = narrowed, LinkStrategy.SERVICE_MAPPED
+        elif spans_repos(providers):
+            # A target the workspace's own config placed stays unmatched, so
+            # the service pass draws its edge to that repo.
+            if not consumer.meta.get("target_evidence"):
+                state.refuse(consumer)
+            continue
         else:
-            strategy = LinkStrategy.AMBIGUOUS_PATH
+            strategy = _one_repo_strategy(providers)
         for provider in providers:
             state.add(consumer, provider, strategy)
 
 
+def _one_repo_strategy(providers: list[Contract]) -> LinkStrategy:
+    """``unique_path`` for one service of one repo, ``ambiguous_path`` for several."""
+    if len({p.service for p in providers}) == 1:
+        return LinkStrategy.UNIQUE_PATH
+    return LinkStrategy.AMBIGUOUS_PATH
+
+
 def candidate_pass(state: MatchState) -> None:
-    """Retry unmatched consumers after collapsing mount/version/base prefixes on both sides."""
+    """Retry unmatched consumers after collapsing mount/version/base prefixes on both sides.
+
+    A collapsed path two or more repos serve links to none of them.
+    """
     candidate_index: dict[str, list[Contract]] = defaultdict(list)
     for key, providers in state.provider_index.items():
         split = _split_http_id(key)
@@ -456,13 +476,135 @@ def candidate_pass(state: MatchState) -> None:
         if core in ("", "/"):
             continue
 
-        for provider in prefer_target_repo(candidate_index.get(core, []), consumer):
-            if internal(provider, consumer) or not accepts(provider, consumer):
-                continue
-            psplit = _split_http_id(normalize_contract_id(provider.contract_id))
-            if psplit is None or not _methods_compatible(method, psplit[0]):
-                continue
+        servers = [
+            p
+            for p in prefer_target_repo(candidate_index.get(core, []), consumer)
+            if not internal(p, consumer) and accepts(p, consumer) and _method_fits(method, p)
+        ]
+        if spans_repos(servers):
+            state.refuse(consumer)
+            continue
+        for provider in servers:
             state.add(consumer, provider, LinkStrategy.PREFIX_STRIPPED)
+
+
+def _segments(path: str) -> list[str]:
+    return [s for s in path.split("/") if s]
+
+
+def _names_a_resource(segments: list[str]) -> bool:
+    """Whether *segments* hold a literal that is no mount, version or operational word.
+
+    A provider path with none (``/{param}``, ``/api/{param}``, ``/{param}/status``) is a
+    catch-all: a concrete call segment meeting it says nothing about the route.
+    """
+    return any(
+        s != _PARAM
+        and s not in _MOUNT_PREFIX_SEGMENTS
+        and s not in _GENERIC_SEGMENTS
+        and not _VERSION_SEGMENT_RE.match(s)
+        for s in segments
+    )
+
+
+def _param_hits(call: list[str], route: list[str]) -> int | None:
+    """How many of *route*'s ``{param}`` segments a concrete segment of *call* fills.
+
+    ``None`` when the paths differ in length or any segment differs where *route*
+    holds a literal. ``0`` means the two paths are the same text.
+    """
+    if len(call) != len(route):
+        return None
+    hits = 0
+    for seen, declared in zip(call, route, strict=True):
+        if seen == declared:
+            continue
+        if declared != _PARAM:
+            return None
+        hits += 1
+    return hits
+
+
+def _matching_param_routes(
+    call: list[str],
+    method: str,
+    routes: list[tuple[str, list[str], Contract]],
+) -> list[tuple[int, Contract]]:
+    """Return compatible provider routes ranked by the number of parameter hits."""
+    fits = []
+    for route_method, segments, provider in routes:
+        hits = _param_hits(call, segments)
+        if hits and _methods_compatible(method, route_method):
+            fits.append((hits, provider))
+    return fits
+
+
+def _link_param_candidates(
+    state: MatchState,
+    consumer: Contract,
+    fits: list[tuple[int, Contract]],
+) -> None:
+    """Link the most-literal candidates or refuse an ambiguous cross-repo match."""
+    if not fits:
+        return
+
+    fewest = min(hits for hits, _ in fits)
+    candidates = [p for hits, p in fits if hits == fewest]
+    servers = [
+        p
+        for p in prefer_target_repo(candidates, consumer)
+        if not internal(p, consumer) and accepts(p, consumer)
+    ]
+
+    if spans_repos(servers):
+        state.refuse(consumer)
+        return
+
+    for provider in servers:
+        state.add(consumer, provider, LinkStrategy.PARAM_SEGMENT)
+
+
+def segment_pass(state: MatchState) -> None:
+    """Link a call with a concrete value in a parameter position to the route declaring a ``{param}`` there.
+
+    ``GET /api/render/1`` meets ``GET /api/render/{param}``: same segment count, every
+    segment equal or a provider ``{param}``, at least one of the latter. Runs last among
+    the path passes, so only consumers an exact, base-resolved or prefix-stripped match
+    left alone get here; links are :attr:`LinkStrategy.PARAM_SEGMENT` candidates.
+
+    Of the routes a call fits, only the most literal stand: ``/users/me`` leaves
+    ``/users/{param}`` out when both are declared. A provider with no literal naming a
+    resource (:func:`_names_a_resource`) is never a target. Routes in two or more repos
+    link to none of them, as in :func:`candidate_pass`.
+    """
+    routes: dict[int, list[tuple[str, list[str], Contract]]] = defaultdict(list)
+    for key, providers in state.provider_index.items():
+        split = _split_http_id(key)
+        if split is None:
+            continue
+        segments = _segments(split[1])
+        if _PARAM not in segments or not _names_a_resource(segments):
+            continue
+        routes[len(segments)].extend((split[0], segments, p) for p in providers)
+
+    for consumer in state.unmatched("http"):
+        split = _split_http_id(normalize_contract_id(consumer.contract_id))
+        if split is None:
+            continue
+        method, path = split
+        path = consumer.meta.get("route_path", path)
+        if _is_static_asset_path(path):
+            continue
+        call = _segments(path)
+        if not call:
+            continue
+
+        fits = _matching_param_routes(
+            call,
+            method,
+            routes.get(len(call), []),
+        )
+        _link_param_candidates(state, consumer, fits)
 
 
 def service_pass(state: MatchState) -> None:
@@ -515,5 +657,6 @@ __all__ = [
     "gateway_pass",
     "gateway_route_links",
     "is_deferred",
+    "segment_pass",
     "service_pass",
 ]

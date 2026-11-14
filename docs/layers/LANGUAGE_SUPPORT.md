@@ -66,10 +66,11 @@ listed per language and framework in
 | Dead code detection | ✅ | ✅* | ✅ | ✅ | ✅ |
 | Semantic search and wiki pages | ✅ | ✅ | ✅ | ✅ | ✅ |
 
-Every Full and Good language has a dedicated import resolver except Object
-Pascal and Objective-C, which resolve through a generic unit-name or header-stem
-match, and Apex, which has no imports and resolves names case-insensitively
-within each sfdx project's namespace.
+Every Full and Good language has a dedicated import resolver except
+Objective-C, which resolves through a generic header-stem match, and Apex,
+which has no imports and resolves names case-insensitively within each sfdx
+project's namespace. Object Pascal resolves `uses` through the project files
+that compile each unit and matches names case-insensitively.
 Scala, Elixir and F# have dedicated import resolvers with known gaps; see
 [Limits](#limits).
 
@@ -244,6 +245,10 @@ invoked by name.
 - Lightweight languages resolve imports against a declared module-name index.
 - OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform
   and Markdown appear in the file tree and the wiki.
+- A Markdown document gets a `documents` edge to each repository file it links
+  to or names in backticks, when that reference resolves to exactly one file
+  (a bare backticked name never to a root-level file).
+  See [GRAPH.md](GRAPH.md#edge-types).
 - HTML contributes `<script src>` and `<link href>` edges, so `index.html`
   reaches `src/main.ts` in a Vite or webpack app.
 - HTML and QML files are never flagged as dead code, since whether a page or a
@@ -274,7 +279,7 @@ This table is why a language is Full and not Good.
 | Ruby | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Kotlin | ✅ | ✅ | ✅ | no | no | no | ✅ |
 | Dart | ✅ | ✅ | ✅ | no | no | no | ✅ |
-| Object Pascal | ✅ | n/a | ✅ | n/a | n/a | no | ✅ |
+| Object Pascal | ✅ | n/a | ✅ | n/a | n/a | ✅ | ✅ |
 | Razor | ✅ | n/a | n/a | n/a | n/a | no | ✅ |
 | PHP | ✅ | ✅ | ✅ | no | no | ✅ | no |
 | C | ✅ | no | no | no | no | ✅ | no |
@@ -322,7 +327,7 @@ The full list per language, with the mechanics behind each gap, is in
 | Kotlin | Extract Method, which needs a grammar that labels control flow |
 | Ruby | Extract Method (dataflow dialect) |
 | GDScript | Health markers (complexity, performance, dataflow) |
-| Object Pascal | A dedicated `uses` resolver |
+| Object Pascal | Form files (`.dfm`, `.fmx`) binding event handlers |
 | COBOL | Dialect coverage, health markers beyond complexity |
 | VB.NET, Elixir | Health markers |
 | F#, Objective-C | Health markers beyond complexity |

@@ -111,7 +111,6 @@ export default function OpportunityDrawer({
           <AiPromptButton
             label={AGENT_PROMPT_LABEL}
             onClick={() => onAgentPrompt(current)}
-            className="px-3.5 py-2 text-sm"
           />
         </div>
       </div>

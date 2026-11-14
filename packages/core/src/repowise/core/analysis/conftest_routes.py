@@ -15,11 +15,12 @@ through its imports can break a test through either:
    selected already, chosen as the first by path (an import check). Autouse
    fixtures run for that test too, so a patch an autouse fixture applies to a
    module on the route (``monkeypatch.setattr(mod, "x", ...)``) that stops
-   working fails there as well.
+   working fails there as well. So does a cache reset an autouse fixture runs
+   (below) that starts raising.
 2. **What the conftest does with the module.** A fixture, a hook or
    module-level code that names something from a module on the route, in any
-   way but as the ``setattr`` target (the module or an attribute of it) in an
-   autouse fixture or hook,
+   way but as the ``setattr`` target (the module or an attribute of it) or a
+   cache reset (:func:`_cache_reset`) in an autouse fixture or hook,
    can change what a test sees: calling it, reading a constant, comparing,
    iterating or formatting it all do. An autouse fixture, a ``pytest_*`` hook,
    module-level code (class bodies included) and a fixture or hook defined in
@@ -55,7 +56,8 @@ import-time side effect (plugin registration, a patch) elsewhere in the closure
 of a module whose local name the conftest reads, since that read still
 imports it. A local function that reads or runs repo files by path (``open``,
 ``Path.read_text``, ``os.system``) is judged by its imports only, as the module
-grain already was. Upgrade path: a per-test map built from a coverage run,
+grain already was. A function named as a cache reset that does more than
+empty a cache is trusted by its name (:func:`_cache_reset`). Upgrade path: a per-test map built from a coverage run,
 which records what each test executed.
 """
 
@@ -63,6 +65,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import re
 import symtable
 from collections import Counter
 from collections.abc import Callable, Collection, Iterator, Mapping
@@ -125,6 +128,8 @@ _RUNS_BY_ATTRIBUTE = frozenset(
 )  # fmt: skip
 # The ``functools`` decorators whose ``cache_clear`` empties a function's cache.
 _CACHE_DECORATORS = frozenset({"cache", "lru_cache"})
+# Callee names :func:`_cache_reset` reads as emptying a cache.
+_CACHE_RESET_RE = re.compile(r"(?:clear|reset|invalidate)_\w*cache\w*")
 
 
 @dataclass(frozen=True)
@@ -248,6 +253,33 @@ def _patch_target(name: ast.Name, parents: Mapping[int, ast.AST]) -> bool:
     func = par.func
     called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
     return called in _TARGET_CALLS
+
+
+def _cache_reset(name: ast.Name, parents: Mapping[int, ast.AST]) -> bool:
+    """Whether the name, or an attribute chain read from it, is called as a cache reset.
+
+    The call is a statement of its own (its result unused) with no arguments,
+    and the callee is named ``clear_*cache*``, ``reset_*cache*`` or
+    ``invalidate_*cache*`` (``cache_clear`` keeps its :func:`local_names`
+    rule). Emptying a cache changes no value its owner serves, only how
+    fresh it is, so a test that can see the
+    difference reaches the owner through its own imports and is selected for
+    it; a reset that starts raising fails the import check. Ceiling: the name
+    is trusted, so a "reset" that also rebuilds or reconfigures state other
+    modules read reaches tests without an import route of their own only
+    through the import check.
+    """
+    node, attrs = _dotted_read(name, parents)
+    call = parents.get(id(node))
+    return (
+        _CACHE_RESET_RE.fullmatch(attrs[-1] if attrs else name.id) is not None
+        and not any(_runs_by_attribute(a) for a in attrs)
+        and isinstance(call, ast.Call)
+        and call.func is node
+        and not call.args
+        and not call.keywords
+        and isinstance(parents.get(id(call)), ast.Expr)
+    )
 
 
 def _is_literal(node: ast.AST, bound: Collection[str]) -> bool:
@@ -383,15 +415,21 @@ def _runs_by_attribute(attr: str) -> bool:
     )
 
 
+def _has_dynamic_load(text: str) -> bool:
+    return any(m in text for m in PY_DYNAMIC_LOAD_MARKERS)
+
+
 def _globals_used(
     node: ast.FunctionDef | ast.AsyncFunctionDef, scope: symtable.SymbolTable
 ) -> set[str] | None:
     """The module names *node* reads, or None when it imports or assigns outside itself."""
-    if any(m in ast.unparse(node) for m in PY_DYNAMIC_LOAD_MARKERS) or any(
+    # The cheap walk first, and one unparse for every marker: unparsing per
+    # marker was most of a finalize's test-route time.
+    if any(
         (isinstance(sub, (ast.Import, ast.ImportFrom)) and not _stdlib_import(sub))
         or (isinstance(sub, ast.Attribute) and _runs_by_attribute(sub.attr))
         for sub in ast.walk(node)
-    ):
+    ) or _has_dynamic_load(ast.unparse(node)):
         return None
     # Decorators and defaults run in the module's scope, the body in its own.
     defaults = [*node.decorator_list, *node.args.defaults, *node.args.kw_defaults]
@@ -471,7 +509,9 @@ def _module_names(tree: ast.Module, counts: Mapping[str, int]) -> _ModuleNames:
         and isinstance(value, (ast.Call, ast.Dict, ast.List, ast.Set))
         and all(s.id in outside for s in ast.walk(value) if isinstance(s, ast.Name))
     } | {n: "cache_clear" for n, node in functions.items() if _cached(node, outside, tree.body)}
-    return _ModuleNames(_parents(tree), frozenset(literals), frozenset(outside), resets, functions)
+    # Only a reset is checked against its parents; most modules have none.
+    parents = _parents(tree) if resets else {}
+    return _ModuleNames(parents, frozenset(literals), frozenset(outside), resets, functions)
 
 
 def _not_local(deps: Mapping[str, set[str] | None]) -> set[str]:
@@ -849,7 +889,7 @@ class ConftestFacts:
             path = local.get(load.id) or hot.get(load.id)
             if path is None:
                 continue
-            if _patch_target(load, self.parents):
+            if _patch_target(load, self.parents) or _cache_reset(load, self.parents):
                 r.patch = r.patch or load.id
             elif not self._reads_local(load, path, stable):
                 r.run = r.run or load.id
@@ -1086,14 +1126,16 @@ def _judge_routes(
     facts: dict[str, ConftestFacts | None] = {}
     consts: dict[str, EntryNames] = {}
     uses: dict[tuple, ConftestUse] = {}
+    # Entries share re-export origins, each probed by path: read every file once per call.
+    source_of = lru_cache(maxsize=None)(read_source) if read_source else None
     for target, conf, route in ((t, c, r) for t, by in routes.items() for c, r in by.items()):
         if conf not in facts:
             source = read(conf)
             facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
         # The changed file's own local names may be what changed.
         others = route.entries - {target}
-        for e in others - set(consts) if read_source else ():
-            consts[e] = entry_names(e, read_source)
+        for e in others - set(consts) if source_of else ():
+            consts[e] = entry_names(e, source_of)
         stable = {e: names for e in others if e in consts and (names := consts[e].stable(target))}
         _judge(conf, route, facts[conf], plugin_loader, uses, stable)
 

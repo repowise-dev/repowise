@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.scope import parse_scope
+from repowise.core.analysis.health.scope import parse_scope, rows_in_scope
 from repowise.core.analysis.health.trends import (
     diff_snapshots,
     drop_unscoped_fields,
@@ -95,8 +95,13 @@ async def health_trend(
     )
     summary = diff_snapshots(snapshots)
     # Snapshots record per-file scores for the whole repository, so a narrowed
-    # response has to drop the test files from the movement list too.
-    test_paths = await crud.get_test_file_paths(session, repo_id) if narrowed else set()
+    # response has to drop the files the scope leaves out from the movement list too.
+    left_out: set[str] = set()
+    if narrowed:
+        metrics = await crud.get_health_metrics(session, repo_id)
+        kept = {m.file_path for m in rows_in_scope(scope, metrics)}
+        left_out = await crud.get_test_file_paths(session, repo_id)
+        left_out |= {m.file_path for m in metrics} - kept
 
     # Per-file delta from the last two snapshots.
     file_deltas: list[dict] = []
@@ -110,7 +115,7 @@ async def health_trend(
         for p in all_paths:
             before = prev.get(p)
             after = cur.get(p)
-            if before is None or after is None or p in test_paths:
+            if before is None or after is None or p in left_out:
                 continue
             d = round(float(after) - float(before), 2)
             if d == 0:

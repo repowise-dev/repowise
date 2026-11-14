@@ -18,10 +18,15 @@ which legs are asynchronous (:data:`ASYNC_EDGE_KINDS`) instead of hiding them.
 
 **Reuse, not reinvention.** Cycle finding is delegated to NetworkX
 (``simple_cycles`` / ``strongly_connected_components``) — the same library the
-single-repo graph metrics use — rather than a hand-rolled DFS. The graph is
-service-granular (tens of nodes), so enumeration is cheap; we still cap the
+single-repo graph metrics use — rather than a hand-rolled DFS. We cap the
 reported set (:data:`MAX_CYCLES`) and log truncation so a pathological graph
 never bloats the artifact silently.
+
+**Bounded enumeration.** Cycle count grows exponentially with the largest
+strongly connected component (an 18-service tangle has millions), so the
+enumeration stops after :data:`MAX_ENUMERATED_CYCLES`. Under that budget the
+total is exact; past it the total is a lower bound (``total_capped``) and the
+listed cycles come from a length-bounded pass, so they are still the shortest.
 
 Pure and I/O-free: it consumes a ``SystemGraph`` and returns dataclasses.
 """
@@ -45,6 +50,15 @@ _log = logging.getLogger("repowise.workspace.cycles")
 #: count is returned alongside the capped list so no caller can mistake the one
 #: for the other.
 MAX_CYCLES = 50
+
+#: Enumeration budget. A graph with more cycles than this reports the total as
+#: "at least" this many instead of enumerating every one (which is exponential
+#: in the largest cyclic group and hangs on a dense tangle).
+MAX_ENUMERATED_CYCLES = 20_000
+
+#: Longest cycle the bounded pass looks for once the budget is hit. The short
+#: loops are the actionable ones, and length-bounded enumeration stays cheap.
+MAX_CYCLE_LENGTH = 6
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +114,11 @@ class DependencyCycle:
 # ---------------------------------------------------------------------------
 
 
+def cycle_total(total: int, capped: bool) -> str:
+    """``total`` as a reader should see it: "at least N" when the budget stopped the count."""
+    return f"at least {total}" if capped else str(total)
+
+
 def _cycle(
     nodes: list[str], adjacency: dict[str, dict[str, list[SystemEdge]]]
 ) -> DependencyCycle:
@@ -119,47 +138,104 @@ def _cycle(
     return DependencyCycle(nodes=list(nodes), edge_ids=edge_ids, leg_kinds=leg_kinds)
 
 
-def detect_cycles(graph: SystemGraph) -> tuple[list[DependencyCycle], int]:
-    """Return the structural dependency cycles in *graph*, and how many exist.
+def _canonical_rotation(nodes: list[str]) -> list[str]:
+    """Rotate the cycle so the lexicographically smallest service id starts it.
+
+    NetworkX's ``simple_cycles`` begins each cycle at whatever node its own
+    iteration order lands on, which follows set iteration order and therefore
+    varies with PYTHONHASHSEED. A cycle is the same loop regardless of where
+    the rotation starts, so normalising the start node makes the reported
+    ``nodes``, ``edge_ids`` and ``leg_kinds`` identical on every run.
+    """
+    if not nodes:
+        return nodes
+    start = nodes.index(min(nodes))
+    return nodes[start:] + nodes[:start]
+
+
+def _enumerate(digraph: Any, length_bound: int | None) -> tuple[list[list[str]], bool]:
+    """Up to :data:`MAX_ENUMERATED_CYCLES` rotated cycles, and whether that is all of them."""
+    import networkx as nx
+
+    found: list[list[str]] = []
+    for raw in nx.simple_cycles(digraph, length_bound=length_bound):
+        if len(found) == MAX_ENUMERATED_CYCLES:
+            return found, False
+        found.append(_canonical_rotation(raw))
+    return found, True
+
+
+def _shortest_cycles(digraph: Any) -> list[list[str]]:
+    """Every cycle up to the longest length whose bounded pass fits the budget.
+
+    Raises the bound one length at a time and stops once the pass holds
+    :data:`MAX_CYCLES` cycles (the shortest ones are then all in it) or the
+    budget cuts it. The previous complete pass is then kept, even with fewer
+    than :data:`MAX_CYCLES`: a cut pass is an arbitrary subset, and listing
+    fewer cycles beats listing ones that change from run to run.
+    """
+    best: list[list[str]] = []
+    for bound in range(1, MAX_CYCLE_LENGTH + 1):
+        found, complete = _enumerate(digraph, bound)
+        if not complete:
+            return best or found
+        best = found
+        if len(best) >= MAX_CYCLES:
+            break
+    return best
+
+
+def detect_cycles(graph: SystemGraph) -> tuple[list[DependencyCycle], int, bool]:
+    """Return the structural dependency cycles in *graph*, how many, and whether that is a floor.
 
     Cycles are ordered shortest-first (the tightest loops are the most
-    actionable), then lexicographically for stability. The returned list is
-    capped at :data:`MAX_CYCLES`; the second element is the true count before
-    that cap, so a caller reporting "N cycles" cannot accidentally report the
-    cap instead. Returns ``([], 0)`` when the structural subgraph is acyclic or
-    NetworkX is unavailable.
+    actionable), then lexicographically for stability. Every cycle is rotated
+    to start at its smallest node id, so the same graph always produces the
+    same cycles regardless of hash seed. The returned list is capped at
+    :data:`MAX_CYCLES`; the second element is the count before that cap, so a
+    caller reporting "N cycles" cannot accidentally report the cap instead.
+    The third is True when the enumeration budget stopped the count: the total
+    is then "at least N". Returns ``([], 0, False)`` when the structural
+    subgraph is acyclic or NetworkX is unavailable.
     """
     adjacency = graph.adjacency()
     if not adjacency:
-        return [], 0
+        return [], 0, False
 
     try:
         import networkx as nx
     except Exception:  # pragma: no cover - networkx is a hard dependency
         _log.warning("networkx unavailable; skipping cycle detection", exc_info=True)
-        return [], 0
+        return [], 0, False
 
     digraph = nx.DiGraph()
     digraph.add_nodes_from(n.id for n in graph.nodes)
     digraph.add_edges_from((src, tgt) for src, targets in adjacency.items() for tgt in targets)
 
-    cycles: list[DependencyCycle] = []
     try:
-        for raw in nx.simple_cycles(digraph):
-            cycle = _cycle(raw, adjacency)
-            if cycle.edge_ids:
-                cycles.append(cycle)
+        raw_cycles, complete = _enumerate(digraph, None)
+        total = len(raw_cycles)
+        if not complete:
+            # No cycle within MAX_CYCLE_LENGTH: list some from the cut full pass
+            # rather than none beside "at least N" (which ones then follows
+            # networkx iteration order).
+            raw_cycles = _shortest_cycles(digraph) or raw_cycles
     except Exception:  # pragma: no cover - defensive
         _log.warning("cycle enumeration failed", exc_info=True)
-        return [], 0
+        return [], 0, False
 
-    cycles.sort(key=lambda c: (c.length, c.nodes))
-    total = len(cycles)
-    if total > MAX_CYCLES:
+    raw_cycles.sort(key=lambda nodes: (len(nodes), nodes))
+    if not complete:
+        _log.info(
+            "Cycle detection stopped at %d cycles; reporting the %d shortest.",
+            total,
+            min(total, MAX_CYCLES),
+        )
+    elif total > MAX_CYCLES:
         _log.info(
             "Cycle detection found %d cycles; reporting the %d shortest.",
             total,
             MAX_CYCLES,
         )
-        cycles = cycles[:MAX_CYCLES]
-    return cycles, total
+    cycles = [_cycle(nodes, adjacency) for nodes in raw_cycles[:MAX_CYCLES]]
+    return cycles, total, not complete

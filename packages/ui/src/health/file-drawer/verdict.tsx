@@ -61,7 +61,7 @@ export function VerdictSection({
         {/* The prompt is the one primary action, withheld only when the
             verdict is the all-clear and there is nothing for it to fix. */}
         {model.showPrompt ? (
-          <AiPromptButton onClick={onPrompt} label="Fix with AI prompt" />
+          <AiPromptButton onClick={onPrompt} />
         ) : null}
         <PlanLink href={planTarget} onNavigate={onNavigate} />
         {fullPage ? (

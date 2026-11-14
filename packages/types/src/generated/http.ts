@@ -103,6 +103,16 @@ export interface ActiveProviderSelection {
   embedder?: string | null;
 }
 
+/** What the index knows about one affected file. ``None`` means unknown, never healthy. */
+export interface AffectedSignal {
+  path: string;
+  is_hotspot?: boolean | null;
+  health_score?: number | null;
+  module?: string | null;
+  is_test?: boolean;
+  indexed?: boolean | null;
+}
+
 export interface AgentPromptResponse {
   flavor: "generic" | "claude-code" | "claude-code-mcp" | "cursor";
   text: string;
@@ -406,9 +416,13 @@ export interface ArtifactUpdateRequest {
 export interface BlastRadiusRequest {
   changed_files: string[];
   max_depth?: number;
+  with_graph?: boolean;
 }
 
 export interface BlastRadiusResponse {
+  affected_signals?: AffectedSignal[] | null;
+  changed_owners?: ChangedOwner[] | null;
+  test_commands?: string[] | null;
   direct_risks: DirectRiskEntry[];
   transitive_affected: TransitiveEntry[];
   cochange_warnings: CochangeWarning[];
@@ -529,6 +543,67 @@ export interface ChangeAuthor {
   email: string;
 }
 
+export interface ChangeBlastRadiusRequest {
+  change_id: string;
+  max_depth?: number;
+  with_graph?: boolean;
+  offset?: number;
+  limit?: number;
+}
+
+export interface ChangeBlastRadiusResponse {
+  affected_signals?: AffectedSignal[] | null;
+  changed_owners?: ChangedOwner[] | null;
+  test_commands?: string[] | null;
+  direct_risks: DirectRiskEntry[];
+  transitive_affected: TransitiveEntry[];
+  cochange_warnings: CochangeWarning[];
+  recommended_reviewers: ReviewerEntry[];
+  test_gaps: string[];
+  test_impact: TestImpactResponse;
+  structural_impact_score: number;
+  structural_impact_band: "localized" | "moderate" | "broad";
+  structural_impact_scale: RiskScalarSemantics;
+  overall_risk_score: number;
+  overall_risk_score_compatibility: RiskCompatibilityField;
+  change_id: string;
+  change?: ChangeCandidateModel | null;
+  changed_files: string[];
+  changed_files_total: number;
+  transitive_total?: number;
+  next_offset?: number | null;
+  reach_summary?: ReachSummary | null;
+  missing_partners_total?: number | null;
+  review?: ChangeReview | null;
+  review_unavailable?: string | null;
+}
+
+export interface ChangeCandidateModel {
+  id: string;
+  kind: "working_tree" | "branch" | "commit" | "change_request";
+  label: string;
+  title?: string | null;
+  author?: string | null;
+  committed_at?: string | null;
+  head_sha?: string | null;
+  base?: string | null;
+  ahead?: number | null;
+  files_changed?: number | null;
+  is_current?: boolean;
+  pushed?: boolean | null;
+  number?: number | null;
+  base_sha?: string | null;
+  change_term?: string | null;
+}
+
+/** The changes a reviewer can pick, and the one to open first. */
+export interface ChangeCandidatesResponse {
+  changes: ChangeCandidateModel[];
+  default_id?: string | null;
+  working_tree_supported: boolean;
+  health_check_supported?: boolean;
+}
+
 /** The evidence checklist (``repowise.core.changes.evidence``), versioned. */
 export interface ChangeEvidence {
   schema_version: number;
@@ -571,6 +646,28 @@ export interface ChangeForgeMetadata {
   approvals?: number | null;
   labels?: string[] | null;
   linked_issues?: string[] | null;
+}
+
+export interface ChangeHealthCheckRequest {
+  change_id: string;
+}
+
+/**
+ * ``repowise health check <revspec> --format json`` for one listed change.
+ *
+ * ``findings`` are the gate's rows (health findings introduced, worsened or
+ * fixed, and the diff-risk rules); ``gate`` holds the verdict at the CLI
+ * defaults (fail on introduced, at high).
+ */
+export interface ChangeHealthCheckResponse {
+  change_id: string;
+  revspec: string;
+  status: string;
+  explanation?: string | null;
+  scope: Record<string, unknown>;
+  skipped: Record<string, string>;
+  findings: Record<string, unknown>[];
+  gate: Record<string, unknown>;
 }
 
 /** A finding a change's commit introduced or worsened, with that commit. */
@@ -679,6 +776,80 @@ export interface ChangeRecord {
   metadata: ChangeForgeMetadata;
   evidence?: ChangeEvidence | null;
   evidence_building?: boolean;
+}
+
+/**
+ * The change's score and tests, from the functions ``repowise risk`` and
+ * ``get_change_risk`` use, so all three give the same answer.
+ */
+export interface ChangeReview {
+  revspec: string | null;
+  risk: ChangeRiskBlock;
+  tests: ChangeTestsBlock;
+  test_commands?: string[];
+}
+
+/**
+ * ``repowise risk <revspec> --format json`` for the change, field for field.
+ *
+ * ``fix_history`` says how often the touched files needed fixes;
+ * ``risk_percentile`` ranks the diff's size and spread against the
+ * repository's recent commits (``score`` is the 0-10 model score it ranks).
+ * Neither is a probability that the change breaks something.
+ */
+export interface ChangeRiskBlock {
+  ref: string;
+  working_tree: boolean;
+  fix_history: FixHistoryResponse;
+  risk_authority: RiskAuthority;
+  score: number;
+  score_measures: string;
+  score_unit: string;
+  risk_percentile: number | null;
+  review_priority: string | null;
+  classification: string | null;
+  fallback_band: string | null;
+  baseline_sample_size: number;
+  exclude_patterns: string[];
+  is_fix: boolean;
+  features: ChangeFeaturesResponse;
+  drivers: RiskDriverResponse[];
+}
+
+/**
+ * The tests the change needs: ``get_change_risk``'s ``impacted_tests``, longer.
+ *
+ * ``run_all`` true means run the whole suite, for ``reasons``; false with an
+ * empty ``tests_to_run`` means no test needs to run. ``status`` is
+ * ``selected``, ``run_all``, ``degraded`` (the index lags the checkout and the
+ * list holds most of the suite), or why no selection was made (``no_index``,
+ * ``unknown``, ``timeout``, ``busy``, ``config_invalid``, ``too_large``).
+ */
+export interface ChangeTestsBlock {
+  status: string;
+  run_all: boolean;
+  reasons: string[];
+  reasons_total?: number | null;
+  basis: string;
+  map_present?: boolean | null;
+  tests_to_run: string[];
+  tests_to_run_kind?: string | null;
+  total: number;
+  truncated: boolean;
+  always_run_total?: number | null;
+  broadcast_total?: number | null;
+  import_closure_total?: number | null;
+  summary: string;
+  why?: Record<string, string> | null;
+  basis_by_file?: Record<string, string> | null;
+  basis_by_file_total?: number | null;
+}
+
+/** Who owns some of the changed files, by primary authorship. */
+export interface ChangedOwner {
+  email: string;
+  name?: string | null;
+  files: number;
 }
 
 export interface ChangelogEntryModel {
@@ -1315,6 +1486,10 @@ export interface CouplingNodeResponse {
   nloc?: number;
 }
 
+export interface CoverageAddRequest {
+  path: string;
+}
+
 /** One ingested report's repo-wide figures, as ``crud.load_coverage_history`` reads them. */
 export interface CoverageHistoryPoint {
   ingested_at: string;
@@ -1441,6 +1616,20 @@ export interface DeadCodeSummaryResponse {
   gated?: Record<string, unknown>;
 }
 
+/**
+ * A decision prompt for the reader's agent, as ``repowise decision discover`` prints it.
+ *
+ * ``kind`` is the prompt served: ``discover`` asked with no background
+ * records to check comes back as ``add``. ``text`` is empty only for
+ * ``agreements`` with none stored, and then a surface offers nothing.
+ */
+export interface DecisionAgentPromptResponse {
+  kind: "discover" | "add" | "agreements" | "review" | "pin" | "unpin" | "veto" | "edit";
+  text: string;
+  ids: string[];
+  count: number;
+}
+
 /** A link from a decision to a governed file or module. */
 export interface DecisionCodeEdge {
   decision_id: string;
@@ -1539,7 +1728,7 @@ export interface DecisionGraphResponse {
   code_edges: DecisionCodeEdge[];
 }
 
-/** Governance rollup: what is stale, awaiting review, and ungoverned. */
+/** Governance rollup: what is stale, what is background, and what is ungoverned. */
 export interface DecisionHealthResponse {
   summary?: Record<string, number>;
   stale_decisions?: DecisionRecordResponse[];
@@ -1562,6 +1751,9 @@ export interface DecisionLaneCountsResponse {
   history: number;
   governing: number;
   total: number;
+  in_force?: number | null;
+  pinned?: number | null;
+  recent?: number | null;
 }
 
 /** One node in a decision lineage chain (root → … → current). */
@@ -1576,6 +1768,21 @@ export interface DecisionLineageEntry {
 /** The supersedes/refines chain, root first. */
 export interface DecisionLineageResponse {
   lineage?: DecisionLineageEntry[];
+}
+
+/** POST body for /decisions/{id}/pin and /unpin. Both fields optional. */
+export interface DecisionPinUpdate {
+  reason?: string | null;
+}
+
+/** How a decision came into force, for the ``recent`` lane's rows. */
+export interface DecisionRecentInfo {
+  at: string;
+  signer: string;
+  signer_kind: string;
+  signer_session?: string;
+  commit?: string;
+  landed_on?: string;
 }
 
 export interface DecisionRecordResponse {
@@ -1606,10 +1813,17 @@ export interface DecisionRecordResponse {
   updated_at: string;
   evidence_count?: number | null;
   evidence_preview?: EvidencePreview | null;
+  hotspot_files?: string[] | null;
   currency?: string | null;
   accepter?: string | null;
   accepter_kind?: string | null;
   accepter_session?: string | null;
+  blockers?: string[] | null;
+  pinned?: boolean | null;
+  recent?: DecisionRecentInfo | null;
+  decision_text_missing?: boolean;
+  delivered_count?: number | null;
+  last_delivered_at?: string | null;
 }
 
 /** The resolved decision capture policy for one repository. */
@@ -1673,6 +1887,7 @@ export interface DecisionSourceState {
  */
 export interface DecisionStatusUpdate {
   status?: string | null;
+  reason?: string | null;
   superseded_by?: string | null;
   affected_modules?: string[] | null;
   affected_files?: string[] | null;
@@ -2619,6 +2834,10 @@ export interface HealthWorkQueueResponse {
   limit?: number;
 }
 
+export interface HookToggle {
+  enabled: boolean;
+}
+
 export interface HotFilesGraphResponse {
   nodes: HotFilesNodeResponse[];
   links: GraphEdgeResponse[];
@@ -2810,6 +3029,7 @@ export interface McpToolInfo {
   presentation: string;
   safety: string;
   evidence_basis: string;
+  schema_tokens?: number;
 }
 
 export interface McpToolRecipeInfo {
@@ -2823,6 +3043,8 @@ export interface McpToolSurfaceResponse {
   repo_id?: string | null;
   is_workspace: boolean;
   override?: string[] | string | null;
+  profile?: string | null;
+  profiles?: Record<string, string[]>;
   tools: McpToolInfo[];
 }
 
@@ -2949,6 +3171,21 @@ export interface NodeSearchResult {
 /** Acknowledgement for a mutation with nothing else to report. */
 export interface OkResponse {
   ok?: boolean;
+}
+
+export interface OnboardingPatch {
+  welcome_seen_repo?: string | null;
+  setup_pill_hidden?: boolean | null;
+  hosted_card_hidden?: boolean | null;
+}
+
+/** Per-machine onboarding state, plus the switches that hide hosted surfaces. */
+export interface OnboardingState {
+  welcome_seen?: Record<string, string>;
+  setup_pill_hidden?: boolean;
+  hosted_card_hidden?: boolean;
+  hints_enabled: boolean;
+  signed_in: boolean;
 }
 
 /** Every display name and canonical email folded into one person. */
@@ -3129,6 +3366,7 @@ export interface PageResponse {
   repository_id: string;
   page_type: string;
   title: string;
+  nav_title?: string | null;
   target_path: string;
   source_hash: string;
   model_name: string;
@@ -3376,6 +3614,13 @@ export interface PeriodHealthSummaryResponse {
   findings_introduced: number;
   findings_worsened: number;
   net_findings: number;
+  categories?: Record<string, number> | null;
+}
+
+/** Result of pinning a file's doc (issue #812). */
+export interface PinDocResponse {
+  file_path: string;
+  pinned: boolean;
 }
 
 /** A function's stored size measures; an absent one was not measured. */
@@ -3408,6 +3653,13 @@ export interface PlanRiskResponse {
   ref?: string | null;
 }
 
+/** A signed-in agent CLI on a paid plan: a model with no new spend. */
+export interface PlanRoute {
+  provider: string;
+  cli_name: string;
+  minutes?: number | null;
+}
+
 /**
  * What the map is counting.
  *
@@ -3435,8 +3687,10 @@ export interface ProviderEntry {
   requires_key?: boolean;
   accepts_base_url?: boolean;
   local_server?: boolean;
+  local_model?: boolean;
   env_vars?: string[];
   setup_hint?: string;
+  detected?: "signed_in" | "installed" | "env" | "saved" | null;
 }
 
 export interface ProviderModelEntry {
@@ -3462,6 +3716,7 @@ export interface ProviderStatusResponse {
   providers?: ProviderEntry[];
   flag_only_providers?: string[];
   embedders?: EmbedderEntry[];
+  plan_route?: PlanRoute | null;
 }
 
 /**
@@ -3507,6 +3762,16 @@ export interface QuietOwner {
   last_commit_at: string | null;
   files_owned: number;
   changing_files_owned: number;
+}
+
+/** Counts over every file a change reaches, not only the page sent. */
+export interface ReachSummary {
+  files: number;
+  tests: number;
+  direct: number;
+  modules: number;
+  max_depth: number;
+  imported: string[];
 }
 
 /** What the ``fix_first`` scope leaves out of a page's filtered set. */
@@ -3843,10 +4108,33 @@ export interface ReposSummaryResponse {
   repos: RepoSummaryRow[];
 }
 
+export interface RetiredPageDetail {
+  archive_id: string;
+  page_id: string;
+  repository_id: string;
+  retired_at: string;
+  reason: string;
+  superseded_by: string | null;
+  title: string;
+  page: Record<string, unknown>;
+  versions: Record<string, unknown>[];
+}
+
+export interface RetiredPageSummary {
+  archive_id: string;
+  page_id: string;
+  repository_id: string;
+  retired_at: string;
+  reason: string;
+  superseded_by: string | null;
+  title: string;
+}
+
 export interface ReviewerEntry {
   email: string;
   files: number;
   ownership_pct: number;
+  name?: string | null;
 }
 
 export interface ReviewerSuggestion {
@@ -4091,6 +4379,208 @@ export interface SetApiKeyRequest {
   repo_id?: string | null;
 }
 
+export interface SettingAlsoMoved {
+  key: string;
+  before: SettingState;
+  after: SettingState;
+}
+
+export interface SettingArea {
+  area: string;
+  settings: SettingView[];
+}
+
+/** What one write did, as ``repowise config set --format json`` reports it. */
+export interface SettingChangeResponse {
+  action: "set" | "reset";
+  key: string;
+  changed: boolean;
+  before: SettingState;
+  after: SettingState;
+  also: SettingAlsoMoved[];
+  effect: string;
+  undo: string[];
+  env_override?: string | null;
+}
+
+/** The environment variable that also sets a setting. */
+export interface SettingEnvVar {
+  name: string;
+  wins: boolean;
+  prefix: boolean;
+}
+
+/** Where one setting stands. */
+export interface SettingState {
+  value?: unknown;
+  source: string;
+  problem?: string | null;
+  locked?: boolean;
+  default?: unknown;
+  changed: boolean;
+}
+
+/** A value that fits this repository better than the current one. */
+export interface SettingSuggestion {
+  key: string;
+  current_value?: unknown;
+  suggested_value?: unknown;
+  reason: string;
+  impact?: string | null;
+  benefit?: string | null;
+  command: string;
+}
+
+/** Set one setting to ``value``, or ``reset`` it to its default. */
+export interface SettingUpdate {
+  key: string;
+  value?: unknown;
+  reset?: boolean;
+}
+
+/** One setting: what it is and where it stands. */
+export interface SettingView {
+  value?: unknown;
+  source: string;
+  problem?: string | null;
+  locked?: boolean;
+  default?: unknown;
+  changed: boolean;
+  key: string;
+  type: "bool" | "int" | "float" | "str" | "list" | "mapping";
+  default_note?: string | null;
+  description: string;
+  area: string;
+  scope: "repo" | "user" | "env";
+  file?: string | null;
+  choices?: string[];
+  minimum?: number | null;
+  maximum?: number | null;
+  exclusive_minimum?: boolean;
+  env?: SettingEnvVar | null;
+  internal?: boolean;
+  reload: "immediate" | "update" | "reindex" | "restart";
+  accepts: string;
+  applies: string;
+  writable: boolean;
+}
+
+export interface SettingsResponse {
+  areas: SettingArea[];
+  suggestions?: SettingSuggestion[];
+}
+
+export interface SetupAgent {
+  id: string;
+  display_name: string;
+  tier?: string | null;
+  docs_url?: string | null;
+  installed: boolean;
+  connected: boolean;
+  registrations?: SetupRegistration[];
+  config_files?: Record<string, string[]>;
+  first_call_at?: string | null;
+  last_call_at?: string | null;
+  default_profile?: string;
+}
+
+/** Every call to this repo's index, whichever agent made it. */
+export interface SetupCalls {
+  first_call_at?: string | null;
+  last_call_at?: string | null;
+  unattributed?: boolean;
+}
+
+export interface SetupCheck {
+  id: string;
+  name: string;
+  level: "ok" | "warn" | "fail";
+  detail?: string;
+  fix?: string | null;
+}
+
+export interface SetupCoverage {
+  ingested_at?: string | null;
+  configured_paths?: string[];
+  discovered?: SetupCoverageReport[];
+}
+
+export interface SetupCoverageReport {
+  path: string;
+  modified_at: string;
+  age_days: number;
+}
+
+export interface SetupFileChange {
+  path: string;
+  action: string;
+  scope: string;
+  reason?: string | null;
+}
+
+export interface SetupIndex {
+  state: "up_to_date" | "behind" | "incomplete";
+  indexed_commit?: string | null;
+  live_head?: string | null;
+  indexed_commit_missing?: boolean;
+  indexed_at?: string | null;
+  file_count?: number;
+  parse_error_count?: number;
+  parse_error_files?: string[];
+}
+
+export interface SetupModel {
+  docs_mode: "none" | "deterministic" | "llm";
+  active_provider?: string | null;
+  active_model?: string | null;
+  configured_providers?: string[];
+}
+
+export interface SetupRegistration {
+  method: string;
+  scope: string;
+  config_path: string;
+}
+
+export interface SetupResponse {
+  repo_id: string;
+  generated_at: string;
+  index: SetupIndex;
+  agents_available: boolean;
+  agents?: SetupAgent[];
+  calls_available: boolean;
+  calls: SetupCalls;
+  sync: SetupSync;
+  rewrite_hook: SetupRewriteHook;
+  coverage_available: boolean;
+  coverage: SetupCoverage;
+  model_available: boolean;
+  model: SetupModel;
+  checks_available: boolean;
+  checks?: SetupCheck[];
+  onboarding: OnboardingState;
+  writes_allowed: boolean;
+}
+
+export interface SetupRewriteHook {
+  state: "installed" | "not_installed" | "not_applicable" | "unknown";
+  detail?: string;
+}
+
+export interface SetupSync {
+  installed?: boolean | null;
+  detail?: string;
+}
+
+/** What a write did. ``ok`` is the command's own success. */
+export interface SetupWriteResponse {
+  ok: boolean;
+  command: string;
+  message?: string;
+  output?: string[];
+  files?: SetupFileChange[];
+}
+
 export interface SiloModule {
   module: string;
   owner: OwnerRef;
@@ -4294,6 +4784,7 @@ export interface TestRecommendation {
   basis: "measured" | "inferred";
   bases: ("measured" | "inferred")[];
   source_files: string[];
+  source_files_total?: number | null;
   evidence: TestImpactEvidence[];
   stale?: boolean;
   stale_reason?: "test_file_missing" | "test_file_changed" | null;
@@ -4302,6 +4793,7 @@ export interface TestRecommendation {
 export interface TransitiveEntry {
   path: string;
   depth: number;
+  via?: string | null;
 }
 
 /**
@@ -4318,8 +4810,9 @@ export interface UnclusteredFiles {
  * Persist a new ``mcp.tools`` override for a repo.
  *
  * ``tools`` accepts the same shapes as the config block: a list of explicit
- * names or ``+``/``-`` deltas, the string ``"all"``, or ``null``/empty to
- * clear the override and fall back to the default surface.
+ * names, a profile name optionally followed by ``+``/``-`` deltas, deltas
+ * alone, or ``null``/empty to clear the override and fall back to each
+ * client's default.
  */
 export interface UpdateMcpToolsRequest {
   repo_id: string;
@@ -4443,6 +4936,7 @@ export interface WorkspaceArchitectureResponse {
   core_ratio?: number | null;
   core_members?: string[];
   cycle_count?: number | null;
+  cycle_count_capped?: boolean;
   conformance_violations?: number;
   architecture_type?: string;
   score?: number | null;
@@ -4507,6 +5001,14 @@ export interface WorkspaceCoChangeEntry {
   strength: number;
   frequency: number;
   last_date: string;
+  evidence?: WorkspaceCoChangeEvidence | null;
+}
+
+/** Bounded supporting evidence for one co-change pair (#483). */
+export interface WorkspaceCoChangeEvidence {
+  authors?: string[];
+  commit_pairs?: Record<string, unknown>[];
+  max_gap_hours?: number;
 }
 
 /** What declared structure connects one co-changing file pair. */
@@ -4547,6 +5049,7 @@ export interface WorkspaceConformanceResponse {
   violation_count?: number;
   cycle_count?: number;
   total_cycles?: number;
+  total_capped?: boolean;
   violating_repos?: string[];
   cycles_determined?: boolean | null;
   evidence?: WorkspaceGraphEvidence | null;
@@ -4653,6 +5156,74 @@ export interface WorkspaceDependencyCycle {
   async_legs?: number;
 }
 
+/**
+ * One evidence item: OpenSSF Scorecard check keys plus ``method`` and ``basis``.
+ *
+ * ``score`` is 0-10, -1 when inconclusive, ``None`` on a descriptive item.
+ * ``data`` holds the item's full figures; its keys depend on ``name``.
+ */
+export interface WorkspaceEstateCheck {
+  name: string;
+  score?: number | null;
+  reason: string;
+  details?: string[];
+  method: string;
+  basis: "measured" | "inferred" | "declared" | "unresolved" | "gated";
+  data?: Record<string, unknown> | null;
+  documentation?: WorkspaceEstateCheckDocs | null;
+}
+
+export interface WorkspaceEstateCheckDocs {
+  url: string;
+  short: string;
+}
+
+export interface WorkspaceEstateGenerator {
+  name: string;
+  version: string;
+  stamp: string;
+}
+
+export interface WorkspaceEstateRepo {
+  alias?: string | null;
+  name: string;
+  head_commit?: string | null;
+  last_snapshot?: WorkspaceEstateSnapshot | null;
+  indexed?: boolean;
+  index_state?: "behind" | "unreadable" | null;
+}
+
+/** ``GET /api/workspace/estate``: the estate report document. */
+export interface WorkspaceEstateResponse {
+  schema_version: number;
+  kind: "estate";
+  generated_at: string;
+  generator: WorkspaceEstateGenerator;
+  scope: WorkspaceEstateScope;
+  notice: string;
+  repos?: WorkspaceEstateRepo[];
+  sections?: WorkspaceEstateSection[];
+}
+
+export interface WorkspaceEstateScope {
+  kind: "workspace";
+  name: string;
+}
+
+export interface WorkspaceEstateSection {
+  id: string;
+  title: string;
+  summary: string;
+  repo?: string | null;
+  checks?: WorkspaceEstateCheck[];
+  failed?: boolean;
+}
+
+export interface WorkspaceEstateSnapshot {
+  taken_at: string;
+  stamp?: string | null;
+}
+
 /** One reason a graph's evidence is short of measured. */
 export interface WorkspaceEvidenceReason {
   code: string;
@@ -4679,6 +5250,9 @@ export interface WorkspaceExtractionDiagnostics {
   http_link_coverage?: number | null;
   unrecognised_call_files?: Record<string, number> | null;
   unrecognised_call_file_count?: number | null;
+  topic_names_unresolved?: number;
+  unrecognised_message_files?: Record<string, number> | null;
+  unrecognised_message_file_count?: number | null;
   symbol_identity?: Record<string, WorkspaceSymbolIdentity>;
   schema_coverage?: WorkspaceSchemaCoverage;
   code_api?: WorkspaceCodeApiCoverage;
@@ -4748,6 +5322,21 @@ export interface WorkspaceImpactedNode {
   edge_kinds?: string[];
 }
 
+/**
+ * Links between two services, read from ``system_graph.json``, ``contracts.json``
+ * and ``cross_repo_edges.json``. The three are written together by one
+ * workspace update; ``stale_graph`` is true when the graph and the contracts
+ * record different repo heads, and rows may then be missing.
+ */
+export interface WorkspaceLinksBetweenResponse {
+  a: string;
+  b: string;
+  stale_graph?: boolean;
+  links: WorkspaceServiceLinkEntry[];
+  total: number;
+  totals: WorkspaceServiceLinksTotal[];
+}
+
 export interface WorkspaceNodeArchitectureRole {
   id: string;
   repo?: string;
@@ -4778,6 +5367,19 @@ export interface WorkspaceOrphanProvider {
   other_files?: string[];
 }
 
+/** One manifest dependency of one repo on another, as ``cross_repo_edges.json`` stores it. */
+export interface WorkspacePackageDepEntry {
+  source_repo: string;
+  source_manifest?: string;
+  target_repo: string;
+  target_package?: string;
+  kind?: string;
+  target_manifest?: string;
+  requested_version?: string | null;
+  scope?: string;
+  resolution_basis?: string;
+}
+
 export interface WorkspaceRepoActions {
   alias: string;
   repo_id: string | null;
@@ -4795,6 +5397,7 @@ export interface WorkspaceRepoDiagnostics {
   providers_by_layer?: Record<string, number>;
   consumers_by_layer?: Record<string, number>;
   http_consumers_unresolved?: number;
+  topic_names_unresolved?: number;
 }
 
 export interface WorkspaceRepoEntry {
@@ -4845,6 +5448,35 @@ export interface WorkspaceSchemaCoverage {
   recovered_ratio_eligible?: number | null;
 }
 
+export interface WorkspaceServiceGroup {
+  id: string;
+  label: string;
+  source: string;
+  member_count?: number;
+}
+
+/**
+ * One piece of evidence behind an edge between two services.
+ *
+ * ``evidence`` says which of ``link``, ``package_dep`` or ``co_change`` is set.
+ */
+export interface WorkspaceServiceLinkEntry {
+  kind: string;
+  direction: "a_to_b" | "b_to_a" | "both";
+  evidence: "contract" | "package" | "co_change";
+  link?: WorkspaceContractLinkEntry | null;
+  provider_origin?: string | null;
+  consumer_origin?: string | null;
+  package_dep?: WorkspacePackageDepEntry | null;
+  co_change?: WorkspaceCoChangeEntry | null;
+}
+
+export interface WorkspaceServiceLinksTotal {
+  kind: string;
+  direction: "a_to_b" | "b_to_a" | "both";
+  count: number;
+}
+
 export interface WorkspaceSymbolIdentity {
   total?: number;
   bound?: number;
@@ -4879,6 +5511,16 @@ export interface WorkspaceSystemEdge {
   structural?: boolean;
   contract_refs?: string[];
   strategy?: string | null;
+  family?: string | null;
+}
+
+/** ``GET /api/workspace/system-graph?view=map``: the graph without diagnostics. */
+export interface WorkspaceSystemGraphMapResponse {
+  version?: number;
+  generated_at?: string;
+  nodes?: WorkspaceSystemNode[];
+  edges?: WorkspaceSystemMapEdge[];
+  groups?: WorkspaceServiceGroup[];
 }
 
 export interface WorkspaceSystemGraphResponse {
@@ -4887,6 +5529,23 @@ export interface WorkspaceSystemGraphResponse {
   nodes?: WorkspaceSystemNode[];
   edges?: WorkspaceSystemEdge[];
   diagnostics?: WorkspaceExtractionDiagnostics;
+  groups?: WorkspaceServiceGroup[];
+}
+
+/** An edge of the map's lean view. Mirrors ``core.workspace.system_map_view``. */
+export interface WorkspaceSystemMapEdge {
+  id: string;
+  source: string;
+  target: string;
+  kind: string;
+  match_type: string;
+  confidence?: number;
+  weight?: number;
+  structural?: boolean;
+  contract_refs?: string[] | null;
+  strategy?: string | null;
+  family?: string | null;
+  ref_count?: number;
 }
 
 export interface WorkspaceSystemNode {
@@ -4901,6 +5560,7 @@ export interface WorkspaceSystemNode {
   is_orphan_provider?: boolean;
   is_orphan_consumer?: boolean;
   is_isolated?: boolean;
+  group?: string | null;
 }
 
 /** One consumer file the join looked at, and the state it ended in. */
@@ -4970,6 +5630,27 @@ export interface WorkspaceUnresolvedLink {
   detail?: string | null;
 }
 
+export interface ZoomContainerResponse {
+  id: string;
+  name: string;
+  path?: string;
+  kind: string;
+  technologies?: string[];
+  file_count?: number;
+}
+
+export interface ZoomExternalResponse {
+  id: string;
+  name: string;
+  display_name: string;
+  kind: string;
+  category: string;
+  io_kind?: string | null;
+  ecosystem?: string;
+  file_count?: number;
+  edge_count?: number;
+}
+
 export interface ZoomMapResponse {
   root_id: string;
   project_name: string;
@@ -4979,6 +5660,9 @@ export interface ZoomMapResponse {
   truncated?: boolean;
   nodes: ZoomNodeResponse[];
   relations: ZoomRelationResponse[];
+  externals?: ZoomExternalResponse[];
+  external_relations?: ZoomRelationResponse[];
+  containers?: ZoomContainerResponse[];
 }
 
 export interface ZoomMetricsResponse {
@@ -5010,6 +5694,8 @@ export interface ZoomNodeResponse {
   is_dead?: boolean;
   is_test?: boolean;
   on_flow?: boolean;
+  technologies?: string[];
+  container_ids?: string[];
 }
 
 export interface ZoomRelationResponse {

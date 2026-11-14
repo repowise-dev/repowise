@@ -266,3 +266,46 @@ def test_an_unseen_graph_reads_not_determined_to_an_agent():
     report = conformance_payload(build_conformance_report(graph, []).to_dict())
     assert report["cycles_determined"] is False
     assert "cycles not determined" in report["summary"]
+
+
+def test_a_capped_cycle_count_reads_at_least_to_an_agent():
+    """When the enumeration budget stopped the count, both tools say "at least"."""
+    from unittest.mock import patch
+
+    import repowise.core.workspace.cycles as cy
+    from repowise.core.workspace.architecture_metrics import compute_architecture_metrics
+    from repowise.server.mcp_server.tool_architecture import architecture_payload
+    from repowise.server.mcp_server.tool_conformance import conformance_payload
+
+    names = [f"s{i}" for i in range(5)]
+    graph = SystemGraph(
+        nodes=[SystemNode(id=n, repo=n, service_path=None, name=n) for n in names],
+        edges=[
+            SystemEdge(
+                id=f"{s}->{t}:http",
+                source=s,
+                target=t,
+                kind="http",
+                match_type="exact",
+                confidence=1.0,
+                weight=1,
+                structural=True,
+            )
+            for s in names
+            for t in names
+            if s != t
+        ],
+    )
+    with patch.object(cy, "MAX_ENUMERATED_CYCLES", 30):
+        report = build_conformance_report(graph, [], generated_at="t").to_dict()
+        metrics = compute_architecture_metrics(graph).to_dict()
+
+    payload = conformance_payload(report)
+    assert (payload["total_cycles"], payload["total_capped"]) == (30, True)
+    assert "at least 30 dependency cycle(s)" in payload["summary"]
+    # A repo-scoped answer counts only what it lists, so it is exact.
+    assert conformance_payload(report, "s0")["total_capped"] is False
+
+    arch = architecture_payload(metrics)
+    assert (arch["cycle_count"], arch["cycle_count_capped"]) == (30, True)
+    assert "at least 30 dependency cycle(s)" in arch["summary"]

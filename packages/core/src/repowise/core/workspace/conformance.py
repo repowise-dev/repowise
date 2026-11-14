@@ -202,6 +202,9 @@ class ConformanceReport:
     cycles: list[DependencyCycle] = field(default_factory=list)
     #: True cycle count before :data:`cycles.MAX_CYCLES` capped ``cycles``.
     total_cycles: int = 0
+    #: True when the enumeration budget stopped the count: ``total_cycles`` is
+    #: then a lower bound ("at least N"), not the exact total.
+    total_capped: bool = False
     #: :func:`.graph_evidence.graph_evidence` of the checked graph, as a dict.
     #: None on a report written before evidence was recorded.
     evidence: dict[str, Any] | None = None
@@ -243,6 +246,7 @@ class ConformanceReport:
             # many exist. They differ only when MAX_CYCLES truncated the list.
             "cycle_count": len(self.cycles),
             "total_cycles": self.total_cycles or len(self.cycles),
+            "total_capped": self.total_capped,
             "violating_repos": self.violating_repos,
             "cycles_determined": self.cycles_determined,
             "evidence": self.evidence,
@@ -261,6 +265,7 @@ class ConformanceReport:
             violations=[ConformanceViolation.from_dict(v) for v in data.get("violations", [])],
             cycles=cycles,
             total_cycles=data.get("total_cycles", len(cycles)),
+            total_capped=bool(data.get("total_capped", False)),
             evidence=data.get("evidence"),
         )
 
@@ -356,13 +361,14 @@ def build_conformance_report(
     now rather than to empty. Only a report nobody built is unstamped.
     """
     violations = check_conformance(graph, rules, tags_by_repo)
-    cycles, total_cycles = detect_cycles(graph)
+    cycles, total_cycles, total_capped = detect_cycles(graph)
     return ConformanceReport(
         generated_at=generated_at or datetime.now(UTC).isoformat(),
         rules_evaluated=len(rules),
         violations=violations,
         cycles=cycles,
         total_cycles=total_cycles,
+        total_capped=total_capped,
         evidence=graph_evidence(graph).to_dict(),
     )
 

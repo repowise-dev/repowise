@@ -77,10 +77,38 @@ async def test_up_to_date_restamp_moves_the_stamp(tmp_path, monkeypatch) -> None
     await engine.dispose()
 
 
-async def _synced_repo_at(session, local_path: str):
+async def test_same_day_restamp_leaves_the_row_until_head_moves(tmp_path, monkeypatch) -> None:
+    """A repeat "up to date" check the same UTC day writes nothing; a new head does."""
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.database import init_db
+    from repowise.core.workspace.update import reconcile_repo_head_commit
+
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'wiki.db').as_posix()}"
+    monkeypatch.setenv("REPOWISE_DB_URL", url)
+    engine = create_engine(url)
+    await init_db(engine)
+    sf = create_session_factory(engine)
+    earlier_today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    async with get_session(sf) as session:
+        await _synced_repo_at(session, str(tmp_path), earlier_today)
+
+    await reconcile_repo_head_commit(tmp_path, "a" * 40)
+    async with get_session(sf) as session:
+        repo = await crud.get_repository_by_path(session, str(tmp_path))
+        assert crud.index_synced_at(repo) == earlier_today
+
+    await reconcile_repo_head_commit(tmp_path, "b" * 40)
+    async with get_session(sf) as session:
+        repo = await crud.get_repository_by_path(session, str(tmp_path))
+        assert repo.head_commit == "b" * 40
+        assert crud.index_synced_at(repo) > earlier_today
+    await engine.dispose()
+
+
+async def _synced_repo_at(session, local_path: str, synced: datetime = _SYNCED):
     repo = await crud.upsert_repository(
         session, name="r", local_path=local_path, head_commit="a" * 40
     )
-    repo.updated_at = _SYNCED
+    repo.updated_at = synced
     await session.flush()
     return repo

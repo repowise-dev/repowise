@@ -447,4 +447,5 @@ def _conformance_phase(
         # The true total, not the capped list — a workspace with 500 cycles
         # must not report the same number as one with 50.
         cycles=conformance.total_cycles if conformance else 0,
+        cycles_capped=conformance.total_capped if conformance else False,
     )

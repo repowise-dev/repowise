@@ -21,8 +21,8 @@ _PAGE_IDS = ("file_page:pkg/alpha/one.py", "file_page:pkg/alpha/two.py")
 _NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
 
 
-async def _add_pages(factory, repo_id: str, content: str) -> None:
-    """Two file pages carrying `content` as their body."""
+async def _add_pages(factory, repo_id: str, content: str, digest: str | None = None) -> None:
+    """Two file pages carrying `content` as their body and `digest` as their digest."""
     async with factory() as s:
         for page_id in _PAGE_IDS:
             s.add(
@@ -32,6 +32,7 @@ async def _add_pages(factory, repo_id: str, content: str) -> None:
                     page_type="file_page",
                     title=page_id.removeprefix("file_page:"),
                     content=content,
+                    digest=digest,
                     target_path=page_id.removeprefix("file_page:"),
                     source_hash=page_id,
                     model_name="mock",
@@ -82,7 +83,7 @@ def _capture_prompt(monkeypatch, answer_mod, answer_text: str) -> list[str]:
 
     async def _fake_synthesize(provider, system_prompt, user_prompt, **_kwargs):
         seen.append(user_prompt)
-        return answer_text, None
+        return answer_text, None, None
 
     monkeypatch.setattr(answer_mod, "_resolve_provider_for_answer", lambda _p: _Provider())
     monkeypatch.setattr(answer_mod, "synthesize", _fake_synthesize)
@@ -132,3 +133,50 @@ def test_format_excerpt_cap_is_at_least_the_fetch_size():
     from repowise.server.mcp_server.tool_answer.config import _GATED_EXCERPT_CHARS
 
     assert _MAX_CHARS_PER_HIT_EXCERPT >= _GATED_EXCERPT_CHARS
+
+
+@pytest.mark.asyncio
+async def test_the_digest_reaches_synthesis_past_a_long_body(setup_mcp, factory, monkeypatch):
+    """A body longer than the excerpt used to push the digest out of the prompt."""
+    import repowise.server.mcp_server.tool_answer.answer as answer_mod
+    from repowise.server.mcp_server import get_answer
+
+    digest = "## Questions this page answers\n\n- Where does alpha retry a failed write?"
+    await _add_pages(factory, setup_mcp, "abcdefghij" * 400, digest)
+    _patch_pipeline(monkeypatch, answer_mod, _PAGE_IDS[0])
+    prompts = _capture_prompt(monkeypatch, answer_mod, "Alpha writes (pkg/alpha/one.py).")
+
+    await get_answer("how does the alpha module handle the write path")
+
+    assert prompts, "synthesis must run"
+    assert "- Where does alpha retry a failed write?" in prompts[0]
+
+
+def test_a_long_digest_is_cut_at_a_line_inside_its_slot():
+    from repowise.server.mcp_server.tool_answer.config import (
+        _DIGEST_SLOT_CHARS,
+        _GATED_EXCERPT_CHARS,
+    )
+    from repowise.server.mcp_server.tool_answer.retrieval import _page_excerpt
+
+    body = "# Module\n\n" + "prose line\n" * 600
+    questions = "## Questions this page answers\n\n- How is the client configured?"
+    concepts = "\n\n## Concept index\n\n" + "\n".join(f"- `name_{i}`" for i in range(200))
+    excerpt = _page_excerpt(body, questions + concepts)
+    assert excerpt.startswith("# Module")
+    assert len(excerpt) <= _GATED_EXCERPT_CHARS
+    digest_part = excerpt[excerpt.index("## Questions") :]
+    assert "- How is the client configured?" in digest_part
+    assert len(digest_part) <= _DIGEST_SLOT_CHARS
+    assert digest_part.splitlines()[-1].endswith("`")  # no identifier cut in half
+
+
+def test_a_page_without_a_digest_keeps_the_whole_excerpt():
+    from repowise.server.mcp_server.tool_answer.config import _GATED_EXCERPT_CHARS
+    from repowise.server.mcp_server.tool_answer.retrieval import _page_excerpt
+
+    body = "x" * 5000
+    assert _page_excerpt(body, None) == body[:_GATED_EXCERPT_CHARS]
+    assert _page_excerpt(body, "  ") == body[:_GATED_EXCERPT_CHARS]
+    assert _page_excerpt("short body", "## Q\n\n- q?") == "short body\n\n## Q\n\n- q?"
+    assert _page_excerpt(None, "## Q\n\n- q?") == "## Q\n\n- q?"

@@ -28,11 +28,11 @@
     }
   },
   "health": {
-    "average_health": 4.5,
+    "average_health": 4.52,
     "unanalysed_file_count": 1,
-    "analysed_share": 0.5,
+    "analysed_share": 0.75,
     "band": "needs_work",
-    "hotspot_health": 4.5,
+    "hotspot_health": 4.51,
     "worst_performer_path": "src/core.py",
     "worst_performer_score": 4.5,
     "open_findings": 5,
@@ -141,15 +141,6 @@
       "weight": 0.95
     },
     {
-      "weight": 8.0,
-      "id": "proposed-dec1",
-      "type": "proposed_decision",
-      "title": "Keep the engine single-threaded",
-      "description": "Decision recorded by hand, awaiting review",
-      "severity": "medium",
-      "target_id": "dec1"
-    },
-    {
       "id": "silo-src/core.py",
       "type": "knowledge_silo",
       "title": "src/core.py",
@@ -247,14 +238,14 @@
     }
   ],
   "attention_summary": {
-    "total": 18,
+    "total": 17,
     "by_source": {
       "health_finding": 4,
       "security_finding": 3,
       "refactoring": 2,
       "doc_drift": 2,
       "dead_code": 1,
-      "decisions": 3,
+      "decisions": 2,
       "knowledge_silo": 3
     },
     "areas": [
@@ -316,9 +307,9 @@
       },
       {
         "key": "decisions",
-        "total": 3,
+        "total": 2,
         "severity": "medium",
-        "detail": "1 awaiting review \u00b7 2 hotspots ungoverned",
+        "detail": "2 hotspots ungoverned",
         "lead": {
           "title": "src/core.py",
           "description": "High-churn file with no governing decision",
@@ -360,14 +351,14 @@
   },
   "onboarding_targets": [
     {
-      "path": "src/util.py",
-      "pagerank": 0.25,
+      "path": "web/app.ts",
+      "pagerank": 0.5,
       "doc_words": 0
     },
     {
-      "path": "web/app.ts",
-      "pagerank": 0.5,
-      "doc_words": 2
+      "path": "src/util.py",
+      "pagerank": 0.25,
+      "doc_words": 0
     },
     {
       "path": "src/core.py",
@@ -398,7 +389,7 @@
       "merge_commit_count_90d": 0,
       "commit_count_capped": false,
       "age_days": 0,
-      "last_commit_at": "2026-08-20T00:00:00",
+      "last_commit_at": "2026-08-20T00:00:00Z",
       "change_entropy": 0.0,
       "change_entropy_pct": 0.0,
       "prior_defect_count": 0,
@@ -430,7 +421,7 @@
       "merge_commit_count_90d": 0,
       "commit_count_capped": false,
       "age_days": 0,
-      "last_commit_at": "2026-08-22T00:00:00",
+      "last_commit_at": "2026-08-22T00:00:00Z",
       "change_entropy": 0.0,
       "change_entropy_pct": 0.0,
       "prior_defect_count": 0,

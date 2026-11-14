@@ -21,7 +21,8 @@ Sniffing rules (cheap, deterministic), after stripping a UTF-8 BOM:
 - JaCoCo XML declares the ``-//JACOCO//DTD`` doctype or has a ``<report``
   root (and no ``<coverage`` element).
 - Salesforce Apex JSON is a ``{`` result naming ``orgWideCoverage``,
-  ``testRunCoverage`` or ``ApexClassOrTrigger``, or a ``[`` list of entries
+  ``testRunCoverage`` or ``ApexClassOrTrigger``, or a deploy result naming
+  ``runTestResult`` or ``numLocationsNotCovered``, or a ``[`` list of entries
   with ``totalLines`` and ``lines`` (``test-result-codecoverage.json``).
 
 If detection is ambiguous, callers can pass ``coverage add --format`` to
@@ -99,11 +100,19 @@ def _is_repowise_json(sample: str) -> bool:
 
 
 def _is_apex(sample: str) -> bool:
-    # The CLI's result opens with a summary naming the coverage percentages; the
-    # bare entry list opens with the first class's ``totalLines`` and ``lines``.
+    # The CLI's result opens with a summary naming the coverage percentages; a
+    # deploy result names ``runTestResult`` or per-class ``numLocationsNotCovered``;
+    # the bare entry list opens with the first class's ``totalLines`` and ``lines``.
     if sample.startswith("{"):
         return any(
-            k in sample for k in ('"orgWideCoverage"', '"testRunCoverage"', '"ApexClassOrTrigger"')
+            k in sample
+            for k in (
+                '"orgWideCoverage"',
+                '"testRunCoverage"',
+                '"ApexClassOrTrigger"',
+                '"runTestResult"',
+                '"numLocationsNotCovered"',
+            )
         )
     return sample.startswith("[") and '"totalLines"' in sample and '"lines"' in sample
 

@@ -366,9 +366,13 @@ class TestPythonClassConstants:
         assert (c.contract_id, c.meta["routing_key"]) == ("topic::robot-shop", "orders")
 
 
+_NATS_GO = 'import "github.com/nats-io/nats.go"\n'
+_NATS_TS = "import { connect } from 'nats';\n"
+
+
 class TestNats:
     def test_subscribe_and_publish(self, tmp_path: Path) -> None:
-        src = 'nc.Subscribe("events.created", h)\nnc.Publish("events.deleted", d)\n'
+        src = _NATS_GO + 'nc.Subscribe("events.created", h)\nnc.Publish("events.deleted", d)\n'
         rows = _extract(tmp_path, "main.go", src)
         assert {(c.role, c.contract_id) for c in rows} == {
             ("consumer", "topic::events.created"),
@@ -379,28 +383,47 @@ class TestNats:
     @pytest.mark.parametrize(
         ("rel", "src", "role"),
         [
-            ("sub.py", 'await nc.subscribe("events.created", cb=h)\n', "consumer"),
-            ("Pub.java", 'nc.publish("events.created", data);', "provider"),
-            ("pub.ts", "nc.publish('events.created', sc.encode(x));", "provider"),
+            ("sub.py", 'import nats\nawait nc.subscribe("events.created", cb=h)\n', "consumer"),
+            ("Pub.java", 'import io.nats.client.Connection;\nnc.publish("events.created", data);', "provider"),
+            ("pub.ts", _NATS_TS + "nc.publish('events.created', sc.encode(x));", "provider"),
+            ("pub.mjs", "import { connect } from '@nats-io/transport-node';\nnc.publish('events.created', x);", "provider"),
+            ("ws.js", 'import { connect } from "nats.ws";\nnc.publish("events.created", x);', "provider"),
+            ("cjs.js", 'const { connect } = require("nats");\nnc.publish("events.created", x);', "provider"),
+            ("aio.py", "from nats.aio.client import Client\nawait nc.publish('events.created', b)\n", "provider"),
+            ("deno.ts", 'import { connect } from "npm:nats@2";\nnc.publish("events.created", x);', "provider"),
         ],
     )
     def test_nats_in_other_languages(self, tmp_path: Path, rel: str, src: str, role: str) -> None:
         c = _one(_extract(tmp_path, rel, src), role)
         assert c.contract_id == "topic::events.created"
 
+    @pytest.mark.parametrize(
+        ("rel", "src"),
+        [
+            ("mqtt.js", "const mqtt = require('mqtt');\nclient.publish('home/kitchen/temp', v);\nclient.subscribe('home/#');\n"),
+            ("paho.py", "import paho.mqtt.client as mqtt\nclient.publish('home/kitchen/temp', v)\nclient.subscribe('home/#')\n"),
+            ("ably.ts", "import * as Ably from 'ably';\nclient.publish('orders', d);\n"),
+            ("main.go", 'nc.Publish("events.created", d)\n'),
+        ],
+    )
+    def test_nothing_without_a_nats_client(self, tmp_path: Path, rel: str, src: str) -> None:
+        assert _extract(tmp_path, rel, src) == []
+
     def test_an_unrelated_receiver_is_not_nats(self, tmp_path: Path) -> None:
-        assert _extract(tmp_path, "x.ts", "store.subscribe('state', h);") == []
+        assert _extract(tmp_path, "x.ts", _NATS_TS + "store.subscribe('state', h);") == []
 
     def test_bare_sub_is_not_a_nats_receiver(self, tmp_path: Path) -> None:
-        assert _extract(tmp_path, "x.ts", "sub.subscribe('events.created', h);") == []
+        assert _extract(tmp_path, "x.ts", _NATS_TS + "sub.subscribe('events.created', h);") == []
 
     @pytest.mark.parametrize("subject", ["events.*", "events.>"])
     def test_a_wildcard_subscription_is_a_pattern(self, tmp_path: Path, subject: str) -> None:
-        c = _one(_extract(tmp_path, "sub.go", f'nc.Subscribe("{subject}", h)\n'), "consumer")
+        src = _NATS_GO + f'nc.Subscribe("{subject}", h)\n'
+        c = _one(_extract(tmp_path, "sub.go", src), "consumer")
         assert c.meta["pattern"] == "nats"
 
     def test_a_plain_subject_is_not_a_pattern(self, tmp_path: Path) -> None:
-        c = _one(_extract(tmp_path, "sub.go", 'nc.Subscribe("events.created", h)\n'), "consumer")
+        src = _NATS_GO + 'nc.Subscribe("events.created", h)\n'
+        c = _one(_extract(tmp_path, "sub.go", src), "consumer")
         assert "pattern" not in c.meta
 
 
@@ -451,6 +474,100 @@ class TestBullMq:
         assert _one(_extract(tmp_path, "f.ts", src), "provider").contract_id == "topic::renders"
 
 
+class TestTemporal:
+    @staticmethod
+    def _ids(rows) -> set[tuple[str, str]]:
+        assert all(c.meta["broker"] == "temporal" and c.meta["kind"] == "queue" for c in rows)
+        return {(c.role, c.contract_id) for c in rows}
+
+    def test_typescript_worker_and_client(self, tmp_path: Path) -> None:
+        worker = (
+            "import { Worker } from '@temporalio/worker';\n"
+            "await Worker.create({ taskQueue: 'orders', workflowsPath, activities });\n"
+        )
+        client = (
+            "import { Client } from '@temporalio/client';\n"
+            "await client.workflow.start(placeOrder, { taskQueue: 'orders', workflowId });\n"
+        )
+        assert self._ids(_extract(tmp_path / "worker", "w.ts", worker)) == {
+            ("consumer", "topic::orders")
+        }
+        assert self._ids(_extract(tmp_path / "api", "c.ts", client)) == {
+            ("provider", "topic::orders")
+        }
+
+    def test_typescript_child_workflow_names_its_queue(self, tmp_path: Path) -> None:
+        src = (
+            "import { executeChild } from '@temporalio/workflow';\n"
+            "await executeChild(refund, { taskQueue: 'refunds' });\n"
+        )
+        assert self._ids(_extract(tmp_path, "w.ts", src)) == {("provider", "topic::refunds")}
+
+    def test_go_worker_and_client(self, tmp_path: Path) -> None:
+        src = (
+            'import "go.temporal.io/sdk/worker"\n'
+            'w := worker.New(c, "orders", worker.Options{})\n'
+            'opts := client.StartWorkflowOptions{ID: "id", TaskQueue: "billing"}\n'
+        )
+        assert self._ids(_extract(tmp_path, "main.go", src)) == {
+            ("consumer", "topic::orders"),
+            ("provider", "topic::billing"),
+        }
+
+    def test_java_worker_and_client(self, tmp_path: Path) -> None:
+        src = (
+            "import io.temporal.worker.WorkerFactory;\n"
+            'Worker w = factory.newWorker("orders");\n'
+            'WorkflowOptions.newBuilder().setTaskQueue("billing").build();\n'
+        )
+        assert self._ids(_extract(tmp_path, "A.java", src)) == {
+            ("consumer", "topic::orders"),
+            ("provider", "topic::billing"),
+        }
+
+    def test_python_worker_and_client(self, tmp_path: Path) -> None:
+        src = (
+            "from temporalio.worker import Worker\n"
+            'w = Worker(client, task_queue="orders", workflows=[W])\n'
+            'await client.start_workflow(W.run, id="i", task_queue="billing")\n'
+        )
+        assert self._ids(_extract(tmp_path, "m.py", src)) == {
+            ("consumer", "topic::orders"),
+            ("provider", "topic::billing"),
+        }
+
+    def test_dotnet_worker_and_client(self, tmp_path: Path) -> None:
+        src = (
+            "using Temporalio.Worker;\n"
+            'var w = new TemporalWorker(c, new TemporalWorkerOptions("orders"));\n'
+            "await c.StartWorkflowAsync(W.Run,\n"
+            '    new WorkflowOptions(id: "i", taskQueue: "billing"));\n'
+        )
+        assert self._ids(_extract(tmp_path, "P.cs", src)) == {
+            ("consumer", "topic::orders"),
+            ("provider", "topic::billing"),
+        }
+
+    def test_a_queue_named_by_a_constant_folds(self, tmp_path: Path) -> None:
+        src = (
+            "import { Worker } from '@temporalio/worker';\n"
+            "const QUEUE = 'orders';\n"
+            "await Worker.create({ taskQueue: QUEUE });\n"
+        )
+        assert self._ids(_extract(tmp_path, "w.ts", src)) == {("consumer", "topic::orders")}
+
+    def test_a_file_not_importing_temporal_is_not_read(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "w.ts", "await Worker.create({ taskQueue: 'orders' });\n") == []
+        assert _extract(tmp_path, "w.py", 'w = Worker(client, task_queue="orders")\n') == []
+
+    def test_a_queue_from_the_environment_is_refused(self, tmp_path: Path) -> None:
+        src = (
+            "import { Worker } from '@temporalio/worker';\n"
+            "await Worker.create({ taskQueue: process.env.QUEUE });\n"
+        )
+        assert _extract(tmp_path, "w.ts", src) == []
+
+
 class TestAws:
     def test_sqs_queue_url_names_its_last_segment(self, tmp_path: Path) -> None:
         src = (
@@ -467,6 +584,35 @@ class TestAws:
     def test_a_queue_url_from_the_environment_is_refused(self, tmp_path: Path) -> None:
         src = "new SendMessageCommand({ QueueUrl: process.env.QUEUE_URL, MessageBody: b });\n"
         assert _extract(tmp_path, "q.ts", src) == []
+
+    def test_a_refused_name_is_counted_once_per_call_site(self, tmp_path: Path) -> None:
+        (tmp_path / "q.ts").write_text(
+            "new SendMessageCommand({ QueueUrl: process.env.QUEUE_URL, MessageBody: b });\n"
+            "new SendMessageCommand({ QueueUrl: 'https://sqs.x/1/orders', MessageBody: b });\n"
+            "// new SendMessageCommand({ QueueUrl: process.env.OLD_URL });\n",
+            encoding="utf-8",
+        )
+        # One client.publish read alike by Redis and NATS is still one call.
+        (tmp_path / "pub.js").write_text(
+            "const redis = require('redis');\nconst nats = require('nats');\n"
+            "client.publish(channelFor(user), msg);\n",
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        rows = TopicExtractor().extract(tmp_path, "svc", stats=stats)
+        assert [c.contract_id for c in rows] == ["topic::orders"]
+        assert stats == {"topic_names_unresolved": 2}
+
+    def test_brace_headed_refusals_count_apart(self, tmp_path: Path) -> None:
+        (tmp_path / "main.go").write_text(
+            'import "github.com/segmentio/kafka-go"\n'
+            "w := &kafka.Writer{Topic: os.Getenv(\"A\")}\n"
+            "r := kafka.NewReader(kafka.ReaderConfig{Topic: os.Getenv(\"B\")})\n",
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        assert TopicExtractor().extract(tmp_path, "svc", stats=stats) == []
+        assert stats == {"topic_names_unresolved": 2}
 
     def test_sns_topic_arn_names_its_last_field(self, tmp_path: Path) -> None:
         src = "new PublishCommand({ TopicArn: 'arn:aws:sns:eu-west-1:123:orders', Message: m });\n"
@@ -517,6 +663,253 @@ class TestRedis:
         ]
 
 
+class TestRedisStreamsAndLanguages:
+    """Redis in Go, Java and .NET, and streams: the shapes of issue #4662."""
+
+    _GO = 'import "github.com/redis/go-redis/v9"\n'
+    _LETTUCE = "import io.lettuce.core.api.sync.RedisCommands;\n"
+    _JEDIS = "import redis.clients.jedis.Jedis;\n"
+    _SPRING = "import org.springframework.data.redis.listener.RedisMessageListenerContainer;\n"
+    _SE = "using StackExchange.Redis;\n"
+
+    @staticmethod
+    def _rows(contracts) -> set[tuple[str, str, str, str]]:
+        return {
+            (c.role, c.contract_id, c.meta["kind"], c.meta.get("pattern", "")) for c in contracts
+        }
+
+    # -- Go ---------------------------------------------------------------
+
+    def test_go_pubsub(self, tmp_path: Path) -> None:
+        src = self._GO + (
+            'rdb.Publish(ctx, "orders", payload)\n'
+            'sub := rdb.Subscribe(ctx, "orders", "refunds")\n'
+            'rdb.PSubscribe(ctx, "audit.*")\n'
+        )
+        assert self._rows(_extract(tmp_path, "main.go", src)) == {
+            ("provider", "topic::orders", "channel", ""),
+            ("consumer", "topic::orders", "channel", ""),
+            ("consumer", "topic::refunds", "channel", ""),
+            ("consumer", "topic::audit.*", "channel", "glob"),
+        }
+
+    def test_go_xadd_reads_the_stream_field(self, tmp_path: Path) -> None:
+        src = self._GO + 'rdb.XAdd(ctx, &redis.XAddArgs{Stream: "orders", Values: m})\n'
+        c = _one(_extract(tmp_path, "pub.go", src), "provider")
+        assert c.contract_id == "topic::orders"
+        assert c.meta == {"topic": "orders", "broker": "redis", "kind": "stream"}
+        assert c.symbol_name == "redis.XAdd('orders')"
+
+    def test_go_xreadgroup_drops_the_ids_beside_the_streams(self, tmp_path: Path) -> None:
+        src = self._GO + (
+            "rdb.XReadGroup(ctx, &redis.XReadGroupArgs{Group: g, Consumer: c,\n"
+            '  Streams: []string{"orders", "refunds", ">", ">"}})\n'
+        )
+        rows = _extract(tmp_path, "w.go", src)
+        assert sorted(c.contract_id for c in rows) == ["topic::orders", "topic::refunds"]
+        assert {c.role for c in rows} == {"consumer"}
+
+    def test_go_constant_folds_into_a_stream_name(self, tmp_path: Path) -> None:
+        src = self._GO + 'const Orders = "orders"\nrdb.XAdd(ctx, &redis.XAddArgs{Stream: Orders})\n'
+        assert _one(_extract(tmp_path, "pub.go", src), "provider").contract_id == "topic::orders"
+
+    def test_go_publish_needs_a_go_redis_import(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "bus.go", 'bus.Publish(ctx, "orders", payload)\n') == []
+
+    def test_go_redis_under_its_former_import_path(self, tmp_path: Path) -> None:
+        src = 'import "github.com/go-redis/redis/v8"\nrdb.Publish(ctx, "orders", p)\n'
+        assert _one(_extract(tmp_path, "pub.go", src), "provider").contract_id == "topic::orders"
+
+    # -- Java -------------------------------------------------------------
+
+    def test_spring_convert_and_send(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.data.redis.core.StringRedisTemplate;\n"
+            'redisTemplate.convertAndSend("orders", payload);\n'
+            'stringRedisTemplate.convertAndSend("refunds", payload);\n'
+        )
+        rows = _extract(tmp_path, "Pub.java", src)
+        assert sorted((c.contract_id, c.meta["broker"]) for c in rows) == [
+            ("topic::orders", "redis"),
+            ("topic::refunds", "redis"),
+        ]
+
+    def test_convert_and_send_on_a_rabbit_template_is_not_redis(self, tmp_path: Path) -> None:
+        src = (
+            "import org.springframework.data.redis.core.RedisTemplate;\n"
+            'rabbitTemplate.convertAndSend("orders", payload);\n'
+        )
+        assert {c.meta["broker"] for c in _extract(tmp_path, "Pub.java", src)} == {"rabbitmq"}
+
+    def test_spring_listener_container_topics(self, tmp_path: Path) -> None:
+        src = self._SPRING + (
+            'container.addMessageListener(a, new ChannelTopic("orders"));\n'
+            'container.addMessageListener(a, new PatternTopic("audit.*"));\n'
+        )
+        assert self._rows(_extract(tmp_path, "Cfg.java", src)) == {
+            ("consumer", "topic::orders", "channel", ""),
+            ("consumer", "topic::audit.*", "channel", "glob"),
+        }
+
+    def test_a_channel_topic_with_no_listener_container_is_not_a_consumer(
+        self, tmp_path: Path
+    ) -> None:
+        src = (
+            "import org.springframework.data.redis.listener.ChannelTopic;\n"
+            'ChannelTopic topic = new ChannelTopic("orders");\n'
+        )
+        assert _extract(tmp_path, "Pub.java", src) == []
+
+    def test_lettuce_publish_and_subscribe(self, tmp_path: Path) -> None:
+        src = self._LETTUCE + (
+            'commands.publish("orders", msg);\npubsub.sync().subscribe("orders", "refunds");\n'
+        )
+        assert self._rows(_extract(tmp_path, "L.java", src)) == {
+            ("provider", "topic::orders", "channel", ""),
+            ("consumer", "topic::orders", "channel", ""),
+            ("consumer", "topic::refunds", "channel", ""),
+        }
+
+    def test_jedis_subscribe_skips_the_listener(self, tmp_path: Path) -> None:
+        src = self._JEDIS + (
+            'jedis.subscribe(listener, "orders", "refunds");\n'
+            'jedis.psubscribe(listener, "audit.*");\n'
+            'jedis.publish("orders", msg);\n'
+        )
+        assert self._rows(_extract(tmp_path, "J.java", src)) == {
+            ("provider", "topic::orders", "channel", ""),
+            ("consumer", "topic::orders", "channel", ""),
+            ("consumer", "topic::refunds", "channel", ""),
+            ("consumer", "topic::audit.*", "channel", "glob"),
+        }
+
+    def test_java_streams(self, tmp_path: Path) -> None:
+        src = self._LETTUCE + (
+            'commands.xadd("orders", body);\n'
+            'commands.xreadgroup(Consumer.from("g", "c"), StreamOffset.lastConsumed("refunds"));\n'
+        )
+        assert self._rows(_extract(tmp_path, "S.java", src)) == {
+            ("provider", "topic::orders", "stream", ""),
+            ("consumer", "topic::refunds", "stream", ""),
+        }
+
+    def test_jedis_xreadgroup_reads_the_stream_of_its_entry(self, tmp_path: Path) -> None:
+        src = self._JEDIS + (
+            'jedis.xreadGroup("g", "c", p, Map.entry("orders", StreamEntryID.XREADGROUP_UNDELIVERED_ENTRY));\n'
+            'Map.entry("not-a-stream", "x");\n'
+        )
+        assert [c.contract_id for c in _extract(tmp_path, "J.java", src)] == ["topic::orders"]
+
+    def test_spring_ops_for_stream(self, tmp_path: Path) -> None:
+        src = "import org.springframework.data.redis.core.StringRedisTemplate;\n" + (
+            'redisTemplate.opsForStream().add("orders", body);\n'
+            "redisTemplate.opsForStream().add(record);\n"
+        )
+        rows = _extract(tmp_path, "S.java", src)
+        assert self._rows(rows) == {("provider", "topic::orders", "stream", "")}
+
+    def test_java_calls_need_a_redis_client_import(self, tmp_path: Path) -> None:
+        src = 'bus.publish("orders", msg);\nbus.subscribe("orders");\nbus.xadd("orders", b);\n'
+        assert _extract(tmp_path, "Bus.java", src) == []
+
+    # -- .NET -------------------------------------------------------------
+
+    def test_stackexchange_pubsub(self, tmp_path: Path) -> None:
+        src = self._SE + (
+            "await sub.PublishAsync(\n"
+            '  new RedisChannel("orders", RedisChannel.PatternMode.Literal), msg);\n'
+            'sub.Publish(RedisChannel.Literal("refunds"), msg);\n'
+            'await sub.SubscribeAsync(RedisChannel.Pattern("audit.*"), h);\n'
+            'sub.Subscribe("plain", h);\n'
+        )
+        assert self._rows(_extract(tmp_path, "Svc.cs", src)) == {
+            ("provider", "topic::orders", "channel", ""),
+            ("provider", "topic::refunds", "channel", ""),
+            ("consumer", "topic::audit.*", "channel", "glob"),
+            ("consumer", "topic::plain", "channel", ""),
+        }
+
+    def test_stackexchange_streams(self, tmp_path: Path) -> None:
+        src = self._SE + (
+            'await db.StreamAddAsync("orders", "k", "v");\n'
+            'await db.StreamReadGroupAsync("refunds", "g", "c", ">");\n'
+            'db.StreamRead(new[] { new StreamPosition("audit", "0") });\n'
+        )
+        assert self._rows(_extract(tmp_path, "Svc.cs", src)) == {
+            ("provider", "topic::orders", "stream", ""),
+            ("consumer", "topic::refunds", "stream", ""),
+            ("consumer", "topic::audit", "stream", ""),
+        }
+
+    def test_a_dotnet_observable_is_not_a_channel(self, tmp_path: Path) -> None:
+        src = self._SE + "events.Subscribe(e => log(e));\n"
+        assert _extract(tmp_path, "Svc.cs", src) == []
+
+    def test_dotnet_calls_need_stackexchange_redis(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "Svc.cs", 'bus.Publish("orders", m);\n') == []
+
+    # -- JS and Python streams -------------------------------------------
+
+    def test_xadd_in_js_and_python(self, tmp_path: Path) -> None:
+        js = _extract(
+            tmp_path, "p.ts", "import Redis from 'ioredis';\nr.xadd('orders', '*', 'k', 'v');\n"
+        )
+        py = _extract(tmp_path, "p.py", "import redis\nr.xadd('refunds', {'k': 'v'})\n")
+        assert {(c.role, c.contract_id, c.meta["kind"]) for c in js + py} == {
+            ("provider", "topic::orders", "stream"),
+            ("provider", "topic::refunds", "stream"),
+        }
+
+    def test_node_redis_xreadgroup_reads_the_key(self, tmp_path: Path) -> None:
+        src = "import { createClient } from 'redis';\nawait c.xReadGroup(g, n, { key: 'orders', id: '>' });\n"
+        c = _one(_extract(tmp_path, "w.ts", src), "consumer")
+        assert (c.contract_id, c.meta["kind"]) == ("topic::orders", "stream")
+
+    # -- ends meeting -----------------------------------------------------
+
+    def test_a_go_stream_producer_links_a_java_reader(self, tmp_path: Path) -> None:
+        from repowise.core.workspace.matching import match_contracts
+
+        go = _extract(
+            tmp_path / "go-svc",
+            "pub.go",
+            self._GO + 'rdb.XAdd(ctx, &redis.XAddArgs{Stream: "orders", Values: m})\n',
+            alias="go-svc",
+        )
+        java = _extract(
+            tmp_path / "java-worker",
+            "W.java",
+            self._LETTUCE + 'commands.xreadgroup(c, StreamOffset.lastConsumed("orders"));\n',
+            alias="java-worker",
+        )
+        links = match_contracts([*go, *java])
+        assert [(lk.provider_repo, lk.consumer_repo, lk.contract_id) for lk in links] == [
+            ("go-svc", "java-worker", "topic::orders")
+        ]
+
+    def test_a_dotnet_publisher_links_a_go_subscriber(self, tmp_path: Path) -> None:
+        from repowise.core.workspace.matching import match_contracts
+
+        cs = _extract(
+            tmp_path / "cs",
+            "Pub.cs",
+            self._SE + 'await sub.PublishAsync(RedisChannel.Literal("orders"), msg);\n',
+            alias="cs-svc",
+        )
+        go = _extract(
+            tmp_path / "go",
+            "sub.go",
+            self._GO + 'rdb.Subscribe(ctx, "orders")\n',
+            alias="go-svc",
+        )
+        links = match_contracts([*cs, *go])
+        assert [(lk.provider_repo, lk.consumer_repo) for lk in links] == [("cs-svc", "go-svc")]
+
+    def test_bullmq_keeps_its_own_kind(self, tmp_path: Path) -> None:
+        src = "import { Queue } from 'bullmq';\nconst q = new Queue('orders');\nawait q.add('job', {});\n"
+        assert {c.meta["broker"] for c in _extract(tmp_path, "q.ts", src)} <= {"bullmq"}
+
+
 class TestNestMicroservices:
     _IMPORT = "import { EventPattern, MessagePattern, ClientProxy } from '@nestjs/microservices';\n"
 
@@ -553,6 +946,401 @@ class TestNestMicroservices:
 
     def test_handlers_need_the_microservices_import(self, tmp_path: Path) -> None:
         assert _extract(tmp_path, "c.ts", "@EventPattern('x')\nf() {}\n") == []
+
+
+class TestDapr:
+    _USING = "using Dapr;\nusing Dapr.Client;\n"
+
+    def test_topic_attribute_is_a_consumer(self, tmp_path: Path) -> None:
+        src = self._USING + '[Topic("pubsub", "orders")]\npublic Task Handle(OrderPlaced e) { }\n'
+        c = _one(_extract(tmp_path, "Orders.cs", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_publish_event_on_a_dapr_client_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._USING
+            + "private readonly DaprClient daprClient;\n"
+            + 'await daprClient.PublishEventAsync("pubsub", "orders", evt);\n'
+        )
+        c = _one(_extract(tmp_path, "Pub.cs", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_publish_event_on_another_receiver_is_not_read(self, tmp_path: Path) -> None:
+        src = self._USING + 'await bus.PublishEventAsync("pubsub", "orders", evt);\n'
+        assert _extract(tmp_path, "Other.cs", src) == []
+
+    def test_topic_attribute_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = '[Topic("pubsub", "orders")]\npublic Task Handle(OrderPlaced e) { }\n'
+        assert _extract(tmp_path, "NoDapr.cs", src) == []
+
+    def test_a_named_topic_name_argument_is_read(self, tmp_path: Path) -> None:
+        src = (
+            self._USING
+            + "private readonly DaprClient dapr;\n"
+            + 'await dapr.PublishEventAsync("pubsub", topicName: "orders", evt);\n'
+        )
+        c = _one(_extract(tmp_path, "Named.cs", src), "provider")
+        assert c.contract_id == "topic::orders"
+
+    _SUBSCRIPTION = (
+        "apiVersion: dapr.io/v2alpha1\n"
+        "kind: Subscription\n"
+        "metadata: \n"
+        "  name: order-sub\n"
+        "spec:\n"
+        "  pubsubname: pubsub\n"
+        "  topic: orders\n"
+        "  routes: \n"
+        "    default: /orders\n"
+    )
+
+    def test_a_subscription_manifest_is_a_consumer(self, tmp_path: Path) -> None:
+        c = _one(_extract(tmp_path, "deploy/sub.yaml", self._SUBSCRIPTION), "consumer")
+        assert (c.contract_id, c.meta["broker"], c.line) == ("topic::orders", "dapr", 7)
+
+    def test_every_subscription_in_a_multi_document_file_is_read(self, tmp_path: Path) -> None:
+        other = self._SUBSCRIPTION.replace("orders", "refunds")
+        rows = _extract(tmp_path, "sub.yml", self._SUBSCRIPTION + "---\n" + other)
+        assert {c.contract_id for c in rows} == {"topic::orders", "topic::refunds"}
+
+    def test_only_a_dapr_subscription_is_read(self, tmp_path: Path) -> None:
+        component = self._SUBSCRIPTION.replace("Subscription", "Component")
+        foreign = self._SUBSCRIPTION.replace("dapr.io/v2alpha1", "example.com/v1")
+        assert _extract(tmp_path, "component.yaml", component) == []
+        assert _extract(tmp_path, "foreign.yaml", foreign) == []
+
+    def test_a_broken_manifest_is_skipped(self, tmp_path: Path) -> None:
+        assert _extract(tmp_path, "bad.yaml", "dapr.io: [unclosed\n  kind: Subscription") == []
+
+    _JAVA_IMPORT = "import io.dapr.Topic;\nimport io.dapr.client.DaprClient;\n"
+
+    def test_java_topic_annotation_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            self._JAVA_IMPORT
+            + '@Topic(name = "orders", pubsubName = "pubsub")\n'
+            + "public Mono<Void> handle(CloudEvent<String> e) { }\n"
+        )
+        c = _one(_extract(tmp_path, "Orders.java", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_java_publish_event_on_a_dapr_client_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._JAVA_IMPORT
+            + "private DaprClient client;\n"
+            + 'client.publishEvent("pubsub", "orders", evt).block();\n'
+        )
+        c = _one(_extract(tmp_path, "Pub.java", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_java_publish_event_on_another_receiver_is_not_read(self, tmp_path: Path) -> None:
+        src = self._JAVA_IMPORT + 'bus.publishEvent("pubsub", "orders", evt);\n'
+        assert _extract(tmp_path, "Other.java", src) == []
+
+    def test_java_topic_annotation_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = '@Topic(name = "orders", pubsubName = "pubsub")\npublic void handle() { }\n'
+        assert _extract(tmp_path, "NoDapr.java", src) == []
+
+    _JS_IMPORT = "import { DaprClient, DaprServer } from '@dapr/dapr';\n"
+
+    def test_js_pubsub_publish_on_a_dapr_client_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._JS_IMPORT
+            + "const client = new DaprClient({ daprHost });\n"
+            + "await client.pubsub.publish(PUBSUB, 'orders', data);\n"
+        )
+        c = _one(_extract(tmp_path, "pub.ts", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_js_pubsub_subscribe_on_a_dapr_server_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            self._JS_IMPORT
+            + "const server = new DaprServer({ serverHost });\n"
+            + "await server.pubsub.subscribe('pubsub', 'orders', async (e) => {});\n"
+        )
+        c = _one(_extract(tmp_path, "sub.ts", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_js_pubsub_publish_on_another_receiver_is_not_read(self, tmp_path: Path) -> None:
+        src = self._JS_IMPORT + "await bus.pubsub.publish('pubsub', 'orders', data);\n"
+        assert _extract(tmp_path, "other.ts", src) == []
+
+    def test_js_pubsub_subscribe_on_another_receiver_is_not_read(self, tmp_path: Path) -> None:
+        src = self._JS_IMPORT + "await bus.pubsub.subscribe('pubsub', 'orders', h);\n"
+        assert _extract(tmp_path, "other_sub.ts", src) == []
+
+    def test_js_pubsub_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = (
+            "const client = new DaprClient({});\n"
+            "await client.pubsub.publish('pubsub', 'orders', data);\n"
+        )
+        assert _extract(tmp_path, "nodapr.ts", src) == []
+
+    _PY_IMPORT = "from dapr.clients import DaprClient\nfrom dapr.ext.grpc import App\n"
+
+    def test_python_publish_event_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "with DaprClient() as client:\n"
+            + "    client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
+        )
+        c = _one(_extract(tmp_path, "pub.py", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_subscribe_decorator_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "app = App()\n"
+            + "@app.subscribe(pubsub_name='pubsub', topic='orders')\n"
+            + "def handle(event):\n"
+            + "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "sub.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_subscribe_decorator_reads_a_positional_topic(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "app = App()\n"
+            + "@app.subscribe('pubsub', 'orders')\n"
+            + "def handle(event):\n"
+            + "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "pos_sub.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_publish_event_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = "client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
+        assert _extract(tmp_path, "nodapr.py", src) == []
+
+    def test_python_subscribe_decorator_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = "@app.subscribe(pubsub_name='pubsub', topic='orders')\ndef handle(event):\n    pass\n"
+        assert _extract(tmp_path, "nodapr_sub.py", src) == []
+
+    def test_python_publish_event_reads_a_positional_topic(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "with DaprClient() as client:\n"
+            + "    client.publish_event('pubsub', 'orders', d)\n"
+        )
+        c = _one(_extract(tmp_path, "pos.py", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_publish_event_is_read_with_only_the_grpc_import(self, tmp_path: Path) -> None:
+        src = (
+            "from dapr.ext.grpc import App\n"
+            "client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
+        )
+        c = _one(_extract(tmp_path, "grpc_only.py", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_subscribe_is_read_with_only_the_clients_import(self, tmp_path: Path) -> None:
+        src = (
+            "from dapr.clients import DaprClient\n"
+            "@app.subscribe(pubsub_name='pubsub', topic='orders')\n"
+            "def handle(event):\n"
+            "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "clients_only.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_fastapi_subscribe_decorator_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            "from dapr.ext.fastapi import DaprApp\n"
+            "dapr_app = DaprApp(app)\n"
+            "@dapr_app.subscribe(pubsub='pubsub', topic='orders')\n"
+            "def handle(event):\n"
+            "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "fastapi_sub.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_flask_dapr_subscribe_decorator_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            "from flask_dapr import DaprApp\n"
+            "dapr_app = DaprApp(app)\n"
+            "@dapr_app.subscribe(pubsub='pubsub', topic='orders')\n"
+            "def handle(event):\n"
+            "    pass\n"
+        )
+        c = _one(_extract(tmp_path, "flask_sub.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_async_client_publish_event_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            "from dapr.aio.clients import DaprClient\n"
+            "async with DaprClient() as client:\n"
+            "    await client.publish_event(pubsub_name='pubsub', topic_name='orders', data=d)\n"
+        )
+        c = _one(_extract(tmp_path, "async_pub.py", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_publish_event_definition_is_not_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._PY_IMPORT
+            + "async def publish_event(self, pubsub_name, topic_name='orders', data=None):\n"
+            + "    pass\n"
+        )
+        assert not [c for c in _extract(tmp_path, "wrapper.py", src) if c.role == "provider"]
+
+    def test_python_publish_event_needs_a_dapr_import_not_a_lookalike(self, tmp_path: Path) -> None:
+        src = (
+            "from daprlib import publish_event\n"
+            "client.publish_event(pubsub_name='p', topic_name='orders', data=d)\n"
+        )
+        assert _extract(tmp_path, "daprlib.py", src) == []
+
+    _GO_IMPORT = (
+        "import (\n"
+        '  dapr "github.com/dapr/go-sdk/client"\n'
+        '  "github.com/dapr/go-sdk/service/common"\n'
+        ")\n"
+    )
+
+    def test_go_publish_event_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "client, err := dapr.NewClient()\n"
+            + 'err = client.PublishEvent(ctx, "pubsub", "orders", data)\n'
+        )
+        c = _one(_extract(tmp_path, "pub.go", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_go_subscription_is_a_consumer(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "var sub = &common.Subscription{\n"
+            + '  PubsubName: "pubsub",\n'
+            + '  Topic:    "orders",\n'
+            + '  Route:    "/checkout",\n'
+            + "}\n"
+        )
+        c = _one(_extract(tmp_path, "sub.go", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_go_publish_events_is_a_provider(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "client, err := dapr.NewClient()\n"
+            + 'err = client.PublishEvents(ctx, "pubsub", "orders", events)\n'
+        )
+        c = _one(_extract(tmp_path, "pub_many.go", src), "provider")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_go_subscription_is_read_under_an_import_alias(self, tmp_path: Path) -> None:
+        src = (
+            "import (\n"
+            '  daprcommon "github.com/dapr/go-sdk/service/common"\n'
+            ")\n"
+            'var sub = &daprcommon.Subscription{PubsubName: "pubsub", Topic: "orders"}\n'
+        )
+        c = _one(_extract(tmp_path, "alias_sub.go", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_go_subscription_needs_the_service_common_import(self, tmp_path: Path) -> None:
+        src = (
+            'import dapr "github.com/dapr/go-sdk/client"\n'
+            'var sub = &foo.Subscription{Topic: "orders"}\n'
+        )
+        assert not [c for c in _extract(tmp_path, "client_only.go", src) if c.role == "consumer"]
+
+    def test_go_publish_event_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = 'err = client.PublishEvent(ctx, "pubsub", "orders", data)\n'
+        assert _extract(tmp_path, "nodapr.go", src) == []
+
+    def test_go_subscription_needs_the_dapr_import(self, tmp_path: Path) -> None:
+        src = 'var sub = &common.Subscription{\n  Topic: "orders",\n}\n'
+        assert _extract(tmp_path, "nodapr_sub.go", src) == []
+
+    def test_go_subscription_slice_reads_every_element(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "var subs = []common.Subscription{\n"
+            + '  {PubsubName: "pubsub", Topic: "orders"},\n'
+            + '  {PubsubName: "pubsub", Topic: "refunds"},\n'
+            + "}\n"
+        )
+        rows = _extract(tmp_path, "subs.go", src)
+        assert sorted((c.role, c.contract_id, c.line) for c in rows) == [
+            ("consumer", "topic::orders", 6),
+            ("consumer", "topic::refunds", 7),
+        ]
+
+    def test_a_gcp_pubsub_subscription_is_not_a_dapr_one(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "sub := &pubsubpb.Subscription{\n"
+            + '  Name:  "projects/p/subscriptions/s",\n'
+            + '  Topic: "projects/p/topics/t",\n'
+            + "}\n"
+        )
+        assert _extract(tmp_path, "gcp.go", src) == []
+
+    def test_a_local_struct_with_a_pubsubname_field_is_not_a_subscription(
+        self, tmp_path: Path
+    ) -> None:
+        src = (
+            self._GO_IMPORT
+            + 'cfg := Config{PubsubName: "pubsub", Topic: "orders"}\n'
+            + 'cfg2 := &myapp.Settings{PubsubName: "pubsub", Topic: "orders"}\n'
+        )
+        assert _extract(tmp_path, "config.go", src) == []
+
+    def test_go_subscription_is_bound_to_the_line_of_its_literal(self, tmp_path: Path) -> None:
+        src = (
+            self._GO_IMPORT
+            + "var sub = &common.Subscription{\n"
+            + '  PubsubName: "pubsub",\n'
+            + '  Topic:      "orders",\n'
+            + "}\n"
+        )
+        c = _one(_extract(tmp_path, "line.go", src), "consumer")
+        assert (c.contract_id, c.line) == ("topic::orders", 5)
+
+    def test_an_unresolved_go_subscription_topic_is_counted(self, tmp_path: Path) -> None:
+        (tmp_path / "env_sub.go").write_text(
+            self._GO_IMPORT
+            + 'var sub = &common.Subscription{PubsubName: "pubsub", Topic: os.Getenv("T")}\n',
+            encoding="utf-8",
+        )
+        stats: dict[str, int] = {}
+        assert TopicExtractor().extract(tmp_path, "svc", stats=stats) == []
+        assert stats == {"topic_names_unresolved": 1}
+
+    def test_js_dapr_subscribe_route_names_a_topic(self, tmp_path: Path) -> None:
+        src = (
+            "app.get('/dapr/subscribe', (req, res) => {\n"
+            "  res.json([{ pubsubname: 'pubsub', topic: 'orders', routes: { default: '/o' } }]);\n"
+            "});\n"
+        )
+        c = _one(_extract(tmp_path, "server.js", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_python_dapr_subscribe_route_names_a_topic(self, tmp_path: Path) -> None:
+        src = (
+            "@app.route('/dapr/subscribe', methods=['GET'])\n"
+            "def subscribe():\n"
+            "    return jsonify([{'pubsubname': 'pubsub', 'topic': 'orders'}])\n"
+        )
+        c = _one(_extract(tmp_path, "server.py", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_go_dapr_subscribe_route_names_a_topic(self, tmp_path: Path) -> None:
+        src = (
+            'router.HandleFunc("/dapr/subscribe", handler)\n'
+            "t := []subscription{\n"
+            '    {PubsubName: "pubsub", Topic: "orders"},\n'
+            "}\n"
+        )
+        c = _one(_extract(tmp_path, "server.go", src), "consumer")
+        assert (c.contract_id, c.meta["broker"]) == ("topic::orders", "dapr")
+
+    def test_a_subscription_object_needs_the_dapr_subscribe_route(self, tmp_path: Path) -> None:
+        src = "const s = { pubsubname: 'pubsub', topic: 'orders' };\n"
+        assert _extract(tmp_path, "nosub.js", src) == []
+
+    def test_an_object_without_pubsubname_is_not_a_subscription(self, tmp_path: Path) -> None:
+        src = "app.get('/dapr/subscribe', h);\nconst s = { topic: 'orders' };\n"
+        assert _extract(tmp_path, "nopubsub.js", src) == []
 
 
 class TestKafkaByReceiverType:
@@ -735,3 +1523,61 @@ class TestGoKafka:
             'r := kgo.Record{Topic: "c"}\n'
         )
         assert _extract(tmp_path, "main.go", src) == []
+
+
+_SB = "using Azure.Messaging.ServiceBus;\n"
+
+
+class TestAzureServiceBus:
+    def test_a_sender_and_a_processor_meet_on_the_queue(self, tmp_path: Path) -> None:
+        sender = _SB + 'var sender = client.CreateSender("orders");\nawait sender.SendMessageAsync(m);\n'
+        processor = (
+            _SB
+            + 'var processor = client.CreateProcessor("orders", new ServiceBusProcessorOptions());\n'
+            + 'var receiver = client.CreateReceiver("refunds");\n'
+        )
+        _extract(tmp_path, "sender/OrderPublisher.cs", sender)
+        rows = _extract(tmp_path, "billing/OrderWorker.cs", processor)
+        assert {(c.role, c.contract_id, c.meta["broker"], c.meta["kind"]) for c in rows} == {
+            ("provider", "topic::orders", "azure_servicebus", "queue"),
+            ("consumer", "topic::orders", "azure_servicebus", "queue"),
+            ("consumer", "topic::refunds", "azure_servicebus", "queue"),
+        }
+        assert {c.origin for c in rows} == {ContractOrigin.CLIENT_CALL}
+
+    @pytest.mark.parametrize(
+        "call",
+        [
+            'client.CreateProcessor("orders", "billing")',
+            'client.CreateProcessor("orders", "billing", new ServiceBusProcessorOptions())',
+            'client.CreateReceiver("orders", billingSubscription)',
+            'client.CreateSessionProcessor("orders", SubscriptionName, options)',
+            'client.CreateReceiver(topicName: "orders", subscriptionName: "billing")',
+        ],
+    )
+    def test_a_receive_naming_a_subscription_reads_a_topic(self, tmp_path: Path, call: str) -> None:
+        c = _one(_extract(tmp_path, "Worker.cs", _SB + f"var r = {call};\n"), "consumer")
+        assert (c.contract_id, c.meta["kind"]) == ("topic::orders", "topic")
+
+    def test_functions_triggers_are_route_registrations(self, tmp_path: Path) -> None:
+        src = (
+            "public static class RefundFunction {\n"
+            '    [Function("Refund")]\n'
+            '    public static void Run([ServiceBusTrigger("refunds", Connection = "SB")] string msg) { }\n'
+            '    [FunctionName("Audit")]\n'
+            '    public static void Audit([ServiceBusTrigger("orders", "audit")] string msg) { }\n'
+            "}\n"
+        )
+        rows = _extract(tmp_path, "RefundFunction.cs", src)
+        assert {(c.role, c.contract_id, c.meta["kind"], c.origin) for c in rows} == {
+            ("consumer", "topic::refunds", "queue", ContractOrigin.ROUTE_REGISTRATION),
+            ("consumer", "topic::orders", "topic", ContractOrigin.ROUTE_REGISTRATION),
+        }
+
+    def test_a_commented_out_call_is_not_read(self, tmp_path: Path) -> None:
+        src = _SB + '// var sender = client.CreateSender("old-orders");\n/* client.CreateProcessor("x"); */\n'
+        assert _extract(tmp_path, "Old.cs", src) == []
+
+    def test_client_calls_need_the_library_import(self, tmp_path: Path) -> None:
+        src = 'var s = factory.CreateSender("orders");\nvar p = pool.CreateProcessor("jobs");\n'
+        assert _extract(tmp_path, "Other.cs", src) == []

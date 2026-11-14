@@ -1,5 +1,5 @@
 ---
-description: Set up Repowise for this codebase. Installs if needed, asks about your preferences, and runs the indexing.
+description: Set up Repowise for this codebase (install, options, indexing).
 allowed-tools: Bash(repowise --version), Bash(repowise init:*), Bash(repowise status:*), Bash(repowise update:*), Bash(git rev-parse --git-common-dir), Bash(uv tool install repowise), Bash(pipx install repowise), Bash(pip install repowise), Bash(python -m pip install repowise), Read, AskUserQuestion
 ---
 
@@ -107,7 +107,7 @@ Exclusions:
   --skip-infra           Skip infrastructure files (Dockerfile, Makefile, Terraform, shell)
 
 Git:
-  --commit-limit N       Max commits to analyze per file (default: 5000, max: 10000)
+  --commit-limit N       Newest commits to analyze (default: 5000; above the commit count reads the full history)
   --follow-renames       Track files across renames (slower but more accurate history)
 
 Editor integration:
@@ -139,13 +139,15 @@ Recovery:
 
 Every path reaches this step. It is about the repo, not the provider.
 
-By default `init` points the global repowise MCP entry (in
-`~/.claude/settings.json` and Claude Desktop's config) at this repo and writes
-project files into it (`.mcp.json`, `.claude/CLAUDE.md`, `AGENTS.md`,
-`.vscode/mcp.json`). There is **one** global `repowise` entry, so this repo
-replaces whatever repo it points at now. With `--yes`, init moves it and prints
-the old and new target. That is the right default for the repo someone
-actually works in, and the wrong one for a checkout that is about to disappear.
+By default `init` writes project files into this repo (`.mcp.json`,
+`.claude/CLAUDE.md`, `AGENTS.md`, `.vscode/mcp.json`) and adds the global
+repowise MCP entry (in `~/.claude.json` and Claude Desktop's config)
+when there is none. The Claude Code entry serves whichever repo Claude Code is
+started in. Claude Desktop has no project scope, so its one entry names the
+repo it serves. init never moves an entry that serves another repo; it only
+re-points one whose repo no longer exists. That is the right default for the
+repo someone actually works in, and the wrong one for a checkout that is about
+to disappear.
 
 Add `--no-editor-setup` when either of these holds:
 
@@ -264,3 +266,6 @@ After init exits with `0` or `2`:
    history, with a cost estimate first." For an Index only run, name
    `repowise update --full` instead.
 4. If CLAUDE.md was generated (default): "I've also generated a CLAUDE.md with codebase context that I'll read on every session."
+5. Offer the decision check in one line: "I can check the decisions mined from
+   this repository's history on its busiest files, and keep the real ones. Want
+   me to?" On yes, run `repowise decision discover` and follow what it prints.

@@ -16,6 +16,7 @@ from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
+from repowise.server.mcp_server._savings.interaction import error_reply
 
 #: Cap the per-role member lists in the agent payload; full roles are on REST.
 _MCP_CORE_MEMBER_LIMIT = 25
@@ -40,21 +41,27 @@ async def get_architecture() -> dict[str, Any]:
     snapshot. Structural edges only; co-change is excluded.
     """
     if not _is_workspace_mode():
-        return {
-            "error": "get_architecture is only available in workspace mode.",
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "error": "get_architecture is only available in workspace mode.",
+                "_meta": _build_meta(),
+            },
+        )
 
     enricher = _state._cross_repo_enricher
     metrics = enricher.get_architecture_metrics() if enricher is not None else None
     if not metrics:
-        return {
-            "error": (
-                "No system graph is available yet. Run `repowise update --workspace` "
-                "to build cross-repo relationships first."
-            ),
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "no_index",
+            {
+                "error": (
+                    "No system graph is available yet. Run `repowise update --workspace` "
+                    "to build cross-repo relationships first."
+                ),
+                "_meta": _build_meta(),
+            },
+        )
 
     payload = architecture_payload(metrics)
     payload["_meta"] = _build_meta(
@@ -87,6 +94,8 @@ def architecture_payload(metrics: dict[str, Any]) -> dict[str, Any]:
         "core_members": shown_core,
         "core_members_truncated": max(0, len(core_members) - len(shown_core)),
         "cycle_count": metrics.get("cycle_count", 0),
+        # True when the enumeration budget stopped the count: "at least" cycle_count.
+        "cycle_count_capped": bool(metrics.get("cycle_count_capped", False)),
         "conformance_violations": metrics.get("conformance_violations", 0),
         "role_breakdown": breakdown,
         "evidence": evidence or None,
@@ -98,6 +107,8 @@ def architecture_payload(metrics: dict[str, Any]) -> dict[str, Any]:
 
 def _summary(metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
     """One sentence, which says "not determined" rather than score an unseen graph."""
+    from repowise.core.workspace.cycles import cycle_total
+
     if metrics.get("score") is None:
         return (
             f"Architecture not determined for {metrics.get('node_count', 0)} service(s): "
@@ -115,7 +126,8 @@ def _summary(metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
         f"Architecture score {metrics['score']}/10 "
         f"({metrics.get('architecture_type', 'hierarchical')}): propagation cost "
         f"{metrics.get('propagation_cost_pct', 0)}%, {core_phrase}, "
-        f"{metrics.get('cycle_count', 0)} dependency cycle(s)."
+        f"{cycle_total(metrics.get('cycle_count') or 0, bool(metrics.get('cycle_count_capped')))}"
+        " dependency cycle(s)."
     )
     if evidence.get("state") == "partial":
         summary += f" Partial evidence: {evidence.get('summary')}."

@@ -335,3 +335,57 @@ def test_coverage_is_not_stated_before_the_probe_ran():
     diag = build_diagnostics([_consumer("web", "http::GET::/u")], [], {"web": {}})
     assert diag.unrecognised_call_files is None
     assert diag.http_consumer_coverage is None
+
+
+def test_an_unlinked_call_from_a_script_is_left_out_of_every_count():
+    contracts = [
+        _consumer("web", "http::GET::/docs", file="scripts/docs-parity.mjs"),
+        _consumer("web", "http::GET::/missing", file="src/app.ts"),
+    ]
+    diag = build_diagnostics(contracts, [])
+    assert [u.file_path for u in diag.unmatched_consumers] == ["src/app.ts"]
+    assert diag.total_consumers == 1
+    assert diag.http_consumers_read == 1
+
+
+def test_a_linked_call_from_a_script_still_counts():
+    contracts = [
+        _provider("api", "http::GET::/users"),
+        _consumer("web", "http::GET::/users", file="scripts/seed.py"),
+    ]
+    link = _link("http::GET::/users", "api", "web")
+    link.consumer_file = "scripts/seed.py"
+    diag = build_diagnostics(contracts, [link])
+    assert diag.http_consumers_linked == 1
+    assert diag.http_consumers_read == 1
+
+
+def test_topic_misses_reach_the_diagnostics_apart_from_http():
+    from repowise.core.workspace.diagnostics import ExtractionDiagnostics
+
+    contracts = [
+        _provider("orders", "topic::orders", ctype="topic"),
+        _consumer("billing", "topic::orders", ctype="topic"),
+        _consumer("web", "http::GET::/u"),
+    ]
+    stats = {
+        "orders": {"topic_names_unresolved": 2, "message_files_unrecognised": 0},
+        "photos": {"message_files_unrecognised": 3, "call_files_unrecognised": 0},
+        "web": {"call_files_unrecognised": 0},
+    }
+    diag = build_diagnostics(contracts, [], stats)
+    assert diag.topic_contracts_read == 2
+    assert diag.topic_names_unresolved == 2
+    assert diag.unrecognised_message_files == {"orders": 0, "photos": 3}
+    assert diag.unrecognised_message_file_count == 3
+    assert {r.repo: r.topic_names_unresolved for r in diag.repo_breakdown}["orders"] == 2
+    assert diag.http_consumer_coverage == 1.0  # a messaging file never lowers HTTP
+    restored = ExtractionDiagnostics.from_dict(diag.to_dict())
+    assert restored.to_dict() == diag.to_dict()
+
+
+def test_topic_misses_are_none_before_the_messaging_probe_ran():
+    diag = build_diagnostics([_consumer("web", "http::GET::/u")], [], {"web": {}})
+    assert diag.unrecognised_message_files is None
+    assert diag.unrecognised_message_file_count is None
+    assert diag.topic_names_unresolved == 0

@@ -979,9 +979,9 @@ class TestScanSource:
     @pytest.mark.parametrize(
         ("source", "raw"),
         [
-            ("NEXT_PUBLIC_STRIPE_SECRET_KEY=sk_live_0123456789abcdef\n", "sk_live_0123456789abcdef"),  # pragma: allowlist secret
+            ("NEXT_PUBLIC_API_KEY=my_dummy_key\n", "my_dummy_key"),
             ('  "VITE_API_KEY": "abcdef0123456789",\n', "abcdef0123456789"),
-            ("export const NEXT_PUBLIC_AUTH_TOKEN = 'tok_9876543210';\n", "tok_9876543210"),
+            ("VITE_API_TOKEN=abc123\n", "abc123"),
         ],
     )
     def test_public_env_secret_value_is_redacted(self, source: str, raw: str) -> None:
@@ -1243,6 +1243,22 @@ class TestVendorShapeEdges:
         source = 'GITHUB_TOKEN = "ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ"\n'  # pragma: allowlist secret
         assert self._kinds(source) == ["github_token"]
 
+    def test_public_env_secret_deduped_with_credential_kinds(self) -> None:
+        stripe = "sk_" + "live_" + "4eC39HqLyjWDarjtT1zdp7dc"
+        ghp = "ghp_" + "Kq7mZ2xV9pL4rT8wN3bY6cH1jF5dS0gA2eUo"
+        assert self._kinds(f"NEXT_PUBLIC_STRIPE_SECRET={stripe}\n", "web/.env") == ["stripe_key"]
+        assert self._kinds(f"NEXT_PUBLIC_GITHUB_TOKEN={ghp}\n", "web/.env") == ["github_token"]
+        assert self._kinds('const NEXT_PUBLIC_API_SECRET = "Xk9mQ2vLp7zAbc123";\n', "web/env.ts") == [
+            "hardcoded_secret"
+        ]
+        assert self._kinds(f"NEXT_PUBLIC_STRIPE_SECRET={stripe}  # pragma: allowlist secret\n", "web/.env") == []
+        assert self._kinds("VITE_API_TOKEN=abc123\n", "web/.env") == ["public_env_secret"]
+        assert self._kinds("const k = process.env.NEXT_PUBLIC_API_KEY;\n", "web/app.ts") == [
+            "public_env_secret"
+        ]
+        multi = f'NEXT_PUBLIC_TOKEN="live"; STRIPE_KEY="{stripe}"\n'
+        assert sorted(self._kinds(multi, "web/.env")) == ["public_env_secret", "stripe_key"]
+
     def test_pem_key_with_escaped_newline_is_flagged(self) -> None:
         source = (
             'PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\n'
@@ -1497,6 +1513,9 @@ class TestSecretPrecision:
             ("src/auth.ts", 'const token = "Basic ${btoa(user)}";\n'),
             ("README.md", '--spring.datasource.password="DB PASSWORD"\n'),
             ("README.md", 'DB_PASSWORD="YOUR DB PASSWORD"\n'),
+            ("a.ts", 'const REF_API_KEY = "@group:reference:api";\n'),
+            ("config.py", 'DB_PASSWORD = "secrets/db/password"\n'),
+            ("config.py", 'DB_PASSWORD = "/secrets/db/password"\n'),
         ],
     )
     def test_additional_placeholders_are_not_secrets(self, path: str, source: str) -> None:
@@ -1511,6 +1530,9 @@ class TestSecretPrecision:
             ('const val API_TOKEN = "productionAccessKey"\n', "hardcoded_secret"),
             ('password="Tr0ub4dor 3xyz"\n', "hardcoded_password"),
             ('password = "plain$password123"\n', "hardcoded_password"),
+            ('DB_PASSWORD = "admin:hunter@db"\n', "hardcoded_password"),
+            ('password = "correct.horse"\n', "hardcoded_password"),
+            ('DB_PASSWORD = "admin:hunter"\n', "hardcoded_password"),
         ],
     )
     def test_credential_like_values_still_fire(self, source: str, kind: str) -> None:
@@ -1528,6 +1550,15 @@ class TestSecretPrecision:
     )
     def test_credential_shaped_values_still_fire(self, source: str) -> None:
         assert self._kinds(source) == {"hardcoded_secret"}
+
+    def test_windows_manifest_public_key_token_is_not_a_secret(self) -> None:
+        source = (
+            '<dependency><dependentAssembly>'
+            '<assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" '
+            'version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>'
+            '</dependentAssembly></dependency>\n'
+        )
+        assert self._kinds(source) == set()
 
     def test_doctest_example_is_not_a_password(self) -> None:
         source = (
@@ -1723,3 +1754,61 @@ class TestNoAlarmOnCodeThatDoesNotShip:
         from repowise.core.analysis.security_scan import mask_comments_and_strings
 
         assert mask_comments_and_strings("a /* b /* c */ d */ e", **options) == masked
+
+    def test_csharp_interpolated_string_quotes_inside_hole_are_masked(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("&ids=", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(       , ids)  ;\nvar x = 1;\n"
+        assert (
+            mask_comments_and_strings(
+                src, strings=False, hash_comments=False, **mask_dialect("a.cs")
+            )
+            == src
+        )
+
+    def test_csharp_interpolated_string_comment_inside_hole_does_not_mask_line(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $"{b}items/by?ids={string.Join("//x", ids)}";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $  b               string.Join(     , ids)  ;\nvar x = 1;\n"
+
+    def test_csharp_interpolated_string_verbatim_and_escaped_braces(self) -> None:
+        from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+
+        src = 'var u = $@"c:\\dir\\{sub}\""name""";\nvar x = 1;\n'
+        masked = mask_comments_and_strings(
+            src, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked == "var u = $@         sub          ;\nvar x = 1;\n"
+
+        src_braces = 'var u = $"escaped {{literal}} and {hole}";\n'
+        masked_braces = mask_comments_and_strings(
+            src_braces, strings=True, hash_comments=False, **mask_dialect("a.cs")
+        )
+        assert masked_braces == "var u = $                          hole  ;\n"
+
+@pytest.mark.parametrize("prefix", ["$@", "@$"])
+@pytest.mark.parametrize("strings", [False, True])
+def test_verbatim_interpolation_trailing_backslash_preserves_following_code(prefix, strings):
+    from repowise.core.analysis.security.masking import mask_dialect
+    from repowise.core.analysis.security_scan import mask_comments_and_strings
+
+    literal = r'"c:\dir\"'
+    source = f"var p = {prefix}{literal}; DangerousCall(); // real comment\nNext();\n"
+    masked = mask_comments_and_strings(
+        source, strings=strings, hash_comments=False, **mask_dialect("a.cs")
+    )
+    expected_literal = " " * len(literal) if strings else literal
+    assert masked == (
+        f"var p = {prefix}{expected_literal}; DangerousCall(); "
+        + " " * len("// real comment")
+        + "\nNext();\n"
+    )
+    assert len(masked) == len(source)

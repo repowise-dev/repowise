@@ -223,7 +223,7 @@ def _spy_run(payload, calls: list):
     otherwise invisible until the command runs against a real repo.
     """
 
-    def _run(repo_path, factory, tool_name):
+    def _run(repo_path, factory, tool_name, **_kwargs):
         coro = factory()
         calls.append((repo_path, coro.cr_code.co_qualname, tool_name))
         coro.close()
@@ -391,7 +391,7 @@ def test_search_reaches_the_tool_with_the_mapped_mode(monkeypatch, repo, request
     """
     seen: dict = {}
 
-    def _run(repo_path, factory, tool_name):
+    def _run(repo_path, factory, tool_name, **_kwargs):
         coro = factory()
         seen.update(coro.cr_frame.f_locals)
         coro.close()
@@ -815,7 +815,10 @@ def test_risk_full_on_a_revspec_is_json_not_a_table(monkeypatch, repo):
         risk_command, ["HEAD", "--path", str(repo), "--full", "--baseline", "0"]
     )
     assert result.exit_code == 0, result.output + (result.stderr or "")
-    assert json.loads(result.output) == {"risk": 4.2}
+    # The fixture repo has no index, so the tests block says so beside the score.
+    out = json.loads(result.output)
+    assert out["risk"] == 4.2
+    assert out["impacted_tests"]["status"] == "no_index"
     assert ChangeRiskResult is not None  # import is the contract this leans on
 
 
@@ -839,6 +842,8 @@ class _FakeChangeResult:
     percentile = None
     priority = None
     request_excludes: tuple = ()
+    working_tree = False
+    owned_excludes: tuple = ()
 
 
 def test_changed_file_without_a_target_is_a_usage_error(monkeypatch, repo):

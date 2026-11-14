@@ -159,6 +159,8 @@ class TestParityGoldens:
 _FULL = {
     # astro projects its frontmatter and <script> bodies to TypeScript
     # through the same SFC pass as svelte, so its imports are ordinary ESM.
+    # Markup <script src>/<link href> are imports too, via resolvers/astro.py:
+    # a /-rooted value under the nearest public/, then /src/... from the root.
     "astro",
     "c",
     # COPY members resolve to copybooks by stem, nearest first.
@@ -178,6 +180,8 @@ _FULL = {
     "java",
     "javascript",
     "kotlin",
+    # uses units resolve through .dpr in-paths and .dproj/.lpi search paths.
+    "pascal",
     # php + swift promoted after live validation (Slim, Alamofire).
     "php",
     "python",
@@ -216,6 +220,9 @@ _PARTIAL = {
     # import QtQuick / import "components": module specs via the qmldir
     # index, quoted references relative to the importing file (#727).
     "qml",
+    # Ansible playbook/role wiring via the lightweight tier: real edges
+    # inside Ansible projects, nothing claimed for plain YAML config (#4397).
+    "yaml",
 }
 
 

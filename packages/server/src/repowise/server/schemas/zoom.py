@@ -46,6 +46,12 @@ class ZoomNodeResponse(BaseModel):
     is_dead: bool = False
     is_test: bool = False
     on_flow: bool = False
+    # Up to three code languages / imported frameworks of the subtree, most files
+    # first. Empty on file leaves (they carry ``language``).
+    technologies: list[str] = Field(default_factory=list)
+    # Ids of the containers in ``ZoomMapResponse.containers`` this subtree's
+    # files belong to, most files first; one id = wholly inside that container.
+    container_ids: list[str] = Field(default_factory=list)
 
 
 class ZoomRelationResponse(BaseModel):
@@ -55,6 +61,28 @@ class ZoomRelationResponse(BaseModel):
     label: str = ""
     edge_count: int = 1
     coupling: str = ""  # loose | moderate | tight
+
+
+class ZoomExternalResponse(BaseModel):
+    id: str  # "ext:<package name>"; target_id of external_relations
+    name: str
+    display_name: str
+    kind: str  # io_kind when typed (db | network), else category
+    category: str  # service | framework | library | tool
+    io_kind: str | None = None
+    ecosystem: str = ""
+    # Repository-wide counts, not narrowed by focus or max_depth.
+    file_count: int = 0
+    edge_count: int = 0
+
+
+class ZoomContainerResponse(BaseModel):
+    id: str  # "pkg:<root path>"
+    name: str
+    path: str = ""
+    kind: str  # extension | web_app | api | cli | worker | library
+    technologies: list[str] = Field(default_factory=list)
+    file_count: int = 0  # on the whole tree, not narrowed by focus or max_depth
 
 
 class ZoomMapResponse(BaseModel):
@@ -69,3 +97,10 @@ class ZoomMapResponse(BaseModel):
     truncated: bool = False
     nodes: list[ZoomNodeResponse]
     relations: list[ZoomRelationResponse]
+    # Third-party systems the code reaches, drawn beside the tree. Additive and
+    # defaulted, like the three fields below.
+    externals: list[ZoomExternalResponse] = Field(default_factory=list)
+    # Node -> external links, one per zoom level: ``source_id`` is a child of
+    # ``parent_id``, ``target_id`` an external id.
+    external_relations: list[ZoomRelationResponse] = Field(default_factory=list)
+    containers: list[ZoomContainerResponse] = Field(default_factory=list)

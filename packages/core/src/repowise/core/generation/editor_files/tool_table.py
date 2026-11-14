@@ -35,12 +35,12 @@ character here roughly fifty times more expensive than a character in a tool
 response. It was 3,402 characters and bought a repowise MCP call before ~1.0%
 of edits under Claude Code.
 
-It is kept, and kept short, because the table is what reaches an agent under a
-harness that defers MCP schemas. Claude Code defers, so an agent there must
-issue a ``ToolSearch`` before a tool is even a candidate, and this table in
-CLAUDE.md is the only description it sees until then. Codex loads the schemas
-up front and needs the table least, but reads the same AGENTS.md block, so the
-rows must stay accurate for both. Adding a sentence here is a real cost; spend
+So the table is the opt-in ``tools`` section. By default the block carries
+``_tool_routing.j2`` instead: one line per task kind naming the call with its
+arguments, which is what an agent under a harness that defers MCP schemas
+(Claude Code) reads before its first ``ToolSearch``. When the table is opted
+in, its rows must stay accurate for CLAUDE.md and AGENTS.md alike. Adding a
+sentence here is a real cost; spend
 it in the tool's own schema description instead, which is paid only on use.
 Budgets in ``tests/unit/server/mcp/test_tool_table_drift.py``.
 """
@@ -66,7 +66,7 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
         # was never synthesised, and this row told the agent to distrust the
         # payload on the strength of it, so it re-searched after every call.
         # `confidence` there is graded from the evidence such a payload does carry.
-        "First call for any how/where/why question. "
+        "First call; one per how/where/why question. "
         + _KEYED_ONLY["get_answer"]
         + "`degraded` means no prose; `confidence` rates the evidence. `symbol_bodies` has live bodies.",
     ),
@@ -122,10 +122,16 @@ TOOL_TABLE_ROWS: dict[str, tuple[str, str]] = {
 }
 
 
-def render_tool_table(*, keyless: bool = False) -> str:
-    """Markdown table of the tool rows, in the dict's curated order."""
+def render_tool_table(*, keyless: bool = False, listed: frozenset[str] | None = None) -> str:
+    """Markdown table of the tool rows, in the dict's curated order.
+
+    ``listed``, when given, keeps only the rows for tools the reader's client
+    is shown.
+    """
     lines = ["| Tool | When and why |", "|------|--------------|"]
     for name, (signature, row) in TOOL_TABLE_ROWS.items():
+        if listed is not None and name not in listed:
+            continue
         if keyless and name in _KEYED_ONLY:
             row = row.replace(_KEYED_ONLY[name], "")
         lines.append(f"| `{signature}` | {row} |")

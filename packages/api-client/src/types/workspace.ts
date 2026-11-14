@@ -167,6 +167,20 @@ export interface WorkspaceContractDetail {
   unmatched_reason: string | null;
 }
 
+export interface WorkspaceCoChangeEvidence {
+  /** Distinct author emails behind the pair (bounded sample). */
+  authors: string[];
+  /** Example matched commit pairs: short SHAs, date, time gap in hours. */
+  commit_pairs: {
+    source_sha: string;
+    target_sha: string;
+    date: string;
+    gap_hours: number;
+  }[];
+  /** Largest time gap between the sampled paired commits, hours. */
+  max_gap_hours: number;
+}
+
 export interface WorkspaceCoChangeEntry {
   source_repo: string;
   source_file: string;
@@ -175,6 +189,8 @@ export interface WorkspaceCoChangeEntry {
   strength: number;
   frequency: number;
   last_date: string;
+  /** Bounded supporting evidence (#483); null for pre-evidence overlays. */
+  evidence: WorkspaceCoChangeEvidence | null;
 }
 
 export interface WorkspaceCoChangesResponse {
@@ -243,6 +259,11 @@ export type {
   SystemGraph,
   SystemEdgeKind,
   SystemEdgeMatchType,
+  ServiceLinkDirection,
+  ServiceLinkEntry,
+  ServiceLinkEvidence,
+  ServiceLinksTotal,
+  ServiceLinksBetween,
   ExtractionDiagnostics,
   RepoDiagnostics,
   UnmatchedConsumer,
@@ -277,14 +298,18 @@ export type {
 
 import type {
   SystemGraph,
+  ServiceLinksBetween,
   CrossRepoBlastRadius,
   BreakingChangeReport,
   ConformanceReport,
   ArchitectureMetrics,
 } from "@repowise-dev/types";
 
-/** `GET /api/workspace/system-graph` — the full service-granular system graph. */
+/** `GET /api/workspace/system-graph` — the service-granular system graph (`?view=map`: its lean view). */
 export type WorkspaceSystemGraphResponse = SystemGraph;
+
+/** `GET /api/workspace/system-graph/links` — one page of links between two services. */
+export type WorkspaceLinksBetweenResponse = ServiceLinksBetween;
 
 /** `GET /api/workspace/blast-radius` — cross-repo downstream impact set. */
 export type WorkspaceBlastRadiusResponse = CrossRepoBlastRadius;
@@ -297,3 +322,6 @@ export type WorkspaceConformanceResponse = ConformanceReport;
 
 /** `GET /api/workspace/architecture` — architecture-complexity metrics + roles. */
 export type WorkspaceArchitectureResponse = ArchitectureMetrics;
+
+/** `GET /api/workspace/estate` — the estate report `repowise report estate` prints. */
+export type { EstateReport as WorkspaceEstateResponse } from "@repowise-dev/types";

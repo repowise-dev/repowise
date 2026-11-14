@@ -89,10 +89,14 @@ class LinkStrategy(StrEnum):
     GATEWAY_ROUTE = "gateway_route"
     #: The consumer's base is unread and exactly one service serves the path.
     UNIQUE_PATH = "unique_path"
-    #: The consumer's base is unread and several services serve the path; linked to each.
+    #: The consumer's base is unread and several services of one repo serve the path;
+    #: linked to each. Services in two or more repos are not linked at all.
     AMBIGUOUS_PATH = "ambiguous_path"
     #: Matched only after stripping mount, version or base prefixes from both paths.
     PREFIX_STRIPPED = "prefix_stripped"
+    #: A concrete path segment in the call (``/render/1``) met a provider's ``{param}``
+    #: segment (``/render/{param}``), every other segment equal.
+    PARAM_SEGMENT = "param_segment"
     #: Declared in the workspace config.
     MANUAL = "manual"
     #: A manifest declares the package dependency (system-graph package edges only).
@@ -110,12 +114,18 @@ STRATEGY_CONFIDENCE: dict[LinkStrategy, float] = {
     LinkStrategy.UNIQUE_PATH: 1.0,
     LinkStrategy.AMBIGUOUS_PATH: 0.6,
     LinkStrategy.PREFIX_STRIPPED: 0.6,
+    LinkStrategy.PARAM_SEGMENT: 0.6,
     LinkStrategy.MANUAL: 1.0,
     LinkStrategy.MANIFEST: 1.0,
 }
 
 _CANDIDATE = frozenset(
-    {LinkStrategy.AMBIGUOUS_PATH, LinkStrategy.PREFIX_STRIPPED, LinkStrategy.HOST_ONLY}
+    {
+        LinkStrategy.AMBIGUOUS_PATH,
+        LinkStrategy.PREFIX_STRIPPED,
+        LinkStrategy.PARAM_SEGMENT,
+        LinkStrategy.HOST_ONLY,
+    }
 )
 
 

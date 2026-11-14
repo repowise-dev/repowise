@@ -25,7 +25,6 @@ from structlog.testing import capture_logs
 from repowise.core.generation.kg_context import KnowledgeGraphContext
 from repowise.core.generation.page_generator.levels import (
     build_level6_coros,
-    build_level8_coros,
 )
 from repowise.core.generation.report import reset_house_terms
 from repowise.core.ingestion.models import FileInfo, ParsedFile, RepoStructure, Symbol
@@ -135,14 +134,9 @@ class _Gen:
 
     def __init__(self) -> None:
         self.overview_kwargs: dict[str, Any] = {}
-        self.onboarding_signals: list[Any] = []
 
     def generate_repo_overview(self, *args: Any, **kwargs: Any) -> object:
         self.overview_kwargs = kwargs
-        return object()
-
-    def generate_onboarding_page(self, spec: Any, signals: Any) -> object:
-        self.onboarding_signals.append(signals)
         return object()
 
 
@@ -186,9 +180,9 @@ def _run(
         sel_module_groups=MODULE_GROUPS if module_groups is None else module_groups,
         vector_store=store,
         tour_stops=(),
-        layer_order=(),
         kg_ctx=KnowledgeGraphContext(None),
         on_subphase=None,
+        flow_plans=lambda: [],
         _emit=lambda page_id: True,
     )
 
@@ -301,95 +295,16 @@ async def test_no_module_groups_means_no_table_and_a_log(tmp_path):
     assert any(e["event"] == "generation.overview_capability_table_absent" for e in logs)
 
 
-async def test_the_repository_is_mined_once_for_both_levels(tmp_path):
-    """Mining walks the whole repository. Two consumers, one walk."""
-    run = _run(tmp_path)
-    await build_level6_coros(run)
-    await build_level8_coros(run)
-
-    from_overview = tuple(c.term for c in run.gen.overview_kwargs["capabilities"])
-    onboarding_terms = run.gen.onboarding_signals[0].house_terms
-    assert from_overview
-    assert onboarding_terms
-    # Same objects, so the same pass produced both.
-    assert run._house_terms is onboarding_terms
-    assert all(
-        t.term in {h.term for h in onboarding_terms}
-        for t in run.gen.overview_kwargs["capabilities"]
-    )
-
-
-async def test_onboarding_still_gets_its_terms_when_the_overview_mined_first(tmp_path):
-    """Order independence: level 6 now runs the miner, and level 8 read it
-    from a warm cache rather than from a fresh walk."""
-    run = _run(tmp_path)
-    await build_level6_coros(run)
-    await build_level8_coros(run)
-
-    assert [t.term for t in run.gen.onboarding_signals[0].house_terms] == [
-        "Blast radius",
-        "Change risk",
-    ]
-
-
-# ---------------------------------------------------------------------------
-# The glossary reads the same corroboration corpus
-# ---------------------------------------------------------------------------
-#
-# It is the second consumer of both mined vocabulary and module corroboration.
-# Both cost a pass the run should pay once: mining walks the whole repository,
-# and corroboration reads module summaries out of the store.
-
-
-async def test_the_glossary_is_handed_the_corroboration_corpus(tmp_path):
-    run = _run(tmp_path)
-    await build_level8_coros(run)
-
-    corpus = run.gen.onboarding_signals[0].module_corroboration
-    assert corpus
-    # Title first, summary under it -- what makes a match mean something.
-    assert corpus[0].startswith("Blast Radius Evaluation")
-
-
-async def test_the_corroboration_corpus_is_built_once_for_both_levels(tmp_path):
-    """Level 6 and level 8 both want it, and it costs a batched store read."""
-    store = _Store({"src": "Evaluates the blast radius of a change."})
-    run = _run(tmp_path, written={}, store=store)
-
-    await build_level6_coros(run)
-    asked_after_overview = list(store.asked)
-    await build_level8_coros(run)
-
-    assert asked_after_overview, "the overview should have read the store"
-    assert store.asked == asked_after_overview, "level 8 read the store a second time"
-
-
-async def test_a_run_with_no_glossary_page_does_not_build_the_corpus(tmp_path):
-    """A scoped run that asked for one onboarding page should not pay for a
-    store read that only the glossary consumes."""
-    store = _Store({"src": "Evaluates the blast radius of a change."})
-    run = _run(tmp_path, store=store)
-    run._emit = lambda page_id: "glossary" not in page_id
-
-    await build_level8_coros(run)
-
-    assert store.asked == []
-    assert all(s.module_corroboration == () for s in run.gen.onboarding_signals)
-
-
 async def test_the_overview_is_handed_the_repositorys_own_prose(tmp_path):
-    """The front page's only natural-language input, wired at the level.
-
-    Structure keeps every path and count; this supplies the words. Without it
-    the payload is entirely structural and nothing in the prompt says what the
-    product is for.
-    """
+    """The README reaches the front page in cited sections, wired at the level."""
     run = _run(tmp_path)
     await build_level6_coros(run)
 
-    digest = run.gen.overview_kwargs["prose_digest"]
-    assert "## Blast radius" in digest
-    assert "Blast radius is the set of files a change can reach" in digest
+    readme = run.gen.overview_kwargs["material"].readme
+    text = "\n".join(s.text for s in readme)
+    assert "## Blast radius" in text
+    assert "Blast radius is the set of files a change can reach" in text
+    assert all(s.path == "README.md" and s.start <= s.end for s in readme)
 
 
 async def test_a_repository_with_no_path_still_generates_an_overview(tmp_path):
@@ -397,4 +312,35 @@ async def test_a_repository_with_no_path_still_generates_an_overview(tmp_path):
     run = _run(tmp_path)
     run.repo_path = None
     assert await build_level6_coros(run)
-    assert run.gen.overview_kwargs["prose_digest"] == ""
+    assert run.gen.overview_kwargs["material"].readme == []
+
+
+async def test_material_that_fails_keeps_the_written_front_page(tmp_path, monkeypatch):
+    """A failed material build is not an empty repository: no overview is
+    rewritten this run, so the stored page stands and the next run retries."""
+    from repowise.core.generation.page_generator import front_page
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("docs unreadable")
+
+    monkeypatch.setattr(front_page, "overview_material", _boom)
+    run = _run(tmp_path)
+    run.gen._config = SimpleNamespace(deterministic=False)
+    run.gen._prior_pages = {
+        "repo_overview:ledger": SimpleNamespace(provider_name="openai", metadata={})
+    }
+    assert await build_level6_coros(run) == []
+
+
+async def test_material_that_fails_with_nothing_written_renders_structurally(tmp_path, monkeypatch):
+    from repowise.core.generation.page_generator import front_page
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("docs unreadable")
+
+    monkeypatch.setattr(front_page, "overview_material", _boom)
+    run = _run(tmp_path)
+    run.gen._config = SimpleNamespace(deterministic=False)
+    assert await build_level6_coros(run)
+    assert run.gen.overview_kwargs["structural_only"] is True
+    assert run.gen.overview_kwargs["material"] is None

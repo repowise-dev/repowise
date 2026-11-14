@@ -82,10 +82,12 @@ def _spend(result: Any) -> dict[str, Any]:
 
 
 def _next_commands(run: InitRun) -> list[str]:
-    """The panel's next steps, ``repowise serve`` first."""
+    """The panel's next steps, ``repowise serve`` first, then its model command if any."""
     commands = [command for command, _gloss in run.next_steps]
     if SERVE_COMMAND not in commands:
         commands.insert(0, SERVE_COMMAND)
+    if run.model_upgrade is not None:
+        commands.insert(1, run.model_upgrade.command)
     return commands
 
 
@@ -99,6 +101,7 @@ def run_summary(run: InitRun, gaps: list[str]) -> dict[str, Any]:
         warnings=[*run.run_warnings, *gaps],
         files_written=_relative(run.repo_path, run.files_written),
         next_commands=_next_commands(run),
+        findings=run.stood_out.as_summary() if run.stood_out is not None else None,
     )
 
 

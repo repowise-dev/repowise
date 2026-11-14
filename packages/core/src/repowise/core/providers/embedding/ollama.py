@@ -123,8 +123,16 @@ class OllamaEmbedder:
             return self._timeout
         return self._timeout + sum(len(text) for text in texts) * _SECONDS_PER_CHAR
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts using Ollama's native API."""
+    async def embed(self, texts: list[str], *, kind: str = "document") -> list[list[float]]:
+        """Embed a batch of texts using Ollama's native API.
+
+        Args:
+            texts: Non-empty list of strings to embed.
+            kind: Accepted for Embedder-protocol parity; unused. Ollama
+                embedding models exposed here have no configured directional
+                prefix, so nothing is applied.
+        """
+        del kind
         if not texts:
             return []
 

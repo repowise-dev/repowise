@@ -80,7 +80,7 @@ async def test_a_completed_synthesis_writes_one_cost_row(factory):
         GeneratedResponse(content="the answer", input_tokens=61_741, output_tokens=402)
     )
 
-    text, note = await synthesize(
+    text, note, _ = await synthesize(
         provider, "system", "user", session_factory=factory, repo_id="repo1"
     )
 
@@ -99,7 +99,7 @@ async def test_a_response_with_no_usage_warns_instead_of_writing_zeros(factory, 
     provider = _Provider(GeneratedResponse(content="the answer", input_tokens=0, output_tokens=0))
 
     with caplog.at_level(logging.WARNING, logger="repowise.mcp.answer"):
-        text, note = await synthesize(
+        text, note, _ = await synthesize(
             provider, "system", "user", session_factory=factory, repo_id="repo1"
         )
 
@@ -119,7 +119,7 @@ async def test_the_cost_row_is_logged_even_with_nowhere_to_persist_it(factory, c
     )
 
     with caplog.at_level(logging.INFO, logger="repowise.mcp.answer"):
-        text, _ = await synthesize(provider, "system", "user")
+        text, _, _ = await synthesize(provider, "system", "user")
 
     assert text == "the answer"
     assert await _ledger_rows(factory) == []
@@ -135,7 +135,7 @@ async def test_a_failed_synthesis_writes_no_cost_row(factory):
 
     provider = _Failing(GeneratedResponse(content="", input_tokens=0, output_tokens=0))
 
-    text, note = await synthesize(
+    text, note, _ = await synthesize(
         provider, "system", "user", session_factory=factory, repo_id="repo1"
     )
 

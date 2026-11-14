@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 from collections.abc import Iterator
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import structlog
@@ -89,6 +89,8 @@ _PRICING: dict[str, dict[str, float]] = {
     "kimi-for-coding": {"input": 0.60, "output": 2.40},
     "kimi-k2.5": {"input": 0.60, "output": 2.40},
     "kimi-k2.6": {"input": 0.95, "output": 4.00},
+    # Mistral — https://mistral.ai/pricing
+    "mistral-large-latest": {"input": 0.5, "output": 1.5},
 }
 
 _FALLBACK_PRICING: dict[str, float] = {"input": 3.0, "output": 15.0}
@@ -490,8 +492,11 @@ class CostTracker:
                 if group_by == "model":
                     group_col = LlmCost.model
                 elif group_by == "day":
-                    # SQLite strftime; works for Postgres too with cast
-                    group_col = sa.func.strftime("%Y-%m-%d", LlmCost.ts)
+                    timestamp = LlmCost.ts
+                    # PostgreSQL's date(timestamptz) uses the session time zone.
+                    if session.get_bind().dialect.name == "postgresql":
+                        timestamp = sa.func.timezone("UTC", timestamp)
+                    group_col = sa.func.date(timestamp, type_=sa.Date)
                 else:
                     group_col = LlmCost.operation
 
@@ -516,7 +521,7 @@ class CostTracker:
 
             return [
                 {
-                    "group": row.group,
+                    "group": row.group.isoformat() if isinstance(row.group, date) else row.group,
                     "calls": row.calls,
                     "input_tokens": row.input_tokens or 0,
                     "output_tokens": row.output_tokens or 0,

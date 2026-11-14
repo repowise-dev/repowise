@@ -114,10 +114,11 @@ def test_python_if_chain_on_one_subject() -> None:
 
 
 def test_python_match_inside_a_loop_counts() -> None:
-    # Five decision points (for, three cases, if); the match holds three.
+    # Four decision points (for, two cases, if; ``case _`` is the
+    # fallthrough); the match holds two.
     fns = _functions("python", _PY)
-    assert fns["matcher"].ccn == 6
-    assert fns["matcher"].dispatch_share == 0.6
+    assert fns["matcher"].ccn == 5
+    assert fns["matcher"].dispatch_share == 0.5
 
 
 def test_python_guard_run_counts_what_its_arms_nest() -> None:
@@ -161,8 +162,9 @@ const mw = (target) => {
 }
 """,
     )
-    # Three arms and the if nested in one, of five decision points.
-    assert fns["sw"].dispatch_share == 0.8
+    # The arm holding an if, its if and one point for the two plain arms, of
+    # four decision points.
+    assert fns["sw"].dispatch_share == 0.75
     assert fns["chain"].dispatch_share == 0.8
     assert fns["two"].dispatch_share == 0.0
     # A middleware factory's dispatch sits in the closure it returns.
@@ -197,7 +199,7 @@ func H(x int) int {
 }
 """,
     )
-    assert fns["F"].dispatch_share == 0.8
+    assert fns["F"].dispatch_share == 0.75
     assert fns["H"].dispatch_share == 0.0
 
 
@@ -244,7 +246,7 @@ def test_rust_match() -> None:
         "fn f(x: E) -> i32 { if r { go(); } "
         "match x { E::A => { if a { 1 } else { 2 } } E::B => 2, E::C => 3 } }",
     )
-    assert fns["f"].dispatch_share == 0.8
+    assert fns["f"].dispatch_share == 0.75
 
 
 def test_kotlin_when_needs_a_subject() -> None:
@@ -253,7 +255,7 @@ def test_kotlin_when_needs_a_subject() -> None:
         """fun f(x: Int): Int { if (a) {}; return when (x) { 1 -> { if (b) 1 else 2 } 2 -> 3 else -> 4 } }
 fun g(x: Int): Int { return when { x > 1 -> { if (b) 1 else 2 } x < 0 -> 3 else -> 4 } }""",
     )
-    assert fns["f"].dispatch_share == 0.8
+    assert fns["f"].dispatch_share == 0.75
     assert fns["g"].dispatch_share == 0.0
 
 
@@ -504,7 +506,9 @@ def test_new_detail_keys_leave_the_finding_id_unchanged() -> None:
 def test_judged_ccn_reads_outside_a_dominant_dispatch_and_its_heaviest_arm(
     ccn: int, share: float, arm: int, judged: int
 ) -> None:
-    fn = SimpleNamespace(ccn=ccn, dispatch_share=share, dispatch_arm=arm)
+    fn = SimpleNamespace(
+        ccn=ccn, dispatch_share=share, dispatch_arm=arm, exit_guards=0, copy_guards=0
+    )
     assert judged_ccn(fn) == judged
 
 
@@ -552,7 +556,7 @@ def test_a_switch_with_a_tangled_arm_keeps_complex_method() -> None:
 
 
 def test_nesting_inside_a_switch_arm_is_not_nested_complexity() -> None:
-    # switch, case, if, if: four levels, two of them the dispatch's own.
+    # switch, if, if, if: four levels, one of them the dispatch's own.
     fns = _functions(
         "csharp",
         """class A {
@@ -561,7 +565,7 @@ def test_nesting_inside_a_switch_arm_is_not_nested_complexity() -> None:
       case 1: return 1;
       case 2: return 2;
       default:
-        if (ins > 3) { if (fmt == 4) { return 4; } }
+        if (ins > 3) { if (fmt == 4) { if (fmt > 5) { return 4; } } }
         return fmt;
     }
   }

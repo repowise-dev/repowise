@@ -6,6 +6,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.settings.model import flag
+
 from ...ingestion.git_indexer.function_blame import BlameIndex
 from ...ingestion.package_roots import module_for as _module_for
 from ..execution_graph import file_of_symbol
@@ -127,6 +129,57 @@ def _stamp_symbol_lines(findings: list[HealthFindingData], fcx: FileComplexity) 
 _EXTRACT_METHOD_SOURCES = frozenset({"large_method", "brain_method", "complex_method"})
 
 
+def _wants_extract_method(findings: list[HealthFindingData]) -> bool:
+    return any(getattr(f, "biomarker_type", "") in _EXTRACT_METHOD_SOURCES for f in findings)
+
+
+@dataclass(frozen=True)
+class _Assessed:
+    """What :meth:`FileEvaluator.suggest` reads from :meth:`FileEvaluator.assess`."""
+
+    ctx: FileContext
+    source_lines: list[str] | None
+
+
+@dataclass(frozen=True)
+class ExtractMethodJob:
+    """One file's Extract Method inputs: the detector reads only these."""
+
+    abs_path: str
+    language: str
+    file_path: str
+    source: bytes
+    findings: list[HealthFindingData]
+
+
+def run_extract_method_job(
+    job: ExtractMethodJob,
+) -> tuple[list[RefactoringSuggestion], list[dict[str, Any]]]:
+    """Extract Method for one file, runnable in any process.
+
+    Returns the detector's suggestions and every finding's details afterwards:
+    the detector records on a finding why it offered no plan, and a worker's
+    copy of the findings is not the caller's.
+    """
+    from .dataflow.facts import FileDataflow
+    from .refactoring.extract_method import ExtractMethodDetector
+
+    analyses = FileDataflow(job.abs_path, job.language, job.source).flagged_analyses()
+    ctx = RefactoringContext(
+        file_path=job.file_path,
+        language=job.language,
+        nloc=0,
+        findings=job.findings,
+        function_analyses=analyses,
+    )
+    try:
+        suggestions = ExtractMethodDetector().detect(ctx)
+    except Exception:
+        # The registry's fault isolation: a failed detector offers nothing.
+        suggestions = []
+    return suggestions, [f.details for f in job.findings]
+
+
 def _commit_entries(fcx: FileComplexity, git_meta: dict) -> list:
     """Per-function commit sets: from the blame index, else the stored rows."""
     idx = git_meta.get("blame_index") or git_meta.get("commit_set_blame")
@@ -188,7 +241,7 @@ class _RunConfig:
             severity_overrides=cfg.get("severity_overrides", {}) or {},
             per_file_severity_overrides=cfg.get("per_file_severity_overrides", {}) or {},
             disabled_refactorings=list(cfg.get("disabled_refactorings", ())),
-            refactoring_enabled=bool(cfg.get("refactoring_enabled", True)),
+            refactoring_enabled=flag(cfg.get("refactoring_enabled"), True),
             refactoring_min_confidence=cfg.get("refactoring_min_confidence"),
         )
 
@@ -224,14 +277,16 @@ class FileEvaluator:
     active_contributors: int | None = None
     file_scc_index: dict[str, tuple[str, ...]] | None = None
     methods_by_file: dict[str, tuple[str, ...]] | None = None
+    split_partial_types: dict[str, frozenset[str]] | None = None
     dataflow_cache: FileDataflowCache | None = None
     function_tests: FunctionTests | None = None
     #: Test files by file name (``coverage_actions.paired_test_index``).
     paired_test_files: dict[str, list[str]] | None = None
 
-    def evaluate(
+    def assess(
         self, pf: Any, fcx: FileComplexity
-    ) -> tuple[HealthFileMetricData, list[HealthFindingData], list[RefactoringSuggestion]]:
+    ) -> tuple[HealthFileMetricData, list[HealthFindingData], _Assessed]:
+        """The file's metric and findings, and what :meth:`suggest` reads next."""
         file_path = pf.file_info.path
         clones, dup_pct = self.analyzer._without_kit_clones(
             file_path,
@@ -246,10 +301,47 @@ class FileEvaluator:
         ctx = self._context(pf, fcx, clones, dup_pct, source_lines)
         findings, scores = self._findings(ctx, fcx)
         metric = self._metric(pf, fcx, ctx, scores, findings)
+        return metric, findings, _Assessed(ctx, source_lines)
 
+    def suggest(
+        self,
+        pf: Any,
+        fcx: FileComplexity,
+        findings: list[HealthFindingData],
+        assessed: _Assessed,
+        extract_method: list[RefactoringSuggestion] | None = None,
+    ) -> list[RefactoringSuggestion]:
+        """The file's refactorings; *extract_method* is that detector's output
+        when an :class:`ExtractMethodJob` already computed it."""
         if not self.run.refactoring_enabled:
-            return metric, findings, []
-        return metric, findings, self._suggestions(pf, fcx, ctx, findings, source_lines)
+            return []
+        return self._suggestions(
+            pf, fcx, assessed.ctx, findings, assessed.source_lines, extract_method
+        )
+
+    def evaluate(
+        self, pf: Any, fcx: FileComplexity
+    ) -> tuple[HealthFileMetricData, list[HealthFindingData], list[RefactoringSuggestion]]:
+        metric, findings, assessed = self.assess(pf, fcx)
+        return metric, findings, self.suggest(pf, fcx, findings, assessed)
+
+    def extract_method_job(
+        self, pf: Any, findings: list[HealthFindingData]
+    ) -> ExtractMethodJob | None:
+        """The file's Extract Method work as a job a worker process can run, or
+        None when the detector would read no analyses for it."""
+        if (
+            not self.run.refactoring_enabled
+            or "extract_method" in (self.run.disabled_refactorings or ())
+            or not _wants_extract_method(findings)
+        ):
+            return None
+        source = self.analyzer.read_source(pf.file_info.abs_path)
+        if source is None:
+            return None
+        return ExtractMethodJob(
+            pf.file_info.abs_path, pf.file_info.language, pf.file_info.path, source, findings
+        )
 
     def _context(
         self,
@@ -281,6 +373,7 @@ class FileEvaluator:
             or pf.file_info.is_test
             or fcx.has_inline_tests,
             is_test=bool(pf.file_info.is_test),
+            code_origin=self._code_origin(pf),
             # Separate from has_test_file (import or name pairing) so each signal stays visible.
             reached_by_tests=file_path in analyzer.test_index.reached_files(),
             module=_module_for(file_path, self.package_roots),
@@ -303,6 +396,7 @@ class FileEvaluator:
             duplication_pct=dup_pct,
             clone_sources=clone_sources,
             graph_view=self.graph_view,
+            split_partial_types=(self.split_partial_types or {}).get(file_path, frozenset()),
             blame_index=blame_idx_obj if isinstance(blame_idx_obj, BlameIndex) else None,
             repo_function_mod_p80=self.function_mod_p80,
             repo_active_contributors_90d=self.active_contributors,
@@ -357,8 +451,8 @@ class FileEvaluator:
         biomarker_results = remap_severities(
             biomarker_results, self.run.file_severity_overrides(file_path)
         )
-        scores, deductions = score_file(biomarker_results)
-        findings = attach_impacts(biomarker_results, deductions)
+        scores, deductions = score_file(biomarker_results, ctx.language)
+        findings = attach_impacts(biomarker_results, deductions, ctx.language)
         for f in findings:
             f.file_path = file_path
         _mark_function_facts(findings, fcx.functions)
@@ -405,8 +499,12 @@ class FileEvaluator:
             duplication_pct=ctx.duplication_pct,
             **file_score_fields(analysed, scores, findings),
             is_test=bool(pf.file_info.is_test),
-            code_origin=self.analyzer._origins.get(ctx.file_path) or self.analyzer._origin(pf),
+            code_origin=ctx.code_origin,
         )
+
+    def _code_origin(self, pf: Any) -> str:
+        """The origin the walk recorded, else one read from the path alone."""
+        return self.analyzer._origins.get(pf.file_info.path) or self.analyzer._origin(pf)
 
     def _suggestions(
         self,
@@ -415,6 +513,7 @@ class FileEvaluator:
         ctx: FileContext,
         findings: list[HealthFindingData],
         source_lines: list[str] | None,
+        extract_method: list[RefactoringSuggestion] | None = None,
     ) -> list[RefactoringSuggestion]:
         file_path = ctx.file_path
         analyzer = self.analyzer
@@ -434,7 +533,9 @@ class FileEvaluator:
                 if self.methods_by_file is not None
                 else None
             ),
-            function_analyses=self._extract_method_analyses(pf, findings),
+            function_analyses=(
+                self._extract_method_analyses(pf, findings) if extract_method is None else []
+            ),
             commit_spans=commit_spans(fcx.functions, _commit_entries(fcx, ctx.git_meta)),
             source_lines=source_lines,
             read_lines=analyzer._repo_lines,
@@ -443,11 +544,12 @@ class FileEvaluator:
             rctx,
             disabled=self.run.disabled_refactorings or (),
             min_confidence=self.run.refactoring_min_confidence,
+            precomputed=None if extract_method is None else {"extract_method": extract_method},
         )
 
     def _extract_method_analyses(self, pf: Any, findings: list[HealthFindingData]) -> list[Any]:
         """Dataflow analyses for Extract Method, built only for files with a method-level smell."""
-        if not any(getattr(f, "biomarker_type", "") in _EXTRACT_METHOD_SOURCES for f in findings):
+        if not _wants_extract_method(findings):
             return []
         cache = (
             self.dataflow_cache

@@ -17,9 +17,11 @@ import {
   BookOpen,
   Boxes,
   DollarSign,
+  FileText,
   FlaskConical,
   FolderTree,
   GitCommitHorizontal,
+  GitPullRequestArrow,
   GitMerge,
   HeartPulse,
   LayoutDashboard,
@@ -71,6 +73,7 @@ export const WORKSPACE_NAV: NavItem[] = [
   { label: "Conformance", labelKey: "conformance", href: "/workspace/conformance", icon: ShieldCheck },
   { label: "Contracts", labelKey: "contracts", href: "/workspace/contracts", icon: Link2 },
   { label: "Co-Changes", labelKey: "coChanges", href: "/workspace/co-changes", icon: GitMerge },
+  { label: "Estate report", labelKey: "estateReport", href: "/workspace/estate", icon: FileText },
 ];
 
 export function repoNavGroups(repoId: string): NavGroup[] {
@@ -81,6 +84,7 @@ export function repoNavGroups(repoId: string): NavGroup[] {
       items: [
         { label: "Overview", labelKey: "overview", href: `${base}/overview`, icon: Activity },
         { label: "Chat", labelKey: "chat", href: `${base}/chat`, icon: MessageSquare },
+        { label: "Review", labelKey: "review", href: `${base}/review`, icon: GitPullRequestArrow },
       ],
     },
     {

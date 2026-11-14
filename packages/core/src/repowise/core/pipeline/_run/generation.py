@@ -161,9 +161,8 @@ def _claim_authoritative_page_types(run: PipelineRun) -> None:
 
     ``module_page`` is claimed on evidence (a concept page was produced) or for a
     repo with no production code: ``file_pages_only`` and per-page provider errors
-    also emit zero, and claiming then would delete every concept page. No run emits
-    layer pages (their ids resolve through the redirect table) and SCC pages carry
-    no budget, so a full run always decides both.
+    also emit zero, and claiming then would delete every concept page. SCC pages
+    carry no budget, so a full run always decides them.
     """
     produced_module_page = any(
         getattr(page, "page_type", "") == "module_page" for page in (run.generated_pages or [])
@@ -173,7 +172,6 @@ def _claim_authoritative_page_types(run: PipelineRun) -> None:
     )
     if produced_module_page or not has_code_to_group:
         run.authoritative_page_types.add("module_page")
-    run.authoritative_page_types.add("layer_page")
     run.authoritative_page_types.add("scc_page")
 
 

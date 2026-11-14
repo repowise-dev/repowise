@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import enum
 from abc import ABC, abstractmethod
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -112,3 +113,29 @@ class JobStore(ABC):
         limit: int = 100,
     ) -> list[JobRecord]:
         """Read-side query for the dashboard / CLI ``status`` command."""
+
+
+ABANDONED_JOB_ERROR = "abandoned: the process exited before this job finished"
+
+
+async def reap_abandoned_jobs(
+    job_store: JobStore,
+    *,
+    repository_id: str,
+    phases: Collection[str],
+    keep_ids: Collection[str] = (),
+    error: str = ABANDONED_JOB_ERROR,
+) -> list[JobRecord]:
+    """Mark jobs a dead run left ``PENDING``/``RUNNING`` as ``FAILED``.
+
+    Call this before creating the new job for *phases*: any open row for
+    those phases belongs to an earlier process that exited without closing
+    it. Jobs in *keep_ids* are still owned by the caller and are left alone.
+    Returns the updated records.
+    """
+    leftovers = [
+        job
+        for job in await job_store.find_resumable(repository_id=repository_id)
+        if job.phase in phases and job.id not in keep_ids
+    ]
+    return [await job_store.update_state(job.id, JobState.FAILED, error=error) for job in leftovers]

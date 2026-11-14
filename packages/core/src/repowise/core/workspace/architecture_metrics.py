@@ -159,6 +159,9 @@ class ArchitectureMetrics:
     roles: list[NodeArchitectureRole] = field(default_factory=list)
     generated_at: str = ""
     evidence: GraphEvidence | None = None
+    #: True when the cycle enumeration budget stopped the count, so
+    #: ``cycle_count`` is "at least" that many.
+    cycle_count_capped: bool = False
 
     def role_breakdown(self) -> dict[str, int]:
         """Count of services per role, in canonical role order."""
@@ -177,6 +180,7 @@ class ArchitectureMetrics:
             "core_ratio": self.core_ratio,
             "core_members": self.core_members,
             "cycle_count": self.cycle_count,
+            "cycle_count_capped": self.cycle_count_capped,
             "conformance_violations": self.conformance_violations,
             "architecture_type": self.architecture_type,
             "score": self.score,
@@ -429,7 +433,7 @@ def compute_architecture_metrics(
 
     # The true count, not the reporting cap: a workspace with 500 cycles must
     # not score the same as one with 50.
-    _, cycle_count = detect_cycles(graph)
+    _, cycle_count, cycle_count_capped = detect_cycles(graph)
     score = architecture_score(propagation_cost, core_ratio, cycle_count, conformance_violations)
     architecture_type = (
         ARCH_CORE_PERIPHERY if core_ratio >= CORE_PERIPHERY_MIN_RATIO else ARCH_HIERARCHICAL
@@ -444,6 +448,7 @@ def compute_architecture_metrics(
         core_ratio=round(core_ratio, 4),
         core_members=core_members,
         cycle_count=cycle_count,
+        cycle_count_capped=cycle_count_capped,
         conformance_violations=conformance_violations,
         architecture_type=architecture_type,
         score=score,

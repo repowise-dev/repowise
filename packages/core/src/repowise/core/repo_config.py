@@ -34,14 +34,19 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
             "wiki_style",
             "language",
             "max_file_pages",
+            "folder_coverage",
             "generation_context",
             "enable_onboarding",
+            "context_window",
         }
     ),
     # Agent-surface preferences. init records `hooks` and `editor_files` after
     # it fingerprints the config, so leaving them in "other" turned the first
-    # update after every init into a full rebuild.
-    "state_only": frozenset({"distill", "editor_files", "events", "hooks", "mcp"}),
+    # update after every init into a full rebuild. `managed_checkout` says how
+    # the server keeps the checkout current, not what the index holds.
+    "state_only": frozenset(
+        {"distill", "editor_files", "editor_setup", "events", "hooks", "managed_checkout", "mcp"}
+    ),
 }
 
 
@@ -80,7 +85,10 @@ def load_repo_config(repo_path: Path | str) -> dict[str, Any]:
     if not config_path.exists():
         return {}
 
-    text = config_path.read_text(encoding="utf-8")
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise RepoConfigError(f"Could not parse {config_path}: {exc}") from exc
     try:
         import yaml  # type: ignore[import-untyped]
 
@@ -159,6 +167,92 @@ def save_repo_config(repo_path: Path | str, config: dict[str, Any]) -> None:
     resolver = sys.modules.get("repowise.core.providers.llm.resolve")
     if resolver is not None:
         resolver.forget_cached(target)
+
+
+#: Repo settings whose one home is ``.repowise/config.yaml``, so the CLI and the
+#: web UI read and write the same value. A server row's ``settings_json`` may
+#: still hold them from before: that stored value is a fallback while the file
+#: lacks the key, and moves into the file on the next save.
+FILE_SETTING_KEYS: tuple[str, ...] = ("exclude_patterns", "wiki_style")
+
+
+def _file_setting_default(key: str) -> Any:
+    """What an absent ``key`` means, so writing it would change nothing."""
+    if key == "wiki_style":
+        from repowise.core.generation.styles import DEFAULT_STYLE
+
+        return DEFAULT_STYLE
+    return []
+
+
+def resolve_file_settings(repo_path: Path | str, stored: dict[str, Any]) -> dict[str, Any]:
+    """The effective :data:`FILE_SETTING_KEYS` values: config.yaml's, else *stored*'s.
+
+    *stored* is the legacy server copy (``settings_json``). Keys neither source
+    sets are left out; a bare ``key:`` (null) in the file counts as unset.
+    Raises :class:`RepoConfigError` for a broken config file.
+    """
+    config = load_repo_config(repo_path)
+    resolved = {}
+    for key in FILE_SETTING_KEYS:
+        value = config.get(key)
+        if value is None:
+            value = stored.get(key)
+        if value is not None:
+            resolved[key] = value
+    return resolved
+
+
+def save_file_settings(
+    repo_path: Path | str, updates: dict[str, Any], stored: dict[str, Any]
+) -> dict[str, Any]:
+    """Write *updates* for :data:`FILE_SETTING_KEYS` into config.yaml.
+
+    Legacy *stored* values the file lacks move in with this save, so the server
+    copy can be dropped afterwards. A value equal to what the file already
+    means is not written, and the default removes the key: a save that changes
+    nothing leaves the bytes, and so the config fingerprint, alone. Other keys
+    are preserved. Returns the saved :data:`FILE_SETTING_KEYS` values.
+    """
+    config = load_repo_config(repo_path)
+    before = dict(config)
+    for key in FILE_SETTING_KEYS:
+        default = _file_setting_default(key)
+        if config.get(key) is None and stored.get(key) not in (None, default):
+            config[key] = stored[key]
+        if key in updates:
+            _set_file_setting(config, key, updates[key], default)
+    if config != before:
+        save_repo_config(repo_path, config)
+    return {key: config[key] for key in FILE_SETTING_KEYS if config.get(key) is not None}
+
+
+def write_file_setting(repo_path: Path | str, key: str, value: Any) -> None:
+    """Write one :data:`FILE_SETTING_KEYS` value through :func:`save_file_settings`.
+
+    The settings-registry writer for these keys; ``None`` restores the default.
+    A style must be a built-in or one under ``.repowise/styles/``: generation
+    reads an unknown name as the default, so saving one would change nothing.
+    """
+    if key == "wiki_style" and value is not None:
+        from repowise.core.generation.styles import is_known_style, list_styles
+
+        if not is_known_style(value, repo_path):
+            names = ", ".join(spec.name for spec in list_styles(repo_path))
+            raise ValueError(f"wiki_style: no style named {value!r}; known: {names}")
+    save_file_settings(repo_path, {key: value}, {})
+
+
+def _set_file_setting(config: dict[str, Any], key: str, value: Any, default: Any) -> None:
+    """Set *key* to *value* in *config*; the default (or ``None``) removes it."""
+    value = default if value is None else value
+    current = config.get(key)
+    if value == (default if current is None else current):
+        return
+    if value == default:
+        config.pop(key, None)
+    else:
+        config[key] = value
 
 
 def config_fingerprint(repo_path: Path | str) -> str:

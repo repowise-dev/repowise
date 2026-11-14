@@ -169,6 +169,23 @@ class TestGetChangedFilesNonGit:
         result = d.get_changed_files(base_ref="HEAD~5", until_ref="HEAD")
         assert result == []
 
+    def test_git_repo_raises_on_unknown_ref(self, tmp_path: Path) -> None:
+        import git as gitpython
+        import pytest
+
+        repo = gitpython.Repo.init(tmp_path)
+        with repo.config_writer() as cw:
+            cw.set_value("user", "name", "Test")
+            cw.set_value("user", "email", "test@example.com")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+        repo.index.add(["app.py"])
+        repo.index.commit("initial")
+        repo.close()
+
+        d = ChangeDetector(tmp_path)
+        with pytest.raises((gitpython.GitError, ValueError)):
+            d.get_changed_files(base_ref="0" * 40, until_ref="HEAD")
+
 
 # ---------------------------------------------------------------------------
 # get_affected_pages
@@ -292,6 +309,50 @@ class TestGetAffectedPages:
         for p in result.rename_patch:
             assert p in result.regenerate
 
+    def test_documents_edge_is_not_a_cascade(self, tmp_path: Path) -> None:
+        """A doc linking to a changed file is not regenerated; real predecessors still are."""
+        d = self._detector(tmp_path)
+        g: nx.DiGraph[str] = nx.DiGraph()
+        g.add_edge("b.py", "a.py", edge_type="imports")
+        g.add_edge("c.py", "a.py", edge_type="co_changes")
+        g.add_edge("README.md", "a.py", edge_type="documents")
+
+        result = d.get_affected_pages([self._simple_file_diff("a.py")], graph=g)
+        assert set(result.regenerate) == {"a.py", "b.py"}
+        assert result.decay_only == ["c.py"]
+
+    def test_co_change_partner_decays_whichever_way_it_sorts(self, tmp_path: Path) -> None:
+        """The edge is stored once, ``a.py -> b.py``; either file changing only decays the other (#5472)."""
+        d = self._detector(tmp_path)
+        g: nx.DiGraph[str] = nx.DiGraph()
+        g.add_edge("a.py", "b.py", edge_type="co_changes")
+
+        for changed, partner in (("b.py", "a.py"), ("a.py", "b.py")):
+            result = d.get_affected_pages([self._simple_file_diff(changed)], graph=g)
+            assert result.regenerate == [changed]
+            assert result.decay_only == [partner]
+
+    def test_documents_edge_is_not_a_rename_cascade(self, tmp_path: Path) -> None:
+        """The 2-hop rename cascade walks importers of importers, never doc links."""
+        from repowise.core.ingestion.change_detector import SymbolRename
+
+        d = self._detector(tmp_path)
+        g: nx.DiGraph[str] = nx.DiGraph()
+        g.add_edge("b.py", "a.py", edge_type="imports")
+        g.add_edge("c.py", "b.py", edge_type="imports")
+        g.add_edge("README.md", "b.py", edge_type="documents")
+        g.add_edge("GUIDE.md", "a.py", edge_type="documents")
+        sym_diff = SymbolDiff(
+            added=[],
+            removed=[],
+            renamed=[SymbolRename("add", "calculate_add", "function", 0.9)],
+            modified=[],
+        )
+
+        result = d.get_affected_pages([self._simple_file_diff("a.py", symbol_diff=sym_diff)], graph=g)
+        assert set(result.regenerate) == {"a.py", "b.py"}
+        assert result.decay_only == ["c.py"]
+
     def test_empty_diffs_returns_empty_pages(self, tmp_path: Path) -> None:
         d = self._detector(tmp_path)
         g = nx.DiGraph()
@@ -337,7 +398,8 @@ class TestAffectedPagesPagerankParam:
         result = d.get_affected_pages(
             [self._diff("f0.py")], graph=g, cascade_budget=3, pagerank=pr
         )
-        assert result.regenerate == ["f5.py", "f4.py", "f0.py"]
+        # The changed file first, then importers by the supplied pagerank.
+        assert result.regenerate == ["f0.py", "f5.py", "f4.py"]
         assert set(result.decay_only) == {"f1.py", "f2.py", "f3.py"}
 
     def test_without_pagerank_falls_back_to_internal_computation(

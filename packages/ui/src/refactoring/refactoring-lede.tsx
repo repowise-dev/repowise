@@ -81,7 +81,7 @@ function LedeChips({
         <button
           type="button"
           onClick={onSeeStructural}
-          className="rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="rounded text-xs text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           See the{" "}
           <span className="font-mono tabular-nums">{formatNumber(structuralShown)}</span>{" "}

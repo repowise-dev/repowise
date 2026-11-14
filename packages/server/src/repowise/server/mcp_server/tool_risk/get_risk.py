@@ -43,6 +43,7 @@ from repowise.server.mcp_server._test_selection import (
     files_change,
     select_change_tests,
 )
+from repowise.server.mcp_server._why_pointer import attach_why_pointer
 from repowise.server.mcp_server._workspace_routing import (
     hint_misses,
     needs_routing,
@@ -455,38 +456,30 @@ async def get_risk(
 ) -> dict:
     """What history says about touching these files — bug fixes, churn, owners.
 
-    Fuses git temporal signals (``hotspot_score``/``owner_pct`` are 0-1; trend;
-    bus factor) with graph topology. ``dependents`` are directed structural
-    reach (source depends on target), ``consumers`` require typed contract links,
-    and ``co_change_partners`` are historical correlation only. Those counts
-    are a floor over the indexed graph. Structural reach is not proof of
-    runtime breakage. Security findings are included. Pass changed_files for PR mode: the response leads with
-    ``directive`` (may_break, missing_cochanges, missing_tests,
-    tests_to_run, tests_to_update) — read it first. ``tests_to_run_basis`` says
-    measured or inferred. To score a commit or ``base..head`` range instead,
-    use ``get_change_risk``.
-
-    ``directive.reach`` (localized, moderate, broad) bands import-graph reach:
-    uncalibrated, never a breakage probability.
-    ``include=["blast"]`` adds ``pr_blast_radius``; its raw
-    ``structural_impact_score`` appears only with ``include=["blast", "scales"]``.
-
-    Default responses fit 24,000 serialized chars; nonempty ``include`` uses
-    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
-    ``_meta.recovery_unavailable`` names a storage failure.
-    Include-gated blocks are projections, not omissions.
+    Fuses git signals (``hotspot_score``/``owner_pct`` 0-1, trend, bus
+    factor) with graph reach. ``dependents`` and ``co_change_partners`` are
+    a floor and correlation, not proof of runtime breakage. Pass
+    ``changed_files`` for PR mode: the response leads with ``directive``
+    (may_break, missing_cochanges, missing_tests, tests_to_run); read it
+    first. ``directive.reach`` is never a breakage probability. For a
+    commit or range use ``get_change_risk``.
 
     Args:
-        targets: file paths to assess; defaults to changed_files.
+        targets: file paths; defaults to changed_files.
+        changed_files: PR-changed files for PR mode.
+        include: "graph", "churn", "owners", "scales" (units, calibration),
+            "changes"; with changed_files only: "tests" (typed test rows), "blast".
         repo: usually omitted.
-        changed_files: PR-changed files for blast-radius mode.
-        include: opt-in blocks - "graph", "churn", "owners", "tests" (typed test
-            rows), "blast", "scales" (units, calibration), "changes".
     """
     if repo == "all":
         return _unsupported_repo_all("get_risk")
     if not targets and not changed_files:
-        return {"error": "targets or changed_files is required", "_meta": _build_meta()}
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "invalid_args",
+            {"error": "targets or changed_files is required", "_meta": _build_meta()},
+        )
     routes = (
         await route_targets([*(targets or []), *(changed_files or [])], paths_only=True)
         if repo is None
@@ -562,6 +555,7 @@ async def get_risk(
             label="global_hotspots beyond cap=5",
         )
 
+    await attach_why_pointer(response, ctx, [*targets, *changed_files])
     response["_meta"] = _build_meta(
         repository=evidence.repository, targets=[*targets, *changed_files] or None
     )

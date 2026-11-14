@@ -27,6 +27,7 @@ import {
   planPresentation,
 } from "./presentation";
 import { OpportunityTags } from "./tags";
+import { formatNumber } from "../../lib/format";
 
 /**
  * Action-first rows: what to change, what it buys and what it costs, then the
@@ -130,7 +131,7 @@ function MetaLine({ opportunity }: { opportunity: PerformanceOpportunity }) {
 
 /** A quiet link: secondary ink at rest, the accent only on hover and focus. */
 export const QUIET_LINK_CLS =
-  "rounded text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "rounded text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-accent-primary)] hover:underline focus-visible:text-[var(--color-accent-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 /**
  * Memoized because a page is up to a hundred of these and the surrounding
@@ -172,7 +173,7 @@ const OpportunityRow = memo(function OpportunityRow({
     >
       <div className="flex min-w-0 flex-1 gap-3">
         <span className="mt-0.5 w-7 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          {(opportunity.rank_position + 1).toLocaleString()}
+          {formatNumber(opportunity.rank_position + 1)}
         </span>
         <div className="min-w-0 flex-1">
           <ActionabilityMark state={opportunity.actionability_state} />
@@ -246,7 +247,7 @@ function RowOverflow({
         setOpen(false);
         onClick();
       }}
-      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
       {label}

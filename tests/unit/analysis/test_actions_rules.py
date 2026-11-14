@@ -73,10 +73,13 @@ def _text(a: Action) -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_fragile_without_coverage_says_add_tests_and_basis_unknown() -> None:
+def test_fragile_without_coverage_states_graph_absence_and_basis_unknown() -> None:
     out = _run(code.fragile_file, _facts([_file("src/a.py")]))
     (a,) = out.actions
-    assert a.title.startswith("Add tests around `src/a.py`")
+    assert a.title == (
+        "No test reaches `src/a.py` in the code graph: "
+        "confirm it is tested before its next change"
+    )
     cov = next(w for w in a.why if w.label == "line coverage")
     assert cov.basis == "unknown"
     assert a.confidence == "medium"
@@ -362,8 +365,8 @@ def test_a_folder_names_its_first_step() -> None:
     (a,) = _run(code.fix_concentration, _concentration_facts()).actions
     # Every file here is untested; the most fixed one comes first.
     assert a.title == (
-        "Stabilise `pkg/cli/update/`: first, add tests around `pkg/cli/update/a0.py` "
-        "before its next change"
+        "Stabilise `pkg/cli/update/`: first, no test reaches `pkg/cli/update/a0.py` "
+        "in the code graph: confirm it is tested before its next change"
     )
     assert "10 of the 25 bug-fix commits" in a.impact
 
@@ -644,14 +647,6 @@ def test_coverage_stale_is_improve_signal() -> None:
     )
 
 
-def test_decisions_unreviewed_is_improve_signal() -> None:
-    (a,) = _run(signal.decisions_unreviewed, _facts(proposed_decisions=6)).actions
-    assert a.tier == "improve_signal"
-    assert (
-        _run(signal.decisions_unreviewed, _facts(proposed_decisions=6, accepted_decisions=1)).actions
-        == ()
-    )
-
 
 # ---------------------------------------------------------------------------
 # engine
@@ -697,7 +692,7 @@ def test_engine_reports_totals_and_every_rule() -> None:
     assert quarter["total"] == len(quarter["actions"]) == 7
     assert quarter["hidden"] == 0
     assert quarter["by_tier"] == {"act_now": 1, "plan": 5, "improve_signal": 1}
-    assert len(view["rules"]) == 12
+    assert len(view["rules"]) == 11
     # The week sees the secret and the coverage prompt, not the quarter's plan work.
     assert view["horizons"]["week"]["total"] == 2
 
@@ -909,9 +904,10 @@ def test_fragile_reached_by_tests_without_a_lead_is_silent() -> None:
     assert out.actions == ()
 
 
-def test_fragile_no_test_reaches_says_add_tests() -> None:
+def test_fragile_no_test_reaches_states_graph_absence_not_untested() -> None:
     (a,) = _run(code.fragile_file, _facts([_file("src/a.py", tests_reaching=0)])).actions
-    assert a.title.startswith("Add tests around `src/a.py`")
+    assert a.title.startswith("No test reaches `src/a.py` in the code graph")
+    assert "Add tests" not in a.title
     reach = next(w for w in a.why if w.label == "tests that reach it")
     assert (reach.value, reach.basis) == ("None in the code graph", "inferred")
 
@@ -931,7 +927,7 @@ def test_fragile_unknown_reach_is_not_zero() -> None:
     facts = _facts([unknown], unavailable={"test_map": "Not in this index yet."})
     assert _run(code.fragile_file, facts).actions == ()
     (zero,) = _run(code.fragile_file, _facts([replace(unknown, tests_reaching=0)])).actions
-    assert zero.title.startswith("Add tests around")
+    assert zero.title.startswith("No test reaches")
 
 
 def test_an_anonymous_lead_function_is_left_out_of_the_title() -> None:

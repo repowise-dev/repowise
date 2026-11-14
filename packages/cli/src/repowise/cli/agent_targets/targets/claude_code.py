@@ -7,9 +7,11 @@ exists at all:
   slash commands together, and repowise cannot rewrite it; only ``/plugin
   update`` can. A version skew here is something to *report*, never to repair
   by writing.
-* **direct** — repowise owns the files. ``init`` writes the MCP registration
-  and the augment hooks into ``~/.claude/settings.json`` plus a repo-local
-  ``.mcp.json``. No skills, no commands.
+* **direct** — repowise owns the files. ``init`` writes the user-scope MCP
+  registration into ``~/.claude.json`` (the only place Claude Code reads user
+  MCP servers from), the augment hooks into ``~/.claude/settings.json``, and a
+  repo-local ``.mcp.json`` when no user-scope entry serves the repo. No skills,
+  no commands.
 
 Both routes register ``mcpServers.repowise`` and the same augment hook
 commands, and Claude Code merges them without complaint, so a user on both
@@ -26,18 +28,22 @@ encode several years of shape changes; this module names it and calls it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from pathlib import Path
 
 from repowise.core.agents import identity
 
+from ..formats.server_entry import ServerSpec
 from ..types import (
     Capability,
     DoctorReport,
     DoctorStatus,
     FileAction,
     FileWrite,
+    HostedSupport,
     InstallMethod,
+    InstallOptions,
     Registration,
     Scope,
     WriteResult,
@@ -77,6 +83,18 @@ METHODS = (
     ),
 )
 
+#: The hosted entry is written at Claude Code's *local* scope: under this repo's
+#: key in ``~/.claude.json`` ``projects``, the file ``claude mcp add --scope
+#: local`` writes. The hosted URL names one repo, so a user-scope entry would
+#: serve it in every project, and ``.mcp.json`` is shared with the team. The
+#: install still runs at user scope, because that is the file it edits.
+HOSTED = HostedSupport(
+    scope=Scope.USER,
+    next_step=(
+        'Restart Claude Code in this repo, run /mcp, select "{name}" and '
+        "authenticate in the browser."
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -88,6 +106,13 @@ def settings_path() -> Path:
     from repowise.cli.editor_integrations.claude_config import _claude_code_settings_path
 
     return _claude_code_settings_path()
+
+
+def user_mcp_config_path() -> Path:
+    """The file holding Claude Code's user-scope MCP servers (``~/.claude.json``)."""
+    from repowise.cli.editor_integrations.claude_config import _claude_code_user_config_path
+
+    return _claude_code_user_config_path()
 
 
 def desktop_config_path() -> Path | None:
@@ -124,15 +149,23 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
     file's own formatting stay byte-identical. Re-rendering the whole document
     from a dict would reformat pre-existing entries (issue #1603).
     """
+    from repowise.cli.editor_integrations.claude_config import _stored_repowise_entry
     from repowise.cli.mcp_config import generate_mcp_config
 
     from ..formats.json_merge import (
         merge_json_object_member,
         write_json_config,
     )
+    from ..formats.server_entry import RENAME_HINT, is_remote_entry
 
     config_path = project_mcp_config_path(repo_path)
     new_entry = generate_mcp_config(repo_path)["mcpServers"]["repowise"]
+
+    stored = _stored_repowise_entry(config_path)
+    if stored is not None and is_remote_entry(stored, local_type="stdio"):
+        # See ``formats.server_entry``: merging ``command`` and ``args`` into a
+        # remote entry leaves one that is neither.
+        return FileWrite(path=config_path, action=FileAction.KEPT, reason=RENAME_HINT)
 
     if config_path.exists():
         # Surgical, minimal-edit write. ``KEPT`` means the file's shape is one we
@@ -158,6 +191,87 @@ def write_project_mcp_config(repo_path: Path) -> FileWrite:
         )
 
     return FileWrite(path=config_path, action=action)
+
+
+def _project_key(projects: object, repo_path: Path) -> str:
+    """The key Claude Code files *repo_path* under in ``~/.claude.json`` ``projects``.
+
+    The key Claude Code already uses when it has opened this repo, compared as
+    paths (keys have been written with either slash on Windows). Otherwise the
+    forward-slash absolute path, the spelling current Claude Code writes.
+    """
+    from repowise.cli._helpers.paths import _same_path
+
+    if isinstance(projects, dict):
+        for key in projects:
+            if isinstance(key, str) and _same_path(Path(key), repo_path):
+                return key
+    return repo_path.absolute().as_posix()
+
+
+def _local_server_loaded(repo_path: Path) -> bool:
+    """Whether Claude Code loads a local repowise server in *repo_path* already.
+
+    The plugin, or a ``repowise`` entry that launches a command at user scope
+    or in ``.mcp.json``. A hosted entry beside any of them takes the
+    ``repowise-hosted`` name, so the two never shadow each other.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _stored_repowise_entry,
+        claude_code_plugin_installed,
+    )
+
+    from ..formats.server_entry import is_remote_entry
+
+    if claude_code_plugin_installed(repo_path):
+        return True
+    for path in (user_mcp_config_path(), project_mcp_config_path(repo_path)):
+        stored = _stored_repowise_entry(path)
+        if stored is not None and not is_remote_entry(stored, local_type="stdio"):
+            return True
+    return False
+
+
+def local_scope_servers(repo_path: Path) -> tuple[str, dict]:
+    """``(project key, servers)`` of this repo's local scope in ``~/.claude.json``.
+
+    Raises like :func:`~..formats.json_merge.load_json_object` on a file that
+    is not strict JSON. ``servers`` is ``{}`` when there are none.
+    """
+    from repowise.cli.mcp_config import load_existing_config
+
+    config_path = user_mcp_config_path()
+    existing = load_existing_config(config_path) if config_path.exists() else {}
+    projects = existing.get("projects")
+    key = _project_key(projects, repo_path)
+    project = projects.get(key) if isinstance(projects, dict) else None
+    servers = project.get("mcpServers") if isinstance(project, dict) else None
+    return key, servers if isinstance(servers, dict) else {}
+
+
+def write_local_scope_server(repo_path: Path, spec: ServerSpec) -> tuple[str, FileWrite]:
+    """Merge *spec* into this repo's local-scope servers in ``~/.claude.json``.
+
+    A minimal edit, the same one the user-scope entry gets: Claude Code owns
+    this file and rewrites it often, so only our one member moves. Raises like
+    :func:`~..formats.json_merge.load_json_object` on a file that is not strict
+    JSON; ``KEPT`` when a key on the path is not an object.
+    """
+    from ..formats.json_merge import merge_json_object_member
+
+    config_path = user_mcp_config_path()
+    key, servers = local_scope_servers(repo_path)
+    name = spec.name_in(
+        servers, local_type="stdio", local_elsewhere=_local_server_loaded(repo_path)
+    )
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    action = merge_json_object_member(
+        config_path, ("projects", key, "mcpServers"), name, spec.entry
+    )
+    reason = spec.repointed_from(servers.get(name))
+    if action is FileAction.KEPT:
+        reason = "a key on the projects path is not an object"
+    return name, FileWrite(path=config_path, action=action, reason=reason)
 
 
 def _remove_project_mcp_entry(config_path: Path) -> tuple[Path, FileAction, str | None]:
@@ -201,13 +315,69 @@ def _remove_project_mcp_entry(config_path: Path) -> tuple[Path, FileAction, str 
     return config_path, FileAction.REMOVED, None
 
 
+def sync_project_mcp_config(repo_path: Path) -> FileWrite:
+    """The ``.mcp.json`` write for ``init`` and ``agents refresh``.
+
+    Skipped when Claude Code already loads a user-scope repowise server here
+    (the ``~/.claude.json`` entry or the plugin): the two scopes share the
+    ``repowise`` name and Claude Code reports them as conflicting. An entry an
+    older release wrote is then retired. Written as before otherwise, so a
+    declined or failed user-scope write still leaves the repo connected.
+    """
+    from repowise.cli.editor_integrations.claude_config import claude_code_user_scope_serves
+
+    if claude_code_user_scope_serves(repo_path):
+        return retire_project_mcp_entry(repo_path)
+    return write_project_mcp_config(repo_path)
+
+
+def retire_project_mcp_entry(repo_path: Path) -> FileWrite:
+    """Drop the ``.mcp.json`` entry init wrote, when a user-scope entry serves the repo.
+
+    Only our own ``repowise`` key goes, as a minimal edit; other servers and
+    the file's formatting stay. The file goes only when nothing else is left.
+    A file git tracks is left alone: it is shared, and contributors without
+    the user-scope entry rely on it. A file that is not strict JSON, or a
+    hand-shaped entry, is left alone too.
+    """
+    from repowise.cli.editor_integrations.claude_config import (
+        _is_our_entry,
+        _stored_repowise_entry,
+    )
+    from repowise.cli.git_exclude import is_tracked
+
+    from ..formats.json_merge import load_json_object_or_value_error, remove_json_object_member
+
+    config_path = project_mcp_config_path(repo_path)
+    entry = _stored_repowise_entry(config_path)
+    if entry is None:
+        return FileWrite(path=config_path, action=FileAction.NOT_FOUND)
+    if not _is_our_entry(entry):
+        return FileWrite(config_path, FileAction.KEPT, "the repowise entry is hand-shaped")
+    if is_tracked(repo_path, config_path.name):
+        return FileWrite(
+            config_path,
+            FileAction.KEPT,
+            "tracked in git, so contributors without the user-scope entry rely on it",
+        )
+    try:
+        remove_json_object_member(config_path, "mcpServers", "repowise")
+    except (OSError, ValueError) as exc:
+        return FileWrite(config_path, FileAction.KEPT, f"could not edit it: {exc}")
+    # The entry is gone; failing to drop a now-empty file leaves it in place.
+    with contextlib.suppress(OSError, ValueError):
+        if load_json_object_or_value_error(config_path, ".mcp.json") == {"mcpServers": {}}:
+            config_path.unlink()
+    return FileWrite(path=config_path, action=FileAction.REMOVED)
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
 
 
-def _plugin_installs() -> list[dict]:
-    """Records the host holds for the repowise plugin, or an empty list.
+def _plugin_installs(repo_path: Path | None = None) -> list[dict]:
+    """Records the host holds for the enabled repowise plugin, or an empty list.
 
     Reads the host's own manifest (``installed_plugins.json``, schema version 2:
     a ``plugins`` map from ``"<plugin>@<marketplace>"`` to a list of installs,
@@ -215,6 +385,10 @@ def _plugin_installs() -> list[dict]:
     mode degrades to "no plugin": a manifest we cannot read is not evidence of
     absence, but treating it as presence would make us report a registration
     that may not exist.
+
+    A plugin the user turned off (``enabledPlugins`` false in settings.json)
+    loads nothing, so it has no installs. With *repo_path*, an install pinned
+    to a project (its ``projectPath``) counts only for that project.
     """
     manifest = plugin_manifest_path()
     if not manifest.exists():
@@ -229,11 +403,40 @@ def _plugin_installs() -> list[dict]:
     installs = plugins.get(PLUGIN_KEY)
     if not isinstance(installs, list):
         return []
-    return [entry for entry in installs if isinstance(entry, dict)]
+    if _plugin_turned_off():
+        return []
+    return [
+        entry
+        for entry in installs
+        if isinstance(entry, dict) and (repo_path is None or _install_serves(entry, repo_path))
+    ]
+
+
+def _plugin_turned_off() -> bool:
+    """Whether settings.json sets the plugin to false in ``enabledPlugins``."""
+    import click
+
+    from repowise.cli.mcp_config import load_existing_config
+
+    try:
+        enabled = load_existing_config(settings_path()).get("enabledPlugins")
+    except click.ClickException:  # absent or unreadable settings: no opt-out
+        return False
+    return isinstance(enabled, dict) and enabled.get(PLUGIN_KEY) is False
+
+
+def _install_serves(entry: dict, repo_path: Path) -> bool:
+    """Whether a plugin install loads in *repo_path*: user-wide, or pinned to it."""
+    from repowise.cli._helpers.paths import _same_path
+
+    pinned = entry.get("projectPath")
+    return not isinstance(pinned, str) or not pinned or _same_path(Path(pinned), repo_path)
 
 
 #: What the host, not repowise, has to run to update the plugin.
 PLUGIN_UPDATE_COMMAND = "/plugin update repowise@repowise"
+#: And what it has to run to drop the plugin's copy of a double registration.
+PLUGIN_UNINSTALL_COMMAND = "/plugin uninstall repowise@repowise"
 
 
 def plugin_version_skew() -> list[str]:
@@ -309,7 +512,7 @@ def _has_repowise_server(config_path: Path) -> bool:
         data = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return False
-    servers = data.get("mcpServers")
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
     return isinstance(servers, dict) and "repowise" in servers
 
 
@@ -322,7 +525,7 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
     """
     found: list[Registration] = []
 
-    for entry in _plugin_installs():
+    for entry in _plugin_installs(repo_path):
         scope = Scope.USER if entry.get("scope") != "project" else Scope.PROJECT
         found.append(
             Registration(
@@ -334,10 +537,14 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
             )
         )
 
-    settings = settings_path()
-    if settings.exists() and _has_repowise_server(settings):
+    # settings.json too: older releases wrote the entry there, and refresh and
+    # uninstall must still find it to move or remove it.
+    user_config, legacy = user_mcp_config_path(), settings_path()
+    if user_config.exists() and _has_repowise_server(user_config):
+        found.append(Registration(method="direct", scope=Scope.USER, config_path=user_config))
+    if legacy.exists() and _has_repowise_server(legacy):
         found.append(
-            Registration(method="direct", scope=Scope.USER, config_path=settings),
+            Registration(method="direct", scope=Scope.USER, config_path=legacy, detail="legacy")
         )
 
     desktop = desktop_config_path()
@@ -356,6 +563,21 @@ def detect(repo_path: Path | None = None) -> list[Registration]:
     return found
 
 
+def _uninstall_user_mcp_entry(result: WriteResult) -> None:
+    """Drop the user-scope entry from ~/.claude.json and record it as that file's own row."""
+    from repowise.cli.editor_integrations.claude_config import (
+        claude_code_user_config_leftover_reason,
+        uninstall_claude_code_mcp_entry,
+    )
+
+    removed = uninstall_claude_code_mcp_entry()
+    leftover = claude_code_user_config_leftover_reason()
+    if leftover is not None:
+        result.record(user_mcp_config_path(), FileAction.KEPT, leftover)
+    elif removed:
+        result.record(user_mcp_config_path(), FileAction.REMOVED)
+
+
 class ClaudeCodeTarget:
     """Descriptor for Claude Code. See the module docstring."""
 
@@ -367,6 +589,7 @@ class ClaudeCodeTarget:
     capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
+    hosted = HOSTED
 
     def supports_scope(self, scope: Scope) -> bool:
         return True
@@ -407,11 +630,26 @@ class ClaudeCodeTarget:
             register_with_claude_desktop,
         )
 
+        hosted_url = options.hosted_url if isinstance(options, InstallOptions) else None
+        if hosted_url:
+            from ..formats.server_entry import install_hosted
+
+            if repo_path is None:
+                raise ValueError("the hosted entry needs a repo_path")
+            return install_hosted(
+                user_mcp_config_path(),
+                lambda spec: write_local_scope_server(repo_path, spec),
+                {"type": "http", "url": hosted_url},
+            )
         result = WriteResult()
+        retarget = isinstance(options, InstallOptions) and options.retarget
         if scope is Scope.PROJECT:
             if repo_path is None:
                 raise ValueError("project-scope install needs a repo_path")
-            written = write_project_mcp_config(repo_path)
+            # An explicit `agents add` writes the entry it was asked for;
+            # `refresh` (and doctor --repair) follow init's rule.
+            write = write_project_mcp_config if retarget else sync_project_mcp_config
+            written = write(repo_path)
             result.record(written.path, written.action, written.reason)
             return result
 
@@ -421,12 +659,14 @@ class ClaudeCodeTarget:
         from ..formats.observe import observed_action, read_bytes
 
         settings = settings_path()
+        user_config = user_mcp_config_path()
         desktop_path = desktop_config_path()
         settings_before = read_bytes(settings)
+        user_config_before = read_bytes(user_config)
         desktop_before = read_bytes(desktop_path) if desktop_path is not None else None
 
-        register_with_claude_desktop(repo_path)
-        register_with_claude_code(repo_path)
+        register_with_claude_desktop(repo_path, retarget=retarget)
+        register_with_claude_code(repo_path, retarget=retarget)
         install_claude_code_hooks()
         enable_tool_search_in_claude_code()
 
@@ -434,6 +674,9 @@ class ClaudeCodeTarget:
         # write settings.json, and reporting it three times says nothing a
         # reader can act on.
         result.record(settings, observed_action(settings_before, read_bytes(settings)))
+        user_config_after = read_bytes(user_config)
+        if not (user_config_before is None and user_config_after is None):
+            result.record(user_config, observed_action(user_config_before, user_config_after))
         if desktop_path is not None:
             after = read_bytes(desktop_path)
             if not (desktop_before is None and after is None):
@@ -460,8 +703,8 @@ class ClaudeCodeTarget:
             claude_desktop_leftover_reason,
             uninstall_claude_code_augment_hooks,
             uninstall_claude_code_distill_allow_rules,
-            uninstall_claude_code_mcp_entry,
             uninstall_claude_code_rewrite_hook,
+            uninstall_claude_code_settings_mcp_entry,
             uninstall_claude_desktop_mcp_entry,
         )
 
@@ -490,7 +733,8 @@ class ClaudeCodeTarget:
         removed = uninstall_claude_code_rewrite_hook()
         removed = uninstall_claude_code_augment_hooks() or removed
         removed = uninstall_claude_code_distill_allow_rules() or removed
-        removed = uninstall_claude_code_mcp_entry() or removed
+        removed = uninstall_claude_code_settings_mcp_entry() or removed
+        _uninstall_user_mcp_entry(result)
         # The Desktop config too, because `install` writes it and `detect` reads
         # it. Leaving it made a removed Claude Code still look wired, so the
         # next `doctor --repair` reinstalled everything this had just removed.
@@ -539,7 +783,7 @@ class ClaudeCodeTarget:
                 str(project_mcp_config_path(root)),
                 str(claude_code_local_settings_path(root)),
             ]
-        paths = [str(settings_path())]
+        paths = [str(settings_path()), str(user_mcp_config_path())]
         desktop = desktop_config_path()
         if desktop is not None:
             paths.append(str(desktop))
@@ -567,13 +811,13 @@ class ClaudeCodeTarget:
         # registration from one inside a file it could not parse — and
         # reporting "not installed" for a settings file with a trailing comma
         # sends the user to run an install that refuses for the same reason.
-        settings = settings_path()
-        if is_damaged(settings):
+        damaged = [p for p in (settings_path(), user_mcp_config_path()) if is_damaged(p)]
+        if damaged:
             return DoctorReport(
                 target_id=ID,
                 status=DoctorStatus.BROKEN,
                 issues=(
-                    f"{settings} is not valid JSON, so Claude Code ignores all of it. "
+                    f"{damaged[0]} is not valid JSON, so Claude Code ignores all of it. "
                     "Fix or remove it, then re-register.",
                 ),
                 # `add`, not `refresh`. A file this damaged makes detection
@@ -586,7 +830,9 @@ class ClaudeCodeTarget:
                 repairable=False,
             )
 
-        registrations = detect()
+        # With the repository: the project ``.mcp.json`` that `repowise init`
+        # writes is the registration most often doubled by the plugin.
+        registrations = detect(repo_path)
         if not registrations:
             return DoctorReport(
                 target_id=ID,
@@ -610,18 +856,31 @@ class ClaudeCodeTarget:
             )
 
         duplicates = [r for r in registrations if r.method == "plugin"] and [
-            r for r in registrations if r.method == "direct"
+            r
+            for r in registrations
+            if r.method == "direct" and r.detail not in ("desktop", "legacy")
         ]
         if duplicates:
+            where = ", ".join(str(r.config_path) for r in duplicates)
             issues.append(
-                "repowise is registered twice — once by the plugin and once directly — "
-                "so its MCP tool schemas and hooks are loaded twice."
+                "repowise is registered twice, once by the plugin and once directly "
+                f"({where}), so its MCP instructions, tool schemas and hooks are "
+                "loaded twice."
             )
 
         # Reported last and fixed first: an out-of-date plugin ships its own
         # copy of the hooks, so updating it can resolve the matcher issue above
         # as a side effect, where repairing the matcher does nothing for it.
         fix_command = "repowise hook rewrite install"
+        if duplicates:
+            # A project `.mcp.json` is often shared with the team, so when it is
+            # the only other registration, the plugin is the copy to drop.
+            project_only = all(r.scope == Scope.PROJECT for r in duplicates)
+            fix_command = (
+                PLUGIN_UNINSTALL_COMMAND
+                if project_only
+                else "repowise agents remove --target=claude-code"
+            )
         skew = plugin_version_skew()
         if skew:
             from repowise.cli import __version__

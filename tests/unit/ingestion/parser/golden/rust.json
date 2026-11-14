@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -89,6 +91,7 @@
       "six_ops",
       "two_ops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -99,7 +102,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "rust/flat_match.rs": {
     "file_info": {
@@ -112,7 +116,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -187,6 +193,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -197,7 +204,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "rust/nested.rs": {
     "file_info": {
@@ -210,7 +218,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -262,6 +272,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -272,7 +283,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "rust/perf_io_in_loop.rs": {
     "file_info": {
@@ -285,7 +297,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -536,6 +550,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -547,6 +562,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -556,6 +572,7 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 826,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -572,6 +589,7 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 844,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -588,6 +606,7 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 963,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -604,6 +623,7 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1107,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -620,6 +640,7 @@
         "line": 37,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1348,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -636,6 +657,7 @@
         "line": 43,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1460,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -652,6 +674,7 @@
         "line": 44,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1552,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -668,6 +691,7 @@
         "line": 52,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1821,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -684,6 +708,7 @@
         "line": 57,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1923,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -700,6 +725,7 @@
         "line": 64,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2145,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -716,6 +742,7 @@
         "line": 69,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2266,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -732,6 +759,7 @@
         "line": 73,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 2393,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -748,6 +776,7 @@
         "line": 75,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2431,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -784,6 +813,7 @@
         "line": 18,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 0,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -800,6 +830,7 @@
         "line": 57,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 0,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -810,6 +841,7 @@
         "argument_names": null
       }
     ],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

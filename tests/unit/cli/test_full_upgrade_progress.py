@@ -150,7 +150,9 @@ async def test_full_upgrade_scans_commit_health_at_the_full_budget(monkeypatch) 
 
     budgets: list[float] = []
 
-    async def refresh(_sf, _repo_id, _path, *, budget=None):
+    async def refresh(_sf, _repo_id, _path, *, budget=None, background=False):
+        # A drain holding the lock must not swallow the upgrade's scan.
+        assert background
         budgets.append(budget)
 
     monkeypatch.delenv("REPOWISE_COMMIT_HEALTH_BUDGET_SECONDS", raising=False)

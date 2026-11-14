@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import structlog
@@ -49,5 +50,9 @@ async def _replace_security_findings(
 ) -> None:
     from repowise.core.analysis.security_scan import SecurityScanner, scan_source_map
 
-    findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
+    # The scan is CPU-bound regex work over every file's text; on a large repo
+    # it runs for seconds, so keep it off the event loop.
+    findings_by_file, scanned_paths = await asyncio.to_thread(
+        scan_source_map, parsed_files, source_map
+    )
     await SecurityScanner(session, repo_id).replace_findings(findings_by_file, scanned_paths)

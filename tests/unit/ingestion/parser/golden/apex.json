@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -344,6 +346,7 @@
     "exports": [
       "AccountService"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -353,6 +356,7 @@
         "line": 19,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 551,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -369,6 +373,7 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 608,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -387,6 +392,7 @@
         "line": 21,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 646,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -405,6 +411,7 @@
         "line": 22,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 672,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -421,6 +428,7 @@
         "line": 22,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 683,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -437,6 +445,7 @@
         "line": 27,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 852,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -453,6 +462,7 @@
         "line": 29,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 906,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -471,6 +481,7 @@
         "line": 30,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 938,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -487,6 +498,7 @@
         "line": 30,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 948,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -503,6 +515,7 @@
         "line": 31,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 978,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -521,6 +534,7 @@
         "line": 35,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 1045,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -637,7 +651,8 @@
           "Name"
         ]
       }
-    ]
+    ],
+    "grammar_missing": false
   },
   "apex/AccountTrigger.trigger": {
     "file_info": {
@@ -650,7 +665,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -681,6 +698,7 @@
     "exports": [
       "AccountTrigger"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -690,6 +708,7 @@
         "line": 2,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 92,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -706,6 +725,7 @@
         "line": 3,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 118,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -722,6 +742,7 @@
         "line": 3,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 135,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -753,7 +774,200 @@
         "line": 1,
         "path": []
       }
-    ]
+    ],
+    "grammar_missing": false
+  },
+  "apex/HealthMarkersTest.cls": {
+    "file_info": {
+      "path": "lang_samples/apex/HealthMarkersTest.cls",
+      "language": "apex",
+      "size_bytes": 545,
+      "is_test": false,
+      "is_config": false,
+      "is_api_contract": false,
+      "is_entry_point": false,
+      "is_manifest_entry": false,
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
+    },
+    "symbols": [
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest",
+        "name": "HealthMarkersTest",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest",
+        "kind": "class",
+        "signature": "class HealthMarkersTest",
+        "start_line": 2,
+        "end_line": 19,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=true)\nprivate"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": null,
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "private"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
+        "name": "readsOrgData",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.readsOrgData",
+        "kind": "method",
+        "signature": "readsOrgData() -> void",
+        "start_line": 4,
+        "end_line": 8,
+        "docstring": null,
+        "decorators": [
+          "@isTest(seeAllData = true)\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "name": "ownData",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.ownData",
+        "kind": "method",
+        "signature": "ownData() -> void",
+        "start_line": 10,
+        "end_line": 13,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=false)\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      },
+      {
+        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::suppressed",
+        "name": "suppressed",
+        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.suppressed",
+        "kind": "method",
+        "signature": "suppressed() -> void",
+        "start_line": 15,
+        "end_line": 18,
+        "docstring": null,
+        "decorators": [
+          "@IsTest(SeeAllData=true)\n    @SuppressWarnings('PMD.ApexUnitTestShouldNotUseSeeAllDataTrue')\n    static"
+        ],
+        "visibility": "private",
+        "is_async": false,
+        "complexity_estimate": 1,
+        "language": "apex",
+        "parent_name": "HealthMarkersTest",
+        "is_exported_symbol": false,
+        "is_declaration": false,
+        "type_parameter_count": null,
+        "extension_receiver": null,
+        "written_receiver": null,
+        "modifiers": [
+          "static"
+        ],
+        "alias_of": null
+      }
+    ],
+    "imports": [],
+    "exports": [],
+    "module_name": null,
+    "export_aliases": {},
+    "calls": [
+      {
+        "target_name": "assertNotEquals",
+        "receiver_name": "System",
+        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
+        "line": 7,
+        "argument_count": 2,
+        "receiver_call": null,
+        "start_byte": 263,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": [
+          null,
+          "fixtureId"
+        ]
+      },
+      {
+        "target_name": "Account",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "line": 12,
+        "argument_count": 1,
+        "receiver_call": null,
+        "start_byte": 381,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      }
+    ],
+    "heritage": [],
+    "docstring": null,
+    "parse_errors": [],
+    "content_hash": "ee0b625d872285a30bc7a789d76e01feadef22aaacfda9214f6b1a36f94e9c5f",
+    "type_refs": [
+      {
+        "type_name": "Account",
+        "line": 12,
+        "origin": "composite_literal"
+      }
+    ],
+    "local_refs": [],
+    "registrars": [],
+    "references": [],
+    "schema_refs": [
+      {
+        "source_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
+        "object_name": "Account",
+        "line": 12,
+        "path": []
+      }
+    ],
+    "grammar_missing": false
   },
   "apex/assertions.cls": {
     "file_info": {
@@ -766,7 +980,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -959,6 +1175,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -968,6 +1185,7 @@
         "line": 6,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 177,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -984,6 +1202,7 @@
         "line": 7,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 203,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1006,6 +1225,7 @@
         "line": 8,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 238,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1028,6 +1248,7 @@
         "line": 9,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 276,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1050,6 +1271,7 @@
         "line": 10,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 307,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1066,6 +1288,7 @@
         "line": 11,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 337,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1085,6 +1308,7 @@
         "line": 16,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 440,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1101,6 +1325,7 @@
         "line": 17,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 466,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1123,6 +1348,7 @@
         "line": 19,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 524,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1145,6 +1371,7 @@
         "line": 23,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 609,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1161,6 +1388,7 @@
         "line": 24,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 635,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1183,6 +1411,7 @@
         "line": 29,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 716,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1199,6 +1428,7 @@
         "line": 34,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 797,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1230,7 +1460,8 @@
         "line": 34,
         "path": []
       }
-    ]
+    ],
+    "grammar_missing": false
   },
   "apex/classes.cls": {
     "file_info": {
@@ -1243,7 +1474,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1674,6 +1907,7 @@
     "exports": [
       "Classes"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1683,6 +1917,7 @@
         "line": 52,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 1210,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1699,6 +1934,7 @@
         "line": 58,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1357,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1719,7 +1955,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "apex/health_markers.cls": {
     "file_info": {
@@ -1732,7 +1969,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -2165,6 +2404,7 @@
     "exports": [
       "HealthMarkers"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2174,6 +2414,7 @@
         "line": 13,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 587,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2190,6 +2431,7 @@
         "line": 18,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 785,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2206,6 +2448,7 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 849,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2224,6 +2467,7 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 943,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2240,6 +2484,7 @@
         "line": 28,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1099,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2256,6 +2501,7 @@
         "line": 28,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 1142,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2278,6 +2524,7 @@
         "line": 38,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1415,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2294,6 +2541,7 @@
         "line": 38,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1456,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2312,6 +2560,7 @@
         "line": 42,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1572,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2330,6 +2579,7 @@
         "line": 43,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1622,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2346,6 +2596,7 @@
         "line": 47,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1747,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2362,6 +2613,7 @@
         "line": 51,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1863,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2378,6 +2630,7 @@
         "line": 56,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2103,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2394,6 +2647,7 @@
         "line": 56,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 2128,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2416,6 +2670,7 @@
         "line": 60,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2245,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2514,193 +2769,8 @@
           "OwnerId"
         ]
       }
-    ]
-  },
-  "apex/HealthMarkersTest.cls": {
-    "file_info": {
-      "path": "lang_samples/apex/HealthMarkersTest.cls",
-      "language": "apex",
-      "size_bytes": 545,
-      "is_test": false,
-      "is_config": false,
-      "is_api_contract": false,
-      "is_entry_point": false,
-      "is_manifest_entry": false,
-      "is_reachability_root": false,
-      "is_application_main": false
-    },
-    "symbols": [
-      {
-        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest",
-        "name": "HealthMarkersTest",
-        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest",
-        "kind": "class",
-        "signature": "class HealthMarkersTest",
-        "start_line": 2,
-        "end_line": 19,
-        "docstring": null,
-        "decorators": [
-          "@IsTest(SeeAllData=true)\nprivate"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": null,
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "private"
-        ],
-        "alias_of": null
-      },
-      {
-        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
-        "name": "readsOrgData",
-        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.readsOrgData",
-        "kind": "method",
-        "signature": "readsOrgData() -> void",
-        "start_line": 4,
-        "end_line": 8,
-        "docstring": null,
-        "decorators": [
-          "@isTest(seeAllData = true)\n    static"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": "HealthMarkersTest",
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "static"
-        ],
-        "alias_of": null
-      },
-      {
-        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
-        "name": "ownData",
-        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.ownData",
-        "kind": "method",
-        "signature": "ownData() -> void",
-        "start_line": 10,
-        "end_line": 13,
-        "docstring": null,
-        "decorators": [
-          "@IsTest(SeeAllData=false)\n    static"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": "HealthMarkersTest",
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "static"
-        ],
-        "alias_of": null
-      },
-      {
-        "id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::suppressed",
-        "name": "suppressed",
-        "qualified_name": "lang_samples.apex.HealthMarkersTest.HealthMarkersTest.suppressed",
-        "kind": "method",
-        "signature": "suppressed() -> void",
-        "start_line": 15,
-        "end_line": 18,
-        "docstring": null,
-        "decorators": [
-          "@IsTest(SeeAllData=true)\n    @SuppressWarnings('PMD.ApexUnitTestShouldNotUseSeeAllDataTrue')\n    static"
-        ],
-        "visibility": "private",
-        "is_async": false,
-        "complexity_estimate": 1,
-        "language": "apex",
-        "parent_name": "HealthMarkersTest",
-        "is_exported_symbol": false,
-        "is_declaration": false,
-        "type_parameter_count": null,
-        "extension_receiver": null,
-        "written_receiver": null,
-        "modifiers": [
-          "static"
-        ],
-        "alias_of": null
-      }
     ],
-    "imports": [],
-    "exports": [],
-    "export_aliases": {},
-    "calls": [
-      {
-        "target_name": "assertNotEquals",
-        "receiver_name": "System",
-        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::readsOrgData",
-        "line": 7,
-        "argument_count": 2,
-        "receiver_call": null,
-        "scope_name": null,
-        "edge_type": "calls",
-        "supplied_props": null,
-        "bare_name_fallback": false,
-        "spawned": false,
-        "program_call": false,
-        "argument_types": null,
-        "argument_names": [
-          null,
-          "fixtureId"
-        ]
-      },
-      {
-        "target_name": "Account",
-        "receiver_name": null,
-        "caller_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
-        "line": 12,
-        "argument_count": 1,
-        "receiver_call": null,
-        "scope_name": null,
-        "edge_type": "calls",
-        "supplied_props": null,
-        "bare_name_fallback": false,
-        "spawned": false,
-        "program_call": false,
-        "argument_types": null,
-        "argument_names": null
-      }
-    ],
-    "heritage": [],
-    "docstring": null,
-    "parse_errors": [],
-    "content_hash": "ee0b625d872285a30bc7a789d76e01feadef22aaacfda9214f6b1a36f94e9c5f",
-    "type_refs": [
-      {
-        "type_name": "Account",
-        "line": 12,
-        "origin": "composite_literal"
-      }
-    ],
-    "local_refs": [],
-    "registrars": [],
-    "references": [],
-    "schema_refs": [
-      {
-        "source_symbol_id": "lang_samples/apex/HealthMarkersTest.cls::HealthMarkersTest::ownData",
-        "object_name": "Account",
-        "line": 12,
-        "path": []
-      }
-    ]
+    "grammar_missing": false
   },
   "apex/nested.cls": {
     "file_info": {
@@ -2713,7 +2783,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -2896,6 +2968,7 @@
     "exports": [
       "Nested"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -2906,7 +2979,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "apex/perf_io_in_loop.cls": {
     "file_info": {
@@ -2919,7 +2993,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -3430,6 +3506,7 @@
     "exports": [
       "PerfIoInLoop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -3439,6 +3516,7 @@
         "line": 21,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 740,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3457,6 +3535,7 @@
         "line": 22,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 787,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3475,6 +3554,7 @@
         "line": 28,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 908,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3491,6 +3571,7 @@
         "line": 28,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 923,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3509,6 +3590,7 @@
         "line": 29,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 947,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3527,6 +3609,7 @@
         "line": 40,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1199,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3543,6 +3626,7 @@
         "line": 50,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1492,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3561,6 +3645,7 @@
         "line": 70,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2002,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3577,6 +3662,7 @@
         "line": 73,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2112,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3593,6 +3679,7 @@
         "line": 78,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 2245,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3609,6 +3696,7 @@
         "line": 79,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 2287,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3631,6 +3719,7 @@
         "line": 86,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2479,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3649,6 +3738,7 @@
         "line": 87,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 2510,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3665,6 +3755,7 @@
         "line": 89,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 2581,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3681,6 +3772,7 @@
         "line": 113,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 3166,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3697,6 +3789,7 @@
         "line": 114,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 3214,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3715,6 +3808,7 @@
         "line": 115,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 3273,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3731,6 +3825,7 @@
         "line": 120,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 3444,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -3747,6 +3842,7 @@
         "line": 121,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 3482,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -4125,6 +4221,7 @@
           "Id"
         ]
       }
-    ]
+    ],
+    "grammar_missing": false
   }
 }

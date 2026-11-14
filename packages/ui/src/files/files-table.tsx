@@ -205,7 +205,7 @@ export function FilesTable({ files, fileHref, sortKey, sortDir, onSort }: FilesT
                         a sort you could not see the basis of. */}
                     <span className="flex items-center justify-end gap-1.5 tabular-nums text-[var(--color-text-secondary)]">
                       <span
-                        className="hidden h-1.5 rounded-full bg-[var(--color-accent-primary)] sm:inline-block"
+                        className="hidden h-1.5 rounded-full bg-[var(--color-progress-fill)] sm:inline-block"
                         style={{ width: `${Math.max(2, (f.pagerank_pct / 100) * 28)}px` }}
                       />
                       {f.pagerank_pct.toFixed(1)}

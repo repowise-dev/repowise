@@ -63,8 +63,12 @@ RISK_CAP_CONFIDENCE: float = 0.4
 # Finding kinds that are never deletion-ready, whatever their confidence. A
 # whole file with no importers was measured well below the deletion-ready bar
 # (files read by build scripts, manifests and runtime loaders by path), so it
-# is a review candidate until path mentions and entry-shape evidence exist.
-REVIEW_ONLY_KINDS: frozenset[str] = frozenset({"unreachable_file"})
+# is a review candidate until path mentions and entry-shape evidence exist. A
+# whole package and a private symbol the graph saw no call to are the same kind
+# of claim, so neither may be issued as a deletion.
+REVIEW_ONLY_KINDS: frozenset[str] = frozenset(
+    {"unreachable_file", "zombie_package", "unused_internal"}
+)
 
 # Filename-stem tokens → risk-factor tag. Matched against the basename split on
 # ``. _ -`` so ``environment.db.js`` yields {environment, db, js} → environment
