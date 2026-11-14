@@ -330,7 +330,8 @@ async def _page_stats(sf: Any, repo_id: str) -> tuple[int, int, set[str]]:
     would mean ``docs_mode`` could never flip to ``llm`` no matter how much
     prose was written. The remaining-stub count is scoped to the concept layer
     for exactly that reason. A ``model_free`` page is not a stub either: no
-    model is ever going to write it.
+    model is ever going to write it. Nor is a tombstone: generation never
+    schedules a retired page.
     """
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
