@@ -13,9 +13,11 @@ from ._base import (
     STORED_SNIPPET_CHARS,
     BatchChunkFailure,
     BatchEmbeddingError,
+    PageChunks,
+    VectorCoverage,
     VectorStore,
-    cap_embed_text,
-    iter_embed_chunks,
+    embed_page_chunks,
+    iter_page_chunk_groups,
 )
 
 __all__ = ["STORED_SNIPPET_CHARS", "LanceDBVectorStore", "read_recorded_vector_dim", "record_vector_dim"]
@@ -39,6 +41,12 @@ _METADATA_CACHE_BYTES = 64 * 1024 * 1024
 # buffered as float32 Arrow data, about 8 KB each at 1,536 dimensions, so a
 # full buffer stays near 32 MB.
 _UPSERT_BATCH_ROWS = 4096
+
+# A search returns pages, but a long page is stored as several rows, one per
+# piece. The nearest rows are fetched with this much headroom so that a few
+# long pages crowding the top cannot leave fewer than *limit* distinct pages;
+# the fetch widens until it can.
+_PAGE_OVERFETCH = 4
 
 # ``STORED_SNIPPET_CHARS`` — how much of a page's content each row keeps — is
 # defined with the embed recipe and re-exported here so the historical import
@@ -121,19 +129,28 @@ def _page_ids_in_filter(page_ids: list[str]) -> str:
 
 
 def _last_row_per_page(batches: list[Any]) -> Any:
-    """One Arrow table from *batches*, keeping each page_id's last row.
+    """One Arrow table from *batches*, keeping each page_id's last write.
 
     ``merge_insert`` rejects a source holding a key twice once that key is
     in the table, and inserts both rows when it is not. Written chunk by
     chunk, a repeated page simply overwrote itself, so the last occurrence
-    is the one that wins here too.
+    is the one that wins here too. A write is all of a page's pieces, which
+    sit together starting at ``chunk_index`` 0, so the last write is every
+    row from the page's last piece 0 on.
     """
     import pyarrow as pa  # type: ignore[import]
 
     table = pa.Table.from_batches(batches)
-    last = {page_id: i for i, page_id in enumerate(table.column("page_id").to_pylist())}
-    if len(last) < table.num_rows:
-        table = table.take(sorted(last.values()))
+    page_ids = table.column("page_id").to_pylist()
+    chunk_indexes = table.column("chunk_index").to_pylist()
+    last_write = {
+        page_id: i
+        for i, (page_id, index) in enumerate(zip(page_ids, chunk_indexes, strict=True))
+        if index == 0
+    }
+    keep = [i for i, page_id in enumerate(page_ids) if i >= last_write.get(page_id, 0)]
+    if len(keep) < table.num_rows:
+        table = table.take(keep)
     return table
 
 
@@ -174,6 +191,9 @@ class LanceDBVectorStore(VectorStore):
         self._db = None
         self._table = None
         self._dim_recorded = False
+        # Tables written before pages were chunked lack ``chunk_index`` and
+        # ``chunk_count``. Reads cope; the first write adds the columns.
+        self._chunked = False
 
     async def _ensure_connected(self) -> None:
         if self._db is not None:
@@ -202,6 +222,7 @@ class LanceDBVectorStore(VectorStore):
         table_names = await self._db.table_names()
         if self._table_name in table_names:
             self._table = await self._db.open_table(self._table_name)
+            self._chunked = "chunk_index" in (await self._table.schema()).names
         else:
             self._table = None  # will be created on first upsert
 
@@ -249,6 +270,12 @@ class LanceDBVectorStore(VectorStore):
                 if existing_dim is not None and not self._dim_recorded:
                     record_vector_dim(self._db_path, self._table_name, existing_dim)
                     self._dim_recorded = True
+                if not self._chunked:
+                    # Every row of an older table is one whole-page vector.
+                    await self._table.add_columns(
+                        {"chunk_index": "CAST(0 AS INT)", "chunk_count": "CAST(1 AS INT)"}
+                    )
+                    self._chunked = True
                 return
             # Embedder changed dimensions — the old vectors are unusable.
             # Forget the record first so a crash mid-rebuild leaves none.
@@ -264,16 +291,26 @@ class LanceDBVectorStore(VectorStore):
                 pa.field("page_type", pa.string()),
                 pa.field("target_path", pa.string()),
                 pa.field("content_snippet", pa.string()),
+                pa.field("chunk_index", pa.int32()),
+                pa.field("chunk_count", pa.int32()),
             ]
         )
         self._table = await self._db.create_table(  # type: ignore[union-attr]
             self._table_name, schema=schema, exist_ok=True
         )
+        self._chunked = True
         record_vector_dim(self._db_path, self._table_name, dim)
         self._dim_recorded = True
 
     @staticmethod
-    def _row(page_id: str, vector: list[float], metadata: dict) -> dict:
+    def _row(
+        page_id: str,
+        vector: list[float],
+        metadata: dict,
+        *,
+        chunk_index: int = 0,
+        chunk_count: int = 1,
+    ) -> dict:
         content = str(metadata.get("content", ""))
         return {
             "page_id": page_id,
@@ -282,41 +319,88 @@ class LanceDBVectorStore(VectorStore):
             "page_type": str(metadata.get("page_type", "")),
             "target_path": str(metadata.get("target_path", "")),
             "content_snippet": content[:STORED_SNIPPET_CHARS],
+            "chunk_index": chunk_index,
+            "chunk_count": chunk_count,
         }
 
+    @classmethod
+    def _page_rows(cls, page: PageChunks, vectors: list[list[float]]) -> list[dict]:
+        """One row per piece. A later piece keeps its own text as evidence,
+        so a hit on the tail of a page shows the tail rather than the opener."""
+        (page_id, text, metadata), pieces = page
+        return [
+            cls._row(
+                page_id,
+                vector,
+                {"content": text, **metadata} if i == 0 else {**metadata, "content": piece},
+                chunk_index=i,
+                chunk_count=len(pieces),
+            )
+            for i, (piece, vector) in enumerate(zip(pieces, vectors, strict=True))
+        ]
+
     async def _upsert_rows(self, rows: list[dict] | Any) -> None:
-        """Upsert by ``page_id``; *rows* is a list of row dicts or an Arrow table."""
-        # merge_insert: upsert by page_id (LanceDB 0.12+)
+        """Replace the pages in *rows* (row dicts or an Arrow table) in one commit.
+
+        Rows upsert on ``(page_id, chunk_index)``. A page now shorter than when
+        it was last written would keep its surplus pieces, so the same merge
+        deletes them: a page is never left holding pieces of two writes, and a
+        write that fails leaves the previous one whole.
+        """
+        page_ids = (
+            {str(row["page_id"]) for row in rows}
+            if isinstance(rows, list)
+            else set(rows.column("page_id").to_pylist())
+        )
         try:
-            await (
-                self._table.merge_insert("page_id")  # type: ignore[union-attr]
+            builder = (
+                self._table.merge_insert(["page_id", "chunk_index"])  # type: ignore[union-attr]
                 .when_matched_update_all()
                 .when_not_matched_insert_all()
-                .execute(rows)
             )
+            # Only pages already holding more than one piece can have a surplus.
+            # Asking first keeps the delete filter to those few pages rather
+            # than every page in a several-thousand-row write.
+            chunked = await self._chunked_page_ids()
+            shrinkable = sorted(page_ids & chunked)
+            if shrinkable:
+                builder = builder.when_not_matched_by_source_delete(
+                    f"chunk_index > 0 AND {_page_ids_in_filter(shrinkable)}"
+                )
+            await builder.execute(rows)
         except AttributeError:
             # Fallback for older LanceDB versions: delete + add
             if not isinstance(rows, list):
                 rows = rows.to_pylist()
-            for row in rows:
-                safe_id = str(row["page_id"]).replace("'", "''")
-                await self._table.delete(f"page_id = '{safe_id}'")  # type: ignore[union-attr]
+            ordered = sorted(page_ids)
+            for i in range(0, len(ordered), 500):
+                await self._table.delete(_page_ids_in_filter(ordered[i : i + 500]))  # type: ignore[union-attr]
             await self._table.add(rows)  # type: ignore[union-attr]
+
+    async def _chunked_page_ids(self) -> set[str]:
+        """Pages stored as more than one piece."""
+        rows = (
+            await self._table.query()  # type: ignore[union-attr]
+            .where("chunk_index > 0")
+            .select(["page_id"])
+            .to_list()
+        )
+        return {r["page_id"] for r in rows}
 
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
         await self._ensure_connected()
-        vectors = await self._embedder.embed([cap_embed_text(page_id, text)])
-        vector = vectors[0]
-        await self._ensure_table(vector)
-        meta = {"content": text, **metadata}
-        await self._upsert_rows([self._row(page_id, vector, meta)])
+        for group in iter_page_chunk_groups([(page_id, text, metadata)]):
+            vectors = await embed_page_chunks(self._embedder, group)
+            await self._ensure_table(vectors[0][0])
+            await self._upsert_rows(self._page_rows(group[0], vectors[0]))
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
         """Embed in request-sized chunks and write in a few large upserts.
 
-        One embedder call per :data:`EMBED_BATCH_MAX_ITEMS` items — a whole
+        One embedder call per :data:`EMBED_BATCH_MAX_ITEMS` pieces — a whole
         generation level in a single request blew OpenAI's 300k-token cap
-        and silently lost every file-page embedding. Writes are buffered up
+        and silently lost every file-page embedding. A page longer than one
+        input is several pieces, embedded together and failing together. Writes are buffered up
         to :data:`_UPSERT_BATCH_ROWS` rows (see there for why). A failed
         chunk no longer sinks the rest; the summary error is raised at the
         end so callers still see the loss. A failed write reports every
@@ -344,17 +428,19 @@ class LanceDBVectorStore(VectorStore):
             pending_chunks.clear()
             pending_rows = 0
 
-        for chunk, texts in iter_embed_chunks(items):
+        for group in iter_page_chunk_groups(items):
+            chunk = [item for item, _pieces in group]
             try:
-                vectors = await self._embedder.embed(texts)
+                vectors = await embed_page_chunks(self._embedder, group)
             except Exception as exc:  # isolate per provider request
                 failures.append(BatchChunkFailure(tuple(chunk), "embedding", exc))
                 continue
             try:
-                await self._ensure_table(vectors[0])
+                await self._ensure_table(vectors[0][0])
                 rows = [
-                    self._row(page_id, vector, {"content": text, **metadata})
-                    for (page_id, text, metadata), vector in zip(chunk, vectors, strict=True)
+                    row
+                    for page, page_vectors in zip(group, vectors, strict=True)
+                    for row in self._page_rows(page, page_vectors)
                 ]
                 pending.append(await self._record_batch(rows))
             except Exception as exc:  # preserve vectors' failure stage for callers
@@ -383,10 +469,22 @@ class LanceDBVectorStore(VectorStore):
         # This makes the score semantics match the other backends
         # (InMemory/pgvector both return cosine similarity, higher = better),
         # so callers can apply a single similarity threshold uniformly.
-        query_builder = self._table.query().nearest_to(q_vec)  # type: ignore[union-attr]
-        if hasattr(query_builder, "distance_type"):
-            query_builder = query_builder.distance_type("cosine")
-        raw = await query_builder.limit(limit).to_list()
+        #
+        # A page scores as its best piece: rows come back nearest first, so
+        # the first row seen for a page is its best.
+        fetch = limit * _PAGE_OVERFETCH
+        while True:
+            query_builder = self._table.query().nearest_to(q_vec)  # type: ignore[union-attr]
+            if hasattr(query_builder, "distance_type"):
+                query_builder = query_builder.distance_type("cosine")
+            rows = await query_builder.limit(fetch).to_list()
+            best: dict[str, dict] = {}
+            for r in rows:
+                best.setdefault(r["page_id"], r)
+            if len(best) >= limit or len(rows) < fetch:
+                break
+            fetch *= 2
+        raw = list(best.values())[:limit]
 
         # A caller that came in by raw vector has no query text to centre on,
         # so it gets the opener — at the width it always had. The stored
@@ -410,10 +508,13 @@ class LanceDBVectorStore(VectorStore):
             return True
         await self._ensure_connected()
         await self._ensure_table([float(v) for v in items[0][1]])
-        rows = [
-            self._row(page_id, [float(v) for v in vector], metadata)
-            for page_id, vector, metadata in items
-        ]
+        # Last occurrence wins, as it did when rows merged on page_id alone.
+        rows = list(
+            {
+                page_id: self._row(page_id, [float(v) for v in vector], metadata)
+                for page_id, vector, metadata in items
+            }.values()
+        )
         await self._upsert_rows(rows)
         return True
 
@@ -475,6 +576,10 @@ class LanceDBVectorStore(VectorStore):
         self._table = None
         self._db = None
 
+    def _first_pieces(self, predicate: str) -> str:
+        """*predicate* narrowed to each page's opening piece, which holds its summary."""
+        return f"({predicate}) AND chunk_index = 0" if self._chunked else predicate
+
     async def holds_current_vectors(self) -> bool:
         width = getattr(self._embedder, "dimensions", None)
         return width is not None and read_recorded_vector_dim(
@@ -500,6 +605,34 @@ class LanceDBVectorStore(VectorStore):
             )
             return set()
 
+    async def vector_coverage(self) -> VectorCoverage | None:
+        await self._ensure_connected()
+        if self._table is None:
+            return VectorCoverage(pages=0, chunked_pages=0, incomplete=frozenset())
+        if not self._chunked:
+            pages = await self.list_page_ids()
+            return VectorCoverage(pages=len(pages), chunked_pages=0, incomplete=frozenset())
+        rows = (
+            await self._table.query()  # type: ignore[union-attr]
+            .select(["page_id", "chunk_index", "chunk_count"])
+            .to_list()
+        )
+        held: dict[str, set[int]] = {}
+        planned: dict[str, set[int]] = {}
+        for r in rows:
+            held.setdefault(r["page_id"], set()).add(int(r["chunk_index"]))
+            planned.setdefault(r["page_id"], set()).add(int(r["chunk_count"]))
+        incomplete = frozenset(
+            page_id
+            for page_id, indexes in held.items()
+            if len(planned[page_id]) != 1 or indexes != set(range(next(iter(planned[page_id]))))
+        )
+        return VectorCoverage(
+            pages=len(held),
+            chunked_pages=sum(1 for indexes in held.values() if len(indexes) > 1),
+            incomplete=incomplete,
+        )
+
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
 
@@ -517,7 +650,7 @@ class LanceDBVectorStore(VectorStore):
         try:
             rows = (
                 await self._table.query()  # type: ignore[union-attr]
-                .where(f"target_path = '{safe_path}'")
+                .where(self._first_pieces(f"target_path = '{safe_path}'"))
                 .select(["content_snippet"])
                 .limit(1)
                 .to_list()
@@ -551,7 +684,7 @@ class LanceDBVectorStore(VectorStore):
             try:
                 rows = (
                     await self._table.query()  # type: ignore[union-attr]
-                    .where(_paths_in_filter(batch))
+                    .where(self._first_pieces(_paths_in_filter(batch)))
                     .select(["target_path", "content_snippet"])
                     .to_list()
                 )

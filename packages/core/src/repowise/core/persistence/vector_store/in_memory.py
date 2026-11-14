@@ -5,7 +5,15 @@ from __future__ import annotations
 from repowise.core.providers.embedding.base import Embedder
 
 from ..search import SearchResult
-from ._base import VectorStore, cap_embed_text, cosine_similarity, iter_embed_chunks
+from ._base import (
+    STORED_SNIPPET_CHARS,
+    PageChunks,
+    VectorCoverage,
+    VectorStore,
+    cosine_similarity,
+    embed_page_chunks,
+    iter_page_chunk_groups,
+)
 
 __all__ = ["InMemoryVectorStore"]
 
@@ -19,12 +27,25 @@ class InMemoryVectorStore(VectorStore):
 
     def __init__(self, embedder: Embedder) -> None:
         self._embedder = embedder
-        # page_id → (vector, metadata)
-        self._store: dict[str, tuple[list[float], dict]] = {}
+        # page_id → one (vector, metadata) per piece, in chunk_index order.
+        # A page is replaced whole, so it never holds pieces of two writes.
+        self._store: dict[str, list[tuple[list[float], dict]]] = {}
+
+    def _put(self, group: list[PageChunks], vectors: list[list[list[float]]]) -> None:
+        for ((page_id, _text, metadata), pieces), page_vectors in zip(group, vectors, strict=True):
+            self._store[page_id] = [
+                (
+                    vector,
+                    dict(metadata)
+                    if i == 0
+                    else {**metadata, "content": piece[:STORED_SNIPPET_CHARS]},
+                )
+                for i, (piece, vector) in enumerate(zip(pieces, page_vectors, strict=True))
+            ]
 
     async def embed_and_upsert(self, page_id: str, text: str, metadata: dict) -> None:
-        vectors = await self._embedder.embed([cap_embed_text(page_id, text)])
-        self._store[page_id] = (vectors[0], dict(metadata))
+        for group in iter_page_chunk_groups([(page_id, text, metadata)]):
+            self._put(group, await embed_page_chunks(self._embedder, group))
 
     async def embed_batch(self, items: list[tuple[str, str, dict]]) -> None:
         # Chunked like the persistent stores: this store is also the runtime
@@ -32,15 +53,18 @@ class InMemoryVectorStore(VectorStore):
         # real embedder with real request limits.
         if not items:
             return
-        for chunk, texts in iter_embed_chunks(items):
-            vectors = await self._embedder.embed(texts)
-            for (page_id, _text, metadata), vector in zip(chunk, vectors, strict=True):
-                self._store[page_id] = (vector, dict(metadata))
+        for group in iter_page_chunk_groups(items):
+            self._put(group, await embed_page_chunks(self._embedder, group))
 
     def _search_by_vector(self, q_vec: list[float], limit: int) -> list[SearchResult]:
+        # A page scores as its best piece, so a fact near the end of a long
+        # page ranks the page as highly as one stated in its opening.
         scored: list[tuple[float, str, dict]] = []
-        for pid, (vec, meta) in self._store.items():
-            score = cosine_similarity(q_vec, vec)
+        for pid, pieces in self._store.items():
+            score, meta = max(
+                ((cosine_similarity(q_vec, vec), meta) for vec, meta in pieces),
+                key=lambda pair: pair[0],
+            )
             scored.append((score, pid, meta))
 
         scored.sort(key=lambda t: t[0], reverse=True)
@@ -63,7 +87,7 @@ class InMemoryVectorStore(VectorStore):
 
     async def upsert_vectors(self, items: list[tuple[str, list[float], dict]]) -> bool:
         for page_id, vector, metadata in items:
-            self._store[page_id] = (list(vector), dict(metadata))
+            self._store[page_id] = [(list(vector), dict(metadata))]
         return True
 
     async def search(
@@ -103,6 +127,14 @@ class InMemoryVectorStore(VectorStore):
     async def list_page_ids(self) -> set[str]:
         return set(self._store.keys())
 
+    async def vector_coverage(self) -> VectorCoverage:
+        # Pages are written whole, so none is ever left partly covered.
+        return VectorCoverage(
+            pages=len(self._store),
+            chunked_pages=sum(1 for pieces in self._store.values() if len(pieces) > 1),
+            incomplete=frozenset(),
+        )
+
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
 
@@ -110,7 +142,7 @@ class InMemoryVectorStore(VectorStore):
         pipeline), else falls back to the first 500 chars of 'content'.
         'key_exports' reads the 'exports' metadata field if present, else [].
         """
-        for _pid, (_, meta) in self._store.items():
+        for _pid, [(_, meta), *_rest] in self._store.items():
             if meta.get("target_path") == path:
                 summary = meta.get("summary") or str(meta.get("content", ""))[:500]
                 key_exports = meta.get("exports") or []
@@ -125,7 +157,7 @@ class InMemoryVectorStore(VectorStore):
             return {}
         wanted = set(paths)
         out: dict[str, dict] = {}
-        for _pid, (_, meta) in self._store.items():
+        for _pid, [(_, meta), *_rest] in self._store.items():
             tp = meta.get("target_path")
             if tp in wanted and tp not in out:
                 summary = meta.get("summary") or str(meta.get("content", ""))[:500]
