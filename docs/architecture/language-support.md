@@ -782,6 +782,7 @@ dependency surface their syntax supports.
 | Good | **Elixir** | `.ex` `.exs` | `alias` / `import` / `require` / `use` against a `defmodule` index, Mix path convention as fallback |
 | Good | **F#** | `.fs` `.fsx` `.fsi` | `open` against a declared-name index plus the fsproj compile order; `.fsi` files contribute imports only |
 | Good | **Objective-C** | `.m` `.mm` `.h` | `#import` / `#include` through the header-stem index |
+| Good | **Perl** | `.pl` `.pm` `.t`, perl shebang | `use` / `require` through `@INC`-style whole-segment path suffix; pragmas dropped; `Pkg->m()` and `$self->m()` dispatched through `@ISA` (`use parent`, `use base`, `@ISA`) |
 
 ---
 

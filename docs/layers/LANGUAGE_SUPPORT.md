@@ -1,6 +1,6 @@
 # Language Support
 
-**28 languages parsed to a full AST, 42 on the five-rung support ladder, and
+**29 languages parsed to a full AST, 43 on the five-rung support ladder, and
 framework-aware edges where an ecosystem handler exists.** Every language lands
 on one rung, and the rung tells you which parts of the pipeline produce real
 output for it. Files in any other language still appear in the wiki and are
@@ -18,7 +18,7 @@ resolution and health markers are all static.
   <strong>Good tier &nbsp;</strong>
   <img src="https://img.shields.io/badge/C-A8B9CC?style=flat-square&logo=c&logoColor=black" alt="C" /> <img src="https://img.shields.io/badge/Swift-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift" /> <img src="https://img.shields.io/badge/PHP-777BB4?style=flat-square&logo=php&logoColor=white" alt="PHP" /> <img src="https://img.shields.io/badge/Dart-0175C2?style=flat-square&logo=dart&logoColor=white" alt="Dart" />
   <img src="https://img.shields.io/badge/Delphi-EE1F35?style=flat-square&logo=delphi&logoColor=white" alt="Object Pascal / Delphi" /> <img src="https://img.shields.io/badge/COBOL-005CA5?style=flat-square" alt="COBOL" /> <img src="https://img.shields.io/badge/GDScript-478CBF?style=flat-square&logo=godotengine&logoColor=white" alt="GDScript / Godot" /> <img src="https://img.shields.io/badge/VB.NET-945DB7?style=flat-square&logo=dotnet&logoColor=white" alt="VB.NET" />
-  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" /> <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" /> <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" />
+  <img src="https://img.shields.io/badge/Elixir-6E4A7E?style=flat-square&logo=elixir&logoColor=white" alt="Elixir" /> <img src="https://img.shields.io/badge/F%23-378BBA?style=flat-square&logo=fsharp&logoColor=white" alt="F#" /> <img src="https://img.shields.io/badge/Objective--C-438EFF?style=flat-square&logo=apple&logoColor=white" alt="Objective-C" /> <img src="https://img.shields.io/badge/Perl-39457E?style=flat-square&logo=perl&logoColor=white" alt="Perl" />
 </p>
 <p>
   <strong>Partial tier &nbsp;</strong>
@@ -36,14 +36,14 @@ resolution and health markers are all static.
 | Tier | Languages | What you get |
 |------|-----------|--------------|
 | **Full** (15) | Python, TypeScript, JavaScript, Svelte, Vue, Astro, Java, Kotlin, Go, Rust, C++, C#, Scala, Ruby, Apex (Salesforce) | The whole pipeline: AST symbols, import resolution, a resolved call graph, heritage, docstrings, framework edges and code-health markers |
-| **Good** (11) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F# and Objective-C get the complexity-derived ones; the rest get none yet |
+| **Good** (12) | C, Swift, PHP, Dart, Object Pascal, COBOL, GDScript, VB.NET, Elixir, F#, Objective-C, Perl | Everything above except the full health suite. Dart, Object Pascal and PHP get health markers; C, Swift, COBOL, F#, Objective-C and Perl get the complexity-derived ones; the rest get none yet |
 | **Partial** (2) | Luau / Roblox, Razor / Blazor | Luau: AST symbols and `require()` resolution (Rojo and `.luaurc` aware), no health markers. Razor: a component symbol per file, call edges from `@code` blocks and component tags, C# health markers, no import edges yet |
 | **Lightweight** (6) | Clojure, Haskell, Lean 4, Erlang, HTML, QML | A real file-to-file import graph, no symbol-level claims |
 | **Structural** (8) | R, Zig, Julia, Elm, OCaml, Crystal, Nim, D | Git history only: blame, hotspots, co-change. No AST parsing |
 
-Tree-sitter parsing covers the first three rungs: those are the **28 languages
+Tree-sitter parsing covers the first three rungs: those are the **29 languages
 parsed to a full AST**. The bottom two rungs come from git history and import
-extraction, and all five together make the **42** on the ladder.
+extraction, and all five together make the **43** on the ladder.
 
 [SQL / dbt](#sql--dbt) and [shell](#shell) sit outside the ladder, because
 neither fits a rung: SQL gets symbols and health markers but no call graph, and
@@ -286,6 +286,7 @@ This table is why a language is Full and not Good.
 | F#, Objective-C | ✅ | ✅ | no | no | no | no | no |
 | Apex | ✅ | ✅ | ✅ | no | no | ✅ | ✅ |
 | Shell | ✅ | n/a | n/a | n/a | n/a | n/a | n/a |
+| Perl | ✅ | no | no | no | no | no | no |
 
 ✅ supported, "no" not available yet, n/a the language cannot carry that metric.
 
@@ -312,6 +313,7 @@ Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
 - Scala import resolution is partial, and the Elixir and F# import resolvers
   have known gaps.
 - COBOL dynamic `CALL` targets and free-format source produce no edges.
+- Perl method calls are typed only from `$self`-style invocants, package names and constructor assignments; `use mro 'c3'` is read as the default depth-first order.
 - C has no performance risk support.
 - Salesforce references are followed when the name is literal: runtime-built
   names and objects with no metadata file in the repository get no edge.
@@ -330,7 +332,7 @@ The full list per language, with the mechanics behind each gap, is in
 | Object Pascal | Form files (`.dfm`, `.fmx`) binding event handlers |
 | COBOL | Dialect coverage, health markers beyond complexity |
 | VB.NET, Elixir | Health markers |
-| F#, Objective-C | Health markers beyond complexity |
+| F#, Objective-C, Perl | Health markers beyond complexity |
 | SQL / dbt | Column-level blast radius |
 | Shell | Shebang detection for extensionless executables |
 
