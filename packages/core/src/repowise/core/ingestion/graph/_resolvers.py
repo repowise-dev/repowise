@@ -662,6 +662,7 @@ class ResolveMixin:
             partial_fragments=self._partial_fragments,
             csharp_project_usings=self._csharp_project_usings,
             cpp_index=cpp_index,
+            source_map=self._source_map,
         )
 
         # Record which C/C++ declarations were paired with a definition. The

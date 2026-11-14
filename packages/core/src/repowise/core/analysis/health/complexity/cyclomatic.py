@@ -106,7 +106,16 @@ _FLAT_BRANCH_KINDS = frozenset(
         "while_modifier",
         "until_modifier",
         "rescue_modifier",
+        # Perl's statement modifiers (``return if $x`` / ``$i++ while $c``).
+        "postfix_conditional_expression",
+        "postfix_for_expression",
+        "postfix_loop_expression",
     }
+)
+
+# Perl's ``if`` / ``unless`` node names say "conditional" but are not ternaries.
+_CONDITIONAL_STATEMENT_KINDS = frozenset(
+    {"conditional_statement", "postfix_conditional_expression"}
 )
 
 
@@ -271,6 +280,8 @@ def _enclosing_construct(node: Node, lmap: LanguageNodeMap) -> str:
     if node.type in lmap.catch_kinds:
         return "catch"
     if node.type in lmap.branch_kinds:
+        if node.type in _CONDITIONAL_STATEMENT_KINDS:
+            return "if"
         if "ternary" in node.type or "conditional" in node.type:
             return "ternary"
         return "if"

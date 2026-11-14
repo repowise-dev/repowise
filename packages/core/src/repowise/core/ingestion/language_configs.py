@@ -50,6 +50,7 @@ from .extractors.visibility import (
     ts_visibility,
     vbnet_visibility,
 )
+from .languages.perl_packages import perl_sub_name
 
 
 def _identity_name(name: str, _node_type: str) -> str:
@@ -746,6 +747,21 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="none",
         parent_class_types=frozenset(),
+    ),
+    "perl": LanguageConfig(
+        # `package Foo;` scopes the subs that follow it as siblings, not
+        # children, so the parser reads a sub's package off the tree
+        # (`parser/symbols.py`) rather than by nesting.
+        symbol_node_types={
+            "subroutine_declaration_statement": "function",
+            "method_declaration_statement": "method",
+        },
+        import_node_types=["use_statement", "require_expression"],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+        symbol_name_fn=perl_sub_name,
     ),
 }
 

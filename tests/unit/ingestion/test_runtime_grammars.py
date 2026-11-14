@@ -150,8 +150,12 @@ def test_fetch_requests_every_runtime_grammar_into_the_given_dir(
     result = grammars.fetch_runtime_grammars(str(tmp_path))
 
     assert [c.cache_dir for c in configured] == [str(tmp_path)]
-    assert sorted(requested) == ["apex", "cobol"]
-    assert sorted(result) == [("apex", False, ""), ("cobol", True, "")]
+    assert sorted(requested) == ["apex", "cobol", "perl"]
+    assert sorted(result) == [
+        ("apex", False, ""),
+        ("cobol", True, ""),
+        ("perl", False, ""),
+    ]
 
 
 def test_fetch_reports_a_grammar_that_fails_to_load_even_when_its_file_is_cached(
@@ -170,7 +174,11 @@ def test_fetch_reports_a_grammar_that_fails_to_load_even_when_its_file_is_cached
 
     result = grammars.fetch_runtime_grammars(str(tmp_path))
 
-    assert sorted(result) == [("apex", False, "RuntimeError"), ("cobol", False, "bad ELF header")]
+    assert sorted(result) == [
+        ("apex", False, "RuntimeError"),
+        ("cobol", False, "bad ELF header"),
+        ("perl", False, "RuntimeError"),
+    ]
 
 
 def test_the_fetch_command_names_each_grammar_and_fails_when_one_is_missing(
@@ -311,12 +319,16 @@ def test_the_fetch_command_retries_a_transient_failure(
     calls, script = flaky_pack
     script.append(_download_error("Download error: http status: 503"))
     monkeypatch.setattr(pack, "configure", lambda config: None)
-    monkeypatch.setattr(pack, "downloaded_languages", lambda: ["apex", "cobol"])
+    monkeypatch.setattr(pack, "downloaded_languages", lambda: ["apex", "cobol", "perl"])
 
     result = grammars.fetch_runtime_grammars(str(tmp_path))
 
-    assert sorted(result) == [("apex", True, ""), ("cobol", True, "")]
-    assert len(calls) == 3
+    assert sorted(result) == [
+        ("apex", True, ""),
+        ("cobol", True, ""),
+        ("perl", True, ""),
+    ]
+    assert len(calls) == 4
 
 
 def test_an_update_names_a_failed_grammar_and_records_it_as_degraded(

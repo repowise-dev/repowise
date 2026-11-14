@@ -30,6 +30,11 @@ from ..extractors.visibility import py_module_all_names, ts_deferred_export_name
 from ..lang_helpers.pascal import _inherit_pascal_declared_visibility, _pascal_visibility
 from ..lang_helpers.source_prep import cpp_class_head_macros
 from ..language_configs import LanguageConfig
+from ..languages.perl_packages import (
+    is_perl_lexical_sub,
+    is_perl_package_sub,
+    perl_sub_owner,
+)
 from ..models import FileInfo, Symbol
 from ..parser_helpers import (
     _build_qualified_name,
@@ -484,13 +489,19 @@ def _symbol_kind(
     if kind is None:
         return None
 
+    # A Perl ``my sub`` / ``state sub`` is lexical: no package owns it.
+    if language == "perl" and is_perl_lexical_sub(def_node):
+        return None
+
     # Only module-level and class-body members are symbols; the query is
     # recursive, so defs nested in a callable are dropped. Module-anchored
     # node types only match at module level and skip the check, as does a
-    # def the caller has placed already (``keep_nested``).
+    # def the caller has placed already (``keep_nested``) and a Perl named
+    # ``sub``, which is package-global wherever it is declared.
     if (
         not keep_nested
         and node_type not in _MODULE_ANCHORED_NODE_TYPES
+        and not (language == "perl" and is_perl_package_sub(def_node))
         and _has_callable_ancestor(def_node, config.symbol_node_types, container_ids)
     ):
         return None
@@ -553,6 +564,11 @@ def _resolve_parent_name(
     # COBOL: a level-88 condition name is a value of the item before it.
     if language == "cobol":
         return cobol_condition_parent(def_node)
+
+    # Perl: ``package X;`` scopes the subs after it as siblings, not children,
+    # and ``sub B::f`` names its package itself.
+    if language == "perl" and name_nodes:
+        return perl_sub_owner(def_node, _node_text(name_nodes[0], src))
     return None
 
 
