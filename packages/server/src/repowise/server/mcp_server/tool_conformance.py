@@ -15,6 +15,7 @@ from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
+from repowise.server.mcp_server._savings.interaction import error_reply
 
 #: Inline caps so the agent payload stays tight; true counts are reported and the
 #: full set is on the REST endpoint.
@@ -42,36 +43,45 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
         repo: optional repo alias — limit findings to those involving this repo.
     """
     if not _is_workspace_mode():
-        return {
-            "error": "get_conformance is only available in workspace mode.",
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "error": "get_conformance is only available in workspace mode.",
+                "_meta": _build_meta(),
+            },
+        )
 
     enricher = _state._cross_repo_enricher
     report = enricher.get_conformance() if enricher is not None else None
     if not report:
-        return {
-            "error": (
-                "No conformance report is available yet. Run `repowise update "
-                "--workspace` to build cross-repo relationships, and declare rules "
-                "under `conformance:` in `.repowise-workspace.yaml`."
-            ),
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "no_index",
+            {
+                "error": (
+                    "No conformance report is available yet. Run `repowise update "
+                    "--workspace` to build cross-repo relationships, and declare rules "
+                    "under `conformance:` in `.repowise-workspace.yaml`."
+                ),
+                "_meta": _build_meta(),
+            },
+        )
 
     # A report with no timestamp is one nothing ever wrote a result into. Its
     # zeros are the absence of a check, not the absence of findings, and an
     # agent told "no violations" would act on that.
     ran = bool(report.get("generated_at"))
     if not ran:
-        return {
-            "error": (
-                "The conformance check has not run for this workspace. Its stored "
-                "report has no result in it, so its zero counts mean nothing. Run "
-                "`repowise update --workspace` to produce one."
-            ),
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "no_index",
+            {
+                "error": (
+                    "The conformance check has not run for this workspace. Its stored "
+                    "report has no result in it, so its zero counts mean nothing. Run "
+                    "`repowise update --workspace` to produce one."
+                ),
+                "_meta": _build_meta(),
+            },
+        )
 
     graph = enricher.get_system_graph() or {}
     analysis_commits = {
@@ -86,6 +96,7 @@ async def get_conformance(repo: str | None = None) -> dict[str, Any]:
 
 def conformance_payload(report: dict[str, Any], repo: str | None = None) -> dict[str, Any]:
     """The ``get_conformance`` answer over a *report* that ran, without ``_meta``."""
+    from repowise.core.workspace.cycles import cycle_total
     from repowise.core.workspace.reads import conformance_for_repo
 
     if repo:
@@ -95,10 +106,12 @@ def conformance_payload(report: dict[str, Any], repo: str | None = None) -> dict
         # Scoping picks from the already-capped stored list, so the pre-cap
         # workspace total does not describe this subset.
         total_cycles = len(cycles)
+        total_capped = False
     else:
         violations = report.get("violations", [])
         cycles = report.get("cycles", [])
         total_cycles = report.get("total_cycles", len(cycles))
+        total_capped = bool(report.get("total_capped", False))
 
     shown_violations = violations[:_MCP_VIOLATION_LIMIT]
     shown_cycles = cycles[:_MCP_CYCLE_LIMIT]
@@ -106,7 +119,8 @@ def conformance_payload(report: dict[str, Any], repo: str | None = None) -> dict
     evidence = report.get("evidence") or {}
     if violations or cycles:
         summary = (
-            f"{len(violations)} architecture rule violation(s) and {total_cycles} "
+            f"{len(violations)} architecture rule violation(s) and "
+            f"{cycle_total(total_cycles, total_capped)} "
             f"dependency cycle(s) from {report.get('rules_evaluated', 0)} declared rule(s)."
         )
     elif report.get("cycles_determined") is False:
@@ -132,6 +146,8 @@ def conformance_payload(report: dict[str, Any], repo: str | None = None) -> dict
         # many the workspace has, which the stored report may itself have cut.
         "cycle_count": len(cycles),
         "total_cycles": total_cycles,
+        # True when the enumeration budget stopped the count: "at least" total_cycles.
+        "total_capped": total_capped,
         "checked_at": report.get("generated_at"),
         "cycles_determined": report.get("cycles_determined"),
         "evidence": evidence or None,

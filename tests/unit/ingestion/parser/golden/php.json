@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -100,6 +102,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -113,6 +116,7 @@
     "exports": [
       "AssertionsTest"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -122,6 +126,7 @@
         "line": 7,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 162,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -138,6 +143,7 @@
         "line": 8,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 204,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -154,6 +160,7 @@
         "line": 9,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 244,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -170,6 +177,7 @@
         "line": 10,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 285,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -186,6 +194,7 @@
         "line": 11,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 324,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -202,6 +211,7 @@
         "line": 16,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 445,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -218,6 +228,7 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 523,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -243,7 +254,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/classes.php": {
     "file_info": {
@@ -256,7 +268,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -728,6 +742,7 @@
       "WorkerInterface",
       "Priority"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -737,6 +752,7 @@
         "line": 17,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 352,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -755,7 +771,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/clean.php": {
     "file_info": {
@@ -768,7 +785,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -823,6 +842,7 @@
       "greet",
       "sum"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -833,7 +853,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "php/nested.php": {
     "file_info": {
@@ -846,7 +867,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1045,6 +1068,7 @@
       "try_catch_finally",
       "loops_galore"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1054,6 +1078,24 @@
         "line": 48,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 852,
+        "scope_name": null,
+        "edge_type": "calls",
+        "supplied_props": null,
+        "bare_name_fallback": false,
+        "spawned": false,
+        "program_call": false,
+        "argument_types": null,
+        "argument_names": null
+      },
+      {
+        "target_name": "array_map",
+        "receiver_name": null,
+        "caller_symbol_id": "lang_samples/php/nested.php::lambda_and_arrow",
+        "line": 48,
+        "argument_count": 2,
+        "receiver_call": null,
+        "start_byte": 870,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1070,6 +1112,7 @@
         "line": 75,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1352,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1086,6 +1129,7 @@
         "line": 77,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1431,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1102,6 +1146,7 @@
         "line": 80,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 1542,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1118,6 +1163,7 @@
         "line": 82,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 1614,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1136,6 +1182,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

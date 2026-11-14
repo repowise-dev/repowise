@@ -450,7 +450,7 @@ function DanglingTable({ check, t }: { check: EstateCheck; t: Translator }) {
   );
 }
 
-/** The three-band mark beside each repo's health, as every health mark draws it. */
+/** The five-band mark beside each repo's health, as every health mark draws it. */
 function HealthMark({ score, t }: { score: number; t: Translator }) {
   const mark = healthMark(score);
   return (

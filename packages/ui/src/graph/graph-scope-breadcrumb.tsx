@@ -42,7 +42,7 @@ export function GraphScopeBreadcrumb({
         type="button"
         onClick={onRoot}
         title={`Back to ${rootLabel}`}
-        className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="flex shrink-0 items-center gap-1 rounded px-1.5 py-1 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         <Home className="h-3.5 w-3.5" />
         <span className="max-w-[10rem] truncate">{rootLabel}</span>
@@ -54,7 +54,7 @@ export function GraphScopeBreadcrumb({
             type="button"
             onClick={crumb.onClick}
             title={`Back to ${crumb.label}`}
-            className="max-w-[12rem] truncate rounded px-1.5 py-1 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="max-w-[12rem] truncate rounded px-1.5 py-1 hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             {crumb.label}
           </button>

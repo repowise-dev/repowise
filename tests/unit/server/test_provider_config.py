@@ -318,6 +318,78 @@ def test_list_provider_status_carries_setup_facts_from_the_specs(clean_env, tmp_
     assert status["flag_only_providers"] == ["mock"]
 
 
+def test_list_provider_status_names_where_a_key_was_found(clean_env, tmp_path):
+    repo = _make_repo(tmp_path / "repo", env="OPENAI_API_KEY=sk-from-repo-env\n")
+    clean_env["GEMINI_API_KEY"] = "from-process-env"
+    pc.set_api_key("anthropic", "sk-ant-stored")
+
+    by_id = {p["id"]: p for p in pc.list_provider_status(repo_path=str(repo))["providers"]}
+
+    assert by_id["openai"]["detected"] == "env"
+    assert by_id["gemini"]["detected"] == "env"
+    assert by_id["anthropic"]["detected"] == "saved"
+    assert by_id["deepseek"]["detected"] is None
+    # Keyless providers name nothing; agent CLIs only when asked to detect.
+    assert by_id["ollama"]["detected"] is None
+    assert by_id["claude_cli"]["detected"] is None
+
+
+def test_detect_names_signed_in_agent_clis(clean_env, monkeypatch):
+    from repowise.core.agents.identity import AgentIdentity
+
+    calls: list[str] = []
+
+    def is_logged_in(self):
+        calls.append(self.slug)
+        return self.slug == "claude_code"
+
+    monkeypatch.setattr(AgentIdentity, "is_logged_in", is_logged_in)
+
+    assert {p["detected"] for p in pc.list_provider_status()["providers"]} == {None}
+    assert calls == []
+
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["claude_cli"]["detected"] == "signed_in"
+    assert by_id["codex_cli"]["detected"] is None
+    assert "codex" in calls
+
+
+def test_detect_never_reports_signed_in_for_an_agent_without_a_login_check(clean_env, monkeypatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda name: f"/bin/{name}")
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["opencode"]["detected"] == "installed"
+    assert by_id["copilot_cli"]["detected"] == "installed"
+
+
+def test_detect_does_not_run_login_checks_when_the_network_is_off(clean_env, monkeypatch):
+    import shutil
+    import subprocess
+
+    clean_env["DO_NOT_TRACK"] = "1"
+    monkeypatch.setattr(shutil, "which", lambda name: f"/bin/{name}")
+
+    def fail(*args, **kwargs):
+        raise AssertionError("a login check was spawned with DO_NOT_TRACK set")
+
+    monkeypatch.setattr(subprocess, "run", fail)
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["claude_cli"]["detected"] == "installed"
+    assert by_id["codex_cli"]["detected"] == "installed"
+
+
+def test_a_broken_login_check_counts_as_not_signed_in(clean_env, monkeypatch):
+    from repowise.core.agents.identity import AgentIdentity
+
+    def is_logged_in(self):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(AgentIdentity, "is_logged_in", is_logged_in)
+    by_id = {p["id"]: p for p in pc.list_provider_status(detect=True)["providers"]}
+    assert by_id["claude_cli"]["detected"] is None
+
+
 def test_list_provider_status_carries_the_embedder_registry(clean_env, tmp_path, monkeypatch):
     from repowise.core.providers.embedding import registry
 
@@ -369,8 +441,10 @@ def test_list_provider_status_never_returns_key_material(clean_env, tmp_path):
             "requires_key",
             "accepts_base_url",
             "local_server",
+            "local_model",
             "env_vars",
             "setup_hint",
+            "detected",
         }
         assert "key" not in provider
         assert "api_key" not in provider

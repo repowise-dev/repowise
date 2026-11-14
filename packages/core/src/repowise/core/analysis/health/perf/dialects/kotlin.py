@@ -192,6 +192,13 @@ _LOOP_KINDS: frozenset[str] = frozenset({"for_statement", "while_statement", "do
 _LOCK_SCOPE_METHODS: frozenset[str] = frozenset({"synchronized", "withLock"})
 
 
+def _is_constant_string(node: Node | None) -> bool:
+    """A string literal with no template placeholder (``"^a$"``, not ``"$it.*"``)."""
+    if node is None or node.type not in _STRING_KINDS or node.text is None:
+        return False
+    return not _TEMPLATE_RE.search(node.text.decode("utf-8", "replace"))
+
+
 def _decode(node: Node | None) -> str | None:
     if node is None or node.text is None:
         return None
@@ -578,9 +585,7 @@ class KotlinPerfDialect(IterableSources):
                 if fn is not None and fn.type == "navigation_expression"
                 else None
             )
-            return (
-                "regex_compile_in_loop" if recv is not None and recv.type in _STRING_KINDS else None
-            )
+            return "regex_compile_in_loop" if _is_constant_string(recv) else None
         # Heavy clients to hoist, not rebuild per iteration. Kotlin has no
         # ``new``, so a constructor is a bare call whose method IS the type name.
         if method in JAVA_RESOURCE_CTORS and not self.callee_is_attribute(node):
@@ -613,10 +618,7 @@ class KotlinPerfDialect(IterableSources):
         first = next((c for c in args.children if c.is_named), None)
         if first is None:
             return False
-        inner = next((c for c in first.children if c.is_named), None)
-        if inner is None or inner.type not in _STRING_KINDS or inner.text is None:
-            return False
-        return not _TEMPLATE_RE.search(inner.text.decode("utf-8", "replace"))
+        return _is_constant_string(next((c for c in first.children if c.is_named), None))
 
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 

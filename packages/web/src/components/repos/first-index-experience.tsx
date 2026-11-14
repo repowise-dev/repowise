@@ -23,6 +23,7 @@ interface Props {
  * The fresh-repo overview surface: one prominent "Index this repo" action,
  * live phase-labeled progress once a job is running, and a celebratory
  * handoff (with the first five files to read) when the first index lands.
+ * Its button opens the welcome tour on the indexed overview.
  * Hydrates from any in-flight job so a page refresh mid-index rejoins it.
  */
 export function FirstIndexExperience({ repoId, repoName }: Props) {
@@ -115,7 +116,9 @@ export function FirstIndexExperience({ repoId, repoName }: Props) {
       <IndexCelebration
         repoName={repoName}
         pagesGenerated={completed.pages}
-        onExplore={() => router.refresh()}
+        // Hands off to the welcome on the indexed overview, so the two never stack.
+        exploreLabel={t("firstIndex.takeTour")}
+        onExplore={() => router.push(`/repos/${encodeURIComponent(repoId)}/overview?tour=1`)}
       >
         {startHere.length > 0 && (
           <FirstFiveFiles

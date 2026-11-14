@@ -94,7 +94,7 @@ def _append_unique(
         adjacency.setdefault(source, []).append(target)
 
 
-def _line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
+def call_line_values(attrs: Mapping[str, Any]) -> tuple[int, ...]:
     raw = attrs.get("call_lines")
     if raw is None:
         raw = (attrs.get("call_line"),)
@@ -207,7 +207,7 @@ class ExecutionGraphIndex:
             for source, target, data in graph_edges:
                 attrs = data or {}
                 edge_type = attrs.get("edge_type")
-                lines = _line_values(attrs) if edge_type == "calls" else ()
+                lines = call_line_values(attrs) if edge_type == "calls" else ()
                 if lines:
                     lines = _split_spawned(
                         source,
@@ -300,7 +300,8 @@ class ExecutionGraphIndex:
         if edge_type == "defines":
             _append_unique(declares, source, target, declaration_seen)
             return
-        if not is_reliable_execution_edge(edge_type, origin):
+        # Recursion reaches nothing new and must not count as a caller.
+        if source == target or not is_reliable_execution_edge(edge_type, origin):
             return
         _append_unique(forward, source, target, forward_seen)
         _append_unique(reverse, target, source, reverse_seen)

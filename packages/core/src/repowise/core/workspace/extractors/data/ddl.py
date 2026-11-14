@@ -9,7 +9,6 @@ asserts ownership (the repo evolves that table), marked ``schema: alter``.
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.origins import ContractOrigin
@@ -43,14 +42,13 @@ class DdlDialect:
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         try:
-            import sqlglot
             from sqlglot import exp
         except ImportError:
             return []
-        logging.getLogger("sqlglot").setLevel(logging.ERROR)
+        from repowise.core.ingestion.sql_parse import parse_sql
 
         try:
-            statements = sqlglot.parse(ctx.content, error_level=sqlglot.ErrorLevel.IGNORE)
+            statements = parse_sql(ctx.content)
         except Exception:
             return []
 

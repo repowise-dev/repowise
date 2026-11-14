@@ -58,11 +58,12 @@ from typing import Any
 
 from ...finding_registry import excluded_types
 from ..effort import EFFORT_ORDER
+from ..gain import removal_gain
 from ..refactoring_summary import ADVISORY_TYPES, needs_design
 from ..rows import field
 from .extract_helper import ACTIVE_CO_CHANGE
 from .identity import REFACTORING_MODEL_VERSION, assign_public_ids, stable_id
-from .models import RefactoringSuggestion
+from .models import RECOVERED_SHARE, RefactoringSuggestion
 from .opportunity_rank import (
     opportunity_benefit,
     opportunity_risk,
@@ -379,6 +380,29 @@ def _credited(
     return credited
 
 
+def _recoverable(
+    step_rows: Sequence[tuple[RefactoringSuggestion, str]],
+    credited: set[str],
+    findings: Sequence[Any] | None,
+) -> float:
+    """The credited steps priced together: one rescore of the file without
+    the share of each finding they answer, since gains do not add (caps,
+    history release, the floor). With no findings, or a plan stored before
+    plans carried their share, each step's own gain is summed."""
+    steps = [suggestion for suggestion, plan_id in step_rows if plan_id in credited]
+    shares = [(s, (s.evidence or {}).get(RECOVERED_SHARE)) for s in steps]
+    if findings is None or any(share is None and (s.impact_delta or 0) > 0 for s, share in shares):
+        return sum(float(s.impact_delta or 0.0) for s in steps)
+    removed = [
+        (f, float(share))
+        for s, share in shares
+        if share is not None
+        for f in findings
+        if step_answers(s, f)
+    ]
+    return removal_gain(findings, removed)
+
+
 def _step_of(
     suggestion: RefactoringSuggestion,
     plan_id: str,
@@ -493,7 +517,7 @@ def _compose_one(
         addresses_primary_problem=addresses,
         steps=steps,
         evidence=evidence,
-        recoverable_health=sum(step.impact_delta for step in steps if step.plan_id in credited),
+        recoverable_health=_recoverable(step_rows, credited, findings),
         mechanical_steps=mechanical,
         judgment_steps=len(steps) - mechanical,
         affected_files=tuple(touched),

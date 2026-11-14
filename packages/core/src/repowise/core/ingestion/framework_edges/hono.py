@@ -20,7 +20,7 @@ from .base import (
     FrameworkHandler,
     _add_edge_if_new,
     _build_ts_var_to_file,
-    read_text,
+    read_text_from,
 )
 
 if TYPE_CHECKING:
@@ -76,18 +76,16 @@ class _RouterDslHandler:
         for path, parsed in parsed_files.items():
             if parsed.file_info.language not in ("typescript", "javascript"):
                 continue
-            text = read_text(parsed)
-            if not text or not any(
-                tok in text.lower()
-                for tok in ("hono", "fastify", "koa", "elysia")
-            ):
+            text = read_text_from(path, parsed, ctx.source_map)
+            if not text:
                 continue
-            var_to_file = _build_ts_var_to_file(parsed, path, ctx, path_set)
-            if not var_to_file:
+            lowered = text.lower()
+            if not any(tok in lowered for tok in ("hono", "fastify", "koa", "elysia")):
                 continue
             for m in _ROUTE_CALL_RE.finditer(text):
-                handler_name = m.group(1)
-                target = var_to_file.get(handler_name)
+                # Built on the first route call, not per file: the token test
+                # above passes many files that register no route at all.
+                target = _build_ts_var_to_file(parsed, path, ctx, path_set).get(m.group(1))
                 if target and target in path_set and _add_edge_if_new(graph, path, target):
                     count += 1
         return count

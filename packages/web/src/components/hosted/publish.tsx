@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { OverviewSection } from "@repowise-dev/ui/overview";
+import { SettingsRow } from "@repowise-dev/ui/settings";
+import { useTranslations } from "next-intl";
 import { Button } from "@repowise-dev/ui/ui/button";
 import { ConfirmDialog } from "@repowise-dev/ui/ui/confirm-dialog";
 import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
@@ -113,6 +115,19 @@ export function PublishPanel({ repoId }: { repoId: string }) {
       </p>
       {confirmDialog}
     </div>
+  );
+}
+
+/** Publishing as one row of repo settings' General group. */
+export function PublishRow({ repoId }: { repoId: string }) {
+  const t = useTranslations("views.repoSettings");
+  const { identity } = useHostedIdentity();
+  // A server without the endpoint answers nothing; no row beats a broken one.
+  if (!identity) return null;
+  return (
+    <SettingsRow label={t("publishTitle")} hint={t("publishDescription")}>
+      <PublishPanel repoId={repoId} />
+    </SettingsRow>
   );
 }
 

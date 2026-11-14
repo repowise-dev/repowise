@@ -252,7 +252,7 @@ class ArchNode:
     bus_factor: int | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ArchEdge:
     source: str
     target: str

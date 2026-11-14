@@ -291,7 +291,7 @@ class TestInitIndexOnly:
         providers = set(_db_column(db_path, "SELECT DISTINCT provider_name FROM wiki_pages"))
         assert providers == {"template"}
 
-    def test_index_only_persists_clamped_commit_limit_and_excludes(self, runner, work_repo):
+    def test_index_only_persists_a_deep_commit_limit_and_excludes(self, runner, work_repo):
         from repowise.cli.helpers import load_config
 
         result = runner.invoke(
@@ -303,7 +303,7 @@ class TestInitIndexOnly:
 
         cfg = load_config(work_repo)
         assert cfg["exclude_patterns"] == ["vendor/"]
-        assert cfg["commit_limit"] == 10000  # 99999 clamped to the 10000 max
+        assert cfg["commit_limit"] == 99999  # no upper bound: a full-history window
 
     def test_index_only_omits_excludes_when_none_given(self, runner, work_repo):
         from repowise.cli.helpers import load_config
@@ -1449,6 +1449,53 @@ class TestInitSeedFrom:
             flat = " ".join(r1.output.split())
             assert "is not an ancestor of worktree HEAD" in flat
             assert "Falling back to full init" in flat
+        finally:
+            _remove_worktree(git_work_repo, worktree_dir)
+
+    def test_update_seeds_worktree_behind_its_base(self, git_work_repo, monkeypatch):
+        """The base synced past the worktree's fork point: update still seeds.
+
+        Its catch-up diffs two trees, so the base's last sync need not be an
+        ancestor. This used to exit 1 with "No previous sync found".
+        """
+        import json
+
+        from click.testing import CliRunner
+
+        monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+
+        r0 = CliRunner().invoke(
+            cli, ["init", str(git_work_repo), "--index-only"], catch_exceptions=False
+        )
+        assert r0.exit_code == 0, r0.output
+
+        worktree_dir = git_work_repo.parent / "behind-worktree"
+        _git(["worktree", "add", "-b", "behind", str(worktree_dir), "HEAD"], git_work_repo)
+        try:
+            (git_work_repo / "base_only.py").write_text("x = 1\n", encoding="utf-8")
+            _git(["add", "base_only.py"], git_work_repo)
+            _git(["commit", "-m", "base moves on"], git_work_repo)
+            r1 = CliRunner().invoke(
+                cli, ["update", str(git_work_repo), "--index-only"], catch_exceptions=False
+            )
+            assert r1.exit_code == 0, r1.output
+
+            (worktree_dir / "wt_only.py").write_text("y = 2\n", encoding="utf-8")
+            _git(["add", "wt_only.py"], worktree_dir)
+            _git(["commit", "-m", "worktree work"], worktree_dir)
+
+            r2 = CliRunner().invoke(
+                cli, ["update", str(worktree_dir), "--index-only"], catch_exceptions=False
+            )
+            assert r2.exit_code == 0, r2.output
+            state = json.loads(
+                (worktree_dir / ".repowise" / "state.json").read_text(encoding="utf-8")
+            )
+            assert state["last_sync_commit"] == _rev_parse(worktree_dir, "HEAD")
+            db = worktree_dir / ".repowise" / "wiki.db"
+            nodes = "SELECT COUNT(*) FROM graph_nodes WHERE node_id = '{}'"
+            assert _db_scalar(db, nodes.format("wt_only.py")) == 1
+            assert _db_scalar(db, nodes.format("base_only.py")) == 0
         finally:
             _remove_worktree(git_work_repo, worktree_dir)
 

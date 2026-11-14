@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from repowise.cli.main import cli
 from repowise.core.persistence.database import init_db
-from repowise.core.persistence.models import DecisionRecord, Repository
+from repowise.core.persistence.models import (
+    SUPERSEDED_REASON,
+    DecisionAlias,
+    DecisionRecord,
+    Repository,
+)
 
 _REPO_ID = "decision-cli-repo"
 
@@ -225,6 +230,18 @@ def test_decision_add_prompts_record_active(indexed_repo: Path) -> None:
     assert [d["status"] for d in records if d["title"] == "Interactive title"] == ["active"]
 
 
+def test_decision_add_asks_again_for_a_blank_decision(indexed_repo: Path) -> None:
+    """Acceptance needs the text, so a blank answer is asked again, not stored."""
+    answers = "\nBlank first\ncontext\n   \nthe decision\nwhy\n\n\nsrc/app.py\n\n"
+    result = CliRunner().invoke(cli, ["decision", "add", str(indexed_repo)], input=answers)
+
+    assert result.exit_code == 0, result.output
+    assert "state what was chosen" in result.output
+    listed = CliRunner().invoke(cli, ["decision", "list", str(indexed_repo), "--format", "json"])
+    records = json.loads(listed.output)["decisions"]
+    assert [d["status"] for d in records if d["title"] == "Blank first"] == ["active"]
+
+
 def test_decision_add_without_a_scope_stays_a_candidate(indexed_repo: Path) -> None:
     """A decision that names no files cannot be checked, so it cannot govern.
 
@@ -324,7 +341,12 @@ def test_half_a_command_line_is_an_error_not_a_prompt(indexed_repo: Path) -> Non
     )
 
     assert result.exit_code == 1, result.output
-    assert json.loads(result.output)["error"].startswith("--title and --decision")
+    payload = json.loads(result.output)
+    assert payload["error"].startswith("--title and --decision")
+
+    guidance = payload.get("guidance", "")
+    assert "prompted" not in guidance
+    assert "--decision" in guidance
 
 
 def test_decision_add_help_lists_a_flag_per_field() -> None:
@@ -443,6 +465,10 @@ def test_stale_only_counts_stale_rows_past_the_first_page(indexed_repo: Path) ->
         for i in range(100, 104)
     ]
     _seed_wiki_db(indexed_repo, rows)
+    # Stale is a property of accepted decisions only.
+    for i in range(100, 104):
+        confirmed = CliRunner().invoke(cli, ["decision", "confirm", f"{i:032x}", str(indexed_repo)])
+        assert confirmed.exit_code == 0, confirmed.output
 
     data = _list_json(indexed_repo, "--stale-only")
     assert (data["total"], data["truncated"], len(data["decisions"])) == (4, False, 4)
@@ -521,6 +547,52 @@ def test_decision_ambiguous_prefix_errors(indexed_repo: Path) -> None:
     assert "ambiguous" in result.output.lower()
 
 
+def _seed_aliases(repo_root: Path, aliases: list[tuple[str, str, str]]) -> None:
+    """Add ``(alias_id, decision_id, reason)`` rows to a seeded ``wiki.db``."""
+
+    async def _build() -> None:
+        db_path = repo_root / ".repowise" / "wiki.db"
+        engine = create_async_engine(f"sqlite+aiosqlite:///{db_path.as_posix()}")
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            for alias_id, decision_id, reason in aliases:
+                session.add(
+                    DecisionAlias(
+                        alias_id=alias_id,
+                        repository_id=_REPO_ID,
+                        decision_id=decision_id,
+                        reason=reason,
+                    )
+                )
+            await session.commit()
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+
+def test_a_prefix_skips_a_pre_fix_supersede_pointer(indexed_repo: Path) -> None:
+    # #5331: a ``superseded`` alias names the successor, not the retired id's
+    # record, so resolving through it would show the wrong decision.
+    successor = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    _seed_wiki_db(indexed_repo, [{"id": successor, "title": "The successor"}])
+    _seed_aliases(
+        indexed_repo,
+        [
+            ("b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2", successor, SUPERSEDED_REASON),
+            ("c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3", successor, "merged"),
+        ],
+    )
+
+    merged = CliRunner().invoke(cli, ["decision", "show", "c3c3c3c3", str(indexed_repo)])
+    assert merged.exit_code == 0, merged.output
+    assert "The successor" in merged.output
+
+    pointer = CliRunner().invoke(cli, ["decision", "show", "b2b2b2b2", str(indexed_repo)])
+    assert pointer.exit_code != 0, pointer.output
+    assert "The successor" not in pointer.output
+    assert "not found" in pointer.output.lower()
+
+
 def test_decision_health_prints_summary(indexed_repo: Path) -> None:
     _seed_wiki_db(
         indexed_repo,
@@ -548,7 +620,7 @@ def test_decision_health_prints_summary(indexed_repo: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "Decision Health" in result.output
     assert "Active decisions" in result.output
-    assert "Proposed (needs review)" in result.output
+    assert "Background (not in force)" in result.output
 
 
 def test_decision_health_lists_print_the_whole_title(indexed_repo: Path) -> None:
@@ -620,8 +692,8 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        payload = json.loads(result.output)
-        assert payload == {"id": "c0ffee01", "status": "active", "action": "accepted"}
+        (only,) = json.loads(result.output)["results"]
+        assert (only["id"], only["status"], only["action"]) == ("c0ffee01", "active", "accepted")
 
     def test_dismiss_does_not_prompt_under_json(self, indexed_repo: Path):
         _seed_wiki_db(indexed_repo, [{"id": "c0ffee02", "title": "T", "status": "proposed"}])
@@ -631,7 +703,7 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["status"] == "dismissed"
+        assert json.loads(result.output)["results"][0]["status"] == "dismissed"
 
     def test_dismiss_yes_skips_the_prompt_for_a_person_too(self, indexed_repo: Path):
         _seed_wiki_db(indexed_repo, [{"id": "c0ffee03", "title": "T", "status": "proposed"}])
@@ -663,10 +735,10 @@ class TestTheLifecycleIsDrivableByAnAgent:
             cli, ["decision", action, "deadbeef", str(indexed_repo), "--format", "json"]
         )
 
-        assert json.loads(result.output) == {
-            "error": "decision_not_found",
-            "decision_id": "deadbeef",
-        }
+        payload = json.loads(result.output)
+        assert (payload["succeeded"], payload["failed"]) == (0, 1)
+        (only,) = payload["results"]
+        assert (only["given"], only["error"]) == ("deadbeef", "decision_not_found")
 
     def test_deprecate_records_the_successor(self, indexed_repo: Path):
         _seed_wiki_db(
@@ -686,7 +758,7 @@ class TestTheLifecycleIsDrivableByAnAgent:
         )
 
         assert result.exit_code == 0, result.output
-        assert json.loads(result.output)["status"] == "deprecated"
+        assert json.loads(result.output)["results"][0]["status"] == "deprecated"
 
 
 def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) -> None:
@@ -716,9 +788,9 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
     )
 
     assert result.exit_code == 1, result.output
-    payload = json.loads(result.output)
-    assert payload["error"] == "acceptance_refused"
-    assert any("scope" in blocker for blocker in payload["blockers"])
+    (refused,) = json.loads(result.output)["results"]
+    assert refused["error"] == "acceptance_refused"
+    assert any("scope" in blocker for blocker in refused["blockers"])
 
     # And it is acceptable once the missing parts are supplied.
     fixed = CliRunner().invoke(
@@ -728,6 +800,8 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
             "confirm",
             "badbadba",
             str(indexed_repo),
+            "--decision",
+            "Keep the measured faster path",
             "--reason",
             "Because the alternative was measured slower",
             "--scope",
@@ -739,7 +813,7 @@ def test_confirm_refuses_a_candidate_with_nothing_to_accept(indexed_repo: Path) 
         ],
     )
     assert fixed.exit_code == 0, fixed.output
-    assert json.loads(fixed.output)["status"] == "active"
+    assert json.loads(fixed.output)["results"][0]["status"] == "active"
 
 
 # --- a manual entry is embedded like a mined one ---------------------------
@@ -985,3 +1059,213 @@ def test_config_commands_do_not_need_an_index(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "No index found" not in result.output
+
+
+def test_a_decision_write_leaves_the_actions_view_to_the_next_reader(
+    indexed_repo: Path,
+) -> None:
+    """A decision drops only the actions view, and the write does not rebuild
+    it: the first reader stores it, so recording decisions stays fast."""
+    import sqlite3
+
+    from repowise.cli.commands._index_outcome import refresh_read_snapshots
+
+    _seed_wiki_db(
+        indexed_repo, [{"id": "d" * 32, "title": "Seeded", "status": "proposed"}]
+    )
+    assert refresh_read_snapshots(indexed_repo)
+    added = CliRunner().invoke(
+        cli,
+        ["decision", "add", "--title", "Cache read views", "--decision", "Store them",
+         str(indexed_repo)],
+        input="",
+    )  # fmt: skip
+    assert added.exit_code == 0, added.output
+    with sqlite3.connect(indexed_repo / ".repowise" / "wiki.db") as conn:
+        kinds = {kind for (kind,) in conn.execute("SELECT kind FROM read_snapshots")}
+    assert "actions" not in kinds
+    assert "fix_first" in kinds
+
+
+def test_decision_add_json_reports_blockers_and_next(indexed_repo: Path) -> None:
+    # Adding via an agent without evidence leaves it blocked
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--affects",
+            "command.go",
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)["decision"]
+    assert "blockers" in payload
+    assert any("evidence" in b for b in payload["blockers"])
+    assert "next" in payload
+    assert "confirm " in payload["next"]
+    assert "--evidence" in payload["next"]
+    assert "--agent probe" in payload["next"]
+
+    # Adding with evidence-commit has no blockers
+    result_ok = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags with evidence",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--affects",
+            "command.go",
+            "--evidence-commit",
+            "a" * 40,
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result_ok.exit_code == 0, result_ok.output
+    payload_ok = json.loads(result_ok.output)["decision"]
+    assert "blockers" not in payload_ok
+    assert "next" not in payload_ok
+
+    # Adding without scope and evidence includes both flags in next command
+    result_multi = CliRunner().invoke(
+        cli,
+        [
+            "decision",
+            "add",
+            "--agent",
+            "probe",
+            "--title",
+            "Use cobra flags no scope",
+            "--decision",
+            "Use pflag",
+            "--rationale",
+            "flag parsing",
+            "--format",
+            "json",
+            str(indexed_repo),
+        ],
+    )
+    assert result_multi.exit_code == 0, result_multi.output
+    payload_multi = json.loads(result_multi.output)["decision"]
+    assert "blockers" in payload_multi
+    assert any("scope" in b for b in payload_multi["blockers"])
+    assert any("evidence" in b for b in payload_multi["blockers"])
+    assert "--scope <path>" in payload_multi["next"]
+    assert "--evidence <commit|file>" in payload_multi["next"]
+
+
+
+def test_decision_add_derives_the_title_when_none_is_given(indexed_repo: Path) -> None:
+    """A title is not part of what puts a decision in force; one flag fewer to ask for."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "decision", "add",
+            "--decision", "Escape % and _ before interpolating. Unescaped patterns scan.",
+            "--agent", "claude_code",
+            "--format", "json",
+            str(indexed_repo),
+        ],
+        input="",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["decision"]["title"] == (
+        "Escape % and _ before interpolating. Unescaped patterns scan"
+    )
+
+
+def test_a_person_with_no_title_is_still_asked_for_it(indexed_repo: Path) -> None:
+    result = CliRunner().invoke(
+        cli,
+        ["decision", "add", "--decision", "Escape LIKE patterns", "--format", "json", str(indexed_repo)],
+        input="",
+    )
+
+    assert result.exit_code != 0
+    assert "--title" in result.output
+
+
+def _ledger_rows(repo_root: Path, rows: list[tuple[str, str, str, str, float]]) -> None:
+    """``(session, key, node_id, surface, shown_at)`` hook-ledger rows, category edit_notice."""
+    from repowise.core.sessions.staging import SessionStagingStore
+
+    store = SessionStagingStore.open_default(repo_root)
+    try:
+        for session_id, key, node_id, surface, shown_at in rows:
+            store.add_settled_row(
+                session_id=session_id,
+                key=key,
+                node_id=node_id,
+                surface=surface,
+                category="edit_notice" if surface == "decision" else "served",
+                shown_at=shown_at,
+            )
+        store.commit()
+    finally:
+        store.close()
+
+
+def test_show_and_list_say_how_often_agents_were_shown_a_decision(indexed_repo: Path) -> None:
+    live, retired, quiet = "a" * 32, "e" * 32, "b" * 32
+    _seed_wiki_db(
+        indexed_repo,
+        [{"id": live, "title": "Prefer SQLite locally"}, {"id": quiet, "title": "Quiet one"}],
+    )
+    _seed_aliases(indexed_repo, [(retired, live, "rekeyed")])
+    _ledger_rows(
+        indexed_repo,
+        [
+            ("s1", retired, "src/app.py", "decision", 1_762_000_000.0),
+            ("s2", live, "src/app.py", "decision", 1_762_100_000.0),
+            ("mcp:c1", f"why:{live}", live, "why", 1_762_200_000.0),
+        ],
+    )
+
+    shown = CliRunner().invoke(cli, ["decision", "show", "aaaaaaaa", str(indexed_repo)])
+    assert shown.exit_code == 0, shown.output
+    assert "Shown to agents: 3 times, last 2025-11-03" in shown.output
+
+    data = json.loads(
+        CliRunner()
+        .invoke(cli, ["decision", "show", "aaaaaaaa", str(indexed_repo), "--format", "json"])
+        .output
+    )["decision"]
+    assert data["delivered_count"] == 3
+    assert data["last_delivered_at"].startswith("2025-11-03")
+
+    listed = {d["id"]: d for d in _list_json(indexed_repo)["decisions"]}
+    assert listed[live]["delivered_count"] == 3
+    # Recorded and never shown is a real zero.
+    assert (listed[quiet]["delivered_count"], listed[quiet]["last_delivered_at"]) == (0, None)
+
+
+def test_without_a_ledger_the_count_is_unknown_not_zero(indexed_repo: Path) -> None:
+    _seed_wiki_db(indexed_repo, [{"id": "a" * 32, "title": "Prefer SQLite locally"}])
+
+    shown = CliRunner().invoke(cli, ["decision", "show", "aaaaaaaa", str(indexed_repo)])
+    assert shown.exit_code == 0, shown.output
+    assert "Shown to agents" not in shown.output
+
+    listed = _list_json(indexed_repo)["decisions"][0]
+    assert (listed["delivered_count"], listed["last_delivered_at"]) == (None, None)

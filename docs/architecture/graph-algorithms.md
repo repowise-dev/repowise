@@ -18,6 +18,7 @@ File-level edges:
 |-----------|--------|---------|
 | `imports` (default) | Static import resolution from AST | `from auth import login` |
 | `co_changes` | Git co-change analysis | `auth.py` and `config.py` frequently change together |
+| `documents` | Doc drift's link and path resolution over Markdown documents | `README.md` links to `src/auth.py` |
 | `framework` | Framework-aware synthetic edges | pytest conftest→tests, Django admin→models, FastAPI include_router→routers, Flask register_blueprint→blueprints |
 
 Symbol-level edges (all carry a `confidence` score from 0.0 to 1.0):
@@ -35,7 +36,7 @@ Framework edges are detected automatically when the tech stack includes Django, 
 
 **`file_subgraph()`: keeping metrics accurate across both tiers**
 
-All centrality algorithms (PageRank, betweenness, SCCs, community detection) operate on the file-level subgraph, not the full graph. `file_subgraph()` returns a view of the `DiGraph` containing only `file` and `package` nodes. Without this isolation, the large number of symbol nodes would inflate degree counts and distort every metric. Call `file_subgraph()` before running any file-level algorithm; call the full graph when you need symbol-level traversal.
+All centrality algorithms (PageRank, betweenness, SCCs, community detection) operate on the file-level subgraph. `file_subgraph()` returns a copy of the `DiGraph` containing only `file` and `external` nodes, with self-loops, `co_changes` and `documents` edges removed (`NON_CODE_EDGE_TYPES`). Without this isolation, the large number of symbol nodes would inflate degree counts and distort every metric. Call `file_subgraph()` before running any file-level algorithm. Call the full graph when you need symbol-level traversal.
 
 This is the raw material. Every algorithm below operates on the file subgraph unless otherwise noted.
 
@@ -112,15 +113,11 @@ though someone had written it.
   smaller graphs. Recall leads in three of the seven cells. Most misses are
   dynamic dispatch, which no tool in the comparison resolves without emitting
   several wrong edges for each right one.
-- **Against compiler indexes for more languages.** Java reads 0.725 to 0.781
-  precision against javac across three repositories (0.781 on jsoup). C on git,
-  a repository held out from all tuning, reads 0.979 precision at 0.83 recall.
-  C#, C++, Rust and Python (against jedi, a static analyser) are in the same
-  table.
-- **Hand-graded across nine languages.** 280 call edges per tool, 560 in all,
-  each read with its imports and enclosing scope open: 240 of 280 correct for
-  repowise (85.7%) against 164 of 280 for CodeGraph 1.5.0 (58.6%), with
-  disjoint intervals. Errors concentrate in Rust, C++ and Java.
+- **Against compiler indexes for more languages.** Java reads 0.898 to
+  1.000 precision against javac across seven repositories. C on git,
+  a repository held out from all tuning, reads 0.979 precision at
+  0.837 recall. Dart, Kotlin, C#, C++, Rust and Python (against jedi, a
+  static analyser) are in the same table.
 
 Unused methods are not reported for any language because method-level precision
 does not hold up under this measurement, and reporting them would mean
@@ -241,7 +238,7 @@ except nx.PowerIterationFailedConvergence:
 
 If PageRank doesn't converge, every file gets equal score `1/N`. This is safe; no file gets unfairly prioritized.
 
-### Why co-change edges and symbol edges are excluded
+### Why co-change, documentation and symbol edges are excluded
 
 Repowise's graph has several edge types. PageRank runs only on `imports` edges within the file subgraph. Why?
 
@@ -252,6 +249,8 @@ Repowise's graph has several edge types. PageRank runs only on `imports` edges w
 - A release process updates `CHANGELOG.md`, `version.py`, and `setup.cfg` together. None import each other.
 
 If co-change edges fed into PageRank, files that happen to change alongside many others would appear "important" even when nothing imports them. PageRank should answer "if this file breaks, what else breaks?"; that's a structural question, answered only by import edges.
+
+**Documentation** edges (`documents`) are excluded for the same reason: a README that links to a file only points readers to the file; nothing breaks with it. Counting them would rank linked files above files that are imported, and every link from a doc would pull it into the file's community.
 
 **Symbol edges** (`DEFINES`, `HAS_METHOD`, `CALLS`) are also excluded from file-level PageRank for a different reason: they operate at a finer granularity than files. Including them would give outsized weight to files that define many small functions. `file_subgraph()` filters them out before any file-level metric runs. Symbol-level PageRank (when needed) runs on the full graph separately.
 
@@ -357,7 +356,12 @@ if n > 30_000:  # _LARGE_REPO_THRESHOLD
 
 Instead of computing exact betweenness using all N×N pairs, it samples 500 random source nodes and approximates. Research shows this gives good results; the ranking of "which files are most bridge-like" stays accurate even with sampling, just the exact scores shift slightly.
 
-For repos under 30,000 nodes, exact computation is used.
+For graphs with at most 30,000 nodes, exact computation is used. Symbol
+betweenness runs the exact kernel only on nodes with call or heritage edges.
+Isolated symbols receive `0.0`, and normalization still uses the full symbol
+node count, so removing isolated nodes from the computation preserves scores.
+The sampling threshold, sampling population and disk-cache signature continue
+to use the full graph.
 
 ### How Repowise uses betweenness
 
@@ -459,7 +463,7 @@ Think of it as automated "package detection." Even if your code doesn't use clea
 
 `detect_file_communities()` in `core/analysis/communities.py` tries three partitioners in order:
 
-1. **Leiden** (`graspologic.partition.leiden`, `random_seed=42`). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
+1. **Leiden** (`graspologic_native.leiden`, seed 42, called directly for the same partition as `graspologic.partition.leiden` without importing the full graspologic package). graspologic ships in the optional `graph-extra` extra (`pip install "repowise[graph-extra]"`), so a default install skips this step.
 2. **Louvain** (`networkx.community.louvain_communities`, `seed=42`, `threshold=1e-4`, `max_level=10`). This is what a default install runs.
 3. **Directory grouping**: if Louvain raises, files are grouped by their first path segment.
 
@@ -640,7 +644,7 @@ The simplest graph metric: count the number of incoming edges. If no file import
 in_degree(v) = |{ u : edge(u, v) exists }|
 ```
 
-Just count the edges pointing into each node. O(1) per node lookup.
+Just count the edges pointing into each node. O(1) per node lookup. `co_changes` and `documents` edges do not count: a file linked only from a README is still unreachable.
 
 ### Why it's not that simple
 

@@ -7,6 +7,8 @@ module that looks it up (e.g. ``path_mode.describe_decision_currency``), not her
 
 from __future__ import annotations
 
+# Importing ``compact`` registers its delivery hook.
+from repowise.server.mcp_server.tool_why import compact
 from repowise.server.mcp_server.tool_why.caps import (
     _MAX_AFFECTED_FILES,
     _MAX_HEALTH_PROPOSED,
@@ -28,5 +30,6 @@ __all__ = [
     "_MAX_SEARCH_DECISIONS",
     "_fit_path_response",
     "_rank_keyword_matches",
+    "compact",
     "get_why",
 ]

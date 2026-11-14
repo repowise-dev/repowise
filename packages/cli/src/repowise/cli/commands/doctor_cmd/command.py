@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+from pathlib import Path
 
 import click
 
@@ -18,6 +19,37 @@ from ._types import DoctorCheck
 from .advisories import _print_cli_version_status
 from .repo_checks import _run_repo_checks
 from .workspace_checks import _run_workspace_checks
+
+
+def _check_repair_flags(fmt: str, quick: bool) -> None:
+    """``--repair`` writes, and needs the store drift ``--quick`` skips."""
+    if fmt != "table":
+        raise click.UsageError(
+            "--repair is not supported with --format json (json mode is read-only)."
+        )
+    if quick:
+        raise click.UsageError("--repair needs the store checks that --quick skips.")
+
+
+def _doctor_repo(repo_path: Path, path: str | None, *, repair: bool, fmt: str, quick: bool) -> None:
+    """One repository's checks, then the settings that fit it; exits 1 on a failed check."""
+    from repowise.cli.commands.config_cmd import suggested_for, suggested_line
+
+    all_ok, checks = _run_repo_checks(repo_path, repair, fmt=fmt, quick=quick)
+    suggested = suggested_for(repo_path)
+    if fmt != "table":
+        payload = {
+            "ok": all_ok,
+            "checks": [c._asdict() for c in checks],
+            "suggestions": [s.to_dict() for s in suggested],
+        }
+        click.echo(json.dumps(payload, indent=2))
+    else:
+        line = suggested_line(len(suggested), path)
+        if line:
+            console.print(f"[dim]{line}[/dim]")
+    if not all_ok:
+        raise SystemExit(1)
 
 
 @click.command("doctor")
@@ -44,12 +76,20 @@ from .workspace_checks import _run_workspace_checks
     help="Output format. json is read-only (incompatible with --repair) and exits "
     "1 when any check fails.",
 )
+@click.option(
+    "--quick",
+    is_flag=True,
+    default=False,
+    help="Skip the slow checks: starting the MCP server and reconciling the "
+    "vector and full-text stores. Incompatible with --repair.",
+)
 def doctor_command(
     path: str | None,
     repair: bool,
     workspace: bool,
     no_workspace: bool,
     fmt: str,
+    quick: bool,
 ) -> None:
     """Run health checks on the wiki setup.
 
@@ -57,10 +97,8 @@ def doctor_command(
     workspace mode, runs the full check battery against each indexed repo
     and prints a per-repo table plus a workspace-level summary.
     """
-    if fmt != "table" and repair:
-        raise click.UsageError(
-            "--repair is not supported with --format json (json mode is read-only)."
-        )
+    if repair:
+        _check_repair_flags(fmt, quick)
 
     silencer = silence_logs_for_machine_output() if fmt != "table" else contextlib.nullcontext()
     with silencer:
@@ -79,12 +117,7 @@ def doctor_command(
 
         if not target.is_workspace:
             assert target.repo_path is not None
-            all_ok, checks = _run_repo_checks(target.repo_path, repair, fmt=fmt)
-            if fmt != "table":
-                payload = {"ok": all_ok, "checks": [c._asdict() for c in checks]}
-                click.echo(json.dumps(payload, indent=2))
-            if not all_ok:
-                raise SystemExit(1)
+            _doctor_repo(target.repo_path, path, repair=repair, fmt=fmt, quick=quick)
             return
 
         # Workspace mode — iterate over every entry, run workspace-level
@@ -117,9 +150,10 @@ def doctor_command(
                         else ""
                     )
                 )
-            ok, checks = _run_repo_checks(abs_path, repair, fmt=fmt)
+            ok, checks = _run_repo_checks(abs_path, repair, fmt=fmt, quick=quick)
             overall_ok = overall_ok and ok
-            all_checks.extend(DoctorCheck(f"{entry.alias}: {c.name}", c.ok, c.detail) for c in checks)
+            # The alias goes on the display name only; ids stay the check's own.
+            all_checks.extend(c._replace(name=f"{entry.alias}: {c.name}") for c in checks)
 
         if fmt != "table":
             all_ok = overall_ok and not ws_issues and not not_indexed

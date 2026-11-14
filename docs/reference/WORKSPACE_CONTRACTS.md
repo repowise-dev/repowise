@@ -39,8 +39,9 @@ follows from the strategy.
 | 1.0 | `shared_table` | exact | A service that only models a table, to the one service defining its schema |
 | 1.0 | `service_mapped` | exact | The consumer's host or base token maps to the providing service |
 | 1.0 | `unique_path` | exact | The consumer's base is unread and one service serves the path |
-| 0.6 | `ambiguous_path` | candidate | The base is unread and several services serve the path; linked to each |
+| 0.6 | `ambiguous_path` | candidate | The base is unread and several services of one repo serve the path; linked to each |
 | 0.6 | `prefix_stripped` | candidate | Matched only after stripping mount, version or base prefixes |
+| 0.6 | `param_segment` | candidate | A concrete path segment in the call meets the route's `{param}` segment (`/render/1` to `/render/{id}`); the most literal route wins, and routes in two or more repos link to none |
 | 0.5 | `host_only` | candidate | The host names a workspace service, but no route there serves the path; a service-level edge |
 | 1.0 | `gateway_route` | exact | A gateway's config forwards the path to the service: the gateway's own edge, and a call through it linked on the forwarded path |
 | 1.0 | `manual` | manual | Declared in the workspace config |
@@ -87,9 +88,15 @@ nothing). Such a link carries the exchange as its `contract_id` and the queue as
 binding site itself is linked. A publish to the default exchange
 (`publish('', 'jobs')`) is a publish to the queue `jobs`.
 
+Two ends link only when they can be one broker's destination. The same broker
+always can. A Dapr, Laravel or NestJS name runs over a transport configured
+outside the code, so it meets any broker but BullMQ, whose queue is Redis keys
+only BullMQ reads. Any other pair must be the same broker: a Kafka topic and a
+RabbitMQ queue of one name are two things.
+
 ## Data contracts
 
-Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](../scale/WORKSPACES.md#system-graph). An ORM model with no explicit table name takes its library's default: the Prisma model name, the TypeORM class name in snake case, the Sequelize model name pluralized, the Eloquent class name in snake case and plural. A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. A reader in a file that opens an embedded database (SQLite) links only to tables declared in its own repo, since that file is its own database. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
+Data/DB contracts use the id scheme `data::<table>` and render as a `db` edge in the [system graph](../scale/WORKSPACES.md#system-graph). An ORM model with no explicit table name takes its library's default: the Prisma model name, the TypeORM class name in snake case, the Sequelize model name pluralized, the Eloquent class name in snake case and plural. A service that only models a table (an ORM class, no migration) is linked to the service whose migration or DDL defines that table's schema, when exactly one service defines it; two services that each migrate a table of one name are read as separate databases and not linked. A table on an embedded database (SQLite) links only within its own repo, on either side: a reader or declaration in a file that opens one, and every table in a repo whose code names an embedded engine and no server database (Postgres, MySQL, SQL Server), since that file is the repo's own database. The consumer side (SQL string matching) is heuristic and lower-confidence than the ORM-based providers; unlike HTTP and gRPC, there is no field-level breaking-change diffing for data contracts, only table/route-level removal.
 
 ## HTTP routes and calls
 
@@ -117,8 +124,10 @@ method whose body sends its string parameter through `HttpClient` is read with t
 builds. A client call
 whose base URL is an unresolved placeholder (`fetch(\`${API_BASE}/users\`)`) matches
 on the host-relative path; the link is **exact** when exactly one workspace service
-provides that path (`unique_path`) and a lower-confidence **candidate** when the target
-is ambiguous (`ambiguous_path`). A generic operational path (`/health`, `/healthz`, `/ready`,
+provides that path (`unique_path`) and a lower-confidence **candidate** when several
+services of one repo serve it (`ambiguous_path`). A call whose route two or more repos
+serve, with no host or base naming one, links to none of them and is reported as
+`ambiguous_provider`. A generic operational path (`/health`, `/healthz`, `/ready`,
 `/metrics`, `/status`, `/version`, `/actuator/info`, the root) names no service, so it links
 only to the repo its host or base resolves to or, with neither, to a server in the caller's
 own repo; it never links to another repo by path alone.
@@ -136,12 +145,13 @@ records `target_via` (the source) and `target_evidence` (the file).
 | Source | Files read | Name | Repo |
 |---|---|---|---|
 | `aspire_apphost` | `AppHost.cs`, `Program.cs` holding `DistributedApplication.CreateBuilder` | `AddProject("catalog-api", "../Catalog.API")`, or `AddProject<Projects.X>(...)` through the AppHost's `<ProjectReference>` | The project's directory |
-| `compose` | `docker-compose*.yml`, `compose*.yml` | Service name, `container_name`, `hostname`; `environment` keys whose value is an address | `build` context (or its Dockerfile's directory), else an image basename equal to a repo alias |
+| `compose` | `docker-compose*.yml`, `compose*.yml` | Service name, `container_name`, `hostname`; `environment` keys whose value is an address. `${VAR-default}` and `${VAR:-default}` read as the default | `build` context (or its Dockerfile's directory), else an image basename equal to a repo alias. A missing or empty context (an uninitialised submodule) counts as no build |
 | `k8s_service` | `*.yaml` under `k8s/`, `deploy/`, `manifests/`, ... | `kind: Service` `metadata.name` | A selector or label value equal to a repo alias, else the manifest's repo when it declares no other Service |
 | `spring_application_name` | `application` / `bootstrap` `.yml` or `.properties` | `spring.application.name` | The module the file sits in |
 | `spring_base_path` | `.yml`, `.yaml`, `.properties` under `resources/`, `config/`, `configs/` or `shared/` | `server.servlet.context-path`, `server.context-path`, `spring.webflux.base-path`: a base path, not a name | A module's own `src/main/resources/application` or `bootstrap` file (not a profile file): that module. A config server's `<app>.yml`: the service named `<app>` |
 | `spring_gateway` | `application` / `bootstrap` in a module's resources, or a config-server file named `*gateway*`, `*zuul*`, `*proxy*`, `*edge*` (`.yml` or `.properties`) holding `routes` | Spring Cloud Gateway `routes[]` (`lb://name`, `http://host`) and Zuul `zuul.routes` | A gateway route (below) |
 | `dockerfile_env` | `Dockerfile`, `Dockerfile.*`, `*.Dockerfile` holding `ENV` | `ENV` keys whose value is an address (`CATALOGUE_HOST=catalogue`) | The host the value names |
+| `env_file` | `.env`, `.env.*`, `*.env` (what a compose `env_file:` names) | Keys whose value is an address; no other value is kept | The host the value names |
 | `nginx` | `*.conf`, `*.conf.template`, `*.conf.tmpl` holding `proxy_pass` | Prefix `location` blocks with `proxy_pass` to a host, an `upstream` of one host, or an envsubst `${X_HOST}` in a template | A gateway route (below) |
 | `ocelot` | `ocelot*.json`, `configuration.json` holding `UpstreamPathTemplate` | Ocelot `Routes` (or `ReRoutes`): `ServiceName`, or the one host in `DownstreamHostAndPorts` | A gateway route (below) |
 | `yarp` | `appsettings*.json`, `yarp*.json` holding `ReverseProxy` | YARP `Routes` and the one host their cluster's `Destinations` name | A gateway route (below) |
@@ -152,9 +162,11 @@ under `context-path: /uaa` is `POST /uaa/users`. A module given two different ba
 none.
 
 Each repo is walked once per update for these file names; test, example and build-output
-directories are skipped, and files at the workspace root are read too. A name two files
-place in different repos is left unmapped rather than guessed. To override or fill a gap, add
-the host or base token to `service_bases`, which always wins.
+directories are skipped, and so is any file the code-origin classifier calls test, docs or
+example, vendored or generated (a compose file under `docs/`, `demo/` or `e2e-tests/`).
+Files at the workspace root are read too. A name two files place in different repos is left
+unmapped rather than guessed. To override or fill a gap, add the host or base token to
+`service_bases`, which always wins.
 
 A gateway source states routes rather than names: a path prefix the gateway forwards to a
 service, and the path it forwards (Spring `StripPrefix`, `PrefixPath` and a

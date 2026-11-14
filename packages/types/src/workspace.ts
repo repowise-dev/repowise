@@ -48,6 +48,7 @@ export type LinkStrategy =
   | "unique_path"
   | "ambiguous_path"
   | "prefix_stripped"
+  | "param_segment"
   | "manual"
   | "manifest";
 
@@ -111,6 +112,20 @@ export interface WorkspaceContractLinkEntry {
   consumer_contract_id?: string | null;
 }
 
+export interface WorkspaceCoChangeEvidence {
+  /** Distinct author emails behind the pair (bounded sample). */
+  authors: string[];
+  /** Example matched commit pairs: short SHAs, date, time gap in hours. */
+  commit_pairs: Array<{
+    source_sha: string;
+    target_sha: string;
+    date: string;
+    gap_hours: number;
+  }>;
+  /** Largest time gap between a matched commit pair, in hours. */
+  max_gap_hours: number;
+}
+
 /**
  * Which way a link between two services runs: `a_to_b` when `a` is the consumer
  * or dependent, `both` for a co-change (it has no direction).
@@ -172,6 +187,8 @@ export interface WorkspaceCoChangeEntry {
   strength: number;
   frequency: number;
   last_date: string;
+  /** Bounded supporting evidence (#483); null for pre-evidence overlays. */
+  evidence: WorkspaceCoChangeEvidence | null;
 }
 
 export interface WorkspacePackageDepEntry {
@@ -302,7 +319,8 @@ export type UnmatchedReason =
   | "no_provider"
   | "internal_only"
   | "unlinked"
-  | "external_host";
+  | "external_host"
+  | "ambiguous_provider";
 
 export interface RepoDiagnostics {
   repo: string;
@@ -315,6 +333,8 @@ export interface RepoDiagnostics {
   consumers_by_layer: Record<string, number>;
   /** Calls that reached a confirmed HTTP wrapper but resolved to no path. */
   http_consumers_unresolved: number;
+  /** Broker calls located whose topic or queue name could not be settled. */
+  topic_names_unresolved?: number;
 }
 
 export interface UnmatchedConsumer {
@@ -362,6 +382,11 @@ export interface ExtractionDiagnostics {
   /** Per repo, files with a network-call token and no consumer contract; `null` before the count existed. */
   unrecognised_call_files?: Record<string, number> | null;
   unrecognised_call_file_count?: number | null;
+  /** Broker calls located whose topic or queue name could not be settled. */
+  topic_names_unresolved?: number;
+  /** Per repo, files using a messaging SDK and no topic contract; `null` before the count existed. */
+  unrecognised_message_files?: Record<string, number> | null;
+  unrecognised_message_file_count?: number | null;
 }
 
 /** One reason a graph's evidence is short of measured. */
@@ -621,6 +646,8 @@ export interface ConformanceReport {
   cycle_count: number;
   /** How many cycles exist. Above `cycle_count` when the list was cut. */
   total_cycles: number;
+  /** True when the enumeration budget stopped the count: `total_cycles` is "at least". */
+  total_capped?: boolean;
   /** Distinct repos participating in a violation. */
   violating_repos: string[];
   /** False when the graph had too little evidence for "no cycles" to mean anything. */
@@ -705,6 +732,8 @@ export interface ArchitectureMetrics {
   core_members: string[];
   /** Elementary dependency cycles (matches the conformance report's count). */
   cycle_count: number | null;
+  /** True when the enumeration budget stopped the count: `cycle_count` is "at least". */
+  cycle_count_capped?: boolean;
   /** Declared-rule violations folded into the score (0 when no rules). */
   conformance_violations: number;
   architecture_type: ArchitectureType;

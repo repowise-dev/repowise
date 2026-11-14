@@ -14,6 +14,7 @@
  * Lives in `packages/ui` so the hosted frontend can reuse it.
  */
 
+import type { ReactNode } from "react";
 import { cn } from "../lib/cn";
 import { formatNumber } from "../lib/format";
 
@@ -33,6 +34,27 @@ export const LOAD_MORE_CEILING = 3000;
 
 const SLOW_HINT_THRESHOLD = 3000;
 
+export interface GraphTruncationBannerCopy {
+  /** `shown` and `total` arrive as emphasised figures. */
+  showing: (shown: ReactNode, total: ReactNode) => ReactNode;
+  /** Follows the sentence directly, so it carries its own leading space. */
+  slowerHint: string;
+  seeAllGrouped: string;
+  /** `count` is already formatted. */
+  loadMore: (count: string) => string;
+}
+
+export const GRAPH_TRUNCATION_BANNER_COPY: GraphTruncationBannerCopy = {
+  showing: (shown, total) => (
+    <>
+      Showing the {shown} most-connected files of {total}.
+    </>
+  ),
+  slowerHint: " Loading more will be slower.",
+  seeAllGrouped: "See all of them grouped",
+  loadMore: (count) => `Load ${count} more`,
+};
+
 export interface GraphTruncationBannerProps {
   shown: number;
   total: number;
@@ -43,6 +65,7 @@ export interface GraphTruncationBannerProps {
   /** When known, suggests a healthier scope to switch to. */
   onSwitchToArchitecture?: () => void;
   className?: string;
+  copy?: Partial<GraphTruncationBannerCopy> | undefined;
 }
 
 const linkClass =
@@ -55,7 +78,9 @@ export function GraphTruncationBanner({
   onLoadMore,
   onSwitchToArchitecture,
   className,
+  copy,
 }: GraphTruncationBannerProps) {
+  const c = { ...GRAPH_TRUNCATION_BANNER_COPY, ...copy };
   const nextLimit = Math.min(limit + LOAD_MORE_STEP, LOAD_MORE_CEILING, total);
   const canLoadMore = nextLimit > limit;
   const slowHint = nextLimit > SLOW_HINT_THRESHOLD;
@@ -70,20 +95,19 @@ export function GraphTruncationBanner({
       )}
     >
       <p className="min-w-0 flex-1">
-        Showing the{" "}
-        <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
-          {formatNumber(shown)}
-        </span>{" "}
-        most-connected files of{" "}
-        <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
-          {formatNumber(total)}
-        </span>
-        .
-        {slowHint && canLoadMore && " Loading more will be slower."}
+        {c.showing(
+          <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
+            {formatNumber(shown)}
+          </span>,
+          <span className="font-medium tabular-nums text-[var(--color-text-primary)]">
+            {formatNumber(total)}
+          </span>,
+        )}
+        {slowHint && canLoadMore && c.slowerHint}
       </p>
       {onSwitchToArchitecture && (
         <button type="button" onClick={onSwitchToArchitecture} className={linkClass}>
-          See all of them grouped
+          {c.seeAllGrouped}
         </button>
       )}
       {onLoadMore && canLoadMore && (
@@ -92,7 +116,7 @@ export function GraphTruncationBanner({
           onClick={() => onLoadMore(nextLimit)}
           className={linkClass}
         >
-          Load {formatNumber(Math.min(LOAD_MORE_STEP, nextLimit - limit))} more
+          {c.loadMore(formatNumber(Math.min(LOAD_MORE_STEP, nextLimit - limit)))}
         </button>
       )}
     </div>

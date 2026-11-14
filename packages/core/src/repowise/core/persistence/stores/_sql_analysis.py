@@ -175,12 +175,8 @@ class _SqlAnalysisMixin(AnalysisIndexStore):
             self._session, repository_id, git_meta_map, repo_path
         )
 
-    async def get_stale_decisions(
-        self, repository_id: str, threshold: float = 0.5
-    ) -> list[DecisionRecord]:
-        return await crud.get_stale_decisions(
-            self._session, repository_id, threshold
-        )
+    async def get_stale_decisions(self, repository_id: str) -> list[DecisionRecord]:
+        return await crud.get_stale_decisions(self._session, repository_id)
 
     async def get_decision_health_summary(self, repository_id: str) -> dict:
         return await crud.get_decision_health_summary(self._session, repository_id)

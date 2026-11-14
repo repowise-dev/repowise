@@ -10,6 +10,7 @@ import {
   Server,
   Compass,
   Layers,
+  Workflow,
 } from "lucide-react";
 import type { DocPageSummary } from "@repowise-dev/types/docs";
 
@@ -23,6 +24,8 @@ export const PAGE_TYPE_CONFIG: Record<string, PageTypeConfig> = {
   architecture_diagram: { label: "Knowledge Graph", icon: LayoutGrid },
   layer_page: { label: "Layer", icon: Layers },
   module_page: { label: "Module", icon: FolderOpen },
+  // One operation walked end to end; listed in the tree's Start here group.
+  flow_page: { label: "Walkthrough", icon: Workflow },
   symbol_spotlight: { label: "Symbol", icon: Sparkles },
   file_page: { label: "File", icon: FileText },
   api_contract: { label: "API Contract", icon: FileCode },
@@ -70,10 +73,11 @@ export function getPageLabel(
 // Every file / symbol / api / infra / scc / layer page renders from structure
 // and is a template forever. Only the concept tree and onboarding are written
 // by a model, so "does this page have prose yet" is a question that only makes
-// sense for these four types. This mirrors core's MODEL_WRITTEN_PAGE_TYPES.
+// sense for these types. This mirrors core's MODEL_WRITTEN_PAGE_TYPES.
 
 export const MODEL_WRITTEN_PAGE_TYPES = new Set([
   "module_page",
+  "flow_page",
   "repo_overview",
   "architecture_diagram",
   "onboarding",
@@ -92,7 +96,7 @@ export function isModelWrittenType(pageType: string | null | undefined): boolean
  *  structural page type, which is never a stub in this sense.
  *
  *  `metadata.model_free` marks a page whose subkind is rendered without a
- *  model by design — the glossary quotes mined definitions and has no prompt
+ *  model by design — Active Landscape counts git history and has no prompt
  *  at all. It carries `provider_name === "template"` like a stub and means the
  *  opposite by it: the page is finished, and no model is ever going to write
  *  it. Without this check the tree marks it "a model has not written this page
@@ -107,6 +111,20 @@ export function isStubPage(
   if (!page || !isModelWrittenType(page.page_type)) return false;
   if (page.metadata?.["model_free"]) return false;
   return page.provider_name === "template";
+}
+
+/** True for a page a model actually wrote: a model-written type carrying a
+ *  real provider. The counterpart of `isStubPage`, except that a model-free
+ *  page (Active Landscape) is neither: finished, but not written by a model. */
+export function isWrittenByModel(
+  page:
+    | { page_type?: string; provider_name?: string; metadata?: Record<string, unknown> }
+    | null
+    | undefined,
+): boolean {
+  if (!page || !isModelWrittenType(page.page_type)) return false;
+  if (page.metadata?.["model_free"]) return false;
+  return page.provider_name !== "template";
 }
 
 /** Metadata key core stamps with the provider error a page fell back over.
@@ -142,7 +160,7 @@ export function isStubFallbackPage(
 //
 // One slot — project_overview — is *promoted*: its
 // content lives in the existing repo_overview page, tagged via
-// `metadata.onboarding_slot`. The other five are dedicated
+// `metadata.onboarding_slot`. The others are dedicated
 // `page_type === "onboarding"` pages with `metadata.subkind` discriminating
 // them.
 //
@@ -159,14 +177,12 @@ export function isStubFallbackPage(
 export const ONBOARDING_SLOT_TITLES = {
   project_overview: "Project Overview",
   getting_started: "Getting Started",
-  key_concepts: "Key Concepts",
   how_it_works: "How It Works",
   active_landscape: "Active Landscape",
-  glossary: "Glossary",
 
   // ---- Retired slots, kept only to label rows an old index still holds ----
   //
-  // These three stopped being generated (see `slots.py`), and
+  // These stopped being generated (see `slots.py`), and
   // `sweep_retired_pages` deletes their rows on the next docs update of any
   // kind. An index built before that release still holds them until the user
   // runs one, and `serve` does not.
@@ -180,11 +196,12 @@ export const ONBOARDING_SLOT_TITLES = {
   // Onboarding folder. That reads as a bug rather than a retirement, so they
   // stay listed and an un-swept row keeps the label it has always had.
   //
-  // Ceiling: delete these three lines once no supported index predates the
-  // sweep.
+  // Ceiling: delete these lines once no supported index predates the sweep.
   guided_tour: "Guided Tour",
   codebase_map: "Codebase Map",
   development_guide: "Development Guide",
+  key_concepts: "Key Concepts",
+  glossary: "Glossary",
 } as const;
 
 export type OnboardingSlot = keyof typeof ONBOARDING_SLOT_TITLES;

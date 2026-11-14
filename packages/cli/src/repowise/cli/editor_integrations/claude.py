@@ -30,9 +30,7 @@ class ClaudeCodeSetup:
         repo_path: Path,
         options: EditorSetupOptions,
     ) -> list[Path]:
-        from repowise.cli.mcp_config import save_root_mcp_config
-
-        written = [Path(save_root_mcp_config(repo_path))]
+        written = _sync_project_mcp(console_obj, repo_path)
         claude_md = maybe_generate_claude_md(
             console_obj,
             repo_path,
@@ -44,6 +42,7 @@ class ClaudeCodeSetup:
 
     def register_client(self, console_obj: Any, repo_path: Path) -> None:
         from repowise.cli.editor_integrations.claude_config import (
+            _resolve_mcp_target,
             enable_tool_search_in_claude_code,
             install_claude_code_hooks,
             register_with_claude_code,
@@ -51,15 +50,19 @@ class ClaudeCodeSetup:
         )
         from repowise.cli.ui.brand import OK
 
-        # Callers ask first (global_mcp.confirm_global_mcp): these writes
-        # repoint the single global "repowise" entry.
+        # Callers ask first (global_mcp.confirm_global_mcp). An entry serving
+        # another repo is kept, and these return None for it.
         desktop = register_with_claude_desktop(repo_path)
         if desktop:
-            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Claude Desktop MCP registered ({desktop})")
+            console_obj.print(
+                f"  [{OK}]{glyph('ok')}[/] Claude Desktop MCP registered for "
+                f"{_resolve_mcp_target(repo_path)} ({desktop})"
+            )
 
         code = register_with_claude_code(repo_path)
         if code:
             console_obj.print(f"  [{OK}]{glyph('ok')}[/] Claude Code MCP registered ({code})")
+        _suggest_hosted_rename(console_obj, repo_path)
 
         hooks = install_claude_code_hooks()
         if hooks:
@@ -69,7 +72,7 @@ class ClaudeCodeSetup:
 
         if _uses_lean_tool_surface(repo_path):
             console_obj.print(
-                "  [dim]Lean MCP tool surface configured; skipping tool-search"
+                "  [dim]Small MCP tool surface configured; skipping tool-search"
                 " deferral so the core schemas stay always loaded.[/dim]"
             )
         elif enable_tool_search_in_claude_code():
@@ -90,33 +93,87 @@ class ClaudeCodeSetup:
         run_async(_write_claude_md_async(repo_path))
 
 
-def _uses_lean_tool_surface(repo_path: Path) -> bool:
-    """True when the repo's ``mcp.tools`` config selects the lean profile.
+def _suggest_hosted_rename(console_obj: Any, repo_path: Path) -> None:
+    """One line when a ``repowise`` entry Claude Code loads here is a remote server.
 
-    The lean surface (~1.8k tokens of schema) is cheap enough to keep always
-    loaded, so init skips the tool-search (schema deferral) recommendation for
-    it; deferral would reintroduce the schema-load round trip the profile
-    exists to remove. Mirrors the "lean" token the selection layer resolves
-    (see ``repowise.core.registry.tool_selection.LEAN``), read here via
-    the lightweight config loader so init does not import the server stack.
+    Two places: the user-scope entry, which ``register_with_claude_code``
+    keeps (it is not ours to convert), so the local server is left without
+    its name; and this repo's local scope, which wins over user scope for the
+    same name and so hides the local server. Suggested, never done: renaming
+    someone's server is their call.
     """
+    import click
+
+    from repowise.cli.agent_targets.formats.server_entry import (
+        LOCAL_NAME,
+        RENAME_HINT,
+        is_remote_entry,
+    )
+    from repowise.cli.editor_integrations.claude_config import _stored_repowise_entry
+
+    path = claude_target.user_mcp_config_path()
+    user_entry = _stored_repowise_entry(path)
+    try:
+        local_entry = claude_target.local_scope_servers(repo_path)[1].get(LOCAL_NAME)
+    except click.ClickException:
+        local_entry = None
+    for entry in (user_entry, local_entry):
+        if isinstance(entry, dict) and is_remote_entry(entry, local_type="stdio"):
+            console_obj.print(f"  [dim]{path}: {RENAME_HINT}.[/dim]")
+            return
+
+
+def _sync_project_mcp(console_obj: Any, repo_path: Path) -> list[Path]:
+    """Write ``.mcp.json`` unless a user-scope entry serves the repo; the manifest rows."""
+    from repowise.cli.agent_targets.types import FileAction
+
+    result = claude_target.sync_project_mcp_config(repo_path)
+    if result.action is FileAction.REMOVED:
+        console_obj.print(
+            "  [dim]Removed repowise from .mcp.json: Claude Code already loads it "
+            "for this repo from user scope.[/dim]"
+        )
+    elif result.action is FileAction.KEPT and result.reason:
+        console_obj.print(f"  [dim].mcp.json left as is: {result.reason}.[/dim]")
+    # Only a file that holds our entry is reported; a removed, absent or
+    # deliberately untouched one is not something setup put in the tree.
+    if result.action in (FileAction.CREATED, FileAction.UPDATED, FileAction.UNCHANGED):
+        return [result.path]
+    return []
+
+
+def _uses_lean_tool_surface(repo_path: Path) -> bool:
+    """True when the repo's ``mcp.tools`` config selects the lean or core profile.
+
+    Those surfaces (under 2k tokens of schema) are cheap enough to keep always
+    loaded, so init skips the tool-search (schema deferral) recommendation for
+    them; deferral would reintroduce the schema-load round trip the profiles
+    exist to remove. Read via the lightweight config loader so init does not
+    import the server stack.
+    """
+    from repowise.core.registry.tool_selection import (
+        CORE,
+        LEAN,
+        normalize_override,
+        split_profile,
+    )
+
     try:
         from repowise.core.repo_config import load_repo_config
 
         mcp_cfg = load_repo_config(str(repo_path)).get("mcp") or {}
         tools = mcp_cfg.get("tools") if isinstance(mcp_cfg, dict) else None
+        profile, rest = split_profile(normalize_override(tools))
     except Exception:
         return False
-    if isinstance(tools, str):
-        return tools.strip().lower() == "lean"
-    if isinstance(tools, (list, tuple)) and len(tools) == 1:
-        return str(tools[0]).strip().lower() == "lean"
-    return False
+    return profile in (LEAN, CORE) and not rest
 
 
 def _claude_md_enabled(repo_path: Path) -> bool:
-    cfg = load_config(repo_path)
-    return bool(cfg.get("editor_files", {}).get("claude_md", True))
+    from repowise.core.settings.model import flag
+
+    editor_files = load_config(repo_path).get("editor_files")
+    return flag(editor_files.get("claude_md") if isinstance(editor_files, dict) else None, True)
 
 
 def maybe_generate_claude_md(
@@ -134,22 +191,18 @@ def maybe_generate_claude_md(
     is now in their tree.
     """
 
-    cfg = load_config(repo_path)
     if no_claude_md:
         # Persist opt-out so 'repowise update' respects it.
-        ef_cfg = dict(cfg.get("editor_files", {}))
-        ef_cfg["claude_md"] = False
-        cfg["editor_files"] = ef_cfg
-        try:
-            import yaml  # type: ignore[import-untyped]
+        import click
 
-            cfg_path = repo_path / ".repowise" / "config.yaml"
-            cfg_path.write_text(
-                yaml.dump(cfg, default_flow_style=False, sort_keys=False),
-                encoding="utf-8",
-            )
-        except ImportError:
-            pass
+        from repowise.cli.editor_files import set_editor_file_enabled
+
+        try:
+            set_editor_file_enabled(repo_path, "claude_md", False)
+        except click.ClickException as exc:
+            # Late in init: the index is built, so say the opt-out was not
+            # recorded rather than fail the run over it.
+            console_obj.print(f"[yellow]{exc.format_message()}[/yellow]")
         return None
     if not _claude_md_enabled(repo_path):
         return None

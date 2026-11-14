@@ -39,23 +39,25 @@ def test_split_counts_file_and_cycle_pages_as_structural() -> None:
     assert split_cascade_overflow(_ROWS, ["src/a.py", "src/b.py"]) == (3, 3)
 
 
-def test_warning_points_model_pages_at_generate_stale() -> None:
-    out = _render(50, 2752, (122, 1235))
+def test_warning_points_every_stale_page_at_update_full() -> None:
+    out = _render(50, 2752, (122, 1235), "repowise update --full")
     assert "Cascade budget of 50 pages was reached. 2752 dependent files were skipped" in out
-    assert "1235 structural pages (file / cycle) refresh on the next repowise update" in out
-    assert "122 pages written by a model: run repowise generate --stale" in out
-    assert "or pass `--cascade-budget 2802` to regenerate everything in this run." in out
-
-
-def test_warning_without_model_pages_skips_generate_hint() -> None:
-    out = _render(50, 10, (0, 10))
+    assert "Run repowise update --full to refresh them" in out
+    assert "1235 structural pages (file / cycle), no model needed" in out
+    assert "122 pages written by a model, priced before they are rewritten" in out
     assert "generate --stale" not in out
-    assert "Pass `--cascade-budget 60` to regenerate them in this run." in out
+    assert "--cascade-budget" not in out
+
+
+def test_warning_names_the_workspace_repo() -> None:
+    out = _render(50, 10, (0, 10), "repowise update --repo api --full")
+    assert "Run repowise update --repo api --full to refresh them" in out
+    assert "written by a model" not in out
 
 
 def test_unreadable_store_falls_back_to_the_unsplit_hint() -> None:
-    out = _render(50, 10, None)
-    assert "Pass `--cascade-budget 60` to regenerate them all." in out
+    out = _render(50, 10, None, "repowise update --full")
+    assert "Run repowise update --full to refresh them." in out
     assert "structural" not in out
 
 

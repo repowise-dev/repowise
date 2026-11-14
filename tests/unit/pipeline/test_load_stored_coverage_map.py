@@ -118,6 +118,28 @@ async def test_loader_rereads_a_report_written_after_the_last_ingest(tmp_path, m
     assert len(reads) == 1
 
 
+async def test_a_reread_report_older_than_the_source_is_reported(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    repo_path = tmp_path / "repo"
+    (repo_path / "src").mkdir(parents=True)
+    # Lines 2-5 of the report now land on blank lines.
+    (repo_path / "src" / "a.py").write_text("x = 1\n\n\n\n\n", encoding="utf-8")
+    await _seed(repo_path, [{"file_path": "src/a.py", "line_coverage_pct": 0.0, "total_coverable_lines": 2}])
+    report = repo_path / "coverage" / "lcov.info"
+    report.parent.mkdir()
+    report.write_text("SF:src/a.py\n" + "".join(f"DA:{n},1\n" for n in range(1, 6)) + "end_of_record\n")
+
+    async def _metrics(_session, _repo_id):
+        return [SimpleNamespace(file_path="src/a.py")]
+
+    monkeypatch.setattr("repowise.core.persistence.crud.get_health_metrics", _metrics)
+    logged: list[str] = []
+
+    await load_stored_coverage_map(repo_path, log=logged.append)
+    assert any("no longer match the source" in line for line in logged)
+
+
 async def test_loader_keeps_stored_rows_when_reingest_is_off(tmp_path, monkeypatch):
     repo_path = tmp_path / "repo"
     repo_path.mkdir()

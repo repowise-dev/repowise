@@ -22,10 +22,10 @@ describe("hairlineCardClass", () => {
     expect(classes.some((c) => c.includes("ring-"))).toBe(false);
   });
 
-  it("puts the accent only on the focus ring of a card that is itself a control", () => {
+  it("gives a card that is itself a control the neutral focus ring and no accent", () => {
     const classes = tokens("link");
-    expect(classes).toContain("focus-visible:ring-[var(--color-accent-primary)]");
-    expect(classes.filter((c) => c.includes("accent")).every((c) => c.startsWith("focus-visible:"))).toBe(true);
+    expect(classes).toContain("focus-visible:ring-[var(--color-focus-ring)]");
+    expect(classes.some((c) => c.includes("accent"))).toBe(false);
   });
 
   it("holds the strong hairline with a faint accent ring when highlighted", () => {

@@ -76,7 +76,7 @@ describe("ActiveJobBanner", () => {
             provider_issue: { kind: "auth", message: "API key rejected by openai. Update it in Settings." },
           },
         })}
-        settingsHref="/repos/r1/settings#provider"
+        settingsHref="/repos/r1/settings/models"
         onDismiss={onDismiss}
       />,
     );
@@ -85,7 +85,7 @@ describe("ActiveJobBanner", () => {
     expect(screen.getByText(/API key rejected by openai/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Provider settings/ })).toHaveAttribute(
       "href",
-      "/repos/r1/settings#provider",
+      "/repos/r1/settings/models",
     );
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     expect(onDismiss).toHaveBeenCalled();

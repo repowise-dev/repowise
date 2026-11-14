@@ -233,8 +233,8 @@ export function PathFinderModal() {
           style={{
             width: "100%",
             padding: "10px 0",
-            background: fromId && toId ? "var(--color-accent-fill)" : "var(--color-bg-wash-hover)",
-            color: fromId && toId ? "var(--color-text-on-accent)" : "var(--color-text-secondary)",
+            background: fromId && toId ? "var(--color-action-primary)" : "var(--color-bg-wash-hover)",
+            color: fromId && toId ? "var(--color-text-on-action)" : "var(--color-text-secondary)",
             border: "none",
             borderRadius: 6,
             fontSize: 13,

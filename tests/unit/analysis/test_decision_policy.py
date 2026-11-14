@@ -613,28 +613,45 @@ def test_conventions_runs_with_no_model_once_it_is_switched_on():
 # ---------------------------------------------------------------------------
 
 
-def test_agent_acceptance_is_off_in_every_preset():
-    """The one setting that lets something other than a person grant authority."""
+def test_agent_acceptance_is_on_in_every_preset():
+    """Agents accept by default, signed as themselves; a preset is capture only."""
     for name in PRESET_NAMES:
-        assert preset_policy(name).agent_acceptance is False
+        assert preset_policy(name).agent_acceptance is True
 
 
-def test_a_non_boolean_agent_acceptance_does_not_grant():
-    resolution = resolve_policy({"decisions": {"agent_acceptance": "yes"}})
+def test_agent_acceptance_is_on_with_no_block():
+    assert resolve_policy({}).policy.agent_acceptance is True
+
+
+@pytest.mark.parametrize("value", ["no", "yes", 0])
+def test_a_non_boolean_agent_acceptance_reads_as_off(value):
+    """Someone wrote something there; a quoted "no" must not grant."""
+    resolution = resolve_policy({"decisions": {"agent_acceptance": value}})
 
     assert resolution.policy.agent_acceptance is False
     assert any("agent_acceptance" in w for w in resolution.warnings)
 
 
-def test_turning_agent_acceptance_off_again_actually_writes_it(tmp_path):
-    """``to_config_block`` omits a defaulted setting, so a merging write kept
-    the stored ``true`` and ``--off`` changed nothing at all."""
-    write_policy(tmp_path, preset_policy("default").with_agent_acceptance(True))
-    assert load_policy(tmp_path).policy.agent_acceptance is True
+def test_an_explicit_off_persists(tmp_path):
+    """The block omits a defaulted setting, so off has to be written out or a
+    reload would read the default back on."""
+    from repowise.core.repo_config import load_repo_config
 
-    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(False))
+    write_policy(tmp_path, preset_policy("default").with_agent_acceptance(False))
 
+    assert load_repo_config(tmp_path)["decisions"]["agent_acceptance"] is False
     assert load_policy(tmp_path).policy.agent_acceptance is False
+
+
+def test_turning_agent_acceptance_back_on_actually_writes_it(tmp_path):
+    """A merging write would keep the stored ``false`` and ``--on`` would change
+    nothing, so the policy's keys are replaced, not merged."""
+    write_policy(tmp_path, preset_policy("default").with_agent_acceptance(False))
+    assert load_policy(tmp_path).policy.agent_acceptance is False
+
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(True))
+
+    assert load_policy(tmp_path).policy.agent_acceptance is True
 
 
 def test_a_policy_write_keeps_unrelated_keys_under_decisions(tmp_path):
@@ -661,9 +678,271 @@ def test_the_agent_switch_does_not_rewrite_the_stored_preset(tmp_path):
     from repowise.core.repo_config import load_repo_config
 
     write_policy(tmp_path, preset_policy("balanced"))
-    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(True))
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_agent_acceptance(False))
 
     resolved = load_policy(tmp_path).policy
-    assert resolved.agent_acceptance is True
+    assert resolved.agent_acceptance is False
     assert resolved.preset_name() == "balanced"
     assert load_repo_config(tmp_path)["decisions"]["preset"] == "balanced"
+
+
+# ---------------------------------------------------------------------------
+# Approval
+# ---------------------------------------------------------------------------
+
+
+def test_approval_is_off_with_no_block_and_in_every_preset():
+    assert resolve_policy({}).policy.require_approval is False
+    for name in PRESET_NAMES:
+        assert preset_policy(name).require_approval is False
+
+
+def test_a_non_boolean_approval_reads_as_on():
+    """Someone asked for a gate; a quoted value must not silently open it."""
+    resolution = resolve_policy({"decisions": {"require_approval": "yes"}})
+
+    assert resolution.policy.require_approval is True
+    assert any("require_approval" in w for w in resolution.warnings)
+
+
+def test_approval_round_trips_and_keeps_the_preset(tmp_path):
+    from repowise.core.repo_config import load_repo_config
+
+    write_policy(tmp_path, preset_policy("balanced"))
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_require_approval(True))
+
+    resolved = load_policy(tmp_path).policy
+    assert resolved.require_approval is True
+    assert resolved.agent_grants is False
+    assert resolved.preset_name() == "balanced"
+    assert load_repo_config(tmp_path)["decisions"]["require_approval"] is True
+
+    write_policy(tmp_path, resolved.with_require_approval(False))
+    assert load_policy(tmp_path).policy.require_approval is False
+    assert "require_approval" not in load_repo_config(tmp_path)["decisions"]
+
+
+# ---------------------------------------------------------------------------
+# Update mining
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "block",
+    [None, {}, {"agent_acceptance": False}, {"session_mining": True}, {"harnesses": ["claude_code"]}],
+)
+def test_update_mining_is_off_where_capture_was_never_chosen(block):
+    cfg = {} if block is None else {"decisions": block}
+
+    policy = resolve_policy(cfg).policy
+
+    assert policy.update_mining is False
+    assert policy.update_llm is False
+    # Init still mines history as before.
+    assert policy.llm_allowed("pr") and policy.llm_allowed("git_archaeology")
+
+
+@pytest.mark.parametrize(
+    "block",
+    [{"preset": "default"}, {"preset": "off"}, {"sources": {"pr": True}}, {"sources": {}}],
+)
+def test_a_block_that_chose_capture_keeps_update_mining_on_upgrade(block):
+    assert resolve_policy({"decisions": block}).policy.update_mining is True
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_a_stated_update_mining_wins(value):
+    block = {"preset": "full", "sources": {"pr": True}, "update_mining": value}
+
+    assert resolve_policy({"decisions": block}).policy.update_mining is value
+
+
+def test_a_non_boolean_update_mining_warns_and_falls_back():
+    resolution = resolve_policy({"decisions": {"update_mining": "yes"}})
+
+    assert resolution.policy.update_mining is False
+    assert any("update_mining" in w for w in resolution.warnings)
+
+
+def test_update_llm_needs_capture_and_the_model():
+    on = resolve_policy({"decisions": {"update_mining": True}}).policy
+
+    assert on.update_llm is True
+    assert on.with_llm(False).update_llm is False
+    assert on.with_enabled(False).update_llm is False
+
+
+def test_update_mining_off_round_trips_through_a_written_block(tmp_path):
+    """A write enumerates sources, which alone would read back as on."""
+    write_policy(tmp_path, resolve_policy({}).policy.with_capture_prompt(False))
+
+    block = load_repo_config(tmp_path)["decisions"]
+    assert block["update_mining"] is False
+    assert load_policy(tmp_path).policy.update_mining is False
+
+
+def test_update_mining_survives_a_preset_and_does_not_rename_it(tmp_path):
+    write_policy(tmp_path, preset_policy("balanced").with_update_mining(True))
+
+    resolved = load_policy(tmp_path).policy
+    assert resolved.update_mining is True
+    assert resolved.preset_name() == "balanced"
+    assert resolve_policy({}).policy.to_dict()["update_mining"] is False
+
+
+# ---------------------------------------------------------------------------
+# Session start
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("block", [None, {}, {"preset": "full"}, {"sources": {"pr": True}}])
+def test_session_start_is_off_unless_asked_for(block):
+    cfg = {} if block is None else {"decisions": block}
+
+    assert resolve_policy(cfg).policy.session_start is False
+
+
+def test_session_start_round_trips_and_keeps_the_preset(tmp_path):
+    write_policy(tmp_path, preset_policy("balanced").with_session_start(True))
+
+    resolved = load_policy(tmp_path).policy
+    assert resolved.session_start is True
+    assert resolved.preset_name() == "balanced"
+
+    write_policy(tmp_path, resolved.with_session_start(False))
+    assert load_policy(tmp_path).policy.session_start is False
+    assert "session_start" not in load_repo_config(tmp_path)["decisions"]
+
+
+def test_an_unreadable_session_start_reads_as_off():
+    resolution = resolve_policy({"decisions": {"session_start": "yes"}})
+
+    assert resolution.policy.session_start is False
+    assert any("session_start" in w for w in resolution.warnings)
+
+
+
+def test_upkeep_prompt_is_off_unless_asked_for(tmp_path):
+    assert resolve_policy({}).policy.upkeep_prompt is False
+    assert resolve_policy({"decisions": {"upkeep_prompt": "yes"}}).policy.upkeep_prompt is False
+
+    write_policy(tmp_path, preset_policy("full").with_upkeep_prompt(True))
+    assert load_policy(tmp_path).policy.upkeep_prompt is True
+    write_policy(tmp_path, load_policy(tmp_path).policy.with_upkeep_prompt(False))
+    assert "upkeep_prompt" not in load_repo_config(tmp_path)["decisions"]
+
+
+# ---------------------------------------------------------------------------
+# decisions.mode: the one switch
+# ---------------------------------------------------------------------------
+
+
+def _mode(block: dict):
+    return resolve_policy({"decisions": block}).policy
+
+
+def test_mode_is_full_when_absent():
+    policy = resolve_policy(None).policy
+
+    assert policy.mode == "full"
+    assert policy.captures and policy.delivers
+    assert policy.commit_prompt and policy.agent_grants
+
+
+def test_read_only_delivers_and_captures_nothing():
+    policy = _mode({"mode": "read_only", "update_mining": True, "sync": True})
+
+    assert policy.delivers
+    assert not policy.captures
+    assert policy.enabled_index_sources() == ()
+    assert not policy.update_llm
+    assert not policy.commit_prompt and not policy.agent_grants
+    # Pull still runs; nothing goes up.
+    assert policy.sync and not policy.sends
+
+
+def test_off_delivers_nothing_whatever_the_switches_say():
+    policy = _mode(
+        {
+            "mode": "off",
+            "capture_prompt": True,
+            "upkeep_prompt": True,
+            "session_start": True,
+            "sync": True,
+        }
+    )
+
+    assert not policy.delivers and not policy.captures
+    assert not policy.commit_prompt
+    assert not policy.commit_upkeep
+    assert not policy.session_start_on
+    assert not policy.sends
+    assert policy.enabled_index_sources() == ()
+
+
+def test_under_read_only_a_stated_switch_wins_over_the_mode_default():
+    policy = _mode({"mode": "read_only", "upkeep_prompt": True, "capture_prompt": True})
+
+    assert policy.commit_upkeep
+    assert policy.commit_prompt
+
+
+def test_the_cli_spelling_reads_the_same():
+    assert _mode({"mode": "read-only"}).mode == "read_only"
+
+
+def test_a_bare_yaml_off_reads_as_off():
+    """YAML loads an unquoted ``mode: off`` as the boolean false."""
+    loaded = yaml.safe_load("decisions:\n  mode: off\n")
+    assert loaded["decisions"]["mode"] is False
+    assert resolve_policy(loaded).policy.mode == "off"
+
+
+def test_an_unknown_mode_reads_as_read_only_with_a_warning():
+    resolution = resolve_policy({"decisions": {"mode": "of"}})
+
+    assert resolution.policy.mode == "read_only"
+    assert any("decisions.mode" in w for w in resolution.warnings)
+
+
+@pytest.mark.parametrize("mode", ["off", "read_only", "full"])
+def test_each_mode_round_trips_through_the_config_block(mode):
+    policy = resolve_policy(None).policy.with_mode(mode)
+    block = policy.to_config_block()
+
+    assert resolve_policy({"decisions": block}).policy == policy
+    # Switches at the mode's default stay out of the block.
+    assert "capture_prompt" not in block and "agent_acceptance" not in block
+    assert block.get("mode", "full") == mode
+
+
+def test_setting_a_mode_resets_the_switches_it_governs():
+    policy = _mode({"upkeep_prompt": True, "agent_acceptance": False}).with_mode("full")
+
+    assert policy.upkeep_prompt is False
+    assert policy.agent_acceptance is True
+
+
+def test_a_mode_keeps_capture_membership():
+    policy = preset_policy("balanced").with_mode("off").with_mode("full")
+
+    assert policy.preset_name() == "balanced"
+
+
+def test_status_names_the_mode_for_a_source_it_stops(tmp_path: Path):
+    runtime = {rt.key: rt for rt in _mode({"mode": "read_only"}).runtime(provider_available=True)}
+
+    assert runtime["adr"].status == "disabled"
+    assert "read-only" in runtime["adr"].reason
+    assert runtime["cli"].status == "always_on"
+
+
+def test_layer_mode_reads_full_for_a_missing_or_broken_config(tmp_path: Path):
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    assert layer_mode(None) == "full"
+    assert layer_mode(tmp_path) == "full"
+    _write_config(tmp_path, "decisions: [unclosed\n")
+    assert layer_mode(tmp_path) == "full"
+    _write_config(tmp_path, "decisions:\n  mode: off\n")
+    assert layer_mode(tmp_path) == "off"

@@ -15,12 +15,13 @@ how it is judged or rendered.
 from __future__ import annotations
 
 import hashlib
+import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from repowise.core.ci import github, gitlab, sarif
-from repowise.core.ci.markdown import ROW_LIMIT, cell, details, more_line, plural
+from repowise.core.ci.markdown import ROW_LIMIT, cell, code, details, more_line, plural
 from repowise.core.ci.summary import GateSummary, SummaryFinding
 
 from ..test_paths import is_test_related_path
@@ -29,6 +30,7 @@ from .change_health.models import INCIDENTAL_BASES, ChangeFinding, ChangeHealthD
 from .diff_risk import DiffRiskFinding
 from .health.biomarker_labels import biomarker_label
 from .health.scoring import is_code_shape
+from .health.suggestions import hint_for
 
 #: ``--fail-on`` values, least to most severe: a level fails it and every level above.
 FAIL_ON = ("worsened", "introduced")
@@ -328,8 +330,23 @@ _HEADLINE = {
 }
 
 
-def render_markdown(result: GateResult, *, label: str, scope: str) -> str:
-    """Step-summary / PR-comment markdown: verdict first, then a capped table."""
+def reproduce_command(label: str, result: GateResult, diff_risk: Iterable[str] = ()) -> str:
+    """The ``repowise health check`` command that reaches *result* again locally."""
+    args = ["repowise", "health", "check", label, "--fail-on", result.fail_on]
+    args += ["--fail-at", result.fail_at]
+    for value in diff_risk:
+        args += ["--diff-risk", value]
+    return shlex.join(args)
+
+
+def render_markdown(
+    result: GateResult, *, label: str, scope: str, reproduce: str | None = None
+) -> str:
+    """Step-summary / PR-comment markdown: verdict first, then a capped table.
+
+    A failing verdict with *reproduce* (:func:`reproduce_command`) says how to
+    run the same check locally.
+    """
     errors, warnings = result.at(ERROR), result.at(WARNING)
     lines = [
         _HEADLINE[result.verdict].format(
@@ -355,33 +372,61 @@ def render_markdown(result: GateResult, *, label: str, scope: str) -> str:
     context = [f"{cell(location(f))}: {cell(f.message)}" for f in result.at(NOTE)]
     if context:
         lines += ["", *details("Context (moved, incidental or not code shape; never fails)", context)]
+    if reproduce and not result.passed:
+        lines += ["", f"Reproduce locally: {code(_INSTALL)}, then {code(reproduce)}"]
     lines += ["", f"_{FINDINGS_BASIS}_"]
     return "\n".join(lines) + "\n"
 
 
-def github_annotations(result: GateResult) -> list[str]:
-    """``::error`` for failing findings and ``::warning`` for warnings, capped."""
+def github_annotations(result: GateResult, *, reproduce: str | None = None) -> list[str]:
+    """``::error`` for failing findings and ``::warning`` for warnings, capped.
+
+    A failing health finding carries its fix hint; a failing verdict with
+    *reproduce* ends in one ``::notice`` naming the local command.
+    """
     out = [
         github.annotation(
             f.level,
-            f.message,
+            _with_hint(f),
             file=f.path,
             line=f.line,
             title=f"Health: {biomarker_label(f.rule)}",
         )
         for f in [*result.at(ERROR), *result.at(WARNING)]
     ]
-    return github.cap_annotations(out, noun="health findings")
+    out = github.cap_annotations(out, noun="health findings")
+    if reproduce and not result.passed:
+        out.append(github.notice(_reproduce_line(reproduce)))
+    return out
 
 
-def gate_summary(result: GateResult) -> GateSummary:
-    """The gate's row in the combined CI summary: errors and warnings, notes left out."""
+#: How the gate is installed outside the Action, as docs/start/CI.md has it.
+_INSTALL = "pip install repowise"
+
+
+def _reproduce_line(reproduce: str) -> str:
+    return f"Reproduce locally: {_INSTALL}, then {reproduce}"
+
+
+def _with_hint(f: GateFinding) -> str:
+    """*f*'s message, plus the first sentence of its fix when it fails the gate."""
+    hint = hint_for(f.rule) if f.level == ERROR and f.source == _SOURCE else None
+    return f"{f.message}. {hint}" if hint else f.message
+
+
+def gate_summary(result: GateResult, *, reproduce: str | None = None) -> GateSummary:
+    """The gate's row in the combined CI summary: errors and warnings, notes left out.
+
+    A failing row with *reproduce* names the local command in its headline.
+    """
     errors, warnings = result.at(ERROR), result.at(WARNING)
     headline = {
         PASS: "Nothing this change wrote fails the gate.",
         WARN: f"Passed with {plural(len(warnings), 'warning')}.",
         FAIL: f"Fails on {plural(len(errors), 'finding')} the change wrote.",
     }[result.verdict]
+    if reproduce and not result.passed:
+        headline = f"{headline} {_reproduce_line(reproduce)}"
     findings = tuple(
         SummaryFinding(f.level, f.path, f.line, f.message, f.fingerprint)
         for f in [*errors, *warnings]

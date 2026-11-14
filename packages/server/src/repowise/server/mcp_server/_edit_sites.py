@@ -11,9 +11,11 @@ scan could not see may hold another site.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
+import tokenize
 from collections import Counter
 from collections.abc import Iterable
 from itertools import islice
@@ -26,11 +28,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.fs_walk import PRUNED_DIRS, iter_glob
 from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.symbol_identity import id_segment_name
-from repowise.core.persistence.models import GraphEdge, GraphNode, WikiSymbol
+from repowise.core.persistence.batches import chunked
+from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
-from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
+from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
 from repowise.server.mcp_server._helpers import read_repo_file_text
-from repowise.server.mcp_server._meta import _working_tree_dirty_paths, uncommitted_targets
+from repowise.server.mcp_server._meta import (
+    _changed_files_between,
+    _working_tree_dirty_paths,
+    read_live_head,
+    uncommitted_targets,
+)
 from repowise.server.mcp_server._verify import _MIN_GATE_NAME_LEN, name_at_line, relocate_symbol
 
 MAX_SITES = 200
@@ -38,9 +46,21 @@ MAX_TEXT_CHARS = 160
 # Plain mentions kept per file when a collector can hold the rest: a mock-heavy
 # test can name a symbol hundreds of times and bury its real callers.
 MAX_REFERENCES_PER_FILE = 3
-# Ceiling on files read per call; past it the set is reported incomplete
-# rather than read without bound.
-MAX_FILES = 300
+# A set this small comes back whole: the per-file cuts only keep one busy file
+# from crowding out the rest of a large set.
+SMALL_SET_LINES = 20
+# Ceiling on files read per call, counted after the candidates are narrowed
+# to those holding the name; past it the set is reported incomplete rather
+# than read without bound.
+MAX_FILES = 1000
+# Ceiling on files the importer walk collects from the index (nothing is read).
+MAX_IMPORTERS = 5000
+# Share of the response budget one edit set may fill; the card keeps the rest.
+_BLOCK_SHARE = 0.6
+# The order a file lists its kinds in.
+_BLOCK_KINDS = (
+    "definition", "import", "call", "alias", "reference", "reexport", "prose", "same_name", "doc"
+)
 _MAX_FILE_BYTES = 2_000_000
 _MIN_CALL_CONFIDENCE = 0.7
 _MEMBER_KINDS = frozenset({"method", "constructor", "property", "field"})
@@ -114,13 +134,62 @@ def _import_lines(lines: list[str], start: re.Pattern[str] = _IMPORT_START) -> s
     return out
 
 
+# The module a statement imports from: a quoted path, a Python ``from``
+# module, or a bare ``import`` / ``use`` target.
+_IMPORT_SOURCE = re.compile(
+    r"""\bfrom\s+["'`]([^"'`\n]+)["'`]|\brequire\s*\(\s*["'`]([^"'`\n]+)["'`]"""
+    r"""|^\s*from\s+([\w.]+)\s+import\b|^\s*import\s+["'`]([^"'`\n]+)["'`]"""
+)
+
+
+#: How far from an import site its statement's head and module line are looked for.
+_IMPORT_SCAN_LINES = 200
+
+
+def _import_source(lines: list[str], n: int) -> str | None:
+    """The module the multi-line import statement holding line *n* names.
+
+    ``None`` when line *n* names it already (the reader sees it) or the
+    statement names no module.
+    """
+    if _IMPORT_SOURCE.search(lines[n - 1]):
+        return None
+    floor = max(-1, n - _IMPORT_SCAN_LINES)
+    head = next((i for i in range(n - 1, floor, -1) if _IMPORT_START.match(lines[i])), None)
+    return None if head is None else _statement_module(lines, head, n)
+
+
+def _statement_module(lines: list[str], head: int, n: int) -> str | None:
+    """The module named by the statement opening at index *head* and holding line *n*."""
+    depth = 0
+    for i in range(head, min(len(lines), n + _IMPORT_SCAN_LINES)):
+        if i > head and i >= n and _IMPORT_START.match(lines[i]):
+            return None  # the next statement: an unbalanced bracket never closed this one
+        if m := _IMPORT_SOURCE.search(lines[i]):
+            return next(g for g in m.groups() if g)
+        depth += sum(lines[i].count(c) for c in "({[") - sum(lines[i].count(c) for c in ")}]")
+        if depth <= 0 and i >= n - 1:
+            return None
+    return None
+
+
+def _site(rel: str, n: int, kind: str, lines: list[str]) -> dict[str, Any]:
+    """One edit site; a wrapped import line also names the module it imports from."""
+    site: dict[str, Any] = {"path": rel, "line": n, "kind": kind, "text": lines[n - 1].strip()[:MAX_TEXT_CHARS]}
+    if kind == "import" and (source := _import_source(lines, n)):
+        site["from"] = source
+    return site
+
+
 def _read_lines(root: Path, rel: str) -> list[str] | None:
     try:
-        if (root / rel).stat().st_size > _MAX_FILE_BYTES:
+        abs_path = (root / rel).resolve()
+        abs_path.relative_to(root.resolve())
+        if abs_path.stat().st_size > _MAX_FILE_BYTES:
             return None
-    except OSError:
+    except (OSError, ValueError):
         return None
-    text = read_repo_file_text(root, rel)
+    text = read_repo_file_text(root, rel, allow_extracted=False)
     if text is None:
         return None
     # Only a newline ends a line: splitlines() also splits on form feeds and
@@ -165,8 +234,9 @@ def _renames(
         aliases.update(found)
         if n in imports:
             imported.update(found)
-    # ``name as default`` is a default export, not a rename.
+    # ``name as default`` is a default export, and ``name as name`` keeps the name.
     aliases.discard("default")
+    aliases.discard(name)
     return aliases, aliases & imported
 
 
@@ -344,32 +414,285 @@ async def import_sites(
     return await asyncio.to_thread(_import_sites, Path(repo_root).resolve(), files, module_path)
 
 
+class _ProseLines:
+    """Which hit lines of one file name the symbol only in prose.
+
+    Prose is a comment, a docstring or a sentence in a string: a rename does
+    not have to touch it. A string holding nothing but the name, or a path or
+    dotted name ending in it (``__all__``, a mock target), is a reference.
+    Python is read by its own tokenizer; other syntaxes by the comment and
+    string masks. Either is read once, on the first line that needs it. A
+    file that does not tokenize, or whose syntax has no mask, never reads as
+    prose.
+    """
+
+    def __init__(self, rel: str, lines: list[str], name: str) -> None:
+        self._suffix = PurePosixPath(rel).suffix.lower()
+        self._lines = lines
+        self._name = name
+        # Lines that name it in code or as a whole string, or the two masks.
+        self._read_once: tuple[Any, Any] | None = None
+
+    def _python(self, text: str) -> tuple[set[int], set[int], set[tuple[int, int]]] | None:
+        word = _word(self._name)
+        code: set[int] = set()
+        strings: set[int] = set()
+        at: set[tuple[int, int]] = set()
+        try:
+            for t in tokenize.generate_tokens(io.StringIO(text).readline):
+                if t.type == tokenize.NAME and t.string == self._name:
+                    code.add(t.start[0])
+                    at.add(t.start)
+                elif (
+                    t.type == tokenize.STRING
+                    and (m := _PY_STRING.match(t.string))
+                    and word.search(m.group(3))
+                    # Before 3.12 an f-string is one token: its fields may be code.
+                    and ("f" in m.group(1).lower() or _code_string(m.group(3)))
+                ):
+                    strings.add(t.start[0])
+        except (tokenize.TokenError, SyntaxError):
+            return None
+        return code, strings, at
+
+    def _read(self) -> tuple[Any, Any]:
+        text = "\n".join(self._lines)
+        if self._suffix in _PYTHON_EXTENSIONS:
+            return ("tokens", self._python(text))
+        from repowise.core.workspace.extractors.base import _comment_mask
+
+        full = _comment_mask(self._suffix, text, strings=True)
+        comments = _comment_mask(self._suffix, text, strings=False)
+        if full is None or comments is None:
+            return ("mask", None)
+        return ("mask", (full.split("\n"), comments.split("\n")))
+
+    def _once(self) -> tuple[Any, Any]:
+        if self._read_once is None:
+            self._read_once = self._read()
+        return self._read_once
+
+    def is_code(self, n: int, m: re.Match[str]) -> bool:
+        """Whether hit *m* on line *n* is the name as code; false when nothing can be told."""
+        how, read = self._once()
+        if read is None:
+            return False
+        if how == "tokens":
+            return (n, m.start()) in read[2]
+        return read[0][n - 1][m.start()] != " " or bool(
+            _TAG_BEFORE.search(self._lines[n - 1], 0, m.start())
+        )
+
+    def __call__(self, n: int, hits: list[re.Match[str]]) -> bool:
+        how, read = self._once()
+        if read is None:  # nothing can be told
+            return False
+        if how == "tokens":
+            code, strings, _at = read
+            return n not in code and n not in strings
+        full, comments = read[0][n - 1], read[1][n - 1]
+        text = self._lines[n - 1]
+        for m in hits:
+            # A blanked character was masked, so one left standing is code; a JSX
+            # tag is code even where text before it (``Don't``) fooled the mask.
+            if full[m.start()] != " " or _TAG_BEFORE.search(text, 0, m.start()):
+                return False
+            in_comment = comments[m.start()] == " "
+            if (
+                not in_comment
+                and _NAMED_STRING.match(text[: m.start()][::-1])
+                and _NAMED_TAIL.match(text, m.end())
+            ):
+                return False
+        return True
+
+
+_TAG_BEFORE = re.compile(r"</?$")
+# Reversed text before a hit: optional path or dotted-name characters, then a
+# quote; after it, an optional dotted tail, then a quote (``"pkg.Name.attr"``).
+_NAMED_STRING = re.compile(r"[\w./@:$-]*[\"'`]")
+_NAMED_TAIL = re.compile(r"[\w.$]*[\"'`]")
+# A Python string token: prefix, opening quotes, body.
+_PY_STRING = re.compile(r"(?s)([rRbBuUfF]*)(\"\"\"|'''|\"|')(.*)\2")
+# A string that reads as code, not a sentence: a dotted or path target
+# (``"pkg.mod.Name.attr"``) or a type written as a string (``"Optional[Name]"``).
+_CODE_STRING = re.compile(r"[\w.:/@$\[\]|,-]+")
+
+
+def _code_string(body: str) -> bool:
+    return bool(_CODE_STRING.fullmatch(re.sub(r"\s*([|,])\s*", r"\1", body.strip())))
+
+
+#: Languages where a file reaches another file's symbol only through an import.
+_IMPORT_BOUND_EXTENSIONS = REGISTRY.extensions_for(("python", "typescript", "javascript"))
+_IDENT = re.compile(r"[A-Za-z_$][\w$]*")
+_PY_STAR_IMPORT = re.compile(r"\bimport\s+\*(?!\s*as\b)")
+_ON_OBJECT = re.compile(r"\??\.\s*$")
+# The first name of the object a use sits on: ``a`` in ``a.b.name``; none for
+# ``f().name`` or ``x[0].name``.
+_OBJECT_ROOT = re.compile(r"(?<![\w$.)\]])([A-Za-z_$][\w$]*)(?:\s*\??\.\s*[A-Za-z_$][\w$]*)*\s*\??\.\s*$")
+_ARGUMENT_BEFORE = re.compile(r"[(,]\s*$")
+_KEYWORD_AFTER = re.compile(r"\s*=(?!=)")
+_SLOT_BEFORE = re.compile(r"(?:^|[{(,])\s*$")
+_SLOT_AFTER = re.compile(r"\s*:(?!:)")
+# Object roots that are the caller's own instance or class, never a module.
+_OWN_RECEIVERS = frozenset({"self", "cls"})
+
+
+class _Foreign:
+    """Uses in one importing file that name something other than the symbol.
+
+    In Python, TypeScript and JavaScript a file reaches another file's
+    symbol only through an import, so in a file other than the definition's:
+
+    - a bare use is not the symbol when no import line there names it and no
+      ``from x import *`` could bring it in: it is a local binding;
+    - a use on an object is not the symbol unless the object's first name
+      comes from an import (a module): ``self.name``, ``ctx.name``,
+      ``f().name`` are another object's attribute;
+    - in Python, a keyword argument (``f(name=1)``) and a field or
+      parameter (``name: str``) name a slot. A TypeScript or JavaScript
+      object key is kept: a module mock (``vi.mock(p, () => ({ name }))``)
+      spells the export by it.
+
+    Only uses the tokenizer or mask reads as code are judged. Ceiling: a
+    module bound without an import (``m = importlib.import_module(...)``,
+    ``m = load()`` returning one) reads as a plain object. The dynamic-use
+    reason marks the first; for the second, a Python use on such an object
+    sets ``on_object``, and the caller asks whether the file imports, as a
+    module, one that holds the name.
+    """
+
+    def __init__(
+        self, lines: list[str], imports: set[int], name: str, prose: _ProseLines, python: bool
+    ):
+        self._python = python
+        self._words = {w for n in imports for w in _IDENT.findall(lines[n - 1])}
+        self._bare = name in self._words or any(
+            _PY_STAR_IMPORT.search(lines[n - 1]) for n in imports
+        )
+        self._prose = prose
+        self.on_object = False
+
+    def __call__(self, n: int, text: str, m: re.Match[str]) -> bool:
+        if not self._prose.is_code(n, m):
+            return False
+        before, after = text[: m.start()], text[m.end() :]
+        if _ON_OBJECT.search(before):
+            root = _OBJECT_ROOT.search(before)
+            if root is not None and root.group(1) in self._words:
+                return False
+            # Ceiling: ``load().name`` has no root name and is not counted: a
+            # call's result is mostly a value (``Path(p).resolve()``), rarely a module.
+            if self._python and root is not None and root.group(1) not in _OWN_RECEIVERS:
+                self.on_object = True
+            return True
+        if _SLOT_BEFORE.search(before) and _SLOT_AFTER.match(after):
+            return self._python
+        if self._python and _ARGUMENT_BEFORE.search(before) and _KEYWORD_AFTER.match(after):
+            return True
+        return not self._bare
+
+
+def _own_member_lines(lines: list[str], name: str, python: bool) -> set[int]:
+    """Lines of a file that define a method or function of its own named *name*."""
+    esc = re.escape(name)
+    if python:
+        own = re.compile(rf"^\s*(?:async\s+)?def\s+{esc}\s*\(")
+    else:
+        own = re.compile(
+            rf"^\s*(?:(?:public|private|protected|static|async|override)\s+)*{esc}\s*"
+            rf"(?:<[^>]*>)?\(.*\)\s*(?::[^{{=]*)?\{{\s*$"
+        )
+    return {n for n, t in enumerate(lines, 1) if own.match(t)}
+
+
+_SELF_BEFORE = re.compile(r"\b(?:self|this|cls)\s*\??\.\s*$")
+
+
+class _OwnMember:
+    """Uses in a file whose own class defines a member of the same name: its
+    definition and calls on ``self``/``this`` are that member, not the symbol.
+    A call on any other receiver may be either and is kept."""
+
+    def __init__(self, own: set[int]):
+        self._own = own
+
+    def __call__(self, n: int, text: str, m: re.Match[str]) -> bool:
+        return n in self._own or bool(_SELF_BEFORE.search(text, 0, m.start()))
+
+
+class _Judge(NamedTuple):
+    """Which judge, if any, reads one file's uses."""
+
+    member: bool
+    own: set[int]
+
+    def for_file(
+        self,
+        rel: str,
+        lines: list[str],
+        imports: set[int],
+        name: str,
+        prose: _ProseLines,
+        live: bool,
+        def_path: str,
+    ) -> Any:
+        if self.own:
+            return _OwnMember(self.own)
+        suffix = PurePosixPath(rel).suffix
+        # An edit in progress may use the name before importing it: not judged.
+        if self.member or live or rel == def_path or suffix not in _IMPORT_BOUND_EXTENSIONS:
+            return None
+        return _Foreign(lines, imports, name, prose, suffix in _PYTHON_EXTENSIONS)
+
+
+class _Scope(NamedTuple):
+    """What decides which uses in a file are the symbol's."""
+
+    member: bool
+    # Files holding a base method the symbol answers for, or an override of it.
+    kin: frozenset[str]
+
+
 def _scan(
     root: Path,
     files: list[str],
     name: str,
     definition: tuple[str, int, int],
     call_lines: dict[str, set[int]],
-    dirty: frozenset[str] = frozenset(),
+    dirty: frozenset[str],
+    scope: _Scope,
 ) -> tuple[
-    list[dict[str, Any]], list[str], int, set[str], bool, dict[str, set[str]], dict[str, str]
+    list[dict[str, Any]],
+    list[str],
+    int,
+    set[str],
+    bool,
+    dict[str, set[str]],
+    dict[str, str],
+    list[str],
+    list[str],
 ]:
     """``(sites, unreadable, stale call lines, files renaming it, default-exported,
-    local import aliases per Python file, package declared per file)``.
+    local import aliases per Python file, package declared per file, files
+    defining a member of their own by the name, Python files naming it on an
+    object no import binds)``.
 
     In a *dirty* file the graph's lines predate the edit, so a call is read
-    from the text (the name followed by ``(``) instead.
+    from the text (the name followed by ``(``) instead. A plain reference
+    that only an import alias spells carries ``alias``; one naming it only in
+    a comment, docstring or sentence carries ``prose``.
     """
     word = _word(name)
-    # Bound under any name by its importers, so no spelling can be scanned for.
-    default_export = re.compile(r"\bexport\s+default\b|\bas\s+default\b")
-    def_path, def_start, def_end = definition
     sites: list[dict[str, Any]] = []
     unreadable: list[str] = []
     stale = 0
     renamed: set[str] = set()
     python_aliases: dict[str, set[str]] = {}
     packages: dict[str, str] = {}
+    own: list[str] = []
+    on_object: list[str] = []
     is_default = False
     for rel in files:
         lines = _read_lines(root, rel)
@@ -385,35 +708,120 @@ def _scan(
             renamed.add(rel)
         elif python and local:
             python_aliases[rel] = local
-        if rel == def_path and not python:
-            # A CommonJS module's exports can rename on any line, so any use counts.
-            commonjs = any(_CJS_EXPORT.search(t) for t in lines)
-            if commonjs or any(default_export.search(t) and word.search(t) for t in lines):
-                is_default = True
-        spellings = [word] + [_word(a) for a in aliases]
+        if rel == definition[0] and not python and _default_exported(lines, word):
+            is_default = True
         live = rel in dirty
         graph_calls = set() if live else call_lines.get(rel, set())
-        def_seen = rel != def_path
-        for n, text in enumerate(lines, 1):
-            in_graph = n in graph_calls
-            hits = [m for s in spellings for m in s.finditer(text)]
-            if in_graph and not hits:
-                stale += 1
-                continue
-            if not hits:
-                continue
-            if live:
-                in_graph = any(_CALL_AFTER.match(text, m.end()) for m in hits)
-            if not def_seen and def_start <= n <= def_end:
-                kind, def_seen = "definition", True
-            elif n in imports:
-                kind = "import"
-            elif in_graph:
-                kind = "call"
-            else:
-                kind = "reference"
-            sites.append({"path": rel, "line": n, "kind": kind, "text": text.strip()[:MAX_TEXT_CHARS]})
-    return sites, unreadable, stale, renamed, is_default, python_aliases, packages
+        own_lines = (
+            _own_member_lines(lines, name, python)
+            if scope.member and rel != definition[0] and rel not in scope.kin
+            else set()
+        )
+        if own_lines:
+            own.append(rel)
+        found, missed, through_object = _file_sites(
+            rel, lines, imports, name, local, definition, graph_calls, live,
+            _Judge(scope.member, own_lines),
+        )
+        sites += found
+        stale += missed
+        if through_object:
+            on_object.append(rel)
+    return sites, unreadable, stale, renamed, is_default, python_aliases, packages, own, on_object
+
+
+# Bound under any name by its importers, so no spelling can be scanned for.
+_DEFAULT_EXPORT = re.compile(r"\bexport\s+default\b|\bas\s+default\b")
+
+
+def _default_exported(lines: list[str], word: re.Pattern[str]) -> bool:
+    """Whether the definition file hands the name on under any name importers pick."""
+    # A CommonJS module's exports can rename on any line, so any use counts.
+    if any(_CJS_EXPORT.search(t) for t in lines):
+        return True
+    return any(_DEFAULT_EXPORT.search(t) and word.search(t) for t in lines)
+
+
+def _file_sites(
+    rel: str,
+    lines: list[str],
+    imports: set[int],
+    name: str,
+    local: set[str],
+    definition: tuple[str, int, int],
+    graph_calls: set[int],
+    live: bool,
+    judge: _Judge,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """``(sites, stale graph call lines, named on an object no import binds)`` of one read file.
+
+    Uses that name something else are left out, except on the graph's call
+    lines: for a symbol that is not a member, what an importing file binds
+    itself (:class:`_Foreign`); for a member, another class's own member of
+    that name (:class:`_OwnMember`).
+    """
+    word = _word(name)
+    # A rename outside an import already marks the file; its spelling is
+    # not listed, since an object key (``{ name: vi.fn() }``) reads the same.
+    spellings = [word] + [_word(a) for a in local]
+    def_path, def_start, def_end = definition
+    def_seen = rel != def_path
+    prose = _ProseLines(rel, lines, name)
+    foreign = judge.for_file(rel, lines, imports, name, prose, live, def_path)
+    sites: list[dict[str, Any]] = []
+    stale = 0
+    for n, text in enumerate(lines, 1):
+        hits = [m for s in spellings for m in s.finditer(text)]
+        if n in graph_calls and not hits:
+            stale += 1
+            continue
+        if n in imports:
+            hits = _outside_module(text, hits)
+        elif foreign is not None and n not in graph_calls:
+            hits = [h for h in hits if not foreign(n, text, h)]
+        if not hits:
+            continue
+        is_def = not def_seen and def_start <= n <= def_end
+        def_seen = def_seen or is_def
+        kind = _line_kind(is_def, n in imports, _calls_here(text, hits, n, graph_calls, live))
+        if kind == "import" and prose(n, hits):
+            kind = "reference"  # ``import`` opening a docstring sentence
+        site = _site(rel, n, kind, lines)
+        _flag(site, word, text, prose(n, hits) if kind == "reference" else False)
+        sites.append(site)
+    return sites, stale, isinstance(foreign, _Foreign) and foreign.on_object
+
+
+def _calls_here(
+    text: str, hits: list[re.Match[str]], n: int, graph_calls: set[int], live: bool
+) -> bool:
+    """Whether line *n* calls the name: from the text in an edited file, else the graph."""
+    if live:
+        return any(_CALL_AFTER.match(text, m.end()) for m in hits)
+    return n in graph_calls
+
+
+def _line_kind(is_def: bool, is_import: bool, in_graph: bool) -> str:
+    if is_def:
+        return "definition"
+    if is_import:
+        return "import"
+    return "call" if in_graph else "reference"
+
+
+def _flag(site: dict[str, Any], word: re.Pattern[str], text: str, prose: bool) -> None:
+    """Mark a use only an import alias spells, else a mention only in prose."""
+    if site["kind"] in ("call", "reference") and not word.search(text):
+        site["alias"] = True
+    elif prose:
+        site["prose"] = True
+
+
+def _outside_module(text: str, hits: list[re.Match[str]]) -> list[re.Match[str]]:
+    """*hits* on an import line, less those inside the module it names: in
+    ``from pkg.name import x`` the module is not the symbol."""
+    spans = [m.span(m.lastindex or 0) for m in _IMPORT_SOURCE.finditer(text)]
+    return [h for h in hits if not any(a <= h.start() < b for a, b in spans)]
 
 
 def _aliases_leave(rel: str, lines: list[str], aliases: set[str], imports: set[int]) -> bool:
@@ -448,14 +856,23 @@ def _aliases_leave(rel: str, lines: list[str], aliases: set[str], imports: set[i
     return False
 
 
+# Served after the code sites: other symbols' definitions, then documentation.
+_TRAILING_KINDS = {"same_name": 1, "doc": 2}
+
+
 def _cap_references_per_file(sites: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """*sites* with plain references past the per-file cap dropped; other kinds always stay."""
-    seen: Counter[str] = Counter()
+    """*sites* with plain references past the per-file cap dropped; other kinds
+    always stay, and a set of at most ``SMALL_SET_LINES`` rows stays whole."""
+    if len(sites) <= SMALL_SET_LINES:
+        return sites
+    seen: Counter[tuple[str | None, str]] = Counter()
     kept: list[dict[str, Any]] = []
     for site in sites:
         if site["kind"] == "reference":
-            seen[site["path"]] += 1
-            if seen[site["path"]] > MAX_REFERENCES_PER_FILE:
+            # A workspace search's rows name their repo: one path in two repos is two files.
+            key = (site.get("repo"), site["path"])
+            seen[key] += 1
+            if seen[key] > MAX_REFERENCES_PER_FILE:
                 continue
         kept.append(site)
     return kept
@@ -476,6 +893,27 @@ def _unseen_dirty_files(root: Path, local_path: str) -> list[str] | None:
         elif path.is_file():
             out.append(rel)
     return out
+
+
+def _committed_since_index(
+    root: Path, local_path: str, row_commit: str | None
+) -> tuple[list[str], list[str]]:
+    """``(files, reasons)``: live files committed since the indexed commit, and
+    why that set cannot be told. Nothing to say outside a git checkout."""
+    from repowise.core.workspace.update.state import resolve_indexed_commit
+
+    head = read_live_head(local_path)
+    if head is None:
+        return [], []
+    indexed = resolve_indexed_commit(Path(local_path), row_commit)
+    if indexed.sha is None:
+        return [], ["indexed commit unknown"] if indexed.problem else []
+    if indexed.sha == head:
+        return [], []
+    changed = _changed_files_between(local_path, indexed.sha, head)
+    if changed is None:
+        return [], ["the index is behind HEAD and git cannot list what changed"]
+    return sorted(f for f in changed if (root / f).is_file()), []
 
 
 def _declared_package(lines: list[str]) -> str | None:
@@ -547,7 +985,9 @@ def _jvm_package_files(
 
 def _live_definition(root: Path, node: GraphNode, name: str, language: str) -> tuple[int, int]:
     """*node*'s bounds re-parsed from its edited file; ``(0, 0)`` when it is not found."""
-    text = read_repo_file_text(root, node.file_path)
+    text = read_repo_file_text(root, node.file_path, allow_extracted=False)
+    if text is None:
+        return (0, 0)
     row = WikiSymbol(
         file_path=node.file_path,
         symbol_id=node.node_id,
@@ -588,6 +1028,8 @@ class _ScanResult(NamedTuple):
     is_default: bool
     python_aliases: dict[str, set[str]]
     packages: dict[str, str]
+    own_member: list[str]
+    on_object: list[str]
 
 
 async def _edges_into(session: AsyncSession, repo_id: str, node: GraphNode) -> list[Any]:
@@ -616,22 +1058,27 @@ async def _edges_into(session: AsyncSession, repo_id: str, node: GraphNode) -> l
 
 async def _importer_files(
     session: AsyncSession, repo_id: str, def_file: str, name: str, edges: list[Any]
-) -> set[str]:
-    """The definition file, its importers, and files re-exporting the name onward."""
+) -> tuple[set[str], set[str], bool]:
+    """``(files, holders, cut)``: the definition file, its importers, and files
+    re-exporting the name onward; *holders* the files the walk followed (the
+    definition and each file that may bind the name); *cut* when the walk
+    stopped at its ceiling."""
     # A package barrel's own importers are scanned too.
     files: set[str] = {def_file}
     files.update(row[0] for row in edges if row[2] == "imports")
     frontier, seen = [def_file], {def_file}
-    while frontier and len(files) <= MAX_FILES:
-        rows = (
-            await session.execute(
-                select(GraphEdge.source_node_id, GraphEdge.imported_names_json).where(
-                    GraphEdge.repository_id == repo_id,
-                    GraphEdge.edge_type == "imports",
-                    GraphEdge.target_node_id.in_(frontier),
+    while frontier and len(files) <= MAX_IMPORTERS:
+        rows: list[Any] = []
+        for batch in chunked(frontier):
+            rows += (
+                await session.execute(
+                    select(GraphEdge.source_node_id, GraphEdge.imported_names_json).where(
+                        GraphEdge.repository_id == repo_id,
+                        GraphEdge.edge_type == "imports",
+                        GraphEdge.target_node_id.in_(batch),
+                    )
                 )
-            )
-        ).all()
+            ).all()
         frontier = []
         for src, names_json in rows:
             files.add(src)
@@ -640,7 +1087,7 @@ async def _importer_files(
             if src not in seen and (not names or name in names or "*" in names):
                 seen.add(src)
                 frontier.append(src)
-    return files
+    return files, seen, bool(frontier)
 
 
 def _edge_facts(edges: list[Any], node: GraphNode, name: str, files: set[str]) -> _EdgeFacts:
@@ -678,17 +1125,52 @@ async def _node_language(session: AsyncSession, repo_id: str, node: GraphNode) -
     return (language or "").lower()
 
 
+def _holds(root: Path, rel: str, name: str) -> bool:
+    """Whether *rel*'s bytes hold *name*; an unreadable file is kept for the scan to report."""
+    try:
+        return name.encode() in (root / rel).read_bytes()
+    except OSError:
+        return True
+
+
 def _capped_candidates(
-    files: set[str], unseen: list[str], reasons: list[str]
+    root: Path,
+    name: str,
+    files: set[str],
+    unseen: list[str],
+    held: set[str] | None,
+    def_file: str,
+    reasons: list[str],
 ) -> tuple[list[str], list[str]]:
-    """Indexed and unindexed candidate files, together at most ``MAX_FILES``."""
+    """Indexed and unindexed candidate files, together at most ``MAX_FILES``.
+
+    *held* (the files git grep finds holding the name, ``None`` when git
+    cannot say) narrows both lists first: a file without the name has no
+    site. An indexed file git grep does not search (ignored, or binary to
+    git) is kept when its bytes hold the name.
+    """
     unindexed = sorted(set(unseen) - files)
     ordered = sorted(files)
-    if len(ordered) + len(unindexed) > MAX_FILES:
-        reasons.append(f"over {MAX_FILES} candidate files")
+    if held is not None:
+        ordered = [f for f in ordered if f in held or f == def_file or _holds(root, f, name)]
+        unindexed = [f for f in unindexed if f in held]
+    over = len(ordered) + len(unindexed) - MAX_FILES
+    if over > 0:
+        reasons.append(
+            f"over {MAX_FILES} candidate files: {over} not read, and sites_total counts only those read"
+        )
         ordered = ordered[:MAX_FILES]
         unindexed = unindexed[: max(0, MAX_FILES - len(ordered))]
     return ordered, unindexed
+
+
+def _unread_call_lines(
+    call_lines: dict[str, set[int]], read: list[str], dirty: frozenset[str]
+) -> int:
+    """Graph call lines in files left out for not holding the name: stale, like
+    any graph line the scan finds no name on."""
+    kept = set(read) | dirty
+    return sum(len(lines) for f, lines in call_lines.items() if f not in kept)
 
 
 async def _definition_span(
@@ -700,6 +1182,79 @@ async def _definition_span(
         # Indexed bounds predate the edit; re-parse as get_symbol does.
         return (def_file, *await asyncio.to_thread(_live_definition, root, node, name, language))
     return (def_file, node.start_line or 0, node.end_line or node.start_line or 0)
+
+
+def _module_names(path: str) -> set[str]:
+    """Names a Python import of the module at *path* binds: its stem, or its package's."""
+    p = PurePosixPath(path)
+    return {p.parent.name} if p.stem == "__init__" else {p.stem}
+
+
+def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
+    """Whether *rel* binds one of *module_paths* as a module object and hands
+    that binding on as a whole value: ``return mod``, ``yield mod``, ``m = mod``.
+
+    Ceiling: ``import pkg.mod`` binds ``pkg``, which is not followed; nor is
+    ``f(mod)``, which tests write for every ``monkeypatch.setattr(mod, ...)``.
+    """
+    lines = _read_lines(root, rel)
+    if lines is None:
+        return False
+    imports = _import_lines(lines)
+    local: set[str] = set()
+    for stem in {s for p in module_paths for s in _module_names(p)}:
+        esc = re.escape(stem)
+        aliased = re.compile(rf"(?<!\w){esc}\s+as\s+(\w+)")
+        plain = re.compile(rf"(?<![\w.]){esc}(?![\w.])(?!\s+as\b)")
+        for n in imports:
+            text = lines[n - 1]
+            local.update(m.group(1) for m in aliased.finditer(text))
+            if _outside_module(text, list(plain.finditer(text))):
+                local.add(stem)
+    if not local:
+        return False
+    alt = "|".join(re.escape(a) for a in sorted(local))
+    handed = re.compile(rf"(?:\b(?:return|yield)\s+|(?<![=!<>])=\s*)(?:{alt})\s*(?:[#;]|$)")
+    return any(handed.search(t) for n, t in enumerate(lines, 1) if n not in imports)
+
+
+async def _module_object_reasons(
+    session: AsyncSession,
+    repo_id: str,
+    root: Path,
+    on_object: list[str],
+    holders: set[str],
+) -> list[str]:
+    """Why uses on an object no import binds may be the symbol's.
+
+    A file that imports a module holding the name as a module object and
+    hands that object on (``def load(): import mod; return mod``, then
+    ``m = load(); m.name()``) reaches the symbol through a binding neither
+    the graph nor the scan follows, so such a use was left out.
+    """
+    if not on_object or not holders:
+        return []
+    rows = (
+        await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type == "imports",
+                GraphEdge.source_node_id.in_(on_object),
+                GraphEdge.target_node_id.in_(list(holders)),
+            )
+        )
+    ).all()
+    imported: dict[str, set[str]] = {}
+    for src, tgt in rows:
+        imported.setdefault(src, set()).add(tgt)
+    files = [
+        rel
+        for rel in sorted(imported)
+        if await asyncio.to_thread(_hands_on_module, root, rel, imported[rel])
+    ]
+    if not files:
+        return []
+    return [f"may be called through a module object outside an import: {', '.join(files[:3])}"]
 
 
 async def _python_alias_exports(
@@ -767,8 +1322,11 @@ def _scope_reasons(
         reasons.append(f"renamed on import or export: {', '.join(sorted(scan.renamed_in)[:3])}")
     if scan.is_default:
         reasons.append("default export: importers may rename it")
-    if node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1:
-        reasons.append("member: calls through untyped receivers are not scanned")
+    if scan.own_member:
+        reasons.append(
+            "another class defines its own member of that name, whose uses are not listed: "
+            + ", ".join(scan.own_member[:3])
+        )
     touched = sorted({s["path"] for s in scan.sites if s["path"] in unindexed})
     if touched:
         reasons.append(f"unindexed edits name it: {', '.join(touched[:3])}")
@@ -778,80 +1336,151 @@ def _scope_reasons(
     return reasons
 
 
-def _served_sites(
-    sites: list[dict[str, Any]],
-    reasons: list[str],
+def _language_family(language: str) -> tuple[str, ...]:
+    """The languages whose files can call a member *language* defines."""
+    if language in ("typescript", "javascript"):
+        return ("typescript", "javascript")
+    return _JVM if language in _JVM else (language,)
+
+
+def _member_reasons(
+    root: Path,
     node: GraphNode,
-    collector: OmissionCollector | None,
-) -> dict[str, Any]:
-    """Sort and cap *sites* into the reply, recording what the caps hid."""
-    sites.sort(
-        key=lambda s: (
-            s["kind"] != "definition",
-            is_test_related_path(s["path"]),
-            s["path"],
-            s["line"],
+    name: str,
+    language: str,
+    scanned: set[str],
+    held: set[str] | None,
+) -> list[str]:
+    """Why a member's set may miss calls through receivers of unknown type.
+
+    The scan reads importers only. A file that never imports the definition
+    can still reach the member through a parameter, an attribute, an
+    inherited bare call or a destructuring, so any file of its language
+    family outside the scan that names it as a word may hold another site.
+    """
+    if node.kind not in _MEMBER_KINDS and node.node_id.count("::") <= 1:
+        return []
+    exts = REGISTRY.extensions_for(_language_family(language))
+    if not exts or held is None:
+        return ["member: calls through untyped receivers are not scanned"]
+    word = _word(name)
+    for rel in sorted(held):
+        if rel in scanned or PurePosixPath(rel).suffix not in exts:
+            continue
+        lines = _read_lines(root, rel)
+        if lines is None or any(word.search(t) for t in lines):
+            # The first such file is enough to say why, and keeps the reason short.
+            return [f"member: an unscanned file names it: {rel}"]
+    return []
+
+
+async def _dispatch_kin(
+    session: AsyncSession, repo_id: str, node: GraphNode
+) -> tuple[list[str], list[str]]:
+    """``(base methods, overriding methods)`` *node* is joined to by ``dispatches_to``."""
+    rows = (
+        await session.execute(
+            select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type == "dispatches_to",
+                GraphEdge.confidence >= _MIN_CALL_CONFIDENCE,
+                or_(
+                    GraphEdge.target_node_id == node.node_id,
+                    GraphEdge.source_node_id == node.node_id,
+                ),
+            )
         )
-    )
-    kept = _cap_references_per_file(sites) if collector is not None else sites
-    if len(kept) > MAX_SITES:
-        reasons.append(f"over {MAX_SITES} sites")
-    if len(kept) < len(sites):
+    ).all()
+    bases = sorted({src for src, tgt in rows if tgt == node.node_id and src != node.node_id})
+    overrides = sorted({tgt for src, tgt in rows if src == node.node_id and tgt != node.node_id})
+    return bases, overrides
+
+
+def _dispatch_reasons(bases: list[str], overrides: list[str]) -> list[str]:
+    """Why a method that answers for a base method, or is overridden, has sites
+    the name scan cannot attribute: calls written against the base type, and
+    the overriding definitions a rename or signature change also reaches."""
+    reasons: list[str] = []
+    if bases:
+        reasons.append(f"calls through the base method are not listed: {', '.join(bases[:3])}")
+    if overrides:
         reasons.append(
-            f"{len(sites) - len(kept)} references past {MAX_REFERENCES_PER_FILE} per file"
-            " not shown: sites_omitted_by_file; the full list is under _meta.omitted"
+            f"{len(overrides)} overriding methods are not listed: {', '.join(overrides[:3])}"
         )
-    out: dict[str, Any] = {"sites": kept[:MAX_SITES], "complete": not reasons}
-    if collector is None:
-        if len(sites) > MAX_SITES:
-            out["sites_omitted"] = len(sites) - MAX_SITES
-    elif len(out["sites"]) < len(sites):
-        shown = {id(s) for s in out["sites"]}
-        cap_collection(
-            out,
-            "sites",
-            sites,
-            MAX_SITES,
-            collector,
-            emitted=out["sites"],
-            label=f"{node.node_id} :: references.sites not shown",
-            reason="per_file_reference_cap" if len(kept) < len(sites) else "construction_cap",
-        )
-        out["sites_omitted_by_file"] = dict(
-            Counter(s["path"] for s in sites if id(s) not in shown)
-        )
+    return reasons
+
+
+def _site_order(site: dict[str, Any]) -> tuple[Any, ...]:
+    """The definition first, code before other definitions and documents,
+    production before tests."""
+    return (
+        site["kind"] != "definition",
+        _TRAILING_KINDS.get(site["kind"], 0),
+        is_test_related_path(site["path"]),
+        site["path"],
+        site["line"],
+    )
+
+
+def _served_sites(sites: list[dict[str, Any]], reasons: list[str]) -> dict[str, Any]:
+    """Sort and cap *sites* into the flat reply search_codebase merges."""
+    for site in sites:
+        # Facts the edit-set block reads; a flat row keeps its structural kind.
+        site.pop("alias", None)
+        site.pop("prose", None)
+    sites.sort(key=_site_order)
+    if len(sites) > MAX_SITES:
+        reasons.append(f"over {MAX_SITES} sites")
+    out: dict[str, Any] = {"sites": sites[:MAX_SITES], "complete": not reasons}
+    if len(sites) > MAX_SITES:
+        out["sites_omitted"] = len(sites) - MAX_SITES
     if reasons:
         out["reasons"] = reasons
     return out
 
 
-async def reference_edit_set(
+def _holding(root: Path, name: str) -> set[str] | None:
+    """The files whose text holds *name*; ``None`` when git cannot say."""
+    from repowise.server.mcp_server._line_hits import _files_holding
+
+    held = _files_holding(root, name)
+    return None if held is None else set(held)
+
+
+async def _edit_set(
     session: AsyncSession,
     repo_id: str,
     repo_root: str | Path,
     node: GraphNode,
-    collector: OmissionCollector | None = None,
-) -> dict[str, Any]:
-    """Every live site naming *node*, classified, with a completeness verdict.
-
-    Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
-    plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
-    definition | import | call | reference. With a *collector*, plain
-    references past ``MAX_REFERENCES_PER_FILE`` in one file move to it and
-    ``sites_omitted_by_file`` counts every row not shown.
-    """
+    *,
+    wider: bool,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """``(sites, reasons)``: every live site naming *node*, uncapped, and why
+    the list may not be all of them."""
     root = Path(repo_root).resolve()
     name = _bare_name(node)
     reasons: list[str] = []
 
     edges = await _edges_into(session, repo_id, node)
-    files = await _importer_files(session, repo_id, node.file_path, name, edges)
+    files, holders, cut = await _importer_files(session, repo_id, node.file_path, name, edges)
+    if cut:
+        reasons.append(f"over {MAX_IMPORTERS} importing files")
     facts = _edge_facts(edges, node, name, files)
 
     unseen = await asyncio.to_thread(_unseen_dirty_files, root, str(repo_root))
     if unseen is None:
         reasons.append("working tree status unknown")
         unseen = []
+    row_commit = await session.scalar(
+        select(Repository.head_commit).where(Repository.id == repo_id)
+    )
+    committed, why = await asyncio.to_thread(
+        _committed_since_index, root, str(repo_root), row_commit
+    )
+    reasons += why
+    # Committed since the index or edited since: either way the graph's lines
+    # predate the file, so it is read like an uncommitted edit.
+    unseen = sorted(set(unseen) | set(committed))
     dirty = frozenset(unseen)
 
     language = await _node_language(session, repo_id, node)
@@ -859,17 +1488,160 @@ async def reference_edit_set(
     files.update(package_files)
     reasons += why
 
-    ordered, unindexed = _capped_candidates(files, unseen, reasons)
+    held = await asyncio.to_thread(_holding, root, name)
+    ordered, unindexed = await asyncio.to_thread(
+        _capped_candidates, root, name, files, unseen, held, node.file_path, reasons
+    )
     definition = await _definition_span(root, node, name, language, dirty)
+    bases, overrides = await _dispatch_kin(session, repo_id, node)
+    scope = _Scope(
+        node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1,
+        frozenset(i.split("::", 1)[0] for i in bases + overrides),
+    )
     scan = _ScanResult(
         *await asyncio.to_thread(
-            _scan, root, ordered + unindexed, name, definition, facts.call_lines, dirty
+            _scan, root, ordered + unindexed, name, definition, facts.call_lines, dirty, scope
         )
     )
+    # Past the file cap the left-out files are said already; none is stale for it.
+    if held is not None and len(ordered) + len(unindexed) < MAX_FILES:
+        scan = scan._replace(
+            stale=scan.stale + _unread_call_lines(facts.call_lines, ordered, dirty)
+        )
     await _python_alias_exports(session, repo_id, scan.python_aliases, scan.renamed_in)
+    reasons += await _module_object_reasons(session, repo_id, root, scan.on_object, holders)
 
     reasons += _evidence_reasons(scan, facts)
     scanned = set(ordered) - set(scan.unreadable)
     foreign = _foreign_package_files(package_files, scanned, scan.packages, package, language)
     reasons += _scope_reasons(node, scan, foreign, language, set(unindexed))
-    return _served_sites(scan.sites, reasons, node, collector)
+    reasons += await asyncio.to_thread(
+        _member_reasons, root, node, name, language, scanned | set(unindexed), held
+    )
+    reasons += _dispatch_reasons(bases, overrides)
+    if wider:
+        reasons += await _widen(
+            session, repo_id, root, node, name, ordered + unindexed, scan.sites
+        )
+    return scan.sites, reasons
+
+
+async def reference_edit_set(
+    session: AsyncSession,
+    repo_id: str,
+    repo_root: str | Path,
+    node: GraphNode,
+    *,
+    wider: bool = False,
+) -> dict[str, Any]:
+    """Every live site naming *node*, classified, with a completeness verdict.
+
+    Returns ``{"sites": [{"path", "line", "kind", "text"}], "complete": bool}``
+    plus ``reasons`` when incomplete and ``sites_omitted`` past the cap. Kinds:
+    definition | import | call | reference, and with *wider* also reexport |
+    same_name | doc (see :mod:`._edit_sites_wider`). search_codebase serves
+    these rows; get_context serves :func:`edit_set_block`.
+    """
+    sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=wider)
+    return _served_sites(sites, reasons)
+
+
+def _block_kind(site: dict[str, Any]) -> str:
+    if site.get("prose"):
+        return "prose"
+    return "alias" if site.get("alias") else site["kind"]
+
+
+def _file_lines(
+    sites: list[dict[str, Any]], prose: bool
+) -> tuple[dict[str, dict[str, list[int]]], int]:
+    """``(lines by kind per file, prose lines left out)``, files in serving order."""
+    by_file: dict[str, dict[str, list[int]]] = {}
+    left_out = 0
+    for site in sorted(sites, key=_site_order):
+        kind = _block_kind(site)
+        if kind == "prose" and not prose:
+            left_out += 1
+            continue
+        # A document row stands for every line of it naming the symbol.
+        by_file.setdefault(site["path"], {}).setdefault(kind, []).extend(
+            site.get("lines") or [site["line"]]
+        )
+    return {
+        path: {k: sorted(set(kinds[k])) for k in _BLOCK_KINDS if k in kinds}
+        for path, kinds in by_file.items()
+    }, left_out
+
+
+async def edit_set_block(
+    session: AsyncSession,
+    repo_id: str,
+    repo_root: str | Path,
+    node: GraphNode,
+    collector: OmissionCollector | None = None,
+    *,
+    prose: bool = False,
+) -> dict[str, Any]:
+    """get_context's ``references`` block: the edit set, one entry per file.
+
+    ``files`` maps each path to its line numbers by kind: definition |
+    import | call | alias (a use through an import alias) | reference |
+    reexport | same_name (another symbol of that name) | doc, and with
+    *prose* also prose (a comment, docstring or sentence naming it; counted
+    in ``prose_lines`` otherwise). ``sites_total`` counts every listed line.
+    Past the block's share of the response budget the leading files are
+    served and the rest go to *collector*, with ``files_total`` and
+    ``complete: false``: nothing is left out without its count.
+    """
+    sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=True)
+    by_file, left_out = _file_lines(sites, prose)
+    budget = int(effective_char_budget() * _BLOCK_SHARE)
+    shown: dict[str, dict[str, list[int]]] = {}
+    used = 0
+    for path, kinds in by_file.items():
+        cost = len(json.dumps({path: kinds}, separators=(",", ":")))
+        if shown and used + cost > budget:
+            break
+        shown[path] = kinds
+        used += cost
+    if len(shown) < len(by_file):
+        rest = {p: k for p, k in by_file.items() if p not in shown}
+        where = "the rest are under _meta.omitted" if collector is not None else "the rest are not shown"
+        reasons.append(f"{len(shown)} of {len(by_file)} files shown to fit the response; {where}")
+        if collector is not None:
+            collector.add(f"{node.node_id} :: references.files not shown", rest)
+    out: dict[str, Any] = {
+        "complete": not reasons,
+        "sites_total": sum(len(n) for kinds in by_file.values() for n in kinds.values()),
+    }
+    if len(shown) < len(by_file):
+        out["files_total"] = len(by_file)
+    if left_out:
+        out["prose_lines"] = left_out
+    if reasons:
+        out["reasons"] = reasons
+    out["files"] = shown
+    return out
+
+
+async def _widen(
+    session: AsyncSession,
+    repo_id: str,
+    root: Path,
+    node: GraphNode,
+    name: str,
+    files: list[str],
+    sites: list[dict[str, Any]],
+) -> list[str]:
+    """Add re-export, same-name and doc sites to *sites*; why the docs may be short."""
+    from repowise.server.mcp_server import _edit_sites_wider as wide
+
+    seen = {(s["path"], s["line"]) for s in sites}
+    found = await asyncio.to_thread(wide.reexport_sites, root, files, node.file_path)
+    found += await wide.same_name_sites(session, repo_id, root, node, name)
+    docs, reasons = await asyncio.to_thread(wide.doc_sites, root, name)
+    for site in found + docs:
+        if (site["path"], site["line"]) not in seen:
+            seen.add((site["path"], site["line"]))
+            sites.append(site)
+    return reasons

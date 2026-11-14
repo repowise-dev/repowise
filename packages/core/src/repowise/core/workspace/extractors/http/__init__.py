@@ -14,29 +14,35 @@ the one gate and comment check every contract type shares.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
 from ..dialect import ContractDialect, run_dialect, union_extensions
 from ..langs import PYTHON
+from .aiohttp_web import AiohttpWebDialect
 from .apex_callouts import ApexCalloutsDialect
 from .apex_rest import ApexRestDialect
 from .aspnet import AspNetDialect
 from .azure_functions import AzureFunctionsDialect
 from .csharp_http import CSharpHttpDialect
 from .django import DjangoDialect
+from .drf import DrfDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
 from .fastify import FastifyDialect
 from .flask import FlaskDialect
 from .go import GoDialect
 from .go_clients import GoClientsDialect
+from .grape import GrapeDialect
 from .hapi import HapiDialect
 from .java_clients import JavaClientsDialect, MicroProfileClientsDialect, SpringClientsDialect
+from .javalin import JavalinDialect
 from .jaxrs import JaxRsDialect
 from .js_clients import JsClientsDialect
 from .koa import KoaDialect
 from .kotlin_clients import KotlinClientsDialect
+from .ktor_server import KtorServerDialect
 from .laravel import LaravelDialect
 from .micronaut import MicronautDialect
 from .mounts import merge_mount_maps
@@ -45,11 +51,13 @@ from .next_app import NextAppDialect
 from .paths import normalize_http_path
 from .php_clients import PhpClientsDialect
 from .python_clients import PythonClientsDialect
+from .rails_routes import RailsRoutesDialect
 from .refit import RefitDialect
 from .remix import RemixDialect
 from .ruby_clients import RubyClientsDialect
 from .rust_axum import RustAxumDialect
 from .rust_clients import RustClientsDialect
+from .sinatra import SinatraDialect
 from .spring import SpringDialect
 
 if TYPE_CHECKING:
@@ -73,8 +81,12 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     AspNetDialect(),
     RustAxumDialect(),
     DjangoDialect(),
+    DrfDialect(),
+    AiohttpWebDialect(),
     JaxRsDialect(),
     MicronautDialect(),
+    KtorServerDialect(),
+    JavalinDialect(),
     NextAppDialect(),
     RemixDialect(),
     ApexRestDialect(),
@@ -82,6 +94,9 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     FastifyDialect(),
     HapiDialect(),
     KoaDialect(),
+    RailsRoutesDialect(),
+    SinatraDialect(),
+    GrapeDialect(),
 )
 
 # HTTP-client call recognisers (one client/language each).
@@ -167,16 +182,14 @@ class HttpExtractor:
 
         contracts: list[Contract] = []
         for rel_path, suffix, content in scanned:
-            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index)
+            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index, repo_root=Path(repo_path))
             # Python sits in both sets now, so one test covers the provider
             # pass (which reads the declarations above a span) and the consumer
             # pass (which reads the span itself).
             indexed = suffix in CONSUMER_INDEX_SUFFIXES
             # Only spans that can still describe this file's text supersede the
             # regex; a missing or overrun entry leaves the dialect in charge.
-            symbols = (
-                symbols_for_content(ctx, content.count("\n") + 1) if indexed else []
-            )
+            symbols = symbols_for_content(ctx, content.count("\n") + 1) if indexed else []
             lines = content.split("\n") if symbols else []
             # Run the index pass first: it only supersedes the text dialect for
             # a file it actually produced routes for. A file that yielded no
@@ -184,9 +197,7 @@ class HttpExtractor:
             # shape the queries do not capture) must not silently delete the
             # routes the regex can still see in the file's text.
             from_parse = (
-                extract_http_providers(ctx, symbols, lines)
-                if symbols and suffix in PYTHON
-                else []
+                extract_http_providers(ctx, symbols, lines) if symbols and suffix in PYTHON else []
             )
             contracts.extend(from_parse)
 

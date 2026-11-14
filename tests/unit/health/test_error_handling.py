@@ -358,7 +358,9 @@ def test_idiomatic_hit_is_labelled_and_not_scored():
     idiomatic, plain = ErrorHandlingDetector().detect(ctx)
     assert idiomatic.details == {"kind": "unsafe_unwrap", "idiom": "lock_poison", "deduction": 0.0}
     assert idiomatic.deduction == 0.0
-    assert "idiomatic" in idiomatic.reason
+    assert idiomatic.reason == (
+        "unwrapping a lock panics only if another thread panicked while holding it"
+    )
     assert plain.details == {"kind": "unsafe_unwrap"}
     assert plain.deduction is None
     assert plain.reason == "unwrap/expect turns a recoverable error into a crash"
@@ -428,5 +430,197 @@ def test_python_noqa_suppression(source: bytes, expected: dict, note: str):
     hits = _hits("python", source)
     by_kind: dict[str, int] = {}
     for h in hits:
+        by_kind[h.kind] = by_kind.get(h.kind, 0) + 1
+    assert by_kind == expected, f"{note}: expected {expected}, got {by_kind}"
+
+
+@pytest.mark.parametrize(
+    ("language", "source", "expected", "note"),
+    [
+        ("python", b"try:\n    x()\nexcept asyncio.CancelledError:\n    pass\n", set(), "asyncio"),
+        ("python", b"try:\n    x()\nexcept CancelledError:\n    pass\n", set(), "bare name"),
+        (
+            "python",
+            b"try:\n    x()\n"
+            b"except (asyncio.CancelledError, concurrent.futures.CancelledError) as e:\n"
+            b"    pass\n",
+            set(),
+            "tuple of cancellations",
+        ),
+        (
+            "python",
+            b"try:\n    x()\nexcept (asyncio.CancelledError, ValueError):\n    pass\n",
+            {"swallowed_catch"},
+            "cancellation mixed with an error is still swallowed",
+        ),
+        (
+            "python",
+            b"try:\n    x()\nexcept CancelledError, ValueError:\n    pass\n",
+            {"swallowed_catch"},
+            "parenthesis-free list keeps every type",
+        ),
+        (
+            "csharp",
+            b"class A{ void M(){ try { Go(); } catch (OperationCanceledException) {} } }\n",
+            set(),
+            "C# OperationCanceledException",
+        ),
+        (
+            "csharp",
+            b"class A{ void M(){ try { Go(); } "
+            b"catch (System.Threading.Tasks.TaskCanceledException e) {} } }\n",
+            set(),
+            "C# qualified TaskCanceledException",
+        ),
+    ],
+)
+def test_cancellation_catch_is_not_swallowed(
+    language: str, source: bytes, expected: set, note: str
+):
+    assert {h.kind for h in _hits(language, source)} == expected, note
+
+
+_FALLBACK_BODY = b"    try:\n        return load()\n    except Exception:\n        return None\n"
+
+
+@pytest.mark.parametrize(
+    ("source", "flagged", "note"),
+    [
+        (b'def f():\n    """Return None on failure."""\n' + _FALLBACK_BODY, False, "docstring"),
+        (b'def f():\n    """Best-effort cache read."""\n' + _FALLBACK_BODY, False, "best-effort"),
+        (b'def f():\n    """Load it. Never raises."""\n' + _FALLBACK_BODY, False, "never raises"),
+        (
+            b'def f():\n    """Falls back to an empty dict if the file cannot be read."""\n'
+            + _FALLBACK_BODY,
+            False,
+            "falls back",
+        ),
+        (
+            b"def f():\n    # best-effort: a missing cache is fine\n" + _FALLBACK_BODY,
+            False,
+            "comment above try",
+        ),
+        (
+            b"def f():\n    try:\n        return load()\n    except Exception:  # best-effort\n"
+            b"        return None\n",
+            False,
+            "comment on the except line",
+        ),
+        (b'def f():\n    """Return the loaded config."""\n' + _FALLBACK_BODY, True, "undocumented"),
+        (
+            b'def f():\n    """Returns the value if the key exists; raises on error."""\n'
+            + _FALLBACK_BODY,
+            True,
+            "failure word in another clause",
+        ),
+        (
+            b'def f():\n    """Does not raise ValueError for blanks."""\n' + _FALLBACK_BODY,
+            True,
+            "a named exception it does not raise is no fallback",
+        ),
+        (
+            b'def f():\n    """Best-effort read."""\n    try:\n        load()\n'
+            b"    except Exception:\n        log()\n",
+            True,
+            "documented but the handler does not return",
+        ),
+        (
+            b'def f():\n    """Best-effort read."""\n    try:\n        return load()\n'
+            b"    except:\n        return None\n",
+            True,
+            "bare except still catches KeyboardInterrupt",
+        ),
+        (
+            b'def f():\n    """Return None on failure."""\n    def g():\n        """Return it."""\n'
+            b"        try:\n            return load()\n        except Exception:\n"
+            b"            return None\n",
+            True,
+            "only the nearest function's docstring counts",
+        ),
+    ],
+)
+def test_documented_fallback_is_not_broad_except(source: bytes, flagged: bool, note: str):
+    kinds = {h.kind for h in _hits("python", source)}
+    assert bool(kinds & {"broad_except", "bare_except"}) is flagged, note
+
+
+# Ruby / Swift / Dart / Scala keep the handler body outside the catch node's
+# block-like children, so each has its own lookup (issue #4793).
+_SWALLOW = {"swallowed_catch": 1}
+_NON_BLOCK_GRAMMAR_FIXTURES = [
+    # Ruby ``rescue``: body is a ``then`` child, absent when empty.
+    ("ruby", b"begin; g; rescue => e; end\n", _SWALLOW, "empty rescue"),
+    ("ruby", b"begin\n  g\nrescue Foo\n  # ignore\nend\n", _SWALLOW, "comment-only rescue"),
+    ("ruby", b"def m\n  g\nrescue\nend\n", _SWALLOW, "empty method-level rescue"),
+    ("ruby", b"begin; g; rescue => e; puts e; end\n", {}, "rescue that logs"),
+    ("ruby", b"begin; g; rescue => e; retry; end\n", {}, "rescue that retries"),
+    # Ruby ``rescue_modifier``: only a ``nil`` fallback swallows.
+    ("ruby", b"x = g rescue nil\n", _SWALLOW, "rescue modifier falling back to nil"),
+    ("ruby", b"x = g rescue 5\n", {}, "rescue modifier with a real fallback"),
+    # Swift ``catch_block``: body is a ``statements`` child, absent when empty.
+    ("swift", b"do { try g() } catch { }\n", _SWALLOW, "empty catch"),
+    ("swift", b"do { try g() } catch { /* ignore */ }\n", _SWALLOW, "block-comment catch"),
+    ("swift", b"do { try g() } catch { // ignore\n}\n", _SWALLOW, "line-comment catch"),
+    ("swift", b"do { try g() } catch { print(error) }\n", {}, "catch that logs"),
+    # Dart: the handler block is a sibling of ``catch_clause``.
+    ("dart", b"void f() { try { g(); } catch (e) {} }\n", _SWALLOW, "empty catch"),
+    (
+        "dart",
+        b"void f() { try { g(); } on FormatException catch (e) {} }\n",
+        _SWALLOW,
+        "empty on-catch",
+    ),
+    ("dart", b"void f() { try { g(); } catch (e) { /* x */ } }\n", _SWALLOW, "comment-only"),
+    ("dart", b"void f() { try { g(); } catch (e) { print(e); } }\n", {}, "catch that logs"),
+    (
+        "dart",
+        b"void f() { try { g(); } catch (e) {} on Foo catch (e) { print(e); } }\n",
+        _SWALLOW,
+        "only the empty one of two handlers",
+    ),
+    # Scala: one ``case_clause`` per handler under ``catch_clause``.
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch { case e: Exception => () } }\n",
+        _SWALLOW,
+        "unit arm",
+    ),
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch { case e: Exception => } }\n",
+        _SWALLOW,
+        "arm with no body",
+    ),
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch { case e: Exception => {} } }\n",
+        _SWALLOW,
+        "empty block arm",
+    ),
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch { case e: Exception => log(e) } }\n",
+        {},
+        "arm that logs",
+    ),
+    (
+        "scala",
+        b"object A { def f() = try { g() } catch {\n  case _: Foo => ()\n  case e: Bar => log(e)\n} }\n",
+        _SWALLOW,
+        "only the empty arm of two",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("language", "source", "expected", "note"),
+    _NON_BLOCK_GRAMMAR_FIXTURES,
+    ids=[f"{lang}-{note}" for lang, _, _, note in _NON_BLOCK_GRAMMAR_FIXTURES],
+)
+def test_swallowed_catch_in_grammars_without_a_block_child(
+    language: str, source: bytes, expected: dict, note: str
+):
+    by_kind: dict[str, int] = {}
+    for h in _hits(language, source):
         by_kind[h.kind] = by_kind.get(h.kind, 0) + 1
     assert by_kind == expected, f"{note}: expected {expected}, got {by_kind}"

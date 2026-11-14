@@ -11,6 +11,7 @@
 import { ArrowRight, Boxes, Database, Link2, type LucideIcon } from "lucide-react";
 import { EDGE_FAMILY_COPY, EDGE_FAMILY_ORDER, type EdgeFamily, type FamilyCount } from "./edge-families";
 import { kindMixText } from "./aggregate-facts";
+import { formatNumber } from "../../lib/format";
 
 // Re-exported for the lens switch and existing imports; the control lives in shared.
 export { Segmented, type SegmentOption } from "../../shared/segmented";
@@ -55,7 +56,7 @@ export function SystemMapFilters({ familyCounts, kindCounts, families, onToggleF
             onClick={() => onToggleFamily(family)}
             aria-pressed={active}
             title={`${copy.label}: ${copy.meaning}${mix ? ` (${mix})` : ""}. ${active ? "Click to hide." : "Click to show."}`}
-            className={`inline-flex min-h-[28px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${
+            className={`inline-flex min-h-[28px] items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
               active
                 ? "border-[var(--color-border-hover)] bg-[var(--color-bg-surface)] text-[var(--color-text-primary)]"
                 : "border-dashed border-[var(--color-border-default)] text-[var(--color-text-secondary)]"
@@ -64,7 +65,7 @@ export function SystemMapFilters({ familyCounts, kindCounts, families, onToggleF
             <Icon size={12} aria-hidden />
             <span className={active ? undefined : "line-through"}>{copy.label}</span>
             <span className="font-mono text-[10px] tabular-nums text-[var(--color-text-secondary)]">
-              {count.toLocaleString()}
+              {formatNumber(count)}
             </span>
           </button>
         );

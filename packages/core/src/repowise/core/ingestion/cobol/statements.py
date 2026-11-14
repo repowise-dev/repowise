@@ -55,6 +55,50 @@ _CLOSING_PERIOD = re.compile(r"[ \t]*\.")
 _FILLER = "CONTINUE"
 _DATA_PLACEHOLDER = "01 FILLER PIC X."
 
+_XML_TOKEN = re.compile(
+    r"('[^'\n]*'|\"[^\"\n]*\")"
+    r"|(?P<start>(?<![\w-])XML\s+(?:GENERATE|PARSE)\b)"
+    r"|(?P<end>(?<![\w-])END-XML(?![\w-]))"
+    r"|(?P<period>\.(?:\s|$))",
+    re.IGNORECASE,
+)
+
+
+def _close_xml_block(
+    tok: re.Match[str], depth: int, curr_start: int, blocks: list[tuple[int, int]]
+) -> int:
+    if tok.group("end"):
+        depth -= 1
+        if depth == 0:
+            blocks.append((curr_start, tok.end()))
+        return depth
+    if tok.group("period"):
+        blocks.append((curr_start, tok.start()))
+        return 0
+    return depth
+
+
+def _xml_statement_blocks(code: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of each ``XML GENERATE`` and ``XML PARSE`` statement.
+
+    Terminates at ``END-XML`` (inclusive) or at a statement-ending period (exclusive),
+    skipping any statements or periods inside string literals.
+    """
+    blocks: list[tuple[int, int]] = []
+    depth = 0
+    curr_start = 0
+    for tok in _XML_TOKEN.finditer(code):
+        if tok.group("start"):
+            if depth == 0:
+                curr_start = tok.start()
+            depth += 1
+        elif depth > 0:
+            depth = _close_xml_block(tok, depth, curr_start, blocks)
+
+    if depth > 0:
+        blocks.append((curr_start, len(code)))
+    return blocks
+
 
 @dataclass(frozen=True)
 class ExecBlock:
@@ -148,6 +192,17 @@ def procedure_division(code: str) -> tuple[int, str | None]:
     return len(code), None
 
 
+def _mask_xml_statements(chars: list[str], code: str, procedure_from: int) -> None:
+    # XML GENERATE and XML PARSE statements (IBM Enterprise COBOL) are masked up to
+    # END-XML or the terminating period so they do not produce an ERROR node that
+    # swallows the rest of the procedure division. Any nested statement in ON EXCEPTION
+    # or call edge to a PROCESSING PROCEDURE is dropped with it.
+    for start, end in _xml_statement_blocks(code):
+        _blank(chars, start, end)
+        if start >= procedure_from:
+            chars[start : start + len(_FILLER)] = _FILLER
+
+
 def mask_statements(code: str, procedure_from: int | None = None) -> str:
     """Blank COPY statements and EXEC blocks, keeping every line and offset.
 
@@ -171,6 +226,7 @@ def mask_statements(code: str, procedure_from: int | None = None) -> str:
         _blank(chars, block.start, end)
         if block.start >= procedure_from and not _SQL_INCLUDE.match(block.body):
             chars[block.start : block.start + len(_FILLER)] = _FILLER
+    _mask_xml_statements(chars, code, procedure_from)
     masked = "".join(chars)
     # Right to left, so a replacement of another length leaves earlier offsets alone.
     for m in reversed(list(_COPY.finditer(masked))):

@@ -189,6 +189,18 @@ def template_upstream(pattern: str, forwarded: str) -> str | None:
     return heads[1] if tails[0] == tails[1] else None
 
 
+_DEFAULT_RE = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:?-([^${}]*)\}")
+
+
+def with_defaults(value: str) -> str:
+    """*value* with each ``${VAR-default}`` / ``${VAR:-default}`` read as its default.
+
+    The value compose (and a shell) uses when nothing sets the variable. Any other
+    placeholder stays, so :func:`host_of` still refuses it.
+    """
+    return _DEFAULT_RE.sub(r"\1", value) if "${" in value else value
+
+
 def host_of(key: str, value: str) -> str | None:
     """The host config entry *key* = *value* names, or None when it is not an address.
 
@@ -218,4 +230,5 @@ __all__ = [
     "join_config_path",
     "literal_prefix",
     "template_upstream",
+    "with_defaults",
 ]

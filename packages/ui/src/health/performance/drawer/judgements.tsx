@@ -128,7 +128,7 @@ export function EvidenceSection({ current }: { current: PerformanceOpportunity }
         <Field
           label="Affected"
           value={affectedSummary(current)}
-          detail={`${current.observations_total.toLocaleString()} observation${current.observations_total === 1 ? "" : "s"} fold into this cause.`}
+          detail={`${formatNumber(current.observations_total)} observation${current.observations_total === 1 ? "" : "s"} fold into this cause.`}
         />
         <Field
           label="Amplification"
@@ -173,7 +173,7 @@ export function WhyRankedSection({
   return (
     <CollapsibleSection title="Why it ranks here">
       <p className="text-sm text-[var(--color-text-secondary)]">
-        Position <span className="tabular-nums">{(position + 1).toLocaleString()}</span>{" "}
+        Position <span className="tabular-nums">{formatNumber(position + 1)}</span>{" "}
         in the queue.
       </p>
       {current.why_ranked.length > 0 ? (

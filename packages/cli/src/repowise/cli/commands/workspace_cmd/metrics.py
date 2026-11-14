@@ -30,9 +30,10 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
         check_conformance,
         tags_by_repo_from_config,
     )
+    from repowise.core.workspace.cycles import cycle_total
     from repowise.core.workspace.system_graph import load_system_graph
 
-    fmt = resolve_format(fmt, as_json)
+    fmt =resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
     ws_root, ws_config = _require_workspace(start)
 
@@ -105,7 +106,10 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
             f"  Cyclic core         [green]none[/green]"
             f"   [dim]({metrics.node_count} services, acyclic structure)[/dim]"
         )
-    console.print(f"  Dependency cycles   [bold]{metrics.cycle_count}[/bold]")
+    console.print(
+        "  Dependency cycles   [bold]"
+        f"{cycle_total(metrics.cycle_count or 0, metrics.cycle_count_capped)}[/bold]"
+    )
     if metrics.conformance_violations:
         console.print(
             f"  Rule violations     [red]{metrics.conformance_violations}[/red]"

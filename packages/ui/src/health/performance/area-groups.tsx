@@ -12,6 +12,7 @@ import type { PerformanceViewAdapter } from "./adapter";
 import type { PerformanceAreaGroup } from "./grouping";
 import { ACTIONABILITY_LABEL } from "./presentation";
 import { OpportunityList, QUIET_LINK_CLS, type RowCallbacks } from "./queue";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The queue grouped by area: one card per directory, the area with the most
@@ -39,7 +40,7 @@ const FETCHING_CARDS = 8;
 function countsLine(group: PerformanceAreaGroup): string {
   const parts = (["plan_ready", "advisory", "investigate", "expected"] as const)
     .filter((state) => group.counts[state] > 0)
-    .map((state) => `${group.counts[state].toLocaleString()} ${ACTIONABILITY_LABEL[state].toLowerCase()}`);
+    .map((state) => `${formatNumber(group.counts[state])} ${ACTIONABILITY_LABEL[state].toLowerCase()}`);
   return parts.join(" · ");
 }
 
@@ -140,7 +141,7 @@ const AreaCard = memo(function AreaCard({
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded text-left sm:w-auto sm:flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded text-left sm:w-auto sm:flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <ChevronRight
             aria-hidden="true"
@@ -178,7 +179,7 @@ const AreaCard = memo(function AreaCard({
               onClick={() => onOpenArea(group.area)}
               className={`${QUIET_LINK_CLS} mt-2 px-1 text-xs`}
             >
-              Show all {group.total.toLocaleString()} in {label}
+              Show all {formatNumber(group.total)} in {label}
             </button>
           ) : null}
         </div>

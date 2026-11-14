@@ -45,6 +45,19 @@ interface PersistedDockState {
 
 const DEFAULT_STATE: PersistedDockState = { mode: "minimized", draft: "" };
 
+/** The minimized dock's default gap above the viewport bottom (`collisionInset`). */
+const DEFAULT_COLLISION_INSET = "1rem";
+
+/** The minimized pill's minimum height; the pill and `CHAT_DOCK_PILL_REACH` both read it. */
+const PILL_MIN_HEIGHT = "2.75rem";
+
+/**
+ * How far the minimized dock reaches up from the viewport bottom at its
+ * default offset. A host panel anchored bottom-right stops above this rather
+ * than run under the pill.
+ */
+export const CHAT_DOCK_PILL_REACH = `calc(${DEFAULT_COLLISION_INSET} + ${PILL_MIN_HEIGHT})`;
+
 function readDockState(storageKey: string): PersistedDockState {
   if (typeof window === "undefined") return DEFAULT_STATE;
   try {
@@ -221,7 +234,7 @@ export function ChatDock({
   onOpenFullChat,
   owlDarkSrc = "/repowise-logo.png",
   owlLightSrc = "/repowise-logo-light.png",
-  collisionInset = "1rem",
+  collisionInset = DEFAULT_COLLISION_INSET,
   onArtifactPin,
   onOpenArtifactSource,
   artifactOverrides,
@@ -397,7 +410,8 @@ export function ChatDock({
                 ? `Open repository chat, ${error ? "chat needs attention" : "answer ready"}`
                 : "Open repository chat"
           }
-          className="group flex min-h-11 items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
+          style={{ minHeight: PILL_MIN_HEIGHT }}
+          className="group flex items-center gap-2 rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] py-1.5 pl-1.5 pr-3 shadow-[var(--shadow-md)] outline-none transition-[border-color,box-shadow,transform] hover:border-[var(--color-border-hover)] hover:shadow-[var(--shadow-lg)] focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] motion-safe:hover:-translate-y-px motion-reduce:transition-none"
         >
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--color-bg-elevated)]">
             <BrandMark
@@ -434,7 +448,7 @@ export function ChatDock({
             onClick={onDismiss}
             aria-label="Hide Ask Repowise"
             title="Hide Ask Repowise. Bring it back in Settings."
-            className="absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] shadow-[var(--shadow-md)] transition-opacity before:absolute before:-inset-1.5 before:content-[''] hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] pointer-fine:opacity-0 pointer-fine:group-hover/dock:opacity-100 motion-reduce:transition-none"
+            className="absolute -right-1.5 -top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] text-[var(--color-text-tertiary)] shadow-[var(--shadow-md)] transition-opacity before:absolute before:-inset-1.5 before:content-[''] hover:text-[var(--color-text-primary)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] pointer-fine:opacity-0 pointer-fine:group-hover/dock:opacity-100 motion-reduce:transition-none"
           >
             <X className="h-3 w-3" />
           </button>
@@ -573,7 +587,7 @@ export function ChatDock({
               <button
                 type="button"
                 onClick={onOpenFullChat}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
                 <MessageCircle className="h-3.5 w-3.5" />
                 Full chat

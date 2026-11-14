@@ -16,19 +16,29 @@ from typing import Any
 
 from repowise.core.cancellation import check_cancelled
 
-from ..source_reader import disk_source_reader
+from ..source_reader import reads_working_tree
 from .detector import (
     DEFAULT_MIN_LINES,
     DEFAULT_WINDOW_TOKENS,
     DuplicationReport,
     detect_clones,
+    splice_clones,
+    splice_may_apply,
 )
 from .limits import DuplicationLimits
+from .token_cache import _CACHE_FILENAME
 
 # Process startup is needless overhead for the small repositories common in
 # unit tests and editor workflows. Repositories above this size are where the
 # detector's transient arenas become material compared with the base process.
 _ISOLATION_FILE_THRESHOLD = 1_000
+
+# An update's splice runs here when the token cache it loads is at most this
+# big. This trades memory for time: a 68 MB cache on a 2,000-file repo spliced
+# 2 s faster here and peaked 100 MB lower across both processes, but left about
+# 155 MB committed in this one (about 2x the file size) for the rest of the
+# update. The bound caps that at about 250 MB; a larger cache keeps the child.
+_IN_PROCESS_SPLICE_MAX_CACHE_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +46,7 @@ class _FileInfo:
     path: str
     abs_path: str
     language: str
+    is_test: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,13 +56,14 @@ class _ParsedFile:
 
 def _worker(
     sender: Any,
-    files: list[tuple[str, str, str]],
+    files: list[tuple[str, str, str, bool | None]],
     git_meta_map: dict[str, dict[str, Any]],
     window_tokens: int,
     min_lines: int,
     limits: DuplicationLimits | None,
     cache_dir: Path | None,
     changed_files: set[str] | None,
+    splice: bool,
 ) -> None:
     """Run in a fresh interpreter and return only the compact report."""
     try:
@@ -67,12 +79,29 @@ def _worker(
             limits=limits,
             cache_dir=cache_dir,
             changed_files=changed_files,
+            splice=splice,
         )
         sender.send((True, report))
     except BaseException:
         sender.send((False, traceback.format_exc()))
     finally:
         sender.close()
+
+
+def _splices_in_process(
+    parsed_files: list[Any], cache_dir: Path, changed_files: set[str] | None
+) -> bool:
+    """An update whose splice is cheaper here than a spawned interpreter."""
+    if changed_files is None:
+        return False
+    paths = {pf.file_info.path for pf in parsed_files}
+    if not splice_may_apply(len(changed_files & paths), len(paths)):
+        return False
+    try:
+        size = (Path(cache_dir) / _CACHE_FILENAME).stat().st_size
+    except OSError:
+        return False  # no cache to splice against: a full scan follows
+    return size <= _IN_PROCESS_SPLICE_MAX_CACHE_BYTES
 
 
 def detect_clones_with_isolation(
@@ -89,7 +118,7 @@ def detect_clones_with_isolation(
 ) -> DuplicationReport:
     """Detect clones, isolating repository-scale transient allocations.
 
-    Only the three file-info strings used by the detector cross the process
+    Only the file-info fields the detector reads cross the process
     boundary. The full parsed AST/model graph remains in the parent, and the
     child returns the comparatively small final report.
 
@@ -104,7 +133,7 @@ def detect_clones_with_isolation(
     # revision's, which that reader documents as the thing it must not do.
     # Those callers (the base side of a diff, a historical commit) analyse a
     # changed-file set, not a repository, so the bound is not what they need.
-    reader_is_working_tree = source_reader is None or source_reader is disk_source_reader
+    reader_is_working_tree = reads_working_tree(source_reader)
 
     if len(parsed_files) < isolation_file_threshold or not reader_is_working_tree:
         return detect_clones(
@@ -118,8 +147,45 @@ def detect_clones_with_isolation(
             source_reader=source_reader,
         )
 
+    # Only a full scan needs the child; see _IN_PROCESS_SPLICE_MAX_CACHE_BYTES.
+    splice = True
+    if cache_dir is not None and _splices_in_process(parsed_files, cache_dir, changed_files):
+        report = splice_clones(
+            parsed_files,
+            git_meta_map,
+            cache_dir,
+            window_tokens=window_tokens,
+            min_lines=min_lines,
+            limits=limits,
+            changed_files=changed_files,
+            source_reader=source_reader,
+        )
+        if report is not None:
+            return report
+        splice = False  # the child would only repeat the miss
+    return _detect_in_worker(
+        parsed_files, git_meta_map, window_tokens, min_lines, limits, cache_dir, changed_files, splice
+    )
+
+
+def _detect_in_worker(
+    parsed_files: list[Any],
+    git_meta_map: dict[str, dict[str, Any]] | None,
+    window_tokens: int,
+    min_lines: int,
+    limits: DuplicationLimits | None,
+    cache_dir: Path | None,
+    changed_files: set[str] | None,
+    splice: bool,
+) -> DuplicationReport:
+    """Run :func:`detect_clones` in a spawned interpreter and return its report."""
     files = [
-        (pf.file_info.path, str(pf.file_info.abs_path), pf.file_info.language)
+        (
+            pf.file_info.path,
+            str(pf.file_info.abs_path),
+            pf.file_info.language,
+            getattr(pf.file_info, "is_test", None),
+        )
         for pf in parsed_files
     ]
     # Clone weighting only reads this field. Avoid serializing the much larger
@@ -143,6 +209,7 @@ def detect_clones_with_isolation(
             limits,
             cache_dir,
             changed_files,
+            splice,
         ),
         name="repowise-duplication",
     )

@@ -24,14 +24,19 @@ from typing import Any
 from repowise.core.workspace.code_api import CODE_CONTRACT_TYPE
 from repowise.core.workspace.contracts import (
     TOPIC_KIND_BINDING,
+    TOPIC_NAMES_UNRESOLVED_STAT,
     Contract,
     ContractLink,
     normalize_contract_id,
     same_service,
 )
 from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, LAYER_REGEX
-from repowise.core.workspace.matching.common import shared_idl
-from repowise.core.workspace.network_probe import UNRECOGNISED_CALL_FILES_STAT, outside_runtime
+from repowise.core.workspace.matching.common import AMBIGUOUS_PROVIDER, shared_idl
+from repowise.core.workspace.network_probe import (
+    UNRECOGNISED_CALL_FILES_STAT,
+    UNRECOGNISED_MESSAGE_FILES_STAT,
+    outside_runtime,
+)
 from repowise.core.workspace.signature_schema import SCHEMA_SOURCE
 
 # ---------------------------------------------------------------------------
@@ -61,6 +66,9 @@ class UnmatchedReason:
     #: The call targets a literal third-party host (Stripe, Formspree, …) that is
     #: not a workspace service, so it is intentionally excluded from matching.
     EXTERNAL_HOST = "external_host"
+    #: Two or more repos serve the call's route and neither its host nor its
+    #: base says which one it reaches, so it links to none of them.
+    AMBIGUOUS_PROVIDER = "ambiguous_provider"
 
 
 #: The closed set, for the wire copies that have to agree with it.
@@ -69,6 +77,7 @@ UNMATCHED_REASON_VALUES = (
     UnmatchedReason.INTERNAL_ONLY,
     UnmatchedReason.UNLINKED,
     UnmatchedReason.EXTERNAL_HOST,
+    UnmatchedReason.AMBIGUOUS_PROVIDER,
 )
 
 
@@ -94,6 +103,8 @@ class RepoDiagnostics:
     #: Calls that reached a confirmed HTTP wrapper but whose path could not be
     #: resolved statically. Real endpoint calls, located and then not named.
     http_consumers_unresolved: int = 0
+    #: Broker calls located whose topic or queue name the file does not settle.
+    topic_names_unresolved: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -348,6 +359,17 @@ class ExtractionDiagnostics:
     #: HTTP consumers that formed a cross-repo link. None on an artifact
     #: written before this count, which only knew which calls were read.
     http_consumers_linked: int | None = None
+    #: Broker calls located whose topic or queue name could not be settled.
+    topic_names_unresolved: int = 0
+    #: Per repo, files using a messaging SDK that produced no topic contract
+    #: (:data:`.network_probe.MESSAGE_PROBE_ROWS`). None when no repo was probed.
+    unrecognised_message_files: dict[str, int] | None = None
+
+    @property
+    def unrecognised_message_file_count(self) -> int | None:
+        if self.unrecognised_message_files is None:
+            return None
+        return sum(self.unrecognised_message_files.values())
 
     @property
     def unrecognised_call_file_count(self) -> int | None:
@@ -376,6 +398,14 @@ class ExtractionDiagnostics:
     def http_consumers_read(self) -> int:
         """HTTP consumer contracts read, linked or not."""
         return sum(r.consumers_by_type.get("http", 0) for r in self.repo_breakdown)
+
+    @property
+    def topic_contracts_read(self) -> int:
+        """Topic contracts read, publishes and subscriptions both."""
+        return sum(
+            r.providers_by_type.get("topic", 0) + r.consumers_by_type.get("topic", 0)
+            for r in self.repo_breakdown
+        )
 
     @property
     def http_calls_seen(self) -> int | None:
@@ -442,6 +472,9 @@ class ExtractionDiagnostics:
             "openapi": self.openapi.to_dict(),
             "unrecognised_call_files": self.unrecognised_call_files,
             "unrecognised_call_file_count": self.unrecognised_call_file_count,
+            "topic_names_unresolved": self.topic_names_unresolved,
+            "unrecognised_message_files": self.unrecognised_message_files,
+            "unrecognised_message_file_count": self.unrecognised_message_file_count,
         }
 
     @classmethod
@@ -472,6 +505,7 @@ class ExtractionDiagnostics:
                     providers_by_layer=r.get("providers_by_layer", {}),
                     consumers_by_layer=r.get("consumers_by_layer", {}),
                     http_consumers_unresolved=r.get("http_consumers_unresolved", 0),
+                    topic_names_unresolved=r.get("topic_names_unresolved", 0),
                 )
                 for r in data.get("repo_breakdown", [])
             ],
@@ -518,6 +552,8 @@ class ExtractionDiagnostics:
             openapi=OpenApiCoverage.from_dict(openapi),
             unrecognised_call_files=data.get("unrecognised_call_files"),
             http_consumers_linked=data.get("http_consumers_linked"),
+            topic_names_unresolved=data.get("topic_names_unresolved", 0),
+            unrecognised_message_files=data.get("unrecognised_message_files"),
         )
 
 
@@ -548,6 +584,8 @@ def _classify_unmatched(
     """Return the :class:`UnmatchedReason` for an unmatched *consumer*."""
     if consumer.meta.get("external"):
         return UnmatchedReason.EXTERNAL_HOST
+    if consumer.meta.get(AMBIGUOUS_PROVIDER):
+        return UnmatchedReason.AMBIGUOUS_PROVIDER
     candidates = providers_by_norm_id.get(normalize_contract_id(consumer.contract_id))
     if not candidates:
         return UnmatchedReason.NO_PROVIDER
@@ -615,6 +653,9 @@ def build_diagnostics(
                 consumers_by_layer=dict(sorted(cons_by_layer.items())),
                 http_consumers_unresolved=stats_by_repo.get(repo, {}).get(
                     "http_consumer_unresolved", 0
+                ),
+                topic_names_unresolved=stats_by_repo.get(repo, {}).get(
+                    TOPIC_NAMES_UNRESOLVED_STAT, 0
                 ),
             )
         )
@@ -699,13 +740,17 @@ def build_diagnostics(
         schema_coverage=schema,
         code_api=code_api,
         openapi=OpenApiCoverage.from_stats(stats_by_repo),
-        unrecognised_call_files=_unrecognised_call_files(stats_by_repo),
+        unrecognised_call_files=_probe_counts(stats_by_repo, UNRECOGNISED_CALL_FILES_STAT),
         http_consumers_linked=sum(
             1
             for c in consumers
             if c.contract_type == "http"
             and _contract_key(c.repo, c.file_path, c.contract_id) in matched_consumers
         ),
+        topic_names_unresolved=sum(
+            s.get(TOPIC_NAMES_UNRESOLVED_STAT, 0) for s in stats_by_repo.values()
+        ),
+        unrecognised_message_files=_probe_counts(stats_by_repo, UNRECOGNISED_MESSAGE_FILES_STAT),
     )
 
 
@@ -733,9 +778,9 @@ def _runtime_contracts(
     A script polling a dev server is not a call of the running system, so it is
     left out of every count here, as the network probe leaves those files out
     of its own. One that linked stays: the link shows it reaches a service.
-    Ceiling: the origin is path-only, so a product folder named ``tools/`` or
-    ``scripts/`` reads as tooling too; a classifier that reads the package
-    layout would narrow it, and it belongs in ``code_origin`` when it comes.
+    Ceiling: the origin is path-only, so a product folder named ``scripts/``
+    reads as tooling too; a classifier that reads the package layout would
+    narrow it, and it belongs in ``code_origin`` when it comes.
     """
     return [
         c
@@ -804,13 +849,9 @@ def _orphan_providers(
     return orphans
 
 
-def _unrecognised_call_files(
-    stats_by_repo: dict[str, dict[str, int]],
-) -> dict[str, int] | None:
-    """The probe's per-repo counts, or None when no repo carries one."""
+def _probe_counts(stats_by_repo: dict[str, dict[str, int]], key: str) -> dict[str, int] | None:
+    """A probe's per-repo counts under *key*, or None when no repo carries one."""
     counts = {
-        repo: stats[UNRECOGNISED_CALL_FILES_STAT]
-        for repo, stats in sorted(stats_by_repo.items())
-        if UNRECOGNISED_CALL_FILES_STAT in stats
+        repo: stats[key] for repo, stats in sorted(stats_by_repo.items()) if key in stats
     }
     return counts or None

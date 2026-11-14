@@ -14,6 +14,8 @@ import { Button } from "@repowise-dev/ui/ui/button";
 import { toast } from "sonner";
 import { submitFeedback, type FeedbackCategory } from "@/lib/api/feedback";
 import { useTranslations } from "next-intl";
+import { FIELD_CLASS } from "@repowise-dev/ui/ui/input";
+import { cn } from "@/lib/utils/cn";
 
 /** The categories in the order they are offered. The labels are read from the
  *  active locale inside the component, so the list is built there. */
@@ -94,7 +96,7 @@ export function FeedbackButton() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label={t("feedback.title")}
-        className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-accent-primary)]/50 hover:bg-[var(--color-accent-muted)] hover:text-[var(--color-text-primary)]"
+        className="flex w-full items-center gap-2 rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)] transition-colors hover:border-[var(--color-border-hover)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]"
       >
         <MessageSquarePlus className="h-4 w-4 shrink-0 text-[var(--color-accent-primary)]" />
         <span>{t("feedback.title")}</span>
@@ -121,7 +123,7 @@ export function FeedbackButton() {
                     onClick={() => setCategory(option.value)}
                     className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
                       category === option.value
-                        ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                        ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                         : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-text-tertiary)]"
                     }`}
                   >
@@ -147,7 +149,7 @@ export function FeedbackButton() {
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder={t("feedback.messagePlaceholder")}
-                className="w-full resize-none rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2.5 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)]"
+                className={cn(FIELD_CLASS, "w-full resize-none rounded-lg px-3 py-2.5 text-sm")}
               />
               <p className="mt-1 text-right text-[11px] text-[var(--color-text-tertiary)]">
                 {message.length}/{MAX_LENGTH}
@@ -171,7 +173,7 @@ export function FeedbackButton() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
-                className="w-full rounded-lg border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-accent-primary)] focus:outline-none focus:ring-1 focus:ring-[var(--color-accent-primary)]"
+                className={cn(FIELD_CLASS, "w-full rounded-lg px-3 py-2 text-sm")}
               />
             </div>
           </div>

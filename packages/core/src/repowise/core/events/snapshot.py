@@ -31,9 +31,6 @@ logger = logging.getLogger(__name__)
 SNAPSHOT_FACTS_VERSION = 1
 #: Window for "recent" activity, back from the newest indexed commit.
 RECENT_DAYS = 90
-#: A governing decision at or above this staleness counts as stale
-#: (the threshold ``get_stale_decisions`` uses).
-STALE_THRESHOLD = 0.5
 #: Ceiling on ``(file, commit)`` rows read for the recent window, newest first.
 #: Past it the window is partial and says so (``recent_capped``); the rules
 #: that read recent activity skip it. Upgrade path: aggregate per component in SQL.
@@ -227,22 +224,25 @@ async def _recent_commit_files(session: Any, repository_id: str) -> list[dict[st
 async def governing_decisions(
     session: Any, repository_id: str
 ) -> tuple[dict[str, list[tuple[str, str]]], set[str]]:
-    """Governing ``(id, title)`` pairs per file, and the ids at or past :data:`STALE_THRESHOLD`."""
+    """Governing ``(id, title)`` pairs per file, and the ids of those that are stale.
+
+    Stale is ``get_stale_decisions``' meaning, the one ``decision health`` counts.
+    """
     from repowise.core.persistence.crud.authority import governing_decisions_by_file
+    from repowise.core.persistence.crud.decision_staleness import get_stale_decisions
     from repowise.core.persistence.models import DecisionRecord
 
     governing = await governing_decisions_by_file(session, repository_id)
     ids = {d for pairs in governing.values() for d, _ in pairs}
     if not ids:
         return governing, set()
-    stale = await session.scalars(
-        select(DecisionRecord.id).where(
+    records = await session.scalars(
+        select(DecisionRecord).where(
             DecisionRecord.repository_id == repository_id,
             DecisionRecord.id.in_(sorted(ids)),
-            DecisionRecord.staleness_score >= STALE_THRESHOLD,
         )
     )
-    return governing, set(stale)
+    return governing, {d.id for d in await get_stale_decisions(session, repository_id, records)}
 
 
 def provided_contracts(repo_root: Path, head_commit: str | None) -> dict[str, dict[str, int]] | None:

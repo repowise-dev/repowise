@@ -34,6 +34,24 @@ def network_switches_off(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_signed_in_agent_cli(monkeypatch):
+    """Keep the upgrade line off the developer's own signed-in agent CLIs.
+
+    ``status``, ``doctor`` and the MCP keyless line probe for one; a test that
+    wants a route patches ``agent_cli_auth`` in the core module itself. The MCP
+    server's per-process probe and overview caches start empty per test.
+    """
+    from repowise.server.mcp_server import _meta
+
+    monkeypatch.setattr(
+        "repowise.core.providers.llm.subscription.agent_cli_auth", lambda _name: None
+    )
+    for name in ("_route_probes", "_routes", "_generate_calls", "_generate_counts"):
+        monkeypatch.setattr(_meta, name, {})
+    monkeypatch.setattr(_meta, "_overview_upgrade_named", set())
+
+
+@pytest.fixture(autouse=True)
 def fresh_test_map_cache():
     """In-memory stores reuse one URL and seed graph rows without moving the
     index stamp, so the process-wide index-state caches start empty per test."""
@@ -48,3 +66,18 @@ def fresh_test_map_cache():
     clear_test_map_cache()
     clear_area_cache()
     clear_coupling_cache()
+
+
+@pytest.fixture(scope="session")
+def cobol_grammar():
+    """Skip at run time when the COBOL grammar cannot load (first use may download it).
+
+    A module-level skip runs during collection, where xdist workers racing on a
+    cold grammar cache can disagree and abort the session (#5408)."""
+    grammar_pack = pytest.importorskip(
+        "tree_sitter_language_pack", reason="run `uv sync --all-packages`"
+    )
+    try:
+        grammar_pack.get_language("cobol")
+    except Exception as exc:  # pragma: no cover - depends on first-use grammar cache/network
+        pytest.skip(f"COBOL grammar unavailable: {exc}")

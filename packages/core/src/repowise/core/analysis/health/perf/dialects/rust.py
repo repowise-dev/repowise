@@ -312,9 +312,11 @@ class RustPerfDialect(IterableSources):
             # ``futures::executor::block_on`` / ``Handle::block_on`` inside async
             # blocks the executor thread — the canonical sync-in-async smell.
             return "block_on"
-        if root in ("std", "thread") and method == "sleep":
+        # A method call's root is its receiver's leftmost name, so ``std`` would
+        # match ``std::io::stdin().read(..)`` (console IO, not ``fs::read``).
+        if root == "thread" and method == "sleep":
             return "thread::sleep"
-        if root in ("std", "fs") and method in RUST_SYNC_FS_METHODS:
+        if root == "fs" and method in RUST_SYNC_FS_METHODS:
             return f"fs::{method}"
         return None
 

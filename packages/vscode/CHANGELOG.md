@@ -7,6 +7,88 @@ is the minimum server version it checks against.
 This file starts at 0.7.0. Earlier releases are described in the repository's
 release history.
 
+## 0.16.0
+
+The bundled Code Health and overview views carry the health and decisions
+wording of repowise 0.61.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved; repowise
+0.61.0 fills every view in this release.
+
+### Code Health
+
+- Marker descriptions say where each one scores: duplicated code scores in
+  TypeScript and error handling in Python, low cohesion is advisory, and an
+  advisory marker costs the file no points.
+- The complex-method finding reads "Many paths through one function", naming
+  what it measures.
+- Copy prompts treat mined decision records as background: the agent checks one
+  only when it bears on the change, and can put it in force with
+  `repowise decision confirm`.
+
+### Overview
+
+- The decisions summary counts decisions in force and background records, and
+  its attention row lists in-force decisions drifting from their code.
+
+## 0.15.0
+
+The Docs panel reads as a table of contents with walkthroughs in their own group,
+and every health score reads on the same five bands.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved; repowise
+0.60.0 fills every view in this release, including the walkthrough pages.
+
+### Docs
+
+- The overview and onboarding chapters lead the page tree in reading order,
+  walkthroughs that follow one operation end to end get their own group, and
+  generated code pages sit under one "Reference" folder.
+- Sections are numbered two levels deep and labelled as titles, such as "CLI"
+  where the tree used to show "Cli Overview".
+- The tree searches as you type and stays quick on large wikis.
+- Page sources name the cited line range, as `path:12-40`.
+- Mermaid diagrams use a neutral palette.
+
+### Code Health
+
+- Scores and the trend chart use the five canonical bands: Excellent, Good,
+  Fair, Needs work and At risk.
+
+### Other
+
+- The CLI-not-found and out-of-date server notices offer `uv tool install` /
+  `uv tool upgrade` first, with a pip command beside it.
+- The walkthrough points to `repowise serve` for the guided tour and Setup.
+- Figures group their digits the same way in every view, whatever the system
+  locale.
+
+## 0.14.0
+
+Code Health findings come with the rule that silences them and an agent prompt
+ready to copy, and the graph path finder lists every route between two nodes.
+
+**Requires repowise 0.47.0 or newer.** The minimum has not moved; repowise
+0.59.0 fills every view in this release.
+
+### Code Health
+
+- Findings carry the rule that silences them and an agent prompt ready to copy.
+- Untested complexity and per-function coverage (CRAP) show when a coverage
+  report is loaded.
+- Apex and COBOL findings read with proper labels, and six performance
+  findings show readable names.
+
+### Graph
+
+- The path finder lists every route between two nodes.
+- Keyboard shortcut help is rewritten.
+
+### Overview
+
+- Dashboard figures name the window they measure: 6-month bug fixes beside
+  90-day churn.
+
 ## 0.13.0
 
 The Overview opens on what to do next, Code Health gets a zoomable folder map,

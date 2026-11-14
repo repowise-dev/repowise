@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import re
 
+import pytest
+
 from repowise.core.analysis.health.fix_first import build_fix_first, text
 from repowise.core.analysis.health.worth import SIZE_MARKERS
 from tests.unit.health.fix_first_rows import FINDINGS, METRICS
@@ -128,7 +130,7 @@ def test_an_unverified_clone_finding_rescues_nothing() -> None:
 
 
 def test_the_files_other_findings_still_compete() -> None:
-    handler = {**_COMPLEX, "biomarker_type": "error_handling", "function_name": "load",
+    handler = {**_COMPLEX, "biomarker_type": "complex_conditional", "function_name": "load",
                "public_id": "finding_eh", "line_start": 70, "line_end": 70,
                "health_impact": 0.5, "details": {}}
     queue = _queue([_finding(dispatch_share=0.9), handler])
@@ -212,7 +214,7 @@ def test_a_class_finding_without_a_plan_is_no_candidate() -> None:
 
 
 def test_a_line_finding_names_its_line() -> None:
-    handler = {**_finding(), "biomarker_type": "error_handling", "line_start": 77}
+    handler = {**_finding(), "biomarker_type": "complex_conditional", "line_start": 77}
     step = _queue([handler]).lead.action.steps[0]
     assert (step.line, step.file_path) == (77, "src/core.py")
 
@@ -369,7 +371,7 @@ def test_an_unverified_clone_finding_does_not_lift() -> None:
 
 
 def test_a_duplicate_does_not_lift_a_line_finding() -> None:
-    handler = {**_finding(), "biomarker_type": "error_handling", "line_start": 30}
+    handler = {**_finding(), "biomarker_type": "complex_conditional", "line_start": 30}
     item = _queue([handler], plans=[_helper()]).lead
     assert _ranked(item, "duplicate inside") == "no"
 
@@ -550,10 +552,16 @@ def test_extract_class_and_move_method_plans_wait_for_their_audit() -> None:
     assert moved.totals.excluded["low_value_kind"] == 0
 
 
-def test_large_method_and_low_cohesion_findings_are_low_value() -> None:
-    for marker in ("large_method", "low_cohesion"):
-        queue = _queue([{**_finding(), "biomarker_type": marker}])
-        assert queue.items == () and queue.totals.excluded["low_value_kind"] == 1
+def test_large_method_findings_are_low_value() -> None:
+    queue = _queue([{**_finding(), "biomarker_type": "large_method"}])
+    assert queue.items == () and queue.totals.excluded["low_value_kind"] == 1
+
+
+@pytest.mark.parametrize("marker", ["low_cohesion", "error_handling", "dry_violation"])
+def test_an_advisory_finding_is_no_fix_first_item(marker) -> None:
+    """It costs the file nothing, so there is nothing to rank or count."""
+    queue = _queue([{**_finding(), "biomarker_type": marker, "dimension": "advisory"}])
+    assert queue.items == () and sum(queue.totals.excluded.values()) == 0
 
 
 def test_a_split_file_plan_and_a_complex_method_stay() -> None:

@@ -140,7 +140,7 @@ export function AreaLabels({
           data-area={l.path}
           data-dominated={l.dominated ? "true" : undefined}
           className={`group pointer-events-auto absolute left-0 top-0 flex max-w-[220px] flex-col items-center rounded px-1.5 py-0.5 text-center leading-tight bg-[var(--color-bg-glass)] data-[state=open]:flex-row data-[state=open]:gap-1.5 ${
-            cursor === l.path ? "ring-2 ring-[var(--color-accent-primary)]" : ""
+            cursor === l.path ? "ring-2 ring-[var(--color-focus-ring)]" : ""
           }`}
           style={{ visibility: "hidden" }}
         >

@@ -284,10 +284,6 @@ export function PathFinderPanel({
         onClick={handleFind}
         disabled={!from.trim() || !to.trim() || loading}
         className="w-full h-7 text-xs font-medium gap-1.5"
-        style={{
-          background: "var(--color-accent-graph)",
-          color: "var(--color-text-on-accent)",
-        }}
       >
         {loading ? (
           <Spinner size="sm" />

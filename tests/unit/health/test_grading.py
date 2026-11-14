@@ -195,3 +195,8 @@ def test_headline_scope_only_when_a_minority_was_analysed() -> None:
     assert headline_scope(60, 40) is None
     assert headline_scope(115, 0) is None
     assert headline_scope(0, 0) is None
+
+
+def test_a_repo_score_reads_the_same_five_bands_as_a_file() -> None:
+    # One scale on every surface: a 7.7 repo is Good, as a 7.7 file is.
+    assert headline_band(7.7, None) == band_for(7.7) == "good"

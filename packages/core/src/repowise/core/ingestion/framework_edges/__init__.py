@@ -27,6 +27,7 @@ from . import (
     aspnet,
     aura,
     aws_lambda,
+    camel,
     django,
     dotnet_discovery,
     dotnet_roots,
@@ -45,6 +46,7 @@ from . import (
     micronaut,
     next_app,
     pytest_edges,
+    python_job_roots,
     quarkus,
     rails,
     remix,
@@ -77,6 +79,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *django.HANDLERS,
     *fastapi.HANDLERS,
     *flask.HANDLERS,
+    *python_job_roots.HANDLERS,  # Celery autodiscover and Airflow DAG modules
     *aspnet.HANDLERS,  # ASP.NET edges, then the any-C# extension-method scan
     *dotnet_discovery.HANDLERS,  # types a .NET framework finds by assembly scan
     *dotnet_roots.HANDLERS,
@@ -84,6 +87,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *laravel.HANDLERS,
     *spring.HANDLERS,
     *jakarta.HANDLERS,
+    *camel.HANDLERS,
     *apex_rest.HANDLERS,
     *quarkus.HANDLERS,
     *micronaut.HANDLERS,

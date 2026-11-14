@@ -12,6 +12,8 @@ import { Search } from "lucide-react";
 import type { SystemMapNavCopy } from "./nav-copy";
 import { SEARCH_MIN_CHARS, type SearchHit } from "./search-index";
 import type { MapSearch } from "./use-system-map-search";
+import { FIELD_CLASS } from "../../ui/input";
+import { cn } from "../../lib/cn";
 
 export interface SystemMapSearchProps {
   search: MapSearch;
@@ -59,7 +61,7 @@ export function SystemMapSearch({ search, inputRef, copy, name }: SystemMapSearc
         }}
         onFocus={() => setOpen(true)}
         onKeyDown={search.onKeyDown}
-        className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-7 pr-2 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className={cn(FIELD_CLASS, "h-8 w-full pl-7 pr-2 text-xs")}
       />
       {shown && <SearchResults id={listId} optionId={optionId} search={search} copy={copy} name={name} />}
     </div>

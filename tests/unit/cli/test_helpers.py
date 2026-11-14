@@ -18,6 +18,7 @@ from repowise.cli.helpers import (
     get_head_commit,
     get_repowise_dir,
     load_state,
+    read_state,
     resolve_provider,
     resolve_reasoning,
     resolve_repo_path,
@@ -237,6 +238,55 @@ class TestStateFile:
     def test_save_creates_repowise_dir(self, tmp_path):
         save_state(tmp_path, {"key": "value"})
         assert (tmp_path / ".repowise" / "state.json").exists()
+
+    def test_read_missing_state_reports_missing(self, tmp_path):
+        result = read_state(tmp_path)
+        assert result.status == "missing"
+        assert result.state == {}
+        assert result.error is None
+
+    def test_read_valid_and_empty_objects(self, tmp_path):
+        state_path = ensure_repowise_dir(tmp_path) / "state.json"
+        state_path.write_text('{"last_sync_commit": "abc123"}', encoding="utf-8")
+        result = read_state(tmp_path)
+        assert (result.status, result.state) == ("ok", {"last_sync_commit": "abc123"})
+
+        state_path.write_text("{}", encoding="utf-8")
+        result = read_state(tmp_path)
+        assert (result.status, result.state) == ("empty", {})
+
+    @pytest.mark.parametrize(
+        "content",
+        ["{invalid", "", "[]", "null", '"text"', "42"],
+    )
+    def test_read_corrupt_or_non_object_state_reports_unreadable(self, tmp_path, content):
+        state_path = ensure_repowise_dir(tmp_path) / "state.json"
+        state_path.write_text(content, encoding="utf-8")
+        result = read_state(tmp_path)
+        assert result.status == "unreadable"
+        assert result.state == {}
+        assert result.error
+        assert load_state(tmp_path) == {}
+
+    def test_read_invalid_utf8_state_reports_unreadable(self, tmp_path):
+        state_path = ensure_repowise_dir(tmp_path) / "state.json"
+        state_path.write_bytes(b"\xff\xfe")
+        result = read_state(tmp_path)
+        assert result.status == "unreadable"
+        assert result.state == {}
+        assert result.error
+
+    def test_read_state_does_not_swallow_os_errors(self, tmp_path, monkeypatch):
+        ensure_repowise_dir(tmp_path)
+
+        def _boom(self, *args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(Path, "read_text", _boom)
+        with pytest.raises(PermissionError):
+            read_state(tmp_path)
+        with pytest.raises(PermissionError):
+            load_state(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -565,6 +615,15 @@ class TestValidateProviderConfig:
         warnings = validate_provider_config()
         assert len(warnings) == 1
         assert "ANTHROPIC_API_KEY" in warnings[0]
+
+    def test_key_in_the_repo_env_file_counts(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("REPOWISE_PROVIDER", "openai")
+        (tmp_path / ".repowise").mkdir()
+        (tmp_path / ".repowise" / ".env").write_text("OPENAI_API_KEY=sk-test\n")
+
+        assert validate_provider_config(repo_path=tmp_path) == []
+        assert validate_provider_config() != []
 
     def test_openai_missing_key(self, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

@@ -34,6 +34,7 @@ import { buildPairAiPrompt } from "./system-map-pair-prompt";
 import { RouteRow } from "./system-map-route-row";
 import { plural } from "./system-map-model";
 import { useRoutesBetween, type KindRows, type RoutesBetweenState } from "./use-routes-between";
+import { formatNumber } from "../../lib/format";
 
 export interface SystemMapRoutesPanelProps {
   graph: Pick<SystemGraph, "nodes">;
@@ -53,7 +54,7 @@ export interface SystemMapRoutesPanelProps {
 
 const QUIET = "text-xs text-[var(--color-text-secondary)]";
 const BUTTON =
-  "rounded-md border border-[var(--color-border-hover)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "rounded-md border border-[var(--color-border-hover)] px-2.5 py-1 text-xs font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 export function SystemMapRoutesPanel(props: SystemMapRoutesPanelProps) {
   const { graph, between, families } = props;
@@ -94,7 +95,7 @@ export function SystemMapRoutesPanel(props: SystemMapRoutesPanelProps) {
           </p>
         )}
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <AiPromptButton label="Copy prompt for an agent" onClick={() => setPrompting(true)} />
+          <AiPromptButton onClick={() => setPrompting(true)} />
           {props.contractsHref &&
             repos.map((repo) => {
               const A = props.LinkComponent ?? "a";
@@ -111,7 +112,7 @@ export function SystemMapRoutesPanel(props: SystemMapRoutesPanelProps) {
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter routes, files or packages"
           aria-label="Filter routes"
-          className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] px-2.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent-primary)]"
+          className="h-8 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-inset)] px-2.5 text-xs text-[var(--color-text-primary)] placeholder:text-[var(--color-text-secondary)] focus:outline-none focus:ring-2 focus:ring-[var(--color-focus-ring)]"
         />
         <RoutesBody state={state} q={q} a={a.name} b={b.name} {...props} />
       </SystemMapRailFrame>
@@ -183,7 +184,7 @@ function KindSection({ section, rows, a, b, onMore, contractHref, LinkComponent 
     <section className="flex flex-col gap-1" aria-label={`${style.label} routes`}>
       <h3 className={`${MICRO_LABEL} inline-flex items-center gap-1.5`}>
         <Icon size={12} aria-hidden />
-        {style.label} · {section.total.toLocaleString()}
+        {style.label} · {formatNumber(section.total)}
       </h3>
       {loaded.length === 0 && rows?.loading !== false ? (
         <RowSkeletons />
@@ -191,7 +192,7 @@ function KindSection({ section, rows, a, b, onMore, contractHref, LinkComponent 
         rowsByDirection(loaded).map((g) => (
           <div key={g.direction} className="flex flex-col">
             <h4 className="text-xs text-[var(--color-text-secondary)]">
-              {directionLabel(g.direction, a, b)} · {(section.byDirection[g.direction] ?? g.rows.length).toLocaleString()}
+              {directionLabel(g.direction, a, b)} · {formatNumber(section.byDirection[g.direction] ?? g.rows.length)}
             </h4>
             <ul className="m-0 flex list-none flex-col divide-y divide-[var(--color-border-default)] p-0">
               {g.rows.map((r, i) => (
@@ -221,7 +222,7 @@ function PageFooter({ shown, total, rows, onMore }: { shown: number; total: numb
   if (shown === 0 || shown >= total) return null;
   return (
     <div className="flex items-center justify-between gap-3">
-      <p className={QUIET}>{`Showing ${shown.toLocaleString()} of ${plural(total, "route", "routes")}`}</p>
+      <p className={QUIET}>{`Showing ${formatNumber(shown)} of ${plural(total, "route", "routes")}`}</p>
       <button type="button" className={BUTTON} onClick={onMore} disabled={rows?.loading}>
         {rows?.loading ? "Loading…" : "Load more"}
       </button>

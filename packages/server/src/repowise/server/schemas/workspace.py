@@ -172,9 +172,18 @@ class WorkspaceContractDetail(BaseModel):
     #: Links this contract participates in, on whichever side it plays.
     links: list[WorkspaceContractLinkEntry] = []
     #: Why this consumer matched no provider (``external_host``,
-    #: ``internal_only``, ``no_provider``), from the system graph's diagnostics.
+    #: ``internal_only``, ``no_provider``, ``ambiguous_provider``), from the
+    #: system graph's diagnostics.
     #: None for providers, for linked consumers, and when no graph is built.
     unmatched_reason: str | None = None
+
+
+class WorkspaceCoChangeEvidence(BaseModel):
+    """Bounded supporting evidence for one co-change pair (#483)."""
+
+    authors: list[str] = []
+    commit_pairs: list[dict] = []
+    max_gap_hours: float = 0.0
 
 
 class WorkspaceCoChangeEntry(BaseModel):
@@ -185,6 +194,7 @@ class WorkspaceCoChangeEntry(BaseModel):
     strength: float
     frequency: int
     last_date: str
+    evidence: WorkspaceCoChangeEvidence | None = None
 
 
 class WorkspacePackageDepEntry(BaseModel):
@@ -371,6 +381,7 @@ class WorkspaceRepoDiagnostics(BaseModel):
     providers_by_layer: dict[str, int] = {}
     consumers_by_layer: dict[str, int] = {}
     http_consumers_unresolved: int = 0
+    topic_names_unresolved: int = 0
 
 
 class WorkspaceUnmatchedConsumer(BaseModel):
@@ -378,7 +389,7 @@ class WorkspaceUnmatchedConsumer(BaseModel):
     file_path: str
     contract_id: str
     contract_type: str
-    reason: str  # no_provider | internal_only | unlinked
+    reason: str  # no_provider | internal_only | unlinked | external_host | ambiguous_provider
 
 
 class WorkspaceOrphanProvider(BaseModel):
@@ -460,6 +471,12 @@ class WorkspaceExtractionDiagnostics(BaseModel):
     #: ``None`` on an artifact written before the count existed.
     unrecognised_call_files: dict[str, int] | None = None
     unrecognised_call_file_count: int | None = None
+    #: Broker calls located whose topic or queue name could not be settled.
+    topic_names_unresolved: int = 0
+    #: Per repo, files using a messaging SDK and no topic contract.
+    #: ``None`` on an artifact written before the count existed.
+    unrecognised_message_files: dict[str, int] | None = None
+    unrecognised_message_file_count: int | None = None
 
     symbol_identity: dict[str, WorkspaceSymbolIdentity] = {}
     schema_coverage: WorkspaceSchemaCoverage = WorkspaceSchemaCoverage()
@@ -657,6 +674,9 @@ class WorkspaceConformanceResponse(BaseModel):
     #: many exist. They differ when MAX_CYCLES truncated the list.
     cycle_count: int = 0
     total_cycles: int = 0
+    #: True when the enumeration budget stopped the count, so ``total_cycles``
+    #: is a lower bound ("at least N").
+    total_capped: bool = False
     violating_repos: list[str] = []
     #: False when the graph had too little evidence for "no cycles" to mean
     #: anything; ``None`` on a report written before evidence was recorded.
@@ -688,6 +708,8 @@ class WorkspaceArchitectureResponse(BaseModel):
     core_ratio: float | None = None
     core_members: list[str] = []
     cycle_count: int | None = None
+    #: True when the enumeration budget stopped the count ("at least N").
+    cycle_count_capped: bool = False
     conformance_violations: int = 0
     architecture_type: str = "undetermined"
     score: float | None = None

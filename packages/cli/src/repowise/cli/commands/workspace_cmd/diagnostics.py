@@ -130,6 +130,8 @@ def _emit_diagnostics_json(
             "http_consumers_linked": diag.http_consumers_linked,
             "http_link_coverage": diag.http_link_coverage,
             "unrecognised_call_files": diag.unrecognised_call_files,
+            "topic_names_unresolved": diag.topic_names_unresolved,
+            "unrecognised_message_files": diag.unrecognised_message_files,
             "evidence": graph_evidence(graph).to_dict(),
         }
     )
@@ -182,6 +184,7 @@ def _print_extraction_coverage(diag: ExtractionDiagnostics) -> None:
         layers = _layers(diag.consumers_by_layer)
         console.print(f"    Consumers   {diag.total_consumers} ({layers})")
     _print_call_coverage(diag)
+    _print_topic_coverage(diag)
     console.print(
         "    [dim]'index' contracts come from the parsed symbol table, 'regex' "
         "from a text dialect.[/dim]"
@@ -234,6 +237,32 @@ def _print_call_coverage(diag: ExtractionDiagnostics) -> None:
         )
 
 
+def _print_topic_coverage(diag: ExtractionDiagnostics) -> None:
+    """Topic contracts read, broker calls not named, and files on a messaging SDK no dialect reads.
+
+    Counts only: a file on an unread SDK is a floor of one call, not a call
+    count, so no share is claimed. Silent on an artifact older than the probe.
+    """
+    missed = diag.unrecognised_message_file_count
+    if missed is None:
+        return
+    read = diag.topic_contracts_read
+    unresolved = diag.topic_names_unresolved
+    if not (read or unresolved or missed):
+        return
+    console.print(
+        f"    Topic calls {read} read, {unresolved} located but the name not statically "
+        f"resolvable, {missed} file(s) using a messaging SDK no dialect reads."
+    )
+    by_repo = [(repo, n) for repo, n in (diag.unrecognised_message_files or {}).items() if n]
+    if by_repo:
+        console.print(
+            "      [dim]unread messaging calls: "
+            + ", ".join(f"{repo} {n}" for repo, n in by_repo)
+            + "[/dim]"
+        )
+
+
 def _unlinked_http_split(diag: ExtractionDiagnostics) -> str:
     """Where the read but unlinked HTTP calls went, workspace wide."""
     counts, in_service = diag.http_unlinked()
@@ -250,12 +279,14 @@ _HTTP_REASON_SHORT = {
     "no_provider": "match no declared route",
     "unlinked": "match a route that did not link",
     "external_host": "call a third-party host",
+    "ambiguous_provider": "match a route two or more repos serve",
 }
 
 _REASON_LABELS = {
     "no_provider": "dangling: no repo declares the route, service, topic or table they use",
     "unlinked": "matching provider exists but no link formed",
     "external_host": "call a third-party host, outside the workspace",
+    "ambiguous_provider": "ambiguous: two or more repos serve the route, nothing names one",
 }
 
 #: Reasons in reading order: dangling calls first, any other reason next,

@@ -19,10 +19,11 @@ from typing import TYPE_CHECKING
 
 from repowise.core.workspace.origins import ContractOrigin
 
-from ..base import ScanContext
+from ..base import ScanContext, line_at
 from ..langs import CSHARP, JAVA, KOTLIN, PYTHON, RUBY
-from .dialect import dedup_emit, found_names
-from .names import pluralize, snake_case
+from ..strings import call_arguments
+from .dialect import _Found, dedup_emit, found_names
+from .names import normalize_table_name, pluralize, snake_case
 
 if TYPE_CHECKING:
     from repowise.core.workspace.contracts import Contract
@@ -39,8 +40,44 @@ class SqlAlchemyDjangoDialect:
 
     _TABLENAME_RE = re.compile(r"^\s*__tablename__\s*[:=]\s*.*?['\"](\S+?)['\"]", re.MULTILINE)
     _DB_TABLE_RE = re.compile(r"^\s*db_table\s*=\s*['\"](\S+?)['\"]", re.MULTILINE)
-    _CREATE_TABLE_RE = re.compile(r"\bop\.create_table\(\s*['\"](\w+)['\"]")
+    _CREATE_TABLE_RE = re.compile(r"\bop\.create_table\s*\(")
     _SQLMODEL_RE = re.compile(r"\bclass\s+(\w+)\([^)]*\btable\s*=\s*True[^)]*\)")
+    _BARE_STRING_RE = re.compile(r"['\"](\w+)['\"]")
+    _SCHEMA_KWARG_RE = re.compile(r"schema\s*=\s*['\"](\w+)['\"]")
+
+    def _created_tables(self, content: str) -> list[_Found]:
+        r"""The tables each ``op.create_table`` call declares, schema-qualified.
+
+        Alembic takes the target schema as a ``schema=`` keyword that usually
+        trails the column list, so the call's first string literal is the bare
+        table name and the qualifier has to come from the keyword: a
+        schema-qualified migration would otherwise be recorded as ``owners``
+        where its SQL consumers say ``core.owners``, and the two keys would
+        never meet. The argument list is split at top level
+        (:func:`..strings.call_arguments`) so a ``schema=`` belonging to a
+        later statement, or one on a nested call inside the argument list,
+        cannot lend its schema to this table. The qualified token goes through
+        :func:`normalize_table_name` so the case folding - and the default
+        schema drop - is the SQL consumer side's own.
+        """
+        found: list[_Found] = []
+        for m in self._CREATE_TABLE_RE.finditer(content):
+            args = call_arguments(content, m.end() - 1)  # m.end()-1 is the '('
+            if not args:
+                continue
+            name = self._BARE_STRING_RE.fullmatch(args[0])
+            if name is None:
+                continue
+            table = name.group(1)
+            for arg in args[1:]:
+                schema = self._SCHEMA_KWARG_RE.fullmatch(arg)
+                if schema is not None:
+                    table = f"{schema.group(1)}.{table}"
+                    break
+            raw = normalize_table_name(table)
+            if raw is not None:
+                found.append((raw, ContractOrigin.DDL, line_at(content, m.start())))
+        return found
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         # A migration's `create_table` defines the schema; the rest model it.
@@ -49,7 +86,7 @@ class SqlAlchemyDjangoDialect:
         content = ctx.content
         seen: set[str] = set()
         created = (
-            found_names(self._CREATE_TABLE_RE, content, ContractOrigin.DDL)
+            self._created_tables(content)
             if ctx.has_any(("op.create_table",))
             else []
         )

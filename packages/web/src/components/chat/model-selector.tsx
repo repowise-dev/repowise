@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { providerSetupHref } from "@/lib/utils/page-href";
 import { useTranslations } from "next-intl";
 import { ModelSelector as ModelSelectorShell } from "@repowise-dev/ui/chat/model-selector";
 import { useProviders } from "@/lib/hooks/use-providers";
@@ -37,7 +38,7 @@ export function ModelSelector({
       onBrowse={setBrowsing}
       {...(models ? { models: models.models } : {})}
       modelsLoading={modelsLoading}
-      settingsHref={repoId ? `/repos/${repoId}/settings` : "/settings"}
+      settingsHref={repoId ? providerSetupHref(repoId) : "/settings/models"}
       labels={{
         dialog: t("dialog"),
         provider: t("provider"),

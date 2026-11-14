@@ -145,6 +145,8 @@ Include the template and set variables for the gates you use:
 ```yaml
 include:
   - remote: https://raw.githubusercontent.com/repowise-dev/repowise/main/ci/gitlab/repowise.gitlab-ci.yml
+  # or a committed copy, when GitLab cannot reach GitHub:
+  # - local: ci/repowise.gitlab-ci.yml
 
 variables:
   REPOWISE_COVERAGE_REPORT: coverage/lcov.info
@@ -166,8 +168,11 @@ Each job logs its markdown report and keeps it as an artifact; override
 | `repowise-risk` | merge requests, when `REPOWISE_RISK_FAIL_ABOVE_PERCENTILE` is set | none |
 | `repowise-impacted-tests` | merge requests, when `REPOWISE_IMPACTED_TESTS: "true"` | none |
 | `repowise-code-quality` | the default branch; never fails the pipeline | `gl-code-quality-doc-drift.json` |
+| `repowise-note` | merge requests, when `REPOWISE_GITLAB_TOKEN` is set; never fails the pipeline | none |
 
 - `REPOWISE_VERSION` pins the release; gate variables are in each gate's table.
+- The jobs install Repowise from PyPI (or your package mirror) and download
+  nothing else.
 - Report lists (`REPOWISE_COVERAGE_REPORT`, `REPOWISE_COVERAGE_BASE_REPORT`)
   are space separated and may hold globs and `path=prefix`; Repowise expands
   the globs, not the shell.
@@ -176,6 +181,29 @@ Each job logs its markdown report and keeps it as an artifact; override
 - `repowise-code-quality` publishes the report the widget compares against, so
   only new issues show as new. It covers doc drift only: security judges only
   what a change adds, and the default branch has no change.
+
+**Merge request note.** Set `REPOWISE_GITLAB_TOKEN` and `repowise-note` posts
+one note on the merge request: a table of every gate that ran and each gate's
+findings. Later pipelines edit that note rather than add another, and count the
+findings a push resolved. The note job runs after the gates, whatever they
+decided, and its own failure never fails the pipeline.
+
+- **Token.** The CI job token cannot write merge-request notes, so create a
+  project access token (Settings > Access tokens) with the `api` scope and the
+  Reporter role; a group access token or a personal access token works too.
+  The note is posted as that token's user, and a pipeline edits only a note
+  its own user posted.
+- **Variable.** Add it under Settings > CI/CD > Variables as
+  `REPOWISE_GITLAB_TOKEN`, masked. Leave it unprotected: merge request
+  pipelines run on unprotected branches, where protected variables are empty.
+  Every job of such a pipeline can read it, including code a merge request
+  adds, so keep the token to one project and the Reporter role.
+- **Self-managed GitLab** works the same way: the job talks to
+  `CI_API_V4_URL`, which GitLab sets to your instance's API.
+- **Outside the template**, run `repowise ci-summary DIR --gate NAME=CODE ...
+  --gitlab-note` after gates that ran with `REPOWISE_GATE_SUMMARY_DIR=DIR`
+  and `--format markdown`; outside a merge request pipeline it posts nothing
+  and says so.
 
 <details><summary>Line coverage in the merge request diff</summary>
 
@@ -563,6 +591,9 @@ health-fail-at: medium
 | `health-fail-at` | `REPOWISE_HEALTH_FAIL_AT` | `--fail-at` | Lowest failing severity: `medium`, `high` (default), `critical`. |
 
 Findings that do not fail warn. On GitLab, set `REPOWISE_HEALTH: "true"`.
+With `--format github`, each failing finding's annotation ends in a one-line
+fix hint, and a failing run names the `repowise health check` command that
+reproduces it locally, in the job log and the summary.
 
 ### Before an agent commits or pushes
 
@@ -798,6 +829,9 @@ These run, but the summary counts them apart and JSON lists them:
 | `selected.basis` | what drove each selection |
 | `selected.why` | the `--explain` answer per selected test |
 
+- Importing `pkg.a.b` counts as importing `pkg/__init__.py` and
+  `pkg/a/__init__.py`, since Python runs them first (basis `package-init`).
+
 ### Conftest changes
 
 A change reaching a `conftest.py` only through imports selects tests asking for
@@ -808,13 +842,21 @@ a fixture that uses it (directly, via other fixtures, `usefixtures` or
   module-level code uses the change, or the conftest imports it only for side
   effects (`selected.broadcast`).
 - Everything runs when a fixture request is unreadable (computed name, mark in
-  a variable, config `usefixtures`), the conftest loads plugins or is
+  a variable, a request name in a string, `exec`/`eval`/`compile`, config
+  `usefixtures`), the conftest loads plugins or is
   unreadable, or the index predates this; the reasons name the cause.
 
 <details><summary>Edge cases and ceilings</summary>
 
 - `monkeypatch.setattr(mod.Cls, "name", ...)` on an imported module or its
   class in an autouse fixture is left to the import check.
+- So is a bare cache reset there (`clear_*cache*()`, `reset_*cache*()`,
+  `invalidate_*cache*()`, no arguments, result unused). Ceiling: the name is
+  trusted, so a "reset" that also reconfigures shared state reaches tests
+  without their own import of it only through the import check.
+- `request.getfixturevalue(name)` is read when `name` is a test parameter that
+  one `parametrize` supplies from a literal list of names, or from a module
+  constant bound once to one.
 - Reading an imported module's literal constant, or calling its function that
   uses nothing it imports beyond standard modules that cannot load code by name
   (emptying a `functools` cache or standard container counts), reaches only a

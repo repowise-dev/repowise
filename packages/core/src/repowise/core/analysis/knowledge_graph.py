@@ -21,6 +21,8 @@ from repowise.core.support_paths import CONFIG_EXTENSIONS, DOC_EXTENSIONS, class
 
 _log = logging.getLogger(__name__)
 
+KNOWLEDGE_GRAPH_FILENAME = "knowledge-graph.json"
+
 #: Schema version of the ``knowledge-graph.json`` artifact. Bump whenever a
 #: change makes an older file unsafe to load — readers reject anything below
 #: this and callers rebuild from scratch, which is cheaper and safer than
@@ -222,7 +224,9 @@ def _slugify(text: str) -> str:
 # longer a test, moving its ``test`` tag.
 # "7": a JavaScript-family file under a ``tests/`` folder inside a ``src`` tree
 # is not a test by that folder alone, moving its ``test`` tag.
-KG_BUILDER_VERSION = "7"
+# "8": `documents` joined the map as its own relation, so a doc linking to a
+# file reaches the export instead of being dropped.
+KG_BUILDER_VERSION = "8"
 
 # An unmapped type is dropped from the export entirely (see the
 # `if not kg_type: continue` below), which is silent. Six real types used to be
@@ -252,6 +256,8 @@ _EDGE_TYPE_MAP: dict[str, str] = {
     "framework_binds": "depends_on",
     "reads": "depends_on",
     "references": "depends_on",
+    # Its own relation, not `depends_on`: a doc naming a file is prose, not a code reference.
+    "documents": "documents",
 }
 
 
@@ -474,7 +480,7 @@ def compute_kg_fingerprint(graph_builder: Any) -> str:
         str(g.number_of_nodes()),
         str(g.number_of_edges()),
         str(len(set(cd.values()))),
-        ",".join(sorted(list(cd.keys())[:100])),
+        ",".join(sorted(cd)[:100]),
     ]
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
@@ -567,6 +573,6 @@ def save_knowledge_graph_json(repo_path: Path, kg: Any, *, portable: bool = Fals
     else:
         data = kg.to_dict()
 
-    kg_json_path = Path(repo_path) / ".repowise" / "knowledge-graph.json"
+    kg_json_path = Path(repo_path) / ".repowise" / KNOWLEDGE_GRAPH_FILENAME
     kg_json_path.parent.mkdir(parents=True, exist_ok=True)
     kg_json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")

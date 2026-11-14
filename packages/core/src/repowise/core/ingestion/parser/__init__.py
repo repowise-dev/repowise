@@ -28,6 +28,8 @@ Capture-name conventions (shared across ALL .scm files):
 
 from __future__ import annotations
 
+from typing import Any
+
 from tree_sitter import Language
 
 from ..extractors import extract_heritage, extract_module_docstring
@@ -52,7 +54,7 @@ from ..parser_helpers import _collect_error_nodes, _run_query
 from ..python_local_refs import local_refs_from_tree, parse_python_module
 from ..python_registrars import registering_functions
 from ..salesforce_soql import apex_schema_refs
-from ..sfc_source import component_call_sites, prepare_source
+from ..sfc_source import component_call_sites, prepare_source, scan
 from ..special_handlers import SPECIAL_HANDLER_LANGUAGES, parse_special
 from .calls import (
     _DOTTED_PATH,
@@ -79,6 +81,7 @@ from .grammars import (
     _load_compiled_query,
     _parse_tree,
     _recover_kotlin_annotated_declarations,
+    _recover_kotlin_misparsed_spans,
     failed_query_languages,
     grammar_tag_for,
     log,
@@ -194,8 +197,9 @@ class ASTParser:
         if config is None or language is None or _is_fsharp_signature(file_info):
             return _parse_without_grammar(file_info, source, config, language, content_hash)
 
-        # An SFC (.svelte, .vue) is blanked to its script at byte-identical
-        # offsets; ``content_hash`` above keeps hashing the original bytes.
+        # An SFC (.svelte, .vue, .razor, .astro) is blanked to its script at
+        # byte-identical offsets; ``content_hash`` above keeps hashing the
+        # original bytes.
         original_source = source
         source = prepare_source(lang, source, path=file_info.path)
 
@@ -203,12 +207,14 @@ class ASTParser:
 
         recovered_annotations: dict[int, tuple[int, str]] = {}
         if lang == "kotlin":
+            parsed_root = root
+            root, source = _recover_kotlin_misparsed_spans(language, root, source)
             root, source, recovered_annotations = _recover_kotlin_annotated_declarations(
                 language,
                 root,
                 source,
             )
-            if recovered_annotations:
+            if recovered_annotations or root is not parsed_root:
                 parse_errors = _collect_error_nodes(root)
 
         src = source.decode("utf-8", errors="replace")
@@ -219,7 +225,7 @@ class ASTParser:
         matches = _run_query(query, root) if query is not None else []
 
         symbols = _finalize_symbols(
-            _extract_symbols(matches, config, file_info, src), root, src, file_info
+            _extract_symbols(matches, config, file_info, src, original_source), root, src, file_info
         )
         _restore_kotlin_annotations(symbols, recovered_annotations)
         imports = _extract_imports(matches, config, file_info, src)
@@ -245,6 +251,7 @@ class ASTParser:
             symbols=symbols,
             imports=imports,
             exports=_derive_exports(symbols),
+            module_name=_go_package_name(root) if lang == "go" else None,
             export_aliases=ts_export_aliases(src) if lang in _TS_JS_LANGUAGES else {},
             calls=calls,
             heritage=extract_heritage(matches, config, file_info, src),
@@ -260,6 +267,17 @@ class ASTParser:
                 apex_schema_refs(root, symbols, file_info.path) if lang == "apex" else []
             ),
         )
+
+
+def _go_package_name(root: Any) -> str | None:
+    """Return the Go package clause, which participates in import resolution."""
+    for node in root.named_children:
+        if node.type != "package_clause":
+            continue
+        for child in node.named_children:
+            if child.type == "package_identifier":
+                return child.text.decode("utf-8", errors="replace")
+    return None
 
 
 def _is_fsharp_signature(file_info: FileInfo) -> bool:
@@ -294,6 +312,7 @@ def _parse_without_grammar(
         docstring=None,
         parse_errors=[],
         content_hash=content_hash,
+        grammar_missing=config is not None and language is None,
     )
 
 
@@ -303,7 +322,29 @@ def _masked_imports(lang: str, original_source: bytes) -> list[Import]:
         from ..cobol.facts import cobol_imports
 
         return cobol_imports(original_source)
+    if lang == "astro":
+        return _astro_markup_imports(original_source)
     return []
+
+
+def _astro_markup_imports(original_source: bytes) -> list[Import]:
+    """An Astro page's markup ``<script src>`` / ``<link href>``, as imports.
+
+    Astro bundles a ``<script>`` whose only attribute is ``src`` as ``import "<src>"``,
+    so its value is kept as written, like a frontmatter import: an alias or a package
+    resolves. Any other value is a URL the browser fetches, page-relative as in HTML,
+    so a bare one (``favicon.ico``) gains ``./``. The resolver tries it beside the
+    page, then under the nearest ``public/``.
+    """
+    from ..lightweight_imports.html import ref_imports
+
+    markup: list[Import] = []
+    for tag, value, bundled in scan("astro", original_source).asset_refs:
+        for imp in ref_imports([(tag, value)]):
+            if not bundled and not imp.module_path.startswith((".", "/")):
+                imp.module_path = f"./{imp.module_path}"
+            markup.append(imp)
+    return markup
 
 
 def _masked_call_sites(lang: str, original_source: bytes, symbols: list[Symbol]) -> list:

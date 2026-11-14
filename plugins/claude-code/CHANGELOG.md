@@ -2,6 +2,62 @@
 
 All notable changes to the Repowise Claude Code plugin are documented here.
 
+## 0.61.0
+
+### Added
+- A settings skill points the agent at `repowise config list`, `explain`, `set` and `reset`, and asks the user before changing a setting (#5522).
+- `/repowise:decision` and the architectural-decisions skill cover the decisions digest: decisions come into force when their commit lands, mined records are background, `repowise decision discover` hands them to the agent, pin, veto and `decisions.mode` (#5499, #5502, #5506, #5508, #5517).
+- `/repowise:init` mentions the discovery pass after indexing and full git history for large repositories (#5506, #5529).
+
+### Changed
+- Slash commands carry `disable-model-invocation: true`, so Claude Code lists them to people, not the model; `init` stays listed. Skills are trimmed to what the agent acts on (#5590).
+- The shell `PostToolUse` hook passes `git pull`, `merge`, `rebase` and `cherry-pick` to the stale-wiki check, not only `git commit` (#5382).
+- `/repowise:health` names every origin `--scope production` leaves out: tests, tooling, build, vendored, generated and docs examples (#5450).
+- `/repowise:impacted-tests` explains that `--format list` prints nothing when every test must run (#5619).
+
+### Fixed
+- The pre-modification skill's name matches its directory, and the generator enforces it (#5323).
+- The codebase-exploration skill reads search trust from each hit's `sources` (`fts`, `symbol`, `vector`), the field `search_codebase` returns.
+- The README and developer notes give Claude Code's default surface as ten tools, with `list_repos` added in a workspace.
+
+## 0.60.0
+
+### Added
+- A `PreToolUse` hook on shell commands runs `repowise-rewrite`, which wraps
+  noisy commands (tests, builds, git, searches) in `repowise distill` so the
+  agent sees errors first (#5082). It does nothing when `repowise-rewrite` is
+  not installed.
+
+### Changed
+- `/repowise:decision` shows the signed forms an agent uses to record
+  (`--agent <slug> --evidence-commit`) and accept (`--agent <slug> --evidence`)
+  decisions, and the architectural-decisions skill matches (#5015).
+- `/repowise:init` describes the MCP entry as one that serves whichever repo
+  Claude Code starts in, written to `~/.claude.json`, and never moved off
+  another repo (#5094, #5145).
+- The codebase-exploration skill routes an exact identifier, string or file
+  name to Grep, Glob and Read, and flow, callers, impact, rationale and change
+  review each to one named Repowise tool, matching the generated CLAUDE.md
+  (#5168).
+- The Lens panel reads the leaner MCP replies, so staleness, completeness and
+  degraded reasons still show (#4981).
+
+## 0.59.0
+
+### Added
+- Agents record the decision a commit made by default: a `git commit` hook
+  asks for one, and `repowise decision add --agent <slug>` records it signed
+  as the agent (#4689, #4672).
+- The architectural-decisions skill and `/repowise:decision` show how an agent
+  records and accepts decisions as itself, each acceptance carrying its
+  decision text (#4688).
+
+### Changed
+- `/repowise:health` and `/repowise:coverage` explain that a `.coverage` file
+  builds only the per-test map, with the export command for per-file numbers
+  (#4320).
+- `/repowise:coverage` reads Apex coverage reports (#4413).
+
 ## 0.58.0
 
 ### Changed

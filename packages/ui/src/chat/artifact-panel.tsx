@@ -92,7 +92,7 @@ function ArtifactHeader({ artifact, comparing, onCompare, onPin, onOpenSource, o
     URL.revokeObjectURL(url);
     setStatus("Artifact exported.");
   }, [artifact]);
-  const actionClass = "inline-flex h-8 items-center gap-1.5 px-2 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  const actionClass = "inline-flex h-8 items-center gap-1.5 px-2 text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
   return (
     <header className="border-b border-[var(--color-border-default)] pb-4">
       <div className="flex items-start justify-between gap-3">

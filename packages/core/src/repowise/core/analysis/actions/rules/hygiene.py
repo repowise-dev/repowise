@@ -307,7 +307,7 @@ def stale_decision(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             severity="medium",
             # The evidence is commits to its files, not a broken rule, so the
             # row asks for a review and claims nothing more.
-            title=f"Review the decision “{d.title}”: the files it governs changed since it was recorded",
+            title=f"Review the decision “{d.title}”: the files it governs changed since it was recorded or last accepted",
             impact="Agents and reviewers still follow it, and nobody has checked it against those changes.",
             why=(WhyFact("status", "Accepted, its files changed since"),),
             target_kind="decision",
