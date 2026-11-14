@@ -235,7 +235,23 @@ class RefactoringHealthService:
             facets=(
                 # Under the list's status, scope and filters, so a badge never
                 # counts rows its tab would not return.
-                await refactoring_facet_counts(self._session, self._repository_id, **filters)
+                await refactoring_facet_counts(
+                    self._session,
+                    self._repository_id,
+                    **(
+                        {
+                            "status": query.status,
+                            "include_unverified": self._include_unverified,
+                            **(
+                                {"opportunity_ids": filters["opportunity_ids"]}
+                                if "opportunity_ids" in filters
+                                else {"queue_eligible": True}
+                            ),
+                        }
+                        if query.scope == "fix_first"
+                        else {"status": query.status, "include_unverified": self._include_unverified}
+                    ),
+                )
                 if with_facets
                 else {}
             ),
