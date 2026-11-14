@@ -1800,6 +1800,7 @@ def _run_partial_analyses(run: UpdateRun) -> None:
         repo_function_mod_p80=repo_function_mod_p80,
         timings=run.timings,
         dead_code=not _dead_code_unchanged(run),
+        full_git_history=bool(run.full_git_summaries),
     )
     run.doc_drift_report = _run_doc_drift_partial(
         run.graph_builder,
