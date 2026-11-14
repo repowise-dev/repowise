@@ -62,15 +62,19 @@ _HEADERS = frozenset({"paragraph_header", "section_header"})
 # Children of the procedure division that are not statements of a body.
 _NOT_STATEMENTS = frozenset({"procedure_using_chaining", "comment"})
 # Scope opener -> the terminator that closes it.
+#: A handler's scope on the stack is this prefix plus the verb that opened it.
+_HANDLER = "handler:"
+_STATEMENT = "_statement"
 _CLOSERS = {
     "END_IF": "if_header",
     "END_EVALUATE": "evaluate_header",
     "END_SEARCH": "search_statement",
     "END_PERFORM": "perform_statement_loop",
     # The verbs that take an AT END / INVALID KEY / ON SIZE ERROR / ON EXCEPTION /
-    # ON OVERFLOW handler; their terminator closes the handler's body.
+    # ON OVERFLOW handler; their terminator closes the handler that verb opened,
+    # and no other (an END-ADD inside an AT END leaves the AT END open).
     **{
-        f"END_{verb}": "handler"
+        f"END_{verb}": _HANDLER + verb
         for verb in (
             "READ",
             "WRITE",
@@ -93,6 +97,8 @@ _CLOSERS = {
     },
 }
 _ARMS = frozenset({"when", "when_other"})
+#: The scopes a WHEN is an arm of.
+_ARM_OWNERS = frozenset({"when", "evaluate_header", "search_statement"})
 _HANDLERS = frozenset({"at_end", "invalid_key", "on_size_error", "on_exception", "on_overflow"})
 # ``NOT AT END`` and the rest: the other side of a handler, which they replace.
 _NOT_HANDLERS = frozenset({f"not_{kind}" for kind in _HANDLERS})
@@ -327,8 +333,12 @@ def _measure(name: str, header: Node, body: list[Node], lines: list[str]) -> Fun
         stack.append(kind)
         max_nesting = max(max_nesting, len(stack))
 
+    # The verb of the latest statement: the one a handler after it belongs to.
+    verb = ""
     for node in body:
         kind = node.type
+        if kind.endswith(_STATEMENT):
+            verb = kind[: -len(_STATEMENT)].upper()
         if kind == "period":
             stack.clear()
             close_dispatch()
@@ -339,6 +349,13 @@ def _measure(name: str, header: Node, body: list[Node], lines: list[str]) -> Fun
                 if not stack:
                     close_dispatch()
         elif kind in _ARMS:
+            # A handler left open in the previous arm (``WHEN 1 READ F AT END
+            # ...`` with no END-READ) ends with that arm.
+            top = len(stack)
+            while top and stack[top - 1].startswith(_HANDLER):
+                top -= 1
+            if top < len(stack) and top and stack[top - 1] in _ARM_OWNERS:
+                del stack[top:]
             if stack and stack[-1] == "when":
                 stack.pop()
             # Stacked ``WHEN a WHEN b`` parse as one arm; each selection is a point.
@@ -370,9 +387,10 @@ def _measure(name: str, header: Node, body: list[Node], lines: list[str]) -> Fun
             if not (stack and stack[-1] == "search_statement"):
                 # The body opens a level; a NOT side replaces its handler, as
                 # the next WHEN replaces an arm.
-                if kind in _NOT_HANDLERS and stack and stack[-1] == "handler":
-                    stack.pop()
-                stack.append("handler")
+                scope = _HANDLER + verb
+                if kind in _NOT_HANDLERS and stack and stack[-1].startswith(_HANDLER):
+                    scope = stack.pop()
+                stack.append(scope)
                 max_nesting = max(max_nesting, len(stack))
         elif kind == "else_if_header":
             charge(1)
