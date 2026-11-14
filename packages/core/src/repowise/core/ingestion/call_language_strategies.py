@@ -20,6 +20,7 @@ from .call_receiver_typing import (
 )
 from .lang_helpers.kotlin_lambdas import in_lambda
 from .languages.csharp_same_namespace import _BCL_COMMON_TYPES, _USING_ALIAS_RE, _USING_NS_RE
+from .languages.perl_packages import PerlPackageIndex
 from .languages.receiver_types import dart_named_constructors
 from .models import CallSite, ParsedFile, Symbol
 from .resolved_call import ResolvedCall
@@ -80,6 +81,17 @@ _EXPECT = "expect"
 
 
 _FRIEND = re.compile(r"\bfriend\b")
+
+_PERL_PACKAGE = re.compile(r"^[A-Za-z_]\w*(?:::\w+)*$")
+
+# Receivers that are the invocant of the sub they appear in, by convention.
+_PERL_INVOCANTS = frozenset({"$self", "$class", "$this", "$proto", "shift", "$_[0]", "__PACKAGE__"})
+
+# ``$self->SUPER::m()`` arrives with this receiver (parser/calls.py).
+_PERL_SUPER = "SUPER"
+
+# ``ref($self)->m()``: the invocant's class, which dispatches as ``$self`` does.
+_PERL_REF = re.compile(r"^ref\s*\(?\s*(\$\w+)\s*\)?$")
 
 
 def member_head_flags(lines: list[str], symbol: Symbol) -> tuple[bool, bool]:
@@ -210,6 +222,8 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         inherited_typed_receiver=True,
         inherited_fields=True,
     ),
+    # A Perl package is a file region, not a class: no sub records its package.
+    "perl": _LanguageCallStrategies(member=("_resolve_perl_method_call",)),
     # Apex resolves type names in its project namespace; no bare-name fallback (Java's rule).
     "apex": _LanguageCallStrategies(
         free=("_resolve_apex_namespace_type",),
@@ -291,6 +305,9 @@ class LanguageStrategiesMixin:
         self._apex_namespaces: Any = None
         self._apex_retyping = False
 
+        # Perl packages and their parents (lazy PerlPackageIndex)
+        self._perl_index: PerlPackageIndex | None = None
+
         # C/C++ same-target resolution (lazy CppWorkspaceIndex)
         self._cpp_index: Any = None
         self._cpp_index_built = False
@@ -363,6 +380,107 @@ class LanguageStrategiesMixin:
         parsed = self._parsed_files.get(file_path)
         language = parsed.file_info.language if parsed else ""
         return _LANGUAGE_CALL_STRATEGIES.get(language, _NO_LANGUAGE_STRATEGIES)
+
+    def _get_perl_index(self) -> PerlPackageIndex:
+        """Lazily read every Perl file's packages and parents."""
+        if self._perl_index is None:
+            self._perl_index = PerlPackageIndex.build(
+                (path, parsed.file_info.abs_path)
+                for path, parsed in self._parsed_files.items()
+                if parsed.file_info.language == "perl"
+            )
+        return self._perl_index
+
+    def _perl_sub_in(self, package: str, name: str, caller_file: str) -> tuple[str | None, bool]:
+        """The sub *name* in *package*, as ``(symbol id, ambiguous)``.
+
+        A package no file declares is looked for as ``Pkg/Mod.pm``, matched by
+        whole-segment path suffix as ``@INC`` would find it under any root.
+        Where two files declare the package (a copied module), the caller's own
+        file answers if it is one of them: the code running is the copy it is in.
+        """
+        index = self._get_perl_index()
+        files = index.files.get(package)
+        if files is None:
+            rel = package.replace("::", "/") + ".pm"
+            files = tuple(p for p in self._file_symbols if p == rel or p.endswith(f"/{rel}"))
+        if caller_file in files:
+            files = (caller_file,)
+        found: set[str] = set()
+        for path in files:
+            sym_id = self._file_top_level.get(path, {}).get(name)
+            symbol = self._symbols_by_id.get(sym_id) if sym_id else None
+            if symbol is not None and index.package_at(path, symbol.start_line) in (package, None):
+                found.add(symbol.id)
+        if len(found) > 1:
+            return None, True
+        return next(iter(found), None), False
+
+    def _resolve_perl_method_call(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A Perl method call, dispatched through ``@ISA`` as Perl does.
+
+        ``$self->m()`` (or ``$class``, ``shift``, ``__PACKAGE__``) starts at the
+        package around the call, ``$self->SUPER::m()`` at its parents, and
+        ``Pkg->m()`` at ``Pkg``. ``Pkg::m()`` names one sub and is never
+        dispatched. ``$obj->m()`` starts at ``Pkg`` when the caller last assigned
+        ``$obj`` from ``Pkg->new(..)`` or ``new Pkg(..)``. The first package in the
+        depth-first order that defines the sub answers; two files defining it
+        there bind nothing.
+        Ceiling: any other receiver is untyped and left alone, a later
+        non-constructor reassignment of ``$obj`` is not seen, and ``use mro 'c3'``
+        is read as the default depth-first order.
+        """
+        receiver = call.receiver_name or ""
+        referenced = _PERL_REF.match(receiver)
+        if referenced and referenced.group(1) in _PERL_INVOCANTS:
+            receiver = referenced.group(1)
+        index = self._get_perl_index()
+        inherited_origin, inherited_confidence = "self_inherited", 0.90
+        if receiver in _PERL_INVOCANTS or receiver == _PERL_SUPER:
+            start = index.package_at(file_path, call.line)
+            if start is None:
+                if receiver == _PERL_SUPER:
+                    return None
+                sym_id = self._file_top_level.get(file_path, {}).get(call.target_name)
+                if sym_id is None or sym_id == caller_id:
+                    return None
+                return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
+            own_origin, own_confidence = "self_scope", 0.95
+        elif receiver.startswith("$"):
+            caller = self._symbols_by_id.get(caller_id)
+            first = caller.start_line if caller is not None else 1
+            start = index.constructed_type(file_path, receiver, first, call.line)
+            if start is None:
+                return None
+            own_origin, own_confidence = "receiver_typed_global", 0.75
+            inherited_origin, inherited_confidence = own_origin, own_confidence
+        elif _PERL_PACKAGE.match(receiver):
+            start = receiver
+            own_origin, own_confidence = "scoped_name", 0.93
+        else:
+            return None
+        order = index.mro(start) if call.scope_name is None else (start,)
+        if receiver == _PERL_SUPER:
+            order = order[1:]
+        for depth, package in enumerate(order):
+            sym_id, ambiguous = self._perl_sub_in(package, call.target_name, file_path)
+            if ambiguous:
+                return None
+            if sym_id is None:
+                continue
+            if sym_id == caller_id:
+                return None
+            if depth == 0 and receiver != _PERL_SUPER:
+                return ResolvedCall(caller_id, sym_id, own_confidence, call.line, own_origin)
+            return ResolvedCall(
+                caller_id, sym_id, inherited_confidence, call.line, inherited_origin
+            )
+        return None
 
     def _get_cpp_index(self) -> Any:
         """Lazily build a CppWorkspaceIndex via a minimal stand-in context."""

@@ -430,6 +430,16 @@ def _call_from_match(
         target_name = target_name.strip()
         if not target_name:
             return None
+    # Perl: ``Pkg::Mod::sub(..)`` names its package as ``Pkg::Mod->sub(..)`` does,
+    # and ``$self->SUPER::m()`` / ``$self->Pkg::m()`` name where dispatch starts.
+    # A function call keeps its package as ``scope_name`` too: it is never dispatched.
+    perl_scope = None
+    if language == "perl" and "::" in target_name:
+        function_form = receiver_name is None
+        receiver_name, _, target_name = target_name.rpartition("::")
+        if not receiver_name or not target_name:
+            return None
+        perl_scope = receiver_name if function_form else None
 
     arg_nodes = capture_dict.get("call.arguments", [])
     receiver_call_nodes = capture_dict.get("call.receiver_call", [])
@@ -462,7 +472,7 @@ def _call_from_match(
         start_byte=target_nodes[0].start_byte,
         argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
-        scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else None,
+        scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else perl_scope,
         edge_type=(
             "references" if site_node.type in config.reference_call_node_types else "calls"
         ),

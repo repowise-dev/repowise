@@ -95,7 +95,7 @@ def _callee_matches_assert(call_node: Node) -> bool:
     roots = [callee] if callee is not None else [c for c in call_node.children if c.is_named][:1]
     # PHP spells identifiers ``name`` (not ``*identifier``), and a method
     # call keeps its method name in a ``name`` field. Both are gated on PHP's
-    # call node kinds, which no other mapped grammar has.
+    # call node kinds; Perl shares ``function_call_expression`` but has no ``name`` node.
     is_php_call = call_node.type in _PHP_CALL_KINDS
     if is_php_call and call_node.type != "function_call_expression":
         name_node = call_node.child_by_field_name("name")

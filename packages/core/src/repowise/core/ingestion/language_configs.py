@@ -747,6 +747,19 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         parent_extraction="none",
         parent_class_types=frozenset(),
     ),
+    "perl": LanguageConfig(
+        # `package Foo;` scopes the subs that follow it as siblings, not
+        # children, so subs carry no parent.
+        symbol_node_types={
+            "subroutine_declaration_statement": "function",
+            "method_declaration_statement": "method",
+        },
+        import_node_types=["use_statement", "require_expression"],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+    ),
 }
 
 # An SFC's <script> block IS TypeScript, and sfc_source hands the parser a TS

@@ -536,14 +536,15 @@ def test_php_complexity(source: str, expected: dict[str, int]) -> None:
 def test_php_name_nodes_count_only_in_php_calls() -> None:
     """The ``name`` identifier match is gated to PHP's call kinds.
 
-    No other mapped grammar has a ``name`` node or PHP's call node kinds, so
-    their assertion counting cannot change through that gate.
+    No other mapped grammar has a ``name`` node or PHP's method-call kinds, so
+    their assertion counting cannot change through that gate. Perl shares only
+    ``function_call_expression``, which reads no ``name`` field.
     """
     from repowise.core.analysis.health.complexity.assertions import _PHP_CALL_KINDS
     from repowise.core.analysis.health.complexity.languages import LANGUAGE_MAPS
     from repowise.core.ingestion.parser import _get_language, grammar_tag_for
 
-    php_only = _PHP_CALL_KINDS | {"name"}
+    php_only = (_PHP_CALL_KINDS - {"function_call_expression"}) | {"name"}
     for language in LANGUAGE_MAPS:
         if language == "php":
             continue

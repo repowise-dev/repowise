@@ -1548,6 +1548,25 @@
         "code_origin": "production"
       },
       {
+        "file_path": "perl/control_flow.pm",
+        "score": 10.0,
+        "max_ccn": 5,
+        "max_nesting": 2,
+        "nloc": 31,
+        "has_test_file": false,
+        "module": "perl",
+        "duplication_pct": null,
+        "line_coverage_pct": null,
+        "branch_coverage_pct": null,
+        "defect_score": 10.0,
+        "maintainability_score": 10.0,
+        "performance_score": 10.0,
+        "structure_deduction": 0.0,
+        "history_deduction": 0.0,
+        "is_test": false,
+        "code_origin": "production"
+      },
+      {
         "file_path": "php/assertions.php",
         "score": 10.0,
         "max_ccn": 1,
@@ -3777,6 +3796,26 @@
         "id": "finding_d69da900f78a85b1c0f8"
       },
       {
+        "biomarker_type": "untested_complexity",
+        "severity": "medium",
+        "file_path": "perl/control_flow.pm",
+        "function_name": "guards",
+        "line_start": 16,
+        "line_end": 22,
+        "details": {
+          "crap": 30.0,
+          "ccn": 5,
+          "coverage_basis": "estimated",
+          "action": "add_tests",
+          "coverage_tier": "none",
+          "symbol_line": 16
+        },
+        "health_impact": 0.0,
+        "reason": "guards has CRAP 30 (complexity 5, estimated, no test found reaching it)",
+        "dimension": "advisory",
+        "id": "finding_a2fbcef49ed9454ecf7b"
+      },
+      {
         "biomarker_type": "nested_complexity",
         "severity": "medium",
         "file_path": "php/nested.php",
@@ -5305,8 +5344,8 @@
       "worst_performer_score": 7.77,
       "worst_test_path": "apex/HealthMarkersTest.cls",
       "worst_test_score": 10.0,
-      "file_count": 71,
-      "maintainability_average": 9.72,
+      "file_count": 72,
+      "maintainability_average": 9.73,
       "maintainability_hotspot": null,
       "performance_average": 9.8,
       "performance_hotspot": null,
@@ -5314,10 +5353,10 @@
       "history_average": 0.0,
       "structure_hotspot": null,
       "history_hotspot": null,
-      "production_average": 9.66,
-      "production_file_count": 69,
+      "production_average": 9.67,
+      "production_file_count": 70,
       "unanalysed_file_count": 4,
-      "analysed_share": 0.9467
+      "analysed_share": 0.9474
     },
     "repo_function_mod_p80": null,
     "suggestions": [

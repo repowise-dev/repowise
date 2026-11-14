@@ -213,6 +213,8 @@ _PARTIAL = {
     "sql",
     # source ./lib.sh + $SCRIPT_DIR / dirname idioms.
     "shell",
+    # use Foo::Bar by @INC-style suffix match; require "x.pl" by path.
+    "perl",
     # <script src>/<link href> as document-/root-relative asset paths. Partial
     # rather than full because template dialects (Django, Jinja, Go templates,
     # ERB, Handlebars) are invisible to an HTML grammar and yield nothing.
@@ -337,9 +339,9 @@ class TestDriftManifests:
     def test_code_suffixes_are_the_non_infra_code_derivation(self) -> None:
         assert REGISTRY.non_infra_code_extensions() == _CODE_SUFFIXES
         # The 32 once-missing extensions are protected now …
-        assert {".dart", ".hs", ".clj", ".erl", ".nim", ".m", ".luau"} <= _CODE_SUFFIXES
-        # … infra languages stay promotable, and the perl orphan is gone.
-        assert {".sh", ".bash", ".zsh", ".tf", ".hcl", ".pl"} & _CODE_SUFFIXES == set()
+        assert {".dart", ".hs", ".clj", ".erl", ".nim", ".m", ".luau", ".pl", ".pm"} <= _CODE_SUFFIXES
+        # … and infra languages stay promotable.
+        assert {".sh", ".bash", ".zsh", ".tf", ".hcl"} & _CODE_SUFFIXES == set()
 
     def test_non_code_languages_are_config_plus_infra_plus_aliases(self) -> None:
         assert (
