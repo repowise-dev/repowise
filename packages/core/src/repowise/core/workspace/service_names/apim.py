@@ -19,7 +19,8 @@ An API whose ``serviceUrl`` is not a literal URL (a Bicep parameter or
 ``${...}`` interpolation, an ARM ``[...]`` expression, or none at all) is still
 stated, with no target and no forwarded path, so it keeps a shorter prefix from
 claiming its calls. An API with an empty ``path`` is a catch-all and is
-skipped. Ceiling: a ``set-backend-service base-url`` in policy XML and the
+skipped. ARM templates are read only under the usual template file names
+(``azuredeploy*.json``, ``*template*.json``). Ceiling: a ``set-backend-service base-url`` in policy XML and the
 operations' ``urlTemplate`` are not read.
 """
 
@@ -138,9 +139,14 @@ def read(file: SourceFile) -> Iterable[Claim]:
         yield from _json(file)
 
 
+#: Bicep files, the APIOps ``apiInformation.json`` and the usual ARM template
+#: names (``azuredeploy.json``, ``mainTemplate.json``, ``apim.template.json``).
+#: Other JSON (``package.json``, ``appsettings.json``) is never read here.
+#: Every stated API has a ``path``, so that is the marker: gating on
+#: ``serviceUrl`` would skip a file whose only API has none.
 SOURCE = ServiceNameSource(
     name="apim",
-    filenames=("*.bicep", "*.json"),
-    marker="serviceUrl",
+    filenames=("*.bicep", "apiinformation.json", "azuredeploy*.json", "*template*.json"),
+    marker="path",
     read=read,
 )

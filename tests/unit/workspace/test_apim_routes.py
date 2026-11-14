@@ -6,7 +6,12 @@ from pathlib import Path
 
 from repowise.core.workspace.matching import run_matching
 from repowise.core.workspace.origins import LinkStrategy
-from repowise.core.workspace.service_names import ServiceNameMap, apim, build_service_name_map
+from repowise.core.workspace.service_names import (
+    ServiceNameMap,
+    _claims_in,
+    apim,
+    build_service_name_map,
+)
 from repowise.core.workspace.service_names.base import Route, SourceFile
 
 
@@ -170,3 +175,39 @@ def test_apim_route_links_the_gateway_to_the_service_behind_it(tmp_path: Path) -
         (lk.consumer_repo, lk.provider_repo, lk.strategy)
         for lk in run_matching([], m.routes).service_links
     ] == [("apim", "orders", LinkStrategy.GATEWAY_ROUTE)]
+
+
+def test_only_apim_file_names_are_gated() -> None:
+    gated = [
+        name
+        for name in (
+            "main.bicep",
+            "apiInformation.json",
+            "azuredeploy.json",
+            "azuredeploy.parameters.json",
+            "mainTemplate.json",
+            "apim.template.json",
+            "package.json",
+            "appsettings.json",
+            "tsconfig.json",
+        )
+        if apim.SOURCE.gates(name, ())
+    ]
+    assert gated == [
+        "main.bicep",
+        "apiInformation.json",
+        "azuredeploy.json",
+        "azuredeploy.parameters.json",
+        "mainTemplate.json",
+        "apim.template.json",
+    ]
+
+
+def test_api_without_service_url_is_stated_from_a_file_with_no_service_url(
+    tmp_path: Path,
+) -> None:
+    api = tmp_path / "apis" / "orders" / "apiInformation.json"
+    api.parent.mkdir(parents=True)
+    api.write_text('{"properties": {"displayName": "Orders", "path": "orders"}}')
+    claims = [(s.name, c.name, c.route) for s, c in _claims_in(api, ("apis", "orders"))]
+    assert claims == [("apim", "", Route("/orders", None))]
