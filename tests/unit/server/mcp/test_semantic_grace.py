@@ -2,8 +2,9 @@
 
 The vector leg waits on an embedding round trip: ~0.3s warm, 5-13s on a cold
 store or a rate-limited embedder, while full-text answers in tens of
-milliseconds. Once the other legs are in, the vector leg gets a short grace;
+milliseconds. Usable lexical hits give the vector leg a short grace;
 past it the reply goes out without semantic hits and says so in ``_meta``.
+Without usable lexical hits, search waits for the bounded vector query.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import asyncio
 
 import pytest
 
+from repowise.core.providers.embedding.base import MockEmbedder
 from repowise.server.mcp_server import tool_search
 from repowise.server.mcp_server._answer_pipeline.leg_record import (
     begin_leg_record,
@@ -82,7 +84,8 @@ class _Ctx:
         self.vector_store = None
 
 
-def test_fused_retrieve_returns_full_text_without_waiting(monkeypatch) -> None:
+@pytest.mark.parametrize("source", ["fts", "symbol", "filename"])
+def test_fused_retrieve_returns_lexical_hits_without_waiting(monkeypatch, source) -> None:
     class _Hit:
         page_id = "file_page:a.py"
         title = "a.py"
@@ -91,7 +94,7 @@ def test_fused_retrieve_returns_full_text_without_waiting(monkeypatch) -> None:
         page_type = "file_page"
         target_path = "a.py"
 
-    async def fts(ctx, query, limit):
+    async def fts(*args, **kwargs):
         return [_Hit()]
 
     async def vector(ctx, query, limit):
@@ -102,10 +105,16 @@ def test_fused_retrieve_returns_full_text_without_waiting(monkeypatch) -> None:
         return []
 
     monkeypatch.setenv(_SEMANTIC_GRACE_ENV, "0.05")
-    monkeypatch.setattr(tool_search, "_safe_fts", fts)
+    monkeypatch.setattr(tool_search, "_safe_fts", fts if source == "fts" else nothing)
     monkeypatch.setattr(tool_search, "_safe_vector", vector)
-    monkeypatch.setattr(tool_search, "_safe_symbol_search", nothing)
-    monkeypatch.setattr(tool_search, "_safe_filename_search", nothing)
+    monkeypatch.setattr(tool_search, "_safe_symbol_search", fts if source == "symbol" else nothing)
+
+    async def filename(*args, **kwargs):
+        return [(_Hit(), True)]
+
+    monkeypatch.setattr(
+        tool_search, "_safe_filename_search", filename if source == "filename" else nothing
+    )
 
     async def go():
         begin_leg_record()
@@ -119,7 +128,7 @@ def test_fused_retrieve_returns_full_text_without_waiting(monkeypatch) -> None:
         return out, elapsed, reply, retrieval_legs()
 
     out, elapsed, reply, legs = asyncio.run(go())
-    assert [r["page_id"] for r in out] == ["file_page:a.py"]
+    assert [(r["page_id"], r["sources"]) for r in out] == [("file_page:a.py", [source])]
     assert elapsed < 1.0
     assert legs == {"vector": "skipped"}
     assert reply["_meta"]["retrieval_degraded"] == ["vector"]
@@ -131,3 +140,95 @@ def test_a_whole_reply_carries_no_flag() -> None:
         return _flag_degraded_legs({"results": [], "_meta": {}})
 
     assert asyncio.run(go()) == {"results": [], "_meta": {}}
+
+
+class _SemanticHit:
+    page_id = "file_page:semantic.py"
+    title = "semantic.py"
+    score = 1.0
+    snippet = ""
+    page_type = "file_page"
+
+
+class _SlowStore:
+    _embedder = MockEmbedder()
+
+    def __init__(self, delay: float) -> None:
+        self.delay = delay
+        self.started = asyncio.Event()
+        self.finished = False
+
+    async def search(self, query, limit=10):
+        self.started.set()
+        try:
+            await asyncio.sleep(self.delay)
+            return [_SemanticHit()]
+        finally:
+            self.finished = True
+
+
+@pytest.fixture
+def empty_lexical(monkeypatch):
+    async def nothing(*args, **kwargs):
+        return []
+
+    monkeypatch.setenv(_SEMANTIC_GRACE_ENV, "0.01")
+    monkeypatch.setattr(tool_search, "_safe_fts", nothing)
+    monkeypatch.setattr(tool_search, "_safe_symbol_search", nothing)
+    monkeypatch.setattr(tool_search, "_safe_filename_search", nothing)
+
+
+def _search_with_store(store):
+    ctx = _Ctx()
+    ctx.vector_store = store
+
+    async def go():
+        begin_leg_record()
+        out = await tool_search._fused_retrieve(ctx, "concept", 5, None)
+        return out, retrieval_legs()
+
+    return go()
+
+
+@pytest.mark.parametrize("fts_score", [None, 0.01])
+def test_empty_lexical_search_waits_for_the_bounded_vector_leg(
+    empty_lexical, monkeypatch, fts_score
+) -> None:
+    if fts_score is not None:
+
+        async def below_floor(*args, **kwargs):
+            hit = _SemanticHit()
+            hit.score = fts_score
+            return [hit]
+
+        monkeypatch.setattr(tool_search, "_safe_fts", below_floor)
+
+    store = _SlowStore(0.05)
+    out, legs = asyncio.run(_search_with_store(store))
+    assert [(row["page_id"], row["sources"]) for row in out] == [
+        ("file_page:semantic.py", ["vector"])
+    ]
+    assert legs == {}
+    assert store.finished
+
+
+def test_empty_lexical_search_still_honours_the_vector_timeout(empty_lexical, monkeypatch) -> None:
+    monkeypatch.setenv("REPOWISE_VECTOR_SEARCH_TIMEOUT_S", "0.05")
+    store = _SlowStore(5)
+    out, legs = asyncio.run(_search_with_store(store))
+    assert out == []
+    assert legs == {"vector": "timeout"}
+    assert store.finished
+
+
+def test_cancelling_an_empty_search_finishes_its_vector_leg(empty_lexical) -> None:
+    async def go():
+        store = _SlowStore(5)
+        task = asyncio.create_task(_search_with_store(store))
+        await store.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert store.finished
+
+    asyncio.run(go())

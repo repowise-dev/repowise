@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from repowise.core.persistence.database import get_session
@@ -144,8 +145,8 @@ async def _run_legs(ctx, query: str, fetch_limit: int, *, semantic: bool) -> tup
     """``(vector, fts, symbol, filename)`` hits; the vector leg only when *semantic*.
 
     The lexical legs run while a store still loading at startup finishes; the
-    grace starts once it is loaded, so a fresh server's first search keeps
-    its semantic hits.
+    grace starts once it is loaded. With no usable lexical hits, wait for
+    the vector leg's existing query timeout rather than return an empty reply.
     """
     if not semantic:
         return ([], *await _lexical_legs(ctx, query, fetch_limit))
@@ -153,10 +154,14 @@ async def _run_legs(ctx, query: str, fetch_limit: int, *, semantic: bool) -> tup
     try:
         lexical = await _lexical_legs(ctx, query, fetch_limit)
         await _pkg._wait_for_vector_store(ctx)
+        if any(hit.score >= _MIN_RELEVANCE_SCORE for hit in lexical[0]) or any(lexical[1:]):
+            vector = await vector_leg_within(vector_leg, semantic_grace_s())
+        else:
+            vector = await vector_leg
+        return (vector, *lexical)
     except BaseException:
         await cancel_and_wait([vector_leg])
         raise
-    return (await vector_leg_within(vector_leg, semantic_grace_s()), *lexical)
 
 
 async def _vector_leg(ctx, query: str, fetch_limit: int) -> list:
@@ -164,7 +169,7 @@ async def _vector_leg(ctx, query: str, fetch_limit: int) -> list:
     return await _pkg._safe_vector(ctx, query, fetch_limit)
 
 
-async def _lexical_legs(ctx, query: str, fetch_limit: int) -> list[list]:
+async def _lexical_legs(ctx, query: str, fetch_limit: int) -> Sequence[list]:
     return await asyncio.gather(
         _pkg._safe_fts(ctx, query, fetch_limit),
         _pkg._safe_symbol_search(ctx, query, pageless=True),
@@ -288,7 +293,11 @@ async def _search_single_repo(
         _attach_paths(output, page_info)
         output = filter_dicts_by_key(output, "target_path", _pkg._get_exclude_spec(ctx.path))
         boost_named_paths(
-            output, query, path_index.word_counts, len(path_index.paths), score_key="relevance_score"
+            output,
+            query,
+            path_index.word_counts,
+            len(path_index.paths),
+            score_key="relevance_score",
         )
 
     _downweight_test_pages(output, query)
