@@ -318,11 +318,14 @@ async def _incremental_repo_update(
                 repo_path, graph_builder, parsed_files, merged_excludes, timings
             )
     if products_sink is not None:
+        from ...pipeline.resume.rehydrate import rehydrate_doc_drift_report, rehydrate_health_report
+
         health_report = (
             rescored_report
             if rescored_report is not None
-            else await _stored_health_report(repo_path)
+            else await _stored_analysis_report(repo_path, rehydrate_health_report)
         )
+        stored_drift_report = await _stored_analysis_report(repo_path, rehydrate_doc_drift_report)
         products_sink.append(
             UpdateProducts(
                 parsed_files=parsed_files,
@@ -331,7 +334,7 @@ async def _incremental_repo_update(
                 repo_structure=_structure,
                 file_count=file_count,
                 dead_code_report=dead_code_report,
-                doc_drift_report=doc_drift_report,
+                doc_drift_report=stored_drift_report,
                 health_report=health_report,
                 knowledge_graph_result=kg,
             )
@@ -383,15 +386,15 @@ async def _rescore_repo_health(
     return None
 
 
-async def _stored_health_report(repo_path: Path) -> Any:
-    """The whole-repo health report read back from the store, or ``None``.
+async def _stored_analysis_report(repo_path: Path, read: Any) -> Any:
+    """Read a whole-repo report after persistence, or ``None`` on failure.
 
-    Best-effort: a failed read leaves the products without a health report.
+    Each report uses its own session so one failed query cannot abort the
+    other's transaction on PostgreSQL.
     """
     from ...persistence import create_engine, create_session_factory, get_session
     from ...persistence.crud import get_repository_by_path
     from ...persistence.database import resolve_db_url
-    from ...pipeline.resume.rehydrate import rehydrate_health_report
 
     try:
         engine = create_engine(resolve_db_url(repo_path))
@@ -400,11 +403,11 @@ async def _stored_health_report(repo_path: Path) -> Any:
                 repo = await get_repository_by_path(session, str(repo_path))
                 if repo is None:
                     return None
-                return await rehydrate_health_report(session, repo.id)
+                return await read(session, repo.id)
         finally:
             await engine.dispose()
     except Exception:
-        _log.warning("Stored health report unavailable for %s", repo_path, exc_info=True)
+        _log.warning("%s unavailable for %s", read.__name__, repo_path, exc_info=True)
     return None
 
 
