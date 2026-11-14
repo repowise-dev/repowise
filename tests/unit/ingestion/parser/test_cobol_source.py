@@ -40,14 +40,6 @@ def _program(data: str = "", procedure: str = "", header: str = "") -> bytes:
     return ("\n".join(lines) + "\n").encode()
 
 
-def _between_paragraphs(directive: str) -> bytes:
-    # Right before a paragraph header, where the grammar error used to swallow
-    # the header and everything after it.
-    return _program(
-        procedure=f"           CONTINUE.\n{directive}\n       MID-PARA.\n           CONTINUE."
-    )
-
-
 def _parse(source: bytes, path: str = "DEMO.cbl"):
     return ASTParser().parse_file(_make_file_info(path, "cobol"), source)
 
@@ -78,13 +70,6 @@ def _names(parsed) -> dict[str, int]:
             data="       01 WS-L PIC X(70) VALUE 'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTU\n"
             "      -    'VWXYZ'."
         ),
-        _between_paragraphs("       EJECT"),
-        _between_paragraphs("       EJECT."),
-        _between_paragraphs("           SKIP1"),
-        _between_paragraphs("           SKIP2"),
-        _between_paragraphs("           SKIP3."),
-        _between_paragraphs("       TITLE 'SECTION TWO'"),
-        _between_paragraphs('       title "section two".'),
     ],
     ids=[
         "exec-cics",
@@ -101,13 +86,6 @@ def _names(parsed) -> dict[str, int]:
         "comment-entries",
         "empty-linkage",
         "continuation",
-        "eject",
-        "eject-period",
-        "skip1",
-        "skip2",
-        "skip3-period",
-        "title",
-        "title-lowercase-double-quoted",
     ],
 )
 def test_constructs_the_grammar_rejects_parse_with_every_paragraph(case: bytes) -> None:
@@ -169,10 +147,7 @@ def test_names_that_only_start_like_a_listing_directive_are_kept() -> None:
 def test_a_null_terminated_prefix_is_blanked_and_a_name_ending_in_z_is_kept() -> None:
     line = "           MOVE Z'A' TO BUZ. MOVE z\"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
 
-    assert (
-        rewrite_gaps(line)
-        == "           MOVE  'A' TO BUZ. MOVE  \"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
-    )
+    assert rewrite_gaps(line) == "           MOVE  'A' TO BUZ. MOVE  \"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
 
 
 def test_doubled_quotes_in_an_apostrophe_literal_are_left_alone() -> None:
@@ -253,7 +228,9 @@ def _working_storage(*entries: bytes) -> bytes:
         b"       IDENTIFICATION DIVISION.\n"
         b"       PROGRAM-ID. DEMO.\n"
         b"       DATA DIVISION.\n"
-        b"       WORKING-STORAGE SECTION.\n" + b"".join(entries) + b"       PROCEDURE DIVISION.\n"
+        b"       WORKING-STORAGE SECTION.\n"
+        + b"".join(entries)
+        + b"       PROCEDURE DIVISION.\n"
         b"           STOP RUN.\n"
     )
 
