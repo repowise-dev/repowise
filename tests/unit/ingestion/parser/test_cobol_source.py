@@ -98,6 +98,52 @@ def test_constructs_the_grammar_rejects_parse_with_every_paragraph(case: bytes) 
         assert lines[names[paragraph] - 1].strip() == f"{paragraph}."
 
 
+def test_listing_directives_are_blanked_and_paragraphs_after_them_kept() -> None:
+    # The issue's program: EJECT between two paragraphs used to swallow the rest.
+    source = (
+        b"       IDENTIFICATION DIVISION.\n"
+        b"       PROGRAM-ID. DEMO.\n"
+        b"       DATA DIVISION.\n"
+        b"       WORKING-STORAGE SECTION.\n"
+        b"       01 WS-MSG PIC X(20).\n"
+        b"       PROCEDURE DIVISION.\n"
+        b"       MAIN-PARA.\n"
+        b"           MOVE 1 TO WS-MSG.\n"
+        b"       EJECT\n"
+        b"       FIRST-PARA.\n"
+        b"           STOP RUN.\n"
+        b"       SECOND-PARA.\n"
+        b"           DISPLAY 'X'.\n"
+    )
+
+    parsed = _parse(source)
+
+    assert parsed.parse_errors == []
+    names = _names(parsed)
+    assert {p: names.get(p) for p in ("MAIN-PARA", "FIRST-PARA", "SECOND-PARA")} == {
+        "MAIN-PARA": 7,
+        "FIRST-PARA": 10,
+        "SECOND-PARA": 12,
+    }
+
+
+def test_names_that_only_start_like_a_listing_directive_are_kept() -> None:
+    source = _program(
+        data="       01 EJECT-FLAG PIC X.\n       01 TITLE-LINE PIC X(20).",
+        procedure="           MOVE 'Y' TO EJECT-FLAG.\n"
+        "           MOVE 'TITLE' TO TITLE-LINE.\n"
+        "           PERFORM SKIP1-PARA.\n"
+        "       SKIP1-PARA.\n"
+        "           CONTINUE.",
+    )
+
+    parsed = _parse(source)
+
+    assert parsed.parse_errors == []
+    names = _names(parsed)
+    assert {"EJECT-FLAG", "TITLE-LINE", "SKIP1-PARA", "MAIN-PARA", "LAST-PARA"} <= set(names)
+
+
 def test_a_null_terminated_prefix_is_blanked_and_a_name_ending_in_z_is_kept() -> None:
     line = "           MOVE Z'A' TO BUZ. MOVE z\"B\" TO BUZ. MOVE 'PLAN Z' TO BUZ."
 
