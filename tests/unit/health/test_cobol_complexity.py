@@ -303,7 +303,7 @@ def test_multi_target_goto() -> None:
         )
     )
     # 3 targets add 3 CCN points to the initial 1, then CCN should be 4, cognitive complexity receives flat +1.
-    assert rows["MAIN-P"][2:5] == (4, 0, 1)  # (ccn, max_nesting, cognitive)
+    assert rows["MAIN-P"][2:5] == (4, 0, 1)     # (ccn, max_nesting, cognitive)
 
 
 def test_single_target_goto_depending_on() -> None:
