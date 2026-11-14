@@ -264,6 +264,7 @@ async def _incremental_repo_update(
         graph_builder,
         git_meta_map,
         health=not rescore_health,
+        full_git_history=bool(full_git_summaries),
         timings=timings,
     )
 
@@ -459,12 +460,14 @@ async def _partial_analysis(
     git_meta_map: dict,
     *,
     health: bool = True,
+    full_git_history: bool = False,
     timings: Any = None,
 ) -> tuple[Any, Any, Any]:
     """Partial health, dead-code and doc-drift reports over the changed files.
 
     Returns ``(partial_health_report, dead_code_report, doc_drift_report)``;
-    ``health=False`` skips the health pass and returns ``None`` for it.
+    ``health=False`` skips health scoring. A full history refresh can still
+    return a report carrying the function blame rows gathered before scoring.
     """
     from ...pipeline.incremental import (
         DocDriftUpdate,
@@ -506,6 +509,7 @@ async def _partial_analysis(
         coverage_map=stored_coverage_map,
         log=_log.info,
         health=health,
+        full_git_history=full_git_history,
         timings=timings,
     )
     doc_drift_report = run_doc_drift_partial(

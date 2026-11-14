@@ -186,6 +186,14 @@ def _refreshed_metric(refreshed: Any, stored: Any, commit: str | None) -> dict:
     }
 
 
+async def _replace_function_blame(session: Any, repo_id: str, report: Any) -> None:
+    rows = getattr(report, "function_blame_rows", None)
+    if rows:
+        from repowise.core.persistence.crud import replace_git_function_blame_for_files
+
+        await replace_git_function_blame_for_files(session, repo_id, rows)
+
+
 async def persist_partial_health(
     session: Any, repo_id: str, report: Any, repo_path: Any = None
 ) -> None:
@@ -216,8 +224,10 @@ async def persist_partial_health(
     )
     # Nothing analysed: a deletion-only update runs no health analysis, so it
     # has no role map to restamp stored roles with. Roles, like performance
-    # findings, refresh on the next run that analyses any file.
+    # findings, refresh on the next run that analyses any file. A full Git
+    # history refresh can still carry function blame for every file.
     if not changed_paths and not performance_paths:
+        await _replace_function_blame(session, repo_id, report)
         return
     analyzed_commit = await _analyzed_commit(session, repo_id)
     # One savepoint over the findings and everything derived from them. This
@@ -296,13 +306,10 @@ async def persist_partial_health(
         # opportunity folds a file's plans, and a file this run did not touch
         # can still lose one when a cross-file plan elsewhere resolves.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
-    # Per-function blame rollup for the changed files (keeps git_function_blame
-    # current between full indexes; FULL git tier only — empty otherwise).
-    fn_blame_rows = getattr(report, "function_blame_rows", None)
-    if fn_blame_rows:
-        from repowise.core.persistence.crud import replace_git_function_blame_for_files
-
-        await replace_git_function_blame_for_files(session, repo_id, fn_blame_rows)
+    # Changed files on an ordinary update; every file on a full history walk.
+    # Use the same replacement writer so obsolete function ids are removed.
+    # FULL git tier only: other tiers have no blame indexes to roll up.
+    await _replace_function_blame(session, repo_id, report)
     # Only a full index rewrites the whole population, so rows an older version
     # scored for prose or configuration go here rather than lingering in the
     # average, and rows written before ``is_test`` existed get it from their
