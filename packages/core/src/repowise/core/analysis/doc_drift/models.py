@@ -160,26 +160,31 @@ class SymbolScope:
 
 @dataclass
 class DocDriftReport:
-    """The drift pass's output for one repository."""
+    """The drift pass's output or complete stored findings for one repository.
+
+    Rehydrated reports have no scan metadata: timestamp, counters and renderer
+    are ``None``, verdicts and documents are empty, and both write scopes are
+    ``None``. Those empty collections do not claim that a scan read no documents.
+    """
 
     repo_id: str
-    analyzed_at: datetime
+    analyzed_at: datetime | None
     total_findings: int
     findings: list[DocDriftFindingData]
     confidence_summary: dict
     """``{"high": N, "medium": N, "low": N}`` over the post-cutoff findings."""
-    documents_scanned: int
-    references_checked: int
+    documents_scanned: int | None
+    references_checked: int | None
     verdict_summary: dict
     """``{"resolved": N, "missing": N, "ambiguous": N, "uncheckable": N}`` over
     every reference examined. Reported because the uncheckable count is the
     honest denominator: a detector that hides it is claiming coverage it does
     not have."""
-    anchor_renderer: str = "github"
+    anchor_renderer: str | None = "github"
     """Which renderer's slug algorithm the anchor class used, or the renderer
     that caused it to stand down. See :mod:`~.renderer`."""
-    hidden_below_threshold: int = 0
-    suppressed: int = 0
+    hidden_below_threshold: int | None = 0
+    suppressed: int | None = 0
     """References an inline ``repowise-drift-ignore`` marker silenced. Counted
     so a suppression is visible and never mistaken for a clean doc."""
     documents: frozenset[str] = field(default_factory=frozenset)
