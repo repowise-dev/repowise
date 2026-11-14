@@ -64,17 +64,14 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
     """
 
     from repowise.cli.agent_targets.formats.server_entry import RENAME_HINT, RemoteServerEntryError
-    from repowise.cli.mcp_config import (
-        save_vscode_extensions_config,
-        save_vscode_mcp_config,
-    )
     from repowise.cli.ui.brand import OK, WARN
 
     written: list[Path] = []
     try:
-        mcp_path = save_vscode_mcp_config(repo_path)
-        console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code MCP configured ({mcp_path})")
-        written.append(Path(mcp_path))
+        mcp = vscode_target.write_mcp_config(repo_path)
+        if mcp.action in (FileAction.CREATED, FileAction.UPDATED):
+            console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code MCP configured ({mcp.path})")
+            written.append(mcp.path)
     except RemoteServerEntryError:
         console_obj.print(f"  [{WARN}].vscode/mcp.json left unchanged: {RENAME_HINT}.[/]")
     except ValueError:
@@ -84,9 +81,12 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
         )
 
     try:
-        ext_path = save_vscode_extensions_config(repo_path)
-        console_obj.print(f"  [{OK}]{glyph('ok')}[/] VS Code extension recommended ({ext_path})")
-        written.append(Path(ext_path))
+        ext = vscode_target.write_extensions_config(repo_path)
+        if ext.action in (FileAction.CREATED, FileAction.UPDATED):
+            console_obj.print(
+                f"  [{OK}]{glyph('ok')}[/] VS Code extension recommended ({ext.path})"
+            )
+            written.append(ext.path)
     except ValueError:
         console_obj.print(
             f"  [{WARN}].vscode/extensions.json left unchanged (not valid JSON; it may "
@@ -104,7 +104,9 @@ def _write_vscode_files(console_obj: Any, repo_path: Path) -> list[Path]:
                 f"  [{WARN}].github/copilot-instructions.md left unchanged: its Repowise "
                 "markers are unpaired or duplicated, or it could not be read.[/]"
             )
-        else:
-            console_obj.print(f"  [{OK}]{glyph('ok')}[/] Copilot instructions updated ({instructions.path})")
+        elif instructions.action in (FileAction.CREATED, FileAction.UPDATED):
+            console_obj.print(
+                f"  [{OK}]{glyph('ok')}[/] Copilot instructions updated ({instructions.path})"
+            )
             written.append(instructions.path)
     return written
