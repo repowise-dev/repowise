@@ -102,15 +102,8 @@ def _innermost(regions: Iterable[tuple[str, int, int]], line: int) -> str | None
     return best[1] if best else None
 
 
-def _constructed(node: Node) -> tuple[str, str] | None:
-    """``($var, Pkg)`` for ``my $var = Pkg->new(..)`` or ``my $var = new Pkg(..)``.
-
-    Only a constructor types the variable: what another class method returns
-    is unknown, as is a chained call (``Pkg->new->init``).
-    """
-    left = node.child_by_field_name("left") or (node.named_children or [None])[0]
-    right = node.named_children[-1] if node.named_child_count > 1 else None
-    if left is None or right is None:
+def _assigned_variable(left: Node | None) -> str | None:
+    if left is None:
         return None
     scalar = left if left.type == "scalar" else None
     if left.type == "variable_declaration" and left.named_child_count == 1:
@@ -118,23 +111,55 @@ def _constructed(node: Node) -> tuple[str, str] | None:
     varname = (
         next((c for c in scalar.named_children if c.type == "varname"), None) if scalar else None
     )
-    if varname is None:
+    return _text(varname) if varname is not None else None
+
+
+def _method_constructor_package(node: Node) -> str | None:
+    invocant = node.named_children[0] if node.named_children else None
+    method = next((c for c in node.named_children if c.type == "method"), None)
+    if invocant is None or invocant.type != "bareword" or method is None:
         return None
-    package = None
-    if right.type == "method_call_expression":
-        invocant = right.named_children[0] if right.named_children else None
-        method = next((c for c in right.named_children if c.type == "method"), None)
-        if invocant is not None and invocant.type == "bareword" and method is not None:
-            package = _text(invocant) if _text(method) in _CONSTRUCTORS else None
-    elif right.type == "ambiguous_function_call_expression":
-        function = right.child_by_field_name("function")
-        args = [c for c in right.named_children if c != function]
-        if function is not None and _text(function) in _CONSTRUCTORS and args:
-            named = args[0].child_by_field_name("function") or args[0]
-            package = _text(named)
+    return _text(invocant) if _text(method) in _CONSTRUCTORS else None
+
+
+def _function_constructor_package(node: Node) -> str | None:
+    function = node.child_by_field_name("function")
+    if function is None or _text(function) not in _CONSTRUCTORS:
+        return None
+    args = [child for child in node.named_children if child != function]
+    if not args:
+        return None
+    named = args[0].child_by_field_name("function") or args[0]
+    return _text(named)
+
+
+def _constructor_package(node: Node) -> str | None:
+    if node.type == "method_call_expression":
+        return _method_constructor_package(node)
+    if node.type == "ambiguous_function_call_expression":
+        return _function_constructor_package(node)
+    return None
+
+
+def _constructed(node: Node) -> tuple[str, str] | None:
+    """``($var, Pkg)`` for ``my $var = Pkg->new(..)`` or ``my $var = new Pkg(..)``.
+
+    Only a constructor types the variable: what another class method returns
+    is unknown, as is a chained call (``Pkg->new->init``).
+    """
+    left = node.child_by_field_name("left")
+    if left is None and node.named_children:
+        left = node.named_children[0]
+    right = node.named_children[-1] if node.named_child_count > 1 else None
+    if right is None:
+        return None
+    variable = _assigned_variable(left)
+    if variable is None:
+        return None
+    package = _constructor_package(right)
     if package is None or not _PACKAGE_NAME.match(package):
         return None
-    return f"${_text(varname)}", package
+    return f"${variable}", package
 
 
 def scan_perl_packages(source: bytes) -> tuple[PerlPackage, ...]:

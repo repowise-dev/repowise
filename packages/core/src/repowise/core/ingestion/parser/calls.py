@@ -430,16 +430,12 @@ def _call_from_match(
         target_name = target_name.strip()
         if not target_name:
             return None
-    # Perl: ``Pkg::Mod::sub(..)`` names its package as ``Pkg::Mod->sub(..)`` does,
-    # and ``$self->SUPER::m()`` / ``$self->Pkg::m()`` name where dispatch starts.
-    # A function call keeps its package as ``scope_name`` too: it is never dispatched.
     perl_scope = None
-    if language == "perl" and "::" in target_name:
-        function_form = receiver_name is None
-        receiver_name, _, target_name = target_name.rpartition("::")
-        if not receiver_name or not target_name:
+    if language == "perl":
+        perl_names = _split_perl_call_name(target_name, receiver_name)
+        if perl_names is None:
             return None
-        perl_scope = receiver_name if function_form else None
+        target_name, receiver_name, perl_scope = perl_names
 
     arg_nodes = capture_dict.get("call.arguments", [])
     receiver_call_nodes = capture_dict.get("call.receiver_call", [])
@@ -484,6 +480,19 @@ def _call_from_match(
         bare_name_fallback=on_unnamed_object,
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
+
+
+def _split_perl_call_name(
+    target_name: str, receiver_name: str | None
+) -> tuple[str, str | None, str | None] | None:
+    """Split Perl's ``Pkg::sub`` form, preserving package scope for plain subs."""
+    if "::" not in target_name:
+        return target_name, receiver_name, None
+    function_form = receiver_name is None
+    receiver_name, _, target_name = target_name.rpartition("::")
+    if not receiver_name or not target_name:
+        return None
+    return target_name, receiver_name, receiver_name if function_form else None
 
 
 def _call_arguments(

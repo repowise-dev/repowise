@@ -94,6 +94,23 @@ _PERL_SUPER = "SUPER"
 _PERL_REF = re.compile(r"^ref\s*\(?\s*(\$\w+)\s*\)?$")
 
 
+@dataclass(frozen=True, slots=True)
+class _PerlDispatch:
+    package: str
+    origin: str
+    confidence: float
+    inherited_origin: str
+    inherited_confidence: float
+    is_super: bool = False
+
+
+def _perl_receiver(receiver: str) -> str:
+    referenced = _PERL_REF.match(receiver)
+    if referenced and referenced.group(1) in _PERL_INVOCANTS:
+        return referenced.group(1)
+    return receiver
+
+
 def member_head_flags(lines: list[str], symbol: Symbol) -> tuple[bool, bool]:
     """How a C++ member function's first line reads: ``(outside its class, qualified)``.
 
@@ -435,38 +452,58 @@ class LanguageStrategiesMixin:
         non-constructor reassignment of ``$obj`` is not seen, and ``use mro 'c3'``
         is read as the default depth-first order.
         """
-        receiver = call.receiver_name or ""
-        referenced = _PERL_REF.match(receiver)
-        if referenced and referenced.group(1) in _PERL_INVOCANTS:
-            receiver = referenced.group(1)
+        receiver = _perl_receiver(call.receiver_name or "")
+        dispatch = self._perl_dispatch(file_path, call, caller_id, receiver)
+        if dispatch is None:
+            if receiver in _PERL_INVOCANTS:
+                return self._resolve_perl_unscoped_invocant(file_path, call, caller_id)
+            return None
         index = self._get_perl_index()
-        inherited_origin, inherited_confidence = "self_inherited", 0.90
+        order = index.mro(dispatch.package) if call.scope_name is None else (dispatch.package,)
+        if dispatch.is_super:
+            order = order[1:]
+        return self._resolve_perl_order(order, dispatch, file_path, call, caller_id)
+
+    def _perl_dispatch(
+        self, file_path: str, call: CallSite, caller_id: str, receiver: str
+    ) -> _PerlDispatch | None:
+        index = self._get_perl_index()
         if receiver in _PERL_INVOCANTS or receiver == _PERL_SUPER:
             start = index.package_at(file_path, call.line)
             if start is None:
-                if receiver == _PERL_SUPER:
-                    return None
-                sym_id = self._file_top_level.get(file_path, {}).get(call.target_name)
-                if sym_id is None or sym_id == caller_id:
-                    return None
-                return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
-            own_origin, own_confidence = "self_scope", 0.95
+                return None
+            return _PerlDispatch(start, "self_scope", 0.95, "self_inherited", 0.90,
+                                 receiver == _PERL_SUPER)
         elif receiver.startswith("$"):
             caller = self._symbols_by_id.get(caller_id)
             first = caller.start_line if caller is not None else 1
             start = index.constructed_type(file_path, receiver, first, call.line)
             if start is None:
                 return None
-            own_origin, own_confidence = "receiver_typed_global", 0.75
-            inherited_origin, inherited_confidence = own_origin, own_confidence
+            return _PerlDispatch(
+                start, "receiver_typed_global", 0.75, "receiver_typed_global", 0.75
+            )
         elif _PERL_PACKAGE.match(receiver):
-            start = receiver
-            own_origin, own_confidence = "scoped_name", 0.93
+            return _PerlDispatch(receiver, "scoped_name", 0.93, "self_inherited", 0.90)
         else:
             return None
-        order = index.mro(start) if call.scope_name is None else (start,)
-        if receiver == _PERL_SUPER:
-            order = order[1:]
+
+    def _resolve_perl_unscoped_invocant(
+        self, file_path: str, call: CallSite, caller_id: str
+    ) -> ResolvedCall | None:
+        sym_id = self._file_top_level.get(file_path, {}).get(call.target_name)
+        if sym_id is None or sym_id == caller_id:
+            return None
+        return ResolvedCall(caller_id, sym_id, 0.95, call.line, "self_scope")
+
+    def _resolve_perl_order(
+        self,
+        order: tuple[str, ...],
+        dispatch: _PerlDispatch,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
         for depth, package in enumerate(order):
             sym_id, ambiguous = self._perl_sub_in(package, call.target_name, file_path)
             if ambiguous:
@@ -475,11 +512,10 @@ class LanguageStrategiesMixin:
                 continue
             if sym_id == caller_id:
                 return None
-            if depth == 0 and receiver != _PERL_SUPER:
-                return ResolvedCall(caller_id, sym_id, own_confidence, call.line, own_origin)
-            return ResolvedCall(
-                caller_id, sym_id, inherited_confidence, call.line, inherited_origin
-            )
+            own = depth == 0 and not dispatch.is_super
+            origin = dispatch.origin if own else dispatch.inherited_origin
+            confidence = dispatch.confidence if own else dispatch.inherited_confidence
+            return ResolvedCall(caller_id, sym_id, confidence, call.line, origin)
         return None
 
     def _get_cpp_index(self) -> Any:
