@@ -42,10 +42,10 @@ export function C4LevelTabs({ level, onLevelChange, l3Enabled }: C4LevelTabsProp
               borderRadius: 6,
               border: "1px solid var(--color-border-default)",
               background: active
-                ? "var(--color-accent-muted, rgba(245,149,32,0.15))"
+                ? "var(--color-selection-wash)"
                 : "transparent",
               color: active
-                ? "var(--color-accent-primary)"
+                ? "var(--color-text-primary)"
                 : "var(--color-text-secondary)",
               cursor: disabled ? "not-allowed" : "pointer",
               opacity: disabled ? 0.4 : 1,

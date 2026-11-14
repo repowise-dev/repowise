@@ -231,9 +231,8 @@ export function CodeHealthView() {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      await mutateAll((key) => typeof key === "string" && key.includes(repoId), undefined, {
-        revalidate: true,
-      });
+      // No data argument, so each key keeps what it shows while it refetches.
+      await mutateAll((key) => typeof key === "string" && key.includes(repoId));
     } finally {
       setRefreshing(false);
     }
@@ -385,7 +384,7 @@ export function CodeHealthView() {
           release's version so a reader who dismissed an earlier one sees it. */}
       <ReleaseNotice
         id="health-scoring"
-        version="0.58.0"
+        version="0.61.0"
         detail={t("coChangeNoticeBody")}
         detailLabel={t("coChangeNoticeMore")}
         hideLabel={t("coChangeNoticeLess")}

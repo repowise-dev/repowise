@@ -22,10 +22,11 @@ import { NewMark } from "./new-mark";
 import { useIsNewSurface } from "@/lib/hooks/use-new-surfaces";
 import { FeedbackButton } from "./feedback-button";
 import { LanguageSwitcher } from "./language-switcher";
+import { FooterSetupPill } from "@/components/setup/setup-pill";
 import { ThemeToggle } from "@repowise-dev/ui/shared/theme-toggle";
 import { cn } from "@/lib/utils/cn";
-import { GLOBAL_NAV, WORKSPACE_NAV, repoNavGroups } from "./nav-items";
-import { NavGroupList } from "./nav-group-list";
+import { GLOBAL_NAV, WORKSPACE_NAV, isNavItemActive, repoNavGroups } from "./nav-items";
+import { NAV_ROW_ACTIVE, NAV_ROW_IDLE, NavGroupList } from "./nav-group-list";
 import type { RepoResponse, WorkspaceResponse } from "@/lib/api/types";
 
 interface MobileNavProps {
@@ -113,25 +114,18 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
               <nav className="space-y-1">
                 {GLOBAL_NAV.map((item) => {
                   const Icon = item.icon;
-                  const isActive = pathname === item.href;
+                  const isActive = isNavItemActive(item, pathname);
                   return (
                     <Link
                       key={item.href}
                       href={item.href}
                       className={cn(
                         "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-base transition-colors",
-                        isActive
-                          ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                          : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                        isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                       )}
                     >
                       <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                        <Icon
-                          className={cn(
-                            "h-4 w-4",
-                            isActive && "text-[var(--color-accent-primary)]",
-                          )}
-                        />
+                        <Icon className="h-4 w-4" />
                       </span>
                       <span className="truncate">{t(item.labelKey)}</span>
                       {isNew(item.href) && <NewMark />}
@@ -159,18 +153,11 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                           href={item.href}
                           className={cn(
                             "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
-                            isActive
-                              ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                              : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                            isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                           )}
                         >
                           <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                            <Icon
-                              className={cn(
-                                "h-4 w-4",
-                                isActive && "text-[var(--color-accent-primary)]",
-                              )}
-                            />
+                            <Icon className="h-4 w-4" />
                           </span>
                           <span className="truncate">{t(item.labelKey)}</span>
                         </Link>
@@ -223,18 +210,11 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
                                         href={item.href}
                                         className={cn(
                                           "flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-xs transition-colors",
-                                          isActive
-                                            ? "bg-[var(--color-bg-elevated)] font-medium text-[var(--color-text-primary)]"
-                                            : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)]",
+                                          isActive ? NAV_ROW_ACTIVE : NAV_ROW_IDLE,
                                         )}
                                       >
                                         <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-                                          <Icon
-                                            className={cn(
-                                              "h-4 w-4",
-                                              isActive && "text-[var(--color-accent-primary)]",
-                                            )}
-                                          />
+                                          <Icon className="h-4 w-4" />
                                         </span>
                                         <span className="truncate">{t(item.labelKey)}</span>
                                         {isNew(item.href) && <NewMark />}
@@ -266,6 +246,7 @@ export function MobileNav({ repos = [], workspace }: MobileNavProps) {
           </ScrollArea>
 
           <div className="flex flex-col gap-2 border-t border-[var(--color-border-default)] px-4 py-2.5">
+            <FooterSetupPill repos={repos} activeRepoId={activeRepoId} />
             <FeedbackButton />
             {/* Mobile had no theme control anywhere in the shell, so the
                 preference was simply unreachable on a phone. It shares the

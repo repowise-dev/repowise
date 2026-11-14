@@ -27,6 +27,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   risk: "Risk",
   security: "Security",
   settings: "Settings",
+  setup: "Setup",
   "knowledge-graph": "Knowledge Graph",
   zoom: "Zoom Map",
   files: "Files",
@@ -41,6 +42,7 @@ const SEGMENT_LABELS: Record<string, string> = {
  * segment itself.
  */
 export const SEGMENT_MESSAGE_KEYS: Record<string, string> = {
+  review: "review",
   overview: "overview",
   docs: "docs",
   chat: "chat",
@@ -69,6 +71,7 @@ export const SEGMENT_MESSAGE_KEYS: Record<string, string> = {
   risk: "risk",
   security: "security",
   settings: "settings",
+  setup: "setup",
   "knowledge-graph": "knowledgeGraph",
   zoom: "zoom",
   files: "files",

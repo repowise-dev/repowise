@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -89,6 +91,7 @@
       "SixOps",
       "TwoOps"
     ],
+    "module_name": "conditionals",
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -99,7 +102,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "go/nested.go": {
     "file_info": {
@@ -112,7 +116,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -167,6 +173,7 @@
       "DeeplyNested",
       "Shallow"
     ],
+    "module_name": "sample",
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -177,7 +184,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "go/perf_io_in_loop.go": {
     "file_info": {
@@ -190,7 +198,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -418,6 +428,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -443,6 +454,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -468,6 +480,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -493,6 +506,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -504,6 +518,7 @@
       }
     ],
     "exports": [],
+    "module_name": "sample",
     "export_aliases": {},
     "calls": [
       {
@@ -513,6 +528,7 @@
         "line": 20,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 663,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -529,6 +545,7 @@
         "line": 26,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 807,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -545,6 +562,7 @@
         "line": 32,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 919,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -561,6 +579,7 @@
         "line": 38,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1041,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -577,6 +596,7 @@
         "line": 39,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 1106,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -593,6 +613,7 @@
         "line": 45,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1244,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -609,6 +630,7 @@
         "line": 46,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1326,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -625,6 +647,7 @@
         "line": 62,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1767,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -641,6 +664,7 @@
         "line": 75,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1968,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -675,6 +699,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

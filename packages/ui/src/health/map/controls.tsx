@@ -35,7 +35,7 @@ export function ZoomControls({
           aria-label={b.label}
           title={b.label}
           onClick={b.act}
-          className={`min-w-[28px] px-2 py-1 font-mono tabular-nums text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-accent-primary)] ${
+          className={`min-w-[28px] px-2 py-1 font-mono tabular-nums text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--color-focus-ring)] ${
             i > 0 ? "border-l border-[var(--color-border-default)]" : ""
           }`}
         >

@@ -174,7 +174,7 @@ describe("OverviewBody", () => {
     expect(map).toHaveTextContent("1,059");
     expect(screen.getByRole("link", { name: /^Ownership/ })).toHaveTextContent("41sole-owned files");
     expect(screen.getByRole("link", { name: /^Decisions/ })).toHaveTextContent(
-      "12recorded, of which 7 accepted and 4 awaiting review",
+      "12recorded, of which 7 in force and 4 background",
     );
     expect(screen.getByRole("link", { name: /^Refactoring/ })).toHaveTextContent("9open opportunities");
     expect(screen.getByRole("link", { name: /^Tests/ })).toHaveTextContent("81.3%line coverage");
@@ -250,7 +250,7 @@ describe("inventoryRows", () => {
       ["health", 321, "open findings", "server detail"],
       ["security", 1, "in shipped source", "9 more in tests and docs"],
       ["refactoring", 9, "open opportunities", "server detail"],
-      ["decisions", 5, "to review", "4 awaiting review, 1 drifting from the code"],
+      ["decisions", 1, "drifting from the code", ""],
       ["ownership", 41, "sole-owned files", "One author, no second reader"],
       ["doc_drift", 5, null, "server detail"],
     ]);

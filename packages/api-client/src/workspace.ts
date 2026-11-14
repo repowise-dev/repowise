@@ -10,9 +10,11 @@ import type {
   WorkspaceSyncResponse,
   WorkspaceSystemGraphResponse,
   WorkspaceBlastRadiusResponse,
+  WorkspaceLinksBetweenResponse,
   WorkspaceBreakingChangesResponse,
   WorkspaceConformanceResponse,
   WorkspaceArchitectureResponse,
+  WorkspaceEstateResponse,
   WorkspaceTestImpactResponse,
   ExtractionDiagnostics,
 } from "./types";
@@ -114,13 +116,49 @@ export async function getWorkspaceDiagnostics(
  * The service-granular system graph (nodes = services, typed directed edges)
  * that the Live System Map renders. Thin pass-through over the persisted
  * `system_graph.json` artifact.
+ *
+ * `view: "map"` asks for the map's lean view: no `diagnostics` (read them from
+ * `getWorkspaceDiagnostics`), no `contract_refs` on structural edges, and a
+ * `ref_count` on every edge. A server without the view returns the full graph,
+ * which has the same shape with those fields filled.
  */
 export async function getWorkspaceSystemGraph(
   fetchOptions?: RequestInit,
+  opts?: { view?: "map" },
 ): Promise<WorkspaceSystemGraphResponse> {
   return apiGet<WorkspaceSystemGraphResponse>(
     "/api/workspace/system-graph",
-    undefined,
+    opts?.view ? { view: opts.view } : undefined,
+    fetchOptions,
+  );
+}
+
+/**
+ * Everything behind the edges between two service nodes (contract links,
+ * package dependencies, co-changes), both directions, one page at a time.
+ * Each end is resolved to its service server-side, the way the graph was built.
+ */
+export async function getWorkspaceLinksBetween(
+  opts: {
+    a: string;
+    b: string;
+    /** One edge kind: `http`, `grpc`, `event`, `db`, `package`, `co_change`... */
+    kind?: string;
+    /** Every whitespace-separated term must match the row's ids, files, symbols or packages. */
+    q?: string;
+    limit?: number;
+    offset?: number;
+  },
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceLinksBetweenResponse> {
+  const params: Record<string, string | number> = { a: opts.a, b: opts.b };
+  if (opts.kind) params.kind = opts.kind;
+  if (opts.q) params.q = opts.q;
+  if (opts.limit != null) params.limit = opts.limit;
+  if (opts.offset != null) params.offset = opts.offset;
+  return apiGet<WorkspaceLinksBetweenResponse>(
+    "/api/workspace/system-graph/links",
+    params,
     fetchOptions,
   );
 }
@@ -171,6 +209,18 @@ export async function getWorkspaceConformance(opts?: {
 
 export async function getWorkspaceArchitecture(): Promise<WorkspaceArchitectureResponse> {
   return apiGet<WorkspaceArchitectureResponse>("/api/workspace/architecture");
+}
+
+/**
+ * The estate report: repositories and services, the system map and its
+ * evidence, contracts and dangling calls, health and churn per repo, the
+ * riskiest seams and where to start. Built on request from the stored
+ * workspace artifacts and every member index, so it takes about a second.
+ */
+export async function getWorkspaceEstate(
+  fetchOptions?: RequestInit,
+): Promise<WorkspaceEstateResponse> {
+  return apiGet<WorkspaceEstateResponse>("/api/workspace/estate", undefined, fetchOptions);
 }
 
 /**

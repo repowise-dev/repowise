@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from .grading import analysed_share
 from .models import HealthFileMetricData, HealthFindingData, Severity
-from .rows import field, scored_rows, split_tests, split_unscored
+from .rows import field, scored_rows, split_unscored
 from .shape_curve import continuous_base, group_by_function, saturated
 
 if TYPE_CHECKING:
@@ -164,8 +164,6 @@ _BIOMARKER_WEIGHT_MULTIPLIER: dict[str, float] = {
     "code_age_volatility": 1.1,  # gate unmet at T0 across the corpus
     # --- floored: fired widely but weak / non-predictive at T0 ---
     "developer_congestion": 0.5,  # was 1.5 - the HEAD-leakage hero; weak under T0
-    "low_cohesion": 0.5,
-    "repeated_nesting": 0.5,
     "primitive_obsession": 0.5,
     "dry_violation": 0.5,
     "knowledge_loss": 0.4,  # confirmed weak-negative since Phase 1
@@ -271,7 +269,6 @@ ZERO_IMPACT_DIMENSIONS: frozenset[str] = frozenset({"performance", ADVISORY_DIME
 # toward both.
 _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Floored-in-defect maintainability smells -> full weight in maintainability.
-    "low_cohesion": {"defect", "maintainability"},
     "primitive_obsession": {"defect", "maintainability"},
     "dry_violation": {"defect", "maintainability"},
     "error_handling": {"defect", "maintainability"},
@@ -286,7 +283,6 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # maintainability problem whether or not it is also a defect predictor.
     "complex_method": {"defect", "maintainability"},
     "complex_conditional": {"defect", "maintainability"},
-    "repeated_nesting": {"defect", "maintainability"},
     # Performance-risk detectors contribute to ``performance`` ONLY. They are
     # NOT defect predictors and must never move the surfaced (defect) score -
     # that exclusion is what keeps the defect golden guarantee intact.
@@ -333,6 +329,13 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
     # Fires only beside complex_method and large_method on the same function, so
     # scoring it charged that function twice; dropping it moved no defect AUC.
     "brain_method": {ADVISORY_DIMENSION},
+    # A blind precision study judged 7 of 24 findings real: it fires on short
+    # functions with a few simple loops. Dropping it with four other weak markers
+    # cost 0.004 defect AUC.
+    "repeated_nesting": {ADVISORY_DIMENSION},
+    # A blind precision study (705 cards, 64 repos) judged 7 of 39 findings
+    # worth acting on; defect AUC as a flag 0.527. Listed, never deducted.
+    "low_cohesion": {ADVISORY_DIMENSION},
     # Its two inputs already deduct: complexity through complex_method, missing
     # coverage through coverage_gap and coverage_gradient. Uncalibrated; it ranks
     # which complex functions most need tests rather than moving the score.
@@ -352,7 +355,6 @@ _BIOMARKER_DIMENSIONS: dict[str, set[str]] = {
 # duals stay at 1.0 too. Tuned only against the maintainability cap budget
 # below, never against the defect corpus. Unknown biomarkers fall back to 1.0.
 _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
-    "low_cohesion": 1.0,
     "primitive_obsession": 1.0,
     "dry_violation": 1.0,
     "error_handling": 1.0,
@@ -361,7 +363,6 @@ _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
     "nested_complexity": 1.0,
     "complex_method": 1.0,
     "complex_conditional": 1.0,
-    "repeated_nesting": 1.0,
     # SQL smells ship advisory (0.7) pending a precision spot-check on a
     # migrations-heavy corpus, mirroring how new perf markers land.
     "sql_high_complexity": 0.7,
@@ -372,12 +373,10 @@ _MAINTAINABILITY_WEIGHT_MULTIPLIER: dict[str, float] = {
 # Maintainability category per biomarker - an OWN table, independent of the
 # defect category map, so the two dimensions can be retuned separately.
 _MAINTAINABILITY_CATEGORY: dict[str, str] = {
-    "low_cohesion": "structural_complexity",
     "god_class": "structural_complexity",
     "nested_complexity": "structural_complexity",
     "large_method": "structural_complexity",
     "complex_conditional": "structural_complexity",
-    "repeated_nesting": "structural_complexity",
     "complex_method": "size_and_complexity",
     "primitive_obsession": "size_and_complexity",
     "dry_violation": "duplication",
@@ -407,7 +406,6 @@ _MAINTAINABILITY_CATEGORY_CAPS: dict[str, float] = {
 # ``_BIOMARKER_DIMENSIONS`` - this label is just the finding's primary bucket.
 _MAINTAINABILITY_HOME: frozenset[str] = frozenset(
     {
-        "low_cohesion",
         "primitive_obsession",
         "dry_violation",
         "error_handling",
@@ -429,19 +427,24 @@ _MAINTAINABILITY_HOME: frozenset[str] = frozenset(
 # waits on corpus precision data for the remaining advisory markers.
 # ---------------------------------------------------------------------------
 
-# Per-biomarker weight on the performance dimension. ``io_in_loop`` is the
-# gate-cleared core (measured 79% precision, Phase 0) and carries full weight;
-# ``string_concat_in_loop`` and ``blocking_sync_in_async`` ride the same pass
-# at a reduced advisory weight pending their own spot-check (see
-# MARKER_BACKLOG.md). Unknown biomarkers fall back to 1.0.
+# Per-biomarker weight on the performance dimension; 0.0 lists a finding
+# without deducting. Unknown biomarkers fall back to 1.0.
 _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
-    "io_in_loop": 1.0,
+    # Listed, never scored (0.0). A blind study of 705 findings on 64 repositories
+    # judged these worth acting on: io_in_loop 1 of 50, lock_in_loop 0 of 26,
+    # string_concat_in_loop 1 of 25, membership_test_against_list_in_loop 1 of 11,
+    # list_insert_zero_in_loop 0 of 3, nested_loop_with_io 0 of 3. The code is
+    # real, but on a cold path (setup, once per connection, the error path) that
+    # the detectors cannot tell from a hot one. They keep the ``performance``
+    # home, not ``advisory``: the performance queue and the call-path closure
+    # select findings by that home.
+    "io_in_loop": 0.0,
+    "lock_in_loop": 0.0,
+    "string_concat_in_loop": 0.0,
+    "membership_test_against_list_in_loop": 0.0,
+    "list_insert_zero_in_loop": 0.0,
+    "nested_loop_with_io": 0.0,
     "blocking_sync_in_async": 0.7,
-    # PROMOTED 0.5 -> 0.7 (Phase-7d): the reset-per-iteration guard lifted Python
-    # precision to 100% (26/26 on the headroom corpus) by dropping the dominant
-    # FP class (an accumulator re-initialized each iteration is bounded, not
-    # O(n^2)). Clears the 70% bar with comfortable n.
-    "string_concat_in_loop": 0.7,
     # Phase 7a markers. Ship at advisory weight pending each one's Phase-0 gate
     # (MARKER_BACKLOG.md); promote to full weight where corpus precision >= 70%.
     # resource_construction is the highest-confidence (classified constructor),
@@ -453,25 +456,19 @@ _PERFORMANCE_WEIGHT_MULTIPLIER: dict[str, float] = {
     "regex_compile_in_loop": 0.6,
     "defer_in_loop": 0.6,
     "resource_construction_in_loop": 0.7,
-    "lock_in_loop": 0.5,
-    # PROMOTED 0.5 -> 0.7 (Phase-7c): 100% precision across corpora (7a 22/22 +
-    # headroom Python 12/12 = 34/34; list-vs-set gate holds). Clears the 70% bar.
-    "membership_test_against_list_in_loop": 0.7,
     "serial_await_in_loop": 0.4,
     # Phase 7b markers. Ship at advisory weight pending each one's Phase-0 gate
-    # (MARKER_BACKLOG.md / PHASE7B_LABELS.md). nested_loop_with_io rides with
-    # io_in_loop (nesting-confident); blocking_io_under_lock is high-confidence
-    # by construction (a sink under a held lock); the centrality-gated pair are
-    # advisory (the gate is precision, but the algorithmic cost is context-bound).
-    "nested_loop_with_io": 0.5,
+    # (MARKER_BACKLOG.md / PHASE7B_LABELS.md). blocking_io_under_lock is
+    # high-confidence by construction (a sink under a held lock); the
+    # centrality-gated pair are advisory (the gate is precision, but the
+    # algorithmic cost is context-bound).
     "blocking_io_under_lock": 0.6,
     "hot_path_sync_io": 0.5,
     "nested_loop_quadratic": 0.4,
     # Phase 7d language-specific markers. Ship advisory pending each one's gate
-    # (MARKER_BACKLOG.md / PHASE7D); the two O(n^2)-by-construction Python ones
-    # (front-insert / pd.concat) carry slightly more weight than the moderate-
-    # precision json_parse / goroutine-spawn ones.
-    "list_insert_zero_in_loop": 0.6,
+    # (MARKER_BACKLOG.md / PHASE7D); pd.concat (O(n^2) by construction) carries
+    # slightly more weight than the moderate-precision json_parse /
+    # goroutine-spawn ones.
     "pd_concat_in_loop": 0.6,
     # ``iterrows`` is a documented pandas anti-pattern, high-precision by the
     # distinctive method name; advisory pending corpus volume (no pandas in the
@@ -570,6 +567,8 @@ _ADVISORY_HOME: frozenset[str] = frozenset(
         "mock_saturated_test",
         "hidden_coupling",
         "brain_method",
+        "repeated_nesting",
+        "low_cohesion",
         "untested_complexity",
         "apex_soql_injection",
         "apex_missing_sharing",
@@ -578,6 +577,73 @@ _ADVISORY_HOME: frozenset[str] = frozenset(
         "cobol_unstructured_flow",
     }
 )
+
+# Marker -> languages where it is listed but never scored: a cell whose measured
+# precision falls short in those languages only. Data only; an entry needs its
+# numbers (findings judged, worth acting on) in docs/architecture/code-health.md
+# §5.4. Within a listed language the marker behaves exactly like one in
+# ``_ADVISORY_HOME``; findings stored that way carry the ``advisory`` dimension,
+# which is what row-reading surfaces check (:func:`finding_is_advisory`).
+# Keys are file language tags (``.tsx`` is ``typescript``, ``.jsx`` ``javascript``).
+# Only markers without defect signal are listed; complex_method,
+# nested_complexity and large_method keep their weight in every language.
+_ADVISORY_BY_LANGUAGE: dict[str, frozenset[str]] = {
+    "complex_conditional": frozenset(
+        {
+            "c",
+            "cpp",
+            "csharp",
+            "dart",
+            "fsharp",
+            "go",
+            "java",
+            "javascript",
+            "kotlin",
+            "objectivec",
+            "php",
+            "python",
+            "ruby",
+            "rust",
+            "typescript",
+        }
+    ),
+    "god_class": frozenset({"csharp", "kotlin", "python", "scala", "typescript"}),
+    "primitive_obsession": frozenset(
+        {
+            "c",
+            "cpp",
+            "csharp",
+            "java",
+            "javascript",
+            "php",
+            "python",
+            "rust",
+            "scala",
+            "swift",
+            "typescript",
+        }
+    ),
+}
+
+
+# The inverse: marker -> the only languages where it scores; everywhere else it
+# behaves like an ``_ADVISORY_BY_LANGUAGE`` cell. For a marker whose findings
+# are mostly not worth acting on (dry_violation 7 of 64, error_handling 6 of 54
+# judged) but whose flag still ranks defects in one language: dry_violation in
+# TypeScript (flag AUC 0.571, 32% of files), error_handling in Python (0.641,
+# 28%). There each keeps its floored weight (code-health.md §5.4).
+_SCORED_ONLY_IN: dict[str, frozenset[str]] = {
+    "dry_violation": frozenset({"typescript"}),
+    "error_handling": frozenset({"python"}),
+}
+
+
+def _advisory_in(name: str, language: str | None) -> bool:
+    if language is None:
+        return False
+    if name in _SCORED_ONLY_IN:
+        return language not in _SCORED_ONLY_IN[name]
+    return language in _ADVISORY_BY_LANGUAGE.get(name, ())
 
 
 def severity_deduction(sev: Severity) -> float:
@@ -599,20 +665,23 @@ def history_biomarkers() -> frozenset[str]:
     return frozenset(n for n, c in _BIOMARKER_CATEGORY.items() if c == HISTORY_CATEGORY)
 
 
-def dimensions_for(name: str) -> set[str]:
+def dimensions_for(name: str, language: str | None = None) -> set[str]:
     """Dimensions a biomarker's deduction contributes to.
 
     Unlisted biomarkers default to ``{"defect"}`` (the historical single score).
     Performance-only detectors map to ``{"performance"}`` and are deliberately
     excluded from ``defect`` - that exclusion is what keeps the defect golden
-    guarantee intact.
+    guarantee intact. *language* applies ``_ADVISORY_BY_LANGUAGE`` and
+    ``_SCORED_ONLY_IN``.
     """
+    if _advisory_in(name, language):
+        return {ADVISORY_DIMENSION}
     return _BIOMARKER_DIMENSIONS.get(name, {"defect"})
 
 
-def biomarker_dimension(name: str) -> str:
+def biomarker_dimension(name: str, language: str | None = None) -> str:
     """The finding's single 'home' dimension for display / per-pillar filtering."""
-    if name in _ADVISORY_HOME:
+    if name in _ADVISORY_HOME or _advisory_in(name, language):
         return ADVISORY_DIMENSION
     if name in _PERFORMANCE_HOME:
         return "performance"
@@ -654,6 +723,15 @@ def ranked_severity(name: str, severity: str | None) -> str | None:
 def is_advisory(name: str) -> bool:
     """True when *name* is a non-scoring marker (see ``ADVISORY_DIMENSION``)."""
     return name in _ADVISORY_HOME
+
+
+def finding_is_advisory(finding: Any) -> bool:
+    """True for a stored finding that scores nothing: an advisory marker, or one
+    stored as advisory for its file's language (``_ADVISORY_BY_LANGUAGE``)."""
+    return (
+        is_advisory(field(finding, "biomarker_type", "") or "")
+        or field(finding, "dimension", None) == ADVISORY_DIMENSION
+    )
 
 
 def maintainability_weight(name: str) -> float:
@@ -811,7 +889,9 @@ def remap_severities(
     return out
 
 
-def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | None], list[float]]:
+def score_file(
+    results: Iterable[BiomarkerResult], language: str | None = None
+) -> tuple[dict[str, float | None], list[float]]:
     """Aggregate biomarker hits into per-dimension scores in ``[1.0, 10.0]``.
 
     Returns ``(scores, defect_deductions)`` where:
@@ -823,14 +903,20 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     - ``defect_deductions`` is each finding's contribution to the DEFECT score
       after grouping and category bounds, parallel to *results*. It populates
       ``HealthFindingData.health_impact``, a defect-pillar quantity.
+
+    *language* is the file's, for ``_ADVISORY_BY_LANGUAGE``.
     """
     results_list = list(results)
+
+    def dims(r: BiomarkerResult) -> set[str]:
+        return dimensions_for(r.biomarker_type, language)
+
 
     # Only biomarkers whose dimensions include ``defect`` deduct here.
     # ``defect_deductions`` stays parallel to the full ``results_list`` (others
     # get 0.0) so ``attach_impacts`` can zip 1:1.
     defect_idx = [
-        i for i, r in enumerate(results_list) if "defect" in dimensions_for(r.biomarker_type)
+        i for i, r in enumerate(results_list) if "defect" in dims(r)
     ]
     defect_results = [results_list[i] for i in defect_idx]
     defect_score, defect_sub = _score_dimension(
@@ -845,9 +931,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
     for sub_i, orig_i in enumerate(defect_idx):
         defect_deductions[orig_i] = defect_sub[sub_i]
 
-    maint_results = [
-        r for r in results_list if "maintainability" in dimensions_for(r.biomarker_type)
-    ]
+    maint_results = [r for r in results_list if "maintainability" in dims(r)]
     maint_score, _ = _score_dimension(
         maint_results,
         lambda r: maintainability_weight(r.biomarker_type),
@@ -857,7 +941,7 @@ def score_file(results: Iterable[BiomarkerResult]) -> tuple[dict[str, float | No
 
     # PERFORMANCE: now that the detectors are registered, every file is measured
     # - a clean file scores 10.0 (no perf findings), not ``None``.
-    perf_results = [r for r in results_list if "performance" in dimensions_for(r.biomarker_type)]
+    perf_results = [r for r in results_list if "performance" in dims(r)]
     perf_score, _ = _score_dimension(
         perf_results,
         lambda r: performance_weight(r.biomarker_type, (r.details or {}).get("orm")),
@@ -929,9 +1013,10 @@ def unclamped_score(structure: float | None, history: float | None) -> float | N
 
 
 def attach_impacts(
-    results: list[BiomarkerResult], deductions: list[float]
+    results: list[BiomarkerResult], deductions: list[float], language: str | None = None
 ) -> list[HealthFindingData]:
-    """Lift ``BiomarkerResult`` -> ``HealthFindingData`` with impact attached."""
+    """Lift ``BiomarkerResult`` -> ``HealthFindingData`` with impact attached;
+    *language* is the file's, as passed to :func:`score_file`."""
     out: list[HealthFindingData] = []
     for r, d in zip(results, deductions, strict=True):
         out.append(
@@ -945,7 +1030,7 @@ def attach_impacts(
                 details=r.details,
                 health_impact=round(d, 3),
                 reason=r.reason,
-                dimension=biomarker_dimension(r.biomarker_type),
+                dimension=biomarker_dimension(r.biomarker_type, language),
             )
         )
     return out
@@ -974,6 +1059,32 @@ def nloc_weighted_attr(rows: list[HealthFileMetricData], attr: str) -> float | N
     if total_w == 0:
         return sum(float(field(r, attr)) for r in scored) / len(scored)
     return sum(float(field(r, attr)) * _weight(r) for r in scored) / total_w
+
+
+def headline_split(rows: Sequence[Any]) -> tuple[float | None, float | None]:
+    """NLOC-weighted ``(structure, history)`` halves of the headline deduction.
+
+    The stored halves are unclamped, so a file under the floor holds more
+    points than its score lost. Each file's halves are scaled to its floored
+    deficit (``SCORE_MAX - score``) so the two always add up to ``SCORE_MAX``
+    minus the headline. ``(None, None)`` until every scored file carries the
+    split: halves over a subset would not add up to the headline.
+    """
+    split = scored_rows(rows)
+    if not split or any(
+        field(r, "structure_deduction", None) is None and field(r, "history_deduction", None) is None
+        for r in split
+    ):
+        return None, None
+    structure = history = 0.0
+    for r in split:
+        s = float(field(r, "structure_deduction", 0.0) or 0.0)
+        h = float(field(r, "history_deduction", 0.0) or 0.0)
+        scale = (SCORE_MAX - _row_score(r)) / (s + h) if s + h > 0 else 0.0
+        structure += s * scale * _weight(r)
+        history += h * scale * _weight(r)
+    total_w = sum(_weight(r) for r in split)
+    return structure / total_w, history / total_w
 
 
 def nloc_weighted_score(rows: list[HealthFileMetricData]) -> float:
@@ -1022,6 +1133,23 @@ def hotspot_health(
     if not rows:
         return None
     return round(nloc_weighted_score(rows), 2)
+
+
+def production_average(metrics: Iterable[Any]) -> tuple[float | None, int]:
+    """``(score, file count)`` over the scored production files in *metrics*.
+
+    The only implementation of ``production_average``. Production is the file
+    set ``worst_performer`` is picked from (``ranking.split_in_scope``), so
+    tests, tooling, build scripts, vendored, generated and docs example files
+    are all left out. The score is ``None`` when no production file is scored.
+    """
+    # Imported here: ``ranking`` reads this module's score ceiling.
+    from .ranking import split_in_scope
+
+    production, _ = split_in_scope(scored_rows(metrics))
+    if not production:
+        return None, 0
+    return round(nloc_weighted_score(production), 2), len(production)
 
 
 def _empty_kpis(unanalysed: int) -> dict[str, object]:
@@ -1084,9 +1212,11 @@ def compute_kpis(
       ``None`` when no file carries a performance score.
     - ``structure_average`` / ``history_average`` and their hotspot pair: the
       headline's two halves, in deduction points, so a surface can say which
-      one is holding the score down. ``None`` until files carry the split.
-    - ``production_average``: ``average_health`` over non-test files, weighted
-      identically, so a narrowed view and a narrowed trend agree.
+      one is holding the score down. They sum to ``SCORE_MAX`` minus the
+      matching headline (``headline_split``). ``None`` until files carry the split.
+    - ``production_average``: ``average_health`` over production code, the
+      files ``worst_performer`` is picked from (``ranking.split_in_scope``):
+      no tests, tooling, build, vendored, generated or docs example files.
     - ``unanalysed_file_count``: files stored with no score because health has
       no dialect for their language. Every KPI above leaves them out; when no
       file is scored at all, the two headline averages are ``None``.
@@ -1105,17 +1235,14 @@ def compute_kpis(
     # Imported here: ``ranking`` reads this module's score ceiling.
     from .ranking import worst_kpis
 
-    # ``production_average`` keeps its own rule: every non-test file.
-    production, _ = split_tests(metrics)
+    production, production_count = production_average(metrics)
     maint_avg = nloc_weighted_attr(metrics, "maintainability_score")
     maint_hotspot = nloc_weighted_attr(hotspots, "maintainability_score")
     perf_avg = nloc_weighted_attr(metrics, "performance_score")
     perf_hotspot = nloc_weighted_attr(hotspots, "performance_score")
-    splits = {
-        f"{half}_{scope}": nloc_weighted_attr(rows, f"{half}_deduction")
-        for half in ("structure", "history")
-        for scope, rows in (("average", metrics), ("hotspot", hotspots))
-    }
+    splits: dict[str, float | None] = {}
+    for scope, rows in (("average", metrics), ("hotspot", hotspots)):
+        splits[f"structure_{scope}"], splits[f"history_{scope}"] = headline_split(rows)
     return {
         "hotspot_health": hotspot_health(metrics, hotspot_paths),
         "average_health": round(nloc_weighted_score(metrics), 2),
@@ -1126,10 +1253,8 @@ def compute_kpis(
         "performance_average": round(perf_avg, 2) if perf_avg is not None else None,
         "performance_hotspot": round(perf_hotspot, 2) if perf_hotspot is not None else None,
         **{k: round(v, 2) if v is not None else None for k, v in splits.items()},
-        "production_average": (
-            round(nloc_weighted_score(production), 2) if production else None
-        ),
-        "production_file_count": len(production),
+        "production_average": production,
+        "production_file_count": production_count,
         "unanalysed_file_count": unanalysed,
         "analysed_share": analysed_share(len(metrics), unanalysed),
     }

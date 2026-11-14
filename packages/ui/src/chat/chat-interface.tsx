@@ -85,6 +85,8 @@ export interface ChatInterfaceProps {
    * wrapper that owns its providers SWR.
    */
   modelSelectorSlot?: ReactNode;
+  /** One muted line under the composer, such as a cost or accuracy note. */
+  composerNote?: ReactNode;
   /**
    * Slot rendered in the left side of the active-conversation header bar AND
    * in the empty-state composer footer. Typically a `<ConversationHistory />`
@@ -149,6 +151,7 @@ export function ChatInterface({
   onSend,
   onCancel,
   modelSelectorSlot,
+  composerNote,
   historySlot,
   buildCitationHref,
   linkPrefix,
@@ -446,7 +449,7 @@ export function ChatInterface({
                     <button
                       type="button"
                       onClick={() => void onRetry(lastMessage)}
-                      className="inline-flex h-8 items-center rounded-md px-2 text-xs font-medium hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                      className="inline-flex h-8 items-center rounded-md px-2 text-xs font-medium hover:bg-[var(--color-bg-elevated)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                     >
                       Retry
                     </button>
@@ -463,7 +466,7 @@ export function ChatInterface({
             aria-pressed={isFollowingLive}
             aria-label="Jump to latest"
             title="Jump to latest"
-            className="absolute bottom-3 left-1/2 z-10 flex h-8 w-8 print:hidden -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="absolute bottom-3 left-1/2 z-10 flex h-8 w-8 print:hidden -translate-x-1/2 items-center justify-center rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-overlay)] text-[var(--color-text-secondary)] shadow-[var(--shadow-sm)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             <ArrowDown className="h-4 w-4" />
           </button>
@@ -481,12 +484,6 @@ export function ChatInterface({
         )}
       >
         <div className={cn(column, dock && "px-3")}>
-          {showContext && context && (
-            <ChatContextIndicator
-              context={context}
-              {...(onContextRemove ? { onRemove: onContextRemove } : {})}
-            />
-          )}
           <ChatComposer
             value={input}
             onValueChange={setInput}
@@ -500,6 +497,18 @@ export function ChatInterface({
             autoFocus={autoFocus}
             textareaRef={textareaRef}
             {...(modelSelectorSlot ? { footer: modelSelectorSlot } : {})}
+            {...(composerNote ? { note: composerNote } : {})}
+            {...(showContext && context
+              ? {
+                  header: (
+                    <ChatContextIndicator
+                      context={context}
+                      className="px-0 pb-1"
+                      {...(onContextRemove ? { onRemove: onContextRemove } : {})}
+                    />
+                  ),
+                }
+              : {})}
           />
         </div>
       </div>

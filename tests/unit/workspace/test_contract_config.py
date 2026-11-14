@@ -198,3 +198,23 @@ class TestSettingStages:
         )
         assert base.analysis_fingerprint() == moved.analysis_fingerprint()
         assert base.analysis_fingerprint() != edited.analysis_fingerprint()
+
+    def test_analysis_fingerprint_follows_declared_groups_only(self) -> None:
+        import hashlib
+        import json
+
+        def ws(*tags: str) -> WorkspaceConfig:
+            return WorkspaceConfig(repos=[RepoEntry(path="a", alias="a", tags=list(tags))])
+
+        base = ws()
+        # Without a group tag the payload is the one stamped before groups
+        # counted, so existing stamps (conformance tags included) stay valid.
+        old = [base.contracts.to_dict(), base.conformance.to_dict()]
+        expected = hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest()[:16]
+        assert base.analysis_fingerprint() == expected
+        assert ws("backend", "team:x").analysis_fingerprint() == expected
+        assert ws("group:core").analysis_fingerprint() != expected
+        assert ws("backend", "group:core").analysis_fingerprint() == ws(
+            "group:core", "python"
+        ).analysis_fingerprint()
+        assert ws("group:core").analysis_fingerprint() != ws("group:edge").analysis_fingerprint()

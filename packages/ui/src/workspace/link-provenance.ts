@@ -62,6 +62,11 @@ const STRATEGIES = {
     label: "Matched after stripping a prefix",
     meaning: "The paths match only after removing a mount, version or base prefix. Verify before relying on it.",
   },
+  param_segment: {
+    label: "Matched a route parameter",
+    meaning:
+      "The call names a concrete value where the route declares a parameter, such as /render/1 against /render/{id}. Verify before relying on it.",
+  },
   manual: {
     label: "Declared by hand",
     meaning: "Declared in the workspace config.",
@@ -138,6 +143,24 @@ export function linkStrategyCopy(strategy: string | null | undefined): Provenanc
       meaning: "This version does not describe this matching rule.",
     }
   );
+}
+
+/**
+ * Strategies a reader should check before relying on the link: the call's
+ * base URL was not read, or the paths matched only after loosening them.
+ * Route rows name only these, so the exception stands out and the stronger
+ * rules stay the quiet default.
+ */
+const WEAK_STRATEGIES: ReadonlySet<string> = new Set<LinkStrategy>([
+  "unique_path",
+  "ambiguous_path",
+  "prefix_stripped",
+  "param_segment",
+  "host_only",
+]);
+
+export function strategyNeedsCheck(strategy: string | null | undefined): boolean {
+  return Boolean(strategy && WEAK_STRATEGIES.has(strategy));
 }
 
 /** Describe a contract origin. Null only when the contract carries none. */

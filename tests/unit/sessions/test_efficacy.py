@@ -16,6 +16,7 @@ from repowise.core.sessions.efficacy import (
     ACTION_WINDOW,
     AMBIGUOUS,
     classify,
+    firing_dose,
     ingest_transcript_efficacy,
     iter_transcript_firings,
     ledger_key,
@@ -413,3 +414,88 @@ def test_ledger_key_mirrors_the_hook_side_helper(surface, category, text):
     from repowise.cli.commands.augment_cmd._shared import _ledger_key
 
     assert ledger_key(surface, category, text) == _ledger_key(surface, category, text)
+
+
+
+# ---------------------------------------------------------------------------
+# upkeep / commit_notice
+# ---------------------------------------------------------------------------
+
+UPKEEP = (
+    '[repowise] Commit abc12345 changes code governed by 2 decisions: 1a2b3c4d "Use JWT"; '
+    '5e6f7a8b "Price at zero". Settle each with one command: still holds '
+    "`repowise decision reaffirm <id> --agent <your slug>`; replaced "
+    "`repowise decision deprecate <id> --superseded-by <new id> --agent <your slug>`; "
+    "knowingly broken `repowise decision deprecate <id> --reason '<why>' --agent <your slug>`."
+)
+
+
+def _bash(command: str) -> tuple[str, str]:
+    return ("Bash", json.dumps({"command": command}))
+
+
+def _upkeep_firing():
+    (firing,) = parse_emission(UPKEEP)
+    return firing
+
+
+def test_upkeep_targets_are_the_named_ids_not_the_commit():
+    assert _upkeep_firing().targets == ["1a2b3c4d", "5e6f7a8b"]
+
+
+@pytest.mark.parametrize(
+    "command, verb",
+    [
+        ("repowise decision reaffirm 1a2b3c4d --agent claude_code", "reaffirm"),
+        ("repowise distill repowise decision deprecate 5e6f7a8b --reason gone", "deprecate"),
+        ("repowise decision deprecate 1a2b3c4d --superseded-by 99 --agent x", "deprecate"),
+    ],
+)
+def test_upkeep_acts_on_any_of_its_commands(command, verb):
+    settled = classify(_upkeep_firing(), [_bash(command)])
+
+    assert settled.acted is True and settled.evidence == verb
+
+
+def test_upkeep_needs_a_named_decision_and_a_settling_verb():
+    calls = [
+        _bash("repowise decision reaffirm deadbeef --agent x"),
+        _bash("repowise decision show 1a2b3c4d"),
+        ("Read", json.dumps({"file_path": "1a2b3c4d"})),
+        # Named in the same call, but not as an argument of the command.
+        _bash("git commit -m 'run repowise decision reaffirm later for 1a2b3c4d'"),
+    ]
+
+    assert classify(_upkeep_firing(), calls).acted is False
+
+
+def test_upkeep_counts_a_command_anywhere_later_in_the_session():
+    """Settling waits for the work to finish; the window is the session."""
+    calls = [("Read", "{}")] * (ACTION_WINDOW + 10) + [_bash("repowise decision reaffirm 1a2b3c4d")]
+
+    assert classify(_upkeep_firing(), calls).acted is True
+
+
+def test_other_surfaces_keep_the_action_window():
+    (firing,) = parse_emission("[repowise] src/a.py has been bug-fixed 4x in the last 6 months, last today.")
+    calls = [("Read", "{}")] * ACTION_WINDOW + [_bash("pytest")]
+
+    assert classify(firing, calls).acted is False
+
+
+def test_firing_dose_splits_each_sessions_first_and_second_firing():
+    rows = [
+        {"session_id": "a", "shown_at": 2.0, "acted": 0},
+        {"session_id": "a", "shown_at": 1.0, "acted": 1},
+        {"session_id": "a", "shown_at": 3.0, "acted": 1},
+        {"session_id": "b", "shown_at": 5.0, "acted": 0},
+    ]
+
+    assert firing_dose(rows) == {
+        "firings": 4,
+        "acted": 2,
+        "first": 2,
+        "first_acted": 1,
+        "second": 1,
+        "second_acted": 0,
+    }

@@ -19,5 +19,3 @@ export * from "./package-deps-table";
 export * from "./repo-card";
 export * from "./repo-card-compact";
 export * from "./repo-pair-table";
-export * from "./workspace-graph";
-export * from "./workspace-graph-node";

@@ -111,6 +111,7 @@ def test_only_a_prose_source_is_asked():
     """
     title, decision = "Never stage all changes", "Do not use `git add -A`."
     assert classify_kind(title, decision, source="session") == AGREEMENT_KIND
+    assert classify_kind(title, decision, source="agent") == AGREEMENT_KIND
     assert classify_kind(title, decision, source="comment") == ARCHITECTURAL_KIND
     assert classify_kind(title, decision, source="pr") == ARCHITECTURAL_KIND
     # An unnamed caller gets the kind that keeps being checked, per the module's

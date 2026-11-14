@@ -1188,9 +1188,21 @@ def _exported_names(content: str, pattern: re.Pattern[str]) -> list[tuple[str, i
 
 # The App Router takes the verb from the exported name and the path from the
 # file's location, so a route handler's text holds no path literal at all.
-_NEXT_HANDLER_RE = re.compile(
-    _EXPORT_HEAD + r"(?P<name>GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b",
+_NEXT_VERBS = r"GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS"
+_NEXT_HANDLER_RE = re.compile(_EXPORT_HEAD + rf"(?P<name>{_NEXT_VERBS})\b", re.MULTILINE)
+
+# The same handlers exported from a brace list: destructured from a library's
+# handler object (`export const { GET, POST } = handlers`) or named in an export
+# list (`export { handler as GET }`, `export { GET } from "./auth"`).
+_NEXT_HANDLER_LIST_RE = re.compile(
+    r"^[^\S\n]*(?P<export>export)\s+(?:(?:const|let|var)\s+)?\{(?P<body>[^}]*)\}",
     re.MULTILINE,
+)
+# A verb the list binds under its own name. One followed by `:` is a key the
+# destructuring renames, one followed by `as` is exported under another name,
+# and one after an inline `type` modifier exports only a type.
+_NEXT_LISTED_VERB_RE = re.compile(
+    rf"(?<![\w$.])(?P<type>type\s+)?(?P<name>{_NEXT_VERBS})\b(?!\s*(?::|as\b))"
 )
 
 
@@ -1228,7 +1240,17 @@ def next_route_path(rel_path: str) -> str | None:
 
 def next_route_verbs(content: str) -> list[tuple[str, int]]:
     """``(verb, offset)`` per exported handler, in declaration order."""
-    return _exported_names(content, _NEXT_HANDLER_RE)
+    found = _exported_names(content, _NEXT_HANDLER_RE)
+    for m in _NEXT_HANDLER_LIST_RE.finditer(content):
+        listed = _NEXT_LISTED_VERB_RE.finditer(m.group("body"))
+        found += [(v.group("name"), m.start("export")) for v in listed if not v.group("type")]
+    seen: set[str] = set()
+    out: list[tuple[str, int]] = []
+    for verb, offset in sorted(found, key=lambda pair: pair[1]):
+        if verb not in seen:
+            seen.add(verb)
+            out.append((verb, offset))
+    return out
 
 
 # ---------------------------------------------------------------------------

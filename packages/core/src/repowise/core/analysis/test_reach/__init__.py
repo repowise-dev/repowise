@@ -86,6 +86,30 @@ through ``__init__.py`` (3 recovered, 5 added) and ``conftest.py`` transitivity
 transitive *execution*, which import edges structurally cannot see, which is
 what the call graph is for.
 
+Those numbers rank tests for a file. Saying a file has *no* test is a different
+claim, and the default depth over-made it: on a 63-file change to this
+repository, 224 dependents read as untested, and in a hand-labelled sample
+only 41% of the flagged files were. A caller about to make that claim passes
+``helpers`` (``pr_blast.file_tests``; the health pass's pairing does the same),
+which adds the helper or barrel hop and :func:`~.walk.package_walk`: a test
+loading the file through its own package (an ``__init__`` re-export chain, a
+registry beside the modules it imports), never through a hub, never from
+another package. Flagged-and-truly-untested rose from 41% to 71% with every
+real gap in the sample kept; 32 of 35 sampled files it newly calls tested
+were. The import tier's default stays 1, so test ranking and selection are
+unchanged.
+
+Last, :func:`~.walk.use_walk` lets reach cross packages on symbol evidence:
+call edges back from the file's symbols (``DEFAULT_CALL_DEPTH``) to code in
+other files that calls into it, then the tests that call that code or load its
+file. Importing something that imports the file is not enough, a symbol with
+more than ``HUB_MIN_FAN_IN`` callers in code neither carries nor joins, and a
+``conftest.py`` loading every router is no test. Files with no code of their
+own (re-export barrels, ``package-info.java``) are ``type_only``. On the
+labelled set in ``tests/fixtures/untested_eval`` (149 files, Python,
+TypeScript, Go, Java), precision of "untested" rose from 55% to 84% with
+recall of real gaps unchanged at 88%.
+
 Why recall reads low, and why that is not the graph's fault
 -----------------------------------------------------------
 27.7% looks poor for a graph this dense, and the reason is what the ground truth
@@ -157,8 +181,11 @@ from .db import (
     always_run_test_files,
     any_reached,
     any_tests_reaching,
+    cached_file_paths,
     cached_files_reached_by_tests,
     cached_hub_files,
+    cached_import_graphs,
+    cached_placement,
     cached_test_files,
     cached_test_masks,
     call_graph_from_db,
@@ -172,10 +199,12 @@ from .db import (
     placed_test_files,
     reach_into_symbols,
     reach_states_from_db,
+    stored_origins,
     tests_reaching,
     tests_reaching_by_tier,
     tests_reaching_through_helpers,
     unscanned_test_files,
+    write_test_masks_snapshot,
 )
 from .forward import (
     CallGraphView,
@@ -223,8 +252,11 @@ __all__ = [
     "any_reached",
     "any_tests_reaching",
     "build_walk_maps",
+    "cached_file_paths",
     "cached_files_reached_by_tests",
     "cached_hub_files",
+    "cached_import_graphs",
+    "cached_placement",
     "cached_test_files",
     "cached_test_masks",
     "call_graph_from_db",
@@ -254,10 +286,12 @@ __all__ = [
     "replaced_files",
     "replaced_modules",
     "rust_has_inline_tests",
+    "stored_origins",
     "tests_matching_by_name",
     "tests_reaching",
     "tests_reaching_by_tier",
     "tests_reaching_through_helpers",
     "type_only_files",
     "unscanned_test_files",
+    "write_test_masks_snapshot",
 ]

@@ -16,10 +16,12 @@ KEY`` / ``ON SIZE ERROR`` / ``ON EXCEPTION`` / ``ON OVERFLOW`` handler are +1
 CCN and a flat +1 cognitive; ``AND`` / ``OR`` are +1 each; ``EVALUATE`` and
 ``SEARCH`` open a level and ``WHEN`` / ``WHEN OTHER`` open another, like a
 switch and its cases. ``GO TO`` and ``ALTER`` are breaks in flow: a flat +1
-cognitive. A handler's body opens a level, as a ``WHEN`` arm does: its
-``NOT ...`` side replaces it, and the verb's ``END-READ`` (``END-WRITE``,
-``END-COMPUTE``, ``END-CALL``, ...) or the sentence period closes it; a
-``SEARCH``'s ``AT END`` stays an arm of the ``SEARCH``. NLOC counts the non-blank lines of
+cognitive; a plain ``GO TO`` adds no CCN, while ``GO TO ... DEPENDING ON`` adds
+one per target. A handler's body opens a level, as a ``WHEN`` arm does: its
+``NOT ...`` side replaces it, and its own verb's ``END-READ`` (``END-WRITE``,
+``END-COMPUTE``, ``END-CALL``, ...), the next ``WHEN`` of an enclosing arm or
+the sentence period closes it; a ``SEARCH``'s ``AT END`` stays an arm of the
+``SEARCH``. NLOC counts the non-blank lines of
 the code view (comments and sequence areas blank) from the first statement to
 the last, so a masked ``EXEC`` block counts every line it spans.
 
@@ -395,8 +397,15 @@ def _measure(name: str, header: Node, body: list[Node], lines: list[str]) -> Fun
         elif kind == "else_if_header":
             charge(1)
             cognitive += 1
+
         elif kind in _JUMPS:
             cognitive += 1
+            if kind == "goto_statement":
+                targets = [c for c in node.children if c.type == "label"]
+                # DEPENDING ON picks a target or falls through: one point per target.
+                if b"DEPENDING" in (node.text or b"").upper():
+                    charge(len(targets))
+
         operators = _boolean_operators(node)
         charge(operators)
         cognitive += operators

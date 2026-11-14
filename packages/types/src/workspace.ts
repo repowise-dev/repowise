@@ -48,6 +48,7 @@ export type LinkStrategy =
   | "unique_path"
   | "ambiguous_path"
   | "prefix_stripped"
+  | "param_segment"
   | "manual"
   | "manifest";
 
@@ -111,6 +112,73 @@ export interface WorkspaceContractLinkEntry {
   consumer_contract_id?: string | null;
 }
 
+export interface WorkspaceCoChangeEvidence {
+  /** Distinct author emails behind the pair (bounded sample). */
+  authors: string[];
+  /** Example matched commit pairs: short SHAs, date, time gap in hours. */
+  commit_pairs: Array<{
+    source_sha: string;
+    target_sha: string;
+    date: string;
+    gap_hours: number;
+  }>;
+  /** Largest time gap between a matched commit pair, in hours. */
+  max_gap_hours: number;
+}
+
+/**
+ * Which way a link between two services runs: `a_to_b` when `a` is the consumer
+ * or dependent, `both` for a co-change (it has no direction).
+ */
+export type ServiceLinkDirection = "a_to_b" | "b_to_a" | "both";
+
+/** What a row between two services is: which of its payload fields is set. */
+export type ServiceLinkEvidence = "contract" | "package" | "co_change";
+
+/**
+ * One piece of evidence behind an edge between two services, each end resolved
+ * to its service the way the system graph was built. Mirrors
+ * `repowise.core.workspace.links_between`.
+ */
+export interface ServiceLinkEntry {
+  /** The system-graph edge kind it folds into. */
+  kind: SystemEdgeKind | (string & {});
+  direction: ServiceLinkDirection;
+  evidence: ServiceLinkEvidence;
+  /** Set when `evidence` is `contract`: a contract link or service link. */
+  link?: WorkspaceContractLinkEntry | null;
+  /** What established each end's contract; null when unknown. */
+  provider_origin?: ContractOriginWire | null;
+  consumer_origin?: ContractOriginWire | null;
+  /** Set when `evidence` is `package`. */
+  package_dep?: WorkspacePackageDepEntry | null;
+  /** Set when `evidence` is `co_change`. */
+  co_change?: WorkspaceCoChangeEntry | null;
+}
+
+export interface ServiceLinksTotal {
+  kind: SystemEdgeKind | (string & {});
+  direction: ServiceLinkDirection;
+  count: number;
+}
+
+/** `GET /api/workspace/system-graph/links`: one page of rows between `a` and `b`. */
+export interface ServiceLinksBetween {
+  a: string;
+  b: string;
+  /** The graph and the contracts record different repo heads; rows may be missing. */
+  stale_graph?: boolean;
+  /** Ordered by direction, kind, evidence, then ids and files. */
+  links: ServiceLinkEntry[];
+  /** Rows matching every filter; the page is cut from these. */
+  total: number;
+  /**
+   * Rows per edge kind and direction, for every kind present, under `q` but not
+   * `kind`. Not grouped: a view showing kind families sums them itself.
+   */
+  totals: ServiceLinksTotal[];
+}
+
 export interface WorkspaceCoChangeEntry {
   source_repo: string;
   source_file: string;
@@ -119,6 +187,8 @@ export interface WorkspaceCoChangeEntry {
   strength: number;
   frequency: number;
   last_date: string;
+  /** Bounded supporting evidence (#483); null for pre-evidence overlays. */
+  evidence: WorkspaceCoChangeEvidence | null;
 }
 
 export interface WorkspacePackageDepEntry {
@@ -151,6 +221,13 @@ export type SystemEdgeKind =
   | "co_change"
   | "db";
 
+/**
+ * What an edge kind means at the system level. Mirrors core's
+ * `EDGE_KIND_FAMILY` (`repowise.core.workspace.system_graph`), the one owner of
+ * kind-to-family; read `SystemEdge.family` rather than mapping kinds here.
+ */
+export type SystemEdgeFamily = "runtime" | "data" | "build" | "history";
+
 /** How confidently an edge was matched. Behavioral co-change edges are `inferred`. */
 export type SystemEdgeMatchType = "exact" | "candidate" | "manual" | "inferred";
 
@@ -174,6 +251,25 @@ export interface SystemNode {
   is_orphan_consumer: boolean;
   /** Participates in no edges. */
   is_isolated: boolean;
+  /** Id of the `ServiceGroup` this service belongs to; absent or null when ungrouped. */
+  group?: string | null;
+}
+
+/** Where a service group came from: a declared repo tag, a shared alias prefix, or linkage. */
+export type ServiceGroupSource = "tag" | "name" | "linked";
+
+/**
+ * A group of services the map can draw as one card. Mirrors
+ * `repowise.core.workspace.grouping.ServiceGroup`. Core alone decides when to
+ * group (`MIN_SERVICES_TO_GROUP`, `MIN_GROUPS`): a non-empty `groups` list is
+ * the answer, so a view never re-derives the gate.
+ */
+export interface ServiceGroup {
+  /** `tag:<name>`, `name:<prefix>` or `linked:<smallest member id>`. */
+  id: string;
+  label: string;
+  source: ServiceGroupSource;
+  member_count: number;
 }
 
 /** A typed, directed relationship between two services (`source` → `target`). */
@@ -188,10 +284,17 @@ export interface SystemEdge {
   weight: number;
   /** True for contract/package edges, false for behavioral co-change edges. */
   structural: boolean;
-  /** Back-pointers to the underlying evidence, for drill-down (bounded). */
-  contract_refs: string[];
+  /**
+   * Back-pointers to the underlying evidence, for drill-down (bounded). The
+   * map's lean view (`?view=map`) sends null on structural edges.
+   */
+  contract_refs?: string[] | null;
+  /** Distinct refs the full edge keeps; set by the lean view in place of the list. */
+  ref_count?: number;
   /** Strategy of the link that gave the edge its confidence; null on a co-change edge. */
   strategy?: LinkStrategyWire | null;
+  /** The kind's family, set by core (an unknown kind is `history`). */
+  family?: SystemEdgeFamily | null;
 }
 
 export interface SystemGraph {
@@ -199,7 +302,10 @@ export interface SystemGraph {
   generated_at: string;
   nodes: SystemNode[];
   edges: SystemEdge[];
-  diagnostics: ExtractionDiagnostics;
+  /** Absent from the map's lean view, which reads `/api/workspace/diagnostics`. */
+  diagnostics?: ExtractionDiagnostics;
+  /** Service groups; absent or empty when the estate is too small to group. */
+  groups?: ServiceGroup[];
 }
 
 // ---------------------------------------------------------------------------
@@ -213,7 +319,8 @@ export type UnmatchedReason =
   | "no_provider"
   | "internal_only"
   | "unlinked"
-  | "external_host";
+  | "external_host"
+  | "ambiguous_provider";
 
 export interface RepoDiagnostics {
   repo: string;
@@ -226,6 +333,8 @@ export interface RepoDiagnostics {
   consumers_by_layer: Record<string, number>;
   /** Calls that reached a confirmed HTTP wrapper but resolved to no path. */
   http_consumers_unresolved: number;
+  /** Broker calls located whose topic or queue name could not be settled. */
+  topic_names_unresolved?: number;
 }
 
 export interface UnmatchedConsumer {
@@ -273,6 +382,11 @@ export interface ExtractionDiagnostics {
   /** Per repo, files with a network-call token and no consumer contract; `null` before the count existed. */
   unrecognised_call_files?: Record<string, number> | null;
   unrecognised_call_file_count?: number | null;
+  /** Broker calls located whose topic or queue name could not be settled. */
+  topic_names_unresolved?: number;
+  /** Per repo, files using a messaging SDK and no topic contract; `null` before the count existed. */
+  unrecognised_message_files?: Record<string, number> | null;
+  unrecognised_message_file_count?: number | null;
 }
 
 /** One reason a graph's evidence is short of measured. */
@@ -532,6 +646,8 @@ export interface ConformanceReport {
   cycle_count: number;
   /** How many cycles exist. Above `cycle_count` when the list was cut. */
   total_cycles: number;
+  /** True when the enumeration budget stopped the count: `total_cycles` is "at least". */
+  total_capped?: boolean;
   /** Distinct repos participating in a violation. */
   violating_repos: string[];
   /** False when the graph had too little evidence for "no cycles" to mean anything. */
@@ -616,6 +732,8 @@ export interface ArchitectureMetrics {
   core_members: string[];
   /** Elementary dependency cycles (matches the conformance report's count). */
   cycle_count: number | null;
+  /** True when the enumeration budget stopped the count: `cycle_count` is "at least". */
+  cycle_count_capped?: boolean;
   /** Declared-rule violations folded into the score (0 when no rules). */
   conformance_violations: number;
   architecture_type: ArchitectureType;

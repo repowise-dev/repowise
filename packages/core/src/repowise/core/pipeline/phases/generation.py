@@ -6,6 +6,7 @@ orchestrator.py) imports these phase functions. No CLI/click/rich imports.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,56 @@ class _GenerationDisplay:
             emit_phase_failed(self._progress, "embedding")
 
 
+def _report_run_failures(
+    job_system: Any, job_id: str | None, on_complete: Callable[[list[str]], None]
+) -> None:
+    """Hand *on_complete* this run's failed page ids, never failing the run."""
+    if job_id is None:
+        return
+    # Broad on purpose: reporting is advisory, and a caller's callback or an
+    # unreadable checkpoint must not turn a finished generation into an error.
+    try:
+        on_complete(job_system.get_checkpoint(job_id).failed_page_ids)
+    except Exception as exc:
+        logger.warning("generation_completion_callback_failed", error=str(exc))
+
+
+def _selected_file_pages_written(
+    selection: Any, generated_pages: list[Any], preserved_page_ids: set[str] | None
+) -> int:
+    """How many selected files have a file page after this run.
+
+    A page this run wrote counts, and so does one a resumed run kept from the
+    run it resumes. A selected file with neither is a real gap.
+    """
+    written = {p.target_path for p in generated_pages if p.page_type == "file_page"}
+    kept = {
+        page_id.removeprefix("file_page:")
+        for page_id in preserved_page_ids or ()
+        if page_id.startswith("file_page:")
+    }
+    return len(set(selection.file_page_paths) & (written | kept))
+
+
+def _fill_file_page_scope(
+    scope: dict[str, Any],
+    selection: Any,
+    generated_pages: list[Any],
+    preserved_page_ids: set[str] | None,
+) -> None:
+    """Write the run's file-page figures into *scope*; leave it empty without a selection."""
+    if selection is None:
+        return
+    eligible = selection.eligible_file_pages
+    generated = _selected_file_pages_written(selection, generated_pages, preserved_page_ids)
+    scope.update(
+        eligible=eligible,
+        effective_cap=selection.effective_file_page_cap,
+        generated=generated,
+        omitted=max(0, eligible - generated),
+    )
+
+
 async def run_generation(
     *,
     repo_path: Path,
@@ -103,6 +154,7 @@ async def run_generation(
     selection_out: dict[str, Any] | None = None,
     persisted_page_ids: set[str] | None = None,
     stats_out: dict[str, int] | None = None,
+    on_generation_complete: Callable[[list[str]], None] | None = None,
 ) -> list[Any]:
     """Run LLM-powered page generation.
 
@@ -126,6 +178,9 @@ async def run_generation(
     ``stats_out`` is filled with ``embed_failed_pages``: how many pages this
     run failed to embed, so a caller can refuse to call semantic search
     healthy after a failed write.
+
+    ``on_generation_complete`` receives the failed page ids from this run's own
+    checkpoint. A failure to read or report them never fails generation.
 
     ``test_run`` limits generation to the top 10 files by PageRank, so a quick
     validation run can exercise the whole generation path without paying for a
@@ -275,17 +330,14 @@ async def run_generation(
     )
     if stats_out is not None:
         stats_out["embed_failed_pages"] = generator.embed_failed_pages
-    selection = getattr(generator, "selection", None)
-    if selection_out is not None and selection is not None:
-        selection_out.update(
-            eligible=selection.eligible_file_pages,
-            effective_cap=selection.effective_file_page_cap,
-            # A resumed run may reuse already-persisted file pages rather than
-            # returning them in ``generated_pages``.  Selection is the durable
-            # contract: after a successful phase every selected file has a page.
-            generated=len(selection.file_page_paths),
+    if on_generation_complete is not None:
+        _report_run_failures(job_system, generator.last_job_id, on_generation_complete)
+    # A test run selected from a sample, so its selection says nothing about
+    # the repository; the caller then counts against every parsed file.
+    if selection_out is not None and not test_run:
+        _fill_file_page_scope(
+            selection_out, getattr(generator, "selection", None), generated_pages, preserved_page_ids
         )
-        selection_out["omitted"] = max(0, selection_out["eligible"] - selection_out["generated"])
 
     # Which onboarding slots were made goes to the log; the screen has the
     # onboarding row's page count.

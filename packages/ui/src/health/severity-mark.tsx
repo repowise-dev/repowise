@@ -32,10 +32,13 @@ const SEVERITY_TEXT: Record<Severity, string> = {
 export function SeverityMark({
   severity,
   compact = false,
+  label,
   className,
 }: {
   severity: Severity;
   compact?: boolean;
+  /** The severity word. English by default. */
+  label?: string | undefined;
   className?: string;
 }) {
   return (
@@ -48,7 +51,7 @@ export function SeverityMark({
         className={`h-1.5 w-1.5 shrink-0 rounded-full ${SEVERITY_DOT[severity]}`}
         aria-hidden
       />
-      <span className={compact ? "sr-only" : undefined}>{SEVERITY_LABEL[severity]}</span>
+      <span className={compact ? "sr-only" : undefined}>{label ?? SEVERITY_LABEL[severity]}</span>
     </span>
   );
 }

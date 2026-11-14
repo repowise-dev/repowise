@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..decision_graph import sync_links_from_record
-from ..models import DecisionRecord, GitMetadata, _now_utc
+from ..models import DecisionAcceptance, DecisionRecord, GitMetadata, _now_utc
 
 
 async def _fill_git_meta_gaps(
@@ -64,6 +65,8 @@ async def recompute_decision_staleness(
 
     With *repo_path*, each record is scored from when its own evidence commits
     landed, when that is after its birth; without it, from its birth alone.
+    A later reviewed grant (see :func:`latest_grant_times`) moves the anchor
+    to it either way.
 
     Also fills ``last_code_change`` from the same per-file dates the score is
     counted from, and re-derives ``affected_modules_json`` from the files each
@@ -109,6 +112,7 @@ async def recompute_decision_staleness(
     )
 
     landings = _evidence_landings(repo_path, decisions, affected_by_id)
+    grants = await latest_grant_times(session, repository_id)
     now = _now_utc()
     updated = 0
     dated = 0
@@ -128,7 +132,7 @@ async def recompute_decision_staleness(
         if dec.source == "conventions":
             continue
 
-        if _rescore_staleness(dec, affected, git_meta_map, now, landings):
+        if _rescore_staleness(dec, affected, git_meta_map, now, landings, grants.get(dec.id)):
             updated += 1
 
     if updated or modules_updated or dated:
@@ -185,6 +189,7 @@ def _rescore_staleness(
     git_meta_map: dict[str, dict],
     now: datetime,
     landings: dict,
+    accepted_at: datetime | None = None,
 ) -> bool:
     """Recompute the git-diff staleness score; True when it moved by more than 0.01."""
     from repowise.core.analysis.decisions.extractor import DecisionExtractor
@@ -198,6 +203,7 @@ def _rescore_staleness(
         affected,
         git_meta_map,
         landed_at=landing.at if landing else None,
+        accepted_at=accepted_at,
     )
     if abs(new_score - dec.staleness_score) > 0.01:
         dec.staleness_score = round(new_score, 3)
@@ -233,17 +239,87 @@ def _backfill_module_nodes(
     return moved
 
 
+#: Signers whose grant means someone read the code as it stood. An ``import``
+#: row is stamped when a manifest, migration or tracked ADR is applied on this
+#: machine, which says nothing about when the code was last reviewed.
+_REVIEWING_KINDS = ("person", "agent")
+
+
+async def latest_grant_times(
+    session: AsyncSession,
+    repository_id: str,
+    decision_ids: Iterable[str] | None = None,
+) -> dict[str, datetime]:
+    """When each decision was last accepted, reaffirmed or merged into, by id.
+
+    Reviewed grants only (see :data:`_REVIEWING_KINDS`). Staleness counts
+    from here when it is later than the record's birth and landing.
+    """
+    from repowise.core.analysis.decisions.lifecycle import GRANTING_ACTIONS
+
+    q = (
+        select(DecisionAcceptance.decision_id, func.max(DecisionAcceptance.created_at))
+        .where(
+            DecisionAcceptance.repository_id == repository_id,
+            DecisionAcceptance.action.in_(sorted(GRANTING_ACTIONS)),
+            DecisionAcceptance.accepter_kind.in_(_REVIEWING_KINDS),
+        )
+        .group_by(DecisionAcceptance.decision_id)
+    )
+    if decision_ids is not None:
+        q = q.where(DecisionAcceptance.decision_id.in_(sorted(set(decision_ids))))
+    return dict((await session.execute(q)).all())
+
+
+async def rescore_decision_staleness(session: AsyncSession, record: DecisionRecord) -> None:
+    """Rescore one record from persisted git metadata, anchored at its latest grant.
+
+    Called right after a grant so ``needs_review`` clears without waiting for
+    the next index. No evidence landing is read, since a grant just written is
+    later than any landing, so a record with no reviewed grant is left to
+    :func:`recompute_decision_staleness`, which reads landings.
+    """
+    affected = json.loads(record.affected_files_json or "[]")
+    # Conventions write their own conformance share; see the batch path.
+    if not affected or record.source == "conventions":
+        return
+    grants = await latest_grant_times(session, record.repository_id, [record.id])
+    if record.id not in grants:
+        return
+    from repowise.core.analysis.decisions.staleness import compute_staleness
+
+    git_meta = await _fill_git_meta_gaps(session, record.repository_id, {}, set(affected))
+    score = compute_staleness(record.created_at, affected, git_meta, accepted_at=grants[record.id])
+    # A later anchor only lowers the score. A rise means a file this store has
+    # no metadata for yet, such as one added since the last index, which the
+    # next index scores with the full picture.
+    if score < (record.staleness_score or 0.0):
+        record.staleness_score = score
+        record.updated_at = _now_utc()
+
+
+def is_stale(currency: str | None) -> bool:
+    """The one meaning of a stale decision: accepted, at effective ``needs_review``.
+
+    *currency* is from ``decision_currencies``, where a candidate is ``None``.
+    A candidate's staleness score is a fact about its files, not a decision
+    going stale, so it never counts.
+    """
+    return currency == "needs_review"
+
+
 async def get_stale_decisions(
     session: AsyncSession,
     repository_id: str,
-    threshold: float = 0.5,
+    records: Iterable[DecisionRecord] | None = None,
 ) -> list[DecisionRecord]:
-    """Return active decisions with staleness_score >= threshold."""
-    result = await session.execute(
-        select(DecisionRecord).where(
-            DecisionRecord.repository_id == repository_id,
-            DecisionRecord.status.in_(["active"]),
-            DecisionRecord.staleness_score >= threshold,
+    """The decisions in *records* (default: the repository's) that :func:`is_stale`."""
+    from .authority import decision_currencies
+
+    if records is None:
+        records = await session.scalars(
+            select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
         )
-    )
-    return list(result.scalars().all())
+    records = list(records)
+    currencies = await decision_currencies(session, repository_id, records)
+    return [r for r in records if is_stale(currencies.get(r.id))]

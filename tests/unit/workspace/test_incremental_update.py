@@ -346,6 +346,19 @@ def test_full_pipeline_merges_repo_settings_excludes(tmp_path, stub_full_pipelin
     assert stub_full_pipeline[0]["exclude_patterns"] == ["tools/"]
 
 
+def test_config_yaml_excludes_win_over_legacy_settings(tmp_path, stub_full_pipeline):
+    repo = _make_git_repo(tmp_path)
+    _mark_indexed(repo, "deadbeef" * 5)
+    _write_repo_settings(repo, {"exclude_patterns": ["tools/"]})
+    (repo / ".repowise" / "config.yaml").write_text(
+        "exclude_patterns:\n- vendor/\n", encoding="utf-8"
+    )
+
+    asyncio.run(update_single_repo_index(repo))
+
+    assert stub_full_pipeline[0]["exclude_patterns"] == ["vendor/"]
+
+
 def test_full_pipeline_uses_repo_history_settings(tmp_path, stub_full_pipeline):
     from repowise.core.repo_config import save_repo_config
 

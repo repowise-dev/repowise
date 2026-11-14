@@ -161,12 +161,13 @@ class TestExportMacroClassBodies:
     The body becomes a ``compound_statement`` and its members statement-context
     ``declaration`` nodes, so none of the ``field_declaration`` patterns reach
     them, and ``= 0`` wraps the declarator in an ``init_declarator`` the plain
-    forward-declaration pattern cannot match either.
+    forward-declaration pattern cannot match either. An ALL-CAPS macro is
+    blanked before parsing, so these cases use a lower-case one.
     """
 
     def test_a_pure_virtual_member_lands(self) -> None:
         assert _methods(
-            "class LEVELDB_EXPORT Iterator {\n"
+            "class leveldb_export Iterator {\n"
             " public:\n"
             "  virtual void Seek(const Slice& t) = 0;\n"
             "  void RegisterCleanup(int a);\n"
@@ -180,7 +181,7 @@ class TestExportMacroClassBodies:
         constructor with a member-init list does too.
         """
         source = (
-            "class LEVELDB_EXPORT R {\n"
+            "class leveldb_export R {\n"
             " public:\n"
             "  size_t Index(size_t i) const { return i + 1; }\n"
             "  virtual void Real() = 0;\n"
@@ -195,7 +196,7 @@ class TestExportMacroClassBodies:
 
     def test_a_deleted_function_is_not_a_method_declaration(self) -> None:
         got = _methods(
-            "class LEVELDB_EXPORT S {\n"
+            "class leveldb_export S {\n"
             " public:\n"
             "  void gone(int n) = delete;\n"
             "  virtual void kept() = 0;\n"

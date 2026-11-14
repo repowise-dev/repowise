@@ -29,10 +29,6 @@ EVIDENCE_MEASURED = "measured"
 EVIDENCE_PARTIAL = "partial"
 EVIDENCE_INSUFFICIENT = "insufficient"
 
-#: Edge kinds that record a build-time reference (a manifest dependency, a
-#: project reference, a published-package import), not a runtime call.
-BUILD_EDGE_KINDS: frozenset[str] = frozenset({"package"})
-
 #: Cap on the names a reason lists; its count is always the true one.
 _MAX_NAMED = 8
 
@@ -203,7 +199,7 @@ def _facts(graph: SystemGraph) -> _Facts:
     for edge in graph.edges:
         if not edge.structural or edge.source not in known or edge.target not in known:
             continue
-        if edge.kind in BUILD_EDGE_KINDS:
+        if edge.family == "build":  # a manifest or package reference, not a call
             build += 1
         else:
             runtime += 1

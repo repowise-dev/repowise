@@ -8,7 +8,7 @@ ones (:mod:`repowise.cli.ci`).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 import click
@@ -31,8 +31,6 @@ from repowise.cli.output import emit_json, format_option
 
 if TYPE_CHECKING:
     from repowise.core.analysis.change_health.models import ChangeHealthDelta
-    from repowise.core.analysis.change_health.sources import GitRevisionSource
-    from repowise.core.analysis.health.config import HealthConfig
     from repowise.core.analysis.health_gate import GateResult
 
 _FORMATS = (*CI_FORMATS, "sarif", "gitlab")
@@ -123,7 +121,7 @@ def health_check(
     except Exception as exc:
         # A crash must never read as a failed gate.
         cannot_evaluate(fmt, "internal_error", f"health check failed unexpectedly: {exc!r}")
-    _EMITTERS.get(fmt, _print_table)(verdict)
+    _EMITTERS.get(fmt, _print_table)(replace(verdict, diff_risk=diff_risk))
     if not verdict.result.passed:
         raise click.exceptions.Exit(EXIT_GATE_FAILED)
 
@@ -135,6 +133,14 @@ class _Verdict:
     result: GateResult
     delta: ChangeHealthDelta
     label: str
+    #: ``--diff-risk`` as given, so the reproduce command matches the run.
+    diff_risk: tuple[str, ...] = ()
+
+    @property
+    def reproduce(self) -> str:
+        from repowise.core.analysis.health_gate import reproduce_command
+
+        return reproduce_command(self.label, self.result, self.diff_risk)
 
 
 def _diff_risk_levels(values: tuple[str, ...]) -> dict[str, str]:
@@ -157,54 +163,15 @@ def _diff_risk_levels(values: tuple[str, ...]) -> dict[str, str]:
 def _evaluate(
     revspec: str | None, fail_on: str, fail_at: str, repo: str | None, levels: dict[str, str]
 ) -> _Verdict:
-    from repowise.core.analysis.change_health.service import (
-        ChangeHealthDeltaService,
-        DeltaRequest,
-    )
-    from repowise.core.analysis.change_health.sources import GitRevisionSource
-    from repowise.core.analysis.diff_risk import diff_risk_for_change
-    from repowise.core.analysis.health_gate import (
-        NotEvaluatedError,
-        diff_risk_findings,
-        evaluate,
-    )
+    from repowise.core.analysis.change_health.check import HealthCheckUnavailable, run_health_check
 
     root = str(repo_root(repo))
     label = ci_revspec(root, revspec)
-    source = GitRevisionSource(root)
     try:
-        pair = source.resolve(label)
-    except ValueError as exc:
-        raise _not_evaluated("unsupported_range", str(exc)) from exc
-    rules = _base_rules(source, pair.base_sha)
-    service = ChangeHealthDeltaService(source, repo_path=root, health_config=rules)
-    # One resolution serves the comparison and the diff-risk rules.
-    delta = service.compare(DeltaRequest(root, label), pair=pair)
-    risks = diff_risk_findings(diff_risk_for_change(source, pair, severities=levels))
-    try:
-        result = evaluate(delta, fail_on=fail_on, fail_at=fail_at, extra=risks)
-    except NotEvaluatedError as exc:
+        check = run_health_check(root, label, fail_on=fail_on, fail_at=fail_at, levels=levels)
+    except HealthCheckUnavailable as exc:
         raise _not_evaluated(exc.code, str(exc)) from exc
-    return _Verdict(result, delta, label)
-
-
-def _base_rules(source: GitRevisionSource, base: str) -> HealthConfig:
-    """``.repowise/health-rules.json`` at the change's *base*; defaults when absent.
-
-    Read at the base so a change cannot loosen its own gate.
-    """
-    from repowise.core.analysis.health.config import HEALTH_RULES_PATH, HealthConfig
-
-    raw = source.read(base, [HEALTH_RULES_PATH]).get(HEALTH_RULES_PATH)
-    if raw is None:
-        return HealthConfig()
-    try:
-        return HealthConfig.from_json(raw.decode("utf-8"))
-    except ValueError as exc:
-        raise CannotEvaluateError(
-            "rules_invalid",
-            f"{HEALTH_RULES_PATH} at the change's base ({base[:12]}) is invalid: {exc}",
-        ) from exc
+    return _Verdict(check.result, check.delta, label)
 
 
 def _not_evaluated(code: str, message: str) -> CannotEvaluateError:
@@ -215,7 +182,9 @@ def _not_evaluated(code: str, message: str) -> CannotEvaluateError:
 def _markdown(v: _Verdict) -> str:
     from repowise.core.analysis.health_gate import render_markdown, scope_line
 
-    return render_markdown(v.result, label=v.label, scope=scope_line(v.delta))
+    return render_markdown(
+        v.result, label=v.label, scope=scope_line(v.delta), reproduce=v.reproduce
+    )
 
 
 def _emit_json(v: _Verdict) -> None:
@@ -238,16 +207,19 @@ def _emit_gitlab(v: _Verdict) -> None:
 
 
 def _emit_markdown(v: _Verdict) -> None:
+    from repowise.core.analysis.health_gate import gate_summary
+
     click.echo(_markdown(v), nl=False)
+    write_gate_summary(gate_summary(v.result, reproduce=v.reproduce))
 
 
 def _emit_github(v: _Verdict) -> None:
     from repowise.core.analysis.health_gate import gate_summary, github_annotations
 
-    for line in github_annotations(v.result):
+    for line in github_annotations(v.result, reproduce=v.reproduce):
         click.echo(line)
     append_step_summary(_markdown(v))
-    write_gate_summary(gate_summary(v.result))
+    write_gate_summary(gate_summary(v.result, reproduce=v.reproduce))
 
 
 _COLOUR = {"error": "red", "warning": "yellow", "note": "dim"}

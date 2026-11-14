@@ -8,7 +8,7 @@ earns, so an agent or a reviewer can tell a fact from a guess. An LLM is only
 an optional upgrade for wiki prose, so the graph is reproducible.
 
 <p>
-  <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
+  <img src="https://img.shields.io/badge/18-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="18 edge types" />
   <img src="https://img.shields.io/badge/39-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="39 resolution origins" />
   <img src="https://img.shields.io/badge/28-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="28 full-AST languages" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
@@ -69,20 +69,18 @@ capture queries are in
 | Answer key | Scope | Result |
 |---|---|---|
 | Compiler (Go RTA call graph, `tsc`) | Go and TypeScript, 7 cells over 5 repositories, 37,853 compiler edges | Precision 0.976 to 0.995 |
-| javac | Java, 3 repositories | Precision 0.725 to 0.781 (0.781 on jsoup) |
-| Compiler index | C on git, held out from all tuning | Precision 0.979 at 0.83 recall |
-| Hand-graded | 280 call edges across nine languages | 240 of 280 correct (85.7%); errors cluster in Rust, C++ and Java |
+| javac | Java, 7 repositories (3 held out) | Precision 0.898 to 1.000 |
+| Compiler index | C on git, held out from all tuning | Precision 0.979 at 0.837 recall |
 
 In all seven Go and TypeScript cells, no tool in the five-tool comparison that
 finds as much of the call graph gets more of it right; two tools post higher
 precision in some cells by drawing much smaller graphs. Recall leads in three of
-the seven cells, and most misses are dynamic dispatch. C#, C++, Rust and Python
-(against jedi, a static analyser) are measured in the same table.
+the seven cells, and most misses are dynamic dispatch. Dart, Kotlin, C#, C++,
+Rust and Python (against jedi, a static analyser) are measured in the same table.
 
 Per-language figures, the five-tool table and sample sizes:
-[BENCHMARKS.md: accuracy by language](../BENCHMARKS.md#accuracy-by-language),
-[call graph against a compiler](../BENCHMARKS.md#call-graph-against-a-compiler-five-tools)
-and [hand-graded](../BENCHMARKS.md#call-edges-hand-graded-across-nine-languages).
+[BENCHMARKS.md: accuracy by language](../BENCHMARKS.md#accuracy-by-language)
+and [call graph against a compiler](../BENCHMARKS.md#call-graph-against-a-compiler-five-tools).
 
 ## What is in the graph
 
@@ -93,7 +91,8 @@ external nodes, so a dependency is visible without being documented.
 **Two families of edge.** Structure the parser can see (imports, calls,
 inheritance) and structure only history can see (files that keep changing
 together without importing each other). They are kept apart, so a shared commit
-never appears in your import graph as a dependency.
+never appears in your import graph as a dependency. Documentation links
+(`documents`) are kept apart the same way.
 
 Every consumer reads the graph through one of three shared views, so no two
 features disagree about what counts as a dependency:
@@ -177,7 +176,7 @@ every edge.
 
 ## Edge types
 
-The graph has 17 edge types, each one a distinct claim. These six matter most
+The graph has 18 edge types, each one a distinct claim. These seven matter most
 when you read an answer:
 
 | Edge | Claims | Does not claim |
@@ -188,6 +187,7 @@ when you read an answer:
 | `framework_binds` | A framework wires these two symbols together: a pytest fixture, a Spring injection | A call. Nothing here is source a parser could have seen |
 | `type_use` | A type is referenced in a constructor, method, delegate or record parameter | An import. Weighted below one |
 | `co_changes` | These files keep changing in the same commit | Any code dependency at all |
+| `documents` | A Markdown document links to this file (confidence 1.0) or names its path in backticks (0.8) | That the document depends on it, or that it is used. Graph metrics, dead-code reachability, health dependents and dependency paths ignore it |
 
 The other eleven are `imports`, `defines`, `has_method`, `extends`,
 `implements`, `method_implements`, `framework`, `reads`, `dynamic_uses`,
@@ -220,7 +220,7 @@ walk, the flow reports which origins it declined.
 | Blast radius | The set of things a change can break, with confidence on every hop |
 | Dead code | Reachability over the union view, so a symbol reached only by a framework, a dispatch table or a type reference is not dead |
 | Communities | Leiden clustering (Louvain as fallback) finds the modules your codebase actually has, often not the directory layout |
-| Centrality | PageRank over the file tier ranks what everything depends on; betweenness finds the bridges. Neither is fed co-change edges |
+| Centrality | PageRank over the file tier ranks what everything depends on, and betweenness finds the bridges. Neither is fed co-change or `documents` edges |
 | Cycles | Strongly connected components, documented together because nothing in them can be explained before the others |
 | Execution flows | Entry point to leaf, ranked, with the termination reason attached |
 | Framework wiring | Routes to handlers, DI registrations to implementations, ORM entities to relationships, across Django, FastAPI, Flask, Spring, ASP.NET, Rails, Laravel, Next.js, Express, Axum, Gin and more |
@@ -263,16 +263,14 @@ and a 1-10 architecture score; see
 - `global_unique` at 0.50 is a labelled guess, kept for reachability.
 - Unused methods are not reported for any language, because method-level
   precision is too low to recommend deletions.
-- About one call edge in seven is wrong on the hand-graded sample (85.7%
-  correct over 280 rows). Recall is lower than the leading tool in four of seven
-  compiler-graded cells.
+- Recall is lower than the leading tool in four of seven compiler-graded cells.
 - The graph keeps one node per overload set, so on Java and C# a call can land
-  on the wrong overload. On C#, plan against the compiler figure (0.73 to 0.92),
-  not the hand-graded 30 of 30.
-- Precision is published for eleven of the 28 full-AST languages. Go, TypeScript,
-  Java, C#, C, C++, Rust and Python have a compiler or analyser answer key;
-  Kotlin and Swift have the hand-graded sample only, at 30 rows each, and Apex
-  90 hand-graded rows with recall against a census of literal references.
+  on the wrong overload. C# reads 0.780 to 0.942 against
+  the compiler.
+- Precision is published for eleven languages. Go, TypeScript, Dart, Python, C,
+  C++, Java, Kotlin, C# and Rust are graded against a compiler or analyser;
+  Apex against 90 hand-graded rows, with recall against a census of literal
+  references.
 - Read a precision figure together with its recall. Two tools post higher
   precision in some compiler cells, each by drawing a much smaller graph.
 

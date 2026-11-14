@@ -36,9 +36,24 @@ def _module_index(ctx: ResolverContext) -> dict[str, str]:
     """
     idx = getattr(ctx, "_python_module_index", None)
     if idx is None:
-        idx = build_python_module_index(ctx.path_set)
+        idx = build_python_module_index(
+            {path for path in ctx.path_set if _importable_path(path, ctx)}
+        )
         ctx._python_module_index = idx
     return idx
+
+
+def _importable_path(path: str, ctx: ResolverContext) -> bool:
+    """Inferred nested roots cannot shadow stdlib names; explicit roots can."""
+    module = dotted_module_for(path, ctx.path_set)
+    if not module or module.split(".")[0] not in _STDLIB_NAMES:
+        return True
+    parts = Path(path).with_suffix("").parts
+    depth = module.count(".") + 1 + (parts[-1] == "__init__")
+    root = Path(*parts[:-depth])
+    return root.as_posix() == "." or (
+        root.name == "src" and not _is_package_dir(root.as_posix(), ctx.path_set)
+    )
 
 
 def _module_file(stem: str, path_set: frozenset[str] | set[str]) -> str | None:
@@ -190,13 +205,11 @@ def resolve_python_import_all(
             if not name or name == "*" or "." in name:
                 needs_base = True
                 continue
-            # Source-root-aware index first (absolute imports), then direct
-            # sibling probes, which also cover the relative form.
-            hit = None
-            if not imp.is_relative:
+            # Keep submodules in the package already resolved above; a merged
+            # index can otherwise select another root's same-named package.
+            hit = _module_file(f"{base_dir}/{name}", ctx.path_set)
+            if hit is None and not imp.is_relative:
                 hit = index.get(f"{imp.module_path}.{name}")
-            if hit is None:
-                hit = _module_file(f"{base_dir}/{name}", ctx.path_set)
             if hit is None or hit == base:
                 needs_base = True
             else:

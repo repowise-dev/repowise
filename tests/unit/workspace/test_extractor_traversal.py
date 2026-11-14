@@ -67,12 +67,12 @@ def test_topic_extractor_skips_nested_git_repo(tmp_path: Path) -> None:
     # A NATS producer in the repo is found; an identical one inside a nested
     # repo is not (the nested repo is a hard boundary).
     (tmp_path / "producer.py").write_text(
-        'nc.publish("events.user")', encoding="utf-8"
+        'import nats\nnc.publish("events.user")', encoding="utf-8"
     )
     nested = tmp_path / "bench"
     nested.mkdir()
     (nested / ".git").mkdir()
-    (nested / "other.py").write_text('nc.publish("events.foreign")', encoding="utf-8")
+    (nested / "other.py").write_text('import nats\nnc.publish("events.foreign")', encoding="utf-8")
 
     contracts = TopicExtractor().extract(tmp_path, "primary")
     topics = {c.meta["topic"] for c in contracts}

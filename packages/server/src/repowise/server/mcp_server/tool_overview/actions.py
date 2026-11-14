@@ -5,9 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from repowise.core.analysis.actions.engine import NEXT_ACTIONS_HEAD
-from repowise.core.persistence.crud.analysis.actions import load_actions_view
-from repowise.server.mcp_server._helpers import _cross_repo_cut
+from repowise.core.analysis.actions.model import NEXT_ACTIONS_HEAD
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +37,8 @@ def _compact(action: dict[str, Any], *, full: bool) -> dict[str, Any]:
     row = {k: action.get(k) for k in (_FIELDS if full else _LEAN_FIELDS)}
     if not full:
         row["impact"] = _one_line(row["impact"])
-    row["target"] = {k: v for k, v in (action.get("target") or {}).items() if v is not None}
+    # A repository-wide target has no path; an empty one is not sent.
+    row["target"] = {k: v for k, v in (action.get("target") or {}).items() if v not in (None, "")}
     return row
 
 
@@ -62,9 +61,12 @@ def compact_actions_view(view: dict[str, Any], *, full: bool = True) -> dict[str
                 _compact(a, full=full) for a in horizon.get("actions", [])[:_PER_HORIZON]
             ]
         block[name] = row
-    unavailable = sorted(view.get("unavailable") or {})
-    if unavailable:
-        block["unavailable"] = unavailable
+    # ``unavailable`` stays the sorted name list older readers expect;
+    # ``unavailable_reasons`` says why each one is missing.
+    reasons = view.get("unavailable") or {}
+    if reasons:
+        block["unavailable"] = sorted(reasons)
+        block["unavailable_reasons"] = dict(sorted(reasons.items()))
     return block
 
 
@@ -78,6 +80,10 @@ async def _build_next_actions(
     The savepoint keeps a failed read from poisoning the session the rest of
     the overview still uses.
     """
+    # Imported here so ``compact_actions_view`` stays free of persistence.
+    from repowise.core.persistence.crud.analysis.actions import load_actions_view
+    from repowise.server.mcp_server._helpers import _cross_repo_cut
+
     try:
         async with session.begin_nested():
             view = await load_actions_view(session, repository.id, **_cross_repo_cut(alias))

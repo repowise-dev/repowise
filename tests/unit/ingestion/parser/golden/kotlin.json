@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -65,6 +67,7 @@
       "testManyAsserts",
       "testFewAsserts"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -74,13 +77,17 @@
         "line": 4,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 93,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -90,13 +97,17 @@
         "line": 5,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 116,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -106,13 +117,17 @@
         "line": 6,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 139,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -122,13 +137,17 @@
         "line": 7,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 162,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -138,13 +157,17 @@
         "line": 8,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 185,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -154,13 +177,17 @@
         "line": 9,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 208,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -170,13 +197,17 @@
         "line": 10,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 231,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -186,13 +217,17 @@
         "line": 11,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 254,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -202,13 +237,17 @@
         "line": 12,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 277,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -218,13 +257,17 @@
         "line": 13,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 300,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -234,13 +277,17 @@
         "line": 14,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 323,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -250,13 +297,17 @@
         "line": 15,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 346,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -266,13 +317,17 @@
         "line": 16,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 369,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -282,13 +337,17 @@
         "line": 17,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 392,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -298,13 +357,17 @@
         "line": 18,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 415,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -314,13 +377,17 @@
         "line": 19,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 438,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -330,13 +397,17 @@
         "line": 23,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 487,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -346,14 +417,21 @@
         "line": 25,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 524,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
         "program_call": false,
-        "argument_types": null,
-        "argument_names": null
+        "argument_types": [
+          null,
+          "Int"
+        ],
+        "argument_names": [
+          "x",
+          null
+        ]
       }
     ],
     "heritage": [],
@@ -364,7 +442,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "kotlin/classes.kt": {
     "file_info": {
@@ -377,7 +456,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -731,6 +812,7 @@
       "Cohesive",
       "Splintered"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -741,7 +823,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "kotlin/nested.kt": {
     "file_info": {
@@ -754,7 +837,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -833,6 +918,7 @@
       "shallow",
       "manyBranches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -843,6 +929,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

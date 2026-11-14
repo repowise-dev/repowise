@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from ._shared import HookResult, _find_repo_root
+from ._shared import HookResult, _checkout_root, _find_repo_root
 
 #: Tools whose failure can name a path we could rescue. Bash and PowerShell
 #: fail on paths too ("cd: no such file"), but their input is a command line
@@ -95,11 +95,12 @@ def _repo_relative(repo_path: Path, attempted: str, cwd: Path) -> str | None:
         return None
 
 
-def _resolve(repo_path: Path, relative: str) -> str | None:
+def _resolve(repo_path: Path, relative: str, checkout: Path | None = None) -> str | None:
     """The one indexed file with this basename, or None when that is not one.
 
     None covers every reason to stay quiet, and they are not the same reason:
-    no index, no match, several matches, or a match that is no longer on disk.
+    no index, no match, several matches, or a match that is no longer on disk
+    (in *checkout*, the worktree reading *repo_path*'s index, when given).
     The ambiguous case is silence by decision — naming one of twelve
     ``registry.py`` confidently is the failure this surface exists to avoid.
     """
@@ -124,7 +125,8 @@ def _resolve(repo_path: Path, relative: str) -> str | None:
     # test below is what rules them out along with rows whose file has since
     # been deleted. Both filters run before the uniqueness test, so a stale row
     # cannot hide the single live answer behind an apparent tie.
-    live = [m for m in matches if (repo_path / m).exists()]
+    tree = checkout or repo_path
+    live = [m for m in matches if (tree / m).exists()]
     if len(live) != 1:
         return None
     resolved = live[0]
@@ -176,7 +178,10 @@ def _handle_tool_failure(
         return HookResult()
 
     repo_root = _find_repo_root(Path(cwd)) if cwd else None
-    if repo_root is not None and tool_name in _SEARCH_TOOLS:
+    checkout = _checkout_root(Path(cwd), repo_root) if repo_root is not None else None
+    # The timeout rescue lists the index's paths, and a worktree reading its
+    # main checkout's index may not have them; it stays quiet there.
+    if repo_root is not None and tool_name in _SEARCH_TOOLS and checkout == repo_root:
         timeout = _timeout_rescue(repo_root, tool_input, error_text, session_id)
         if timeout is not None:
             return HookResult(context=timeout)
@@ -189,14 +194,14 @@ def _handle_tool_failure(
     if repo_path is None:
         return HookResult()
 
-    relative = _repo_relative(repo_path, attempted, Path(cwd))
+    relative = _repo_relative(checkout, attempted, Path(cwd))
     # A path with no extension is a directory, and "which file did you mean" is
     # not the question it asks. 20 of the 86, left for a surface that can
     # answer them properly.
     if not relative or not Path(relative).suffix:
         return HookResult()
 
-    resolved = _resolve(repo_path, relative)
+    resolved = _resolve(repo_path, relative, checkout)
     if resolved is None:
         return HookResult()
 

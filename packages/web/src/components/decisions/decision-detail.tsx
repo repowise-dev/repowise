@@ -4,8 +4,9 @@
  * Decision detail host — binds the shared {@link SharedDecisionDetail} to web's
  * `/api` client, `/repos/:id` routing, and `next/link`. The composition
  * (markdown body, lineage, module-link editor, evidence drawer, AI prompt,
- * confirm/undo status actions) lives in `@repowise-dev/ui/decisions`; this file
- * only injects the app-specific pieces so web and hosted render the same view.
+ * confirm/undo status actions, pin) lives in `@repowise-dev/ui/decisions`; this
+ * file only injects the app-specific pieces so web and hosted render the same
+ * view. The agent prompts are the server's, the same text the CLI prints.
  */
 
 import Link from "next/link";
@@ -18,9 +19,11 @@ import {
   getDecisionLineage,
   listDecisions,
   patchDecision,
+  setDecisionPinned,
 } from "@/lib/api/decisions";
 import { listModuleHealth } from "@/lib/api/modules";
 import type { DecisionRecordResponse } from "@/lib/api/types";
+import { DecisionRecordPrompts, useDecisionAgentPrompt } from "./add-decision-button";
 
 interface DecisionDetailProps {
   decision: DecisionRecordResponse;
@@ -29,6 +32,11 @@ interface DecisionDetailProps {
 
 export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
   const prefix = `/repos/${repoId}`;
+  const review = useDecisionAgentPrompt(
+    repoId,
+    decision.currency == null ? "review" : null,
+    decision.id,
+  );
 
   const adapter: DecisionDetailAdapter = {
     cacheKey: `${repoId}:${decision.id}`,
@@ -58,6 +66,11 @@ export function DecisionDetail({ decision, repoId }: DecisionDetailProps) {
     },
     hotspotsHref: () => `${prefix}/code-health`,
     LinkComponent: Link,
+    ...(review ? { reviewPrompt: () => review.text } : {}),
+    setPinned: async (pinned) => {
+      await setDecisionPinned(repoId, decision.id, pinned);
+    },
+    renderRecordPrompts: () => <DecisionRecordPrompts repoId={repoId} decision={decision} />,
   };
 
   return <SharedDecisionDetail decision={decision} adapter={adapter} />;

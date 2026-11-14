@@ -11,12 +11,10 @@ the health pass), mirroring the biomarker registry's ``detect_all``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from dataclasses import replace
+from collections.abc import Mapping, Sequence
 
 import structlog
 
-from ..scoring import HISTORY_CATEGORY, biomarker_category, deduction_split, history_cap
 from .models import CONFIDENCE_LEVELS, RefactoringContext, RefactoringSuggestion
 
 log = structlog.get_logger(__name__)
@@ -58,8 +56,12 @@ def detect_refactorings(
     *,
     disabled: Sequence[str] = (),
     min_confidence: str | None = None,
+    precomputed: Mapping[str, list[RefactoringSuggestion]] | None = None,
 ) -> list[RefactoringSuggestion]:
     """Run every registered detector on *ctx*, fault-isolated per detector.
+
+    *precomputed* holds a detector's output already computed for this file
+    (elsewhere, on the same inputs), used in its place in registry order.
 
     *min_confidence* is an optional confidence floor (``"low"`` / ``"medium"``
     / ``"high"``): a suggestion whose ``confidence`` ranks below it is dropped
@@ -68,32 +70,19 @@ def detect_refactorings(
     every suggestion.
     """
     floor_idx = _confidence_floor_index(min_confidence)
-    structure, history = deduction_split(ctx.findings)
     out: list[RefactoringSuggestion] = []
     for detector in registered_detectors(disabled=disabled):
         try:
-            for suggestion in detector.detect(ctx):
+            found = (precomputed or {}).get(detector.name)
+            for suggestion in found if found is not None else detector.detect(ctx):
                 if floor_idx and _confidence_rank(suggestion.confidence) < floor_idx:
                     continue
-                out.append(_with_released_history(suggestion, structure, history))
+                out.append(suggestion)
         except Exception as exc:
             # One bad detector must not break the health pass; degrade to
             # "no suggestion" for this file.
             log.debug("refactoring_detector_failed", detector=detector.name, error=str(exc))
     return out
-
-
-def _with_released_history(
-    suggestion: RefactoringSuggestion, structure: float, history: float
-) -> RefactoringSuggestion:
-    """Add the history deduction a code-shape fix releases by lowering the history cap."""
-    impact = suggestion.impact_delta
-    if impact <= 0 or history <= 0:
-        return suggestion
-    if biomarker_category(suggestion.source_biomarker) == HISTORY_CATEGORY:
-        return suggestion
-    released = max(0.0, history - history_cap(structure - impact))
-    return replace(suggestion, impact_delta=round(impact + released, 3))
 
 
 def _confidence_rank(level: str) -> int:

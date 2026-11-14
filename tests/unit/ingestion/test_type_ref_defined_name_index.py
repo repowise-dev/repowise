@@ -27,11 +27,13 @@ from repowise.core.ingestion.type_ref_resolution import (
 
 
 def _reference_scan(type_name: str, candidates, graph: nx.DiGraph) -> str | None:
-    """The pre-index lookup loop, kept verbatim as the behavioral oracle."""
+    """The pre-index lookup loop over declaration edges, the behavioral oracle."""
     for cand in sorted(candidates):
         if not graph.has_node(cand):
             continue
         for succ in graph.successors(cand):
+            if graph[cand][succ].get("edge_type") not in ("defines", "has_method"):
+                continue
             nd = graph.nodes.get(succ, {})
             if nd.get("node_type") == "symbol" and nd.get("name") == type_name:
                 return cand
@@ -61,6 +63,10 @@ def _make_graph() -> nx.DiGraph:
     # appear under the *file* keys it is not a direct successor of.
     g.add_node("a.go::Writer.Write", node_type="symbol", name="Write")
     g.add_edge("a.go::Writer", "a.go::Writer.Write", edge_type="has_method")
+    # A patch build's seed also holds resolved edges into symbols (heritage,
+    # calls). They name no declaration and must never enter the index.
+    g.add_edge("b.go::Helper", "a.go::Reader", edge_type="implements")
+    g.add_edge("b.go", "a.go::Writer", edge_type="calls")
     return g
 
 
@@ -72,7 +78,9 @@ class TestIndexEquivalence:
             expected = {
                 d.get("name")
                 for s in g.successors(node)
-                if (d := g.nodes[s]).get("node_type") == "symbol" and d.get("name")
+                if (d := g.nodes[s]).get("node_type") == "symbol"
+                and d.get("name")
+                and g[node][s].get("edge_type") in ("defines", "has_method")
             }
             assert index.get(node, set()) == expected, node
 
@@ -87,6 +95,11 @@ class TestIndexEquivalence:
         assert index["a.go"] == {"Writer", "Reader"}
         # A file defining nothing has no entry; lookups treat that as empty.
         assert "no_symbols.go" not in index
+
+    def test_resolved_edges_into_symbols_are_not_declarations(self) -> None:
+        index = _build_defined_name_index(_make_graph())
+        assert "b.go::Helper" not in index
+        assert index["b.go"] == {"Writer", "Helper"}
 
     def test_find_matches_reference_for_all_names_and_candidate_sets(self) -> None:
         g = _make_graph()

@@ -4,11 +4,14 @@
 *spec* for whatever *factory* returns, for every import in the test. The swap
 masks the module only when the stand-in provably holds nothing of the original:
 a closed factory, with zero parameters (a parameter can receive the original
-module) and a body of literals, objects, arrays and bare runner doubles
-(``vi.fn()``). Any other call, a free identifier, a dynamic ``import()``, an
-``await``, a spread or a ``new`` abstains, and so does every way of reaching the
-original (``importActual``, ``requireActual``, ``importOriginal``) since none is
-a bare double. The vocabulary is the mock lexicon's
+module) and a body of literals, objects, arrays and runner doubles: a bare
+``vi.fn()``, or one configured by a chained ``mockReturnValue`` /
+``mockResolvedValue`` / ``mockRejectedValue`` / ``mockImplementation`` (or their
+``Once`` forms) whose every argument is closed. A name bound exactly once, by
+``vi.hoisted(<closed factory>)``, is closed too. Any other call, a free
+identifier, a dynamic ``import()``, an ``await``, a spread or a ``new`` abstains,
+and so does every way of reaching the original (``importActual``,
+``requireActual``, ``importOriginal``) since none is a double. The vocabulary is the mock lexicon's
 (:attr:`~repowise.core.analysis.health.mocks.lexicon.MockDialect.binding_patches`).
 
 Never masks: an automock (no factory), ``doMock`` (later dynamic imports only),
@@ -73,6 +76,7 @@ def replaced_specifiers(path: str, text: str | bytes) -> frozenset[str]:
     if not runners and not namespaces:
         return frozenset()
     proof = _Proof(dialect, runners, namespaces)
+    proof.hoisted = _hoisted_names(root, proof)
     masked: set[str] = set()
     for call in _calls(root):
         form = dialect.binding_patches.get(proof.callee(call.child_by_field_name("function")) or "")
@@ -187,6 +191,109 @@ def _text(node: Any) -> str:
     return node.text.decode("utf-8", "replace") if node is not None else ""
 
 
+# Where a name is bound or written, keyed by the parent node type and the field
+# of that parent the name must occupy (the other children are uses).
+_BINDING_FIELD = {
+    "variable_declarator": "name",
+    "function_declaration": "name",
+    "generator_function_declaration": "name",
+    "function_expression": "name",
+    "generator_function": "name",
+    "class_declaration": "name",
+    "class": "name",
+    "assignment_expression": "left",
+    "augmented_assignment_expression": "left",
+    "for_in_statement": "left",
+    "arrow_function": "parameter",
+    "assignment_pattern": "left",
+    "pair_pattern": "value",
+    "catch_clause": "parameter",
+    "required_parameter": "pattern",
+    "optional_parameter": "pattern",
+    "update_expression": "argument",
+}
+# Parents whose every name child is a binding.
+_BINDING_CONTAINERS = frozenset(
+    {
+        "formal_parameters",
+        "array_pattern",
+        "object_pattern",
+        "rest_pattern",
+        "import_specifier",
+        "import_clause",
+        "namespace_import",
+    }
+)
+
+
+def _binds(node: Any) -> bool:
+    """Whether *node* binds or writes its name, rather than reading it."""
+    if node.type == "shorthand_property_identifier_pattern":
+        return True
+    parent = node.parent
+    if parent is None or node.type != "identifier":
+        return False
+    if parent.type in _BINDING_CONTAINERS:
+        return True
+    field = _BINDING_FIELD.get(parent.type)
+    return field is not None and parent.child_by_field_name(field) == node
+
+
+def _hoisted_names(root: Any, proof: _Proof) -> frozenset[str]:
+    """Names bound once, by ``vi.hoisted(<closed factory>)``, and never rebound.
+
+    A binding of the same name anywhere else in the file (a second declaration,
+    a parameter, an assignment, an import) abstains: the proof is by name, so
+    any other binding could be what a reference reads.
+    """
+    bound: dict[str, int] = {}
+    candidates: list[str] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        stack.extend(node.named_children)
+        if _binds(node):
+            name = _text(node)
+            bound[name] = bound.get(name, 0) + 1
+        if node.type == "variable_declarator" and _is_hoisted_call(
+            node.child_by_field_name("value"), proof
+        ):
+            candidates.extend(_declared_names(node.child_by_field_name("name")))
+    return frozenset(name for name in candidates if bound.get(name) == 1)
+
+
+def _is_hoisted_call(node: Any, proof: _Proof) -> bool:
+    if node is None or node.type != "call_expression":
+        return False
+    callee = proof.callee(node.child_by_field_name("function"))
+    if callee is None or callee.rsplit(".", 1)[-1] not in proof.dialect.hoist_callees:
+        return False
+    args = node.child_by_field_name("arguments")
+    named = [a for a in args.named_children if a.type != "comment"] if args is not None else []
+    return len(named) == 1 and proof.closed_factory(named[0])
+
+
+def _declared_names(target: Any) -> list[str]:
+    """The names a declarator target binds: a plain name, or the properties of a
+    flat object pattern (``{ f }``, ``{ f: g }``). Defaults, rests and nested
+    patterns bind nothing here."""
+    if target is None:
+        return []
+    if target.type == "identifier":
+        return [_text(target)]
+    if target.type != "object_pattern":
+        return []
+    names: list[str] = []
+    for child in target.named_children:
+        if child.type == "shorthand_property_identifier_pattern":
+            names.append(_text(child))
+        elif child.type == "pair_pattern":
+            value = child.child_by_field_name("value")
+            if value is not None and value.type == "identifier":
+                names.append(_text(value))
+    return names
+
+
 class _Proof:
     """Reads callees against the runner bindings one file proves."""
 
@@ -196,6 +303,7 @@ class _Proof:
         self.dialect = dialect
         self.runners = runners
         self.namespaces = namespaces
+        self.hoisted: frozenset[str] = frozenset()
 
     def runner(self, node: Any) -> str | None:
         """``vi`` / ``jest`` when *node* is a proven runner object, else ``None``."""
@@ -233,7 +341,9 @@ class _Proof:
                 c.type == "template_substitution" for c in node.named_children
             )
         if kind == "identifier":
-            return _text(node) == "undefined"
+            return _text(node) == "undefined" or _text(node) in self.hoisted
+        if kind == "shorthand_property_identifier":
+            return _text(node) in self.hoisted
         if kind in ("undefined", "property_identifier", "string_fragment", "escape_sequence"):
             return True
         if kind in _CONTAINERS:
@@ -247,9 +357,23 @@ class _Proof:
             body = node.child_by_field_name("body")
             return body is not None and self._closed(body)
         if kind == "call_expression":
-            callee = self.callee(node.child_by_field_name("function"))
-            if callee is None or callee.rsplit(".", 1)[-1] not in self.dialect.double_callees:
-                return False
-            args = node.child_by_field_name("arguments")
-            return args is not None and all(self._closed(c) for c in args.named_children)
+            return self._double(node)
         return False
+
+    def _double(self, node: Any) -> bool:
+        """A bare runner double (``vi.fn()``), or one configured by chained
+        ``mockReturnValue(...)``-style verbs, with every argument closed."""
+        if node is None or node.type != "call_expression":
+            return False
+        args = node.child_by_field_name("arguments")
+        if args is None or not all(self._closed(c) for c in args.named_children):
+            return False
+        func = node.child_by_field_name("function")
+        if (
+            func is not None
+            and func.type == "member_expression"
+            and _text(func.child_by_field_name("property")) in self.dialect.double_configurers
+        ):
+            return self._double(func.child_by_field_name("object"))
+        callee = self.callee(func)
+        return callee is not None and callee.rsplit(".", 1)[-1] in self.dialect.double_callees

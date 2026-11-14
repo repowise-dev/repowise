@@ -180,3 +180,15 @@ describe("formatDate / formatDateTime render UTC, not the local zone", () => {
     expect(formatDateTime("2026-08-21T13:23:33Z")).toBe("Aug 21, 2026, 1:23 PM");
   });
 });
+
+describe("formatDate / formatDateTime on a missing or unparseable date", () => {
+  // Intl.DateTimeFormat.format throws a RangeError on an Invalid Date, so one
+  // null row used to crash the whole table that rendered it.
+  it.each([null, undefined, "", "not a date", new Date(Number.NaN)])(
+    "renders %s as the empty-date mark instead of throwing",
+    (value) => {
+      expect(formatDate(value)).toBe("—");
+      expect(formatDateTime(value)).toBe("—");
+    },
+  );
+});

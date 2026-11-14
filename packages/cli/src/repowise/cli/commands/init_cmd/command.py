@@ -20,10 +20,15 @@ from repowise.cli.errors import reasoned_error
 from repowise.cli.exit_codes import EXIT_CODES_HELP
 from repowise.cli.helpers import resolve_repo_path
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
-from repowise.core.update_lock import init_in_progress
+from repowise.core.update_lock import (
+    init_in_progress,
+    release_update_lock,
+    try_acquire_update_lock,
+)
 
 from ._agent_summary import init_output
 from ._exit import exit_interrupted
@@ -54,6 +59,7 @@ from ._prepare import (
 )
 from ._questions import _apply_advanced_answers, _ask_questions
 from ._seed import delegate_to_seeded_update
+from ._sibling_hint import suggest_workspace
 from ._workspace_repos import check_repos_flag, split_repo_names
 from .workspace import _workspace_init
 
@@ -86,7 +92,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         repo_names=split_repo_names(opts.repos),
         exclude_patterns=list(opts.exclude),
         commit_limit=opts.commit_limit,
-        follow_renames=opts.follow_renames,
+        follow_renames=bool(opts.follow_renames),
         no_claude_md=opts.no_claude_md,
         agents_md=opts.agents_md,
         codex_setup=opts.codex_setup,
@@ -115,6 +121,17 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         language=opts.language_opt,
         run_mode=opts.run_mode,
     )
+
+
+def _check_folder_coverage(
+    _ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Reject a malformed ``--folder-coverage`` rule before any indexing starts."""
+    try:
+        parse_folder_coverage(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param=param) from None
+    return value
 
 
 @click.command("init", epilog=EXIT_CODES_HELP)
@@ -166,10 +183,12 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "or OpenCode is used only with --provider; the cost confirmation is "
         "accepted; advanced options keep their defaults (standard run mode at "
         "any size, comprehensive style); the detected agents "
-        "are connected; the global repowise MCP entry is pointed here, with the "
-        "old and new target printed; the post-commit hook is installed and the "
-        "distill rewrite hook is not; and with --no-prose, documentation a "
-        "model wrote is replaced without asking."
+        "are connected; Claude Code gets a user-level repowise MCP entry in "
+        "~/.claude.json that names no repo and serves the repo Claude Code "
+        "starts in, added when absent and never moved off another repo it "
+        "serves; the post-commit hook and the distill rewrite hook are "
+        "installed; and with --no-prose, documentation a model wrote is "
+        "replaced without asking."
     ),
 )
 @click.option(
@@ -252,14 +271,13 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
 )
 @click.option(
     "--commit-limit",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
-    help="Max commits to analyze per file and for co-change detection (default: 5000, max: 10000). Saved to config.",
+    help="Newest commits to analyze for file history and co-change (default: 5000). Set it above the repo's commit count to read the full history. Saved to config.",
 )
 @click.option(
-    "--follow-renames",
-    is_flag=True,
-    default=False,
+    "--follow-renames/--no-follow-renames",
+    default=None,
     help="Use git log --follow to track files across renames (slower but more accurate history). Saved to config.",
 )
 @click.option(
@@ -293,7 +311,9 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "(`hooks.search_digest`); re-reading an unchanged, unedited file comes "
         "back as a pointer to the earlier read (`hooks.read_reread`). One "
         "consent, and this flag decides all four without a prompt. Default: "
-        "ask when interactive, skip otherwise. In workspace mode the verdict "
+        "on. Interactive runs ask; --yes and non-interactive runs install it "
+        "and print how to turn it off. A repo that opted out stays off, and "
+        "--no-editor-setup installs nothing. In workspace mode the verdict "
         "applies to every selected repo."
     ),
 )
@@ -318,7 +338,8 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "Wire repowise into your editors. Covers both halves: the machine-wide "
         "config (the Claude Code / Claude Desktop MCP entry, the Claude Code "
         "hooks, the distill rewrite-hook offer) and the project-local files "
-        "(.mcp.json, .claude/CLAUDE.md, .vscode/mcp.json, "
+        "(.claude/CLAUDE.md, .vscode/mcp.json, .mcp.json when no user-scope "
+        "entry or plugin already serves the repo, "
         ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
         "a repo without writing anything into it or outside it; only "
         ".repowise/ is touched, and 'repowise mcp .' still prints the config "
@@ -385,8 +406,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=True,
     help=(
         "Generate the curated Onboarding collection (Project Overview, "
-        "Architecture Guide, Getting Started, Codebase Map, Key Concepts, "
-        "How It Works, Development Guide, Active Landscape). Default: on. "
+        "Getting Started, How It Works, Active Landscape). Default: on. "
         "Slots with insufficient signal are skipped automatically."
     ),
 )
@@ -401,6 +421,19 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "policy decide: untouched on a normal repo, held to a ceiling on a very "
         "large one. Pass 0 for one page per eligible file however many that is. "
         "Saved to config.yaml so later runs keep it."
+    ),
+)
+@click.option(
+    "--folder-coverage",
+    "folder_coverage_rules",
+    multiple=True,
+    metavar="GLOB=PCT",
+    callback=_check_folder_coverage,
+    help=(
+        "Documentation floor for a folder: 'src/core=1.0' promises every code "
+        "file under src/core gets a file page whatever its importance score; "
+        "'src/legacy=0.5' promises half. Repeatable. Saved to config.yaml so "
+        "later update runs keep the floors."
     ),
 )
 @click.option(
@@ -483,6 +516,12 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "and next commands. Human text goes to stderr."
     ),
 )
+@click.option(
+    "--source",
+    default=None,
+    hidden=True,
+    help="Which setup instructions started this run, for anonymous usage stats.",
+)
 def init_command(**params: Any) -> None:
     """Index a codebase and build its documentation.
 
@@ -501,9 +540,26 @@ def init_command(**params: Any) -> None:
             exit_interrupted()
 
 
+#: What ``--source`` may report. Any other value is reported as ``other``, so
+#: the raw text never leaves the machine.
+INSTRUCTION_SOURCES = frozenset({"plugin_command", "setup_doc", "hosted_setup", "mcp_notice"})
+
+
+def _record_instruction_source(source: str | None) -> None:
+    """Attach which setup instructions started this run, when the caller said."""
+    if source is None:
+        return
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(
+        instruction_source=source if source in INSTRUCTION_SOURCES else "other"
+    )
+
+
 def _run_init(opts: InitOptions) -> None:
     """The whole init, one repo or a workspace; exits 2 when it finishes with gaps."""
     start = time.monotonic()
+    _record_instruction_source(opts.source)
     repo_path = resolve_repo_path(opts.path)
 
     if not repo_path.is_dir():
@@ -529,9 +585,23 @@ def _run_init(opts: InitOptions) -> None:
     # redirect to it so the user doesn't have to specify the exact path.
     if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
         repo_path = scan.repos[0].path
+    if not opts.no_workspace:
+        suggest_workspace(repo_path)
 
     with init_in_progress(repo_path):
-        _run_single_repo(opts, repo_path, start)
+        # HOLD BOTH LOCKS (#5512): the init marker alone is not mutual exclusion,
+        # because `update` learns of it only in `_acquire_update_lock` — a run
+        # that already holds the update lock keeps writing the same store. Taking
+        # the update lock too is what makes the marker mean something.
+        if try_acquire_update_lock(repo_path, None) is not None:
+            raise click.ClickException(
+                "Another `repowise update` is already running on this repo. "
+                "Run `repowise init` again when it finishes."
+            )
+        try:
+            _run_single_repo(opts, repo_path, start)
+        finally:
+            release_update_lock(repo_path)
 
 
 def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:

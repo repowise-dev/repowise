@@ -256,7 +256,7 @@ def _spy_run(payload: dict, calls: list):
     rather than awaited — running it would need a database.
     """
 
-    def _run(repo_path, factory, tool_name):
+    def _run(repo_path, factory, tool_name, *, workspace_root=None):
         coro = factory()
         calls.append((repo_path, coro.cr_code.co_qualname, tool_name))
         coro.close()
@@ -789,7 +789,9 @@ def test_logs_are_silenced_at_every_format_not_only_the_machine_ones(
         "repowise.cli.helpers.silence_logs_for_machine_output",
         _fake_silence,
     )
-    monkeypatch.setattr("repowise.cli.tool_bridge.call_tool", lambda p, f, t: {"_meta": {}})
+    monkeypatch.setattr(
+        "repowise.cli.tool_bridge.call_tool", lambda p, f, t, **_kw: {"_meta": {}}
+    )
     result = CliRunner(mix_stderr=False).invoke(
         ask_command, ["q?", *args, "--path", str(repo), "--no-workspace"]
     )
@@ -1090,3 +1092,103 @@ def test_context_fix_signal_names_its_window() -> None:
         _fix_signal({"fix_count": 3, "window": "6 months", "last_fix_days_ago": 2})
         == "3 bug fixes in 6 months, last 2d ago"
     )
+
+
+# --------------------------------------------------------------------------
+# ``ask`` in a workspace
+# --------------------------------------------------------------------------
+
+OTHER_REPO_LINES = [
+    {"repo": "mirror", "path": "jira/PROJ/PROJ-12.md", "line": 11,
+     "text": "# PROJ-12: Deploys stall under load"},
+    {"repo": "mirror", "path": "confluence/ENG/guide.md", "line": 34,
+     "text": "Tracked in [PROJ-12](https://example.test/browse/PROJ-12)."},
+]
+
+
+def test_ask_projection_keeps_the_other_repos_lines():
+    """They are the evidence for an answer citing another workspace repo."""
+    out = project_ask({**ANSWER_PAYLOAD, "other_repo_lines": OTHER_REPO_LINES}, "q?")
+    assert out["other_repo_lines"] == OTHER_REPO_LINES
+    assert "other_repo_lines" not in project_ask(ANSWER_PAYLOAD, "q?")
+
+
+def test_ask_json_carries_the_other_repos_lines(monkeypatch, repo):
+    payload = {**ANSWER_PAYLOAD, "other_repo_lines": OTHER_REPO_LINES}
+    result = _invoke(monkeypatch, ask_command, ["q?", "--format", "json"], repo, payload)
+    assert json.loads(result.stdout)["other_repo_lines"] == OTHER_REPO_LINES
+
+
+def test_ask_renders_the_other_repos_lines_with_their_brackets(monkeypatch, repo):
+    payload = {**ANSWER_PAYLOAD, "other_repo_lines": OTHER_REPO_LINES}
+    result = _invoke(monkeypatch, ask_command, ["q?"], repo, payload)
+    assert "Other workspace repos" in result.stdout
+    assert "mirror: jira/PROJ/PROJ-12.md:11" in result.stdout
+    assert "[PROJ-12](https://example.test/browse/PROJ-12)" in result.stdout
+
+
+def _workspace(tmp_path):
+    """A workspace root holding two indexed member repos, ``code`` and ``mirror``."""
+    for name in ("code", "mirror"):
+        (tmp_path / name / ".repowise").mkdir(parents=True)
+    (tmp_path / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: code\nrepos:\n"
+        "- path: code\n  alias: code\n- path: mirror\n  alias: mirror\n"
+    )
+    return tmp_path
+
+
+def _workspace_roots(monkeypatch, args):
+    seen: list = []
+
+    def _run(repo_path, factory, tool_name, *, workspace_root=None):
+        factory().close()
+        seen.append((repo_path, workspace_root))
+        return {"answer": "x", "_meta": {}}
+
+    monkeypatch.setattr(_ta, "run", _run)
+    result = CliRunner(mix_stderr=False).invoke(ask_command, ["q?", *args])
+    assert result.exit_code == 0, result.output + (result.stderr or "")
+    return seen
+
+
+def test_ask_in_a_workspace_serves_the_workspace(monkeypatch, tmp_path):
+    ws = _workspace(tmp_path)
+    assert _workspace_roots(monkeypatch, ["--path", str(ws), "--repo", "mirror"]) == [
+        ((ws / "mirror").resolve(), ws)
+    ]
+
+
+def test_ask_with_no_workspace_serves_one_repo(monkeypatch, tmp_path):
+    ws = _workspace(tmp_path)
+    seen = _workspace_roots(monkeypatch, ["--path", str(ws / "code"), "--no-workspace"])
+    assert seen == [((ws / "code").resolve(), None)]
+
+
+WHY_CANDIDATES_ONLY_PAYLOAD = {
+    "mode": "path",
+    "path": "a.py",
+    "answer_basis": "candidate",
+    "decisions": [],
+    "candidates": [
+        {"id": "d1", "title": "List core tools for eager-schema clients", "status": "proposed",
+         "decision": "list the core tools", "confidence": 0.6}
+    ],
+    "candidates_note": "1 background record(s) mention this path. None is in force.",
+    "more": 'Origin story, commits, episodes and contributors: get_why(targets=["a.py"], include=["history"])',
+    "_meta": {},
+}
+
+
+def test_why_path_with_only_background_records_is_not_empty(monkeypatch, repo):
+    """Path mode serves candidates and a history pointer, not decisions or archaeology."""
+    out = project_why(WHY_CANDIDATES_ONLY_PAYLOAD)
+    assert out["candidates"][0]["title"] == "List core tools for eager-schema clients"
+    assert "confidence" not in out["candidates"][0]
+    assert out["more"]
+
+    result = _invoke(monkeypatch, why_command, ["a.py"], repo, WHY_CANDIDATES_ONLY_PAYLOAD)
+    assert "Nothing recorded" not in result.stdout
+    assert "Candidates, not in force" in result.stdout
+    assert "List core tools for eager-schema clients" in result.stdout
+    assert "--full" in result.stdout

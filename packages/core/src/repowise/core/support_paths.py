@@ -53,7 +53,7 @@ EXAMPLE_DIR_TOKENS = frozenset(
 # Documentation directories: static-site trees and runnable doc snippets. Like
 # the example dirs above, their files carry entry-style names by convention
 # but document the system rather than being it.
-DOC_DIR_TOKENS = frozenset({"docs", "doc", "website"})
+DOC_DIR_TOKENS = frozenset({"docs", "doc", "website", "docs_src"})
 
 
 def _has_dir_token(path: str, tokens: frozenset[str]) -> bool:
@@ -66,6 +66,15 @@ def _has_dir_token(path: str, tokens: frozenset[str]) -> bool:
     return any(s.lower() in tokens for s in PurePosixPath(path).parts[:-1])
 
 
+_ROOT_BENCHMARK_DIR = "benchmark"
+
+
+def _is_root_benchmark(path: str) -> bool:
+    """Whether *path* is located inside a root ``benchmark/`` directory."""
+    parts = PurePosixPath(path).parts
+    return len(parts) > 1 and parts[0].lower() == _ROOT_BENCHMARK_DIR
+
+
 def is_example_path(path: str) -> bool:
     """Whether *path* is example, demo, or benchmark code.
 
@@ -73,7 +82,7 @@ def is_example_path(path: str) -> bool:
     grouped with the code it imports it inflates that module, and a large
     example tree can dominate a community's label.
     """
-    return _has_dir_token(path, EXAMPLE_DIR_TOKENS)
+    return _is_root_benchmark(path) or _has_dir_token(path, EXAMPLE_DIR_TOKENS)
 
 
 def is_test_or_example_path(path: str) -> bool:
@@ -88,8 +97,16 @@ def is_test_or_example_path(path: str) -> bool:
 # Shared with the knowledge graph's node classifier.
 CONFIG_EXTENSIONS = frozenset(
     {
-        ".yaml", ".yml", ".toml", ".json", ".env", ".ini", ".cfg", ".conf",
-        ".properties", ".xml",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".json",
+        ".env",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".properties",
+        ".xml",
     }
 )
 DOC_EXTENSIONS = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
@@ -150,4 +167,4 @@ def is_support_path(path: str) -> bool:
     points: a reader orienting in the repo must land in the system itself,
     not in its documentation or sample harnesses.
     """
-    return _has_dir_token(path, EXAMPLE_DIR_TOKENS | DOC_DIR_TOKENS)
+    return _is_root_benchmark(path) or _has_dir_token(path, EXAMPLE_DIR_TOKENS | DOC_DIR_TOKENS)

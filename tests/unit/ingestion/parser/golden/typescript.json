@@ -10,7 +10,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -62,6 +64,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -71,6 +74,7 @@
         "line": 5,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 117,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -91,6 +95,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 127,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -107,6 +112,7 @@
         "line": 6,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 138,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -127,6 +133,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 148,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -143,6 +150,7 @@
         "line": 7,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 159,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -163,6 +171,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 169,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -179,6 +188,7 @@
         "line": 8,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 180,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -199,6 +209,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 190,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -215,6 +226,7 @@
         "line": 9,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 201,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -235,6 +247,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 211,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -251,6 +264,7 @@
         "line": 10,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 222,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -271,6 +285,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 232,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -287,6 +302,7 @@
         "line": 11,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 243,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -307,6 +323,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 253,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -323,6 +340,7 @@
         "line": 12,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 264,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -343,6 +361,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 274,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -359,6 +378,7 @@
         "line": 13,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 285,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -379,6 +399,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 295,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -395,6 +416,7 @@
         "line": 14,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 306,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -415,6 +437,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 316,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -431,6 +454,7 @@
         "line": 15,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 327,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -451,6 +475,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 337,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -467,6 +492,7 @@
         "line": 16,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 348,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -487,6 +513,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 358,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -503,6 +530,7 @@
         "line": 17,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 369,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -523,6 +551,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 379,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -539,6 +568,7 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 390,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -559,6 +589,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 400,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -575,6 +606,7 @@
         "line": 19,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 411,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -595,6 +627,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 421,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -611,6 +644,7 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 432,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -631,6 +665,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 442,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -647,6 +682,7 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 490,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -667,6 +703,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 500,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -683,6 +720,7 @@
         "line": 26,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 526,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -703,6 +741,7 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 536,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -721,7 +760,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/classes.ts": {
     "file_info": {
@@ -734,7 +774,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -993,6 +1035,7 @@
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1002,6 +1045,7 @@
         "line": 22,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 377,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1020,7 +1064,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/conditionals.ts": {
     "file_info": {
@@ -1033,7 +1078,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1112,6 +1159,7 @@
       "sixOps",
       "twoOps"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1122,7 +1170,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/nested.ts": {
     "file_info": {
@@ -1135,7 +1184,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1190,6 +1241,7 @@
       "deeplyNested",
       "shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -1200,7 +1252,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/perf_io_in_loop.ts": {
     "file_info": {
@@ -1213,7 +1266,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1349,6 +1404,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1360,6 +1416,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1369,6 +1426,7 @@
         "line": 15,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 394,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1385,6 +1443,7 @@
         "line": 21,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 540,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1401,6 +1460,7 @@
         "line": 32,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 822,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1425,7 +1485,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_class_modifiers.ts": {
     "file_info": {
@@ -1438,7 +1499,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1794,6 +1857,7 @@
       "Service",
       "Repository"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1803,6 +1867,7 @@
         "line": 13,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 283,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1819,6 +1884,7 @@
         "line": 21,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 463,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -1843,7 +1909,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_module_consts.ts": {
     "file_info": {
@@ -1856,7 +1923,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -2004,6 +2073,7 @@
       "mode",
       "limit"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2013,6 +2083,7 @@
         "line": 10,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 303,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2031,7 +2102,8 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "typescript/ts_overload_fn_method.ts": {
     "file_info": {
@@ -2044,7 +2116,9 @@
       "is_entry_point": false,
       "is_manifest_entry": false,
       "is_reachability_root": false,
-      "is_application_main": false
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -2332,6 +2406,7 @@
       "Client",
       "Transport"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -2341,6 +2416,7 @@
         "line": 11,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 317,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
@@ -2359,6 +2435,7 @@
     "local_refs": [],
     "registrars": [],
     "references": [],
-    "schema_refs": []
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

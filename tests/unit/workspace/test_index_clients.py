@@ -31,6 +31,7 @@ from repowise.core.workspace.extractors.from_index import EXTRACTION_LAYER_KEY, 
 from repowise.core.workspace.extractors.http.index_clients import extract_consumers
 from repowise.core.workspace.extractors.http.js_clients import JsClientsDialect
 from repowise.core.workspace.extractors.http.wrappers import confirm_wrappers
+from repowise.core.workspace.origins import ContractOrigin
 from repowise.core.workspace.repo_index import IndexedSymbol
 
 from ._repo_index import make_repo_index
@@ -577,6 +578,27 @@ class TestLexicalNoiseIsNotEvidence:
         # that the call *after* it still parses, which a desynced scan loses.
         assert "http::GET::/plain" in _ids(contracts)
 
+    def test_a_nested_template_query_suffix_reads_the_route(self):
+        source = (
+            "export class C {\n"
+            "  private async fetch<T>(p: string): Promise<T> {\n"
+            "    return (await fetch(p)).json();\n"
+            "  }\n"
+            "  wins(id: string, q: string) {\n"
+            '    return this.fetch<W>(`/snapshots/${id}/wins${q ? `?${q}` : ""}`);\n'
+            "  }\n"
+            "  file(id: string, qs: string) {\n"
+            '    return this.fetch<F>(`/files/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);\n'
+            "  }\n"
+            "}\n"
+        )
+        contracts, unresolved, _c = _run(source, "src/lib/c.ts")
+        assert _ids(contracts) == {
+            "http::GET::/snapshots/{param}/wins",
+            "http::GET::/files/{param}",
+        }
+        assert unresolved == 0
+
     def test_a_regex_literal_containing_a_paren_does_not_desync(self):
         source = (
             "export class C {\n"
@@ -779,6 +801,80 @@ class TestBoundClientReceiver:
         contracts, unresolved = _run_py(source)
         assert contracts == []
         assert unresolved == 0
+
+
+class TestImportedClientClasses:
+    """``from httpx import AsyncClient`` binds as surely as ``httpx.AsyncClient``."""
+
+    @pytest.mark.parametrize(
+        ("imports", "ctor"),
+        [
+            ("from httpx import AsyncClient", "AsyncClient()"),
+            ("from httpx import Client as Http", "Http()"),
+            ("from httpx import (\n    AsyncClient,\n    Timeout,\n)", "AsyncClient()"),
+            ("from aiohttp import ClientSession", "ClientSession()"),
+            ("from requests import Session", "Session()"),
+        ],
+    )
+    def test_an_imported_class_binds(self, imports: str, ctor: str):
+        source = f"{imports}\n\ndef f():\n    c = {ctor}\n    c.get('/things')\n"
+        assert _ids(_run_py(source)[0]) == {"http::GET::/things"}
+
+    def test_a_session_from_another_library_stays_unbound(self):
+        source = (
+            "from sqlalchemy.orm import Session\n\n"
+            "def f(engine):\n    s = Session(engine)\n    s.get('/things')\n"
+        )
+        assert _run_py(source) == ([], 0)
+
+    def test_a_name_imported_from_two_modules_stays_unbound(self):
+        source = (
+            "from requests import Session\nfrom sqlalchemy.orm import Session\n\n"
+            "def f(engine):\n    s = Session(engine)\n    s.get('/things')\n"
+        )
+        assert _run_py(source) == ([], 0)
+
+
+class TestInstanceBase:
+    """``base_url=`` on the constructor is the host every relative call goes to."""
+
+    def test_a_relative_path_joins_the_base(self):
+        source = (
+            "import httpx\n\n"
+            "async def f():\n"
+            "    async with httpx.AsyncClient(base_url='http://users:8000/api') as c:\n"
+            "        await c.get('users/1')\n"
+        )
+        (contract,) = _run_py(source)[0]
+        assert contract.contract_id == "http::GET::/api/users/1"
+        assert contract.origin == ContractOrigin.INSTANCE_BASE
+
+    def test_an_environment_base_is_kept_as_a_token(self):
+        source = (
+            "import os\nimport httpx\n\n"
+            "def f():\n"
+            "    c = httpx.Client(base_url=os.environ.get('USERS_URL'))\n"
+            "    c.post('/api/users')\n"
+        )
+        contracts, unresolved = _run_py(source)
+        assert _ids(contracts) == {"http::POST::/api/users"}
+        assert contracts[0].origin == ContractOrigin.INSTANCE_BASE
+        assert unresolved == 0
+
+    def test_an_absolute_url_ignores_the_base(self):
+        source = (
+            "import httpx\n\n"
+            "def f():\n"
+            "    c = httpx.Client(base_url='http://users')\n"
+            "    c.get('http://billing/invoices')\n"
+        )
+        assert _ids(_run_py(source)[0]) == {"http::GET::/invoices"}
+
+    def test_a_client_with_no_base_keeps_its_rooted_only_rule(self):
+        source = "import httpx\n\ndef f():\n    c = httpx.Client()\n    c.get('users')\n"
+        contracts, unresolved = _run_py(source)
+        assert contracts == []
+        assert unresolved == 1
 
 
 class TestBindingIsRequired:

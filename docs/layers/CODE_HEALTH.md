@@ -77,7 +77,7 @@ not analysed, never scored as a 10.
 
 | Control | Values | Effect |
 |---|---|---|
-| `scope` | `all` (default), `production` | `production` drops test files, which lowers the headline because tests usually score higher |
+| `scope` | `all` (default), `production` | `production` drops test, tooling, build, vendored, generated and docs example files, which lowers the headline because tests usually score higher |
 | `counts` | `everything` (default), `code_shape` | `code_shape` removes the git-history half of each deduction, to see whether code improved after a refactor raised churn |
 
 Every response echoes both. `everything` is the calibrated number every accuracy claim
@@ -147,10 +147,10 @@ Every id with its threshold and weight:
 
 | Family | Detectors | Cap | Catches |
 |---|---:|---|---|
-| Structural complexity | 6 | 2.5 | Deep nesting, brain methods (listed, not scored), god classes, low cohesion, repeated nesting, complex conditions |
+| Structural complexity | 6 | 2.5 | Deep nesting, god classes, complex conditions; brain methods, repeated nesting and low cohesion are listed, not scored |
 | Size and complexity | 3 | 1.5 | Long or high-CCN functions, primitive obsession |
-| Duplication | 1 | 1.0 | Cloned blocks |
-| Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors |
+| Duplication | 1 | 1.0 | Cloned blocks; scored in TypeScript, listed elsewhere |
+| Error handling | 1 | 0.5 | Swallowed or catch-all handlers, `unwrap`/panic, discarded Go errors; scored in Python, listed elsewhere |
 | Change history | 10 | 1.0 to 3.5 | Churn, change entropy, co-change scatter, ownership, fading ownership, prior bug fixes |
 | Test coverage | 4 | 2.0 + 2.0 | Untested hotspots, coverage gaps, uncovered lines (needs a report), untested complex functions (advisory) |
 | Test quality | 4 | 0.5 | Oversized or duplicated assertion blocks; two advisory markers |
@@ -161,11 +161,11 @@ Every id with its threshold and weight:
 
 - Caps are code-health caps; SQL deducts only in maintainability (2.0) and performance
   findings, cartesian joins included, only in performance risk (2.0).
-- Twenty-four detectors move code health. Nine are advisory: listed with zero impact,
+- Twenty-three detectors move code health. Ten are advisory: listed with zero impact,
   out of impact-ranked lists unless you ask for the advisory dimension. Three governance
   findings from the [decisions layer](DECISIONS.md) never deduct.
 - `dry_violation` and `duplicated_assertion_block` stay off every default surface (overview, priorities, MCP, REST lists) until
-  a re-measurement clears their precision; they are still scored. Assertion-block
+  a re-measurement clears their precision; `duplicated_assertion_block` still scores, `dry_violation` in TypeScript. Assertion-block
   markers fire only in test files; house assertion helpers go in the
   [`assertions:` block](../reference/CONFIG.md#the-assertions-block).
 - History amplifies code risk: alone it costs a file at most 1.0 point, so a simple file

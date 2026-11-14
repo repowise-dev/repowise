@@ -35,10 +35,14 @@ HOW_LONG = "A hosted index usually takes about 10 minutes, longer for big repos.
 #: Paid tiers. Anyone else hitting a private-repo refusal needs a plan first.
 _PAID_TIERS = {"pro", "teams", "admin"}
 
+#: ``owner/name`` as GitHub spells it, with an optional ``.git``.
+_OWNER_NAME = r"(?P<owner>[A-Za-z0-9-]+)/(?P<name>[A-Za-z0-9._-]+?)(?:\.git)?"
+
 # https://github.com/o/n(.git), git@github.com:o/n(.git), ssh://git@github.com/o/n
 _GITHUB_REMOTE = re.compile(
     r"^(?:https?://(?:[^@/]+@)?github\.com/|git@github\.com:|ssh://git@github\.com(?::\d+)?/)"
-    r"(?P<owner>[A-Za-z0-9-]+)/(?P<name>[A-Za-z0-9._-]+?)(?:\.git)?/?$"
+    + _OWNER_NAME
+    + r"/?$"
 )
 
 
@@ -80,6 +84,16 @@ def parse_github_remote(url: str) -> tuple[str, str] | None:
     if not match:
         return None
     return match.group("owner"), match.group("name")
+
+
+#: ``owner/name`` as typed on a command line.
+_REPO_SLUG = re.compile(rf"^{_OWNER_NAME}$")
+
+
+def parse_repo_slug(value: str) -> tuple[str, str] | None:
+    """``(owner, name)`` for an ``owner/name`` argument, ``None`` for anything else."""
+    match = _REPO_SLUG.match(value.strip())
+    return (match.group("owner"), match.group("name")) if match else None
 
 
 def _git(repo_path: Path, *args: str) -> str | None:

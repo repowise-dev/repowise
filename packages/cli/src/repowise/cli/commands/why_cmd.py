@@ -219,6 +219,18 @@ def project(payload: dict) -> dict:
     if episodes:
         out["episodes"] = [_project_episode(e) for e in _capped(episodes)]
 
+    # Path mode leads with what is in force; background records and the
+    # history pointer come beside it. Without them an ungoverned path printed
+    # "Nothing recorded" while the tool had answered.
+    candidates = payload.get("candidates")
+    if candidates:
+        out["candidates"] = [_project_decision(c) for c in _capped(candidates)]
+        if len(candidates) > len(out["candidates"]):
+            out["candidates_total"] = len(candidates)
+    for key in ("candidates_note", "more"):
+        if payload.get(key):
+            out[key] = payload[key]
+
     # The three blocks the tool substitutes when decisions are silent. Losing
     # them empties exactly the mode this tool exists to never leave empty:
     # `get_why` sets git_archaeology and code_rationale *because* nothing
@@ -286,8 +298,9 @@ def why_command(
 
     QUERY is a question ("why is auth using JWT?"), a file path (its governing
     decisions, origin story and alignment score), or omitted for the decision
-    health dashboard — or for repeatable --target paths, when named. Falls back to
-    git archaeology when a path has no decisions, so it is never empty.
+    health dashboard — or for repeatable --target paths, when named. A path
+    leads with the decisions in force and the background records beside them;
+    --full adds its origin story and git history.
     """
     fmt = _ta.resolve_format_for(fmt, full)
     repo_path = _ta.resolve_indexed_repo(
@@ -301,7 +314,10 @@ def why_command(
     def _factory():
         from repowise.server.mcp_server.tool_why import get_why
 
-        return get_why(query=query, targets=list(targets) or None)
+        # --full is the whole answer, so it asks for the history too.
+        return get_why(
+            query=query, targets=list(targets) or None, include=["history"] if full else None
+        )
 
     payload = _ta.run(repo_path, _factory, "get_why")
 
@@ -420,9 +436,28 @@ def _render(projected: dict) -> None:
         if entry.get("git_archaeology"):
             _render_archaeology(console, entry["git_archaeology"], indent="  ")
 
+    candidates = projected.get("candidates") or []
+    if candidates:
+        console.print("\n[bold]Candidates, not in force[/bold]")
+        if projected.get("candidates_note"):
+            console.print(f"  [dim]{projected['candidates_note']}[/dim]")
+        for candidate in candidates:
+            console.print(
+                f"  [dim]candidate:[/dim] {candidate.get('title', '')} "
+                f"[dim]({candidate.get('status', '')})[/dim]"
+            )
+        _print_more(console, projected, "candidates", len(candidates))
+    if projected.get("more"):
+        # The tool's pointer names the MCP call; on the CLI --full asks for
+        # the same history.
+        console.print(
+            "\n[dim]Origin story, commits, episodes and contributors: "
+            "pass --full.[/dim]"
+        )
+
     for label, key in (
         ("Stale decisions", "stale_decisions"),
-        ("Proposed, awaiting review", "proposed_awaiting_review"),
+        ("Background, not in force", "proposed_awaiting_review"),
         ("Conflicts", "conflicts"),
         ("Retired", "retired_decisions"),
         ("Accepted, naming no file", "unscoped_decisions"),
@@ -470,6 +505,7 @@ _RENDERABLE_BLOCKS = (
     "counts",
     "alignment",
     "decisions",
+    "candidates",
     "origin_story",
     "git_archaeology",
     "code_rationale",

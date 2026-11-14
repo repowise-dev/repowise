@@ -194,7 +194,7 @@ describe("the row prompt", () => {
   it("opens the agent prompt from the row without opening the drawer", async () => {
     const loadPrompt = vi.fn().mockResolvedValue("Prompt from core");
     render(<NextActions data={response([], [action()])} hrefFor={() => null} loadPrompt={loadPrompt} />);
-    fireEvent.click(screen.getByRole("button", { name: /Copy prompt for your agent: Raise test coverage/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt: Raise test coverage/ }));
     const dialog = await screen.findByRole("dialog");
     expect(await within(dialog).findByText("Prompt from core")).toBeInTheDocument();
     expect(within(dialog).queryByText("Why it is on the list")).toBeNull();
@@ -203,7 +203,7 @@ describe("the row prompt", () => {
 
   it("is absent when the host has no prompt", () => {
     render(<NextActions data={response([], [action()])} hrefFor={() => null} />);
-    expect(screen.queryByRole("button", { name: /Copy prompt for your agent/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy prompt/ })).toBeNull();
   });
 });
 

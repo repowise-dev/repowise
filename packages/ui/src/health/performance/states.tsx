@@ -176,7 +176,7 @@ export function LinkedCauseUnavailable({
       <button
         type="button"
         onClick={onDismiss}
-        className="rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+        className="rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         Dismiss
       </button>

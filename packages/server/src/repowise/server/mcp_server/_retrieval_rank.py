@@ -9,7 +9,11 @@ from collections import Counter
 from collections.abc import Mapping
 
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
-from repowise.server.mcp_server._query_terms import content_terms, split_humps
+from repowise.server.mcp_server._query_terms import (
+    QUESTION_FRAME_VERBS,
+    content_terms,
+    split_humps,
+)
 
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
@@ -32,6 +36,12 @@ def window_term_weight(df: int, n: int) -> float:
 def _ranking_terms(text: str, *, max_terms: int = 8) -> set[str]:
     """Content terms with a tiny retrieval-only inflection normalisation."""
     return {_INFLECTIONS.get(term, term) for term in content_terms(text, max_terms=max_terms)}
+
+
+def _query_ranking_terms(query: str, *, max_terms: int = 8) -> set[str]:
+    """:func:`_ranking_terms` of a query, without the verbs that frame the question."""
+    terms = [t for t in content_terms(query, max_terms=None) if t not in QUESTION_FRAME_VERBS]
+    return {_INFLECTIONS.get(term, term) for term in terms[:max_terms]}
 
 
 def _identifier_words(token: str) -> list[str]:
@@ -82,7 +92,7 @@ def rerank_by_context_coverage(
     term weights make vocabulary repeated by the whole window weak evidence,
     while terms that distinguish one candidate carry more weight.
     """
-    terms = _ranking_terms(query)
+    terms = _query_ranking_terms(query)
     if not terms or not hits:
         return hits
 

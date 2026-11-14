@@ -30,7 +30,9 @@ report = detect_clones(parsed_files, git_meta_map)
    to rule out hash collisions before emitting a `ClonePair`.
 4. **Merge adjacent windows** — adjacent or overlapping clone windows
    between the same `(file_a, file_b)` collapse into one contiguous
-   region.
+   region. A region shared by two non-test files of one directory with no
+   branch and no lambda in it (`tokenizer.decision_lines`) is dropped: it is
+   the skeleton sibling implementations share, not copied logic.
 5. **Co-change correlation** — for each surviving pair we look up
    `git_meta_map[file_a]['co_change_partners_json']` (and the reverse
    direction). The max count attaches to `ClonePair.co_change_count`

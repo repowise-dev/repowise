@@ -147,6 +147,32 @@ public class Token extends Base {
 """
 
 
+def test_java_method_modifiers_are_recorded(parser: ASTParser) -> None:
+    source = (
+        b"interface H { void handle(int x); default void a() {} "
+        b"static void b() {} }\n"
+        b"class K { static void s() {} public final void p() {} "
+        b"private void q() {} }\n"
+    )
+    result = parser.parse_file(_make_file_info("H.java", "java"), source)
+    by_name = {s.name: s for s in result.symbols if s.kind == "method"}
+    assert by_name["handle"].modifiers == ()
+    assert by_name["a"].modifiers == ("default",)
+    assert by_name["b"].modifiers == ("static",)
+    assert by_name["s"].modifiers == ("static",)
+    assert by_name["p"].modifiers == ("public", "final")
+    assert by_name["q"].modifiers == ("private",)
+
+
+def test_java_annotation_stays_out_of_modifiers(parser: ASTParser) -> None:
+    source = b"class K { @Deprecated public void d() {} }\n"
+    result = parser.parse_file(_make_file_info("K.java", "java"), source)
+    method = next(s for s in result.symbols if s.kind == "method")
+    assert method.modifiers == ("public",)
+    assert not any("Deprecated" in m for m in method.modifiers)
+    assert any("Deprecated" in d for d in method.decorators)
+
+
 class TestReceiverlessTwin:
     """The bare-call pattern leaves ``object`` unconstrained, so it also matches
     ``obj.m()``. That copy folds into the member call as its bare-name fallback;

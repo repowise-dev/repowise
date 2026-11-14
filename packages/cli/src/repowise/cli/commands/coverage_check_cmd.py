@@ -507,6 +507,9 @@ class _Reports:
             ignore=self.cfg.ignore,
             # The check stores nothing, so a fragment is judged, flagged partial.
             allow_partial=True,
+            # A base report describes another commit than the files on disk,
+            # so its lines cannot be checked against them.
+            check_alignment=False,
         )
 
 
@@ -604,6 +607,7 @@ def _emit(pc, fmt: str) -> None:
         emit_json(pc.to_dict())
     elif fmt == "markdown":
         click.echo(render_markdown(pc), nl=False)
+        write_gate_summary(gate_summary(pc))
     elif fmt == "github":
         for line in github_annotations(pc):
             click.echo(line)

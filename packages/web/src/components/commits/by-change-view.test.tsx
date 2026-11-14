@@ -15,6 +15,7 @@ vi.mock("next-intl/server", () => ({
   getTranslations: async (namespace: string) =>
     createTranslator({ locale: "en", messages, namespace: namespace as never }),
 }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children?: React.ReactNode }) => (
     <a href={href} {...rest}>

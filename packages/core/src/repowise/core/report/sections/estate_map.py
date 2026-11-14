@@ -55,7 +55,7 @@ def _dependencies(ctx: WorkspaceReportContext, graph: Any) -> dict[str, Any]:
 def _architecture(ctx: WorkspaceReportContext, graph: Any) -> dict[str, Any]:
     from repowise.core.workspace.architecture_metrics import compute_architecture_metrics
     from repowise.core.workspace.conformance import check_conformance, tags_by_repo_from_config
-    from repowise.core.workspace.cycles import detect_cycles
+    from repowise.core.workspace.cycles import cycle_total, detect_cycles
 
     config = ctx.config()
     violations = check_conformance(
@@ -73,14 +73,14 @@ def _architecture(ctx: WorkspaceReportContext, graph: Any) -> dict[str, Any]:
             basis="unresolved",
             data=data,
         )
-    cycles, _total = detect_cycles(graph)
+    cycles, _total, _capped = detect_cycles(graph)
     roles = metrics.role_breakdown()
     details = [
         f"propagation cost {metrics.propagation_cost_pct:.1f}%: the average share of other "
         "services one service can reach",
         f"cyclic core: {', '.join(metrics.core_members)}" if metrics.core_members
         else "cyclic core: none",
-        f"{metrics.cycle_count} dependency cycle(s)",
+        f"{cycle_total(metrics.cycle_count or 0, metrics.cycle_count_capped)} dependency cycle(s)",
         *capped(
             [
                 " -> ".join([*c.nodes, c.nodes[0]])

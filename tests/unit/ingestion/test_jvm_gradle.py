@@ -210,7 +210,7 @@ class TestJvmGradleIndex:
     def test_plugin_detection_and_publishing(self, tmp_path: Path) -> None:
         from repowise.core.ingestion.resolvers.jvm_gradle import (
             JvmGradleProject,
-            _detect_plugins,
+            detect_gradle_plugins,
             is_publishing_gradle_project,
         )
 
@@ -221,7 +221,7 @@ class TestJvmGradleIndex:
             "    `maven-publish`\n"
             "}\n"
         )
-        lib_plugins = _detect_plugins(tmp_path / "lib")
+        lib_plugins = detect_gradle_plugins(tmp_path / "lib")
         assert "java-library" in lib_plugins
         assert "maven-publish" in lib_plugins
         assert is_publishing_gradle_project(
@@ -235,7 +235,7 @@ class TestJvmGradleIndex:
             '    id("java-library.caffeine")\n'
             '}\n'
         )
-        app_plugins = _detect_plugins(tmp_path / "app")
+        app_plugins = detect_gradle_plugins(tmp_path / "app")
         assert "application" in app_plugins
         assert "java-library.caffeine" in app_plugins
         assert not is_publishing_gradle_project(
@@ -251,7 +251,7 @@ class TestJvmGradleIndex:
             "    alias(libs.plugins.some.tool)\n"
             "}\n"
         )
-        lib_comment_plugins = _detect_plugins(tmp_path / "lib_comment")
+        lib_comment_plugins = detect_gradle_plugins(tmp_path / "lib_comment")
         assert "application" not in lib_comment_plugins
         assert "java-library" in lib_comment_plugins
         assert is_publishing_gradle_project(

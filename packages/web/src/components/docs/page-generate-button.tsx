@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { providerSetupHref } from "@/lib/utils/page-href";
 import { toast } from "sonner";
 import {
   RegenerateButton,
@@ -18,7 +19,8 @@ import type { PageResponse, GenerateEstimate } from "@/lib/api/types";
 import { useTranslations } from "next-intl";
 
 /**
- * Reader-side "Write with AI" / "Regenerate" for a single page. Owns the
+ * The page's own "Write this page with AI" / "Rewrite with AI", a quiet
+ * model-coloured action in the reader's metadata row. Owns the
  * lazily-fetched cost estimate, the cascade choice, the launch, and the live
  * progress — the shared `ui` components stay presentational.
  */
@@ -26,22 +28,18 @@ export function PageGenerateButton({
   page,
   repoId,
   onGenerated,
-  variant = "button",
 }: {
   page: PageResponse;
   repoId: string;
   /** Called once a run completes so the host can refresh the page list. */
   onGenerated?: () => void;
-  /** "button" is the header toolbar affordance; "inline" is the compact,
-   *  link-like entry point rendered beside the provenance pill in the reader. */
-  variant?: "button" | "inline";
 }) {
   // "Write" on a stub concept page, "Regenerate" on a written one. Callers only
   // mount this on the model-written page types, so a stub here is genuinely a
   // page awaiting its first prose, never a structural file page.
   const t = useTranslations("docs");
   const mode = isStubPage(page) ? "write" : "regenerate";
-  const settingsHref = `/repos/${repoId}/settings#provider`;
+  const settingsHref = providerSetupHref(repoId);
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cascade, setCascade] = useState<RegenerateCascade>("none");
@@ -123,7 +121,8 @@ export function PageGenerateButton({
     <>
       <RegenerateButton
         mode={mode}
-        inline={variant === "inline"}
+        quiet
+        label={mode === "write" ? t("pageGenerate.write") : t("pageGenerate.rewrite")}
         onRegenerate={openConfirm}
         isLoading={launching && !jobId}
         isInProgress={jobId != null}
