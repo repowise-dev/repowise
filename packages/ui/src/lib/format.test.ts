@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatTopPercentile, ordinal } from "./format";
+import { formatTopPercentile, ordinal, parseDate } from "./format";
 
 describe("formatTopPercentile", () => {
   it.each([
@@ -35,5 +35,15 @@ describe("ordinal", () => {
     [0, "0th"],
   ])("renders %s as %s", (n, expected) => {
     expect(ordinal(n)).toBe(expected);
+  });
+});
+
+describe("parseDate", () => {
+  it("parses a date-only string as UTC midnight without a Z suffix", () => {
+    expect(parseDate("2026-06-23").toISOString()).toBe("2026-06-23T00:00:00.000Z");
+  });
+
+  it("treats a bare datetime as UTC", () => {
+    expect(parseDate("2026-06-23T13:23:33").toISOString()).toBe("2026-06-23T13:23:33.000Z");
   });
 });

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { ReviewNudgeHost } from "@/components/review/review-nudge-host";
 import { notFound } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import Link from "next/link";
@@ -164,6 +165,7 @@ export default async function OverviewPage({ params }: Props) {
         header: (
           <>
             {header}
+            <ReviewNudgeHost repoId={id} />
             {/* A dialog: renders in a portal, so its slot here is only a mount point. */}
             <WelcomeMoment
               repoId={id}

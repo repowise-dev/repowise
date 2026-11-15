@@ -35,6 +35,7 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
     type_only_files,
 )
+from repowise.core.code_origin import owes_a_test
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import Repository
 from repowise.server.deps import get_db_session
@@ -263,16 +264,25 @@ async def _inferred_coverage(
                     "files_total": 0,
                     "files_reached": 0,
                     "files_not_reached": 0,
+                    "files_not_applicable": 0,
                     "test_file_count": len(test_files),
                 },
             }
-        reached = set(await any_tests_reaching(session, repo_id, [m.file_path for m in rows]))
+        # Code that owes no test (generated, vendored, build, tooling, docs
+        # example, migration) is listed as such, never as unreached: the rule
+        # ``pr_blast.file_tests`` and the health biomarkers apply.
+        exempt = {m.file_path for m in rows if not owes_a_test(m.file_path, m.code_origin)}
+        reached = set(
+            await any_tests_reaching(
+                session, repo_id, [m.file_path for m in rows if m.file_path not in exempt]
+            )
+        )
         # A file of only types has nothing a test could run: not a gap.
         repo = await session.get(Repository, repo_id)
         # Reads and parses files: off the event loop.
         types = await asyncio.to_thread(
             type_only_files,
-            [m.file_path for m in rows if m.file_path not in reached],
+            [m.file_path for m in rows if m.file_path not in reached | exempt],
             read_under(repo.local_path if repo else None),
         )
         rows = [m for m in rows if m.file_path not in types]
@@ -287,12 +297,14 @@ async def _inferred_coverage(
         }
 
     reached_count = sum(1 for m in rows if m.file_path in reached)
+    exempt_count = sum(1 for m in rows if m.file_path in exempt)
     files = [
         {
             "file_path": m.file_path,
             "reached": m.file_path in reached,
             "health_score": _score(m),
             "nloc": m.nloc,
+            **({"not_applicable": True} if m.file_path in exempt else {}),
         }
         for m in rows[:limit]
     ]
@@ -306,7 +318,8 @@ async def _inferred_coverage(
             "files": files,
             "files_total": len(rows),
             "files_reached": reached_count,
-            "files_not_reached": len(rows) - reached_count,
+            "files_not_reached": len(rows) - reached_count - exempt_count,
+            "files_not_applicable": exempt_count,
             "test_file_count": len(test_files),
         },
     }

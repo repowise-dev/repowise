@@ -132,11 +132,14 @@ export const GOOD_MIN = 7.0;
 export const FAIR_MIN = 5.5;
 export const NEEDS_WORK_MIN = 4.0;
 
-/**
- * The canonical three-band reading beside a health mark: Healthy at 8 or
- * above, Warning from 4, Alert below 4 (`NEEDS_WORK_MIN`).
- */
-export const HEALTHY_MIN = 8.0;
+/** The lower edge of each band, for keys and grounds that draw the ranges. */
+export const HEALTH_BAND_MIN: Record<HealthBand, number> = {
+  excellent: EXCELLENT_MIN,
+  good: GOOD_MIN,
+  fair: FAIR_MIN,
+  needs_work: NEEDS_WORK_MIN,
+  at_risk: 0,
+};
 
 /** Worst-first, matching how the surfaces list files. */
 export const HEALTH_BAND_ORDER: readonly HealthBand[] = [
@@ -1373,6 +1376,11 @@ export type ReachedVia = "call-graph" | "import-graph" | "indirect-import" | "mo
 export interface ReachedFileRow {
   file_path: string;
   reached: boolean;
+  /**
+   * Generated, vendored, build, tooling, docs example or migration code: no
+   * test is owed, so it is never listed as unreached. Absent means owed.
+   */
+  not_applicable?: boolean;
   health_score?: number | null;
   nloc?: number;
 }
@@ -1391,6 +1399,8 @@ export interface InferredTestMap {
   files_total: number;
   files_reached: number;
   files_not_reached: number;
+  /** Files that owe no test (see `ReachedFileRow.not_applicable`); counted in neither of the two above. */
+  files_not_applicable?: number;
   test_file_count: number;
   /**
    * Present only when `basis` is `measured` (the hybrid shape): how many files

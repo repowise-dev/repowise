@@ -14,7 +14,7 @@ from .types import CostEstimate, CostRange, PageTypePlan
 # repo indexed before this change carries historical LLM averages for these
 # types that would otherwise price free pages as if a model still wrote them.
 STRUCTURAL_PAGE_TYPES = frozenset(
-    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page", "layer_page"}
+    {"file_page", "symbol_spotlight", "api_contract", "infra_page", "scc_page"}
 )
 
 
@@ -65,8 +65,8 @@ def estimate_cost(
 
     for plan in plans:
         inp, out = _tokens_per_page(plan.page_type, telemetry=telemetry)
-        total_input += inp * plan.count
-        total_output += out * plan.count
+        total_input += inp * plan.model_count
+        total_output += out * plan.model_count
 
     # An unpriced model is estimated as free; the CLI gate has always done so.
     input_rate, output_rate = lookup_cost(model_name) or (0.0, 0.0)

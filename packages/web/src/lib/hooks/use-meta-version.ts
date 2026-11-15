@@ -19,11 +19,12 @@ export function useMetaVersion() {
   return { meta: data ?? null, error: (error as Error | undefined) ?? null, isLoading };
 }
 
-/** Changelog entries. Fetched lazily (pass enabled=false until the view opens). */
-export function useChangelog(enabled: boolean, limit = 20) {
+/** Changelog entries. Fetched lazily (pass enabled=false until the view opens).
+ *  `includeNewer` also lists releases newer than the running version. */
+export function useChangelog(enabled: boolean, limit = 20, includeNewer = false) {
   const { data, error, isLoading } = useSWR(
-    enabled ? ["changelog", limit] : null,
-    () => getChangelog(limit),
+    enabled ? ["changelog", limit, includeNewer] : null,
+    () => getChangelog(limit, includeNewer),
     SWR_OPTS,
   );
   return { entries: data?.entries ?? [], error: (error as Error | undefined) ?? null, isLoading };

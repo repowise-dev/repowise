@@ -14,6 +14,7 @@ import type {
   SystemNode,
   WorkspaceContractLinkEntry,
 } from "@repowise-dev/types/workspace";
+import { formatNumber } from "../../lib/format";
 
 /** The contract fields the map reads. Structural, so the host's wire type fits. */
 export interface SystemMapContract {
@@ -185,7 +186,7 @@ const WEIGHT_UNIT: Record<SystemEdgeKind, [string, string]> = {
 
 export function weightLabel(edge: Pick<SystemEdge, "kind" | "weight">): string {
   const unit = WEIGHT_UNIT[edge.kind] ?? ["contract", "contracts"];
-  return `${edge.weight.toLocaleString()} ${edge.weight === 1 ? unit[0] : unit[1]}`;
+  return `${formatNumber(edge.weight)} ${edge.weight === 1 ? unit[0] : unit[1]}`;
 }
 
 /** The canvas label's unit: short, because it sits on a line between two boxes. */
@@ -200,7 +201,7 @@ const SHORT_UNIT: Record<SystemEdgeKind, string> = {
 };
 
 export function weightShort(edge: Pick<SystemEdge, "kind" | "weight">): string {
-  return `${edge.weight.toLocaleString()} ${SHORT_UNIT[edge.kind] ?? "contracts"}`;
+  return `${formatNumber(edge.weight)} ${SHORT_UNIT[edge.kind] ?? "contracts"}`;
 }
 
 /** The relationship as a sentence a developer would say. */
@@ -287,7 +288,7 @@ export function nodeLocation(node: Pick<SystemNode, "repo" | "service_path">): s
 // ---------------------------------------------------------------------------
 
 export function plural(n: number, one: string, many: string): string {
-  return `${n.toLocaleString()} ${n === 1 ? one : many}`;
+  return `${formatNumber(n)} ${n === 1 ? one : many}`;
 }
 
 /** Why a consumer matched no provider, as the tail of "N calls ...". */
@@ -303,6 +304,6 @@ const UNMATCHED_REASON: Record<string, string> = {
 export function unmatchedReasonList(byReason: Record<string, number>): string {
   return Object.entries(byReason)
     .sort((a, b) => b[1] - a[1])
-    .map(([r, n]) => `${n.toLocaleString()} ${UNMATCHED_REASON[r] ?? r}`)
+    .map(([r, n]) => `${formatNumber(n)} ${UNMATCHED_REASON[r] ?? r}`)
     .join(", ");
 }

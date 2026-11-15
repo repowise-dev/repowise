@@ -1,7 +1,7 @@
 """A structurally-keyed page must leave generation with a structural key.
 
-Three page types are keyed on what they group rather than on a path —
-``module_page``, ``layer_page`` and ``scc_page`` — and the stale-page sweep
+Two page types are keyed on what they group rather than on a path,
+``module_page`` and ``scc_page``, and the stale-page sweep
 finds them by that key. A keyed page that lands without one is invisible to
 the sweep: it can never be retired, so every later run strands it as a
 duplicate alongside its replacement.
@@ -77,15 +77,6 @@ def test_a_member_keyed_page_is_still_keyed_from_its_members():
 
     assert page.structural_key
     assert page.structural_key.startswith("module-")
-
-
-def test_a_layer_is_still_keyed_from_its_target_path():
-    """Layers have no member list and are keyed by their curated id."""
-    page = _page("layer_page:presentation", "layer_page", target_path="presentation")
-
-    _stamp_structural_keys([page])
-
-    assert page.structural_key == "presentation"
 
 
 def test_a_key_set_by_the_producer_is_kept():

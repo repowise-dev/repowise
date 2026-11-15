@@ -809,6 +809,8 @@ class HermesTarget:
     capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
+    #: No hosted entry: repowise does not write a remote server for this host.
+    hosted = None
 
     def supports_scope(self, scope: Scope) -> bool:
         """Both, and each writes a different file.

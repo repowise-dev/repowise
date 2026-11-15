@@ -72,6 +72,28 @@ class PhaseTimings:
         """Mapping of phase name -> accumulated seconds (rounded to 0.01s)."""
         return {name: round(secs, 2) for name, secs in self._totals.items()}
 
+    def scoped(self, prefix: str) -> ScopedPhaseTimings:
+        """A view that records into this table under ``prefix``.
+
+        Keeps a stage that runs twice under the same phase names apart from
+        its first visit instead of folding into it.
+        """
+        return ScopedPhaseTimings(self, prefix)
+
+
+class ScopedPhaseTimings:
+    """Start/stop forwarder that prefixes every phase name; see :meth:`PhaseTimings.scoped`."""
+
+    def __init__(self, table: PhaseTimings, prefix: str) -> None:
+        self._table = table
+        self._prefix = prefix
+
+    def start(self, phase: str) -> None:
+        self._table.start(self._prefix + phase)
+
+    def stop(self, phase: str) -> None:
+        self._table.stop(self._prefix + phase)
+
 
 class PhaseTimingRecorder:
     """Observes pipeline phase events and records wall-clock durations.
@@ -135,7 +157,7 @@ class PhaseTimingRecorder:
 
 
 @contextmanager
-def timed(timings: PhaseTimings | None, name: str) -> Iterator[None]:
+def timed(timings: PhaseTimings | ScopedPhaseTimings | None, name: str) -> Iterator[None]:
     """Time ``name`` into ``timings``, or do nothing when there is no table.
 
     For stages that have no progress callback for a recorder to observe.

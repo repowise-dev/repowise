@@ -38,6 +38,7 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.code_origin import prefer_production
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._graph_files import (
@@ -101,7 +102,7 @@ def _is_plumbing(path: str) -> bool:
     ``__init__.py`` re-exports and test modules bridge unrelated files in the
     graph (a test imports both ends of the codebase), so they make good BFS
     coincidences and bad injected answers. Kept out of anchors and injection;
-    they may still be traversed as interior nodes.
+    ``__init__.py`` may still be traversed as an interior node; a test may not.
 
     Test material means the union, fixtures included: a factory module bridges
     the graph exactly the way a test does. The rules come from
@@ -125,6 +126,24 @@ def _token_matches_stem(token: str, stem: str) -> bool:
     return token + "s" == stem or token == stem + "s"
 
 
+async def _symbol_anchor_files(session: Any, repo_id: str, question_ids: set[str]) -> list[str]:
+    """Files defining a function, method or class the question names, in path order."""
+    if not question_ids:
+        return []
+    res = await session.execute(
+        select(WikiSymbol.file_path)
+        .where(
+            WikiSymbol.repository_id == repo_id,
+            WikiSymbol.name.in_(sorted(question_ids)),
+            WikiSymbol.kind.in_(("function", "method", "class", "interface")),
+        )
+        # Insertion order here decides which anchors survive the
+        # _FLOW_MAX_ANCHORS cap, so it must not be the engine's whim.
+        .order_by(WikiSymbol.file_path)
+    )
+    return prefer_production(list(dict.fromkeys(fp for (fp,) in res.all() if fp)))
+
+
 async def _resolve_question_anchors(
     session: Any,
     repo_id: str,
@@ -143,24 +162,9 @@ async def _resolve_question_anchors(
     Returns ``{file_path: source}`` where source is ``"symbol"`` or
     ``"module"``. These are the endpoints the path search connects.
     """
-    anchors: dict[str, str] = {}
-
-    # Named symbols -> defining files.
-    if question_ids:
-        res = await session.execute(
-            select(WikiSymbol.file_path)
-            .where(
-                WikiSymbol.repository_id == repo_id,
-                WikiSymbol.name.in_(sorted(question_ids)),
-                WikiSymbol.kind.in_(("function", "method", "class", "interface")),
-            )
-            # Insertion order here decides which anchors survive the
-            # _FLOW_MAX_ANCHORS cap, so it must not be the engine's whim.
-            .order_by(WikiSymbol.file_path)
-        )
-        for (fp,) in res.all():
-            if fp:
-                anchors.setdefault(fp, "symbol")
+    anchors: dict[str, str] = dict.fromkeys(
+        await _symbol_anchor_files(session, repo_id, question_ids), "symbol"
+    )
 
     # Module-name matches. Build a stem -> file_page paths map once, then keep
     # tokens that resolve tightly (not the generic ones).
@@ -273,18 +277,11 @@ def _bfs_path(adj: dict[str, list[str]], src: str, dst: str, max_depth: int) -> 
             frontier, parents, other = fwd_frontier, fwd, bwd
         else:
             frontier, parents, other = bwd_frontier, bwd, fwd
-        nxt: list[str] = []
-        for node in frontier:
-            for nb in adj.get(node, ()):
-                if nb in parents:
-                    continue
-                parents[nb] = node
-                visited += 1
-                if nb in other:
-                    return _stitch(fwd, bwd, nb)
-                nxt.append(nb)
-            if visited > _FLOW_MAX_VISITED:
-                return None
+        nxt, meet, visited = _advance(adj, frontier, parents, other, visited)
+        if meet is not None:
+            return _stitch(fwd, bwd, meet)
+        if visited > _FLOW_MAX_VISITED:
+            return None
         if expand_fwd:
             fwd_frontier = nxt
             fwd_depth += 1
@@ -293,6 +290,35 @@ def _bfs_path(adj: dict[str, list[str]], src: str, dst: str, max_depth: int) -> 
             bwd_depth += 1
         expand_fwd = not expand_fwd
     return None
+
+
+def _advance(
+    adj: dict[str, list[str]],
+    frontier: list[str],
+    parents: dict[str, Any],
+    other: dict[str, Any],
+    visited: int,
+) -> tuple[list[str], str | None, int]:
+    """One BFS hop from *frontier*: the next frontier, the node where the two
+    sides meet (or None), and the running visit count. Stops early past the
+    visit cap, as the caller then gives up."""
+    nxt: list[str] = []
+    for node in frontier:
+        for nb in adj.get(node, ()):
+            # A test imports both ends of the codebase, so a path through one
+            # connects files that do not call each other. A test endpoint (the
+            # other side's root) is still reachable.
+            endpoint = nb in other and other[nb] is None
+            if nb in parents or (is_test_related_path(nb) and not endpoint):
+                continue
+            parents[nb] = node
+            visited += 1
+            if nb in other:
+                return nxt, nb, visited
+            nxt.append(nb)
+        if visited > _FLOW_MAX_VISITED:
+            break
+    return nxt, None, visited
 
 
 def _stitch(fwd: dict[str, Any], bwd: dict[str, Any], meet: str) -> list[str]:
@@ -309,6 +335,30 @@ def _stitch(fwd: dict[str, Any], bwd: dict[str, Any], meet: str) -> list[str]:
         right.append(node)
         node = bwd.get(node)
     return left + right
+
+
+def _grounded_paths(
+    adj: dict[str, list[str]], endpoints: list[str], retrieved: set[str]
+) -> list[list[str]]:
+    """The bounded shortest path between each pair of *endpoints* that is grounded."""
+    paths: list[list[str]] = []
+    for i in range(len(endpoints)):
+        for j in range(i + 1, len(endpoints)):
+            path = _bfs_path(adj, endpoints[i], endpoints[j], _FLOW_MAX_DEPTH)
+            if path and len(path) >= 2 and _is_grounded(path, retrieved):
+                paths.append(path)
+    return paths
+
+
+def _is_grounded(path: list[str], retrieved: set[str]) -> bool:
+    """Whether *path* is a flow the question asked about, not a walk to a file name.
+
+    A module anchor only matched a file name (``level`` -> ``levels.py``). When
+    retrieval also returned that file, or the question named a symbol in it,
+    any path within the depth cap counts. Otherwise only a direct neighbour
+    does: a longer path to it runs through hub files and joins unrelated code.
+    """
+    return len(path) == 2 or (path[0] in retrieved and path[-1] in retrieved)
 
 
 async def expand_via_flow_path(
@@ -361,12 +411,9 @@ async def expand_via_flow_path(
 
     adj = await file_adjacency(session, repo_id)
 
-    paths: list[list[str]] = []
-    for i in range(len(endpoints)):
-        for j in range(i + 1, len(endpoints)):
-            path = _bfs_path(adj, endpoints[i], endpoints[j], _FLOW_MAX_DEPTH)
-            if path and len(path) >= 2:
-                paths.append(path)
+    retrieved = {node_to_file(h.get("target_path") or "") for h in hits}
+    retrieved.update(p for p, src in anchors.items() if src == "symbol")
+    paths = _grounded_paths(adj, endpoints, retrieved)
 
     if not paths:
         return hits, []

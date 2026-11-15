@@ -105,7 +105,8 @@ Plan shape (open dict, no migration):
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import contextlib
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -119,6 +120,7 @@ from ..dataflow import Extraction, find_extractions, get_defuse_dialect
 from ..dataflow.stages import STAGE_MAX_CCN, StagePlan, find_stages
 from ..effort import effort_bucket
 from ..gain import removal_gain
+from ..models import Severity
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
 from . import render
@@ -171,6 +173,19 @@ _STAGE_MIN_CCN = 2 * STAGE_MAX_CCN + 1
 _NARROWING_LANGUAGES = frozenset({"typescript", "tsx"})
 # Keys a stage carries that the plan's own (stage 1) keys do not.
 _STAGE_ONLY_KEYS = ("ccn", "nloc", "context_params")
+
+
+def _marker_severities(findings: list[Any]) -> dict[str, Any]:
+    severities: dict[str, Any] = {}
+    for f in findings:
+        marker = getattr(f, "biomarker_type", "")
+        sev = getattr(f, "severity", None)
+        if not marker:
+            continue
+        curr = severities.get(marker)
+        if curr is None or (sev is not None and severity_deduction(sev) > severity_deduction(curr)):
+            severities[marker] = sev
+    return severities
 
 
 @register
@@ -230,7 +245,7 @@ class ExtractMethodDetector(RefactoringDetector):
     ) -> None:
         """Add *analysis*'s plan to *out*: the staged split when one is anchored,
         else the best single span; why none was offered goes on *matched*."""
-        markers = {getattr(f, "biomarker_type", "") for f in matched}
+        marker_severities = _marker_severities(matched)
         fn_node = analysis.fn_node
         receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
         # The slicer's per-block walk, read again by a staged plan.
@@ -239,8 +254,10 @@ class ExtractMethodDetector(RefactoringDetector):
         candidates = find_extractions(analysis, lmap, receiver, prefixes, refused)
         candidates = _writable_spans(analysis, candidates, ctx.language, refused)
         _mark_stage_refused(matched, frozenset(refused))
-        best = _choose(analysis, candidates, markers)
-        staged = _staged(analysis, best, lmap, receiver, ctx.language, matched, prefixes)
+        best = _choose(analysis, candidates, marker_severities)
+        staged = _staged(
+            analysis, best, lmap, receiver, ctx.language, matched, prefixes, marker_severities
+        )
         scope = _scope(fn_node, files) if staged is not None or best is not None else None
         if staged is not None:
             split = self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
@@ -465,6 +482,7 @@ def _staged(
     language: str | None,
     findings: list[Any],
     prefixes: dict[int, Any] | None = None,
+    markers: Mapping[str, Any] | Iterable[str] | None = None,
 ) -> StagePlan | None:
     """The staged split, when the function is too complex for one helper and
     the split lifts at least twice what the best single span does (several
@@ -472,7 +490,8 @@ def _staged(
     clear the floor a single span does. Why a stage was not offered is kept
     on *findings* (:data:`STAGE_REFUSED_DETAIL`), so refusals are counted
     from the index."""
-    markers = {getattr(f, "biomarker_type", "") for f in findings}
+    if markers is None:
+        markers = _marker_severities(findings)
     # Only languages with a staged renderer, each with the outputs one call binds.
     max_returns = render.staged_outputs(language)
     if max_returns is None or analysis.ccn < _STAGE_MIN_CCN:
@@ -996,14 +1015,26 @@ def host_is_async(fn_node: Any, lmap: LanguageNodeMap, language: str | None) -> 
     return dialect is not None and dialect.is_async_fn(fn_node)
 
 
+def _finding_severity(raw_sev: Any) -> Severity | None:
+    if isinstance(raw_sev, str):
+        with contextlib.suppress(ValueError):
+            return Severity(raw_sev)
+    return raw_sev if isinstance(raw_sev, Severity) else None
+
+
 def _worth_extracting(
-    analysis: FunctionAnalysis, extraction: Extraction, markers: set[str]
+    analysis: FunctionAnalysis,
+    extraction: Extraction,
+    markers: Mapping[str, Any] | Iterable[str],
 ) -> bool:
     """The minimum-worth floor, applied while choosing among candidates."""
     for marker in markers:
-        rule = _SEVERITY_RULE[marker]
+        rule = _SEVERITY_RULE.get(marker)
+        if rule is None:
+            continue
         helper = rule(extraction.ccn_removed + 1, extraction.slice_nloc)
-        before = rule(analysis.ccn, analysis.nloc)
+        finding_sev = markers.get(marker) if isinstance(markers, Mapping) else None
+        before = _finding_severity(finding_sev) or rule(analysis.ccn, analysis.nloc)
         # The helper inherits the finding undiminished: the smell moved.
         if helper is not None and (
             before is None or severity_deduction(helper) >= severity_deduction(before)
@@ -1013,7 +1044,9 @@ def _worth_extracting(
 
 
 def _choose(
-    analysis: FunctionAnalysis, candidates: list[Extraction], markers: set[str]
+    analysis: FunctionAnalysis,
+    candidates: list[Extraction],
+    markers: Mapping[str, Any] | Iterable[str],
 ) -> Extraction | None:
     """The strongest span worth doing and offerable, best-first.
 

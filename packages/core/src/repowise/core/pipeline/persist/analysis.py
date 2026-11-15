@@ -27,10 +27,10 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
     from repowise.core.analysis.health.coverage import measurement_commit
     from repowise.core.persistence.crud import (
         replace_doc_drift_guarded,
+        replace_git_function_blame_for_files,
         save_coverage_files,
         save_dead_code_findings,
         set_repo_function_mod_p80,
-        upsert_git_function_blame_bulk,
     )
 
     # ---- Dead code findings --------------------------------------------------
@@ -90,7 +90,7 @@ async def persist_analysis(result: Any, session: Any, repo_id: str) -> None:
         # Per-function blame rollup (FULL tier only; empty otherwise).
         fn_blame_rows = getattr(hr, "function_blame_rows", None)
         if fn_blame_rows:
-            await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+            await replace_git_function_blame_for_files(session, repo_id, fn_blame_rows)
         # The hotspot gate an incremental update will score against. Written
         # only by a run that walked the whole repo (the analyzer leaves it None
         # otherwise), so an incremental run cannot publish its changed-files

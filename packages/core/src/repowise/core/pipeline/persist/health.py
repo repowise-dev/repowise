@@ -112,6 +112,7 @@ async def save_full_health_report(
     *,
     analyzed_commit: str | None,
     repo_path: Any = None,
+    refresh_governance: bool = False,
 ) -> None:
     """Full-replace a repository's health rows and everything derived from them.
 
@@ -125,6 +126,11 @@ async def save_full_health_report(
     commit these scores were computed against; ``None`` reads as "not
     recorded", which is honest, while a wrong sha would not be. ``repo_path``
     lets a plan whose file is gone read as deleted.
+
+    ``refresh_governance`` rebuilds the governance findings, which the findings
+    replace below deletes, before the refactoring queue is folded, so the queue
+    is composed once. For a caller whose decisions are already stored (the
+    update's re-score); the index stores its decisions after this writer.
     """
     from repowise.core.persistence.crud import (
         PayoffContext,
@@ -196,10 +202,24 @@ async def save_full_health_report(
             plan_policy=getattr(hr, "performance_plan_policy", None),
             execution_roles=getattr(hr, "execution_roles", None),
         )
+        if refresh_governance:
+            await _refresh_governance_best_effort(session, repo_id)
         # Fold the plans just written into per-file opportunities. Last in the
         # savepoint because it composes over the stored rows, so it has to see
         # the reconciliation above rather than the detector output.
         await finalize_refactoring_opportunities(session, repo_id, analyzed_commit=analyzed_commit)
+
+
+async def _refresh_governance_best_effort(session: Any, repo_id: str) -> None:
+    """Governance refresh inside the health savepoint; a failure keeps the health rows.
+
+    The refresh runs in its own savepoint, so a failure rolls back only its
+    half-written replace.
+    """
+    try:
+        await _persist.refresh_governance_findings(session, repo_id, recompose_queue=False)
+    except Exception as exc:
+        logger.warning("governance_findings_skipped", error=str(exc))
 
 
 async def refresh_governance_findings(

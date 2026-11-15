@@ -28,6 +28,20 @@ def _string_prefix(text: str, quote_idx: int) -> str:
     return text[k:quote_idx]
 
 
+def _closes(quote: str, ch: str) -> bool:
+    """Whether *ch* ends a JS string opened by *quote*.
+
+    A quote or apostrophe string cannot run past its line: where one seems
+    to, it is JSX text (``<p>Don't</p>``), not a string.
+    """
+    return ch == quote or (ch == "\n" and quote != "`")
+
+
+def _opens_regex(text: str, i: int, prev_sig: str) -> bool:
+    """Whether the ``/`` at *i* opens a regex literal; ``</`` closes a JSX tag."""
+    return prev_sig in _REGEX_PRECEDERS and not (i and text[i - 1] == "<")
+
+
 def can_mask(suffix: str) -> bool:
     """Whether :func:`mask_source` reads files with *suffix* (else returns them as-is)."""
     return suffix.lower() == ".py" or suffix.lower() in _JS_LIKE
@@ -110,7 +124,7 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
                 quote = ""
                 i += 2
                 continue
-            if ch == quote:
+            if _closes(quote, ch):
                 quote = ""
             elif strings:
                 out[i] = " " if ch != "\n" else "\n"
@@ -130,7 +144,7 @@ def mask_source(text: str, suffix: str, *, strings: bool = False) -> str:
                 out[j] = " "
             i += 2
             continue
-        if ch == "/" and prev_sig in _REGEX_PRECEDERS:
+        if ch == "/" and _opens_regex(text, i, prev_sig):
             i += 1
             while i < n and text[i] != "\n":
                 if text[i] == "\\":

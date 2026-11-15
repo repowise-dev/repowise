@@ -15,12 +15,15 @@ Optional ``include`` parameter widens the response:
   - include=["callers"]   → who calls this symbol (symbol targets only)
   - include=["callees"]   → what this symbol calls (symbol targets only)
   - include=["references"]→ every live edit site of a symbol (definition,
-                            imports, calls, other mentions) and whether
-                            the list is complete (symbol targets only)
+                            imports, calls, other mentions) as line numbers
+                            by kind per file, and whether the list is
+                            complete (symbol targets only)
+  - include=["references+"]→ the same, plus lines naming it in a comment,
+                            docstring or sentence
   - include=["ownership"] → primary owner, bus factor, contributor count; on a
                             component target, declared owners against recent
                             activity, with findings
-  - include=["last_change"]→ last commit date and author
+  - include=["last_change"]→ last commit date, and its author when stored
   - include=["metrics"]   → PageRank, betweenness, percentile ranks
   - include=["community"] → community membership + neighbors
   - include=["decisions"] → decisions governing the target, in three labelled
@@ -34,11 +37,15 @@ Optional ``include`` parameter widens the response:
   - include=["health"]    → code-health scores and biomarkers for the target
   - include=["doc_drift"] → documents that name this file, and their drift
   - include=["symbols"]   → every symbol in a file card, not the ranked top 15
+  - include=["facts"]     → a symbol card's fact row (awaits, assigned fields,
+                            complexity, resolved callers) and direct test links
   - include=["changes"]   → recent Change Records touching a file target
   - include=["suspects"]  → changes merged in the last 14 days ranked against the
                             targets as a symptom, each with the signals that fired
   - include=["provenance"]→ a file's commits by source (agent, human-attested,
                             unknown) with coverage and the honest agent share
+  - include=["files"]     → on a directory, every file under it (capped, with
+                            ``complete`` and ``omitted``) and its tests
 
 An unrecognised key is dropped and named in ``ignored_arguments`` rather than
 silently ignored: an unknown key otherwise produces exactly the response the
@@ -56,12 +63,13 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from repowise.core.distill.budget import estimate_tokens
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import ToolRecipe
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._budget import OmissionCollector, register_post_enforce
 from repowise.server.mcp_server._changes import change_cards, is_change_target, suspects_block
 from repowise.server.mcp_server._components import component_cards, is_component_target
 from repowise.server.mcp_server._episodes import enrich_episode_counts as _enrich_episodes
@@ -76,7 +84,9 @@ from repowise.server.mcp_server._helpers import (
 )
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import completeness_line as _completeness_line
+from repowise.server.mcp_server._meta import served_root
 from repowise.server.mcp_server._packages import is_package_target, package_cards
+from repowise.server.mcp_server._why_pointer import attach_why_pointer
 from repowise.server.mcp_server._workspace_routing import (
     needs_routing,
     route_targets,
@@ -99,6 +109,7 @@ _INCLUDE_BLOCKS = frozenset(
         "callers",
         "callees",
         "references",
+        "references+",
         "ownership",
         "last_change",
         "metrics",
@@ -109,9 +120,11 @@ _INCLUDE_BLOCKS = frozenset(
         "health",
         "doc_drift",
         "symbols",
+        "facts",
         "changes",
         "provenance",
         "suspects",
+        "files",
     }
 )
 
@@ -137,33 +150,23 @@ async def get_context(
 ) -> dict:
     """Triage card for files / modules / symbols — relationships, not source bytes.
 
-    Returns title, summary, signatures with lines, hotspot bit and
-    decision_record titles. A symbol row without symbol_id is path::name.
-    fix_history (count, age, bug_magnet) appears only on files with counted
-    bug fixes; hotspot is churn. Either is a cue to call get_risk. episodes
-    counts the dated records bound to a target (absent at zero); get_why serves
-    the bodies. A symbol target counts as its file; a module aggregates all
-    beneath it. Batch targets in one call. No source bytes by default:
-    include=["skeleton"] gives the whole file body-elided and line-verified in
-    ONE call, or Read it. Do not call get_symbol per signature.
-    For a rename or update-all-callers task, include=["references"] is the
-    whole edit set when complete.
-
-    Defaults fit 24,000 serialized chars; nonempty ``include`` uses
-    32,000. Reductions carry counts and ``_meta.omitted`` recovery refs;
-    ``_meta.recovery_unavailable`` names a storage failure.
-    Include-gated blocks are projections, not omissions.
+    Returns summary, signatures with lines, hotspot, fix_history and
+    decision titles; either risk cue means get_risk. Batch targets in one
+    call. Whole file, body-elided and line-verified: include=["skeleton"]
+    in ONE call, or Read it; do not call get_symbol per signature. Rename:
+    include=["references"] is the whole edit set when ``complete``. Which
+    files in a directory lack tests: include=["files"] on it.
 
     Args:
-        targets: paths, "path::Symbol" ids, "component:<name>",
+        targets: paths, "path::Symbol", "component:<name>",
             "change:<id>" (pr-123 or a sha), "package:<name>".
-        include: opt-in blocks: full_doc | ownership | last_change | callers
-            | callees | references | metrics | community | decisions | skeleton
-            | skeleton+ | health | doc_drift (docs naming it) | symbols
-            (all, not top 15) | changes | provenance | suspects.
-        compact: False adds structure+imports+docstrings.
+        include: callers | callees | references (+ adds comments) | skeleton | skeleton+
+            | files | symbols (all, not top 15) | decisions | full_doc
+            | ownership | last_change | metrics | community | health
+            | doc_drift | changes | provenance | suspects | facts.
+        compact: False adds structure, imports, docstrings.
+        symptom: issue text or stack trace to rank ``suspects`` on.
         repo: usually omitted.
-        symptom: issue text, error or stack trace suspects ranks on.
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")
@@ -201,6 +204,7 @@ async def get_context(
             {r["target"]: r for r in raw_results if isinstance(r, dict)},
             exclude_spec=exclude_spec,
             collector=collector,
+            repo_root=served_root(repository, ctx.path),
         )
         suspects = (
             await suspects_block(session, repository, targets, symptom)
@@ -222,12 +226,30 @@ async def get_context(
     }
     if suspects is not None:
         response["suspects"] = suspects
+    # include=["decisions"] lists the titles on each card already.
+    if "decisions" not in include_set:
+        await attach_why_pointer(response, ctx, targets)
     _attach_whole_files(response, results)
     _attach_cross_repo(response, ctx.alias)
     drop_echoed_target(response.get("targets"))
     attach_ignored_arguments(response, ignored)
     collector.attach(response)
+    await asyncio.to_thread(_declare_replaced_reads, response, ctx.path)
     return response
+
+
+def _declare_replaced_reads(response: dict[str, Any], repo_root: Any) -> None:
+    """Credit each file card with what one Read of its file costs. Never raises."""
+    from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.counterfactual import context_replaced_tokens
+    from repowise.server.mcp_server._savings.reads import file_read_tokens
+
+    try:
+        tokens = context_replaced_tokens(response, lambda p: file_read_tokens(repo_root, p))
+    except Exception:  # savings accounting never breaks a tool call
+        _log.debug("get_context savings declaration failed", exc_info=True)
+        return
+    declare_replaced(response, tokens)
 
 
 def _include_set(include: list[str] | None, ignored: list[dict[str, Any]]) -> set[str]:
@@ -326,19 +348,41 @@ def _per_target_results(targets: list[str], raw_results: list[Any]) -> list[dict
     return results
 
 
-def _attach_whole_files(response: dict[str, Any], results: list[dict[str, Any]]) -> None:
-    """Mark the response complete for files served whole.
+def _served_whole(card: Any) -> bool:
+    """Whether *card* carries its file's whole source.
 
     A "raw" skeleton is the file's own source untouched; the other modes elide
-    bodies, so they are not whole files.
+    bodies. A raw text the budget later cut no longer measures its full size.
     """
-    whole_files = sum(
-        1
-        for r in results
-        if isinstance(r.get("skeleton"), dict) and r["skeleton"].get("mode") == "raw"
-    )
+    skeleton = card.get("skeleton") if isinstance(card, dict) else None
+    if not isinstance(skeleton, dict) or skeleton.get("mode") != "raw":
+        return False
+    text = skeleton.get("text")
+    return isinstance(text, str) and estimate_tokens(text) == skeleton.get("full_tokens")
+
+
+def _attach_whole_files(response: dict[str, Any], results: list[dict[str, Any]]) -> None:
+    """Mark the response complete for files served whole."""
+    whole_files = sum(1 for r in results if _served_whole(r))
     if whole_files:
         response["_meta"]["complete"] = _completeness_line(files=whole_files)
+
+
+def _settle_whole_files(result: dict[str, Any]) -> None:
+    """Restate the whole-file claim on what the response budget left."""
+    meta = result.get("_meta")
+    if not isinstance(meta, dict) or "complete" not in meta:
+        return
+    targets = result.get("targets")
+    cards = targets.values() if isinstance(targets, dict) else ()
+    whole_files = sum(1 for c in cards if _served_whole(c))
+    if whole_files:
+        meta["complete"] = _completeness_line(files=whole_files)
+    else:
+        meta.pop("complete")
+
+
+register_post_enforce("get_context", _settle_whole_files)
 
 
 def _attach_cross_repo(response: dict[str, Any], alias: Any) -> None:

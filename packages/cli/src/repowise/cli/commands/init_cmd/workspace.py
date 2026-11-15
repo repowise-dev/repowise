@@ -9,6 +9,7 @@ same helpers as the single-repo flow.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import time
@@ -30,6 +31,7 @@ from repowise.cli.editor_setup import (
     resolve_editor_setup_options,
     write_editor_project_files,
 )
+from repowise.cli.git_exclude import keep_workspace_data_out
 from repowise.cli.helpers import (
     console,
     ensure_repowise_dir,
@@ -46,7 +48,9 @@ from repowise.cli.helpers import (
     save_state,
 )
 from repowise.cli.providers import (
+    flush_cost_tracker,
     resolve_embedder,
+    run_cost_tracker,
     semantic_search_command,
     semantic_search_status,
 )
@@ -71,7 +75,11 @@ from repowise.core.workspace.update import stamp_workspace_entry
 
 from ._exit import COST_UNCONFIRMED_BUILT, exit_on_gaps
 from ._ingest import structural_generation_config
-from ._interactive import offer_distill_rewrite_hook, offer_hook_install
+from ._interactive import (
+    offer_distill_rewrite_hook,
+    offer_hook_install,
+    warn_unresolved_hooks,
+)
 from ._workspace_config import WorkspacePick, build_workspace_config
 from ._workspace_plan import WorkspaceAnswers, WorkspacePlan, run_workspace_plan_screen
 from ._workspace_repos import repos_primary_line, select_workspace_repos
@@ -111,6 +119,7 @@ def _run_workspace_generation(
     wiki_style: str = DEFAULT_STYLE,
     language: str = "en",
     reuse_prior_pages: bool = True,
+    cost_tracker: Any | None = None,
 ) -> list[Any]:
     """Run LLM generation for a single repo in the workspace init flow.
 
@@ -188,6 +197,7 @@ def _run_workspace_generation(
         verbose=False,
         test_run=test_run,
         timings=timings,
+        cost_tracker=cost_tracker,
     )
 
 
@@ -334,6 +344,8 @@ class _RepoIndex:
     result: Any
     callback: Any
     provider: Any
+    #: Billed by decision mining during indexing, reused by generation.
+    cost_tracker: Any = None
 
 
 @dataclass
@@ -434,6 +446,7 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
     from repowise.core.pipeline import PhaseTimingRecorder, run_pipeline
     from repowise.core.pipeline.modes import OrchestratorMode
 
+    cost_tracker = run_cost_tracker(repo.path, repo_provider)
     with progress_steps(console) as steps:
         callback = PhaseTimingRecorder(steps)
 
@@ -451,10 +464,9 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
                 include_submodules=ctx.include_submodules,
                 generate_docs=False,
                 llm_client=repo_provider,
+                cost_tracker=cost_tracker,
                 mode=(
-                    OrchestratorMode.FAST
-                    if ctx.run_mode == "fast"
-                    else OrchestratorMode.STANDARD
+                    OrchestratorMode.FAST if ctx.run_mode == "fast" else OrchestratorMode.STANDARD
                 ),
                 progress=callback,
                 existing_kg_fingerprint=_prev_kg_fp,
@@ -462,8 +474,15 @@ def _index_repo(repo: Any, ctx: _WorkspaceCtx, repo_provider: Any) -> _RepoIndex
                 generation_config=structural_generation_config(ctx.index_only),
             )
         )
-    console.print(f"    [{OK}]{glyph('ok')}[/] {result.file_count:,} files, {result.symbol_count:,} symbols")
-    return _RepoIndex(result=result, callback=callback, provider=repo_provider)
+    console.print(
+        f"    [{OK}]{glyph('ok')}[/] {result.file_count:,} files, {result.symbol_count:,} symbols"
+    )
+    # Persisted now: generation may not run for this repo, and flushes only its own.
+    if cost_tracker is not None:
+        flush_cost_tracker(cost_tracker)
+    return _RepoIndex(
+        result=result, callback=callback, provider=repo_provider, cost_tracker=cost_tracker
+    )
 
 
 def _generate_repo_docs(repo: Any, ctx: _WorkspaceCtx, index: _RepoIndex) -> _RepoDocs:
@@ -511,6 +530,7 @@ def _generate_repo_with_model(
             wiki_style=ctx.wiki_style,
             language=ctx.language,
             reuse_prior_pages=not ctx.force,
+            cost_tracker=index.cost_tracker,
         )
         result.generated_pages = generated_pages
         # ``result.vector_store`` is set inside the generation call.
@@ -520,7 +540,9 @@ def _generate_repo_with_model(
 
         docs.pages_generated = len(generated_pages) - count_stub_fallbacks(generated_pages)
         docs.docs_mode = "llm"
-        console.print(f"    [{OK}]{glyph('ok')}[/] Wrote {pages(docs.pages_generated)} with the model\n")
+        console.print(
+            f"    [{OK}]{glyph('ok')}[/] Wrote {pages(docs.pages_generated)} with the model\n"
+        )
     except CostGateDeclined:
         # Declining only meant "not at that price": fall back to the free
         # template renderer rather than leave the repo with no wiki.
@@ -710,7 +732,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             provider.provider_name,
             provider.model_name,
             ctx.embedder_name_resolved,
-            embedding_model=resolve_embedding_model(ctx.embedder_name_resolved),
+            embedding_model=resolve_embedding_model(
+                ctx.embedder_name_resolved, repo_path=repo_path
+            ),
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit,
             reasoning=ctx.resolved_reasoning,
@@ -722,6 +746,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             save_config_partial(repo_path, wiki_style=ctx.wiki_style)
         if ctx.language != "en":
             save_config_partial(repo_path, language=ctx.language)
+    if ctx.follow_renames and docs.docs_mode in ("llm", "deterministic"):
+        # So update keeps following renames for this repo (#5367).
+        save_config_partial(repo_path, follow_renames=True)
     elif docs.docs_mode == "deterministic":
         from repowise.cli.providers.embedders import resolve_embedding_model
 
@@ -734,7 +761,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             exclude_patterns=ctx.exclude_patterns if ctx.exclude_patterns else None,
             commit_limit=ctx.resolved_commit_limit if ctx.resolved_commit_limit else None,
             embedder=det_embedder,
-            embedding_model=(resolve_embedding_model(det_embedder) if det_embedder else None),
+            embedding_model=(
+                resolve_embedding_model(det_embedder, repo_path=repo_path) if det_embedder else None
+            ),
         )
 
 
@@ -852,7 +881,9 @@ def _workspace_init(
         hook = plan.sync if plan.sync is not None else hook
     primary_repo = pick.primary_repo
     load_dotenv(primary_repo.path)
-    answers.embedder_name_resolved = resolve_embedder(answers.embedder_name)
+    answers.embedder_name_resolved = resolve_embedder(
+        answers.embedder_name, repo_path=primary_repo.path
+    )
     # Whether the user named this embedder, rather than resolve_embedder
     # inferring one from an LLM key: the free template path will not put a
     # hosted embedder on the user's bill unless they named it.
@@ -869,7 +900,7 @@ def _workspace_init(
     if repo_names:
         console.print(repos_primary_line(ws_config.default_repo, pick))
 
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
 
     ctx = _WorkspaceCtx(
         provider=provider,
@@ -895,7 +926,7 @@ def _workspace_init(
         resolved_reasoning=resolved_reasoning,
         embedder_name_resolved=answers.embedder_name_resolved,
         embedder_was_requested=embedder_was_requested,
-        resolved_commit_limit=max(1, min(answers.commit_limit or _DEFAULT_COMMIT_LIMIT, 10000)),
+        resolved_commit_limit=clamp_commit_limit(answers.commit_limit),
         run_mode=run_mode,
         first_index=first_index,
     )
@@ -1045,6 +1076,14 @@ def _save_workspace(
         no_editor_setup=not editor_setup,
     ):
         register_editor_clients(console, primary_path)
+        # The repos' .mcp.json files were written before the user-scope entry
+        # existed; drop each one that entry now serves, as single-repo init does.
+        from repowise.cli.agent_targets.targets.claude_code import sync_project_mcp_config
+
+        for repo in selected:
+            # Best effort: a malformed .mcp.json was already reported when written.
+            with contextlib.suppress(Exception):
+                sync_project_mcp_config(Path(repo.path))
 
 
 def _resolve_workspace_provider(
@@ -1069,7 +1108,9 @@ def _resolve_workspace_provider(
             )
             # Re-resolve: interactive provider selection may just have set the
             # provider's API key in os.environ.
-            answers.embedder_name_resolved = resolve_embedder(answers.embedder_name)
+            answers.embedder_name_resolved = resolve_embedder(
+                answers.embedder_name, repo_path=primary_repo.path
+            )
             console.print(
                 f"  Provider: [{VALUE}]{provider.provider_name}[/] / "
                 f"Model: [{VALUE}]{provider.model_name}[/]"
@@ -1105,6 +1146,10 @@ def _workspace_config(pick: WorkspacePick, *, ask: bool, dry_run: bool) -> Any:
     else:
         config_path = ws_config.save(root)
         console.print(f"  [{OK}]{glyph('ok')}[/] {verb} {config_path.name}")
+        if excluded := keep_workspace_data_out(root):
+            console.print(
+                f"  [dim]Kept out of git (.git/info/exclude): {', '.join(excluded)}[/dim]"
+            )
     console.print()
     return ws_config
 
@@ -1175,6 +1220,7 @@ def _offer_workspace_hooks(
         yes=yes,
         no_editor_setup=not editor_setup,
     )
+    warn_unresolved_hooks(console, [r.path for r in selected], no_editor_setup=not editor_setup)
 
 
 def _workspace_gaps(ctx: _WorkspaceCtx, totals: _WorkspaceTotals) -> list[str]:

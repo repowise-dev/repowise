@@ -118,6 +118,21 @@ def test_github_format_writes_annotations_and_step_summary(repo, tmp_path_factor
     assert [f["file_path"] for f in row["findings"]] == ["src/app.py"]
 
 
+def test_markdown_format_leaves_the_same_row_for_gitlab(repo, tmp_path_factory) -> None:
+    report = _lcov(repo, {2: 1, 3: 0})
+    out = tmp_path_factory.mktemp("gl")
+
+    result = _run(
+        repo, "main...feat", "--report", report, "--format", "markdown",
+        env={"REPOWISE_GATE_SUMMARY_DIR": str(out)},
+    )  # fmt: skip
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith("**Patch coverage 50.0%**")
+    row = json.loads((out / "coverage.json").read_text(encoding="utf-8"))
+    assert (row["gate"], row["verdict"]) == ("coverage", "pass")
+
+
 def test_default_base_comes_from_ci_variables(repo) -> None:
     # A CI checkout: detached, no local trunk, the base only as a remote branch.
     _git(repo, "update-ref", "refs/remotes/origin/main", "main")

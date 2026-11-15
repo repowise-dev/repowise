@@ -38,4 +38,8 @@ from __future__ import annotations
 from ._stem import _stem_priority, build_stem_map
 from .builder import GraphBuilder
 
-__all__ = ["GraphBuilder", "_stem_priority", "build_stem_map"]
+__all__ = [
+    "GraphBuilder",
+    "_stem_priority",
+    "build_stem_map",
+]

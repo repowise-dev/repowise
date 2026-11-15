@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.analysis.decisions.provenance import rank_for_source
 
 from ..decision_graph import sync_links_from_record
-from ..models import DecisionRecord, _now_utc
+from ..models import DecisionCandidateMeta, DecisionRecord, _now_utc
 from .decision_evidence import (
     _evidence_quote,
     _first_commit,
@@ -26,7 +26,11 @@ from .decision_identity import (
     _extraction_status,
     _merge_status,
     derive_decision_id,
+    duplicate_commits,
+    duplicate_text,
+    keeper_order,
 )
+from .decision_lane_fold import RewordingIndex, fold_archaeology_into_pr, merge_folded_files
 from .decision_review_meta import _write_candidate_meta
 
 
@@ -38,6 +42,7 @@ def _normalize_title(title: str) -> str:
     t = _re.sub(r"[^a-z0-9\s]", "", t)
     t = _re.sub(r"\s+", " ", t)
     return t
+
 
 #: Sources whose evidence file is itself a reviewable, version-controlled
 #: statement of the decision. Only these can accept without a person present.
@@ -119,19 +124,29 @@ async def bulk_upsert_decisions(
     Every touched record is (re-)embedded into the store, so decisions are
     matchable next run *and* discoverable via ``search_codebase``.
 
+    A ``git_archaeology`` decision mined from the same merge commit as a ``pr``
+    decision takes the PR title first, so the pair folds into the PR record
+    (:func:`fold_archaeology_into_pr`) without needing an embedder.
+
     Returns the ids of every record touched (created or updated) this call, so
     a caller can run the Phase-3 supersession/conflict detection over just the
     records that changed.
     """
-    groups = _group_by_normalized_title(decisions)
+    if not decisions:
+        return []
+    existing = await _existing_records(session, repository_id)
+    existing_by_norm = _records_by_title(existing)
+    groups = _group_by_normalized_title(
+        fold_archaeology_into_pr(decisions, existing, _normalize_title)
+    )
     if not groups:
         return []
 
-    existing_by_norm = await _existing_records_by_title(session, repository_id)
     # A store hit (which returns a decision id) resolves back to the live
     # record through this map, and it is grown as records are created so
     # paraphrases *within* one batch also collapse.
-    id_to_rec: dict[str, DecisionRecord] = {rec.id: rec for rec in existing_by_norm.values()}
+    id_to_rec: dict[str, DecisionRecord] = {rec.id: rec for rec in existing}
+    rewordings = await _rewording_index(session, repository_id, existing)
 
     # Headline candidate per group: highest source rank, tie-break by
     # confidence. Hoisted so the batched embedding can see every group's
@@ -151,6 +166,24 @@ async def bulk_upsert_decisions(
     for norm, members in groups.items():
         headline = headline_by_norm[norm]
         rec = existing_by_norm.get(norm)
+        split = any(bool(d.get("needs_split")) for d in members)
+
+        # No title match: the same commit already stored this sentence under
+        # another title? Re-mining a PR body rewords the title and moves the
+        # span on every update, so the id (files + quote) moves with it. The
+        # stored record keeps its id and gains this run as evidence. A bundle
+        # is held out, as it is from evidence identity.
+        reworded = False
+        if rec is None and not split:
+            match_id = rewordings.match(
+                headline.get("source", ""),
+                headline.get("evidence_commits"),
+                headline.get("decision") or headline.get("source_quote") or "",
+            )
+            if match_id is not None and match_id in id_to_rec:
+                rec = id_to_rec[match_id]
+                existing_by_norm[norm] = rec
+                reworded = True
 
         # No title match → ask the store whether a semantically-equivalent
         # decision already exists, and fold into it if so (cheap title dedup
@@ -188,8 +221,13 @@ async def bulk_upsert_decisions(
                 created = True
             existing_by_norm[norm] = rec
             id_to_rec[rec.id] = rec
-        if not created:
+            if created and not split:
+                rewordings.add(rec.id, rec.source, duplicate_commits(rec), duplicate_text(rec))
+        # A rewording from the same lane is not new information: promoting it
+        # would retitle the record on every update, accepted ones included.
+        if not created and not reworded:
             _maybe_promote_headline(rec, headline)
+        merge_folded_files(rec, members)
 
         await _accrete_evidence(session, rec.id, members)
 
@@ -226,23 +264,58 @@ def _group_by_normalized_title(decisions: list[dict]) -> dict[str, list[dict]]:
     return groups
 
 
-async def _existing_records_by_title(
-    session: AsyncSession, repository_id: str
-) -> dict[str, DecisionRecord]:
-    """This repository's records by normalized title, so cross-run merges land on one row.
+async def _existing_records(session: AsyncSession, repository_id: str) -> list[DecisionRecord]:
+    """This repository's records, oldest first."""
+    rows = await session.execute(
+        select(DecisionRecord)
+        .where(DecisionRecord.repository_id == repository_id)
+        .order_by(DecisionRecord.created_at, DecisionRecord.id)
+    )
+    return list(rows.scalars().all())
+
+
+def _records_by_title(records: list[DecisionRecord]) -> dict[str, DecisionRecord]:
+    """Records by normalized title, so cross-run merges land on one row.
 
     On a title collision the most authoritative existing row is canonical.
     """
-    existing_rows = await session.execute(
-        select(DecisionRecord).where(DecisionRecord.repository_id == repository_id)
-    )
     existing_by_norm: dict[str, DecisionRecord] = {}
-    for rec in existing_rows.scalars().all():
+    for rec in records:
         norm = _normalize_title(rec.title)
         prior = existing_by_norm.get(norm)
         if prior is None or rank_for_source(rec.source) > rank_for_source(prior.source):
             existing_by_norm[norm] = rec
     return existing_by_norm
+
+
+async def _rewording_index(
+    session: AsyncSession, repository_id: str, records: list[DecisionRecord]
+) -> RewordingIndex:
+    """Stored records a reworded arrival can fold into, in keeper order.
+
+    A record flagged as bundling several decisions is left out: a single claim
+    folding into it would file that claim under the bundle's name.
+    """
+    from .authority import accepted_decision_ids
+
+    accepted = await accepted_decision_ids(session, repository_id)
+    flagged = set(
+        (
+            await session.execute(
+                select(DecisionCandidateMeta.decision_id).where(
+                    DecisionCandidateMeta.repository_id == repository_id,
+                    DecisionCandidateMeta.needs_split.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    index = RewordingIndex()
+    for rec in keeper_order(records, accepted):
+        if rec.id not in flagged:
+            index.add(rec.id, rec.source, duplicate_commits(rec), duplicate_text(rec))
+    return index
 
 
 @dataclass(frozen=True)
@@ -272,9 +345,7 @@ def _headline_identity(
     return _HeadlineIdentity(id=derived, quote=quote)
 
 
-def _new_record(
-    repository_id: str, identity: _HeadlineIdentity, headline: dict
-) -> DecisionRecord:
+def _new_record(repository_id: str, identity: _HeadlineIdentity, headline: dict) -> DecisionRecord:
     """A new record whose every field comes from the group's headline."""
     # A source that measures its own conformance supplies the score;
     # otherwise the git-diff recompute fills it in later.

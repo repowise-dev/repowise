@@ -36,5 +36,5 @@ Useful flags:
 
 - This command = the **whole change** ranked against recent repository history.
 - For **per-file** structural reach, missing co-changes, and missing tests,
-  use the `get_risk` MCP tool / the `change-review` skill.
+  use `repowise risk --target <path> --changed-file <path>` / the `change-review` skill.
 - For **per-file health** scores, use `/prompts:repowise-health`.

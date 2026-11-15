@@ -103,6 +103,11 @@ disable the model calls themselves.
   indexed data synchronously, with no LLM call (`routers/claude_md.py`).
 - `POST /api/repos/{repo_id}/blast-radius` is a deterministic graph analysis
   (`packages/core/src/repowise/core/analysis/pr_blast.py`).
+  `POST /api/repos/{repo_id}/blast-radius/change` runs the same analysis on one
+  change picked from `GET /api/repos/{repo_id}/blast-radius/changes`
+  (uncommitted work, branches ahead of the default branch, recent indexed
+  commits; `core/analysis/change_candidates.py`). A server without a checkout
+  offers the commits only.
 - Every status update, deletion, settings write, and read-only report.
 
 ### 1.4 One data-leaving call
@@ -280,6 +285,21 @@ detail endpoint returns the object, and two conventions sit on top:
 | `{ok: true}` (and `{ok: true, deleted_pages: N}` for repo deletion) | mutations with nothing else to report, e.g. conversation delete, repository delete | Acknowledgement only |
 | `{event_id, status: "accepted"}` with `200` | all three webhooks | The stored event's id, not a job id |
 | `X-Repowise-Redirected-From: <requested id>` response header | `GET /api/pages/{page_id}` and `/api/pages/lookup` | A retired page id resolved to its successor; the header names the id that was asked for (`routers/pages.py`) |
+| `{detail: {status: "retired", reason, superseded_by, archive_id, archive_url, page_id}}` with `410` | The same page readers, with an explicit `repo_id`, when an archived identity has no static redirect | The live page is gone; `archive_url` reads that exact retirement, not a guessed live successor |
+
+Retired records have native, repository-bound readers:
+
+- `GET /api/repos/{repo_id}/pages/retired?limit=100&offset=0` lists distinct
+  retirement events with `archive_id`, `page_id`, `repository_id`, UTC
+  `retired_at`, `reason`, `superseded_by` and `title`, without full bodies.
+- `GET /api/repos/{repo_id}/pages/retired/{page_id}` returns the same metadata,
+  the complete original `page` record, and all original `versions`, newest
+  first. Optional `archive_id` selects an exact event when an ID was reused.
+
+These routes inherit the repository router's authentication and workspace
+database routing. Ordinary live pages, version queries, search and MCP retrieval
+exclude archives. Records older than 90 days are purged in the existing
+retired-page sweep; reading cannot restore a retired row as live.
 
 Enum vocabularies are shared deliberately and are the same four values wherever
 one appears: `open`, `acknowledged`, `resolved`, `false_positive` for health
@@ -534,7 +554,7 @@ one per router area; this table maps an area to the tag to open there.
 | Merged changes (Change Records) reconstructed from git | `changes` | `routers/changes.py` |
 | Typed events from consecutive index runs (CloudEvents, pull) | `events` | `routers/events.py` |
 | Structural coupling report | `coupling` | `routers/coupling.py` |
-| Blast radius for a change | `blast-radius` | `routers/blast_radius.py` |
+| Blast radius for a change, and the changes to pick from | `blast-radius` | `routers/blast_radius.py` |
 | Architectural decisions, lanes, lineage, policy settings | `decisions` | `routers/decisions.py` |
 | Mined session episodes | `episodes` | `routers/episodes.py` |
 | Action prompts and recorded state | `actions` | `routers/actions.py` |

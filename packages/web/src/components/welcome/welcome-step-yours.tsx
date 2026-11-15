@@ -29,7 +29,9 @@ export function WelcomeStepYours({ repoId, setup }: { repoId: string; setup: Set
   const t = useTranslations("welcome.yours");
   return (
     <div className="space-y-4">
-      {setup && setup.model.docs_mode !== "llm" && <ModelBox repoId={repoId} />}
+      {setup && setup.model.docs_mode !== "llm" && (
+        <ModelBox repoId={repoId} keyless={setup.model_available && !setup.model.active_provider} />
+      )}
       <ul className="divide-y divide-[var(--color-border-default)]">
         <SyncRow repoId={repoId} setup={setup} />
         {showsHostedRow(setup) && (
@@ -64,8 +66,9 @@ function useDetectedSources(repoId: string): ModelSource[] {
   return orderModelSources(data?.providers ?? []).filter((s) => s.detected);
 }
 
-/** The model offer: the one plum surface in the welcome. */
-function ModelBox({ repoId }: { repoId: string }) {
+/** The model offer: the one plum surface in the welcome. `keyless`: no model
+ *  resolves for this repo, so agent answers are evidence, not written. */
+function ModelBox({ repoId, keyless }: { repoId: string; keyless: boolean }) {
   const t = useTranslations("welcome.yours");
   const tm = useTranslations("modelUpgrade");
   const format = useFormatter();
@@ -91,6 +94,7 @@ function ModelBox({ repoId }: { repoId: string }) {
           </li>
         ))}
       </ul>
+      {keyless && <p className={`${MOMENT_CAPTION} mt-3`}>{t("keyless")}</p>}
       <div className="mt-4 flex flex-col gap-3 min-[561px]:flex-row min-[561px]:items-center min-[561px]:justify-between">
         <p className={MOMENT_CAPTION}>
           {detected.length > 0 &&

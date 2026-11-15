@@ -56,10 +56,18 @@ class Forge(Protocol):
     kind: ForgeKind
     label: str  # "GitHub", "GitLab", "Azure DevOps", "Bitbucket", "Git"
     change_term: str  # "pull request" | "merge request"
+    change_head_ref: str  # "refs/pull/{number}/head"; "" when the forge publishes none
 
     def commit_url(self, ref: RemoteRef, sha: str) -> str: ...
     def change_url(self, ref: RemoteRef, number: int) -> str: ...
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str: ...
+    def blob_url(
+        self,
+        ref: RemoteRef,
+        rev: str,
+        path: str,
+        line: int | None = None,
+        end_line: int | None = None,
+    ) -> str: ...
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str: ...
     def format_change_ref(self, number: int) -> str: ...
     def parse_change_refs(
@@ -92,6 +100,20 @@ def split_host_port(authority: str) -> tuple[str, str] | None:
 
 #: A full or abbreviated commit id (sha1 or sha256), as opposed to a branch.
 _SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
+
+
+def line_anchor(line: int | None, end_line: int | None, single: str, span: str) -> str:
+    """A blob URL's line fragment: ``""`` without a line, else *single* or *span*.
+
+    The one place a range is normalised: *span* applies only when *end_line*
+    is past *line*. Both templates may use ``{line}``, ``{end}`` and
+    ``{after}`` (the line after the last), which is what each forge spells.
+    """
+    if not line:
+        return ""
+    end = end_line if end_line and end_line > line else line
+    template = span if end > line else single
+    return template.format(line=line, end=end, after=end + 1)
 
 
 def looks_like_sha(rev: str) -> bool:
@@ -181,6 +203,9 @@ class BaseForge:
     kind: ForgeKind
     label: str
     change_term: str = "pull request"
+    #: The ref the forge publishes a change's head commit under, with a
+    #: ``{number}`` field; ``""`` when it publishes none a clone can fetch.
+    change_head_ref: str = ""
     #: The CI system this forge runs, if it has one.
     ci: CiSystem | None = None
     #: Path segments that start a web route on this forge and never name a
@@ -229,7 +254,9 @@ class BaseForge:
     def change_url(self, ref: RemoteRef, number: int) -> str:
         raise NotImplementedError
 
-    def blob_url(self, ref: RemoteRef, rev: str, path: str, line: int | None = None) -> str:
+    def blob_url(
+        self, ref: RemoteRef, rev: str, path: str, line: int | None = None, end_line: int | None = None
+    ) -> str:
         raise NotImplementedError
 
     def compare_url(self, ref: RemoteRef, base: str, head: str) -> str:

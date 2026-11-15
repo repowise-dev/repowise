@@ -244,3 +244,13 @@ def test_concept_wording_is_derived_from_the_identifier(identifier, concept):
     rows, _ = build_concept_index([_file_context("pkg/a.py", [_symbol(identifier)])])
 
     assert rows[0]["concept"] == concept
+
+
+def test_concept_index_leads_with_the_most_called_and_drops_module_state():
+    """The cap drops what nothing uses, and ``log`` is never a concept."""
+    hot = {**_symbol("resolve_all", line=40), "callers": 12}
+    log = {**_symbol("log", line=1), "kind": "variable"}
+    ctx = _file_context("pkg/resolve.py", [log, _symbol("helper", line=10), hot])
+    rows, omitted = build_concept_index([ctx])
+    assert [r["symbol"] for r in rows] == ["resolve_all", "helper"]
+    assert omitted == 0

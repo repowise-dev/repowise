@@ -37,6 +37,10 @@ The shared source format, one file per item:
 Bodies may reference a slash command as ``{{cmd:risk}}``; each host renders it in
 its own syntax. Frontmatter is stored verbatim rather than as parsed keys so a
 rendered file reproduces byte for byte, folded scalars and all.
+
+Text only one host should read goes between ``{{only:codex}}`` and ``{{end}}``.
+Codex is listed fewer MCP tools by default than Claude Code, so a step that
+names one of the others has to read differently there.
 """
 
 from __future__ import annotations
@@ -131,6 +135,12 @@ class Item:
 
 _FRONTMATTER = re.compile(r"\A---\n(.*?\n)---\n+", re.S)
 _TOKEN = re.compile(r"\{\{cmd:([a-z0-9-]+)\}\}")
+#: A block on lines of its own takes the newline after each marker with it, so
+#: the host that drops it gets no blank line. An inline ``{{end}}`` keeps the
+#: newline after it, or the lines either side would join.
+HOST_BLOCK = re.compile(
+    r"\{\{only:([a-z-]+)\}\}\n?(.*?)\{\{end\}\}(?:(?<=\n\{\{end\}\})\n)?", re.S
+)
 _KEY_LINE = re.compile(r"\A([A-Za-z][A-Za-z0-9_-]*):")
 
 
@@ -181,11 +191,22 @@ def select_keys(frontmatter: str, allowed: frozenset[str] | None) -> str:
     return "".join(kept)
 
 
+def _host_block(item: Item, host: Host, match: re.Match[str]) -> str:
+    """The block's text for its own host, nothing for the others.
+
+    An unknown host id raises: a misspelt one would drop the block for every host.
+    """
+    if match.group(1) not in {h.id for h in HOSTS}:
+        raise ValueError(f"{item.source}: {{{{only:{match.group(1)}}}}} names no host")
+    return match.group(2) if match.group(1) == host.id else ""
+
+
 def render(item: Item, host: Host, *, frontmatter_keys: frozenset[str] | None) -> str:
     frontmatter = select_keys(item.frontmatter_for(host), frontmatter_keys)
     if not frontmatter.strip():
         raise ValueError(f"{item.source}: nothing left of the frontmatter for host {host.id!r}")
-    body = _TOKEN.sub(lambda m: host.command_reference.format(id=m.group(1)), item.body)
+    body = HOST_BLOCK.sub(lambda m: _host_block(item, host, m), item.body)
+    body = _TOKEN.sub(lambda m: host.command_reference.format(id=m.group(1)), body)
     return f"---\n{frontmatter}---\n\n{body}"
 
 
@@ -242,6 +263,31 @@ def orphaned_files() -> list[Path]:
     return found
 
 
+def skill_name_mismatches() -> list[str]:
+    """Generated skills whose frontmatter name diverges from their directory basename.
+
+    Claude Code and tools like Skillshare require the frontmatter skill name to
+    match the directory basename, otherwise the skill is dropped or misregistered.
+    """
+    mismatches: list[str] = []
+    for host in HOSTS:
+        for item in load_items("skills"):
+            target_path = host.skills_root / item.directory_for(host) / "SKILL.md"
+            text = render(item, host, frontmatter_keys=None)
+            frontmatter_text = text.split("\n---\n\n", 1)[0].removeprefix("---\n")
+            fm = yaml.safe_load(frontmatter_text) or {}
+            name = fm.get("name")
+            expected_dir = target_path.parent.name
+            if not name:
+                mismatches.append(f"{host.id}: {item.source.name} lacks frontmatter 'name'")
+            elif name != expected_dir:
+                mismatches.append(
+                    f"{host.id}: {item.source.name} frontmatter name {name!r} "
+                    f"does not match directory {expected_dir!r}"
+                )
+    return mismatches
+
+
 # ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
@@ -271,6 +317,12 @@ def main(argv: list[str] | None = None) -> int:
         help="report drift and exit non-zero instead of writing",
     )
     args = parser.parse_args(argv)
+
+    mismatches = skill_name_mismatches()
+    for err in mismatches:
+        print(f"skill name mismatch: {err}", file=sys.stderr)
+    if mismatches:
+        return 1
 
     files = rendered_files()
     drifted: list[Path] = []

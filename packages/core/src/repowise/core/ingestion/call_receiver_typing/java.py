@@ -11,17 +11,23 @@ from ..symbol_identity import outer_scope, symbol_id_path
 from ..type_names import bare_type_name, strip_type_arguments, type_qualifier
 from ._shared import _FUNCTION_KINDS, _TYPE_KINDS
 
-# Where a Java declaration header opens its type-parameter list: after a type's
-# name, or after a method's modifiers and annotations, before its return type.
+# Where a JVM declaration header opens its type-parameter list: after a type's
+# name, after a Java method's modifiers and annotations, before its return
+# type, or after Kotlin's ``fun`` keyword.
 _JAVA_TYPE_PARAMETERS = re.compile(
     r"\b(?:class|interface|record)\s+\w+\s*<"
+    r"|\bfun\s*<"
     r"|^(?:\s*(?:@[\w.]+(?:\([^)]*\))?|public|protected|private|static|final|abstract"
     r"|synchronized|native|default|strictfp)\b)*\s*<"
 )
 
 
+# Kotlin words that can precede a type parameter's name: variance and ``reified``.
+_TYPE_PARAMETER_MODIFIERS = frozenset({"in", "out", "reified"})
+
+
 def _header_type_parameters(header: str) -> set[str]:
-    """The names a Java declaration header's ``<...>`` list declares."""
+    """The names a Java or Kotlin declaration header's ``<...>`` list declares."""
     opened = _JAVA_TYPE_PARAMETERS.search(header)
     if opened is None:
         return set()
@@ -31,7 +37,12 @@ def _header_type_parameters(header: str) -> set[str]:
         close += 1
     names: set[str] = set()
     for param in strip_type_arguments(header[opened.end() : close - 1]).split(","):
-        names.update(param.split()[:1])
+        words = [
+            word
+            for word in param.split()
+            if word not in _TYPE_PARAMETER_MODIFIERS and not word.startswith("@")
+        ]
+        names.update(words[:1])
     return names
 
 
@@ -57,7 +68,7 @@ class JavaTypeVisibility:
         """
         if bare in self._externally_bound_names(file_path):
             return None
-        declared = self._declared_types_named(bare)
+        declared = self._kotlin_platform_declaration(file_path, self._declared_types_named(bare))
         if len(declared) != 1 or bare in self._java_type_parameters(file_path, caller_id):
             return None
         type_file, (type_id, *_), _ = declared[0]
@@ -66,7 +77,57 @@ class JavaTypeVisibility:
         if self._declares(type_id, call.target_name) is not None:
             return None
         hit = self._ancestor_method(type_id, call.target_name, caller_id, class_chain_first=True)
+        if hit is not None and self._is_expect(hit):
+            hit = self._kotlin_platform_member(file_path, hit)
         return None if hit is None else (hit, "global")
+
+    def _kotlin_platform_declaration(
+        self, file_path: str, declared: list[tuple[str, tuple[str, ...], int]]
+    ) -> list[tuple[str, tuple[str, ...], int]]:
+        """*declared*, narrowed to the one a Kotlin Multiplatform caller compiles against.
+
+        An ``expect`` type and its ``actual`` twins are one type to the compiler,
+        so the caller's source set picks among them (see ``_most_visible``).
+        Any other set of same-named types is left as it is.
+        """
+        if len(declared) < 2 or self._language_of(file_path) != "kotlin":
+            return declared
+        expect = [ident[0] for _, ident, _ in declared if self._is_expect(ident[0])]
+        if len(expect) != 1 or not all(
+            self._platform_twin(expect[0], ident[0]) for _, ident, _ in declared
+        ):
+            return declared
+        chosen = self._most_visible(file_path, ((path, ident[0]) for path, ident, _ in declared))
+        return [entry for entry in declared if entry[1][0] == chosen]
+
+    def _kotlin_platform_member(self, file_path: str, expect_id: str) -> str | None:
+        """The twin of the ``expect`` member *expect_id* that *file_path*'s source set sees.
+
+        Twins share the id past the file path; the caller's own platform's
+        ``actual`` outranks the ``expect`` (see ``_most_visible``).
+        """
+        path = symbol_id_path(expect_id)
+        scoped = expect_id[len(path) :]
+        name = self._symbols_by_id[expect_id].name
+        twins = (
+            (symbol_id_path(sym_id), sym_id)
+            for sym_id in self._global_symbols.get(name, ())
+            if sym_id[len(symbol_id_path(sym_id)) :] == scoped
+            and self._platform_twin(expect_id, sym_id)
+        )
+        return self._most_visible(file_path, twins)
+
+    def _platform_twin(self, expect_id: str, sym_id: str) -> bool:
+        """Is *sym_id* *expect_id* itself, or an ``actual`` of it in the same package?"""
+        if sym_id == expect_id:
+            return True
+        symbol = self._symbols_by_id[sym_id]
+        owner = self._symbols_by_id.get(self._caller_class_id(sym_id)) if symbol.parent_name else None
+        if "actual" not in symbol.modifiers and (owner is None or "actual" not in owner.modifiers):
+            return False
+        index = self._get_jvm_index()
+        expect_path = symbol_id_path(expect_id)
+        return index is not None and symbol_id_path(sym_id) in index.same_package_files(expect_path)
 
     def _visible_java_type(self, file_path: str, bare: str, type_file: str) -> bool:
         """Whether Java lets *file_path* write *bare* for the type in *type_file*.
@@ -218,12 +279,21 @@ class JavaTypeVisibility:
             return sym_id, "same_package"
         return sym_id, "import"
 
-    def _java_type_parameters(self, file_path: str, caller_id: str) -> set[str]:
+    def _java_type_parameters(self, file_path: str, caller_id: str) -> frozenset[str]:
         """Type parameters the caller and its enclosing types declare.
 
         Read off each declaration header, up to its body's ``{``, since no
-        parsed symbol keeps its ``<...>`` list.
+        parsed symbol keeps its ``<...>`` list. Bounded type variables (e.g.
+        ``<T extends Number>``) are captured by identifier name without bound
+        verification under the ingestion heuristic.
         """
+        cache = getattr(self, "_java_type_params_cache", None)
+        if cache is None:
+            cache = {}
+            self._java_type_params_cache = cache
+        key = (file_path, caller_id)
+        if key in cache:
+            return cache[key]
         spans = self._spans_for(file_path)
         line = spans.get(caller_id, (0, 0))[0]
         lines = self._text_of(file_path).splitlines()
@@ -236,7 +306,9 @@ class JavaTypeVisibility:
                 continue
             header = "\n".join(lines[start - 1 : end]).partition("{")[0]
             names.update(_header_type_parameters(header))
-        return names
+        frozen = frozenset(names)
+        cache[key] = frozen
+        return frozen
 
     def _returns_java_self_type(self, callee_id: str) -> bool:
         """Does *callee_id* return its class's self-bounded type parameter?

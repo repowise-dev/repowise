@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from repowise.server.mcp_server._helpers import read_repo_file_text
 from repowise.server.mcp_server.tool_answer.config import (
     _MATCHED_SYMBOL_SOURCE_LINES,
     _MAX_RICH_SIG_LINES,
@@ -21,14 +22,7 @@ def _read_repo_text(repo_root: Path | None, file_path: str) -> str | None:
     The single disk read shared by the bounds gate and the signature/body
     slices below, so a hydrated file is read once rather than once per helper.
     """
-    if repo_root is None:
-        return None
-    try:
-        abs_path = (repo_root / file_path).resolve()
-        abs_path.relative_to(repo_root.resolve())
-        return abs_path.read_text(encoding="utf-8", errors="replace")
-    except (OSError, ValueError):
-        return None
+    return read_repo_file_text(repo_root, file_path, allow_extracted=False)
 
 
 def _read_symbol_source(

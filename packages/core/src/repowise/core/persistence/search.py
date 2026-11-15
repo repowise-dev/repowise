@@ -34,6 +34,7 @@ from repowise.core.fts_query import match_term as _match_term
 from repowise.core.fts_query import meaningful_terms as _meaningful_terms
 
 from .batches import chunked
+from .database import hold_schema_lock
 from .information_floor import information_floor, meets_information_floor, substantive_text
 
 
@@ -51,6 +52,10 @@ class SearchResult:
 
 
 _SNIPPET_LEN = 200
+
+# How far a snippet edge may move inward to land on whitespace instead of
+# inside a word. Past this the word is a long token and the cut stays.
+_SNIPPET_EDGE_SLACK = 20
 
 # Markdown heading lines and blank lines at the start of a text.
 _LEADING_HEADINGS = re.compile(r"\A(?:[ \t]*(?:#{1,6}(?:[ \t][^\n]*)?)?[ \t]*\r?\n)+")
@@ -175,8 +180,10 @@ PG_FTS_EXPRESSION = (
 # vocabulary heavily, so a small cache removes almost all of the counting.
 _DF_CACHE_MAX = 2048
 
-# Keeps scores strictly decreasing when two MATCH expressions' results are
-# concatenated. Small enough not to disturb any threshold downstream.
+# How far below its predecessor a widened-pass hit is pulled when the two
+# MATCH expressions' results are concatenated out of score order. Relative, so
+# a term common enough that BM25 scores it near zero is pulled to a smaller
+# positive score rather than below zero.
 _SCORE_EPSILON = 1e-6
 
 # Per-column bm25 weights, in ``PAGE_FTS_COLUMNS`` order: title and
@@ -225,19 +232,50 @@ def snippet_around(content: str, query: str, length: int = _SNIPPET_LEN) -> str:
 
     lowered = content.lower()
     position = -1
+    match_end = 0
     for term in _meaningful_terms(query):
         found = lowered.find(term)
         if found != -1 and (position == -1 or found < position):
             position = found
+            match_end = found + len(term)
     if position == -1:
-        return content[:length].rstrip()
+        start, end = _word_edges(content, 0, min(length, len(content)), 0, 0)
+        return content[start:end].rstrip()
 
     # Centre the window, then slide it back inside the page rather than
     # letting it run off an edge: a match in the first or last few characters
     # would otherwise return a window shorter than the budget for no reason.
     start = max(0, position - length // 2)
     start = min(start, max(0, len(content) - length))
-    return content[start : start + length].strip()
+    end = min(start + length, len(content))
+    start, end = _word_edges(content, start, end, position, match_end)
+    return content[start:end].strip()
+
+
+def _word_edges(
+    content: str, start: int, end: int, keep_from: int, keep_to: int
+) -> tuple[int, int]:
+    """Move a cut that falls inside a word inward to the nearest whitespace.
+
+    Edges only move inward, so the window never grows past its budget, and
+    never into ``content[keep_from:keep_to]``, the matched term (pass ``0, 0``
+    when there is none and the window starts at the page). A cut with no
+    whitespace within :data:`_SNIPPET_EDGE_SLACK` characters stays where it
+    is, so a page that is one long token still gives a non-empty window.
+    """
+    if 0 < start < end and not content[start - 1].isspace() and not content[start].isspace():
+        limit = min(start + _SNIPPET_EDGE_SLACK, keep_from)
+        for i in range(start, limit):
+            if content[i].isspace():
+                start = i + 1
+                break
+    if start < end < len(content) and not content[end - 1].isspace() and not content[end].isspace():
+        limit = max(end - _SNIPPET_EDGE_SLACK, keep_to, start + 1)
+        for i in range(end - 1, limit - 1, -1):
+            if content[i].isspace():
+                end = i
+                break
+    return start, end
 
 
 def strip_leading_headings(text: str) -> str:
@@ -256,8 +294,11 @@ def strip_leading_headings(text: str) -> str:
 class FullTextSearch:
     """Full-text search backed by SQLite FTS5 or PostgreSQL tsvector."""
 
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(self, engine: AsyncEngine, *, repository_id: str | None = None) -> None:
         self._engine = engine
+        # Set on a store several repositories share: search() reads this one's
+        # pages unless a call names another.
+        self._repository_id = repository_id
         self._dialect = engine.dialect.name  # "sqlite" or "postgresql"
         # term → how many pages it matches. "" is the corpus size.
         self._df_cache: OrderedDict[str, int] = OrderedDict()
@@ -285,6 +326,8 @@ class FullTextSearch:
             await self.prune_orphans()
         elif self._dialect == "postgresql":
             async with self._engine.begin() as conn:
+                # IF NOT EXISTS alone still races a concurrent creator.
+                await hold_schema_lock(conn)
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS idx_wiki_pages_fts "
@@ -662,6 +705,8 @@ class FullTextSearch:
         """
         if not query.strip():
             return []
+        if repository_id is None:
+            repository_id = self._repository_id
 
         if self._dialect == "sqlite":
             return await self._search_sqlite(query, limit, repository_id=repository_id)
@@ -806,13 +851,13 @@ class FullTextSearch:
         # the widened one — so scores are clamped to be non-increasing along it,
         # keeping a caller that sorts by score in agreement with one that reads
         # the list in order.
-        ceiling: float | None = None
+        previous: float | None = None
         for pid in page_ids:
             page_type, target_path = meta.get(pid, ("", ""))
             score = -(rank_by_id[pid] or 0.0)  # FTS5 rank is negative
-            if ceiling is not None and score > ceiling:
-                score = ceiling
-            ceiling = score - _SCORE_EPSILON
+            if previous is not None and score > previous:
+                score = previous * (1 - _SCORE_EPSILON)
+            previous = score
             results.append(
                 SearchResult(
                     page_id=pid,

@@ -27,7 +27,7 @@ def gated(monkeypatch):
     gate = asyncio.Event()
     runs: list = []
 
-    async def _select(_repo, _factory, change, _config, cancel):
+    async def _select(_repo, _factory, change, _config, cancel, _named=None):
         runs.append((change, cancel))
         await gate.wait()
         return {"for": change.label}, None, None

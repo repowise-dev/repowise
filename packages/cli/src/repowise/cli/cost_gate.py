@@ -103,7 +103,9 @@ def cost_gate_declined(est: Any, *, yes: bool, message: str) -> bool:
     return not confirm_cost_gate(message, estimated_usd=est.estimated_cost_usd)
 
 
-def cost_gate_blocks(est: Any, *, yes: bool, message: str) -> bool:
+def cost_gate_blocks(
+    est: Any, *, yes: bool, message: str, defer_without_terminal: bool = False
+) -> bool:
     """Return ``True`` when the run must not spend, ``False`` to proceed.
 
     The single cost question, shared by ``init``, ``generate`` and
@@ -117,10 +119,16 @@ def cost_gate_blocks(est: Any, *, yes: bool, message: str) -> bool:
       will answer or silently spending money no one approved.
     - Over the gate on a terminal: asks (default yes, flipping past
       :data:`COST_GATE_HARD_USD`) and blocks when the user declines.
+
+    ``defer_without_terminal`` turns the no-terminal error into a plain block,
+    for a caller with a free fallback (``update`` rebuilding the wiki after an
+    upgrade keeps the current pages and asks again on the next run).
     """
     if est.estimated_cost_usd <= COST_GATE_USD or yes:
         return False
     if not sys.stdin.isatty():
+        if defer_without_terminal:
+            return True
         raise reasoned_error(
             f"This would spend about {format_cost(est)} and there is no terminal "
             "to confirm on. Re-run with --yes to accept the cost, or with "

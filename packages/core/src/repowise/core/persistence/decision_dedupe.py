@@ -351,7 +351,7 @@ async def apply_dedupe(
                 canonical.kind = ARCHITECTURAL_KIND
             await _absorb_evidence(session, canonical.id, folded.id)
             await _repoint_references(session, canonical.id, folded.id)
-            await _add_alias(session, folded.id, canonical.id, reason="merged")
+            await _add_alias(session, folded.id, canonical.id)
             await session.delete(folded)
             await session.flush()
             retired.append(folded_id)

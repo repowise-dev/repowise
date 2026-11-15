@@ -12,7 +12,8 @@ import {
   DialogDescription,
   DialogFooter,
 } from "../ui/dialog";
-import { formatNumber, formatCost, formatRelativeTime } from "../lib/format";
+import { formatNumber, formatCost } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 // Weighted average per-page token heuristics from cost_estimator.py _TOKEN_HEURISTICS
 const AVG_INPUT_TOKENS_PER_PAGE = 3500;
@@ -361,13 +362,13 @@ export function QuickActions({
           <span className="text-xs text-[var(--color-text-tertiary)]">
             Last synced{" "}
             <span className="text-[var(--color-text-secondary)]">
-              {lastSyncAt ? formatRelativeTime(lastSyncAt) : "never"}
+              {lastSyncAt ? <RelativeTime date={lastSyncAt} /> : "never"}
             </span>
           </span>
           <span className="text-xs text-[var(--color-text-tertiary)]">
             Last re-indexed{" "}
             <span className="text-[var(--color-text-secondary)]">
-              {lastResyncAt ? formatRelativeTime(lastResyncAt) : "never"}
+              {lastResyncAt ? <RelativeTime date={lastResyncAt} /> : "never"}
             </span>
           </span>
         </div>

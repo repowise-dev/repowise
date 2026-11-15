@@ -105,6 +105,20 @@ SELF_CASES = [
         "\treturn n * fact(n-1)\n}\n",
         "m.go::fact",
     ),
+    # A const arrow function: its declaration line names it with no `(`.
+    (
+        "typescript",
+        "m.ts",
+        "export const merge: (...p: string[]) => string = (\n  a: string,\n  ...rest: string[]\n"
+        "): string => {\n  if (rest.length) {\n    a = merge(a, ...rest)\n  }\n  return a\n}\n",
+        "m.ts::merge",
+    ),
+    (
+        "typescript",
+        "m.ts",
+        "export const fact = (n: number): number => (n ? n * fact(n - 1) : 1)\n",
+        "m.ts::fact",
+    ),
 ]
 
 

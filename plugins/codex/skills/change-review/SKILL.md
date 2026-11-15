@@ -12,50 +12,41 @@ architectural decisions that govern the touched code.
 
 Two complementary risk signals, use both:
 
-- **`get_change_risk(revspec=…)` (MCP)** scores the *whole change as one unit* (a
-  commit or a `base..head` range). No LLM, no network. Prefer this in-MCP
-  tool; it takes a revspec and diffs server-side, so you never shell out. Lead
-  with `directive` and `health_delta` — what the change actually made worse.
-  Findings the change wrote sort above pre-existing ones it only touched.
-  Then `risk_percentile` (this change ranked against sampled recent commits by
-  diff size and spread, not a bug predictor), stated in one line by
-  `diff_shape`; `include=["scales"]` adds its `review_priority` tercile and
-  `classification` label. The raw 0-10 `score`
-  ranks 0.99 against lines added, so it sits behind `include=["diagnostics"]`
-  rather than on the wire.
-  Omit `revspec` to score uncommitted work. This is the pre-merge gate: "how risky is this
-  change overall?" The `repowise risk <revspec>` CLI is the identical scorer for
-  when you are already in a terminal.
-- **`get_risk(changed_files=…)` (MCP)** works *per file* and returns the
-  `directive` block, the specific things to check inside the diff.
+- **`repowise risk <revspec>`** scores the *whole change as one unit* (a commit
+  or a `base..head` range). No LLM, no network. It reports `risk_percentile`
+  (this change ranked against sampled recent commits by diff size and spread,
+  not a bug predictor) and the drivers behind it. Omit the revspec to score
+  uncommitted work. **`repowise health check <revspec>`** says what the change
+  actually made worse: the health findings it wrote, and the ones it worsened.
+  Together they are the pre-merge gate: "how risky is this change overall?"
+- **`repowise risk --target <path> --changed-file <path>`** works *per file*
+  and returns the `directive` block, the specific things to check inside the
+  diff.
 
 ## Score the whole change first
 
 ```
-get_change_risk(revspec="main..HEAD")   # HEAD, a commit SHA, or base..head
+repowise risk main..HEAD            # HEAD, a commit SHA, or base..head
+repowise health check main...HEAD   # the findings the change introduced
 ```
 
-Read `directive` first: `status`, a `headline` naming what got worse, the
-`reasons` behind it and `next_actions` to run. `health_delta` carries the
-findings the change introduced or resolved. Then `risk_percentile` and the top
-drivers: a high score from large diffusion (many dirs/subsystems) or low author
-familiarity tells you where to look hardest. `extensions=[".py", ".ts"]` counts
-only certain file types; `exclude_patterns=["tests/"]` omits paths. A `warning`
-field, or a `directive.status` of `unknown`, means the revspec or filters
-matched no files, so an all-zero score there is not a clean bill of health. The
-equivalent from a terminal is `repowise risk <revspec>` (add `--ext .py,.ts` or
-`--format json`).
+Read the health check first: a finding the change wrote fails it, one it made
+worse warns. Then `risk_percentile` and the top drivers: a high score from large
+diffusion (many dirs/subsystems) or low author familiarity tells you where to
+look hardest. `--ext .py,.ts` counts only certain file types; `-x tests/` omits
+paths; `--format json` gives machine output. A revspec or filter that matched no
+files scores zero, and that is not a clean bill of health.
 
 ## Then drill into the per-file directive
 
-Call `get_risk` in **PR mode** by passing the changed files:
+Run the per-file report in **PR mode** by passing each changed file twice:
 
 ```
-get_risk(targets=<changed files>, changed_files=<same changed files>)
+repowise risk --target <file> --changed-file <file> --format json   # repeat both per changed file
 ```
 
-The response carries its own `directive` block, per file rather than per change
-(distinct from `get_change_risk`'s) — read it first, it's a few short lists:
+The response carries its own `directive` block, per file rather than per
+change — read it first, it's a few short lists:
 
 - **`may_break`** — files/symbols that import their way to what changed but are
   *not* in the diff. Reachability, not a diff: it says these depend on the
@@ -75,10 +66,8 @@ The response carries its own `directive` block, per file rather than per change
   could be made (`timeout`, `config_invalid`, `unknown`, ...), and then every
   test must run.
 
-`get_change_risk` carries the same answer as **`impacted_tests`**: `status`
-(`selected` or `run_all`, or why nothing was selected), `run_all`, `reasons`,
-`tests_to_run` and `why`. `include=["blast"]` on `get_risk` adds
-`pr_blast_radius`, the fuller dossier behind the directive's lists.
+The same JSON carries `pr_blast_radius`, the fuller dossier behind the
+directive's lists.
 
 For the line-precise version from a terminal, `repowise impacted-tests <revspec>`
 maps each changed line to the tests whose recorded coverage touches it, then
@@ -91,11 +80,13 @@ and a brand-new file is "unknown, run the full suite", never "no tests needed".
 1. **Why does this code exist?** For any non-trivial changed file, call
    `get_why(query="<file>")` — don't let a change silently contradict a recorded
    architectural decision. Surface `conflicts_with` / `supersedes` hits.
-2. **Did the change make health worse?** `get_health(targets=<changed files>,
-   include=["biomarkers"])` — call out new complexity, deep nesting, or
-   duplication the diff introduced.
-3. **Who should review?** `get_risk` ownership + co-change signals suggest the
-   people with the most context on the touched code.
+2. **Did the change make health worse?** `repowise health --score <changed file>
+   --against main` (repeat `--score` per file) scores each file now and at the
+   base — call out new complexity, deep nesting, or duplication the diff
+   introduced.
+3. **Who should review?** The ownership + co-change signals in
+   `repowise risk --target` suggest the people with the most context on the
+   touched code.
 
 ## Getting the diff
 
@@ -114,6 +105,6 @@ didn't support.
 
 ## Error handling
 
-If `get_risk` errors or returns nothing, the MCP server may be down or the repo
+If `repowise risk --target` errors or returns nothing, the repo may be
 unindexed — say so and review from the raw diff, noting that Repowise context was
 unavailable. Suggest `/prompts:repowise-init` if the repo isn't indexed.

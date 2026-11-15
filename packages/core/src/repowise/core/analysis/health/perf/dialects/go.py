@@ -349,6 +349,9 @@ class GoPerfDialect(IterableSources):
     # -- what a loop walks (perf/dialects/iterables.py) ---------------------------
 
     function_kinds = _GO_FN_KINDS
+    # What :meth:`runs_once_in_loop` reads; :meth:`_ends_loop` is Go's own.
+    scope_kinds = _GO_FN_KINDS
+    statement_block_kinds = frozenset({"statement_list"})
     change_kinds = frozenset({"assignment_statement", "inc_statement", "dec_statement"})
     conditional_kinds = frozenset(
         {
@@ -440,8 +443,6 @@ class GoPerfDialect(IterableSources):
 
     def loop_stmt_marker(self, node: Node, list_names: frozenset[str]) -> str | None:
         if node.type == "defer_statement":
-            if self._defer_runs_once_per_entry(node):
-                return None
             return "defer_in_loop"
         # ``go func(){…}()`` spawned per element of a ``for … range`` loop fans
         # out one goroutine per item with no concurrency bound (the spawn-
@@ -475,25 +476,15 @@ class GoPerfDialect(IterableSources):
         {"function_declaration", "method_declaration", "func_literal"}
     )
 
-    def _defer_runs_once_per_entry(self, defer_node: Node) -> bool:
-        """True when a later statement in the defer's block leaves every loop.
+    def _ends_loop(self, stmt: Node, loop_kinds: frozenset[str]) -> bool:
+        """*stmt* leaves every loop: a ``return``, or a ``break`` that exits it.
 
-        A ``defer`` followed in its own block by a ``return``, or by a
-        ``break`` that exits the loop, with no ``continue``/``goto`` in
-        between, can only be reached once before control leaves the loop, so
-        the deferred call is registered at most once and the ``defer_in_loop``
-        leak does not apply. A ``break`` inside a ``switch``/``select`` case
-        leaves the case (loop keeps running), a labeled ``break`` only counts
-        when the label names a statement at or outside the loop, and in a loop
-        nest the exit must leave the OUTERMOST loop — otherwise each outer
-        iteration re-enters and registers the defer again. Ceiling: a ``goto``
-        never counts as an exit.
+        A ``break`` inside a ``switch``/``select`` case leaves the case (loop
+        keeps running), a labeled ``break`` only counts when the label names a
+        statement at or outside the loop, and in a loop nest the exit must
+        leave the OUTERMOST loop, or each outer iteration re-enters. Ceiling: a
+        ``goto`` never counts as an exit.
         """
-        return self._exit_follows(
-            defer_node, self._leaves_all_loops, frozenset({"continue_statement", "goto_statement"})
-        )
-
-    def _leaves_all_loops(self, stmt: Node) -> bool:
         if stmt.type == "return_statement":
             # ``return`` exits the whole function — unless a func literal or
             # method sits between the loop and this statement, in which case it

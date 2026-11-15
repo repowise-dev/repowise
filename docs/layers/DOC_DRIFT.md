@@ -195,6 +195,13 @@ That returns the documents naming it, where in each, and whether those
 documents already carry drift of their own. Useful when you are about to move
 or rename something and want to know what will go stale.
 
+The dependency graph holds a narrower copy of the same evidence as
+`documents` edges: one per document and file, only for links and backticked
+paths that resolve to exactly one file, with no drift state. A bare backticked
+name such as `package.json` never reaches a root-level file. `include=["doc_drift"]`
+reads the drift tables (`doc_drift_references`), not those edges. See
+[GRAPH.md](GRAPH.md#edge-types).
+
 ## Where it shows up
 
 - `repowise doc-drift` for the report, with `--format json` for a script

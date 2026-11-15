@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
 import { useFormatter, useTranslations } from "next-intl";
 import { seriesColor } from "@repowise-dev/ui/shared/series";
 import type { HealthBand } from "@repowise-dev/types/health";
-import { commitsViewHref } from "@/lib/changes";
+import { reviewHref } from "@/lib/changes";
 import type { WelcomeLens } from "@/lib/welcome-moment";
 import {
   MOMENT_CAPTION,
@@ -130,7 +130,7 @@ function useLensText(repoId: string): (lens: WelcomeLens) => CardText {
           value: n(lens.reached),
           unit: t("risk.unit", { count: lens.reached }),
           caption: t.rich("risk.caption", { path: lens.path, mono }),
-          href: commitsViewHref(repoId, "review"),
+          href: reviewHref(repoId),
           open: t("risk.open"),
         };
       case "decisions":

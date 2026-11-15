@@ -390,7 +390,7 @@ function Actions({
             className={failed ? "text-[var(--color-error)]" : "text-[var(--color-text-tertiary)]"}
           >
             {failed
-              ? "Could not save that. Nothing changed."
+              ? "Could not save all of that. The list shows what was saved."
               : saved
                 ? `Saved as ${STATUS_LABEL[saved].toLowerCase()}.`
                 : ""}

@@ -107,6 +107,31 @@ def test_cue_must_sit_in_an_interrogative_clause(question, ids, expected):
     assert _is_data_shape_question(question, ids) is expected
 
 
+@pytest.mark.parametrize(
+    "question,ids,expected",
+    [
+        # The shape noun names what is being changed; the ask is the change's risk.
+        (
+            "Assess the risk of changing how the `Headers` class in httpx/_models.py "
+            "normalizes or stores header keys.",
+            {"Headers"},
+            False,
+        ),
+        ("What would break if I refactor the fields of RequestPayload?", {"RequestPayload"}, False),
+        ("what is the blast radius of renaming keys in session_payload", {"session_payload"}, False),
+        # A change named in a pasted body does not stop a later shape question.
+        (
+            _TICKET + "\nWe are changing widget_attrs.\nWhat fields does each entry in "
+            "widget_attrs contain?",
+            {"AuthenticationForm", "widget_attrs"},
+            True,
+        ),
+    ],
+)
+def test_risk_of_change_question_is_not_a_shape_question(question, ids, expected):
+    assert _is_data_shape_question(question, ids) is expected
+
+
 def test_long_pasted_body_with_no_question_never_fires():
     """The product argument, independent of any benchmark.
 

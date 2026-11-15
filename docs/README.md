@@ -107,6 +107,7 @@ For a map of every layer and how they feed each other, read
 
 | Doc | What it covers |
 |-----|----------------|
+| [scale/LARGE_MONOREPOS.md](scale/LARGE_MONOREPOS.md) | Index a multi-million-line monorepo with its full history: commands, sizing, freshness |
 | [scale/WORKSPACES.md](scale/WORKSPACES.md) | Multi-repo intelligence: cross-repo contracts, co-changes, one MCP server |
 | [scale/WORKTREES.md](scale/WORKTREES.md) | Linked git worktrees seed their index from the base checkout |
 | [../docker/README.md](../docker/README.md) | Running repowise in Docker |

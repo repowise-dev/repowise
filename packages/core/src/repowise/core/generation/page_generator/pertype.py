@@ -32,7 +32,7 @@ from ..architecture_mermaid import (
     system_map_section,
 )
 from ..context.assembler import build_concept_index
-from ..context.module_facts import module_base
+from ..context.module_facts import CONNECTIONS_HEADING, connections_markdown, module_base
 from ..context_assembler import FilePageContext
 from ..models import (
     GENERATION_LEVELS,
@@ -43,18 +43,67 @@ from ..models import (
     compute_page_id,
     compute_source_hash,
 )
+from ..nav_titles import NAV_TITLE_KEY, split_nav_title
 from ..overview_tables import (
     Capability,
     build_capability_table,
     build_package_table,
     embed_capability_table,
     embed_package_table,
+    embed_section,
 )
-from ..page_sources import lint_sources
+from ..page_sources import lint_sources, module_page_sources
+from ..prose import unwrap_markdown_links
+from ..report import ORIENTATION_PROSE_WORD_BUDGET
 from ..structural_labels import structural_page_title
+from ..styles.registry import DEFAULT_STYLE
 from .reuse import files_digest, group_material, model_reuse_key
 
 log = structlog.get_logger(__name__)
+
+#: A ``Sources:`` line written straight under its paragraph renders as part of
+#: it; a blank line keeps it on its own.
+_SOURCES_GLUED = re.compile(r"(?<=\S)[ \t]*\n(?=Sources: )")
+
+#: The front page's prose range under the default style: the first-time
+#: reader's tour, with room for the parts narrative.
+_OVERVIEW_WORDS = (700, ORIENTATION_PROSE_WORD_BUDGET)
+#: Marks an onboarding context the caller did not build.
+_BUILD_CONTEXT = object()
+
+
+def _git_summary(git_meta_map: dict[str, dict] | None) -> dict | None:
+    """Churn facts for the keyless overview, or ``None`` with no git metadata."""
+    if not git_meta_map:
+        return None
+    metas = list(git_meta_map.values())
+    top_churn = sorted(metas, key=lambda m: m.get("commit_count_90d", 0), reverse=True)[:3]
+    oldest = min(
+        (m for m in metas if m.get("first_commit_at")),
+        key=lambda m: m["first_commit_at"],
+        default=None,
+    )
+    return {
+        "hotspot_count": sum(1 for m in metas if m.get("is_hotspot")),
+        "stable_count": sum(1 for m in metas if m.get("is_stable")),
+        "top_churn_files": [m.get("file_path", "") for m in top_churn],
+        "oldest_file": oldest.get("file_path", "") if oldest else "",
+        "oldest_file_age_days": oldest.get("age_days", 0) if oldest else 0,
+    }
+
+
+def _overview_subject(system_map: SystemMap | None, material: Any) -> str:
+    """Digest of what the overview is written from besides evidence files.
+
+    The repository's name, the system map it names, and the source evidence it
+    quotes are its subject: RAG drift alone reuses the prose, and a changed
+    map or evidence file regenerates it (issue #1089). The walkthroughs, part
+    summaries and documentation it is written from count too.
+    """
+    return hashlib.sha256(
+        (naming_payload(system_map) if system_map else "").encode()
+        + (material.digest_text() if material else "").encode()
+    ).hexdigest()
 
 
 def _stub_fallback(page: GeneratedPage, page_type: str, exc: Exception) -> GeneratedPage:
@@ -191,17 +240,9 @@ class PerTypeGenerationMixin:
         self,
         symbol: Any,
         parsed: ParsedFile,
-        pagerank: dict[str, float],
         graph: Any,
-        source_map: dict[str, bytes] | None = None,
     ) -> GeneratedPage:
-        ctx = self._assembler.assemble_symbol_spotlight(
-            symbol,
-            parsed,
-            pagerank,
-            graph,
-            source_bytes=(source_map or {}).get(parsed.file_info.path, b""),
-        )
+        ctx = self._assembler.assemble_symbol_spotlight(symbol, parsed, graph)
         target = f"{parsed.file_info.path}::{symbol.name}"
         # The subject is the defining file's bytes — the same subject the file
         # page uses. A spotlight renders a symbol out of that file, so when the
@@ -268,6 +309,8 @@ class PerTypeGenerationMixin:
             parsed_files=parsed_files,
             source_map=source_map,
             execution_flows=execution_flows,
+            target_path=target_path,
+            full_material=self._style.name == DEFAULT_STYLE,
         )
         module_git_summary = None
         if git_meta_map:
@@ -389,7 +432,7 @@ class PerTypeGenerationMixin:
 
             page = self._stub_module_page(ctx, page_target, title)
             return _stamp_concept(_with_digest(page))
-        user_prompt = self._render("module_page.j2", ctx=ctx)
+        user_prompt = self._render("module_page.j2", ctx=ctx, word_budget=ctx.words)
         # The page's subject is its group: the membership ``structural_key``
         # hashes, plus each member file's bytes, so an unchanged group reuses
         # its prose across RAG drift while an edited member regenerates it
@@ -397,7 +440,7 @@ class PerTypeGenerationMixin:
         # prompt/template/style upgrade still forces a one-time regen.
         reuse_key = model_reuse_key(
             self,
-            group_material(structural_key, members, source_map),
+            group_material(structural_key, members, source_map, ctx.child_pages),
             "module_page",
             "module_page.j2",
         )
@@ -412,6 +455,12 @@ class PerTypeGenerationMixin:
         except Exception as exc:
             stub = self._stub_module_page(ctx, page_target, title)
             return _stamp_concept(_with_digest(_stub_fallback(stub, "module_page", exc)))
+        # The sidebar name the page picked for itself, in the same call. Off
+        # the body before anything reads its opening.
+        # A copy: the provider cache holds this response, and a later hit must
+        # still carry the line.
+        nav_title, body = split_nav_title(response.content)
+        response = replace(response, content=body)
         page = self._build_generated_page(
             "module_page",
             page_target,
@@ -423,12 +472,26 @@ class PerTypeGenerationMixin:
         )
         # Citations of a missing file, or one its section never names, go.
         # Diagrams are checked for every page of the run in ``sanitize_pages``.
+        known_paths = [n for n in graph if "::" not in n]
         page.content = lint_sources(
-            page.content,
+            unwrap_markdown_links(page.content),
             base=module_base(ctx.files),
             members=ctx.files,
-            known_paths=[n for n in graph if "::" not in n],
+            known_paths=known_paths,
             symbols_by_file={fc.file_path: [s["name"] for s in fc.symbols] for fc in file_contexts},
+        )
+        # The functions each surviving citation is about, with their spans.
+        cited = module_page_sources(
+            page.content, base=module_base(ctx.files), members=ctx.files,
+            known_paths=known_paths, file_contexts=file_contexts,
+        )
+        if cited:
+            page.metadata["sources"] = cited
+        if nav_title:
+            page.metadata[NAV_TITLE_KEY] = nav_title
+        page.content = _SOURCES_GLUED.sub("\n\n", page.content)
+        page.content = embed_section(
+            page.content, CONNECTIONS_HEADING, connections_markdown(ctx.facts or {})
         )
         return _stamp_concept(_with_digest(page))
 
@@ -473,8 +536,10 @@ class PerTypeGenerationMixin:
         source_map: dict[str, bytes] | None = None,
         parsed_files: list[ParsedFile] | None = None,
         capabilities: Sequence[Capability] = (),
-        prose_digest: str = "",
+        material: Any = None,
+        structural_only: bool = False,
     ) -> GeneratedPage:
+        """Write the front page; *structural_only* renders the keyless page this run."""
         ctx = self._assembler.assemble_repo_overview(
             repo_structure,
             pagerank,
@@ -485,29 +550,14 @@ class PerTypeGenerationMixin:
             external_systems=external_systems,
             decision_records=decision_records,
             parsed_files=parsed_files,
-            prose_digest=prose_digest,
+            material=material,
         )
-        repo_git_summary = None
-        if git_meta_map:
-            metas = list(git_meta_map.values())
-            top_churn = sorted(metas, key=lambda m: m.get("commit_count_90d", 0), reverse=True)[:3]
-            oldest = min(
-                (m for m in metas if m.get("first_commit_at")),
-                key=lambda m: m["first_commit_at"],
-                default=None,
-            )
-            repo_git_summary = {
-                "hotspot_count": sum(1 for m in metas if m.get("is_hotspot")),
-                "stable_count": sum(1 for m in metas if m.get("is_stable")),
-                "top_churn_files": [m.get("file_path", "") for m in top_churn],
-                "oldest_file": oldest.get("file_path", "") if oldest else "",
-                "oldest_file_age_days": oldest.get("age_days", 0) if oldest else 0,
-            }
+        repo_git_summary = _git_summary(git_meta_map)
         if not repo_name:
             repo_name = getattr(repo_structure, "name", None) or "repo"
         prior = self._prior_pages.get(compute_page_id("repo_overview", repo_name))
         prior_names = dict(prior.metadata).get(SYSTEM_MAP_NAMES) if prior else None
-        if self._config.deterministic:
+        if self._config.deterministic or structural_only:
             stub = self._stub_repo_overview(
                 ctx, repo_name, f"Repository Overview: {repo_name}", repo_git_summary
             )
@@ -523,22 +573,16 @@ class PerTypeGenerationMixin:
         user_prompt = self._render(
             "repo_overview.j2",
             ctx=ctx,
-            repo_git_summary=repo_git_summary,
+            word_budget=_OVERVIEW_WORDS,
             system_map_payload=naming_payload(system_map) if system_map else "",
         )
         user_prompt, evidence = self._append_source_evidence(
             user_prompt, "repo_overview", source_map or {}
         )
-        # The overview's subject is the repository: its name, the system map it
-        # names, and the source evidence it quotes. RAG drift alone reuses the
-        # prose; a changed map or evidence file regenerates it (issue #1089).
-        map_digest = hashlib.sha256(
-            (naming_payload(system_map) if system_map else "").encode()
-        ).hexdigest()
         evidence_files = files_digest((item.path for item in evidence.included), source_map or {})
         reuse_key = model_reuse_key(
             self,
-            f"{repo_name}|{map_digest}|{evidence_files}",
+            f"{repo_name}|{_overview_subject(system_map, material)}|{evidence_files}",
             "repo_overview",
             "repo_overview.j2",
         )
@@ -594,22 +638,9 @@ class PerTypeGenerationMixin:
                 count=len(ungrounded),
                 tokens=ungrounded[:20],
             )
-        # The overview carries its own enumerable facts: the tables and the
-        # system map are built from the run, not by the model. The table embeds
-        # are idempotent, so a reused page picks them up too.
-        # Unconditional: content reused from an earlier run keeps that run's
-        # rows, and an empty selection has to remove them.
-        response = replace(
-            response,
-            content=embed_capability_table(response.content, build_capability_table(capabilities)),
-        )
-        if ctx.package_stats:
-            response = replace(
-                response,
-                content=embed_package_table(
-                    response.content, build_package_table(ctx.package_stats)
-                ),
-            )
+        # The written page carries its own parts table and defined terms, from
+        # the same facts, so only the system map is embedded after it. The
+        # capability and package tables stay on the keyless page.
         page = self._build_generated_page(
             "repo_overview",
             repo_name,
@@ -639,14 +670,28 @@ class PerTypeGenerationMixin:
         self,
         spec: _onboarding.SubkindSpec,
         signals: _onboarding.OnboardingSignals,
+        *,
+        ctx: Any = _BUILD_CONTEXT,
+        next_title: str | None = None,
     ) -> GeneratedPage | None:
         """Generate one onboarding page from a registered subkind spec.
 
         Returns ``None`` when the subkind's gate fails (``build_context``
-        returned ``None``) — the slot is silently skipped for this repo.
+        returned ``None``): the slot is silently skipped for this repo. *ctx*
+        is the context when the caller built it already; *next_title* is the
+        page a reader opens after this one, linked at the end.
         """
+        if ctx is _BUILD_CONTEXT:
+            ctx = spec.build_context(signals)
+        page = await self._onboarding_page(spec, signals, ctx)
+        if page is not None and (next_title or "\nNext: **" in page.content):
+            page.content = _onboarding.with_next_link(page.content, next_title)
+        return page
+
+    async def _onboarding_page(
+        self, spec: _onboarding.SubkindSpec, signals: _onboarding.OnboardingSignals, ctx: Any
+    ) -> GeneratedPage | None:
         page_key = f"onboarding/{spec.slot}"
-        ctx = spec.build_context(signals)
         if ctx is None:
             log.debug("onboarding.gate_skipped", slot=spec.slot)
             self._disabled_source_evidence(page_key, "page_not_generated")
@@ -690,6 +735,7 @@ class PerTypeGenerationMixin:
             template_name,
             ctx=ctx,
             slot=spec.slot,
+            word_budget=getattr(ctx, "word_budget", None),
             exact_source_available=any(item.symbol is not None for item in evidence.included),
         )
         if evidence.rendered:
@@ -754,9 +800,8 @@ class PerTypeGenerationMixin:
             content_hash=reuse_key,
         )
         # Subkind discriminator lives in metadata; page_type alone is shared
-        # across all six generated onboarding slots.
-        page.metadata["subkind"] = spec.slot
-        page.metadata["onboarding_slot"] = spec.slot
+        # across every generated onboarding slot.
+        page.metadata.update(_onboarding.slot_metadata(spec.slot))
         return self._attach_source_evidence(page, page_key, evidence)
 
     @staticmethod

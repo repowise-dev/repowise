@@ -1,6 +1,7 @@
 import * as React from "react";
 import type { Hotspot } from "@repowise-dev/types/git";
-import { formatRelativeTime, formatDateTime } from "../lib/format";
+import { formatDateTime } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
 
 function fileName(path: string): string {
   const i = path.lastIndexOf("/");
@@ -100,7 +101,7 @@ export function HotspotTable({
                 <td className="py-2.5 pr-4 font-mono tabular-nums text-[var(--color-text-secondary)]">
                   {h.last_fix_at ? (
                     <span title={formatDateTime(h.last_fix_at)}>
-                      {formatRelativeTime(h.last_fix_at)}
+                      <RelativeTime date={h.last_fix_at} />
                     </span>
                   ) : (
                     <span className="text-[var(--color-text-tertiary)]">—</span>

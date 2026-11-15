@@ -54,7 +54,7 @@ def _provider_kwargs_or_error(selection: Any, repo_path: Path | None) -> dict[st
     if selection.provider_source != "autodetect" and "api_key" not in kwargs:
         # A configured provider whose key is nowhere still gets built: the
         # constructor says what it needs. Agent CLIs are checked for install.
-        for warning in _facade.validate_provider_config(selection.provider):
+        for warning in _facade.validate_provider_config(selection.provider, repo_path=repo_path):
             _facade.warn(warning)
     return kwargs
 
@@ -222,6 +222,8 @@ def validate_provider_config(
     Args:
         provider_name: The provider name to validate. If None, checks all possible providers.
         repo_path: The repo whose configured provider counts as explicitly requested.
+            Its ``.repowise/.env`` keys count too; without it only the process
+            environment is read.
 
     Returns:
         List of warning messages for missing or invalid configuration.

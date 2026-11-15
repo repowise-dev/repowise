@@ -46,9 +46,9 @@ _TEMPLATES: dict[str, str] = {
         "dispatch dict."
     ),
     "complex_method": (
-        "Reduce cyclomatic complexity. Decompose the function along its "
-        "conditional axes; if it dispatches on a type tag, replace the "
-        "if/elif ladder with polymorphism or a lookup table."
+        "Split the function where its paths serve separate jobs. Each "
+        "independent path is a case to test; if it dispatches on a type tag, "
+        "a lookup table or polymorphism can replace the if/elif ladder."
     ),
     "repeated_nesting": (
         "Split the function into stages. Several nested blocks side by side "

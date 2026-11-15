@@ -145,6 +145,21 @@ def signal_commits(
     return commit_map, commit_files
 
 
+def restrict_to_commits(git_meta_map: dict[str, dict], shas: set[str]) -> dict[str, dict]:
+    """*git_meta_map* with each file's significant commits narrowed to *shas*.
+
+    *shas* are 8-character prefixes. Files left with no commit are dropped.
+    Both history miners read only this list, so an update hands them the
+    narrowed map to mine the commits it brought in and nothing older.
+    """
+    narrowed: dict[str, dict] = {}
+    for path, meta in git_meta_map.items():
+        kept = [c for c in _significant_commits(meta) if str(c.get("sha", ""))[:8] in shas]
+        if kept:
+            narrowed[path] = {**meta, "significant_commits_json": kept}
+    return narrowed
+
+
 def _pr_candidate(commit: dict, body: str) -> dict | None:
     """The prompt-ready record of a PR-shaped body with decision signals, else None."""
     low = body.lower()
@@ -156,6 +171,7 @@ def _pr_candidate(commit: dict, body: str) -> dict | None:
         "subject": commit.get("message", ""),
         "body": body,
         "pr": commit.get("pr_number"),
+        "date": commit.get("date", ""),
     }
 
 

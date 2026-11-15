@@ -10,6 +10,9 @@ import type {
   RiskCompatibilityField,
   RiskScalarSemantics,
 } from "./risk-semantics.js";
+import type { ChangeReview, ReachSummary } from "./generated/http.js";
+
+export type { ChangeReview, ChangeRiskBlock, ChangeTestsBlock, ReachSummary } from "./generated/http.js";
 
 export interface DirectRiskEntry {
   path: string;
@@ -30,6 +33,8 @@ export interface DirectRiskEntry {
 export interface TransitiveEntry {
   path: string;
   depth: number;
+  /** The file one hop nearer the change that this one imports. Only on a change analysis. */
+  via?: string | null;
 }
 
 export interface CochangeWarning {
@@ -41,6 +46,8 @@ export interface CochangeWarning {
 
 export interface ReviewerEntry {
   email: string;
+  /** Display name from git history; only on a change analysis. */
+  name?: string | null;
   files: number;
   /** 0–1 fraction. UI multiplies by 100 for display. */
   ownership_pct: number;
@@ -67,6 +74,8 @@ export interface TestRecommendation {
   /** Every retained evidence category; measured and inferred may both occur. */
   bases: TestRecommendationBasis[];
   source_files: string[];
+  /** Every changed file this test reaches, where a change reply's `source_files` names the first few. */
+  source_files_total?: number | null;
   evidence: TestImpactEvidence[];
   /** A measured row whose test file is gone or changed since the coverage run. */
   stale?: boolean;
@@ -140,6 +149,12 @@ export interface TestImpactResponse {
 }
 
 export interface BlastRadiusResponse {
+  /** Per affected file; only when the request asked `with_graph`. */
+  affected_signals?: AffectedSignal[];
+  /** Owners of the changed files themselves; only with `with_graph`. */
+  changed_owners?: ChangedOwner[] | null;
+  /** Commands that run the recommended tests, one per runner; only with `with_graph`. */
+  test_commands?: string[] | null;
   direct_risks: DirectRiskEntry[];
   transitive_affected: TransitiveEntry[];
   cochange_warnings: CochangeWarning[];
@@ -159,4 +174,154 @@ export interface BlastRadiusResponse {
 export interface BlastRadiusRequest {
   changed_files: string[];
   max_depth?: number;
+  /** Also return `via` on transitive rows and `affected_signals`, for drawing. */
+  with_graph?: boolean;
+}
+
+/** What the index knows about one affected file. `null` means unknown, never healthy. */
+export interface AffectedSignal {
+  path: string;
+  is_hotspot: boolean | null;
+  health_score: number | null;
+  module: string | null;
+  /** A test file: a test to run, never code the change reaches. Absent from older servers. */
+  is_test?: boolean;
+  /**
+   * Whether the index has the file. False for a file new since the last
+   * index run (no graph, health or owner yet); absent from older servers.
+   */
+  indexed?: boolean | null;
+}
+
+/** Who owns some of the changed files, by primary authorship. */
+export interface ChangedOwner {
+  email: string;
+  name: string | null;
+  /** Changed files this person is the primary owner of. */
+  files: number;
+}
+
+/** A `change_request` (a merge or pull request) is never listed; a link opens one. */
+export type ChangeCandidateKind = "working_tree" | "branch" | "commit" | "change_request";
+
+/** One change a reviewer can pick. `id` is what the analysis call takes back. */
+export interface ChangeCandidate {
+  id: string;
+  kind: ChangeCandidateKind;
+  label: string;
+  title: string | null;
+  author: string | null;
+  committed_at: string | null;
+  head_sha: string | null;
+  /** The branch it is compared against, for a branch. */
+  base: string | null;
+  /** Commits only on this branch, for a branch. */
+  ahead: number | null;
+  files_changed: number | null;
+  /** The checked-out branch, or uncommitted work in the checkout. */
+  is_current: boolean;
+  /** For a branch: whether it exists on the remote; local-only is often scratch work. */
+  pushed?: boolean | null;
+  /** For a change request: its number on the forge. */
+  number?: number | null;
+  /** For a change request: the commit it is compared against. */
+  base_sha?: string | null;
+  /** For a change request: what its forge calls one ("merge request", "pull request"). */
+  change_term?: string | null;
+}
+
+export interface ChangeCandidatesResponse {
+  changes: ChangeCandidate[];
+  default_id: string | null;
+  /** False where the server has no checkout: only indexed commits are offered. */
+  working_tree_supported: boolean;
+  /**
+   * Whether the health check can judge a listed change. A local server needs
+   * its checkout; a host that reads blobs another way says true without one.
+   * Missing on an older server: read `working_tree_supported` instead.
+   */
+  health_check_supported?: boolean;
+}
+
+export interface ChangeBlastRadiusRequest {
+  change_id: string;
+  max_depth?: number;
+  /** Also return `via` on each reached file, for drawing the map. */
+  with_graph?: boolean;
+  /** The page of `transitive_affected`: rows `offset` to `offset + limit` (server default 500, at most 5,000). */
+  offset?: number;
+  limit?: number;
+}
+
+export interface ChangeBlastRadiusResponse extends BlastRadiusResponse {
+  /**
+   * The change analyzed. A merge or pull request asked for by number
+   * (`mr:<n>`, `pr:<n>`) comes back pinned to its two commits
+   * (`mr:<n>@<base sha>...<head sha>`), so a link built from it never moves.
+   */
+  change_id: string;
+  /** The merge or pull request, as the picker shows one; null for other kinds. */
+  change?: ChangeCandidate | null;
+  /** The paths analyzed, after the server's cap. */
+  changed_files: string[];
+  /** Every path the change touches, before the cap. */
+  changed_files_total: number;
+  /**
+   * Every reached file; `transitive_affected` holds one page of them, and
+   * `affected_signals` and `test_gaps` cover the changed files and that page.
+   * Absent from older servers, which send every row.
+   */
+  transitive_total?: number;
+  /** The `offset` of the next page; null on the last. */
+  next_offset?: number | null;
+  reach_summary?: ReachSummary | null;
+  /** Files that usually change with a changed one and are left out; `cochange_warnings` lists the strongest pairs. */
+  missing_partners_total?: number | null;
+  /**
+   * The change's score and tests, as `repowise risk` and `get_change_risk`
+   * give them; null when git could not be read here (`review_unavailable` says why).
+   */
+  review?: ChangeReview | null;
+  review_unavailable?: string | null;
+}
+
+/** One row the health gate weighed: a health finding or a diff-risk rule. */
+export interface HealthCheckFinding {
+  /** `health` or `diff-risk`. */
+  source: string;
+  /** The biomarker, or the diff-risk rule (added-suppression, weakened-tests, test-only-branch). */
+  rule: string;
+  /** The gate's level: error fails, warning warns, note informs. */
+  level: "error" | "warning" | "note";
+  file_path: string;
+  line_number: number | null;
+  symbol: string | null;
+  message: string;
+  fingerprint: string;
+  /** Health rows: introduced, worsened, resolved, moved... */
+  change_kind?: string;
+  severity?: string;
+  severity_before?: string;
+  [key: string]: unknown;
+}
+
+export interface ChangeHealthCheckResponse {
+  change_id: string;
+  revspec: string;
+  status: string;
+  explanation: string | null;
+  scope: Record<string, unknown>;
+  skipped: Record<string, string>;
+  findings: HealthCheckFinding[];
+  gate: {
+    passed: boolean;
+    verdict: "pass" | "warn" | "fail";
+    fail_on: string;
+    fail_at: string;
+    failing_count: number;
+    warning_count: number;
+    note_count: number;
+    notes: string[];
+    [key: string]: unknown;
+  };
 }

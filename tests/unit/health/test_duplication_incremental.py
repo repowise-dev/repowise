@@ -323,8 +323,8 @@ def test_corrupt_artifact_falls_back(tmp_path: Path):
     assert _key(report) == _key(_full(parsed))
 
 
-def test_truncated_state_refuses_to_splice(tmp_path: Path):
-    """A window-budget-hit run persists a flag that blocks splicing."""
+def test_truncated_state_splices_to_the_same_cut(tmp_path: Path):
+    """A window-budget-hit run splices only to the result a full run gives."""
     # Budget admits the first file's windows but trips on the second, so
     # the run persists a truncated state (an empty-window run would
     # return before persisting anything).
@@ -337,7 +337,6 @@ def test_truncated_state_refuses_to_splice(tmp_path: Path):
     (tmp_path / "a.py").write_text(_BODY.replace("doit", "edited"))
     parsed = _parsed(tmp_path)
     report = _incremental(parsed, cache_dir, {"a.py"}, limits=lim)
-    assert "incremental" not in report.diagnostics
     assert _key(report) == _key(_full(parsed, limits=lim))
 
 
@@ -348,7 +347,6 @@ def test_unchanged_token_cache_entries_survive_splice(tmp_path: Path):
     from repowise.core.analysis.health.duplication.token_cache import (
         DuplicationTokenCache,
     )
-    from repowise.core.analysis.health.engine import HEALTH_ANALYZER_VERSION
 
     cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
     (tmp_path / "a.py").write_text(_BODY.replace("doit", "edited"))
@@ -356,7 +354,7 @@ def test_unchanged_token_cache_entries_survive_splice(tmp_path: Path):
     report = _incremental(parsed, cache_dir, {"a.py"})
     assert report.diagnostics.get("incremental") is True
 
-    cache = DuplicationTokenCache(cache_dir, WINDOW, HEALTH_ANALYZER_VERSION)
+    cache = DuplicationTokenCache(cache_dir, WINDOW)
     cache.load()
     for rel in ("a.py", "b.py", "c.py"):
         digest = hashlib.sha256((tmp_path / rel).read_bytes()).hexdigest()
@@ -476,3 +474,177 @@ def test_against_index_rescores_an_edited_file(tmp_path: Path):
 def test_against_index_without_one_is_none(tmp_path: Path):
     _write(tmp_path, {"a.py": _BODY})
     assert _against_index([_pf(tmp_path, "a.py")], tmp_path / ".repowise") is None
+
+
+# --- Whole-repo runs splice on the files whose bytes moved ------------------
+
+
+def _whole(parsed, cache_dir, limits=LIMITS):
+    """A cached run with no changed-file list, as a repo-wide re-score makes."""
+    return detect_clones(
+        parsed, window_tokens=WINDOW, min_lines=MIN_LINES, limits=limits, cache_dir=cache_dir
+    )
+
+
+def test_whole_run_on_an_unchanged_tree_splices(tmp_path: Path):
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
+
+    parsed = _parsed(tmp_path)
+    report = _whole(parsed, cache_dir)
+    assert report.diagnostics.get("incremental") is True
+    assert _key(report) == _key(_full(parsed))
+
+
+def test_whole_run_finds_the_edited_file_itself(tmp_path: Path):
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
+    (tmp_path / "c.py").write_text(_BODY.replace("doit", "copied"))
+    (tmp_path / "b.py").unlink()
+
+    parsed = _parsed(tmp_path)
+    report = _whole(parsed, cache_dir)
+    assert report.diagnostics.get("incremental") is True
+    assert any({p.file_a, p.file_b} == {"a.py", "c.py"} for p in report.pairs)
+    assert _key(report) == _key(_full(parsed))
+
+
+def test_whole_run_sees_a_gated_file_grow_into_a_survivor(tmp_path: Path):
+    # Too short for a window, so the seed records it as gated, by its bytes.
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "c.py": _OTHER, "tiny.py": "x = 1\n"})
+    (tmp_path / "tiny.py").write_text(_BODY.replace("doit", "grown"))
+
+    parsed = _parsed(tmp_path)
+    report = _whole(parsed, cache_dir)
+    assert any({p.file_a, p.file_b} == {"a.py", "tiny.py"} for p in report.pairs)
+    assert _key(report) == _key(_full(parsed))
+
+
+def test_whole_run_without_recorded_gated_keys_recomputes(tmp_path: Path):
+    from repowise.core.analysis.health.duplication.pair_index import save_pair_index
+
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
+    index = load_pair_index(cache_dir, WINDOW, LIMITS)
+    index.nonsurvivor_keys = None  # an index written before the keys were kept
+    save_pair_index(cache_dir, index)
+
+    parsed = _parsed(tmp_path)
+    report = _whole(parsed, cache_dir)
+    assert report.diagnostics.get("incremental") is not True
+    assert _key(report) == _key(_full(parsed))
+    # The recompute records the keys, so the next whole run splices.
+    assert load_pair_index(cache_dir, WINDOW, LIMITS).nonsurvivor_keys is not None
+
+
+def test_a_changed_files_splice_keeps_the_keys_for_the_next_whole_run(tmp_path: Path):
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "c.py": _OTHER, "tiny.py": "x = 1\n"})
+    (tmp_path / "a.py").write_text(_BODY.replace("doit", "edited"))
+    _incremental(_parsed(tmp_path), cache_dir, {"a.py"})
+    (tmp_path / "tiny.py").write_text(_BODY.replace("doit", "grown"))
+
+    parsed = _parsed(tmp_path)
+    report = _whole(parsed, cache_dir)
+    assert report.diagnostics.get("incremental") is True
+    assert _key(report) == _key(_full(parsed))
+
+
+def test_whole_run_with_an_unreadable_file_splices(tmp_path: Path):
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
+    # Listed by the parse but gone from disk: unreadable on both sides.
+    parsed = [*_parsed(tmp_path), _pf(tmp_path, "missing.py")]
+    _whole(parsed, cache_dir)
+
+    report = _whole(parsed, cache_dir)
+    assert report.diagnostics.get("incremental") is True
+    assert _key(report) == _key(_full(parsed))
+
+
+def test_whole_run_over_a_budget_cut_index_recomputes(tmp_path: Path):
+    lim = DuplicationLimits(time_budget_secs=0, max_total_windows=35)
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _BODY}, limits=lim)
+    assert load_pair_index(cache_dir, WINDOW, lim).budget_stop is not None
+
+    parsed = _parsed(tmp_path)
+    report = _whole(parsed, cache_dir, limits=lim)
+    assert report.diagnostics.get("incremental") is not True
+    assert _key(report) == _key(_full(parsed, limits=lim))
+
+
+def _keys_of_a_fresh_full_run(tmp_path: Path, files: dict[str, str], limits=LIMITS):
+    """The gated-file keys a full run over *files* records, in a scratch copy."""
+    fresh = tmp_path / "fresh"
+    fresh.mkdir()
+    _seed(fresh, files, limits=limits)
+    return load_pair_index(fresh / ".repowise", WINDOW, limits).nonsurvivor_keys
+
+
+def test_a_clean_splice_persists_the_keys_a_full_run_would(tmp_path: Path):
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "c.py": _OTHER, "tiny.py": "x = 1\n"})
+    after = {"a.py": _OTHER.replace("other", "edited"), "c.py": _OTHER, "tiny.py": "y = 2\n"}
+    for rel, body in after.items():
+        (tmp_path / rel).write_text(body)
+
+    parsed = _parsed(tmp_path)
+    report = _incremental(parsed, cache_dir, {"a.py", "tiny.py"})
+    assert report.diagnostics.get("incremental") is True
+    assert _key(report) == _key(_full(parsed))
+    index = load_pair_index(cache_dir, WINDOW, LIMITS)
+    assert index.nonsurvivors == {"tiny.py"}
+    assert index.nonsurvivor_keys == _keys_of_a_fresh_full_run(tmp_path, after)
+
+
+def test_a_cut_splice_matches_the_oracle_and_records_no_keys(tmp_path: Path):
+    lim = DuplicationLimits(time_budget_secs=0, max_total_windows=35)
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _BODY}, limits=lim)
+    (tmp_path / "a.py").write_text(_BODY.replace("doit", "edited"))
+
+    parsed = _parsed(tmp_path)
+    report = _incremental(parsed, cache_dir, {"a.py"}, limits=lim)
+    assert report.diagnostics.get("incremental") is True
+    assert _key(report) == _key(_full(parsed, limits=lim))
+    index = load_pair_index(cache_dir, WINDOW, lim)
+    assert index.budget_stop is not None
+    assert index.nonsurvivor_keys is None
+
+
+def test_whole_run_drops_files_deleted_since_the_index(tmp_path: Path):
+    # Deleted files never reach the moved set: the splice drops every indexed
+    # path missing from the parse, survivor or gated.
+    cache_dir = _seed(
+        tmp_path, {"a.py": _BODY, "gone.py": _BODY, "c.py": _OTHER, "tiny.py": "x = 1\n"}
+    )
+    (tmp_path / "gone.py").unlink()
+    (tmp_path / "tiny.py").unlink()
+
+    parsed = _parsed(tmp_path)
+    report = _whole(parsed, cache_dir)
+    assert report.diagnostics.get("incremental") is True
+    assert not any("gone.py" in (p.file_a, p.file_b) for p in report.pairs)
+    assert _key(report) == _key(_full(parsed))
+    index = load_pair_index(cache_dir, WINDOW, LIMITS)
+    assert "gone.py" not in index.files and "tiny.py" not in index.nonsurvivors
+
+
+def test_whole_run_through_another_revisions_reader_recomputes(tmp_path: Path):
+    # The index keys the working tree; a reader serving another revision must
+    # not be compared against it.
+    from repowise.core.analysis.health.source_reader import MappingSourceReader
+
+    cache_dir = _seed(tmp_path, {"a.py": _BODY, "b.py": _BODY, "c.py": _OTHER})
+    parsed = _parsed(tmp_path)
+    revision = {pf.file_info.abs_path: _OTHER.encode() for pf in parsed}
+    report = detect_clones(
+        parsed,
+        window_tokens=WINDOW,
+        min_lines=MIN_LINES,
+        limits=LIMITS,
+        cache_dir=cache_dir,
+        source_reader=MappingSourceReader(revision),
+    )
+    assert report.diagnostics.get("incremental") is not True
+    oracle = detect_clones(
+        parsed,
+        window_tokens=WINDOW,
+        min_lines=MIN_LINES,
+        limits=LIMITS,
+        source_reader=MappingSourceReader(revision),
+    )
+    assert _key(report) == _key(oracle)

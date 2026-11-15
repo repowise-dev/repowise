@@ -14,10 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...ids import SYMBOL_SEP, is_external
 from ...ingestion.cohesion import records_no_use
+from ...ingestion.models import NON_CODE_EDGE_TYPES
 from ...persistence.models import GraphEdge
 
-#: History, not code: the edge kind the in-memory dependents count leaves out.
-_NOT_A_USE = ("co_changes",)
+#: History and prose, not code: the edge kinds the in-memory dependents count leaves out.
+_NOT_A_USE = NON_CODE_EDGE_TYPES
 
 
 async def index_dependents(session: AsyncSession, repository_id: str) -> dict[str, int]:
@@ -27,6 +28,11 @@ async def index_dependents(session: AsyncSession, repository_id: str) -> dict[st
         .where(
             GraphEdge.repository_id == repository_id,
             GraphEdge.edge_type.not_in(_NOT_A_USE),
+            # Symbol endpoints and self-edges never count: dropping them in SQL
+            # leaves about a fifth of the rows to fetch.
+            GraphEdge.source_node_id.not_like(f"%{SYMBOL_SEP}%"),
+            GraphEdge.target_node_id.not_like(f"%{SYMBOL_SEP}%"),
+            GraphEdge.source_node_id != GraphEdge.target_node_id,
         )
         .distinct()
     )

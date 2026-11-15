@@ -4,8 +4,9 @@ import { priorityLabel } from "./priority-badge";
 import { HealthDeltaMark, type HealthDeltaLabels } from "./health-delta-mark";
 import { healthDeltaKind } from "./health-delta";
 import type { ResponsiveColumn } from "../shared/responsive-table";
-import { formatLOC, formatRelativeTime } from "../lib/format";
+import { formatLOC } from "../lib/format";
 import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
+import { RelativeTime } from "../shared/relative-time";
 
 /** The commit list's columns, health first. Split from the table so the list
  *  and its controls stay small. */
@@ -88,7 +89,7 @@ export function commitColumns(
       priority: 3,
       render: (c) => (
         <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
-          {c.committed_at ? formatRelativeTime(c.committed_at) : "—"}
+          {c.committed_at ? <RelativeTime date={c.committed_at} /> : "—"}
         </span>
       ),
     },

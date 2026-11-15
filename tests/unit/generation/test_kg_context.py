@@ -81,6 +81,16 @@ class TestGetFileContext:
         assert fc.layer_name == "CLI"
         assert fc.role == "entry_point"
 
+    def test_a_readme_naming_the_entry_file_keeps_it_an_entry_point(self, sample_kg_json):
+        kg = json.loads(sample_kg_json.read_text())
+        kg["edges"].append(
+            {"source": "file:README.md", "target": "file:src/main.py", "type": "documents"}
+        )
+        sample_kg_json.write_text(json.dumps(kg))
+        fc = KnowledgeGraphContext(sample_kg_json).get_file_context("src/main.py")
+        assert fc.role == "entry_point"
+        assert "README.md" not in [n["path"] for n in fc.neighbors]
+
     def test_edge_connector_role(self, sample_kg_json):
         ctx = KnowledgeGraphContext(sample_kg_json)
         fc = ctx.get_file_context("src/core.py")

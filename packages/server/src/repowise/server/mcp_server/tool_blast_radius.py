@@ -18,6 +18,7 @@ from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import _is_workspace_mode
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import persisted_analysis_meta as _analysis_meta
+from repowise.server.mcp_server._savings.interaction import error_reply
 from repowise.server.mcp_server._test_impact import cross_repo_tests_for, tests_block_for
 
 if TYPE_CHECKING:
@@ -76,21 +77,27 @@ async def get_blast_radius(
         include_behavioral: include co-change (behavioral) edges (default true).
     """
     if not _is_workspace_mode():
-        return {
-            "error": "get_blast_radius is only available in workspace mode.",
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "error": "get_blast_radius is only available in workspace mode.",
+                "_meta": _build_meta(),
+            },
+        )
 
     enricher = _state._cross_repo_enricher
     raw = enricher.get_system_graph() if enricher is not None else None
     if not raw:
-        return {
-            "error": (
-                "No system graph is available yet. Run `repowise update --workspace` "
-                "to build cross-repo relationships."
-            ),
-            "_meta": _build_meta(),
-        }
+        return error_reply(
+            "no_index",
+            {
+                "error": (
+                    "No system graph is available yet. Run `repowise update --workspace` "
+                    "to build cross-repo relationships."
+                ),
+                "_meta": _build_meta(),
+            },
+        )
 
     collector = OmissionCollector("get_blast_radius", repo_root=_state._repo_path)
     payload = await blast_radius_payload(

@@ -450,7 +450,12 @@ def extract_with_suppressed(
 
 
 def is_checkable_document(rel_path: str) -> bool:
-    """Whether *rel_path* is prose this repository wrote about itself.
+    """Whether *rel_path* is a Markdown file this repository wrote about itself."""
+    return Path(rel_path).suffix.lower() in MARKDOWN_SUFFIXES and is_own_prose(rel_path)
+
+
+def is_own_prose(rel_path: str) -> bool:
+    """Whether *rel_path*, in any document format, is prose this repository wrote about itself.
 
     Excludes historical records by stem pattern (see
     :data:`~.constants.HISTORICAL_STEM_RE` for why a filename list is not
@@ -465,8 +470,6 @@ def is_checkable_document(rel_path: str) -> bool:
     reports the project's test inputs as its documentation.
     """
     p = Path(rel_path)
-    if p.suffix.lower() not in MARKDOWN_SUFFIXES:
-        return False
     if HISTORICAL_STEM_RE.match(p.stem):
         return False
     if set(p.parts) & VENDORED_DIR_PARTS:

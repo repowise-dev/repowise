@@ -8,6 +8,7 @@ import pytest
 
 from repowise.core.generation.models import GenerationConfig, compute_page_id
 from repowise.core.generation.selection.selector import file_page_eligible
+from repowise.core.ingestion.symbol_use import SymbolUse
 from repowise.core.persistence.models import Page
 from repowise.core.pipeline.persist import sweep_deselected_pages
 from tests.unit.persistence.helpers import insert_repo, make_page_kwargs
@@ -28,6 +29,13 @@ class _Symbol:
     name: str
     kind: str = "function"
     visibility: str = "public"
+    id: str = ""
+    docstring: str | None = "Do one thing. Then another."
+    language: str = "python"
+    parent_name: str | None = None
+    start_line: int = 1
+    end_line: int = 10
+    complexity_estimate: int = 1
 
 
 @dataclass
@@ -37,27 +45,36 @@ class _Parsed:
 
 
 class _Builder:
-    def __init__(self, pagerank: dict[str, float]) -> None:
+    def __init__(self, pagerank: dict[str, float], uses: dict | None = None) -> None:
         self._pagerank = pagerank
+        self._uses = uses or {}
 
     def pagerank(self) -> dict[str, float]:
         return self._pagerank
 
+    def symbol_uses(self) -> dict:
+        return self._uses
 
-# Twenty production files with one distinct public function each, ranked by
-# PageRank: the default 10% keeps two spotlights, the margin protects three.
-_RANKED = [f"src/f{i:02d}.py" for i in range(20)]
+
+# Forty production files with one distinct public function each, ranked by
+# how many other files call it: the default keeps MIN_SPOTLIGHTS (ten), the
+# margin protects fifteen.
+_RANKED = [f"src/f{i:02d}.py" for i in range(40)]
 
 
 def _parsed() -> list[_Parsed]:
-    files = [_Parsed(_FileInfo(p), [_Symbol(f"fn{i}")]) for i, p in enumerate(_RANKED)]
+    files = [
+        _Parsed(_FileInfo(p), [_Symbol(f"fn{i}", id=f"{p}::fn{i}")])
+        for i, p in enumerate(_RANKED)
+    ]
     files.append(_Parsed(_FileInfo("tests/test_a.py", is_test=True), [_Symbol("test_a")]))
     files.append(_Parsed(_FileInfo("src/shim.py")))
     return files
 
 
 def _builder() -> _Builder:
-    return _Builder({p: 1.0 - i / 100 for i, p in enumerate(_RANKED)})
+    uses = {f"{p}::fn{i}": SymbolUse(40 - i, 40 - i) for i, p in enumerate(_RANKED)}
+    return _Builder({p: 1.0 for p in _RANKED}, uses)
 
 
 @pytest.fixture
@@ -137,9 +154,9 @@ class TestDeselectedFilePages:
 class TestDeselectedSpotlights:
     async def test_far_outside_the_cut_is_retired(self, async_session, repo_id) -> None:
         top = await _add(async_session, repo_id, "symbol_spotlight", "src/f00.py::fn0")
-        # Rank 3: past the 10% cut, inside the margin, so it is kept.
-        boundary = await _add(async_session, repo_id, "symbol_spotlight", "src/f02.py::fn2")
-        out = await _add(async_session, repo_id, "symbol_spotlight", "src/f05.py::fn5")
+        # Rank 13: past the cut of ten, inside the margin, so it is kept.
+        boundary = await _add(async_session, repo_id, "symbol_spotlight", "src/f12.py::fn12")
+        out = await _add(async_session, repo_id, "symbol_spotlight", "src/f20.py::fn20")
         test_sym = await _add(
             async_session, repo_id, "symbol_spotlight", "tests/test_a.py::test_a"
         )

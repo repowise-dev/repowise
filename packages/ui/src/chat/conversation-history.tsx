@@ -3,8 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GitFork, History, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Search, Trash2, Undo2 } from "lucide-react";
 import { cn } from "../lib/cn";
-import { formatRelativeTime } from "../lib/format";
 import type { Conversation } from "@repowise-dev/types/chat";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface ConversationHistoryProps {
   conversations: Conversation[] | undefined;
@@ -103,7 +103,7 @@ export function ConversationHistory({
                   {editing?.id === conversation.id ? (
                     <form className="flex gap-1 p-2" onSubmit={(event) => { event.preventDefault(); const title = editing.title.trim(); if (title) void onRename?.(conversation.id, title); setEditing(null); }}><input autoFocus value={editing.title} onChange={(event) => setEditing({ id: conversation.id, title: event.target.value })} aria-label="Conversation title" className="min-w-0 flex-1 border-b border-[var(--color-accent-primary)] bg-transparent text-xs text-[var(--color-text-primary)] outline-none" /><button className="min-h-8 px-2 text-xs text-[var(--color-text-secondary)]">Save</button></form>
                   ) : (
-                    <button type="button" onClick={() => { onSelect(conversation.id); closePopover(); }} className="w-full py-2 pl-2 pr-[7.5rem] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] sm:pr-2"><span className="block text-xs leading-4 text-[var(--color-text-primary)] [overflow-wrap:anywhere]">{conversation.title}</span><span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">{formatRelativeTime(conversation.updated_at)} · {conversation.message_count} msgs</span></button>
+                    <button type="button" onClick={() => { onSelect(conversation.id); closePopover(); }} className="w-full py-2 pl-2 pr-[7.5rem] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] sm:pr-2"><span className="block text-xs leading-4 text-[var(--color-text-primary)] [overflow-wrap:anywhere]">{conversation.title}</span><span className="mt-0.5 block truncate font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]"><RelativeTime date={conversation.updated_at} /> · {conversation.message_count} msgs</span></button>
                   )}
                   <div className="absolute right-1 top-1 flex items-center justify-end gap-0.5 opacity-70 sm:rounded sm:opacity-0 sm:group-hover:bg-[var(--color-bg-overlay)] sm:group-hover:opacity-100 sm:group-focus-within:bg-[var(--color-bg-overlay)] sm:group-focus-within:opacity-100 sm:pointer-events-none sm:group-hover:pointer-events-auto sm:group-focus-within:pointer-events-auto">
                     {onRename && <button type="button" onClick={() => setEditing({ id: conversation.id, title: conversation.title })} aria-label="Rename conversation" className="flex h-7 w-7 items-center justify-center rounded text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-overlay)] hover:text-[var(--color-text-primary)]"><Pencil className="h-3.5 w-3.5" /></button>}

@@ -1,4 +1,4 @@
-"""Co-change, dynamic-hint, and framework-aware edge construction.
+"""Co-change, document, dynamic-hint, and framework-aware edge construction.
 
 Mixed into :class:`GraphBuilder`. These passes add edges that static import
 resolution cannot infer: git co-change relations, dynamic-dispatch hints, and
@@ -6,6 +6,9 @@ framework-mediated wiring.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
@@ -17,13 +20,24 @@ from ...co_change import (
     canonical_pair,
     parse_partners,
 )
-from ..models import FILE_DEPENDENCY_EDGE_TYPES, is_dynamic_edge
+from ..models import DOCUMENTATION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES, is_dynamic_edge
 from ..resolvers import ResolverContext
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.typescript import detect_platform_files
 from ._stem import build_stem_map
 
+if TYPE_CHECKING:
+    from ...analysis.doc_drift.models import DocReference, DriftKind
+    from ...analysis.doc_drift.resolver import RepoIndex
+
 log = structlog.get_logger(__name__)
+
+
+class _DocumentEdgesHost(Protocol):
+    _graph: Any
+    _parsed_files: dict[str, Any]
+    _source_map: dict[str, bytes]
+    _repo_path: Path | None
 
 
 def _merge_dynamic_hint(existing: dict, hint) -> None:
@@ -47,6 +61,78 @@ def _merge_dynamic_hint(existing: dict, hint) -> None:
         return
     names = existing.get("imported_names") or []
     existing["imported_names"] = names + [n for n in hint.imported_names if n not in names]
+
+
+def _document_text(host: _DocumentEdgesHost, doc: str) -> str | None:
+    """A document's text, or None when there is none to read."""
+    from ..document_extractors import DocumentExtractionError
+    from ..source_reader import read_source
+    from ..source_text import decode_source
+
+    # The map holds converted Markdown; disk holds the original (a PDF).
+    data = host._source_map.get(doc)
+    if data is None and host._repo_path is not None:
+        try:
+            data = read_source(host._repo_path, doc)
+        except DocumentExtractionError:
+            return None  # the parse already reported it; no text, no edge
+    return None if data is None else decode_source(data, errors="replace")
+
+
+def _document_targets(
+    host: _DocumentEdgesHost, doc: str, text: str, index: RepoIndex
+) -> dict[str, DriftKind]:
+    """The parsed files ``doc`` names, each with its strongest reference kind."""
+    from ...analysis.doc_drift.extractor import extract
+    from ...analysis.doc_drift.models import DriftKind
+
+    strongest: dict[str, DriftKind] = {}
+    for ref in extract(text, doc):
+        target = _reference_target(index, ref)
+        if target is None or target == doc:
+            continue
+        if target in host._parsed_files and strongest.get(target) is not DriftKind.LINK:
+            strongest[target] = ref.kind
+    return strongest
+
+
+def _reference_target(index: RepoIndex, ref: DocReference) -> str | None:
+    """The file one link or path reference resolves to, else None."""
+    from ...analysis.doc_drift.models import DriftKind, DriftVerdict
+    from ...analysis.doc_drift.resolver import resolve
+
+    if ref.kind not in (DriftKind.LINK, DriftKind.PATH):
+        return None
+    res = resolve(index, ref)
+    # Same filter as ``_Tally.resolve_document``, narrowed to files.
+    if res.verdict is not DriftVerdict.RESOLVED:
+        return None
+    target = res.resolved_target.rstrip("/")
+    # A bare name (or `./name`) can reach a root file; `package.json` is generic prose, not that file.
+    if ref.kind is DriftKind.PATH and "/" not in ref.raw.removeprefix("./") and "/" not in target:
+        return None
+    return target
+
+
+def _place_document_edge(graph: Any, doc: str, target: str, kind: DriftKind) -> None:
+    """Add the ``documents`` edge ``doc`` -> ``target`` unless another edge holds the pair."""
+    from ...analysis.doc_drift.models import DriftKind
+
+    existing = graph.get_edge_data(doc, target)
+    if existing is not None and existing.get("edge_type") != "co_changes":
+        return  # never overwrite another edge on the pair; a DiGraph holds one
+    # co_changes only joins files nothing else links (add_co_change_edges).
+    for u, v in ((doc, target), (target, doc)):
+        if graph.get_edge_data(u, v, {}).get("edge_type") == "co_changes":
+            graph.remove_edge(u, v)
+    link = kind is DriftKind.LINK
+    graph.add_edge(
+        doc,
+        target,
+        edge_type="documents",
+        hint_source="doc_link" if link else "doc_path",
+        confidence=1.0 if link else 0.8,
+    )
 
 
 class EdgesMixin:
@@ -108,12 +194,17 @@ class EdgesMixin:
         """Add co_changes edges from git metadata. Returns count of edges added.
 
         Gated on shared commits rather than the decayed weight, whose scale
-        depends on how wide the commits were.
+        depends on how wide the commits were. Both ends must already be graph
+        nodes and each edge runs in canonical order, so the result depends only
+        on the pairs, not on which files ``git_meta_map`` keys or its order:
+        update passes every tracked file's partners, init only indexed files.
         """
         count = 0
         seen: set[tuple[str, str]] = set()
 
         for file_path, meta in git_meta_map.items():
+            if file_path not in self._graph:
+                continue
             for partner in parse_partners(meta.get("co_change_partners_json")):
                 partner_path, co_count = partner.file_path, partner.weight
                 if partner.support < min_support:
@@ -126,12 +217,9 @@ class EdgesMixin:
                     continue
                 seen.add(pair)
 
-                if not self._graph.has_edge(file_path, partner_path) and not self._graph.has_edge(
-                    partner_path, file_path
-                ):
+                if not self._graph.has_edge(*pair) and not self._graph.has_edge(pair[1], pair[0]):
                     self._graph.add_edge(
-                        file_path,
-                        partner_path,
+                        *pair,
                         edge_type="co_changes",
                         weight=co_count,
                         imported_names=[],
@@ -154,6 +242,37 @@ class EdgesMixin:
         self._graph.remove_edges_from(edges_to_remove)
         self.add_co_change_edges(updated_meta, min_support)
         self._invalidate_subgraph_caches()
+
+    def _resolve_document_edges(self: _DocumentEdgesHost) -> None:
+        """Link each Markdown document to the repository files it names.
+
+        Global on every build, scoped ones too: an unchanged document gains its
+        edge once the file it names appears. Only a link or path doc drift
+        resolves to exactly one parsed file counts -- a missing edge is fine, a
+        wrong one is not.
+        """
+        from ...analysis.doc_drift.extractor import is_own_prose
+        from ...analysis.doc_drift.resolver import RepoIndex
+
+        graph = self._graph
+        graph.remove_edges_from(
+            [
+                (u, v)
+                for u, v, d in graph.edges(data=True)
+                if d.get("edge_type") in DOCUMENTATION_EDGE_TYPES
+            ]
+        )
+        index = None
+        for doc, parsed in self._parsed_files.items():
+            if parsed.file_info.language != "markdown" or not is_own_prose(doc):
+                continue
+            text = _document_text(self, doc)
+            if text is None:
+                continue
+            if index is None:
+                index = RepoIndex.build(frozenset(self._parsed_files), {})
+            for target, kind in _document_targets(self, doc, text, index).items():
+                _place_document_edge(graph, doc, target, kind)
 
     def add_dynamic_edges(self, edges: list) -> None:
         """Add dynamic-hint edges to the graph. Each edge is a DynamicEdge."""
@@ -207,6 +326,7 @@ class EdgesMixin:
         Returns the number of edges added.
         """
         from ..framework_edges import add_framework_edges
+        from ..framework_edges.scan_cache import ScanCache
 
         path_set = set(self._parsed_files.keys())
         stem_map = build_stem_map(path_set)
@@ -229,6 +349,7 @@ class EdgesMixin:
             # over the tree. Empty unless ``set_source_map`` was called.
             source_map=self._source_map,
             pytest_roots=self._pytest_roots,
+            framework_scans=ScanCache(getattr(self, "_cache_dir", None)),
         )
 
         # The .NET project index ``build()`` already made; handlers that scope
@@ -236,6 +357,7 @@ class EdgesMixin:
         if getattr(self, "dotnet_index", None) is not None:
             ctx._dotnet_index = self.dotnet_index
         count = add_framework_edges(self._graph, self._parsed_files, ctx, tech_stack)
+        ctx.framework_scans.save()
         if count:
             log.info("Framework edges added", count=count)
             self._invalidate_subgraph_caches()

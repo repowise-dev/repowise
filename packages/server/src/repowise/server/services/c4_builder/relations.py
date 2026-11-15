@@ -22,15 +22,24 @@ from .models import Relation
 async def load_edges(
     session: AsyncSession, repository_id: str
 ) -> list[tuple[str, str, str]]:
-    """Read every graph edge once, as ``(source, target, type)`` rows.
+    """Read every file-to-file graph edge once, as ``(source, target, type)`` rows.
 
     Split out so a caller rolling the same edges up several ways — by
     container and by component, say — pays for one read instead of one per
     aggregation.
+
+    Only edges between ``file`` nodes (external-system nodes are ``file``
+    nodes too) are read: the roll-up keys file endpoints alone, and the symbol
+    edges it would skip are most of the table.
     """
+    file_nodes = select(GraphNode.node_id).where(
+        GraphNode.repository_id == repository_id, GraphNode.node_type == "file"
+    )
     result = await session.execute(
         select(GraphEdge.source_node_id, GraphEdge.target_node_id, GraphEdge.edge_type).where(
-            GraphEdge.repository_id == repository_id
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.source_node_id.in_(file_nodes),
+            GraphEdge.target_node_id.in_(file_nodes),
         )
     )
     return list(result.all())

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   HOSTED_SOURCE_ID,
@@ -96,6 +96,26 @@ describe("ModelUpgradeSheet", () => {
     expect(screen.queryByText(/free/i)).toBeNull();
     expect(screen.getByText("Found")).toBeInTheDocument();
     expect(screen.getByText("In env")).toBeInTheDocument();
+  });
+
+  it("names the plan quota and the time for a sign-in on a paid plan, never free", () => {
+    renderSheet({ planRoute: { providerId: "claude_cli", minutes: 12 } });
+    expect(
+      screen.getByText("Uses your Claude Code sign-in and plan quota, about 12 minutes."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/free/i)).toBeNull();
+    // The hosted row keeps its place after the choices.
+    const radios = screen.getAllByRole("radio");
+    const hosted = screen.getByRole("link", { name: /Hosted repowise/ });
+    expect(radios[radios.length - 1]!.compareDocumentPosition(hosted) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps the plain sign-in note when the plan route is another CLI, and drops an uncounted time", () => {
+    renderSheet({ planRoute: { providerId: "codex_cli", minutes: 12 } });
+    expect(screen.getByText("Uses your Claude Code sign-in.")).toBeInTheDocument();
+    cleanup();
+    renderSheet({ planRoute: { providerId: "claude_cli", minutes: null } });
+    expect(screen.getByText("Uses your Claude Code sign-in and plan quota.")).toBeInTheDocument();
   });
 
   it("selects a source and writes with it", () => {

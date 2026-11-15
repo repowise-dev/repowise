@@ -37,17 +37,20 @@ from ..calls import FileStrings
 from ..langs import PYTHON
 from ..strings import (
     JS_SYNTAX,
+    NAME_RE,
     PYTHON_SYNTAX,
     match_paren,
     split_first_arg,
 )
-from .client_calls import VERBS, is_rooted_url
+from .client_calls import VERBS, is_rooted_url, join_base
 from .dialect import build_consumer_contract
 from .wrappers import (
     DEFAULT_HOP_BUDGET,
     GENERIC_ARGS,
+    BoundClient,
     bound_clients,
     confirm_wrappers,
+    imports_client_library,
     mask_source,
     sink_call_names,
     sink_patterns,
@@ -102,14 +105,44 @@ def _first_arg_url(arg: str, strings: FileStrings) -> str | None:
     return url if url is not None and is_rooted_url(url) else None
 
 
-def _client_library(
-    clients: list[tuple[str, str, int, int]], receiver: str, line: int
-) -> str | None:
-    """The client library *receiver* is bound to at *line*, or ``None``."""
-    for var, lib, start, end in clients:
-        if var == receiver and start <= line <= end:
-            return lib
+# ``os.environ.get("USERS_URL")``, ``os.getenv("USERS_URL")``, ``os.environ["USERS_URL"]``.
+_ENV_NAME_RE = re.compile(r"""(?:environ\.get|getenv|environ)\s*[(\[]\s*['"](\w+)['"]""")
+
+
+def _bound_client(clients: list[BoundClient], receiver: str, line: int) -> BoundClient | None:
+    """The client instance *receiver* is bound to at *line*, or ``None``."""
+    for client in clients:
+        if client.var == receiver and client.start <= line <= client.end:
+            return client
     return None
+
+
+def _base_text(expr: str, strings: FileStrings) -> str:
+    """The base a client's ``base_url=`` names, or a ``${NAME}`` token standing for it.
+
+    A base read from the environment or a name the file does not bind is kept
+    as a token, as the JS reader keeps one, so a call is not dropped for its
+    host being unknown.
+    """
+    text = strings.text(expr)
+    if text is not None:
+        return text
+    env = _ENV_NAME_RE.search(expr)
+    if env:
+        return "${" + env.group(1) + "}"
+    name = NAME_RE.match(expr)
+    return "${" + (name.group(0) if name else "base") + "}"
+
+
+def _instance_url(first: str, client: BoundClient, strings: FileStrings) -> str | None:
+    """The URL a call through *client* reaches: its first argument, joined onto its base."""
+    if not client.base:
+        return _first_arg_url(first, strings)
+    path = strings.text(first)
+    if path is None:
+        return None
+    url = join_base(_base_text(client.base, strings), path)
+    return url if is_rooted_url(url) else None
 
 
 def _declaration_sites(symbols: Sequence[IndexedSymbol]) -> set[tuple[int, str]]:
@@ -161,7 +194,10 @@ def extract_consumers(
     # receiverless sink call can exist, so the two O(n) masking passes below
     # would run to find nothing. Masking only removes matches, so a miss here is
     # a miss there. Most files in a repo take this exit.
-    if not any(p.search(ctx.content) for p in sink_patterns(ctx.suffix)):
+    if not (
+        any(p.search(ctx.content) for p in sink_patterns(ctx.suffix))
+        or imports_client_library(ctx.content, ctx.suffix)
+    ):
         return [], 0
 
     confirmed = confirm_wrappers(symbols, ctx.content, ctx.suffix, budget)
@@ -180,7 +216,7 @@ def extract_consumers(
     # reading it off ``content`` would mint a contract for an unmade request.
     is_python = ctx.suffix in PYTHON
     code = mask_source(ctx.content, ctx.suffix, strings=True) if is_python else ""
-    clients = bound_clients(code, ctx.suffix, symbols)
+    clients = bound_clients(code, ctx.suffix, symbols, source=content)
     if not confirmed and not sinks and not clients:
         return [], 0
 
@@ -191,7 +227,7 @@ def extract_consumers(
     # (concrete literal) and unresolved. The set of wrappers proven to take a
     # path is only complete once the whole file has been scanned, so the
     # unresolved tally is settled afterwards.
-    resolved: list[tuple[str, str, str, int]] = []  # (callee, url, method, line)
+    resolved: list[tuple[str, str, str, int, ContractOrigin]] = []  # + origin
     unresolved_by_callee: dict[str, int] = {}
     path_taking: set[str] = set()
     # Calls whose argument list would not parse. Kept apart from the
@@ -237,7 +273,8 @@ def extract_consumers(
             continue
         path_taking.add(name)
         opt = _METHOD_OPT_RE.search(rest)
-        resolved.append((name, url, opt.group(1).upper() if opt else "GET", line))
+        method = opt.group(1).upper() if opt else "GET"
+        resolved.append((name, url, method, line, ContractOrigin.TYPED_CLIENT))
 
     # Pass 1b: calls through a variable bound to an HTTP client instance. No
     # wrapper confirmation applies — the binding already proves the receiver.
@@ -247,8 +284,8 @@ def extract_consumers(
         if verb not in _HTTP_VERBS:
             continue
         line = line_at(content, m.start())
-        lib = _client_library(clients, m.group("recv"), line)
-        if lib is None:
+        client = _bound_client(clients, m.group("recv"), line)
+        if client is None:
             continue
         open_idx = m.end() - 1
         close_idx = _match_paren(content, open_idx)
@@ -256,24 +293,25 @@ def extract_consumers(
             parse_failures += 1
             continue
         first, _ = _split_first_arg(content[open_idx + 1 : close_idx])
-        url = _first_arg_url(first, strings)
+        url = _instance_url(first, client, strings)
         if url is None:
             # Unconditional, unlike the wrapper tally above: a client's
             # ``.post`` takes a URL by definition, so ``path_taking`` has no
             # ambiguity to resolve and every miss here is a real endpoint call.
             client_unresolved += 1
             continue
-        resolved.append((lib, url, verb.upper(), line))
+        origin = ContractOrigin.INSTANCE_BASE if client.base else ContractOrigin.TYPED_CLIENT
+        resolved.append((client.library, url, verb.upper(), line, origin))
 
     from ..from_index import EXTRACTION_LAYER_KEY, LAYER_INDEX
 
     out: list[Contract] = []
-    for callee, url, method, line in resolved:
+    for callee, url, method, line, origin in resolved:
         # Higher than the regex dialect's 0.65/0.75: the callee is a confirmed
         # sink-reaching wrapper and the URL is a whole literal argument, not a
         # string that happened to sit next to a parenthesis.
         contract = build_consumer_contract(
-            ctx, method=method, url=url, client=callee, line=line, origin=ContractOrigin.TYPED_CLIENT
+            ctx, method=method, url=url, client=callee, line=line, origin=origin
         )
         if contract is not None:
             contract.meta[EXTRACTION_LAYER_KEY] = LAYER_INDEX

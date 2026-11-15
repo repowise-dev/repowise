@@ -4,7 +4,7 @@
   list handed to the model came back as confident prose about deletions.
 * A file page's own vocabulary is embedded for search but not rendered:
   it lives in page metadata, and the one embed recipe reads it from there.
-* The footer claims only what the page was built from.
+* A file page carries no footer.
 * A template page credits no model; a model-written page names its model.
 """
 
@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 
 import networkx as nx
-import pytest
 
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.models import GenerationConfig
@@ -103,21 +102,11 @@ async def test_the_embed_recipe_picks_the_vocabulary_up(
     assert "ledger overflow while adding" not in bare
 
 
-@pytest.mark.parametrize(
-    ("language", "footer", "retired"),
-    [
-        (None, "Generated from parsed code, the import graph and git history.", "checked against"),
-        ("de", "Erstellt aus geparstem Code, dem Importgraphen und der Git-Historie.", "geprüft"),
-    ],
-)
-async def test_the_footer_claims_only_its_inputs(
-    language, footer, retired, sample_parsed_file, sample_graph, graph_metrics
-):
-    generator = _generator(language=language) if language else _generator()
-    page = await _file_page(generator, sample_parsed_file, sample_graph, graph_metrics)
-
-    assert footer in page.content
-    assert retired not in page.content
+async def test_a_file_page_carries_no_footer(sample_parsed_file, sample_graph, graph_metrics):
+    """A closing line naming the page's inputs said nothing the page did not."""
+    page = await _file_page(_generator(), sample_parsed_file, sample_graph, graph_metrics)
+    assert "Generated from parsed code" not in page.content
+    assert not page.content.rstrip().endswith("---")
 
 
 async def test_a_template_page_credits_no_model(sample_parsed_file, sample_graph, graph_metrics):

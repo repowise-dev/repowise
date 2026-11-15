@@ -17,7 +17,7 @@ from rich.padding import Padding
 from rich.text import Text
 
 from repowise.cli.ui import mascot
-from repowise.cli.ui.brand import BRAND, ERR, INFO, MODEL, OK, WARN, key_value_table
+from repowise.cli.ui.brand import BRAND, INFO, MODEL, WARN, key_value_table
 from repowise.cli.ui.mode_names import INDEX_ONLY, completion_title, mode_label, scope_line
 from repowise.cli.ui.result_panels import build_completion_panel, print_completion_panel
 
@@ -27,8 +27,8 @@ class StoodOut:
     """What the run measured that is worth a look; ``None`` means not measured."""
 
     health_score: float | None = None
-    #: ``grading.mark_for`` of the score; None when too little was analysed to grade.
-    health_mark: str | None = None
+    #: ``grading.headline_band`` of the score; None when too little was analysed to grade.
+    health_band: str | None = None
     lowest_file: str | None = None
     lowest_score: float | None = None
     dead_unreachable: int | None = None
@@ -37,6 +37,8 @@ class StoodOut:
     hotspot_file: str | None = None
     hotspot_commits: int | None = None
     decision_candidates: int | None = None
+    #: Background records the agent's discovery pass would check (``decision discover``).
+    discovery_records: int | None = None
 
     def as_summary(self) -> dict[str, Any]:
         """The same findings for ``--progress json``, one key each, null when not measured."""
@@ -44,7 +46,7 @@ class StoodOut:
         if self.health_score is not None:
             health = {
                 "score": self.health_score,
-                "band": self.health_mark,
+                "band": self.health_band,
                 "lowest_file": self.lowest_file,
                 "lowest_score": self.lowest_score,
             }
@@ -132,15 +134,17 @@ def _metrics(facts: FinishFacts) -> list[tuple[str, str]]:
     return rows
 
 
-_MARK_STYLE = {"healthy": OK, "warning": WARN, "alert": ERR}
-
-
 def _health_value(s: StoodOut) -> str:
-    from repowise.core.analysis.health.grading import MARK_LABEL, format_score
+    from repowise.core.analysis.health.grading import (
+        BAND_LABEL,
+        BAND_TERMINAL_COLOR,
+        format_score,
+    )
 
     figure = f"{format_score(s.health_score)}/10"
-    if s.health_mark:
-        figure = f"[{_MARK_STYLE[s.health_mark]}]{figure} {MARK_LABEL[s.health_mark]}[/]"
+    if s.health_band:
+        style = BAND_TERMINAL_COLOR[s.health_band]
+        figure = f"[{style}]{figure} {BAND_LABEL[s.health_band]}[/]"
     if s.lowest_file and s.lowest_score is not None:
         figure += f"  {escape(s.lowest_file)} is lowest at {format_score(s.lowest_score)}"
     return figure
@@ -165,9 +169,10 @@ def _hotspot_value(s: StoodOut) -> str:
 
 
 def _decisions_value(s: StoodOut) -> str:
+    # Mined records are background an agent asks about, not a list to work.
     count = s.decision_candidates or 0
-    noun = "candidate" if count == 1 else "candidates"
-    return f"{count:,} {noun} to review"
+    noun = "record" if count == 1 else "records"
+    return f"{count:,} background {noun} from history"
 
 
 def stood_out_lines(s: StoodOut) -> list[RenderableType]:
@@ -198,10 +203,7 @@ def model_upgrade_lines(upgrade: ModelUpgrade | None) -> list[RenderableType]:
     return [
         Text(""),
         line(f"[bold {MODEL}]Add a model when you want more[/]"),
-        line(
-            "Docs that explain how and why, chat in the dashboard, "
-            "written answers for your agent."
-        ),
+        line("Answers for your agent and docs that explain how and why: one command, no re-index."),
         line(how),
         dim_line("Or press m next time on the plan screen."),
     ]

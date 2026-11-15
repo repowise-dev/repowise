@@ -286,7 +286,7 @@ the configured embedder (Gemini or OpenAI). No LLM calls, only embedding API cal
 The dependency graph is a two-tier directed graph where **file nodes** represent source
 files and **symbol nodes** represent individual functions, classes, and methods. Edges
 include `imports`, `DEFINES`, `HAS_METHOD`, `CALLS` (with confidence 0.0–1.0),
-`inherits`, `implements`, and `co_changes`. `CALLS` edges are built by `CallResolver`
+`inherits`, `implements`, `co_changes` and `documents`. `CALLS` edges are built by `CallResolver`
 using 3-tier resolution; all others are built by `GraphBuilder` during AST ingestion.
 
 It is built by the `ASTParser` + `GraphBuilder` + `CallResolver` during ingestion and
@@ -303,13 +303,17 @@ The graph is used for:
 - **Change propagation**: when a file changes, walk the graph to find all
   pages that reference its symbols and mark them as stale
 - **PageRank**: runs on `file_subgraph()` (file + package nodes only) to identify
-  the most central files; these get "spotlight" wiki pages and richer generation prompts
+  the most central files, which get richer generation prompts
 - **SCC detection**: circular dependency clusters require a special generation
   strategy (see [Section 5.3](#53-dependency-graph-construction))
 - **Co-change edges**: temporal coupling from git history. Files that frequently
   change together (but may have no import relationship) get `co_changes` edges.
   These participate in change propagation and are shown in the graph visualization
   as dashed purple lines. They do NOT affect PageRank.
+- **Documentation edges** give a Markdown document a `documents` edge to each file
+  it links to or names. No graph metric, dead-code reachability, change
+  propagation or graph view reads them; the knowledge-graph export keeps them
+  as their own relation (see [GRAPH.md](../layers/GRAPH.md#edge-types)).
 - **Dead code detection**: files with `in_degree == 0` (no importers) are
   candidates for unreachable file detection
 - **MCP `get_dependency_path` tool** *(opt-in)*: answers "how is module A connected to module B?"
@@ -491,7 +495,7 @@ instead of tree-sitter.
 
 **Edge types.** User-facing walkthrough: [docs/layers/GRAPH.md](../layers/GRAPH.md).
 `EdgeType` in `ingestion/models.py` is the source of truth, a
-closed `Literal` of 17 values, with `EDGE_TYPE_VALUES` derived from it at runtime
+closed `Literal` of 18 values, with `EDGE_TYPE_VALUES` derived from it at runtime
 and pinned by `tests/unit/ingestion/test_edge_type_vocabulary.py`. The ones whose
 meaning is easy to get wrong:
 
@@ -516,6 +520,10 @@ meaning is easy to get wrong:
 - `co_changes`: A and B frequently change in the same commit (from git history,
   added by `GitIndexer` after graph construction). Weight = co-change count.
   Filtered out of PageRank but included in change propagation and visualization.
+- `documents`: Markdown document → a file it links to or names in backticks,
+  from doc drift's resolver, added by `GraphBuilder.build()`. Replaces a
+  `co_changes` edge on the same pair. Prose, not a dependency: excluded from
+  every metric and view, and kept in the knowledge-graph export.
 
 **Call resolution** is handled by the `CallResolver` module (`ingestion/call_resolver.py`),
 which runs after the static import graph is built. Every edge it emits is stamped
@@ -556,7 +564,8 @@ scores.
 After graph construction, the builder computes:
 
 - **PageRank**: nodes with high PageRank are central and well-connected.
-  Used to decide generation priority and which symbols get spotlight pages.
+  Used to decide generation priority. Spotlight pages rank each symbol by its
+  own production callers instead (`selection/scoring.py::score_symbol`).
 - **Strongly Connected Components (SCCs)**: groups of files with circular imports.
   Logged as warnings. Require special generation handling (see below).
 - **Betweenness centrality**: identifies "bridge" symbols whose removal would
@@ -639,9 +648,9 @@ content to draw from.
 Level 0: External API contracts (OpenAPI, proto, GraphQL)
          → self-contained, no dependencies on other pages
 
-Level 1: Symbol spotlight pages (top 10% by PageRank)
+Level 1: Symbol spotlight pages (most-called public symbols, at most 8 per file)
          → short, fast, parallelizable
-         → high-PageRank symbols get richer documentation
+         → signature, docstring and resolved callers; no source copy
 
 Level 2: File pages
          → uses: source + symbol docs + import summaries (from RAG)
@@ -1121,7 +1130,7 @@ Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 ### Auto-generated Config
 
 `repowise init` registers the MCP server directly where it can: Claude Code
-(`~/.claude/settings.json`), Claude Desktop (if installed), VS Code
+(`~/.claude.json`), Claude Desktop (if installed), VS Code
 (`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
 `.repowise/mcp.json` for clients configured by hand. The completion panel says
 which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
@@ -1280,7 +1289,7 @@ JobSystem
        │
        ├── Level 0: special handlers (OpenAPI, proto, GraphQL, Dockerfile...)
        │
-       ├── Level 1: symbol spotlight pages (top 10% PageRank)
+       ├── Level 1: symbol spotlight pages (most-called symbols)
        │              ┌────────────────────────────────────┐
        │              │ ContextAssembler                   │
        │              │  source + graph metadata           │

@@ -17,8 +17,10 @@ from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server import _state
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._call_tasks import cancel_and_wait
 from repowise.server.mcp_server._changes import overview_changes
 from repowise.server.mcp_server._components import component_list
+from repowise.server.mcp_server._failure_shield import _NOT_INDEXED_MARKER, _shape_not_indexed
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
@@ -27,7 +29,7 @@ from repowise.server.mcp_server._helpers import (
     filter_rows_by_attr,
     resolve_enum_argument,
 )
-from repowise.server.mcp_server._meta import MCP_CONTRACT_VERSION
+from repowise.server.mcp_server._meta import MCP_CONTRACT_VERSION, prose_upgrade_meta, served_root
 from repowise.server.mcp_server._meta import build_meta as _build_meta
 from repowise.server.mcp_server._meta import (
     build_meta_with_full_scope as _build_meta_with_full_scope,
@@ -89,32 +91,14 @@ _INCLUDE_BLOCKS = frozenset(
 async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
     """Orientation for an unfamiliar repo: packages, entry points, riskiest files, top actions.
 
-    Once per session; then use ``get_context`` or ``get_answer``.
-    Compact by default: ``content_md`` is the essay's summary section and
-    ``next_actions`` the week's top three; other blocks ship on request,
-    named in ``more``.
-
-    Defaults fit 24,000 chars; nonempty ``include`` uses 32,000. Reductions
-    carry counts and recovery status in ``_meta``.
-    Include-gated blocks are projections, not omissions.
-
-    In a workspace, omit ``repo`` for the default repo, ``repo='<alias>'`` for
-    another, ``repo='all'`` for cross-repo links.
+    Once per session; then use ``get_context`` or ``get_answer``. Compact by
+    default; other blocks ship on request, named in ``more``.
 
     Args:
-        repo: Repository alias, path, or ID, or ``"all"``.
-        include: Opt-in extras, any combination of:
-            ``"content"`` — the full overview essay instead of its summary.
-            ``"outline"`` — the stored wiki page tree, two rungs deep.
-            ``"tour"`` — ``guided_tour`` + ``reading_order`` onboarding walks.
-            ``"decisions"`` — ``key_decisions``; ``get_why`` is richer.
-            ``"graph"`` — ``community_summary``, code-community clusters.
-            ``"ownership"`` — ``knowledge_map``: top 3 owners by files owned.
-            ``"components"`` — component list with file counts.
-            ``"changes"`` — changes by category, week and source, with coverage.
-            ``"tools"`` — ``tool_surface``: enabled tools, opt-ins, recipes.
-            ``"actions"`` — ``next_actions`` for the quarter too, with ``done_when``.
-            ``"scope"`` — the whole ``_meta.index_scope`` (provider, coverage).
+        repo: alias, path or ID; ``"all"`` for cross-repo links.
+        include: ``content`` (full essay), ``outline``, ``tour``,
+            ``decisions``, ``graph``, ``ownership``, ``components``,
+            ``changes``, ``tools``, ``actions``, ``scope``.
     """
     ignored: list[dict[str, Any]] = []
     want = {
@@ -135,7 +119,10 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
     # dropped — the response carries an expandable [repowise#<ref>] marker.
     collector = OmissionCollector("get_overview", repo_root=ctx.path)
     async with get_session(ctx.session_factory) as session:
-        repository = await _get_repo(session)
+        repository, notice = await _repo_or_notice(session)
+        if notice is not None:
+            attach_ignored_arguments(notice, ignored)
+            return notice
         result = await _repo_overview(
             session,
             ctx.session_factory,
@@ -167,9 +154,43 @@ async def get_overview(repo: str | None = None, include: list[str] | None = None
                 "contract_version": MCP_CONTRACT_VERSION,
                 **_build_meta(repository=repository),
             }
+        # The orientation call is where a no-prose index says how to upgrade.
+        result["_meta"].update(
+            await prose_upgrade_meta(
+                served_root(repository, ctx.path),
+                session_factory=ctx.session_factory,
+                repo_id=getattr(repository, "id", None),
+            )
+        )
         collector.attach(result)
         attach_ignored_arguments(result, ignored)
         return result
+
+
+async def _repo_or_notice(session: Any) -> tuple[Any, dict[str, Any] | None]:
+    """The served repository, or the not-indexed answer when there is none."""
+    try:
+        return await _get_repo(session), None
+    except LookupError as exc:
+        notice = _not_indexed_overview(exc)
+        if notice is None:
+            raise
+        return None, notice
+
+
+def _not_indexed_overview(exc: LookupError) -> dict[str, Any] | None:
+    """The orientation answer for a directory with no index, or None for any other miss.
+
+    Orientation is the first call of a session, and "nothing is indexed here,
+    this is how to index it" is its true answer, so it is an ordinary result
+    rather than an error. A store that would not open stays an error.
+    """
+    if _NOT_INDEXED_MARKER not in str(exc) or _state._store_error is not None:
+        return None
+    if _state._registry is not None:  # one workspace member; the notice speaks for the server
+        return None
+    notice = _shape_not_indexed()
+    return {"title": "Not indexed", "content_md": notice.pop("error"), **notice}
 
 
 async def _repo_overview(
@@ -244,6 +265,10 @@ async def _repo_overview(
         "reading_order_hint": _READING_ORDER_HINT if requested["reading_order"] else None,
     }
     result.update((key, block) for key, block in optional.items() if block)
+    # A block with nothing in it is not sent; its absence says the same.
+    for key in ("code_health", "key_modules", "entry_points", "git_health"):
+        if not result[key]:
+            del result[key]
 
     # The guided tour is persisted on the overview page's metadata at generation.
     if overview_page:
@@ -290,8 +315,7 @@ async def _in_turn(session: Any, repository: Any, actions: Any) -> tuple[Any, An
 async def _abandon(slow: Any) -> None:
     """Stop the slow reads when the rest failed, so no task outlives the call."""
     if isinstance(slow, asyncio.Future):
-        slow.cancel()
-        await asyncio.gather(slow, return_exceptions=True)
+        await cancel_and_wait([slow])
     else:
         slow.close()  # an in-turn read that never started
 

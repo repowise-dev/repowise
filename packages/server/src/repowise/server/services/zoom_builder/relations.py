@@ -16,22 +16,34 @@ from collections import defaultdict
 
 from repowise.core.analysis.c4.labels import coupling_strength, relation_label
 
-from .models import ZoomNode, ZoomRelation
+from .models import ZoomNode, ZoomRelation, ancestry
 from .tree import file_id
 
 
-def _chain(node_id: str, nodes: dict[str, ZoomNode]) -> list[str]:
-    """Root-to-node id path."""
-    out: list[str] = []
-    cur: str | None = node_id
-    while cur is not None:
-        out.append(cur)
-        nxt = nodes.get(cur)
-        if nxt is None:  # defensive: never happens from the builder
+def _sibling_key(ca: list[str] | None, cb: list[str] | None) -> tuple[str, str, str] | None:
+    """``(lowest common ancestor, child toward a, child toward b)`` for two chains.
+
+    None when either file is off the tree or the two never split into distinct
+    siblings.
+    """
+    if ca is None or cb is None:
+        return None
+    # Lowest common ancestor = last shared prefix index.
+    lca_idx = -1
+    for i in range(min(len(ca), len(cb))):
+        if ca[i] == cb[i]:
+            lca_idx = i
+        else:
             break
-        cur = nxt.parent_id
-    out.reverse()
-    return out
+    # The child of the LCA on each path (the LCA itself is shared, so both
+    # files have a next node below it that differs).
+    if lca_idx < 0 or lca_idx + 1 >= len(ca) or lca_idx + 1 >= len(cb):
+        return None
+    child_a = ca[lca_idx + 1]
+    child_b = cb[lca_idx + 1]
+    if child_a == child_b:
+        return None
+    return ca[lca_idx], child_a, child_b
 
 
 def aggregate_relations(
@@ -39,45 +51,32 @@ def aggregate_relations(
     edges: list[tuple[str, str, str]],
 ) -> tuple[ZoomRelation, ...]:
     """Roll file->file edges up to ``(parent, childA, childB)`` sibling edges."""
-    chains: dict[str, list[str]] = {}
+    chains: dict[str, list[str] | None] = {}
 
     def chain_for(path: str) -> list[str] | None:
-        fid = file_id(path)
-        if fid not in nodes:
-            return None
-        cached = chains.get(fid)
-        if cached is None:
-            cached = _chain(fid, nodes)
-            chains[fid] = cached
-        return cached
+        if path not in chains:
+            fid = file_id(path)
+            chains[path] = ancestry(fid, nodes) if fid in nodes else None
+        return chains[path]
 
     counts: dict[tuple[str, str, str], int] = defaultdict(int)
     types: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    # A file pair recurs once per import, call and co-change between the two
+    # files (130k edges, 73k pairs on a 7k-file repository), so its key is
+    # worked out once. Nested by source rather than keyed by a pair tuple, so
+    # the memo adds no object per pair for the garbage collector to walk.
+    pair_keys: dict[str, dict[str, tuple[str, str, str] | None]] = defaultdict(dict)
 
     for src, tgt, etype in edges:
         if src == tgt:
             continue
-        ca = chain_for(src)
-        cb = chain_for(tgt)
-        if ca is None or cb is None:
+        by_target = pair_keys[src]
+        if tgt in by_target:
+            key = by_target[tgt]
+        else:
+            key = by_target[tgt] = _sibling_key(chain_for(src), chain_for(tgt))
+        if key is None:
             continue
-        # Lowest common ancestor = last shared prefix index.
-        lca_idx = -1
-        for i in range(min(len(ca), len(cb))):
-            if ca[i] == cb[i]:
-                lca_idx = i
-            else:
-                break
-        # The child of the LCA on each path (the LCA itself is shared, so both
-        # files have a next node below it that differs).
-        if lca_idx < 0 or lca_idx + 1 >= len(ca) or lca_idx + 1 >= len(cb):
-            continue
-        parent = ca[lca_idx]
-        child_a = ca[lca_idx + 1]
-        child_b = cb[lca_idx + 1]
-        if child_a == child_b:
-            continue
-        key = (parent, child_a, child_b)
         counts[key] += 1
         types[key].add(etype)
 

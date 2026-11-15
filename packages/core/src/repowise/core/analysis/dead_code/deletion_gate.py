@@ -78,7 +78,7 @@ Blocker = Callable[[FindingView, GateFacts], str | None]
 def _base_reason(view: FindingView, _facts: GateFacts) -> str | None:
     """The ladder's own bar: kind, confidence and runtime-load path risk."""
     if view.kind in REVIEW_ONLY_KINDS:
-        return f"A whole file ({view.kind}) is a review candidate, never deletion-ready"
+        return f"A {view.kind} finding is a review candidate, never deletion-ready"
     if view.confidence < SAFE_CONFIDENCE_THRESHOLD:
         return (
             f"Confidence {view.confidence:.2f} is below the deletion-ready bar "

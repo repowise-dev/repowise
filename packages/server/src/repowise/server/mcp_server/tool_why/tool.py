@@ -9,12 +9,16 @@ from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _is_path,
     _is_workspace_mode,
+    _resolve_repo_context,
     _unsupported_repo_all,
+    attach_ignored_arguments,
+    resolve_enum_argument,
 )
 from repowise.server.mcp_server.tool_why.basis import _stamp_answer_basis
 from repowise.server.mcp_server.tool_why.dashboard import _why_health_dashboard
 from repowise.server.mcp_server.tool_why.loading import _named_file
 from repowise.server.mcp_server.tool_why.path_mode import _why_path, _why_targets
+from repowise.server.mcp_server.tool_why.projection import lean_response
 from repowise.server.mcp_server.tool_why.reference import _why_reference
 from repowise.server.mcp_server.tool_why.search import _why_search
 from repowise.server.mcp_server.tool_why.workspace import _why_workspace_search
@@ -39,57 +43,78 @@ async def get_why(
     repo: str | None = None,
     id: str | None = None,
     reference: dict[str, Any] | None = None,
+    include: list[str] | None = None,
 ) -> dict:
     """Why this code is shaped this way — decision records + evidence commits.
 
-    Call before refactors or pattern divergences. Query modes: a question
-    ("why is auth using JWT?"), a file path (governing decisions + origin
-    story + alignment score), a question anchored to targets, or no query
-    (decision health dashboard). Falls back to git archaeology when no
-    decisions exist for a path — never empty. Evidence-bearing rows carry an
-    explicit ``provenance`` and self-contained ``evidence_refs``; matching ids
-    mean shared evidence, not independent corroboration. Every decision row
-    carries ``authority``: ``accepted`` means somebody signed it, ``candidate``
-    means nobody has yet. ``answer_basis`` names the strongest lane the response
-    rests on (decision, episode, rationale, archaeology, documentation,
-    candidate); only ``decision`` is a ruling, and ``candidate`` is the weakest
-    -- it means nothing cleared that bar.
+    Call before a refactor or pattern divergence. Query: a question, a file
+    path, a question with ``targets``, or nothing (decision dashboard).
+    A path gets the rules in force first, then labelled background records.
+    ``authority: accepted`` means somebody signed the decision;
+    ``answer_basis`` names the strongest evidence lane, and only
+    ``decision`` is a ruling.
 
     Args:
         query: question, file/module path, or omit for the dashboard.
-        targets: optional file paths to anchor the search, or to ask about on
-            their own when there is no query.
+        targets: file paths to anchor the search.
+        id: decision or ``ev_...`` evidence id from any tool.
+        reference: structured evidence reference.
         repo: usually omitted.
-        id: decision or ``ev_...`` evidence id emitted by this or another tool.
-        reference: structured evidence reference. Its id and repository are
-            accepted together without caller translation.
+        include: ``["history"]``: a path's origin story, commits, episodes.
     """
+    ignored: list[dict[str, Any]] = []
+    # A list, not a generator, so every unknown value is named.
+    history = "history" in [
+        resolve_enum_argument(v, _INCLUDE, argument="include", ignored=ignored)
+        for v in include or []
+    ]
     if reference:
         id, repo = _reference_coordinates(reference, id, repo)
-    if id:
-        if repo == "all":
-            return _unsupported_repo_all("get_why (reference lookup)")
-        return _stamp_answer_basis(await _why_reference(id, repo, reference=reference))
+    if await _layer_off(repo):
+        return dict(_OFF)
+    result = await _dispatch(query, targets, repo, id, reference, history)
+    attach_ignored_arguments(result, ignored)
+    return result
 
-    # --- repo="all": search decisions across ALL repos ---
+
+#: ``include`` blocks; path mode serves its constraints alone without one.
+_INCLUDE = ("history",)
+
+#: The whole answer under ``decisions.mode: off``.
+_OFF = {"decisions": "off", "note": "Decisions are off for this repository."}
+
+
+async def _layer_off(repo: str | None) -> bool:
+    """Whether ``decisions.mode`` is off for *repo*.
+
+    ``repo="all"`` is decided per repository by the workspace search.
+    """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
     if repo == "all":
-        if not query:
-            response = _unsupported_repo_all("get_why (health dashboard)")
-            response["error"] += " To search all repositories, pass a query."
-            return response
-        return _stamp_answer_basis(await _why_workspace_search(query))
+        return False
+    try:
+        ctx = await _resolve_repo_context(repo)
+    except Exception:  # the mode resolves the repo again and reports it
+        return False
+    return layer_mode(getattr(ctx, "path", None)) == "off"
 
-    # --- Mode 1: No query → the targets, or the health dashboard ---
-    # Targets first: naming files and asking nothing asks about those files.
-    if not query:
-        if targets:
-            return _stamp_answer_basis(await _why_targets(list(targets), repo))
-        # An orientation call, not an answer: no basis to name.
-        return await _why_health_dashboard(repo)
+
+async def _dispatch(
+    query: str | None,
+    targets: list[str] | None,
+    repo: str | None,
+    id: str | None,
+    reference: dict[str, Any] | None,
+    history: bool,
+) -> dict:
+    early = await _without_question(query, targets, repo, id, reference, history)
+    if early is not None:
+        return early
 
     # --- Mode 2: Path → decisions, origin story, alignment ---
     if _is_path(query):
-        return _stamp_answer_basis(await _why_path(query, repo))
+        return _stamp_answer_basis(_lean(await _why_path(query, repo, history=history)))
 
     # --- Mode 3: Natural language → target-aware search ---
     # A named file anchors as ``targets`` would; a failed lookup anchors nothing.
@@ -102,7 +127,46 @@ async def get_why(
     result = await _why_search(query, [named] if named else targets, repo)
     if named:
         result["anchored_on"] = named
-    return _stamp_answer_basis(result)
+    return _stamp_answer_basis(_lean(result))
+
+
+async def _without_question(
+    query: str | None,
+    targets: list[str] | None,
+    repo: str | None,
+    id: str | None,
+    reference: dict[str, Any] | None,
+    history: bool,
+) -> dict | None:
+    """A reference lookup, a cross-repo search, targets alone or the dashboard; else None."""
+    if id:
+        if repo == "all":
+            return _unsupported_repo_all("get_why (reference lookup)")
+        return _stamp_answer_basis(await _why_reference(id, repo, reference=reference))
+
+    # --- repo="all": search decisions across ALL repos ---
+    if repo == "all":
+        if not query:
+            response = _unsupported_repo_all("get_why (health dashboard)")
+            response["error"] += " To search all repositories, pass a query."
+            return response
+        return _stamp_answer_basis(_lean(await _why_workspace_search(query)))
+
+    # --- Mode 1: No query → the targets, or the health dashboard ---
+    # Targets first: naming files and asking nothing asks about those files.
+    if not query:
+        if targets:
+            return _stamp_answer_basis(
+                _lean(await _why_targets(list(targets), repo, history=history))
+            )
+        # An orientation call, not an answer: no basis to name.
+        return _lean(await _why_health_dashboard(repo))
+    return None
+
+
+def _lean(result: dict) -> dict:
+    # A workspace ref names its repository, so passing it back routes the lookup.
+    return lean_response(result, keep_repository=_is_workspace_mode())
 
 
 def _reference_coordinates(

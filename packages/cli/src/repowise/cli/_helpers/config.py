@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from repowise.cli._helpers.paths import ensure_repowise_dir, get_repowise_dir
+from repowise.cli._helpers.paths import ensure_repowise_dir
 from repowise.cli.errors import reasoned_error
 from repowise.core.reasoning import (
     ReasoningMode,
@@ -15,7 +15,7 @@ from repowise.core.reasoning import (
 from repowise.core.reasoning import (
     resolve_reasoning as resolve_core_reasoning,
 )
-from repowise.core.repo_config import CONFIG_FILENAME, RepoConfigError, load_repo_config
+from repowise.core.repo_config import RepoConfigError, load_repo_config
 
 # Suppresses mirroring the provider key into `.repowise/.env`. The env
 # spelling of `init --no-save-key`, mirroring REPOWISE_SKIP_EDITOR_SETUP: CI
@@ -50,6 +50,23 @@ def load_config(repo_path: Path) -> dict[str, Any]:
     except RepoConfigError as exc:
         _facade.err_console.print(f"[yellow]Warning:[/yellow] {exc}")
         return {}
+
+
+def load_config_for_write(repo_path: Path) -> dict[str, Any]:
+    """The config a write merges into. A file that does not parse is refused.
+
+    :func:`load_config` reads a broken file as empty so a read can go on; a
+    write starting from that empty mapping would replace every key the user
+    had with the few it sets. So a write stops here and says which file to fix.
+    """
+    try:
+        return load_repo_config(repo_path)
+    except RepoConfigError as exc:
+        raise reasoned_error(
+            f"{exc}. Nothing was saved, so the file keeps what it has. "
+            "Fix it, then run this again.",
+            reason="config_unreadable",
+        ) from exc
 
 
 def resolve_reasoning(
@@ -183,7 +200,7 @@ def save_config(
 
     # Round-trip: preserve any existing keys (e.g. exclude_patterns set via CLI).
     # provider/model go through the writer the web UI uses too.
-    existing = apply_llm_selection(load_config(repo_path), provider, model)
+    existing = apply_llm_selection(load_config_for_write(repo_path), provider, model)
     existing["embedder"] = embedder
     if embedding_model:
         existing["embedding_model"] = embedding_model
@@ -256,7 +273,7 @@ def save_config_partial(
     only reports that once, but ``get`` cannot tell the two shapes apart
     afterwards.
     """
-    import yaml  # type: ignore[import-untyped]
+    from repowise.core.repo_config import save_repo_config
 
     updates: dict[str, Any] = {}
     if exclude_patterns is not None:
@@ -268,17 +285,11 @@ def save_config_partial(
     if not updates and not clear_embedding_model:
         return
 
-    ensure_repowise_dir(repo_path)
-    config_path = get_repowise_dir(repo_path) / CONFIG_FILENAME
-    existing = load_config(repo_path)
+    existing = load_config_for_write(repo_path)
     existing.update(updates)
     if clear_embedding_model:
         existing.pop("embedding_model", None)
-
-    config_path.write_text(
-        yaml.dump(existing, default_flow_style=False, sort_keys=False),
-        encoding="utf-8",
-    )
+    save_repo_config(repo_path, existing)
 
 
 def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
@@ -288,7 +299,7 @@ def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
     ``distill`` block is merged here first to avoid clobbering sibling keys
     like ``disabled_filters``.
     """
-    cfg = load_config(repo_path)
+    cfg = load_config_for_write(repo_path)
     distill = dict(cfg.get("distill") or {})
     commands = dict(distill.get("commands") or {})
     commands["enabled"] = enabled
@@ -300,7 +311,7 @@ def save_distill_commands_enabled(repo_path: Path, *, enabled: bool) -> None:
 #: One consent turns them all on; each has its own ``repowise hook <name>``
 #: toggle afterwards, so a surface that turns out to be wrong can be dropped
 #: without taking the others with it.
-HOOK_REPLACEMENT_SURFACES = ("read_skeleton", "search_digest")
+HOOK_REPLACEMENT_SURFACES = ("read_skeleton", "search_digest", "read_reread")
 
 
 def save_hook_surface_enabled(repo_path: Path, surface: str, *, enabled: bool) -> None:
@@ -312,7 +323,7 @@ def save_hook_surface_enabled(repo_path: Path, surface: str, *, enabled: bool) -
     larger intervention than serving a Read as its skeleton or a search as its
     digest, not a smaller one. There is deliberately no second question.
     """
-    cfg = load_config(repo_path)
+    cfg = load_config_for_write(repo_path)
     hooks = dict(cfg.get("hooks") or {})
     hooks[surface] = enabled
     save_config_partial(repo_path, hooks=hooks)

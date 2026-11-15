@@ -94,6 +94,20 @@ class TestCyclePageSweep:
         rows = (await async_session.execute(Page.__table__.select())).fetchall()
         assert [r.id for r in rows] == [page]
 
+    async def test_a_graph_that_fails_to_answer_retires_nothing(
+        self, async_session, repo_id
+    ) -> None:
+        """A failed cycle lookup is not "no cycles": the pages it cannot judge stay."""
+        page = await _add_scc_page(async_session, repo_id, ["a.py", "b.py"])
+
+        class _Released(_FakeBuilder):
+            def strongly_connected_components(self):
+                raise RuntimeError("graph released")
+
+        assert await sweep_absent_cycle_pages(async_session, repo_id, _Released([])) == []
+        rows = (await async_session.execute(Page.__table__.select())).fetchall()
+        assert [r.id for r in rows] == [page]
+
 
 @pytest.mark.asyncio
 class TestMembershipPrune:

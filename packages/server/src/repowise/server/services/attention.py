@@ -388,13 +388,12 @@ def _decision_source(decision_health: dict) -> SourceResult:
 
     def lane(key: str) -> list[DecisionAttentionInput]:
         return [
-            DecisionAttentionInput(id=d.id, title=d.title, source=getattr(d, "source", ""))
+            DecisionAttentionInput(id=d.id, title=d.title)
             for d in decision_health.get(key, []) or []
         ]
 
     return decision_source(
         lane("stale_decisions"),
-        lane("proposed_awaiting_review"),
         decision_health.get("ungoverned_hotspots", []) or [],
     )
 

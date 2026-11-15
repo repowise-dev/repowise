@@ -8,7 +8,7 @@ earns, so an agent or a reviewer can tell a fact from a guess. An LLM is only
 an optional upgrade for wiki prose, so the graph is reproducible.
 
 <p>
-  <img src="https://img.shields.io/badge/17-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="17 edge types" />
+  <img src="https://img.shields.io/badge/18-edge_types-3178C6?style=flat-square&labelColor=0A0A0A" alt="18 edge types" />
   <img src="https://img.shields.io/badge/39-resolution_origins-059669?style=flat-square&labelColor=0A0A0A" alt="39 resolution origins" />
   <img src="https://img.shields.io/badge/28-full--AST_languages-F59520?style=flat-square&labelColor=0A0A0A" alt="28 full-AST languages" />
   <img src="https://img.shields.io/badge/0-LLM_calls-1E293B?style=flat-square&labelColor=0A0A0A" alt="zero LLM calls" />
@@ -91,7 +91,8 @@ external nodes, so a dependency is visible without being documented.
 **Two families of edge.** Structure the parser can see (imports, calls,
 inheritance) and structure only history can see (files that keep changing
 together without importing each other). They are kept apart, so a shared commit
-never appears in your import graph as a dependency.
+never appears in your import graph as a dependency. Documentation links
+(`documents`) are kept apart the same way.
 
 Every consumer reads the graph through one of three shared views, so no two
 features disagree about what counts as a dependency:
@@ -175,7 +176,7 @@ every edge.
 
 ## Edge types
 
-The graph has 17 edge types, each one a distinct claim. These six matter most
+The graph has 18 edge types, each one a distinct claim. These seven matter most
 when you read an answer:
 
 | Edge | Claims | Does not claim |
@@ -186,6 +187,7 @@ when you read an answer:
 | `framework_binds` | A framework wires these two symbols together: a pytest fixture, a Spring injection | A call. Nothing here is source a parser could have seen |
 | `type_use` | A type is referenced in a constructor, method, delegate or record parameter | An import. Weighted below one |
 | `co_changes` | These files keep changing in the same commit | Any code dependency at all |
+| `documents` | A Markdown document links to this file (confidence 1.0) or names its path in backticks (0.8) | That the document depends on it, or that it is used. Graph metrics, dead-code reachability, health dependents and dependency paths ignore it |
 
 The other eleven are `imports`, `defines`, `has_method`, `extends`,
 `implements`, `method_implements`, `framework`, `reads`, `dynamic_uses`,
@@ -218,7 +220,7 @@ walk, the flow reports which origins it declined.
 | Blast radius | The set of things a change can break, with confidence on every hop |
 | Dead code | Reachability over the union view, so a symbol reached only by a framework, a dispatch table or a type reference is not dead |
 | Communities | Leiden clustering (Louvain as fallback) finds the modules your codebase actually has, often not the directory layout |
-| Centrality | PageRank over the file tier ranks what everything depends on; betweenness finds the bridges. Neither is fed co-change edges |
+| Centrality | PageRank over the file tier ranks what everything depends on, and betweenness finds the bridges. Neither is fed co-change or `documents` edges |
 | Cycles | Strongly connected components, documented together because nothing in them can be explained before the others |
 | Execution flows | Entry point to leaf, ranked, with the termination reason attached |
 | Framework wiring | Routes to handlers, DI registrations to implementations, ORM entities to relationships, across Django, FastAPI, Flask, Spring, ASP.NET, Rails, Laravel, Next.js, Express, Axum, Gin and more |

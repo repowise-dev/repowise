@@ -45,18 +45,21 @@ def _stem_priority(path: str, stem: str) -> tuple[int, int, int, str]:
     return (parent_match, low_value, len(parts), path)
 
 
+def stem_key(path: str) -> str | None:
+    """The import-stem *path* is filed under in the stem map, or ``None``."""
+    path_obj = Path(path)
+    if path_obj.name == "__init__.py":
+        return path_obj.parent.name.lower() or None
+    return path_obj.stem.lower()
+
+
 def build_stem_map(path_set: set[str]) -> dict[str, list[str]]:
     """Map import-stems to candidate file paths, sorted best-first."""
     buckets: dict[str, list[str]] = {}
     for p in path_set:
-        path_obj = Path(p)
-        if path_obj.name == "__init__.py":
-            parent = path_obj.parent.name
-            if not parent:
-                continue
-            stem = parent.lower()
-        else:
-            stem = path_obj.stem.lower()
+        stem = stem_key(p)
+        if stem is None:
+            continue
         buckets.setdefault(stem, []).append(p)
 
     for stem, paths in buckets.items():

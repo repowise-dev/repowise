@@ -261,6 +261,42 @@ async def test_no_report_falls_back_to_the_graph(client, session, tmp_path):
     assert body["inferred"]["test_file_count"] == 1
 
 
+async def test_code_that_owes_no_test_is_not_applicable_not_unreached(client, session, tmp_path):
+    """Generated and vendored code is listed as owing no test, never counted unreached."""
+    repo = await create_test_repo(client, tmp_path)
+    await save_health_metrics(
+        session,
+        repo["id"],
+        [
+            _metric("src/a.py"),
+            _metric("src/b.py"),
+            # The stored origin decides; the path alone reads it as production.
+            {**_metric("src/client.py"), "code_origin": "generated"},
+            _metric("vendor/lib/x.py"),
+        ],
+    )
+    await _seed_graph(
+        session,
+        repo["id"],
+        nodes={
+            "tests/test_a.py": True,
+            "src/a.py": False,
+            "src/b.py": False,
+            "src/client.py": False,
+            "vendor/lib/x.py": False,
+        },
+        edges=_calls("tests/test_a.py", "src/a.py"),
+    )
+    await session.commit()
+
+    inferred = (await _get(client, repo["id"]))["inferred"]
+
+    exempt = {f["file_path"] for f in inferred["files"] if f.get("not_applicable")}
+    assert exempt == {"src/client.py", "vendor/lib/x.py"}
+    assert (inferred["files_reached"], inferred["files_not_reached"]) == (1, 1)
+    assert inferred["files_not_applicable"] == 2
+
+
 async def test_a_repo_with_no_tests_at_all_says_none_not_inferred(
     client, session, tmp_path
 ):

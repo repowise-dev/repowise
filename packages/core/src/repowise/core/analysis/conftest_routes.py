@@ -415,15 +415,21 @@ def _runs_by_attribute(attr: str) -> bool:
     )
 
 
+def _has_dynamic_load(text: str) -> bool:
+    return any(m in text for m in PY_DYNAMIC_LOAD_MARKERS)
+
+
 def _globals_used(
     node: ast.FunctionDef | ast.AsyncFunctionDef, scope: symtable.SymbolTable
 ) -> set[str] | None:
     """The module names *node* reads, or None when it imports or assigns outside itself."""
-    if any(m in ast.unparse(node) for m in PY_DYNAMIC_LOAD_MARKERS) or any(
+    # The cheap walk first, and one unparse for every marker: unparsing per
+    # marker was most of a finalize's test-route time.
+    if any(
         (isinstance(sub, (ast.Import, ast.ImportFrom)) and not _stdlib_import(sub))
         or (isinstance(sub, ast.Attribute) and _runs_by_attribute(sub.attr))
         for sub in ast.walk(node)
-    ):
+    ) or _has_dynamic_load(ast.unparse(node)):
         return None
     # Decorators and defaults run in the module's scope, the body in its own.
     defaults = [*node.decorator_list, *node.args.defaults, *node.args.kw_defaults]
@@ -503,7 +509,9 @@ def _module_names(tree: ast.Module, counts: Mapping[str, int]) -> _ModuleNames:
         and isinstance(value, (ast.Call, ast.Dict, ast.List, ast.Set))
         and all(s.id in outside for s in ast.walk(value) if isinstance(s, ast.Name))
     } | {n: "cache_clear" for n, node in functions.items() if _cached(node, outside, tree.body)}
-    return _ModuleNames(_parents(tree), frozenset(literals), frozenset(outside), resets, functions)
+    # Only a reset is checked against its parents; most modules have none.
+    parents = _parents(tree) if resets else {}
+    return _ModuleNames(parents, frozenset(literals), frozenset(outside), resets, functions)
 
 
 def _not_local(deps: Mapping[str, set[str] | None]) -> set[str]:
@@ -1118,14 +1126,16 @@ def _judge_routes(
     facts: dict[str, ConftestFacts | None] = {}
     consts: dict[str, EntryNames] = {}
     uses: dict[tuple, ConftestUse] = {}
+    # Entries share re-export origins, each probed by path: read every file once per call.
+    source_of = lru_cache(maxsize=None)(read_source) if read_source else None
     for target, conf, route in ((t, c, r) for t, by in routes.items() for c, r in by.items()):
         if conf not in facts:
             source = read(conf)
             facts[conf] = None if source is None else ConftestFacts.parse(source, conf)
         # The changed file's own local names may be what changed.
         others = route.entries - {target}
-        for e in others - set(consts) if read_source else ():
-            consts[e] = entry_names(e, read_source)
+        for e in others - set(consts) if source_of else ():
+            consts[e] = entry_names(e, source_of)
         stable = {e: names for e in others if e in consts and (names := consts[e].stable(target))}
         _judge(conf, route, facts[conf], plugin_loader, uses, stable)
 

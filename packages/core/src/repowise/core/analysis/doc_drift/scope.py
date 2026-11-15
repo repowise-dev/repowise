@@ -31,7 +31,7 @@ from ..change_health.sources import FileChange, GitRevisionSource
 from ..git_cli import split_revspec
 from .constants import MANIFEST_NAMES
 from .extractor import is_checkable_document
-from .resolver import join_relative
+from .resolver import readings
 
 #: Command runner (the part of a command target before ``:``) to the manifest
 #: basenames that declare its targets.
@@ -93,12 +93,12 @@ class ChangeScope:
         kind = str(finding["kind"])
         target = str(finding["target"])
         if kind in ("path", "link"):
-            if any(self._removes(p) for p in _spellings(doc, target)):
+            if any(self._removes(p) for p in _readings(finding, target)):
                 return "removed"
         elif kind == "anchor":
             host = target.partition("#")[0]
             if host and any(
-                p in self.changed or p in self.removed for p in _spellings(doc, host)
+                p in self.changed or p in self.removed for p in _readings(finding, host)
             ):
                 return "anchor_host"
         elif kind == "command":
@@ -122,10 +122,10 @@ class ChangeScope:
         return any(r.startswith(prefix) for r in self.removed)
 
 
-def _spellings(doc: str, target: str) -> tuple[str, ...]:
-    """*target* as written and joined relative to *doc*: the resolver's two readings."""
-    relative = join_relative(doc, target)
-    return (target,) if relative == target else (target, relative)
+def _readings(finding: Mapping[str, Any], target: str) -> tuple[str, ...]:
+    """The paths the resolver reads *target* as, for *finding*'s reference."""
+    raw = str(finding.get("raw") or "")
+    return readings(str(finding["file_path"]), raw, target, is_link=finding["kind"] != "path")
 
 
 def scope_findings(

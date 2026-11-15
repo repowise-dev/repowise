@@ -91,6 +91,8 @@ def _run_level() -> tuple[list[GeneratedPage], _RecordingJobSystem, _RecordingSt
             vector_store=store,
             completed_page_summaries={},
             timings=None,
+            gen=SimpleNamespace(_prior_pages={}, embed_failed_pages=0),
+            _stored_vector_ids=None,
         )
         return await _GenerationRun.run_level(
             run,
@@ -155,6 +157,8 @@ def test_the_streaming_sink_receives_the_sanitized_page() -> None:
             vector_store=_RecordingStore(),
             completed_page_summaries={},
             timings=None,
+            gen=SimpleNamespace(_prior_pages={}, embed_failed_pages=0),
+            _stored_vector_ids=None,
         )
         await _GenerationRun.run_level(run, [("module_page:p", preamble())], level=4)
 

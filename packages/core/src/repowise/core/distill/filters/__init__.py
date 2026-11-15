@@ -10,6 +10,7 @@ from __future__ import annotations
 from repowise.core.distill.filters import (  # noqa: F401  (registration side effect)
     build_output,
     file_listing,
+    file_read,
     git_diff,
     git_log,
     git_status,

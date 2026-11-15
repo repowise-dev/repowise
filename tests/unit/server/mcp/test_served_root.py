@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.persistence.models import Repository
-from repowise.server.mcp_server import _meta, _server, _state
+from repowise.server.mcp_server import _meta, _state
 from tests.unit.cli.test_update_e2e import _git
 from tests.unit.server.mcp.test_working_tree_freshness import _make_repo
 
@@ -57,7 +57,7 @@ def test_moved_repo_reports_dirty_files_of_the_served_checkout(
     out = _meta.build_meta(repository=row, targets=["pricing.py"])
 
     assert out["working_tree_dirty"] == 1
-    assert "repowise update --working-tree" in out["stale_warning"]
+    assert "differs in the working tree" in out["stale_warning"]
     assert out["index_behind"] is False
 
 
@@ -94,10 +94,18 @@ def test_the_served_path_needs_an_index_and_a_single_repo_server(tmp_path: Path,
 
 
 @pytest.mark.asyncio
-async def test_the_served_row_is_the_one_row_its_store_holds(factory, session, repo_id) -> None:
+async def test_the_served_row_is_the_one_row_its_store_holds(
+    factory, session, repo_id, tmp_path, monkeypatch
+) -> None:
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    monkeypatch.setattr(_state, "_served_repo_id", None)
     await session.commit()
-    assert await _server._served_repository_id(factory) == repo_id
+    await _state.publish_served_repo_id(factory)
+    assert _state._served_repo_id == repo_id
 
     session.add(Repository(id="second", name="second", local_path="/elsewhere"))
     await session.commit()
-    assert await _server._served_repository_id(factory) is None
+    await _state.publish_served_repo_id(factory)
+    assert _state._served_repo_id is None

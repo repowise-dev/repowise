@@ -1,7 +1,7 @@
 """Tests for the stale generated-page sweep.
 
-Module/scc pages key on clustering ordinals and layer pages on display
-names — identities that drift between runs. A full run's output is
+Module and cycle pages key on clustering ordinals and member hashes
+— identities that drift between runs. A full run's output is
 authoritative for those page types: anything it did not reproduce is a
 stranded duplicate from an earlier run and must be swept.
 """
@@ -89,13 +89,13 @@ async def test_sweep_removes_pages_absent_from_run(async_session):
 async def test_sweep_skips_types_the_run_did_not_produce(async_session):
     repo = await insert_repo(async_session)
     async_session.add(_page_row(repo.id, "module_page", "community-1"))
-    async_session.add(_page_row(repo.id, "layer_page", "layer:Data"))
+    async_session.add(_page_row(repo.id, "scc_page", "scc-Data"))
     await async_session.flush()
 
-    # The run produced layer pages but no module pages (e.g. the module level
+    # The run produced cycle pages but no module pages (e.g. the module level
     # was skipped) — module pages must survive.
     swept = await _sweep_stale_generated_pages(
-        async_session, repo.id, [_generated("layer_page", "layer:Data")]
+        async_session, repo.id, [_generated("scc_page", "scc-Data")]
     )
     await async_session.commit()
 
@@ -105,7 +105,7 @@ async def test_sweep_skips_types_the_run_did_not_produce(async_session):
         .scalars()
         .all()
     )
-    assert set(remaining) == {"module_page:community-1", "layer_page:layer:Data"}
+    assert set(remaining) == {"module_page:community-1", "scc_page:scc-Data"}
 
 
 async def test_sweep_never_touches_unswept_page_types(async_session):
@@ -145,20 +145,20 @@ async def test_authoritative_type_sweeps_when_zero_produced(async_session):
     """Regression for the live mini-taskq bug.
 
     A curated full run derived modules 1:1 with layers (every module
-    ``wholeLayer``-skipped), so it emitted layer pages and ZERO module pages
+    ``wholeLayer``-skipped), so it emitted cycle pages and ZERO module pages
     while still being authoritative for ``module_page``. The pre-curated
     community module page must be swept even though the run produced none.
     """
     repo = await insert_repo(async_session)
     async_session.add(_page_row(repo.id, "module_page", "community-0"))
-    async_session.add(_page_row(repo.id, "layer_page", "layer:Data"))
+    async_session.add(_page_row(repo.id, "scc_page", "scc-Data"))
     await async_session.flush()
 
     swept = await _sweep_stale_generated_pages(
         async_session,
         repo.id,
-        [_generated("layer_page", "layer:Data")],
-        {"module_page", "layer_page"},
+        [_generated("scc_page", "scc-Data")],
+        {"module_page", "scc_page"},
     )
     await async_session.commit()
 
@@ -168,17 +168,17 @@ async def test_authoritative_type_sweeps_when_zero_produced(async_session):
         .scalars()
         .all()
     )
-    assert set(remaining) == {"layer_page:layer:Data"}
+    assert set(remaining) == {"scc_page:scc-Data"}
 
 
-async def test_degraded_run_does_not_wipe_layer_pages(async_session):
+async def test_degraded_run_does_not_wipe_scc_pages(async_session):
     """A community-fallback (degraded) run is authoritative for nothing.
 
-    It produces module pages but no layer authority, so pre-existing curated
-    layer pages it cannot reproduce must survive — degradation honesty.
+    It produces module pages but no cycle authority, so pre-existing curated
+    cycle pages it cannot reproduce must survive — degradation honesty.
     """
     repo = await insert_repo(async_session)
-    async_session.add(_page_row(repo.id, "layer_page", "layer:Core"))
+    async_session.add(_page_row(repo.id, "scc_page", "scc-Core"))
     async_session.add(_page_row(repo.id, "module_page", "community-1"))
     await async_session.flush()
 
@@ -191,7 +191,7 @@ async def test_degraded_run_does_not_wipe_layer_pages(async_session):
     await async_session.commit()
 
     # The stale community module page is swept (its type was produced), but the
-    # curated layer page is untouched (not produced, not authoritative). The
+    # curated cycle page is untouched (not produced, not authoritative). The
     # produced ``community-2`` page is upserted elsewhere, not by the sweep, so
     # it is not among the seeded rows here.
     assert swept == ["module_page:community-1"]
@@ -200,14 +200,14 @@ async def test_degraded_run_does_not_wipe_layer_pages(async_session):
         .scalars()
         .all()
     )
-    assert set(remaining) == {"layer_page:layer:Core"}
+    assert set(remaining) == {"scc_page:scc-Core"}
 
 
 async def test_incremental_no_authority_sweeps_nothing(async_session):
     """Incremental no-KG run: generated_pages None + empty authority → no-op."""
     repo = await insert_repo(async_session)
     async_session.add(_page_row(repo.id, "module_page", "community-1"))
-    async_session.add(_page_row(repo.id, "layer_page", "layer:Core"))
+    async_session.add(_page_row(repo.id, "scc_page", "scc-Core"))
     await async_session.flush()
 
     swept = await _sweep_stale_generated_pages(async_session, repo.id, None, set())
@@ -230,7 +230,7 @@ async def test_resumed_pages_are_not_swept(async_session):
     # the fourth, which the outage had killed.
     for ordinal in (1, 2, 3):
         async_session.add(_page_row(repo.id, "module_page", f"community-{ordinal}"))
-    async_session.add(_page_row(repo.id, "layer_page", "layer:Core"))
+    async_session.add(_page_row(repo.id, "scc_page", "scc-Core"))
     await async_session.flush()
 
     swept = await _sweep_stale_generated_pages(
@@ -238,7 +238,7 @@ async def test_resumed_pages_are_not_swept(async_session):
         repo.id,
         [_generated("module_page", "community-4")],
         set(),
-        {f"module_page:community-{i}" for i in (1, 2, 3)} | {"layer_page:layer:Core"},
+        {f"module_page:community-{i}" for i in (1, 2, 3)} | {"scc_page:scc-Core"},
     )
     await async_session.commit()
 
@@ -252,7 +252,7 @@ async def test_resumed_pages_are_not_swept(async_session):
         "module_page:community-1",
         "module_page:community-2",
         "module_page:community-3",
-        "layer_page:layer:Core",
+        "scc_page:scc-Core",
     }
 
 
@@ -291,27 +291,27 @@ async def test_authoritative_empty_type_still_keeps_preserved_pages(async_sessio
     """Authority plus resume: retire the unclaimed, keep what the resume stood on.
 
     An authoritative type sweeps even when the run emitted none of it, which is
-    the one path that could still delete every layer page on a resume. The
+    the one path that could still delete every cycle page on a resume. The
     preserved set has to win there too.
     """
     repo = await insert_repo(async_session)
-    async_session.add(_page_row(repo.id, "layer_page", "layer:Core"))
-    async_session.add(_page_row(repo.id, "layer_page", "layer:Gone"))
+    async_session.add(_page_row(repo.id, "scc_page", "scc-Core"))
+    async_session.add(_page_row(repo.id, "scc_page", "scc-Gone"))
     await async_session.flush()
 
     swept = await _sweep_stale_generated_pages(
         async_session,
         repo.id,
         [],
-        {"layer_page"},
-        {"layer_page:layer:Core"},
+        {"scc_page"},
+        {"scc_page:scc-Core"},
     )
     await async_session.commit()
 
-    assert swept == ["layer_page:layer:Gone"]
+    assert swept == ["scc_page:scc-Gone"]
     remaining = (
         (await async_session.execute(select(Page.id).where(Page.repository_id == repo.id)))
         .scalars()
         .all()
     )
-    assert set(remaining) == {"layer_page:layer:Core"}
+    assert set(remaining) == {"scc_page:scc-Core"}

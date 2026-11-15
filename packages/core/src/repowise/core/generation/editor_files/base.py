@@ -74,6 +74,15 @@ class BaseEditorFileGenerator(ABC):
         template = self._jinja_env.get_template(self.template_name)
         return template.render(data=data)
 
+    def has_managed_section(self, repo_path: Path) -> bool:
+        """True when the file at *repo_path* already carries this generator's section."""
+        target = repo_path / self.filename
+        marker_start = self.MARKER_START_FMT.format(tag=self.marker_tag)
+        try:
+            return marker_start in target.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return False
+
     def write(self, repo_path: Path, data: EditorFileData) -> Path:
         """Write the file to *repo_path*, preserving user content outside markers.
 

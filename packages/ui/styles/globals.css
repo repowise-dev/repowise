@@ -263,8 +263,9 @@
   --color-node-undocumented: #9a8da0; /* light; overridden in .dark */
   --viz-node-stroke: rgba(36, 27, 44, 0.25); /* halo so nodes read on bg */
 
-  /* Mermaid / generated diagrams — blueprint look: ink blocks on a faint
-     grid, dashed connectors, brand-orange entry node. */
+  /* Canvas diagrams (C4, graph edges, workspace map) — blueprint look: ink
+     blocks on a faint grid, dashed connectors. Mermaid diagrams do not use
+     these; they paint from the neutral plane, border and text tokens. */
   --color-diagram-node-fill: #241b2c; /* ink plum block */
   --color-diagram-node-fill-2: #4a4152; /* recessed gray-plum ink (supporting cast) */
   --color-diagram-node-text: #fbf6f1; /* warm paper on ink */
@@ -273,8 +274,7 @@
 
   /* KG canvas node faces — light mode is "blueprint drawn ON the paper":
      warm-white cards with a crisp ink outline (user pick, 2026-06-05);
-     dark mode aliases back to the solid ink blocks. Mermaid keeps using
-     the diagram-node tokens above. */
+     dark mode aliases back to the solid ink blocks. */
   --color-kg-node-fill: #fffdf8; /* warm white card */
   --color-kg-node-fill-2: #f3ece2; /* cream-taupe supporting card */
   --color-kg-node-text: #241b2c; /* dark plum ink text */
@@ -605,7 +605,7 @@
   --color-node-undocumented: #6f6678;
   --viz-node-stroke: rgba(222, 210, 235, 0.22);
 
-  /* Mermaid / generated diagrams — dark: raised plum blocks on subtle grid.
+  /* Canvas diagrams — dark: raised plum blocks on subtle grid.
      Border alpha 0.45: the boundary (not the fill) carries the 3:1 non-text
      separation on the near-black canvas — see contrast_check.py. */
   --color-diagram-node-fill: #322a3e;

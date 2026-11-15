@@ -89,43 +89,22 @@ def _write_health_analysis_meta(
     status = (
         "available" if latest_commit else "provenance_unknown" if metrics else "unavailable"
     )
-    analysis: dict[str, Any] = {
-        "status": status,
-        "source": "stored_health_analysis",
-        "recomputed_this_call": False,
-        "live_verification": {
-            "basis": (
-                "index_commit_and_live_git_head"
-                if meta.get("indexed_commit") and meta.get("live_head")
-                else "unavailable"
-            ),
-            "source_bytes_verified": False,
-        },
-        "refresh": {
-            "command": "repowise update",
-            "precondition": "commit health-relevant working-tree changes first",
-            "required_before_comparison": True,
-        },
-    }
+    # Only what varies: when and which commit sit beside it in ``health_analyzed_*``,
+    # and a block that never changes (where the figures come from, how to refresh
+    # them) would only repeat on every call.
+    analysis: dict[str, Any] = {"status": status}
     if not metrics:
         analysis["reason"] = "no_stored_health_metrics"
     if analyzed:
-        analyzed_at = latest_at.isoformat()
-        analysis["analyzed_at"] = analyzed_at
-        meta["health_analyzed_at"] = analyzed_at
+        meta["health_analyzed_at"] = latest_at.isoformat()
         if latest_commit:
-            analyzed_commit = latest_commit[:12]
-            analysis["analyzed_commit"] = analyzed_commit
-            meta["health_analyzed_commit"] = analyzed_commit
+            meta["health_analyzed_commit"] = latest_commit[:12]
         if commits_count > 1:
-            analysis["analyzed_commits_distinct"] = commits_count
             meta["health_analyzed_commits_distinct"] = commits_count
         if not latest_commit:
             analysis["reason"] = "analysis_commit_not_recorded"
-            analysis["analyzed_commit"] = None
-    else:
-        analysis["recorded_at"] = None
-        analysis["recorded_commit"] = None
-        if metrics:
-            analysis["reason"] = "analysis_timestamp_not_recorded"
+    elif metrics:
+        analysis["reason"] = "analysis_timestamp_not_recorded"
+    if status != "available":
+        analysis["refresh"] = "repowise update"
     meta["health_analysis"] = analysis
