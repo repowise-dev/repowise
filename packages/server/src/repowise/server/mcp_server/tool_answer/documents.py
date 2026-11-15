@@ -121,7 +121,7 @@ def _front_matter_end(lines: list[str]) -> int:
     return next((n for n, line in enumerate(lines[1:], 2) if line.strip() == "---"), 0)
 
 
-def _lines(root: Path, path: str, terms: list[str], asked: list[str] = ()) -> list[dict]:
+def _lines(root: Path, path: str, terms: list[str], asked: tuple[str, ...] | list[str] = ()) -> list[dict]:
     """The lines of *path* holding any of *terms*: the body's in file order,
     then front matter's (``key:``, ``url:``), which says less.
 
@@ -148,6 +148,8 @@ def _lines(root: Path, path: str, terms: list[str], asked: list[str] = ()) -> li
     for n, line in opening[: max(_DOC_LINES_MAX - len(rows), 0)]:
         rows.setdefault(n, _line_row(path, n, line, "match"))
     for term in (t for t in asked if t not in terms):
+        if len(rows) >= _DOC_LINES_MAX:
+            break
         for row in (r for r in scan_literal(root, [path], term, True)[0] if r["line"] > end):
             if len(rows) >= _DOC_LINES_MAX:
                 break
