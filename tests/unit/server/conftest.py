@@ -59,6 +59,7 @@ def _create_test_app():
         repos,
         search,
         security,
+        settings,
         symbols,
         webhooks,
         wins,
@@ -116,6 +117,7 @@ def _create_test_app():
     app.include_router(refactoring.router)
     app.include_router(providers.router)
     app.include_router(security.router)
+    app.include_router(settings.router)
 
     return app
 

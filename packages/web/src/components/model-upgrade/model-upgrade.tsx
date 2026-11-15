@@ -52,6 +52,8 @@ function useSheetLabels(): Partial<ModelUpgradeSheetLabels> {
       pages: (count) => t("pages", { count }),
       counting: t("counting"),
       signedInNote: (name) => t("signedInNote", { name }),
+      planNote: (name, minutes) =>
+        minutes ? t("planNoteTimed", { name, minutes }) : t("planNote", { name }),
       costNote: (cost) => t("costNote", { cost }),
       pricing: t("pricing"),
       keyNote: t("keyNote"),
@@ -87,8 +89,14 @@ function useModelSources(repoId: string, open: boolean) {
   );
   const providers = useMemo(() => data?.providers ?? [], [data]);
   const sources = useMemo(() => orderModelSources(providers), [providers]);
+  const route = data?.plan_route;
+  const planRoute = useMemo(
+    () => (route ? { providerId: route.provider, minutes: route.minutes ?? null } : null),
+    [route],
+  );
   return {
     sources,
+    planRoute,
     keyProviders: useMemo(() => pasteKeyProviders(providers), [providers]),
     activeProvider: data?.active.provider ?? null,
     loading: isLoading,
@@ -143,7 +151,7 @@ export function ModelUpgrade({
   const keyLabels = useProviderFormLabels(true);
   const refreshProviders = useRefreshProviders();
   const bulk = useBulkGenerate(repoId);
-  const { sources, keyProviders, activeProvider, loading } = useModelSources(repoId, open);
+  const { sources, planRoute, keyProviders, activeProvider, loading } = useModelSources(repoId, open);
 
   // null until the user picks: the default follows the detected sources.
   const [picked, setPicked] = useState<string | null>(null);
@@ -201,6 +209,7 @@ export function ModelUpgrade({
         keyProviders={keyProviders}
         onAddKey={addKey}
         estimate={estimate}
+        planRoute={planRoute}
         onWrite={() => void write()}
         writing={writing}
         hostedHref={hostedLink("model_sheet", "keys")}

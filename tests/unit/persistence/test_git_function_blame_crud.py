@@ -140,3 +140,23 @@ async def test_function_commit_shas_by_file(async_session) -> None:
         "a.py": [("foo", 1, 10, ["s2", "s1"])],
         "b.py": [("bar", 4, 8, ["s3"])],
     }
+
+
+@pytest.mark.asyncio
+async def test_replace_drops_a_reblamed_files_vanished_functions(async_session) -> None:
+    from repowise.core.persistence.crud import replace_git_function_blame_for_files
+
+    repo = await insert_repo(async_session)
+    await upsert_git_function_blame_bulk(
+        async_session,
+        repo.id,
+        [_row("a.py::old", mods=3), _row("a.py::kept", mods=2), _row("b.py::other", mods=1)],
+    )
+    await replace_git_function_blame_for_files(
+        async_session, repo.id, [_row("a.py::kept", mods=4), _row("a.py::new", mods=1)]
+    )
+    await async_session.commit()
+
+    rows = {r.symbol_id: r.mod_count for r in await get_git_function_blames(async_session, repo.id)}
+    # b.py was not re-blamed, so its row stays.
+    assert rows == {"a.py::kept": 4, "a.py::new": 1, "b.py::other": 1}

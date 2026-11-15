@@ -9,10 +9,12 @@ so the hook's raw SQL is exercised against the true column names.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
 
+import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from repowise.cli.commands.augment_cmd import decision_inject
@@ -33,6 +35,18 @@ from repowise.core.persistence.models import (
 )
 
 _REPO_ID = "repo1"
+
+#: The real gate, kept before the fixture below replaces it.
+_SESSION_START_ENABLED = decision_inject._session_start_enabled
+
+
+@pytest.fixture(autouse=True)
+def _session_start_on(monkeypatch):
+    """Session-start delivery is off by default; these tests exercise it on.
+
+    The tests of the default put :data:`_SESSION_START_ENABLED` back.
+    """
+    monkeypatch.setattr(decision_inject, "_session_start_enabled", lambda repo_path: True)
 
 
 async def _build_wiki_db(repo_root: Path, decisions: list[dict], extras=None) -> None:
@@ -79,7 +93,7 @@ async def _build_wiki_db(repo_root: Path, decisions: list[dict], extras=None) ->
                     )
                 )
             # Review state lives here, not on the record: three of the four
-            # review actions leave ``status`` alone (see _untouched_clause).
+            # review actions leave ``status`` alone.
             if spec.get("review_state"):
                 session.add(
                     DecisionCandidateMeta(
@@ -201,7 +215,8 @@ async def test_an_accepted_record_off_status_reaches_neither_lane(tmp_path, monk
     assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
 
 
-async def test_global_session_rule_injected_without_file_overlap(tmp_path, monkeypatch):
+async def test_an_agreement_is_not_delivered_at_session_start(tmp_path, monkeypatch):
+    """A rule about how the work is done belongs in the agent's own files."""
     await _build_wiki_db(
         tmp_path,
         [
@@ -219,15 +234,10 @@ async def test_global_session_rule_injected_without_file_overlap(tmp_path, monke
     )
     _quiet_git(monkeypatch)  # no seeds at all
 
-    block = decision_inject._session_decision_block(tmp_path, "sess-1")
-    assert block is not None
-    assert "Never use em dashes" in block
-    assert "Batch the embed calls" not in block
+    assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
 
 
-async def test_global_rules_are_capped_and_never_crowd_out_linked(tmp_path, monkeypatch):
-    """Unlinked rules are always eligible, so a cap keeps them from flooding
-    the block; a working-set-linked decision must still get through."""
+async def test_agreements_take_no_slot_beside_a_linked_decision(tmp_path, monkeypatch):
     rules = [
         {
             "id": f"d-g{i}",
@@ -246,7 +256,7 @@ async def test_global_rules_are_capped_and_never_crowd_out_linked(tmp_path, monk
     block = decision_inject._session_decision_block(tmp_path, "sess-1")
     assert block is not None
     assert "Use JWT auth" in block
-    assert sum("Global rule" in ln for ln in block.splitlines()) == 2
+    assert "Global rule" not in block
 
 
 async def test_unlinked_architectural_decision_is_not_global(tmp_path, monkeypatch):
@@ -275,8 +285,9 @@ async def test_unlinked_architectural_decision_is_not_global(tmp_path, monkeypat
     assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
 
 
-async def test_agreement_is_global_whatever_mined_it(tmp_path, monkeypatch):
-    """An agreement reaches the agent on its noun, not on its source."""
+async def test_an_agreement_stays_out_whatever_recorded_it(tmp_path, monkeypatch):
+    """The noun decides, not the source: an agreement typed in by hand is held
+    back the same way, as is one nobody accepted."""
     await _build_wiki_db(
         tmp_path,
         [
@@ -288,13 +299,21 @@ async def test_agreement_is_global_whatever_mined_it(tmp_path, monkeypatch):
                 "kind": AGREEMENT_KIND,
                 "confidence": 0.8,
                 "links": [],
-            }
+            },
+            {
+                "id": "d-agent-rule",
+                "title": "Commit on the feature branch",
+                "decision": "never commit to main",
+                "source": "agent",
+                "kind": AGREEMENT_KIND,
+                "accepted": False,
+                "status": "proposed",
+                "links": [],
+            },
         ],
     )
     _quiet_git(monkeypatch)
-    block = decision_inject._session_decision_block(tmp_path, "sess-1")
-    assert block is not None
-    assert "Never use em dashes" in block
+    assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
 
 
 async def test_agreement_that_names_files_is_scored_on_them(tmp_path, monkeypatch):
@@ -484,24 +503,98 @@ async def test_edit_notice_fires_once_per_decision(tmp_path):
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", state) is None
 
 
-async def test_edit_notice_module_link_prefix_match(tmp_path):
+async def test_edit_notice_a_named_directory_governs_files_under_it(tmp_path):
+    """A scope naming a directory governs what is in it, a new file included."""
     await _build_wiki_db(
         tmp_path,
         [
             {
-                "id": "d-mod",
+                "id": "d-dir",
                 "title": "Core stays sync",
                 "decision": "no asyncio inside src/core",
-                "links": [("src/core", "module")],
+                "links": [("src/core", "file")],
             }
         ],
     )
-    state: dict = {}
-    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/deep/file.py", "s1", state)
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/deep/new.py", "s1", {})
     assert notice is not None
     assert "Core stays sync" in notice
-    # Not a prefix match: src/core_extra must not count as src/core.
-    assert decision_inject._edit_decision_notice(tmp_path, "src/core_extra/f.py", "s1", {}) is None
+    # Not a string prefix: src/core_extra is not under src/core.
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core_extra/f.py", "s2", {}) is None
+
+
+async def test_edit_notice_a_directory_stored_with_a_trailing_slash_still_governs(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [{"id": "d-slash", "title": "Core stays sync", "decision": "x", "links": [("src\\core\\", "file")]}],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/a.py", "s1", {}) is not None
+
+
+async def test_edit_notice_ignores_derived_module_links(tmp_path):
+    """A module link is the folder of a record's files, not a claim on the folder.
+
+    Read as one, a decision about two files governed every file under their
+    directory tree; on this repository that put six or more decisions on a
+    third of all files. ``get_why`` path mode follows the same rule.
+    """
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-two-files",
+                "title": "Price local models at zero",
+                "decision": "local models cost nothing",
+                "links": [("src/gen/cost.py", "file"), ("src/gen", "module")],
+            }
+        ],
+    )
+    assert decision_inject._edit_decision_notice(tmp_path, "src/gen/other.py", "s1", {}) is None
+    assert decision_inject._edit_decision_notice(tmp_path, "src/gen/cost.py", "s1", {}) is not None
+
+
+def _governing(n: int, path: str = "src/gen/models.py", prefix: str = "d") -> list[dict]:
+    return [
+        {
+            "id": f"{prefix}-{i}",
+            "title": f"Rule {i}",
+            "decision": f"rule {i} holds",
+            "rationale": f"reason {i}",
+            "links": [(path, "file")],
+        }
+        for i in range(n)
+    ]
+
+
+async def test_edit_notice_one_decision_is_exactly_one_line(tmp_path):
+    await _build_wiki_db(tmp_path, _governing(1))
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/gen/models.py", "s1", {})
+    assert notice == (
+        "[repowise] src/gen/models.py is governed by a standing decision: "
+        "Rule 0 because reason 0."
+    )
+
+
+async def test_edit_notice_names_up_to_three_decisions_one_line_each(tmp_path):
+    await _build_wiki_db(tmp_path, _governing(5))
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/gen/models.py", "s1", {})
+    lines = notice.splitlines()
+    assert lines[0] == "[repowise] src/gen/models.py is governed by standing decisions:"
+    assert len(lines) == 4
+    assert all(ln.startswith("- Rule ") and ln.endswith(".") for ln in lines[1:])
+    # The two left over are named on the next edit, not lost.
+    again = decision_inject._edit_decision_notice(tmp_path, "src/gen/models.py", "s1", {})
+    assert len(again.splitlines()) == 3
+
+
+async def test_edit_notice_names_the_file_rule_before_the_directory_rule(tmp_path):
+    specs = _governing(1, "src/gen")
+    specs.append(
+        {"id": "d-file", "title": "Exact", "decision": "x", "links": [("src/gen/a.py", "file")]}
+    )
+    await _build_wiki_db(tmp_path, specs)
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/gen/a.py", "s1", {})
+    assert notice.splitlines()[1].startswith("- Exact")
 
 
 async def test_edit_notice_dedup_survives_state_loss(tmp_path):
@@ -586,10 +679,62 @@ async def test_echoed_title_is_not_repeated(tmp_path):
     assert "because" not in notice
 
 
+async def test_edit_notice_no_double_period_when_rationale_ends_a_sentence(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-cli",
+                "title": "Keep the CLI help text short",
+                "decision": "keep help short",
+                "rationale": "to ensure usability on narrow terminals.",
+                "links": [("src/cli.py", "file")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/cli.py", "s1", {})
+    assert notice is not None
+    assert "because to ensure usability on narrow terminals" in notice
+    assert notice.endswith("terminals.")
+    assert not notice.endswith("..")
+
+
+async def test_edit_notice_no_period_after_clipped_rationale(tmp_path):
+    await _build_wiki_db(
+        tmp_path,
+        [
+            {
+                "id": "d-embed",
+                "title": "Batch embed calls",
+                "decision": "batch embed calls",
+                "rationale": "provider rate limits " * 20,
+                "links": [("src/embed.py", "file")],
+            }
+        ],
+    )
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/embed.py", "s1", {})
+    assert notice is not None
+    assert notice.endswith("…")
+    assert not notice.endswith("….")
+
+
 async def test_edit_notice_respects_session_cap(tmp_path):
     await _build_wiki_db(tmp_path, [_AUTH_DECISION])
-    state = {"decisions_shown": ["x", "y", "z"]}
+    state = {"decisions_shown": [f"x{i}" for i in range(decision_inject._MAX_EDIT_NOTICES)]}
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", state) is None
+
+
+async def test_edit_notice_session_cap_holds_across_files(tmp_path):
+    specs = (
+        _governing(3, "src/a.py", "a")
+        + _governing(3, "src/b.py", "b")
+        + _governing(1, "src/c.py", "c")
+    )
+    await _build_wiki_db(tmp_path, specs)
+    assert decision_inject._edit_decision_notice(tmp_path, "src/a.py", "s1", {}) is not None
+    assert decision_inject._edit_decision_notice(tmp_path, "src/b.py", "s1", {}) is not None
+    # Six named this session: the cap is spent, whatever the next file holds.
+    assert decision_inject._edit_decision_notice(tmp_path, "src/c.py", "s1", {}) is None
 
 
 async def test_edit_notice_silent_for_an_agreement(tmp_path):
@@ -685,13 +830,8 @@ _CANDIDATE = {
 }
 
 
-async def test_a_candidate_reaches_the_session_labelled_as_one(tmp_path, monkeypatch):
-    """The other half of the contract from the tombstone, and the harder half.
-
-    Before this the hook filtered on acceptance and nothing else, so a store
-    with zero acceptance rows injected nothing at all. Restoring candidates as
-    an unlabelled second stream would have been worse than the silence.
-    """
+async def test_a_background_record_reaches_the_session_labelled_as_one(tmp_path, monkeypatch):
+    """Labelled as context, and never handed over as a to-do."""
     await _build_wiki_db(tmp_path, [_CANDIDATE])
     _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
 
@@ -699,7 +839,9 @@ async def test_a_candidate_reaches_the_session_labelled_as_one(tmp_path, monkeyp
 
     assert block is not None
     assert "Rotate the auth keys nightly" in block
-    assert "NOT accepted" in block
+    assert "not in force" in block
+    assert "review" not in block.lower()
+    assert "decision confirm" not in block
     assert "Standing decisions" not in block
 
 
@@ -713,7 +855,7 @@ async def test_an_accepted_decision_is_told_apart_from_a_candidate(tmp_path, mon
     assert block is not None
     lines = block.splitlines()
     accepted_at = next(i for i, ln in enumerate(lines) if "Standing decisions" in ln)
-    candidate_at = next(i for i, ln in enumerate(lines) if "NOT accepted" in ln)
+    candidate_at = next(i for i, ln in enumerate(lines) if "not in force" in ln)
     jwt_at = next(i for i, ln in enumerate(lines) if "Use JWT auth" in ln)
     rotate_at = next(i for i, ln in enumerate(lines) if "Rotate the auth keys" in ln)
     assert accepted_at < jwt_at < candidate_at < rotate_at
@@ -776,7 +918,7 @@ async def test_candidates_cannot_displace_an_accepted_decision(tmp_path, monkeyp
             if "Standing decisions" in ln:
                 seen = True
                 continue
-            if "NOT accepted" in ln:
+            if "not in force" in ln:
                 break
             if seen:
                 out.append(ln)
@@ -959,17 +1101,16 @@ async def test_a_candidate_is_never_injected(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Delivery on capture tier (see tier-2026-09-20/RESULTS.md)
+# Edit-time delivery: in force only
 # ---------------------------------------------------------------------------
 
 
-async def test_a_measured_tier_reaches_edit_time_without_an_acceptance(tmp_path, monkeypatch):
-    """A `comment` record governs the file it was extracted from, unreviewed.
+async def test_a_mined_record_never_reaches_edit_time(tmp_path, monkeypatch):
+    """Background is never injected by a hook, whatever tier mined it.
 
-    That tier is in `_EVIDENCE_TIERS` because a census of its 27 pairs put it
-    at 100% governs with a Wilson lower bound of 88%, over the pre-registered
-    90/80 bar. Before this, an unaccepted record could not reach this surface
-    at all, and the store has held zero acceptance rows since 2026-09-12.
+    ``comment`` records used to be delivered here unaccepted, on a census of
+    how well they name their file; that made a mined record speak at the one
+    moment reserved for decisions in force.
     """
     await _build_wiki_db(
         tmp_path,
@@ -983,22 +1124,7 @@ async def test_a_measured_tier_reaches_edit_time_without_an_acceptance(tmp_path,
                 "accepted": False,
                 "status": "proposed",
                 "links": [("src/core/auth.py", "file")],
-            }
-        ],
-    )
-    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {})
-    assert notice is not None
-    # It must not borrow the reviewed lane's word for itself.
-    assert "mined but not reviewed" in notice
-    assert "standing decision" not in notice
-
-
-async def test_an_unmeasured_tier_stays_out_of_edit_time(tmp_path, monkeypatch):
-    """`commit_selected` measured 71% on 191 pairs, under the bar, so it does
-    not get to say a file is governed. It remains a SessionStart candidate."""
-    await _build_wiki_db(
-        tmp_path,
-        [
+            },
             {
                 "id": "d-selected",
                 "title": "Bind the selected files",
@@ -1008,31 +1134,20 @@ async def test_an_unmeasured_tier_stays_out_of_edit_time(tmp_path, monkeypatch):
                 "accepted": False,
                 "status": "proposed",
                 "links": [("src/core/auth.py", "file")],
-            }
-        ],
-    )
-    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
-
-
-async def test_a_dismissed_record_is_not_rescued_by_its_tier(tmp_path, monkeypatch):
-    """Acceptance overrides downward. A candidate someone tombstoned leaves
-    ``active``/``proposed``, and no capture tier may bring it back."""
-    await _build_wiki_db(
-        tmp_path,
-        [
+            },
             {
-                "id": "d-dismissed",
-                "title": "Keep the parser allocation-free",
-                "decision": "reuse the buffer",
-                "source": "comment",
-                "scope_basis": "",
-                "accepted": False,
-                "status": "dismissed",
-                "links": [("src/core/auth.py", "file")],
-            }
+                "id": "d-control",
+                "title": "A decision in force",
+                "decision": "someone put this in force",
+                "source": "agent",
+                "accepted": True,
+                "links": [("src/other.py", "file")],
+            },
         ],
     )
-    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
+    # The control proves the statement ran: silence below is a refusal.
+    assert decision_inject._edit_decision_notice(tmp_path, "src/other.py", "s1", {}) is not None
+    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s2", {}) is None
 
 
 async def test_an_accepted_record_still_speaks_as_a_standing_decision(tmp_path, monkeypatch):
@@ -1133,42 +1248,19 @@ async def test_a_store_without_scope_basis_delivers_nothing_on_evidence(tmp_path
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
 
 
-async def test_a_tier_does_not_reach_through_a_module_link(tmp_path, monkeypatch):
-    """The census measured (record, file) pairs, so the tier delivers on file
-    links and not on module ones. On the live store the difference is 12
-    measured file matches against 78 files a module prefix would have served.
-    """
-    await _build_wiki_db(
-        tmp_path,
-        [
-            {
-                "id": "d-module",
-                "title": "Centralize package attribution",
-                "decision": "one helper decides what a package is",
-                "source": "comment",
-                "scope_basis": "",
-                "accepted": False,
-                "status": "proposed",
-                "links": [("src/core/health", "module")],
-            }
-        ],
-    )
-    assert decision_inject._edit_decision_notice(tmp_path, "src/core/health/engine.py", "s1", {}) is None
-
-
-async def test_an_accepted_module_link_still_governs_its_subtree(tmp_path, monkeypatch):
+async def test_a_directory_scope_governs_its_subtree(tmp_path, monkeypatch):
     """The control for the test above: restricting the tier to file links must
-    not disturb the module path a reviewed decision already had."""
+    not disturb a reviewed decision whose scope names a directory."""
     await _build_wiki_db(
         tmp_path,
         [
             {
-                "id": "d-module-accepted",
+                "id": "d-dir-accepted",
                 "title": "Centralize package attribution",
                 "decision": "one helper decides what a package is",
                 "source": "comment",
                 "accepted": True,
-                "links": [("src/core/health", "module")],
+                "links": [("src/core/health", "file")],
             }
         ],
     )
@@ -1177,63 +1269,122 @@ async def test_an_accepted_module_link_still_governs_its_subtree(tmp_path, monke
     assert "governed by a standing decision" in notice
 
 
-async def test_a_merged_candidate_is_not_delivered_on_its_tier(tmp_path, monkeypatch):
-    """Review overrides downward even where it leaves ``status`` alone.
+# ---------------------------------------------------------------------------
+# Session start is off by default
+# ---------------------------------------------------------------------------
 
-    ``merge_candidate`` records the acceptance on the *target* and leaves the
-    folded-away candidate at ``proposed`` with no acceptance row of its own, so
-    an acceptance test alone reads it as untouched. Only ``review_state`` knows.
+
+async def test_session_start_is_silent_by_default(tmp_path, monkeypatch):
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+    monkeypatch.setattr(decision_inject, "_session_start_enabled", _SESSION_START_ENABLED)
+
+    assert decision_inject._session_decision_block(tmp_path, "sess-1") is None
+    assert not (tmp_path / ".repowise" / "sessions" / "sessions.db").exists()
+
+
+async def test_session_start_speaks_once_switched_on(tmp_path, monkeypatch):
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION])
+    _quiet_git(monkeypatch, dirty=["src/core/auth.py"])
+    monkeypatch.setattr(decision_inject, "_session_start_enabled", _SESSION_START_ENABLED)
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  session_start: true\n", encoding="utf-8"
+    )
+
+    block = decision_inject._session_decision_block(tmp_path, "sess-1")
+    assert block is not None and "Use JWT auth" in block
+
+
+
+# ---------------------------------------------------------------------------
+# End to end: recorded through the CLI, delivered through the hook
+# ---------------------------------------------------------------------------
+
+
+def test_an_edit_to_a_governed_file_gets_exactly_one_short_notice(tmp_path):
+    """The whole path a user takes: record, put in force, edit, read the notice.
+
+    Recorded through ``decision add`` so the node links are the ones the real
+    write path makes, and delivered through the hook entry with a payload
+    built by ``json.dumps``, the way Claude Code sends it.
     """
-    await _build_wiki_db(
-        tmp_path,
+    from click.testing import CliRunner
+
+    from repowise.cli.main import cli
+
+    asyncio.run(_build_wiki_db(tmp_path, []))
+    (tmp_path / "src" / "core").mkdir(parents=True)
+    (tmp_path / "src" / "core" / "auth.py").write_text("x = 1\n", encoding="utf-8")
+    runner = CliRunner()
+    added = runner.invoke(
+        cli,
         [
-            {
-                "id": "d-open",
-                "title": "Keep the parser allocation-free",
-                "decision": "reuse the buffer",
-                "source": "comment",
-                "scope_basis": "",
-                "accepted": False,
-                "status": "proposed",
-                "links": [("src/core/open.py", "file")],
-            },
-            {
-                "id": "d-merged",
-                "title": "Keep the parser allocation-free",
-                "decision": "reuse the buffer",
-                "source": "comment",
-                "scope_basis": "",
-                "accepted": False,
-                "status": "proposed",
-                "review_state": "merged",
-                "links": [("src/core/auth.py", "file")],
-            },
+            "decision", "add",
+            "--title", "Use JWT auth",
+            "--decision", "Service auth uses short-lived JWT tokens",
+            "--rationale", "session cookies broke the mobile clients",
+            "--affects", "src/core/auth.py",
+            "--format", "json",
+            str(tmp_path),
         ],
+        input="",
     )
-    # The control: an untouched record on the same tier is delivered, so the
-    # silence below is a refusal and not a query that failed.
-    assert decision_inject._edit_decision_notice(tmp_path, "src/core/open.py", "s1", {}) is not None
-    assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s2", {}) is None
+    assert added.exit_code == 0, added.output
+    decision_id = json.loads(added.output)["decision"]["id"]
+    confirmed = runner.invoke(
+        cli, ["decision", "confirm", decision_id, "--as", "tester", str(tmp_path)], input=""
+    )
+    assert confirmed.exit_code == 0, confirmed.output
+
+    payload = {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(tmp_path / "src" / "core" / "auth.py")},
+        "tool_response": {"filePath": str(tmp_path / "src" / "core" / "auth.py")},
+        "cwd": str(tmp_path),
+        "session_id": "0b6f2c1e-9d4a-4c55-8a51-6f1f3f1d2e10",
+    }
+    out = runner.invoke(cli, ["augment"], input=json.dumps(payload))
+    assert out.exit_code == 0, out.output
+    context = json.loads(out.output)["hookSpecificOutput"]["additionalContext"]
+    notices = [ln for ln in context.splitlines() if "governed by" in ln]
+    assert notices == [
+        "[repowise] src/core/auth.py is governed by a standing decision: Use JWT auth "
+        "because session cookies broke the mobile clients."
+    ]
 
 
-async def test_a_candidate_flagged_for_a_split_is_not_delivered_on_its_tier(tmp_path, monkeypatch):
-    """``request_split`` touches neither ``status`` nor the acceptance log
-    either. A record a person flagged as bundling two choices is not one to
-    hand an agent as a single rule about a file."""
-    await _build_wiki_db(
-        tmp_path,
-        [
-            {
-                "id": "d-split",
-                "title": "Keep the parser allocation-free",
-                "decision": "reuse the buffer",
-                "source": "comment",
-                "scope_basis": "",
-                "accepted": False,
-                "status": "proposed",
-                "review_state": "needs_split",
-                "links": [("src/core/auth.py", "file")],
-            }
-        ],
+# ---------------------------------------------------------------------------
+# decisions.mode
+# ---------------------------------------------------------------------------
+
+
+def _set_mode(root: Path, mode: str, extra: str = "") -> None:
+    (root / ".repowise" / "config.yaml").write_text(
+        f"decisions:\n  mode: {mode}\n{extra}", encoding="utf-8"
     )
+
+
+async def test_off_silences_the_edit_notice(tmp_path):
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION])
+    _set_mode(tmp_path, "off")
+
     assert decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {}) is None
+
+
+async def test_read_only_keeps_the_edit_notice(tmp_path):
+    await _build_wiki_db(tmp_path, [_AUTH_DECISION])
+    _set_mode(tmp_path, "read_only")
+
+    notice = decision_inject._edit_decision_notice(tmp_path, "src/core/auth.py", "s1", {})
+
+    assert notice is not None and "Use JWT auth" in notice
+
+
+@pytest.mark.parametrize(("mode", "on"), [("off", False), ("read_only", True), ("full", True)])
+def test_session_start_follows_the_mode(tmp_path, monkeypatch, mode, on):
+    monkeypatch.setattr(decision_inject, "_session_start_enabled", _SESSION_START_ENABLED)
+    (tmp_path / ".repowise").mkdir(exist_ok=True)
+    _set_mode(tmp_path, mode, "  session_start: true\n")
+
+    assert decision_inject._session_start_enabled(tmp_path) is on

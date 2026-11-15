@@ -122,14 +122,14 @@ def _tc(test_id: str, source_file: str, covered_lines: list[int]):
     )
 
 
-async def _change_risk(monkeypatch, repo: Path, factory) -> dict:
+async def _change_risk(monkeypatch, repo: Path, factory, **filters) -> dict:
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
 
     async def _context(_: str | None) -> SimpleNamespace:
         return SimpleNamespace(path=str(repo), session_factory=factory)
 
     monkeypatch.setattr(module, "_resolve_repo_context", _context)
-    return await module.get_change_risk("HEAD", baseline=0, include=["tests"])
+    return await module.get_change_risk("HEAD", baseline=0, include=["tests"], **filters)
 
 
 async def _risk_directive(monkeypatch, repo: Path, factory, changed: list[str]) -> dict:
@@ -166,10 +166,147 @@ async def test_a_test_that_runs_with_every_subset_is_named(tmp_path, monkeypatch
 
     assert it["status"] == "selected"
     assert it["run_all"] is False
-    assert it["tests_to_run"] == ["tests/test_status.py", "tests/test_walks.py"]
-    assert it["why"]["tests/test_walks.py"].startswith("runs with every subset: it lists")
-    assert it["always_run_total"] == 1
+    # It runs, and is counted, but is never listed as a test of the change.
+    assert it["tests_to_run"] == ["tests/test_status.py"]
+    assert "tests/test_walks.py" not in it["why"]
+    assert it["total"] == 2 and it["always_run_total"] == 1
+    assert "1 of them because they run with every subset (not listed)" in it["summary"]
     assert it["basis_by_file"] == {"src/status.py": "import-graph"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {},
+        {"exclude_patterns": ["docs/"]},
+        {"extensions": [".py"]},
+        {"include_paths": ["src/"]},
+    ],
+    ids=["none", "exclude_patterns", "extensions", "include_paths"],
+)
+async def test_change_risk_selects_tests_once_while_it_scores(
+    tmp_path, monkeypatch, filters
+) -> None:
+    """The selection starts beside the score, and the tests block joins it.
+
+    The request's path filters narrow the score, not the tests block's change,
+    so a filtered call shares the same selection.
+    """
+    import asyncio
+    from collections import OrderedDict
+
+    from repowise.server.mcp_server import _test_selection
+
+    repo, base = _repo(tmp_path, {**_STATUS, "docs/notes.md": "one\n"})
+    # The docs edit is what each filter drops from the score.
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "docs/notes.md": "two\n"},
+        "fix: status",
+    )
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        [("tests/test_status.py", "src/status.py", "imports")],
+        db_file=tmp_path / "wiki.db",
+    )
+    runs: list[str] = []
+    real = _test_selection._select_here
+
+    async def _recording(*args, **kwargs):
+        runs.append(args[2].label)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(_test_selection, "_select_here", _recording)
+    monkeypatch.setattr(_test_selection, "_DONE", OrderedDict())
+    tool = importlib.import_module("repowise.server.mcp_server.tool_change_risk.tool")
+    real_score = tool._score_change
+    during: list[bool] = []
+
+    async def _slow_score(*args, **kwargs):
+        for _ in range(500):
+            if runs:
+                break
+            await asyncio.sleep(0.01)
+        during.append(bool(runs))
+        return await real_score(*args, **kwargs)
+
+    monkeypatch.setattr(tool, "_score_change", _slow_score)
+
+    it = (await _change_risk(monkeypatch, repo, factory, **filters))["impacted_tests"]
+
+    assert it["status"] == "selected"
+    assert "tests/test_status.py" in it["tests_to_run"]
+    assert during == [True]
+    assert len(runs) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_change_past_the_ceiling_runs_every_test_without_selecting(
+    tmp_path, monkeypatch
+) -> None:
+    """Past the ceiling the answer is "run every test" at once.
+
+    Selecting from a change that wide spent the whole selection budget, and
+    held the interpreter against the rest of the reply, before saying the same.
+    """
+    from repowise.core.analysis.change_health import service
+    from repowise.server.mcp_server import _test_selection
+
+    repo, base = _repo(tmp_path, _STATUS)
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "tests/test_status.py": "x = 1\n"},
+        "fix: status",
+    )
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        [("tests/test_status.py", "src/status.py", "imports")],
+    )
+
+    started: list[str] = []
+    real = _test_selection.select_change_tests
+
+    async def _recording(*args, **kwargs):
+        started.append(args[2].label)
+        return await real(*args, **kwargs)
+
+    # The head start reads it off the tool package, the tests block off its module.
+    tool_pkg = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    monkeypatch.setattr(tool_pkg, "select_change_tests", _recording)
+    monkeypatch.setattr(_test_selection, "select_change_tests", _recording)
+    monkeypatch.setattr(service, "MAX_CHANGED_FILES", 1)
+
+    it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
+
+    assert it["status"] == "too_large"
+    assert it["run_all"] is True
+    assert "2 changed files exceeds the 1-file ceiling" in it["summary"]
+    assert started == []
+
+
+@pytest.mark.asyncio
+async def test_a_change_at_the_ceiling_is_still_selected_from(tmp_path, monkeypatch) -> None:
+    from repowise.core.analysis.change_health import service
+
+    repo, base = _repo(tmp_path, _STATUS)
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "tests/test_status.py": "x = 1\n"},
+        "fix: status",
+    )
+    factory = await _index(
+        base,
+        {"src/status.py": False, "tests/test_status.py": True},
+        [("tests/test_status.py", "src/status.py", "imports")],
+    )
+    monkeypatch.setattr(service, "MAX_CHANGED_FILES", 2)
+
+    it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
+
+    assert it["status"] != "too_large"
 
 
 @pytest.mark.asyncio
@@ -376,7 +513,7 @@ def test_a_checkout_git_could_not_list_does_not_read_as_no_tests() -> None:
     )
     empty = Checkout([], [], PytestRoots(), lambda _p: None, lambda _p: True)
 
-    selection = select(change, result, TestSelectionConfig(), empty, Plan({}, {}, []))
+    selection = select(change, result, TestSelectionConfig(), empty, Plan({}, {}, [], {}))
 
     assert selection.run_all is True
     assert any("git could not list" in r for r in selection.reasons)
@@ -412,8 +549,10 @@ async def test_workspace_get_risk_selects_in_the_member_repository(tmp_path, mon
     ]
 
     assert seen == ["backend"]
-    # test_walks.py is tracked there but not indexed, so it runs with every subset.
-    assert directive["tests_to_run"] == ["tests/test_status.py", "tests/test_walks.py"]
+    # test_walks.py is tracked there but not indexed, so it runs with every
+    # subset: counted, not listed as a test of the change.
+    assert directive["tests_to_run"] == ["tests/test_status.py"]
+    assert directive["tests_always_run_total"] == 1
     assert directive["tests_run_all"] is False
 
 
@@ -448,8 +587,9 @@ async def test_both_tools_list_tests_in_the_selections_run_order(tmp_path, monke
     it = (await _change_risk(monkeypatch, repo, factory))["impacted_tests"]
     directive = await _risk_directive(monkeypatch, repo, factory, ["src/status.py"])
 
-    # tests/test_walks.py imports nothing indexed, so it runs with every subset, last.
-    order = ["tests/test_z.py", "tests/test_status.py", "tests/test_walks.py"]
+    # tests/test_walks.py imports nothing indexed, so it runs with every subset,
+    # last, and is not listed.
+    order = ["tests/test_z.py", "tests/test_status.py"]
     assert it["tests_to_run"] == order and list(it["why"]) == order
     assert directive["tests_to_run"] == order
 
@@ -528,7 +668,7 @@ def test_a_lagging_index_that_fills_most_of_the_suite_reads_degraded(tmp_path, g
     assert "why" not in block and "basis_by_file" not in block
     if gap:
         assert block["status"] == "degraded" and block["run_all"] is False
-        assert "so 15 of 20 test files were selected; run the whole suite" in block["summary"]
+        assert "so 15 of 20 test files were selected, listed likeliest to fail first; run the whole" in block["summary"]
         # Most of the suite under a run-everything verdict: no tail is stored.
         assert collector.empty
     else:
@@ -573,7 +713,9 @@ def test_the_broadcast_and_import_closure_are_counted_apart_from_the_headline(tm
     assert block["total"] == 1
     assert block["broadcast_total"] == 3 and block["import_closure_total"] == 1
     assert block["tests_to_run"] == ["tests/test_0.py"]
-    assert block["summary"].startswith("1 test(s) to run for this change (1 of 20 test files).")
+    assert block["summary"].startswith(
+        "1 test(s) to run for this change (1 of 20 test files), listed likeliest to fail first."
+    )
     assert "3 more test(s) must still run because a conftest" in block["summary"]
     assert "1 more test(s) must still run because they import the change" in block["summary"]
     # The tests counted apart are stored for recovery, not dropped.
@@ -599,3 +741,242 @@ def test_get_risk_counts_the_broadcast_and_import_closure_apart(tmp_path) -> Non
     summary = tests_summary(len(population), basis, fields, {}, False, 10)
     assert "3 more test(s) must still run because a conftest" in summary
     assert "1 more test(s) must still run because they import the change" in summary
+
+
+def test_only_a_named_commit_starts_a_selection_before_the_score() -> None:
+    from repowise.server.mcp_server.tool_change_risk.impacted import _start_selection
+
+    ctx = SimpleNamespace(path=".", session_factory=object())
+    # Both read as uncommitted or staged work to git, never as the scored HEAD.
+    assert _start_selection(ctx, None) is None
+    assert _start_selection(ctx, "") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "filters",
+    [{}, {"exclude_patterns": ["docs/"]}],
+    ids=["none", "exclude_patterns"],
+)
+async def test_change_risk_compares_health_once_while_it_scores(
+    tmp_path, monkeypatch, filters
+) -> None:
+    """A named change's health comparison starts beside the score, with the excludes it counts."""
+    import asyncio
+
+    repo, base = _repo(tmp_path, {**_STATUS, "docs/notes.md": "one\n", ".riskignore": "*.lock\n"})
+    _commit(
+        repo,
+        {"src/status.py": "def status():\n    return 2\n", "docs/notes.md": "two\n"},
+        "fix: status",
+    )
+    factory = await _index(base, {"src/status.py": False, "tests/test_status.py": True})
+    module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
+    real_compare = module._compare_health
+    compared: list[tuple] = []
+
+    def _recording(repo_path, revspec, extensions, excludes, *rest):
+        compared.append(tuple(excludes))
+        return real_compare(repo_path, revspec, extensions, excludes, *rest)
+
+    monkeypatch.setattr(module, "_compare_health", _recording)
+    tool = importlib.import_module("repowise.server.mcp_server.tool_change_risk.tool")
+    real_score = tool._score_change
+    during: list[bool] = []
+    counted: list[tuple] = []
+
+    async def _slow_score(*args, **kwargs):
+        for _ in range(500):
+            if compared:
+                break
+            await asyncio.sleep(0.01)
+        during.append(bool(compared))
+        result, error = await real_score(*args, **kwargs)
+        counted.append(tuple(result.riskignore_excludes + result.request_excludes))
+        return result, error
+
+    monkeypatch.setattr(tool, "_score_change", _slow_score)
+
+    out = await _change_risk(monkeypatch, repo, factory, **filters)
+
+    assert out["health_delta"]["status"]
+    assert during == [True]
+    assert compared == counted
+    assert "*.lock" in compared[0]
+
+
+@pytest.mark.asyncio
+async def test_an_early_comparison_with_other_excludes_is_replaced(monkeypatch) -> None:
+    import asyncio
+
+    from repowise.server.mcp_server.tool_change_risk import tool
+
+    async def _never(*_a):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(tool, "_delta_with_index", _never)
+    early = asyncio.get_running_loop().create_future()
+    result = SimpleNamespace(riskignore_excludes=("a",), request_excludes=("b",))
+    assert tool._delta_for((("a", "b"), early), None, "HEAD", None, result, (), {}) is early
+
+    fresh = tool._delta_for((("a",), early), None, "HEAD", None, result, (), {})
+
+    assert fresh is not early
+    assert early.cancelled()
+    fresh.cancel()
+
+
+def _with_rule_tests(*, run_all: bool = False) -> object:
+    from repowise.core.analysis.test_selection import Selection
+
+    suite = ("tests/test_a.py", "tests/lens.test.ts", "tests/test_b.py")
+    return Selection(
+        run_all=run_all,
+        reasons=("an index-gap reason",) if run_all else (),
+        tests=suite,
+        test_files=suite,
+        known_tests=(*suite, *(f"tests/test_{i}.py" for i in range(10))),
+        why={
+            "tests/test_a.py": "src/a.py changed (call-graph)",
+            "tests/lens.test.ts": "runs with every subset: it runs a prebuilt bundle",
+            "tests/test_b.py": "src/a.py changed (import-graph)",
+        },
+    )
+
+
+@pytest.mark.parametrize("run_all", [False, True])
+def test_a_rule_selected_test_is_never_listed_as_a_test_of_the_change(tmp_path, run_all) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block(
+        {}, _with_rule_tests(run_all=run_all), collector, limit=10, label="impacted_tests",
+        direct=[],
+    )
+
+    assert block["tests_to_run"] == ["tests/test_a.py", "tests/test_b.py"]
+    assert block["total"] == 3 and block["always_run_total"] == 1
+    assert block["truncated"] is True and not collector.empty
+
+    # The Review page and ``repowise risk`` build the command from the list:
+    # without an agent head it is the whole run list, rule-selected tests too.
+    review = selection_block(
+        {}, _with_rule_tests(run_all=run_all), collector, limit=10, label="impacted_tests"
+    )
+    assert review["tests_to_run"] == ["tests/test_a.py", "tests/lens.test.ts", "tests/test_b.py"]
+    assert review["truncated"] is False
+
+
+def test_a_direct_selector_stands_for_its_file(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block(
+        {},
+        _with_rule_tests(),
+        collector,
+        limit=200,
+        label="impacted_tests",
+        direct=["tests/test_a.py::t"],
+    )
+
+    # The id stands for its file, which is not listed again; test_b.py would
+    # take the head past the characters the two files take, so it waits.
+    assert block["tests_to_run"] == ["tests/test_a.py::t"]
+    assert block["truncated"] is True
+    assert block["summary"].startswith("3 test(s) to run for this change")
+
+
+def test_direct_test_links_lead_the_listed_tests(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block(
+        {},
+        _with_rule_tests(run_all=True),
+        collector,
+        limit=2,
+        label="impacted_tests",
+        direct=["tests/test_b.py::test_edit"],
+    )
+
+    # The test id leads; the head never takes more characters than the file
+    # list it replaces ("tests/test_a.py" + "tests/test_b.py"), so it stops there.
+    assert block["tests_to_run"] == ["tests/test_b.py::test_edit"]
+    assert block["tests_to_run_kind"] == "test_id"
+    assert block["total"] == 3 and block["truncated"] is True
+
+
+def test_get_risk_never_lists_a_rule_selected_test(tmp_path) -> None:
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server.tool_risk.directives import ChangeTests, _tests_to_run
+    from repowise.server.mcp_server.tool_risk.directives_pr import tests_summary
+
+    collector = OmissionCollector("get_risk", store_path=tmp_path / "omissions.db")
+    population, basis, fields = _tests_to_run(
+        ChangeTests(selection=_with_rule_tests()), collector
+    )
+
+    assert population == ["tests/test_a.py", "tests/test_b.py"]
+    assert fields["tests_always_run_total"] == 1
+    assert "tests/lens.test.ts" not in fields["tests_to_run_why"]
+    summary = tests_summary(len(population), basis, fields, {}, False, 10)
+    assert "1 more run with every subset, not listed" in summary
+
+
+@pytest.mark.asyncio
+async def test_direct_test_selectors_read_the_edited_functions_links(tmp_path) -> None:
+    """One-hop tests of the functions whose lines changed, in a run the selection makes."""
+    import json
+
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.persistence.models import FunctionFact, WikiSymbol
+    from repowise.server.mcp_server._test_selection import direct_test_selectors
+
+    factory = await _index("base", {"src/a.py": False, "tests/test_a.py": True})
+    async with factory() as s:
+        for name, start, end, tests in (
+            ("edited", 1, 5, [["tests/test_a.py::test_edited", 1], ["tests/test_a.py::test_far", 2]]),
+            ("untouched", 10, 12, [["tests/test_a.py::test_untouched", 1]]),
+            ("elsewhere", 20, 22, [["tests/test_other.py::test_x", 1]]),
+        ):
+            sid = f"src/a.py::{name}"
+            s.add(
+                WikiSymbol(
+                    repository_id="repo1", file_path="src/a.py", symbol_id=sid, name=name,
+                    qualified_name=name, kind="function", start_line=start, end_line=end,
+                )
+            )
+            s.add(FunctionFact(repository_id="repo1", symbol_id=sid, tests_json=json.dumps(tests)))
+        await s.commit()
+    change = ChangeSet(
+        files={"src/a.py": FileDiff(path="src/a.py", new_lines={3, 21})},
+        deleted=set(), label="HEAD", base=None, head=None,
+    )
+
+    selectors = await direct_test_selectors(factory, change, _with_rule_tests())
+
+    # test_far is two hops out; test_other.py is not in the selection's run.
+    assert selectors == ["tests/test_a.py::test_edited"]
+
+
+def test_a_test_the_change_edits_is_listed_whatever_rule_runs_it(tmp_path) -> None:
+    from repowise.core.analysis.test_selection import Selection
+    from repowise.server.mcp_server._budget import OmissionCollector
+    from repowise.server.mcp_server._test_selection import selection_block
+
+    selection = Selection(
+        run_all=False,
+        reasons=(),
+        tests=("tests/test_new.py",),
+        test_files=("tests/test_new.py",),
+        basis={"tests/test_new.py": "changed-test"},
+        why={"tests/test_new.py": "runs with every subset: not indexed yet"},
+    )
+    collector = OmissionCollector("get_change_risk", store_path=tmp_path / "omissions.db")
+    block = selection_block({}, selection, collector, limit=10, label="t", direct=[])
+
+    assert block["tests_to_run"] == ["tests/test_new.py"]

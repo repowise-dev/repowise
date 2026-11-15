@@ -1,5 +1,9 @@
 export * from "./decisions-table";
 export * from "./decision-review-lanes";
+export * from "./decision-agent-prompts";
+export * from "./decision-review-drawer";
+export * from "./decision-confirm";
+export * from "./decision-origin";
 export * from "./decision-capture-settings";
 export * from "./module-link-editor";
 export * from "./verification-badge";
@@ -12,3 +16,4 @@ export * from "./decision-create-form";
 export * from "./decision-governance";
 export * from "./decision-staleness";
 export * from "./checkout-facts";
+export * from "./bulk-review";

@@ -61,7 +61,12 @@ def assign_containers(
     out of the map. The root ``""`` is the repository root.
     """
     paths = list(file_paths)
-    roots = manifest_roots({*manifests, *(p for p in paths if is_manifest(p))})
+    present = set(paths)
+    roots = manifest_roots(
+        m
+        for m in {*manifests, *(p for p in paths if is_manifest(p))}
+        if not _is_package_module(m, present)
+    )
     candidates = set(roots) or _top_level_dirs(p for p in paths if not is_test_or_example_path(p))
     # Longest first so nested manifests win over their parents.
     ordered = sorted(candidates, key=len, reverse=True)
@@ -83,6 +88,15 @@ def container_name(repo_root: Path | None, manifests: Iterable[str]) -> str | No
         if name:
             return name
     return None
+
+
+def _is_package_module(path: str, present: set[str]) -> bool:
+    """A ``setup.py`` beside an ``__init__.py`` is a module named setup (a
+    ``routers/setup.py`` route file, say), not a manifest: a project root that
+    holds a setup.py is not itself an importable package. The repository root
+    is exempt, since an old flat layout keeps both there."""
+    directory, _, base = path.rpartition("/")
+    return bool(directory) and base.lower() == "setup.py" and f"{directory}/__init__.py" in present
 
 
 def _top_level_dirs(paths: Iterable[str]) -> set[str]:

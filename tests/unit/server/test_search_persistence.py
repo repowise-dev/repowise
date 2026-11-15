@@ -110,6 +110,18 @@ async def test_repo_vector_stores_are_isolated(tmp_path) -> None:
         await store_b.close()
 
 
+def test_repo_stores_keep_the_embedder_of_an_empty_primary_store() -> None:
+    """A multi-repo server's primary store is empty, so falsy; its embedder still wins (#5601)."""
+    from repowise.core.persistence.vector_store import InMemoryVectorStore
+    from repowise.server.search_helpers import _resolve_embedder_from_state
+
+    embedder = MockEmbedder()
+    primary = InMemoryVectorStore(embedder=embedder)
+    assert len(primary) == 0
+
+    assert _resolve_embedder_from_state(SimpleNamespace(vector_store=primary)) is embedder
+
+
 async def test_build_primary_vector_store_postgres_multiple_repos_workspace_config(
     session_factory,
     tmp_path,

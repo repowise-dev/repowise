@@ -122,7 +122,7 @@ export const OVERVIEW_MODEL_COPY: OverviewModelCopy = {
     `${plural(modules, "module", "modules")}, ${formatNumber(entryPoints)} entry points`,
   decisionsEmpty: "No decisions recorded yet",
   decisionsRecorded: (accepted, candidates) =>
-    `recorded, of which ${formatNumber(accepted)} accepted and ${formatNumber(candidates)} awaiting review`,
+    `recorded, of which ${formatNumber(accepted)} in force and ${formatNumber(candidates)} background`,
   refactoringEmpty: "No refactoring analysis yet",
   refactoringOpen: (opportunities) =>
     `open ${plural(opportunities, "opportunity", "opportunities")}, one per file`,
@@ -166,7 +166,6 @@ export interface InventoryCopy {
   securityElsewhere: (elsewhere: number) => string;
   refactoringUnit: string;
   decisionsUnit: string;
-  decisionsDetail: (awaiting: number, drifting: number) => string;
   ownershipUnit: string;
   ownershipDetail: string;
 }
@@ -176,9 +175,7 @@ export const INVENTORY_COPY: InventoryCopy = {
   securityUnit: "in shipped source",
   securityElsewhere: (elsewhere) => `${formatNumber(elsewhere)} more in tests and docs`,
   refactoringUnit: "open opportunities",
-  decisionsUnit: "to review",
-  decisionsDetail: (awaiting, drifting) =>
-    `${formatNumber(awaiting)} awaiting review, ${formatNumber(drifting)} drifting from the code`,
+  decisionsUnit: "drifting from the code",
   ownershipUnit: "sole-owned files",
   ownershipDetail: "One author, no second reader",
 };
@@ -621,7 +618,7 @@ export type InventoryRow = OverviewAttentionAreaRow & { unit?: string };
  * The inventory's area rows, with each count read from the same basis as the
  * explore card and the page it links to: open findings for code health,
  * matches in shipped source for security, open opportunities for
- * refactoring, decisions to review, and sole-owned files for ownership. Rows
+ * refactoring, in-force decisions drifting from their code, and sole-owned files for ownership. Rows
  * whose basis the payload does not carry keep the server's count.
  *
  * Open findings is `open_findings`, the total get_overview and `repowise
@@ -659,9 +656,9 @@ export function inventoryRows(
         if (!d) return area;
         return {
           ...area,
-          total: d.candidates + d.needs_review,
+          total: d.needs_review,
           unit: c.decisionsUnit,
-          detail: c.decisionsDetail(d.candidates, d.needs_review),
+          detail: "",
         };
       }
       case "ownership": {

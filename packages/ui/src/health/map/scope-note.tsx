@@ -14,6 +14,7 @@
 import type { ReactNode } from "react";
 import type { MapScope } from "./types";
 import type { MapCanvasLabels } from "./canvas-labels";
+import { formatNumber } from "../../lib/format";
 
 const ACTION =
   "pointer-events-auto rounded px-1 text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:cursor-wait disabled:opacity-60";
@@ -49,9 +50,9 @@ function Action({
 /** What the cap left out, in the units the server could count. */
 function omittedText(scope: MapScope): string {
   const causes = scope.omitted.performanceFiles;
-  if (causes == null) return `${scope.omitted.files.toLocaleString()} not drawn`;
+  if (causes == null) return `${formatNumber(scope.omitted.files)} not drawn`;
   if (causes === 0) return "every file with a cause worth fixing now is drawn";
-  return `${causes.toLocaleString()} ${plural(causes, "file", "files")} with causes worth fixing now not drawn`;
+  return `${formatNumber(causes)} ${plural(causes, "file", "files")} with causes worth fixing now not drawn`;
 }
 
 function HeldToggle({
@@ -70,7 +71,7 @@ function HeldToggle({
       <Action pending={pending} onClick={() => onChange(!scope.includeHeld)}>
         {scope.includeHeld
           ? "Hide vendored and generated files"
-          : `Include ${held.toLocaleString()} vendored and generated ${plural(held, "file", "files")}`}
+          : `Include ${formatNumber(held)} vendored and generated ${plural(held, "file", "files")}`}
       </Action>
     </Part>
   );
@@ -94,9 +95,9 @@ function SearchPart({
   const pinned = scope.query && scope.query.text === query ? scope.query : null;
   return (
     <Part>
-      <span className="tabular-nums">{matches.toLocaleString()}</span>
+      <span className="tabular-nums">{formatNumber(matches)}</span>
       {pinned
-        ? ` of ${pinned.matches.toLocaleString()} ${plural(pinned.matches, "match", "matches")} drawn`
+        ? ` of ${formatNumber(pinned.matches)} ${plural(pinned.matches, "match", "matches")} drawn`
         : ` ${plural(matches, "match", "matches")} here`}
       {onFindUndrawn && capped && !pinned ? (
         <Part>
@@ -136,14 +137,14 @@ export function MapScopeNote({
       className="pointer-events-none absolute bottom-3 right-3 z-20 max-w-[64%] rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-glass)] px-2.5 py-1.5 text-right text-xs text-[var(--color-text-tertiary)] shadow-sm backdrop-blur-sm sm:max-w-[52%]"
     >
       <span className="font-mono tabular-nums">
-        {scope.shown.toLocaleString()} of {scope.eligible.toLocaleString()}
+        {formatNumber(scope.shown)} of {formatNumber(scope.eligible)}
       </span>{" "}
       files drawn
       {capped ? <Part>{omittedText(scope)}</Part> : null}
       {capped && onDrawMore && more > 0 ? (
         <Part>
           <Action pending={pending} onClick={onDrawMore}>
-            Draw {more.toLocaleString()} more
+            Draw {formatNumber(more)} more
           </Action>
         </Part>
       ) : null}
@@ -230,20 +231,20 @@ export function LoadedNote({
     >
       {loaded === 0 ? (
         <>
-          <span className="font-mono tabular-nums">{total.toLocaleString()}</span> files in folders ·
+          <span className="font-mono tabular-nums">{formatNumber(total)}</span> files in folders ·
           zoom into one to see its files
         </>
       ) : (
         <>
           <span className="font-mono tabular-nums">
-            {loaded.toLocaleString()} of {total.toLocaleString()}
+            {formatNumber(loaded)} of {formatNumber(total)}
           </span>{" "}
           files loaded{loaded < total ? " · zoom in for more" : ""}
         </>
       )}
       {matches !== null ? (
         <Part>
-          <span className="tabular-nums">{matches.toLocaleString()}</span>{" "}
+          <span className="tabular-nums">{formatNumber(matches)}</span>{" "}
           {plural(matches, "match", "matches")} loaded
         </Part>
       ) : null}

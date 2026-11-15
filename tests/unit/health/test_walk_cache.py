@@ -299,3 +299,32 @@ def test_a_changed_files_pass_leaves_the_other_walks_cached(tmp_path: Path, monk
     analyzer().analyze(None, changed_files={"a.py"})
     analyzer().analyze(None)
     assert sorted(calls) == ["a.py", "b.py"]
+
+
+def test_a_sql_walk_without_statement_smells_keys_apart(tmp_path: Path) -> None:
+    # Whether the smells run follows the file's origin, not its bytes, so the
+    # same query under tests/ and under db/ must not share a cached walk.
+    src = b"SELECT a.x FROM a, b;\n"
+    cache = HealthWalkCache(tmp_path)
+
+    def analyzer(origin: str):
+        return SimpleNamespace(
+            read_source=lambda _p: src,
+            _walk_cache=cache,
+            _origins={},
+            _origin=lambda _pf, _source=None: origin,
+        )
+
+    def parsed(name: str):
+        return SimpleNamespace(
+            file_info=SimpleNamespace(path=name, abs_path=str(tmp_path / name), language="sql")
+        )
+
+    vocab = AssertVocabulary()
+    as_test = HealthAnalyzer._walk(analyzer("test"), parsed("tests/q.sql"), vocab)
+    as_prod = HealthAnalyzer._walk(analyzer("production"), parsed("db/q.sql"), vocab)
+    assert (cache.misses, cache.hits) == (2, 0)
+    assert as_test.perf_hits == []
+    assert [h.kind for h in as_prod.perf_hits] == ["sql_cartesian_join"]
+    digest = compute_content_hash(src)
+    assert HealthWalkCache.key("sql", digest) == f"sql:{digest}"

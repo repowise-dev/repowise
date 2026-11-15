@@ -25,6 +25,7 @@ from typing import Any
 
 import structlog
 
+from ..index_persistence import IndexWrite, apply_index_persistence
 from ..persist import persist_analysis, persist_git, persist_ingestion, persist_symbol_analysis
 from ..phase_timing import timed
 from ..progress import emit_phase_failed, emit_warning
@@ -65,11 +66,12 @@ class ResumeController:
         repo_id: str,
         *,
         resume: bool,
+        reap_abandoned: bool = False,
     ) -> None:
         self._sf = session_factory
         self._repo_id = repo_id
         self._resume = resume
-        self._ledger = ResumeLedger(session_factory, repo_id)
+        self._ledger = ResumeLedger(session_factory, repo_id, reap_abandoned=reap_abandoned)
         self._completed: set[ResumePhase] | None = None
         # True once the INDEX phase is provably on disk — either freshly
         # checkpointed this run or rehydrated from a prior run. The caller
@@ -196,6 +198,11 @@ class ResumeController:
                     # the checkpoint total is not mistaken for pure writes.
                     await persist_ingestion(view, session, self._repo_id, timings=timings)
                     await persist_git(view, session, self._repo_id, timings=timings)
+                    await apply_index_persistence(
+                        session,
+                        self._repo_id,
+                        IndexWrite("checkpoint", parsed_files),
+                    )
         except Exception as exc:
             logger.warning("resume_checkpoint_index_failed", error=str(exc))
             # The CLI tells the user their index was saved and that

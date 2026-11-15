@@ -107,7 +107,7 @@ def _install_workspace(
 
     monkeypatch.setattr(_server, "_detect_workspace", lambda _path: (tmp_path, WorkspaceConfig(), None))
     monkeypatch.setattr(_server, "_warm_lancedb", idle_task)
-    monkeypatch.setattr(_server, "_poll_release_check", idle_task)
+    monkeypatch.setattr(_server, "_watch_server_currency", idle_task)
     monkeypatch.setattr("repowise.core.workspace.registry.RepoRegistry", Registry)
     return SimpleNamespace(registries=registries, cancelled_tasks=cancelled_tasks)
 

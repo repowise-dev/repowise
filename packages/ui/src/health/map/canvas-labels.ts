@@ -3,6 +3,8 @@
  * a host can translate them. English by default; the rail's labels extend
  * this set, so one translated object serves both.
  */
+import { formatNumber } from "../../lib/format";
+
 export interface MapCanvasLabels {
   /** A folder's chip under the hotspot lens: "12 hot · 6.4". */
   hotspotChip: (count: number, health: string | null) => string;
@@ -32,7 +34,7 @@ const ORIGIN_NAMES: Record<string, string> = {
   production: "production files",
 };
 
-const n = (v: number) => v.toLocaleString();
+const n = (v: number) => formatNumber(v);
 
 export const DEFAULT_MAP_CANVAS_LABELS: MapCanvasLabels = {
   hotspotChip: (count, health) => (health == null ? `${n(count)} hot` : `${n(count)} hot · ${health}`),

@@ -77,7 +77,6 @@ def test_next_steps_are_serve_and_at_most_two_more():
         {},
         {"dead_unreachable": 12, "dead_unused": 30},
         {"hotspot_count": 4, "top_hotspot": "a.py"},
-        {"decision_count": 9},
     ):
         steps = build_contextual_next_steps(**kwargs)
         assert steps[0][0] == "repowise serve"
@@ -86,12 +85,12 @@ def test_next_steps_are_serve_and_at_most_two_more():
 
 def test_next_steps_findings_rank_below_finishing_the_index():
     """A partial index is a worse problem than an unexplored finding."""
-    steps = build_contextual_next_steps(fast_mode=True, dead_unreachable=40, decision_count=9)
+    steps = build_contextual_next_steps(fast_mode=True, dead_unreachable=40)
     assert steps[1][0] == "repowise update --full"
 
     # With the index complete, the largest finding gets the row.
     found = build_contextual_next_steps(
-        dead_unreachable=12, dead_unused=30, decision_count=9
+        dead_unreachable=12, dead_unused=30
     )
     assert found[1][0] == "repowise dead-code"
 
@@ -242,3 +241,27 @@ def test_declining_the_cost_names_generate_for_the_pages_built_from_code(monkeyp
     run = SimpleNamespace(prior_docs_mode=None, gaps=[], cost_declined=False)
     _generate._after_cost_declined(run)
     assert "Run repowise generate to write it with a model later." in buf.getvalue()
+
+
+def test_next_steps_hand_the_agent_the_background_records_before_findings():
+    steps = build_contextual_next_steps(discovery_records=12, dead_unreachable=4)
+    assert steps[1] == (
+        "repowise decision discover",
+        "a prompt for your agent: check 12 background records on the busiest files",
+    )
+    assert steps[2][0] == "repowise dead-code"
+
+
+def test_next_steps_with_no_background_records_ask_the_agent_to_record():
+    # A keyless index mines no background records; the pass records instead.
+    steps = build_contextual_next_steps(discovery_records=0, hotspot_count=3, top_hotspot="a.py")
+    assert steps[1] == (
+        "repowise decision discover",
+        "a prompt for your agent: record the decisions behind the busiest files",
+    )
+
+
+def test_next_steps_leave_discovery_out_when_the_store_was_not_read():
+    for kwargs in ({"discovery_records": None, "hotspot_count": 3}, {"discovery_records": 0}):
+        cmds = [c for c, _ in build_contextual_next_steps(**kwargs)]
+        assert "repowise decision discover" not in cmds

@@ -62,6 +62,12 @@ def _migrate_claude_code_hooks() -> None:
     migrate_claude_code_hooks()
 
 
+def _migrate_claude_code_mcp_entry() -> None:
+    from repowise.cli.editor_integrations.claude_config import migrate_claude_code_mcp_entry
+
+    migrate_claude_code_mcp_entry()
+
+
 def _migrate_codex_rewrite_hook() -> None:
     from repowise.cli.editor_integrations.codex_config import migrate_codex_rewrite_hook
 
@@ -83,13 +89,24 @@ def _migrate_codex_rewrite_hook() -> None:
 _MIGRATIONS: tuple[tuple[str, Callable[[], None]], ...] = (
     ("claude_code_hooks", _migrate_claude_code_hooks),
     ("codex_rewrite_hook", _migrate_codex_rewrite_hook),
+    ("claude_code_mcp_entry", _migrate_claude_code_mcp_entry),
 )
 
 
 def _expected_stamp() -> str:
+    """Version, migration names and the running install's location.
+
+    The location is there because hook commands pin the script path of the
+    install that wrote them: when another install runs (the old one moved or
+    removed), the migrations run once more and repoint a hook whose script is
+    gone.
+    """
+    import sys
+
     from repowise.cli import __version__
 
-    return f"{__version__} {','.join(name for name, _ in _MIGRATIONS)}"
+    names = ",".join(name for name, _ in _MIGRATIONS)
+    return f"{__version__} {names} {Path(sys.executable).parent.as_posix()}"
 
 
 def _read_stamp() -> str | None:

@@ -250,6 +250,7 @@ class DecisionExtractor:
         parsed_files: list[Any] | None = None,
         source_map: dict[str, bytes] | None = None,
         policy: DecisionPolicy | None = None,
+        existing_pr_shas: set[str] | Sequence[str] | None = None,
     ) -> None:
         self._repo_path = Path(repo_path)
         self._provider = provider
@@ -261,6 +262,7 @@ class DecisionExtractor:
         # Ingestion's {rel_path: bytes} for the indexed set. When given, the
         # marker scan reads it instead of walking and re-reading the tree.
         self._source_map = source_map
+        self._existing_pr_shas = set(existing_pr_shas) if existing_pr_shas is not None else None
 
     def _llm(self, source: str) -> Any | None:
         """The provider *source* may use, or None when its model stage is off.
@@ -572,6 +574,15 @@ class DecisionExtractor:
         ranked, files_by_sha = self._pr_body_candidates()
         if not ranked:
             return []
+        if self._existing_pr_shas is None:
+            from repowise.core.persistence import load_mined_pr_shas
+
+            # Every production entry point uses this miner. Resolve persisted
+            # provenance here instead of relying on an optional caller argument.
+            self._existing_pr_shas = await load_mined_pr_shas(self._repo_path)
+            ranked, files_by_sha = self._pr_body_candidates()
+            if not ranked:
+                return []
         forge = get_forge(detect_forge(self._repo_path))
 
         async def _process_batch(batch: list[dict]) -> list[ExtractedDecision]:
@@ -604,7 +615,14 @@ class DecisionExtractor:
         if not self._git_meta_map:
             return [], {}
         candidates, files_by_sha = pr_candidates(self._git_meta_map)
-        return list(candidates.values())[:_MAX_PR_BODIES], files_by_sha
+        ordered = sorted(
+            candidates.values(),
+            key=lambda c: c.get("date", ""),
+            reverse=True,
+        )
+        if self._existing_pr_shas:
+            ordered = [c for c in ordered if c.get("sha") not in self._existing_pr_shas]
+        return ordered[:_MAX_PR_BODIES], files_by_sha
 
     # ------------------------------------------------------------------
     # Source 5: Comment archaeology (centrality-bounded)
@@ -632,7 +650,7 @@ class DecisionExtractor:
             prompt = COMMENT_ARCHAEOLOGY_PROMPT.format(comments_block=comments_block)
             # Not caught: _run_batches counts a failed batch.
             response = await provider.generate(
-                _SYSTEM_PROMPT, prompt, max_tokens=2500, temperature=0.2
+                _SYSTEM_PROMPT, prompt, max_tokens=_BATCH_MAX_TOKENS, temperature=0.2
             )
             extracted = parse_decisions_reply(response)
             for d in extracted:
@@ -660,10 +678,11 @@ class DecisionExtractor:
         return snippets
 
     def planned_model_calls(self, sources: Collection[str]) -> int:
-        """Model calls the named model-only sources would make; calls none.
+        """Upper bound on named model-only calls; makes no model or store calls.
 
-        Reads the same candidates the miners send, so the estimate and the run
-        cannot drift apart.
+        PR candidates narrow further on the first async mining call when no
+        existing-PR set was supplied: that call loads the store's provenance.
+        Once loaded, planning uses the same narrowed candidate set.
         """
         planned = {
             "git_archaeology": lambda: (len(self._git_archaeology_candidates()[0]), _GIT_BATCH),
@@ -700,7 +719,10 @@ class DecisionExtractor:
         """
         if self._graph is None:
             return []
-        scores = _centrality_scores(self._graph)
+        from repowise.core.ingestion.graph._metrics import without_non_code_edges
+
+        # A README linking to every file, or a co-change partner, is not a dependency vote.
+        scores = _centrality_scores(without_non_code_edges(self._graph))
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         out: list[str] = []
         for node, _score in ranked:
@@ -902,10 +924,14 @@ class DecisionExtractor:
         """Get 1-hop graph neighbors for a file."""
         if self._graph is None:
             return []
+        from repowise.core.ingestion.graph._metrics import without_non_code_edges
+
+        # A doc naming the file, or a file that changes with it, is not one the decision affects.
+        graph = without_non_code_edges(self._graph)
         neighbors: set[str] = set()
-        if file_path in self._graph:
-            neighbors.update(self._graph.successors(file_path))
-            neighbors.update(self._graph.predecessors(file_path))
+        if file_path in graph:
+            neighbors.update(graph.successors(file_path))
+            neighbors.update(graph.predecessors(file_path))
         neighbors.discard(file_path)
         return list(neighbors)[:20]  # Cap at 20
 

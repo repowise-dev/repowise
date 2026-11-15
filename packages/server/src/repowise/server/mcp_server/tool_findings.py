@@ -66,12 +66,18 @@ async def set_finding_status(
     - ``open`` — reset a prior decision.
 
     ``reason`` is a free-text note stored on the row for audit. Returns the
-    new status and its timestamp; raises on an unknown status or an id that
-    does not belong to this repository.
+    new status and its timestamp; an unknown status or an id that does not
+    belong to this repository returns an ``error`` saying which, not a fault.
     """
+    from repowise.server.mcp_server._savings.interaction import error_reply
+
     if status not in ALLOWED_STATUSES:
-        raise ValueError(
-            f"unknown finding status: {status!r}; expected one of {ALLOWED_STATUSES}"
+        return error_reply(
+            "invalid_args",
+            {
+                "error": f"unknown finding status: {status!r}",
+                "remedy": f"Pass one of: {', '.join(ALLOWED_STATUSES)}.",
+            },
         )
 
     if repo == "all":
@@ -97,8 +103,13 @@ async def set_finding_status(
                 None,
             )
         if row is None:
-            raise ValueError(
-                f"refactoring plan not found: {suggestion_id!r} (in this repository)"
+            return error_reply(
+                "not_found",
+                {
+                    "error": f"refactoring plan not found: {suggestion_id!r} (in this repository)",
+                    "remedy": "Use a plan id from get_health(include=[\"refactoring\"]).",
+                    "_meta": _build_meta(repository=repository),
+                },
             )
         updated = await update_refactoring_suggestion_status(
             session, repository.id, row.id, status, reason=reason

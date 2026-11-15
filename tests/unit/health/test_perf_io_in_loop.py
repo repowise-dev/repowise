@@ -644,7 +644,7 @@ def test_perf_findings_score_performance_not_defect():
     assert len(perf) == 2
     scores, deductions = score_file(results)
     assert scores["defect"] == 10.0  # perf never touches the surfaced score
-    assert scores["performance"] < 10.0
+    assert scores["performance"] == 10.0  # io_in_loop is listed, never scored
     # Every perf finding carries 0 defect-pillar impact.
     assert all(d == 0.0 for d in deductions)
 

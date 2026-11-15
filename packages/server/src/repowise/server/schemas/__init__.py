@@ -104,6 +104,8 @@ if TYPE_CHECKING:
         DecisionLaneCountsResponse,
         DecisionLineageEntry,
         DecisionLineageResponse,
+        DecisionPinUpdate,
+        DecisionRecentInfo,
         DecisionRecordResponse,
         DecisionSettings,
         DecisionSettingsUpdate,
@@ -344,6 +346,8 @@ if TYPE_CHECKING:
         WorkspaceUnresolvedLink,
     )
     from .zoom import (
+        ZoomContainerResponse,
+        ZoomExternalResponse,
         ZoomMapResponse,
         ZoomMetricsResponse,
         ZoomNodeResponse,
@@ -442,6 +446,8 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "DecisionLaneCountsResponse",
         "DecisionLineageEntry",
         "DecisionLineageResponse",
+        "DecisionPinUpdate",
+        "DecisionRecentInfo",
         "DecisionRecordResponse",
         "DecisionSettings",
         "DecisionSettingsUpdate",
@@ -655,7 +661,14 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "WorkspaceUnresolvedLink",
     ),
     "views": ("ChartView", "SectionView", "TableView", "ViewPartList"),
-    "zoom": ("ZoomMapResponse", "ZoomMetricsResponse", "ZoomNodeResponse", "ZoomRelationResponse"),
+    "zoom": (
+        "ZoomContainerResponse",
+        "ZoomExternalResponse",
+        "ZoomMapResponse",
+        "ZoomMetricsResponse",
+        "ZoomNodeResponse",
+        "ZoomRelationResponse",
+    ),
 }
 
 _SUBMODULE_OF = {name: module for module, names in _EXPORTS.items() for name in names}
@@ -764,6 +777,8 @@ __all__ = [
     "DecisionLaneCountsResponse",
     "DecisionLineageEntry",
     "DecisionLineageResponse",
+    "DecisionPinUpdate",
+    "DecisionRecentInfo",
     "DecisionRecordResponse",
     "DecisionSettings",
     "DecisionSettingsUpdate",
@@ -961,6 +976,8 @@ __all__ = [
     "WorkspaceTestRecommendation",
     "WorkspaceUnmatchedConsumer",
     "WorkspaceUnresolvedLink",
+    "ZoomContainerResponse",
+    "ZoomExternalResponse",
     "ZoomMapResponse",
     "ZoomMetricsResponse",
     "ZoomNodeResponse",

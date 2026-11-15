@@ -73,3 +73,39 @@ async def test_an_empty_list_says_why(client: AsyncClient, app) -> None:
     await _seed(app, repo["id"])
     full = (await client.get(url)).json()
     assert full["empty_reason"] is None and full["empty_note"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_commit_shows_only_its_important_events(client: AsyncClient, app) -> None:
+    """The commit drawer asks for one commit's events, the ones worth reading."""
+    repo = await create_test_repo(client)
+    rows = [
+        # (id, kind, severity, commit)
+        (1, "decision_stale", "info", "c"),  # info and not an important kind: dropped
+        (2, "contract_broken", "info", "c"),  # important kind at any severity
+        (3, "new_hotspot", "medium", "c"),  # above info
+        (4, "bus_factor_drop", "high", "d"),  # another commit
+    ]
+    async with get_session(app.state.session_factory) as session:
+        for i, kind, severity, sha in rows:
+            session.add(
+                EngineEventRecord(
+                    id=f"{i:032d}",
+                    repository_id=repo["id"],
+                    kind=kind,
+                    component="core",
+                    severity=severity,
+                    occurred_at=datetime(2026, 10, i, tzinfo=UTC),
+                    commit_sha=sha * 40,
+                    base_commit_sha="a" * 40,
+                    stamp="h40.p8",
+                    payload_json="{}",
+                )
+            )
+    url = f"/api/repos/{repo['id']}/events"
+
+    got = (await client.get(url, params={"commit": "c" * 40, "important": "true"})).json()
+    assert [e["id"] for e in got["events"]] == [f"{2:032d}", f"{3:032d}"]
+    everything = (await client.get(url, params={"commit": "c" * 40})).json()["events"]
+    assert len(everything) == 3
+    assert (await client.get(url, params={"commit": "c" * 7})).status_code == 422

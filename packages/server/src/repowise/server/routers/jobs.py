@@ -13,7 +13,7 @@ from starlette.responses import StreamingResponse
 from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GenerationJob, LlmCost
-from repowise.server.auth import get_authenticator
+from repowise.server.auth import checks_repo_access, get_authenticator
 from repowise.server.deps import (
     _header_scheme,
     auth_is_open,
@@ -46,8 +46,13 @@ async def authorize_job_stream(
         return
     if auth and auth.startswith("Bearer "):
         principal = await get_authenticator().verify_token(auth[7:])
-        # Jobs name no repo, so only an unrestricted principal may use the bearer path.
-        if principal is not None and principal.repo_scope is None and principal.tool_scope is None:
+        # Jobs name no repo, so only an unrestricted principal may use the bearer
+        # path; an action-aware authorizer may restrict any principal.
+        if (
+            principal is not None
+            and principal.tool_scope is None
+            and not checks_repo_access(principal)
+        ):
             return
     if verify_stream_token(token, job_id):
         return

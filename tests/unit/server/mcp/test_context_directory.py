@@ -71,6 +71,23 @@ async def test_directory_card_is_no_larger_than_a_file_card(setup_mcp):
     assert len(json.dumps(targets["src/"])) <= len(json.dumps(targets["src/auth/service.py"]))
 
 
+@pytest.mark.asyncio
+async def test_directory_without_page_basis_fields_when_asked_and_neither_when_not(setup_mcp):
+    """A directory without a module page returns health_basis and full_doc_basis when asked, neither when not."""
+    from repowise.server.mcp_server import get_context
+
+    # 1. When requested: both basis fields are present
+    asked = (await get_context(["src/"], include=["health", "full_doc"]))["targets"]["src/"]
+    assert asked["index_status"] == "directory_without_module_page"
+    assert asked["health_basis"] == 'get_health(targets=["module:src/"])'
+    assert asked["full_doc_basis"] == "no_module_page"
+
+    # 2. When not requested: neither basis field is present
+    not_asked = (await get_context(["src/"]))["targets"]["src/"]
+    assert "health_basis" not in not_asked
+    assert "full_doc_basis" not in not_asked
+
+
 def test_last_change_author_is_the_one_committing_at_that_moment():
     from repowise.server.mcp_server.tool_context.sections import _author_at
 
@@ -82,5 +99,152 @@ def test_last_change_author_is_the_one_committing_at_that_moment():
         ]
     )
     assert _author_at(authors, moment) == "Bob"
+    tie = json.dumps(
+        [{"name": n, "last_commit_ts": int(moment.timestamp())} for n in ("Alice", "Bob")]
+    )
+    assert _author_at(tie, moment) is None
     assert _author_at("[]", moment) is None
     assert _author_at("not json", moment) is None
+
+
+async def _set_authors(session, path: str, authors: list[dict]) -> None:
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == path)
+        .values(top_authors_json=json.dumps(authors))
+    )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+async def test_file_last_change_names_who_made_it_not_the_owner(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    last = int(datetime(2026, 3, 15, tzinfo=UTC).timestamp())
+    await _set_authors(
+        session,
+        "src/auth/service.py",
+        [
+            {"name": "Alice", "commit_count": 27, "last_commit_ts": last - 86400},
+            {"name": "Bob", "commit_count": 15, "last_commit_ts": last},
+        ],
+    )
+    card = (await get_context(["src/auth/service.py"], include=["ownership", "last_change"]))[
+        "targets"
+    ]["src/auth/service.py"]
+    assert card["ownership"]["primary_owner"] == "Alice"
+    assert card["last_change"]["author"] == "Bob"
+
+
+@pytest.mark.asyncio
+async def test_file_last_change_omits_an_author_no_stored_commit_matches(setup_mcp, session):
+    from repowise.server.mcp_server import get_context
+
+    # The newest commit was by no stored author (a pure move, or past the cap).
+    last = int(datetime(2026, 3, 15, tzinfo=UTC).timestamp())
+    await _set_authors(
+        session,
+        "src/auth/service.py",
+        [{"name": "Alice", "commit_count": 27, "last_commit_ts": last - 86400}],
+    )
+    result = await get_context(["src/auth/service.py"], include=["last_change"])
+    last_change = result["targets"]["src/auth/service.py"]["last_change"]
+    assert last_change["date"].startswith("2026-03-15")
+    assert "author" not in last_change
+
+
+@pytest.mark.asyncio
+async def test_partial_module_match_is_case_sensitive(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    targets = (await get_context(["SRC", "DB", "db"]))["targets"]
+    # SQLite's LIKE ignores case; a module match must not.
+    assert targets["SRC"].get("type") != "module", targets["SRC"]
+    assert targets["DB"].get("type") != "module", targets["DB"]
+    assert targets["db"]["type"] == "module"
+    assert targets["db"]["docs"]["title"]
+
+
+@pytest.mark.asyncio
+async def test_files_lists_every_file_with_its_tests(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    card = (await get_context(["src/"], include=["files"]))["targets"]["src/"]
+    files = card["files"]
+    # middleware.py has a graph node and no git row; it is listed all the same.
+    assert files["total"] == 3 and files["complete"] is True
+    assert "omitted" not in files and "note" not in files
+    assert files["counts"] == {"tested": 1, "untested": 2}
+    assert files["rows"] == [
+        {"path": "src/auth/middleware.py", "has_test": False},
+        {
+            "path": "src/auth/service.py",
+            "has_test": True,
+            "named_tests": ["tests/test_service.py"],
+        },
+        {"path": "src/db/models.py", "has_test": False},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_files_is_opt_in_and_directory_only(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    targets = (await get_context(["src/", "src/auth/service.py"]))["targets"]
+    assert "files" not in targets["src/"]
+    asked = (await get_context(["src/auth/service.py"], include=["files"]))["targets"]
+    assert "files" not in asked["src/auth/service.py"]
+    assert asked["src/auth/service.py"]["files_basis"] == "directory targets only"
+
+
+@pytest.mark.asyncio
+async def test_files_over_the_cap_say_what_they_left_out(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server.tool_context import files
+
+    monkeypatch.setattr(files, "MAX_FILE_ROWS", 1)
+    block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
+    assert block["total"] == 3 and block["complete"] is False and block["omitted"] == 2
+    assert [r["path"] for r in block["rows"]] == ["src/auth/middleware.py"]
+    assert "subdirectory" in block["hint"]
+
+
+@pytest.mark.asyncio
+async def test_files_without_indexed_tests_says_false_is_not_evidence(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server.tool_context import files
+
+    async def no_tests(*_args):
+        return frozenset()
+
+    monkeypatch.setattr(files, "cached_test_files", no_tests)
+    block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
+    assert "not evidence" in block["note"]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_file_list_names_the_files_opt_in(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server.tool_context import targets
+
+    monkeypatch.setattr(targets, "_SYMBOL_CAP", 1)
+    docs = (await get_context(["src/"]))["targets"]["src/"]["docs"]
+    assert docs["files_all"] == 'include=["files"]'
+    asked = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["docs"]
+    assert "files_all" not in asked
+
+
+@pytest.mark.asyncio
+async def test_files_rows_stop_at_the_size_budget(setup_mcp, monkeypatch):
+    from repowise.server.mcp_server import get_context
+    from repowise.server.mcp_server.tool_context import files
+
+    monkeypatch.setattr(files, "MAX_ROW_CHARS", 100)
+    block = (await get_context(["src/"], include=["files"]))["targets"]["src/"]["files"]
+    assert [r["path"] for r in block["rows"]] == ["src/auth/middleware.py"]
+    assert block["complete"] is False and block["omitted"] == 2
+    assert block["counts"] == {"untested": 1}

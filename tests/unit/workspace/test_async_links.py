@@ -75,6 +75,38 @@ def test_a_bullmq_queue_is_not_a_laravel_queue_of_the_same_name(tmp_path: Path) 
     assert _links(api, worker) == set()
 
 
+def test_temporal_client_reaches_worker_across_languages(tmp_path: Path) -> None:
+    api = _repo(
+        tmp_path,
+        "api",
+        {
+            "c.ts": "import { Client } from '@temporalio/client';\n"
+            "await client.workflow.start(placeOrder, { taskQueue: 'orders', workflowId });\n"
+        },
+    )
+    worker = _repo(
+        tmp_path,
+        "worker",
+        {"w.py": 'from temporalio.worker import Worker\nWorker(client, task_queue="orders")\n'},
+    )
+    assert _links(api, worker) == {("api", "worker", "topic::orders")}
+
+
+def test_a_temporal_queue_is_not_a_kafka_topic_of_the_same_name(tmp_path: Path) -> None:
+    api = _repo(
+        tmp_path,
+        "api",
+        {
+            "c.ts": "import { Client } from '@temporalio/client';\n"
+            "await client.workflow.start(f, { taskQueue: 'orders' });\n"
+        },
+    )
+    consumer = _repo(
+        tmp_path, "consumer", {"k.java": '@KafkaListener(topics = "orders")\nvoid f() {}\n'}
+    )
+    assert _links(api, consumer) == set()
+
+
 def test_a_nats_wildcard_subscription(tmp_path: Path) -> None:
     api = _repo(
         tmp_path, "api", {"p.go": 'import "github.com/nats-io/nats.go"\nnc.Publish("orders.created", d)\n'}
@@ -130,6 +162,16 @@ _DAPR_SUBSCRIPTION = (
     "  routes: \n"
     "    default: /orders\n"
 )
+_DAPR_GO_PUBLISH = (
+    'import dapr "github.com/dapr/go-sdk/client"\n'
+    'err = client.PublishEvent(ctx, "pubsub", "orders", data)\n'
+)
+_DAPR_PY_SUBSCRIBE = (
+    "from dapr.ext.grpc import App\n"
+    "@app.subscribe(pubsub_name='pubsub', topic='orders')\n"
+    "def handle(event):\n"
+    "    pass\n"
+)
 
 
 def test_a_dapr_publisher_reaches_a_kafka_consumer(tmp_path: Path) -> None:
@@ -142,6 +184,12 @@ def test_a_dapr_subscription_manifest_reaches_a_dapr_publisher(tmp_path: Path) -
     api = _repo(tmp_path, "api", {"Pub.cs": _DAPR_PUBLISH})
     billing = _repo(tmp_path, "billing", {"deploy/sub.yaml": _DAPR_SUBSCRIPTION})
     assert _links(api, billing) == {("api", "billing", "topic::orders")}
+
+
+def test_a_go_dapr_publisher_reaches_a_python_dapr_subscriber(tmp_path: Path) -> None:
+    api = _repo(tmp_path, "api", {"pub.go": _DAPR_GO_PUBLISH})
+    worker = _repo(tmp_path, "worker", {"sub.py": _DAPR_PY_SUBSCRIBE})
+    assert _links(api, worker) == {("api", "worker", "topic::orders")}
 
 
 def test_fastapi_websocket_to_browser(tmp_path: Path) -> None:

@@ -90,8 +90,17 @@ class TestStatusKeylessUpgradeNote:
 
     def test_template_only_scope_prints_the_note(self, monkeypatch, tmp_path) -> None:
         out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "deterministic"})
-        assert "repowise generate writes the subsystem pages" in out
-        assert "--provider ollama" in out
+        assert "answers and docs: `repowise generate`" in out
+        assert "a provider key or a local model" in out
+
+    def test_template_only_scope_names_a_signed_in_plan(self, monkeypatch, tmp_path) -> None:
+        from repowise.core.index_scope import FreeRoute
+
+        route = FreeRoute("claude_cli", "Claude Code", minutes=4)
+        monkeypatch.setattr(status_cmd, "upgrade_route", lambda _repo: route)
+        out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "deterministic"})
+        assert "`repowise generate --provider claude_cli` uses your Claude Code" in out
+        assert "about 4 minutes" in out
 
     def test_note_uses_the_scopes_own_next_command(self, monkeypatch, tmp_path) -> None:
         state = {
@@ -112,7 +121,7 @@ class TestStatusKeylessUpgradeNote:
     def test_model_backed_scope_does_not_print_it(self, monkeypatch, tmp_path) -> None:
         out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "llm"})
         assert "Scope" in out
-        assert "repowise generate writes the subsystem pages" not in out
+        assert "answers and docs" not in out
 
 
 def test_sync_state_totals_match_the_pages_table(tmp_path: Path, monkeypatch) -> None:
@@ -153,3 +162,23 @@ def test_health_line_leads_performance_with_the_causes_worth_fixing_now(monkeypa
     line = status_cmd._query_health_line(Path("."))
     assert line is not None
     assert " · 4 of 415 production perf causes worth fixing now (9.7)" in line
+
+
+def test_latency_table_prints_p50_and_p90_per_tool(tmp_path: Path) -> None:
+    from io import StringIO
+
+    from rich.console import Console
+
+    from repowise.core import mcp_latency
+
+    assert status_cmd._latency_table(tmp_path) is None
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / mcp_latency.LOG_FILENAME).write_text(
+        "".join(f'{{"tool":"get_answer","ms":{ms},"cold":false}}\n' for ms in range(1, 11))
+    )
+    table = status_cmd._latency_table(tmp_path)
+    assert table is not None
+    out = StringIO()
+    Console(file=out, width=80).print(table)
+    text = out.getvalue()
+    assert "get_answer" in text and "5 ms" in text and "9 ms" in text

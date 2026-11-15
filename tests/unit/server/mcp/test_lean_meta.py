@@ -52,8 +52,10 @@ async def test_the_outer_pass_keeps_what_the_inner_pass_trimmed() -> None:
 
     result = await tool_middleware(get_why)("why?")
 
-    budget = result["_meta"]["response_budget"]
-    assert budget["serialized_chars"] <= budget["limit_chars"]
+    # The delivered shape names the cut by its omission ref, under the limit.
+    assert result["_meta"]["omitted"]["refs"]
+    assert "response_budget" not in result["_meta"]
+    assert len(json.dumps(result, separators=(",", ":"))) <= 24_000
 
 
 def test_debug_meta_restores_the_accounting(monkeypatch: pytest.MonkeyPatch) -> None:

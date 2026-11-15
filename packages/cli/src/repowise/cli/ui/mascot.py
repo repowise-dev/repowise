@@ -11,6 +11,7 @@ accent, not a ramp.
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from rich.console import Console, ConsoleOptions, RenderResult
@@ -105,11 +106,18 @@ class OwlSpinner:
         yield Text.assemble(frame, " ", self.text) if self.text else frame
 
 
-def owl_status(console: Console, text: str, **live_kwargs: Any) -> Live:
+def owl_status(
+    console: Console, text: str, **live_kwargs: Any
+) -> AbstractContextManager[Live | None]:
     """``console.status`` with the owl: a transient line that blinks while work runs.
 
-    Built the way Rich builds a status, so it behaves the same on a pipe.
+    Built the way Rich builds a status, so it behaves the same on a pipe. Under
+    a display that already holds the console (a progress list), it is a no-op:
+    Rich allows one live display per console and raises on a second, which
+    aborted the work the spinner wrapped.
     """
+    if _live_active(console):
+        return nullcontext()
     return Live(
         OwlSpinner(text),
         console=console,
@@ -117,6 +125,12 @@ def owl_status(console: Console, text: str, **live_kwargs: Any) -> Live:
         transient=True,
         **live_kwargs,
     )
+
+
+def _live_active(console: Console) -> bool:
+    # Rich has no public "is a Live running" check; ``_live`` (13.x) and
+    # ``_live_stack`` (14.x) are where Console tracks it.
+    return bool(getattr(console, "_live_stack", None) or getattr(console, "_live", None))
 
 
 # ---------------------------------------------------------------------------

@@ -46,22 +46,24 @@ async def _build_code_health(session: Any, repository: Any) -> dict[str, Any]:
         hotspot_paths = await get_hotspot_file_paths(session, repository.id)
         production = _production_average(metrics_rows, scored)
         bands = health_distribution(metrics_rows)["bands"]
-        return {
+        kpis = {
             "average_health": health_summary["average_health"],
-            **({"production_average": production} if production is not None else {}),
-            # ``None`` when too few code files were analysed to grade the repo.
+            "production_average": production,
+            # Absent when too few code files were analysed to grade the repo.
             "band": headline_band(
                 health_summary["average_health"], health_summary["analysed_share"]
             ),
+            # Absent when no hotspot carries a score.
             "hotspot_health": hotspot_health(metrics_rows, hotspot_paths),
             "worst_performer_path": health_summary["worst_performer_path"],
             "worst_performer_score": health_summary["worst_performer_score"],
             "open_findings": health_summary["open_findings"],
             "code_files": code_files,
             # Only said when some code files carry no score.
-            **({"files_scored": scored} if scored != code_files else {}),
+            "files_scored": scored if scored != code_files else None,
             # File counts only; get_health carries the NLOC-weighted split.
             "files_by_band": {band: row["files"] for band, row in bands.items()},
         }
+        return {key: value for key, value in kpis.items() if value is not None}
     except Exception:
         return {}

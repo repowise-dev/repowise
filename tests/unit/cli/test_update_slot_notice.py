@@ -158,15 +158,15 @@ def test_notice_names_full_and_never_a_reindex(tmp_path: Path, console: _FakeTer
 
 
 def test_notice_names_the_missing_pages_by_title(tmp_path: Path, console: _FakeTerminal) -> None:
-    from repowise.core.generation.onboarding import SLOT_GLOSSARY, SLOT_TITLES
+    from repowise.core.generation.onboarding import SLOT_ACTIVE_LANDSCAPE, SLOT_TITLES
 
-    offered = [slot for slot in _registered() if slot != SLOT_GLOSSARY]
+    offered = [slot for slot in _registered() if slot != SLOT_ACTIVE_LANDSCAPE]
     save_state(tmp_path, {ONBOARDING_SLOTS_OFFERED_KEY: sorted(offered)})
 
     slot_notice.surface_missing_slots(tmp_path, emitter=None, dry_run=False)
 
     printed = " ".join(console.lines)
-    assert SLOT_TITLES[SLOT_GLOSSARY] in printed
+    assert SLOT_TITLES[SLOT_ACTIVE_LANDSCAPE] in printed
 
 
 def test_notice_is_silent_when_nothing_is_missing(tmp_path: Path, console: _FakeTerminal) -> None:

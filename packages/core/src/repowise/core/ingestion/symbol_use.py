@@ -1,8 +1,8 @@
 """How much production code reaches a symbol, read off the dependency graph.
 
-Spotlight selection, spotlight pages, file pages and onboarding's key concepts
-all count uses the same way, so it lives here, in a module that imports no
-graph-building code: MCP read paths reach it and must stay light.
+Spotlight selection, spotlight pages and file pages all count uses the same
+way, so it lives here, in a module that imports no graph-building code: MCP
+read paths reach it and must stay light.
 """
 
 from __future__ import annotations

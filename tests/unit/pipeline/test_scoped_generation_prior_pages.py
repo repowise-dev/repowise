@@ -92,7 +92,7 @@ async def _minimal_rehydrated():
             )
         ],
         kg_ctx=SimpleNamespace(available=False),
-        deps=SimpleNamespace(),
+        deps=SimpleNamespace(module_page_of={}),
         repo_name="demo",
     )
 

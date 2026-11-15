@@ -21,7 +21,7 @@ def runner():
 
 def test_generate_state_preserves_sync_commit_when_head_is_unavailable():
     state = {"last_sync_commit": "known-good-commit"}
-    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0)
+    outcome = SimpleNamespace(total_pages=1, remaining_template_pages=0, generated_pages=[])
     provider = SimpleNamespace(provider_name="mock", model_name="mock")
 
     with (

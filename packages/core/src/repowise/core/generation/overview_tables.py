@@ -25,9 +25,8 @@ from .house_vocabulary import SelectedTerm, cell, clamp, select_terms
 
 log = structlog.get_logger(__name__)
 
-#: One row of the capability table. The glossary renders the same object, so
-#: the selection and the definition test live in :mod:`house_vocabulary` and
-#: this name is what the overview calls it.
+#: One row of the capability table. The selection and the definition test live
+#: in :mod:`house_vocabulary`; this name is what the overview calls it.
 Capability = SelectedTerm
 
 PACKAGE_TABLE_HEADING = "## Packages"
@@ -113,7 +112,7 @@ def embed_package_table(content: str, table: str | None) -> str:
 # should be in the repository's own words rather than in the generic vocabulary
 # of static analysis. The mined house terms are those words, selected and
 # corroborated by :func:`~house_vocabulary.select_terms`; the front page takes
-# the head of that list and the glossary takes more of it.
+# the head of that list.
 
 MAX_CAPABILITY_ROWS = 6
 #: Long enough for a sentence, short enough that a row stays one line to read.
@@ -128,16 +127,10 @@ def select_capabilities(
 ) -> list[Capability]:
     """The terms worth putting on the front page, in the order they go there.
 
-    The head of :func:`~house_vocabulary.select_terms`. The glossary renders
-    more of the same list, so the ranking, the corroboration and the definition
-    test are shared rather than derived twice — the front page is the top of
-    the glossary by construction, which is also what a reader expects of it.
-
-    Only terms a document defines: a front-page row reading "—" says nothing,
+    The head of :func:`~house_vocabulary.select_terms`. Only terms a document defines: a front-page row reading "—" says nothing,
     and a docstring describes one function rather than what the product does
     ("Decisions are co-located in the page vector store ..." was the whole
-    table here once). The glossary still lists both. Filtered before the cap
-    so defined terms fill it.
+    table here once). Filtered before the cap so defined terms fill it.
     """
     defined = [
         t

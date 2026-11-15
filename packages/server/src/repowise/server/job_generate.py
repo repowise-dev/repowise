@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from repowise.core.persistence.database import get_session
+from repowise.core.settings.model import flag
 from repowise.server.job_records import _complete_job_row, _provider_issue
 from repowise.server.job_state import _load_state, _persist_generate_job_state
 
@@ -157,7 +158,7 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
         reasoning=resolve_reasoning(config=repo_cfg),
         wiki_style=effective_style,
         language=repo_cfg.get("language", "en"),
-        enable_onboarding=bool(repo_cfg.get("enable_onboarding", True)),
+        enable_onboarding=flag(repo_cfg.get("enable_onboarding"), True),
         max_concurrency=int(config.get("concurrency") or 12),
     )
 

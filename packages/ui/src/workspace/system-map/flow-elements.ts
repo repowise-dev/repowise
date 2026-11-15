@@ -32,6 +32,7 @@ import {
   type SystemMapNodeData,
   type SystemMapOverlay,
 } from "./types";
+import { formatNumber } from "../../lib/format";
 
 export interface GroupNodeData {
   group: DrawnGroupNode;
@@ -119,7 +120,7 @@ type Shaped = { type: string; data: Record<string, unknown> } | null;
 function focusLinksText(n: DrawnServiceNode): string | null {
   if (!n.links) return null;
   const mix = kindMixText(n.links.kinds);
-  const head = mix ? `${n.links.links.toLocaleString()} · ${mix}` : n.links.links.toLocaleString();
+  const head = mix ? `${formatNumber(n.links.links)} · ${mix}` : formatNumber(n.links.links);
   return n.bothWays ? `${head} · both ways` : head;
 }
 

@@ -19,7 +19,7 @@ from .base import (
     FrameworkHandler,
     _add_edge_if_new,
     _build_ts_var_to_file,
-    read_text,
+    read_text_from,
 )
 
 if TYPE_CHECKING:
@@ -63,7 +63,7 @@ class _TrpcHandler:
         for path, parsed in parsed_files.items():
             if parsed.file_info.language not in ("typescript", "javascript"):
                 continue
-            text = read_text(parsed)
+            text = read_text_from(path, parsed, ctx.source_map)
             if not text or ("@trpc/" not in text and "publicProcedure" not in text \
                     and "protectedProcedure" not in text):
                 continue

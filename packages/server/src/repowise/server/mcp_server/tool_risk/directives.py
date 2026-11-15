@@ -32,10 +32,12 @@ from repowise.server.mcp_server._helpers import (
 from repowise.server.mcp_server._test_selection import (
     UNAVAILABLE_REASON,
     basis_of,
+    of_the_change,
     split_apart,
 )
 from repowise.server.mcp_server.tool_risk.directives_pr import (
     _WORKSPACE_FAMILIES,  # noqa: F401  re-exported
+    ALWAYS_RUN_FIELD,
     APART_FIELDS,
     _as_path,
     _drop_family,
@@ -409,7 +411,11 @@ async def _governance_directive(ctx: Any, changed_files: list[str]) -> list[dict
     """Governing decisions over *changed_files* that are stale, superseded, or
     contradicted. Bounded to 5 entries. Never raises (returns what it has).
     """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
     governance_risk: list[dict[str, Any]] = []
+    if layer_mode(getattr(ctx, "path", None)) == "off":
+        return governance_risk
     try:
         async with get_session(ctx.session_factory) as _gr_session:
             _gr_repo = await _get_repo(_gr_session)
@@ -576,6 +582,10 @@ def _tests_to_run(
     # In run order (``test_ranking``); the tests counted apart still run.
     population, *apart = split_apart(selection)
     counts = dict(zip(APART_FIELDS, apart, strict=True))
+    # A test that runs with every subset is not a test of these files: it runs,
+    # counted in ``tests_always_run_total``, but never takes a listed slot.
+    counts[ALWAYS_RUN_FIELD] = [t for t in population if not of_the_change(selection, t)]
+    population = [t for t in population if of_the_change(selection, t)]
     for key, tests in counts.items():
         if tests:
             collector.add(f"directive.{key.removesuffix('_total')} ({len(tests)})", tests)

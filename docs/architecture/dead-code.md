@@ -56,7 +56,8 @@ the CLI's live path in `cli/commands/dead_code_cmd.py`.
 ## Unreachable files
 
 Candidate: file-node in-degree 0 after entry points, never-flag paths and the
-rescues in `file_reachability.py`. Base confidence comes from git
+rescues in `file_reachability.py`. `co_changes` and `documents` edges do not
+count, so a file only a README links to is still a candidate. Base confidence comes from git
 (`_git_age_confidence`, `_GIT_AGE_RUNGS`):
 
 | Condition | Confidence |
@@ -150,7 +151,7 @@ importer, base `0.65`, never deletion-ready. Hidden on default surfaces by
 paragraph is judged from the program's source text instead of edges
 (`cobol_paragraphs.py`), at `0.30`.
 
-`zombie_package`: a top-level directory with no inter-package import edges,
+`zombie_package`: a top-level directory with no inter-package import edges (`documents` edges do not count),
 base `0.50`, never deletion-ready. `_NEVER_PACKAGE_DIRS` skips non-package
 directories (`.github`, `.vscode`, `.devcontainer`, `docs`, `examples`,
 `scripts`, `assets`, `static`, `public`, `tests`, `benches`, `fuzz` and
@@ -184,5 +185,7 @@ the file, attention, actions, related-work, graph, chat, export and report
 readers): it applies `cross_repo_cut` to each stored row, then the filters, and
 tiering reads the result. A file another repo's contract link points at gets
 confidence `* 0.3`. Cross-repo co-change partners, or an `unused_export` in a
-repo other repos depend on as a package, keep the confidence. Each adds a
+file another repo's package imports reach (`package_link_reaches` in
+`workspace/package_reach.py`, the rule get_risk's `affected_repos` also uses),
+keep the confidence. Each adds a
 `cross_repo_note` and withdraws `safe_to_delete`.

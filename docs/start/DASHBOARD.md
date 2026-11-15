@@ -326,6 +326,16 @@ Daily LLM spend, a cost heatmap, provider comparison, and the savings attributed
 to `repowise distill` compressing command output before it reaches an agent's
 context window.
 
+## Setup
+
+`/repos/<id>/settings/setup`
+
+**Answers:** what is connected, and what could I add next?
+
+One row each for agents, sync, coverage and a model, with what is on now.
+Every row has a "copy prompt" that hands the step to your agent, and anything
+that needs attention rises to the top. Setup also reopens the welcome tour.
+
 ## Settings
 
 `/repos/<id>/settings` for the repo (exclusions, generation options, sync),

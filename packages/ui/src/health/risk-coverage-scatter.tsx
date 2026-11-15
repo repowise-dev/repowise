@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GOOD_MIN, formatScore, type CoverageBasis } from "@repowise-dev/types/health";
+import { formatNumber } from "../lib/format";
 
 export interface RiskCoveragePoint {
   file_path: string;
@@ -310,8 +311,8 @@ export function RiskCoverageScatter({
 
       <p className="border-t border-[var(--color-border-default)] pt-2 font-mono text-[10px] uppercase tracking-[0.12em] tabular-nums text-[var(--color-text-tertiary)]">
         {inferred
-          ? `${data.length.toLocaleString()} files · ${reachedCount.toLocaleString()} reached by a test · dot size = lines of code · height is the health score · horizontal spread carries no meaning`
-          : `${data.length.toLocaleString()} files · dot size = lines of code · thresholds at 60% coverage and 7.0 health`}
+          ? `${formatNumber(data.length)} files · ${formatNumber(reachedCount)} reached by a test · dot size = lines of code · height is the health score · horizontal spread carries no meaning`
+          : `${formatNumber(data.length)} files · dot size = lines of code · thresholds at 60% coverage and 7.0 health`}
       </p>
     </div>
   );

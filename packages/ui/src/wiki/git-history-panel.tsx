@@ -4,8 +4,9 @@ import { CommitCategorySparkline } from "../git/commit-category-sparkline";
 import { CoChangeList } from "../git/co-change-list";
 import { ChangeHistoryCard } from "../git/change-history-card";
 import { FixHistoryBadge } from "../git/fix-history-badge";
-import { formatRelativeTime, formatDate, formatAgeDays } from "../lib/format";
+import { formatDate, formatAgeDays } from "../lib/format";
 import type { FileAuthor, GitMetadata } from "@repowise-dev/types/git";
+import { RelativeTime } from "../shared/relative-time";
 
 interface GitHistoryPanelProps {
   git: GitMetadata;
@@ -139,7 +140,7 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
               <>
                 <span className="text-[var(--color-text-tertiary)]">Last commit</span>
                 <span className="text-[var(--color-text-secondary)]">
-                  {formatRelativeTime(git.last_commit_at)}
+                  <RelativeTime date={git.last_commit_at} />
                 </span>
               </>
             )}
@@ -242,7 +243,7 @@ export function GitHistoryPanel({ git }: GitHistoryPanelProps) {
                       {commit.author}
                     </span>
                     <span className="text-[10px] text-[var(--color-text-tertiary)]">
-                      {formatRelativeTime(commit.date)}
+                      <RelativeTime date={commit.date} />
                     </span>
                   </div>
                 </div>

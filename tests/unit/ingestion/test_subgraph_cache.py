@@ -10,7 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import networkx as nx
+
 from repowise.core.ingestion import GraphBuilder
+from repowise.core.ingestion.graph._metrics import without_non_code_edges
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import parse_file
 
@@ -79,15 +82,18 @@ class TestSubgraphCache:
         graph.add_node("type_provider.py", node_type="file")
         graph.add_node("framework_entrypoint.py", node_type="file")
         graph.add_node("history_only.py", node_type="file")
+        graph.add_node("README.md", node_type="file")
         graph.add_edge("a.py", "type_provider.py", edge_type="type_use")
         graph.add_edge("framework_entrypoint.py", "a.py", edge_type="framework")
         graph.add_edge("a.py", "history_only.py", edge_type="co_changes")
+        graph.add_edge("README.md", "a.py", edge_type="documents")
 
         sub = gb.file_subgraph()
 
         assert sub["a.py"]["type_provider.py"]["edge_type"] == "type_use"
         assert sub["framework_entrypoint.py"]["a.py"]["edge_type"] == "framework"
         assert not sub.has_edge("a.py", "history_only.py")
+        assert not sub.has_edge("README.md", "a.py")
 
     def test_invalidated_on_add_file(self, tmp_path: Path) -> None:
         gb = _builder(tmp_path)
@@ -123,3 +129,18 @@ class TestSubgraphCache:
             results = [f.result() for f in futures]
         # pagerank dicts agree across threads
         assert results[0] == results[1] == results[2] == results[3]
+
+
+def test_without_non_code_edges_drops_doc_links_and_co_changes() -> None:
+    g = nx.DiGraph()
+    g.add_edge("README.md", "a.py", edge_type="documents")
+    g.add_edge("a.py", "b.py", edge_type="co_changes")
+    g.add_edge("b.py", "a.py", edge_type="imports")
+
+    view = without_non_code_edges(g)
+
+    assert not view.has_edge("README.md", "a.py")
+    assert not view.has_edge("a.py", "b.py")
+    assert view.has_edge("b.py", "a.py")
+    assert "README.md" in view  # nodes stay; only the edge goes
+    assert g.has_edge("README.md", "a.py")  # a view, never a mutation

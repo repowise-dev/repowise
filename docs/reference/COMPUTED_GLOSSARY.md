@@ -86,8 +86,9 @@ workspace overlays, MCP responses, and CLI output.
 | `framework` edge | Synthetic edge from framework conventions. | `framework_edges.py` | `urls.py -> views.py`, `app.py -> routers/users.py` |
 | Dynamic edge | Edge inferred from runtime/dynamic patterns. | `dynamic_hints/*` and `GraphBuilder.add_dynamic_edges()` | `{edge_type: "dynamic_imports", hint_source: "django", weight: 1.0}` |
 | `co_changes` edge | File-to-file historical coupling edge. | `GraphBuilder.add_co_change_edges()` from git metadata | `src/a.py -> src/b.py` with `weight: 4.2` |
+| `documents` edge | A Markdown document links to or names a repository file. Not a dependency. | `GraphBuilder._resolve_document_edges()` via doc drift `extract()`/`resolve()` | `{edge_type: "documents", hint_source: "doc_link", confidence: 1.0}`; a backticked path is `doc_path`, `0.8` |
 | Stem map | Import-stem to candidate file path lookup used for import resolution. | `GraphBuilder._build_stem_map()` | `{"models": ["src/models.py", "tests/models.py"]}` |
-| File subgraph | File-only graph used for PageRank and betweenness. | `GraphBuilder.file_subgraph()` | All file/external nodes, excluding `co_changes` edges |
+| File subgraph | File-only graph used for PageRank and betweenness. | `GraphBuilder.file_subgraph()` | All file/external nodes, excluding self-loops, `co_changes` and `documents` edges |
 | PageRank | File centrality in the import graph. | `GraphBuilder.pagerank()` | `0.01842` |
 | Betweenness | How often a file sits on shortest paths. | `GraphBuilder.betweenness_centrality()` | `0.0067` |
 | SCC | Strongly connected component, used to detect dependency cycles. | `GraphBuilder.strongly_connected_components()` | `{"src/a.py", "src/b.py"}` |
@@ -391,7 +392,7 @@ workspace overlays, MCP responses, and CLI output.
 | Dead-code status | `open`, `acknowledged`, `resolved`, `false_positive` |
 | Security severity | `high`, `med`, `low` |
 | Security kind | `eval_call`, `exec_call`, `pickle_loads`, `subprocess_shell_true`, `os_system`, `hardcoded_password`, `hardcoded_secret`, `fstring_sql`, `concat_sql`, `tls_verify_false`, `weak_hash`, `security_sensitive_symbol` |
-| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `dispatches_to`, `co_changes`, `framework`, `framework_binds`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route`, `references`; all 17, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py`. `reads` is file-to-file only; its former symbol-level producer emits `framework_binds` |
+| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `dispatches_to`, `co_changes`, `framework`, `framework_binds`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route`, `references`, `documents`; all 18, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py`. `reads` is file-to-file only; its former symbol-level producer emits `framework_binds` |
 | Node type | `file`, `symbol`, `external` |
 | Search type | `vector`, `fulltext` |
 | Contract type | `http`, `grpc`, `topic` |

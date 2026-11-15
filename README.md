@@ -71,14 +71,17 @@ the index, and asks you before anything costs money. To do it by hand:
 uv tool install repowise          # or: pipx install repowise / pip install repowise
 cd /path/to/your/repo
 repowise init --yes --no-prose    # graph, git, health, dead code, docs. No key, no spend.
-                                  # (add model-written docs any time with: repowise generate)
+                                  # answers and docs: run repowise generate (one command, no re-index)
 repowise serve                    # dashboard + MCP server (needs Node 20+; first run downloads the UI)
 ```
 
+`serve` opens the dashboard in your browser. After a first index it starts with a short
+guided tour, and Setup is where you connect agents, turn on sync and add coverage or a model.
+
 Restart Claude Code or run `/mcp`, then ask *"What breaks if I change
 `src/auth.py`?"* or *"Use Repowise `get_overview` to summarize this repository."*
-`init` wires Claude Code for this repo and points the global repowise MCP entry
-here. [Full setup for every agent →](docs/start/QUICKSTART.md)
+`init` wires Claude Code for this repo and adds the global repowise MCP entry
+when there is none; it never moves one that serves another repo. [Full setup for every agent →](docs/start/QUICKSTART.md)
 
 ---
 
@@ -560,7 +563,7 @@ languages moving up the ladder: **[roadmap →](ROADMAP.md#languages)**
 
 ## Supported agents and editors
 
-**Eight agents wired end to end · two at the Full tier · every other MCP host one
+**Nine agents wired end to end · two at the Full tier · every other MCP host one
 paste away.**
 
 <p>
@@ -577,12 +580,16 @@ paste away.**
   <img src="https://img.shields.io/badge/GitHub_Copilot_CLI-000000?style=flat-square&logo=githubcopilot&logoColor=white" alt="GitHub Copilot CLI" />
   <img src="https://img.shields.io/badge/Kiro-790ECB?style=flat-square&logoColor=white" alt="Kiro" />
 </p>
+<p>
+  <strong>Basic tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Windsurf-0B100F?style=flat-square&logo=windsurf&logoColor=white" alt="Windsurf" />
+</p>
 
 **Full** is every surface Repowise has: MCP tools, skills, slash commands, a managed
 instructions file, hook-level interception of tool calls, and transcript mining after
 the session. **Good** is MCP tools plus an instructions file or skills, without transcript mining
 (hooks only where the matrix says). **Basic** is the MCP config alone. Anything else that speaks MCP is one snippet away:
-`repowise agents print-config claude-code` prints a server entry for Cline, Windsurf,
+`repowise agents print-config claude-code` prints a server entry for Cline,
 Zed, Gemini CLI or any host that reads `mcpServers`.
 [Integration matrix →](docs/agent/INTEGRATIONS.md)
 
@@ -709,7 +716,7 @@ Doing a security review? **[docs/business/SECURITY_COMPLIANCE.md →](docs/busin
 
 ```bash
 repowise init [PATH]      # index a codebase (plan screen; --yes --no-prose needs no key)
-repowise generate [PATH]  # write wiki pages with a model, on demand
+repowise generate [PATH]  # answers and docs with a model, on an existing index (no re-index)
 repowise serve [PATH]     # MCP server + local dashboard
 repowise update [PATH]    # incremental update (--workspace for every repo)
 repowise watch            # re-index on file change

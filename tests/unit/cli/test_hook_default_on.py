@@ -163,6 +163,12 @@ def test_a_shell_hook_keeps_its_content_and_gains_the_block(repo: Path, editor_s
     assert hooks.status(repo) == "installed"
 
 
+@pytest.fixture(autouse=True)
+def _unpinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hook these tests run must find no repowise, so no real update starts."""
+    monkeypatch.setattr(hooks, "_pinned_repowise", lambda: "repowise")
+
+
 def _run_hook(repo: Path) -> None:
     sh = shutil.which("sh") or shutil.which("bash")
     if sh is None:

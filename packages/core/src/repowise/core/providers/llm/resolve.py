@@ -653,6 +653,29 @@ def save_repo_llm_selection(
     save_repo_config(repo_path, apply_llm_selection(config, provider, model, base_url))
 
 
+def write_provider_setting(repo_path: Path | str, key: str, value: str | None) -> None:
+    """Write ``provider``; ``None`` removes it. The settings-registry writer.
+
+    A model id belongs to one provider, so a new provider drops a model saved
+    for the old one and the new provider's default applies; picking the same
+    provider again keeps it.
+    """
+    from repowise.core.providers.llm.registry import list_providers
+    from repowise.core.repo_config import load_repo_config, save_repo_config
+
+    config = load_repo_config(repo_path)
+    if value is None:
+        config.pop("provider", None)
+        config.pop("model", None)
+    else:
+        known = list_providers()
+        if value not in known:
+            raise ValueError(f"provider: unknown {value!r}; known: {', '.join(known)}")
+        keep = config.get("model") if config.get("provider") == value else None
+        apply_llm_selection(config, value, keep)
+    save_repo_config(repo_path, config)
+
+
 __all__ = [
     "UNSET",
     "LLMSelection",
@@ -679,4 +702,5 @@ __all__ = [
     "update_global_config",
     "validate_base_url",
     "without_credentials",
+    "write_provider_setting",
 ]

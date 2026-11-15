@@ -1,9 +1,11 @@
-"""Files that declare only types, so there is nothing for a test to run.
+"""Files that declare only types, or nothing of their own, so there is nothing for a test to run.
 
 A ``.d.ts``, a TypeScript module whose every statement is a type, an interface
 or a ``declare``, and a Python module of ``Protocol`` and ``TypedDict`` classes
-and type aliases all vanish at run time. "No test reaches this" is true of them
-and says nothing.
+and type aliases all vanish at run time. A module of only imports and
+re-exports (a package ``__init__.py``, an ``index.ts`` barrel) and a Java
+``package-info.java`` or ``module-info.java`` hold no code of their own. "No
+test reaches this" is true of all of them and says nothing.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from pathlib import Path, PurePosixPath
 from repowise.core.test_paths import is_test_related_path
 
 _DECLARATION_SUFFIXES = (".d.ts", ".d.mts", ".d.cts")
+_DECLARATION_NAMES = frozenset({"package-info.java", "module-info.java"})
 _TS_SUFFIXES = frozenset({".ts", ".mts", ".cts", ".tsx"})
 
 # Statements TypeScript erases. A plain import is erased too when every name
@@ -24,22 +27,27 @@ _TS_TYPE_NODES = frozenset(
     {"type_alias_declaration", "interface_declaration", "ambient_declaration"}
 )
 _TS_NEUTRAL_NODES = frozenset({"comment", "empty_statement"})
+# The parts of an ``export`` that only re-export: ``export {a} from``,
+# ``export * from``, ``export {a}`` of an imported name.
+_TS_REEXPORT_PARTS = frozenset(
+    {"export", "export_clause", "namespace_export", "from", "string", "*", ";", "comment"}
+)
 
 _PY_TYPE_BASES = frozenset({"Protocol", "TypedDict"})
 _PY_TYPE_FACTORIES = frozenset({"TypeVar", "ParamSpec", "TypeVarTuple", "NewType"})
 
 
 def is_type_only(path: str, content: str | bytes, *, is_test: bool | None = None) -> bool:
-    """Whether the file at *path* declares only types.
+    """Whether the file at *path* declares only types, or nothing of its own.
 
     *is_test* is the stored flag when the caller has it; a test file is never
     type-only, by the same classifier that stamps the flag. A file that cannot
-    be parsed, or declares nothing, is not type-only.
+    be parsed, or is empty, is not type-only.
     """
     if is_test if is_test is not None else is_test_related_path(path):
         return False
     lowered = path.lower()
-    if lowered.endswith(_DECLARATION_SUFFIXES):
+    if _declared_by_name(lowered):
         return True
     suffix = PurePosixPath(lowered).suffix
     data = content.encode("utf-8", "replace") if isinstance(content, str) else content
@@ -53,15 +61,21 @@ def is_type_only(path: str, content: str | bytes, *, is_test: bool | None = None
 def may_be_type_only(path: str) -> bool:
     """Whether *path*'s name allows :func:`is_type_only`: worth reading its bytes."""
     lowered = path.lower()
-    return lowered.endswith(_DECLARATION_SUFFIXES) or PurePosixPath(lowered).suffix in (
+    return _declared_by_name(lowered) or PurePosixPath(lowered).suffix in (
         _TS_SUFFIXES | {".py", ".pyi"}
+    )
+
+
+def _declared_by_name(lowered: str) -> bool:
+    return (
+        lowered.endswith(_DECLARATION_SUFFIXES) or PurePosixPath(lowered).name in _DECLARATION_NAMES
     )
 
 
 def type_only_files(
     paths: Iterable[str], read: Callable[[str], str | bytes | None]
 ) -> set[str]:
-    """The *paths* that declare only types. *read* returns a file's bytes, or ``None``.
+    """The *paths* that declare only types or nothing of their own. *read* returns a file's bytes, or ``None``.
 
     A declaration file is judged by its name, so it needs no read. Any other
     file *read* cannot open, or that fails to parse, is judged code, so it
@@ -72,7 +86,7 @@ def type_only_files(
         if not may_be_type_only(path):
             continue
         # A declaration file's verdict does not depend on its bytes.
-        content = b"" if path.lower().endswith(_DECLARATION_SUFFIXES) else read(path)
+        content = b"" if _declared_by_name(path.lower()) else read(path)
         try:
             if content is not None and is_type_only(path, content):
                 out.add(path)
@@ -128,6 +142,11 @@ def _ts_type_only(source: bytes, *, tsx: bool) -> bool:
         if node.type == "export_statement" and _ts_type_export(node):
             declared = True
             continue
+        if node.type == "export_statement" and all(
+            c.type in _TS_REEXPORT_PARTS for c in node.children
+        ):
+            declared = True
+            continue
         return False
     return declared
 
@@ -148,13 +167,8 @@ def _python_type_only(source: bytes) -> bool:
         tree = ast.parse(source)
     except (SyntaxError, ValueError):
         return False
-    declared = False
-    for stmt in tree.body:
-        kind = _python_statement(stmt)
-        if kind is None:
-            return False
-        declared = declared or kind
-    return declared
+    # Imports, a docstring and ``__all__`` alone are no code of their own either.
+    return bool(tree.body) and all(_python_statement(stmt) is not None for stmt in tree.body)
 
 
 def _python_statement(stmt: ast.stmt) -> bool | None:

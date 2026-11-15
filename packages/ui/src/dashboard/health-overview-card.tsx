@@ -17,6 +17,7 @@ import { healthBand, SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "../
 import { ProportionBar } from "../shared/proportion-bar";
 import { formatScore, type HealthBand, type PerformanceCauses } from "@repowise-dev/types/health";
 import { Sparkline } from "../health/sparkline";
+import { formatNumber } from "../lib/format";
 
 export interface HealthOverviewPoint {
   taken_at: string | null;
@@ -139,12 +140,12 @@ function FindingsLine({
           key: s.key,
           label: SEVERITY_LABEL[s.key],
           value: s.count,
-          detail: s.count.toLocaleString(),
+          detail: formatNumber(s.count),
           color: SEVERITY_SEGMENT[s.key],
         }))}
       />
       <span className="shrink-0 tabular-nums text-[var(--color-text-secondary)]">
-        {count.toLocaleString()}
+        {formatNumber(count)}
       </span>
     </a>
   );
@@ -477,13 +478,13 @@ function PerformancePillarStat({
       ) : (
         <span className="flex items-baseline gap-1.5">
           <span className="text-xl font-bold tabular-nums leading-none text-[var(--color-text-primary)]">
-            {now.toLocaleString()}
+            {formatNumber(now)}
           </span>
           <span className="text-xs text-[var(--color-text-secondary)]">
             {openOnly != null ? "open" : "worth fixing now"}
           </span>
           <span className="text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-            {openOnly == null && <>· {production.toLocaleString()} in production </>}· {formatScore(score)}/10
+            {openOnly == null && <>· {formatNumber(production)} in production </>}· {formatScore(score)}/10
           </span>
         </span>
       )}

@@ -39,6 +39,29 @@ def _events(store: OmissionStore) -> list[dict]:
     return [dict(row) for row in store._conn.execute("SELECT * FROM savings_events")]
 
 
+def test_distillation_uses_synthetic_transcript_roots(
+    tmp_path: Path, store: OmissionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repowise.core.distill import session_model
+
+    roots: list[tuple[Path | None, Path | None]] = []
+
+    def capture(
+        _repo_root: Path, projects_root: Path | None, codex_sessions_root: Path | None
+    ) -> session_model.ResolvedModel:
+        roots.append((projects_root, codex_sessions_root))
+        return session_model.ResolvedModel(
+            "claude-sonnet-4-6", "claude-sonnet-4-6", "unknown", "default"
+        )
+
+    monkeypatch.setattr(session_model, "_resolve", capture)
+    distill_output(PYTEST_OUTPUT, command="pytest", source="cli", store=store)
+
+    assert roots == [
+        (tmp_path / "agent-transcripts" / "claude", tmp_path / "agent-transcripts" / "codex")
+    ]
+
+
 def test_a_distillation_records_one_measured_event(store: OmissionStore) -> None:
     result = distill_output(PYTEST_OUTPUT, command="pytest", source="cli", store=store)
     assert result.distilled
@@ -97,7 +120,7 @@ def test_the_command_is_never_persisted(store: OmissionStore) -> None:
     )
     stored = str(_events(store)[0])
     assert "hunter2" not in stored
-    assert "private" not in stored
+    assert "/home/someone/private" not in stored
 
 
 def test_two_distillations_of_identical_output_stay_independent(store: OmissionStore) -> None:

@@ -11,6 +11,7 @@
 import { ArrowRight, Boxes, Database, Link2, type LucideIcon } from "lucide-react";
 import { EDGE_FAMILY_COPY, EDGE_FAMILY_ORDER, type EdgeFamily, type FamilyCount } from "./edge-families";
 import { kindMixText } from "./aggregate-facts";
+import { formatNumber } from "../../lib/format";
 
 // Re-exported for the lens switch and existing imports; the control lives in shared.
 export { Segmented, type SegmentOption } from "../../shared/segmented";
@@ -64,7 +65,7 @@ export function SystemMapFilters({ familyCounts, kindCounts, families, onToggleF
             <Icon size={12} aria-hidden />
             <span className={active ? undefined : "line-through"}>{copy.label}</span>
             <span className="font-mono text-[10px] tabular-nums text-[var(--color-text-secondary)]">
-              {count.toLocaleString()}
+              {formatNumber(count)}
             </span>
           </button>
         );

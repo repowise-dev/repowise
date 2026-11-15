@@ -89,6 +89,20 @@ def test_split_first_time_drops_unknown_lookups():
     assert first == ["Amy"]
 
 
+def test_prior_commit_counts_escapes_the_tag_offset(monkeypatch):
+    urls: list[str] = []
+
+    def fake_gh(path: str, jq: str) -> str:
+        urls.append(path)
+        return "1"
+
+    monkeypatch.setattr(rs, "_gh", fake_gh)
+    assert rs._prior_commit_counts(["amy"], "2026-10-25T21:09:38+05:30") == {"amy": 1}
+    assert urls == [
+        f"repos/{rs.GITHUB_REPO}/commits?author=amy&until=2026-10-25T21%3A09%3A38%2B05%3A30&per_page=1"
+    ]
+
+
 def test_maintainers_and_bots():
     assert rs.is_maintainer("RaghavChamadiya", "anything")
     assert rs.is_maintainer(None, "Swati")

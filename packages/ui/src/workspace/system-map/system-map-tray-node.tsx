@@ -16,6 +16,7 @@ import { useSystemMapActions } from "./system-map-actions";
 import { CardAction, HIDDEN_HANDLE } from "./system-map-card-action";
 import { plural } from "./system-map-model";
 import { TRAY_OPEN_TOKEN } from "./view-state";
+import { formatNumber } from "../../lib/format";
 
 const MONO: CSSProperties = {
   fontFamily: "var(--font-mono, ui-monospace, monospace)",
@@ -64,11 +65,11 @@ function TrayNodeInner({ data, selected }: NodeProps) {
     >
       <Handle type="target" position={Position.Top} style={HIDDEN_HANDLE} />
       <span style={{ fontSize: 12, lineHeight: "16px", fontWeight: 600, color: "var(--color-text-primary)" }}>
-        Not linked at runtime · <span style={{ fontVariantNumeric: "tabular-nums" }}>{count.toLocaleString()}</span>
+        Not linked at runtime · <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatNumber(count)}</span>
       </span>
       <span style={MONO} title={names.join(", ")}>
         {names.join(", ")}
-        {rest > 0 ? `, +${rest.toLocaleString()} more` : ""}
+        {rest > 0 ? `, +${formatNumber(rest)} more` : ""}
       </span>
       <span style={{ fontSize: 12, lineHeight: "16px", color: "var(--color-text-secondary)" }}>No runtime or data link.</span>
       <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "auto" }}>
@@ -88,7 +89,7 @@ function MoreNodeInner({ data, selected }: NodeProps) {
     <div style={{ ...dashed(Boolean(selected)), width, height, display: "flex", flexDirection: "column", gap: 3, padding: "9px 12px" }}>
       <Handle type="target" position={horizontal ? Position.Left : Position.Top} style={HIDDEN_HANDLE} />
       <span style={{ fontSize: 15, lineHeight: "20px", fontWeight: 600, color: "var(--color-text-primary)", fontVariantNumeric: "tabular-nums" }}>
-        +{more.serviceIds.length.toLocaleString()} more
+        +{formatNumber(more.serviceIds.length)} more
       </span>
       <span style={{ fontSize: 12, lineHeight: "16px", color: "var(--color-text-secondary)" }}>
         {groups > 0 ? `${plural(groups, "group", "groups")} and their services, ` : "Services "}

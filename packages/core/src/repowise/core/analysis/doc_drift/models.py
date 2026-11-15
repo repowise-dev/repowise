@@ -61,7 +61,8 @@ class DocReference:
 
     kind: DriftKind
     raw: str
-    """The reference exactly as written, for display."""
+    """The reference exactly as written. Its leading ``/``, ``#``, ``./`` or ``../``
+    picks the reading (``resolver.readings``)."""
     target: str
     """Normalized lookup key. For ``ANCHOR`` this is ``"<doc path>#<fragment>"``."""
     doc_path: str

@@ -40,10 +40,10 @@ ALL_IDS = list(_TARGET_MODULES)
 #: The agent this file pretends repowise integrated with. Nothing under
 #: ``core/savings/`` mentions it, which is the whole point.
 SEVENTH = AgentIdentity(
-    slug="windsurf",
-    display_name="Windsurf",
-    hook_adapter="windsurf",
-    session_adapter="windsurf",
+    slug="zed",
+    display_name="Zed",
+    hook_adapter="zed",
+    session_adapter="zed",
 )
 
 
@@ -109,7 +109,7 @@ def test_no_two_targets_answer_to_the_same_announced_name() -> None:
 # ---------------------------------------------------------------------------
 
 
-class _WindsurfTarget:
+class _ZedTarget:
     """A descriptor for an agent repowise does not actually integrate with.
 
     Only the identity-derived attributes are real; nothing here touches the
@@ -123,10 +123,10 @@ class _WindsurfTarget:
     session_adapter = SEVENTH.session_adapter
     capture_adapter = SEVENTH.capture_adapter
     methods = ()
-    project_file_id = "windsurf_rules"
+    project_file_id = "zed_rules"
 
 
-TARGET = _WindsurfTarget()
+TARGET = _ZedTarget()
 
 
 @pytest.fixture
@@ -143,11 +143,11 @@ def seventh_agent(monkeypatch: pytest.MonkeyPatch) -> Iterator[AgentIdentity]:
 def test_a_seventh_agent_costs_a_descriptor_and_a_registry_line(
     seventh_agent: AgentIdentity,
 ) -> None:
-    target = get_target("windsurf")
+    target = get_target("zed")
     assert target is not None
-    assert target.id == "windsurf"
-    assert target.display_name == "Windsurf"
-    assert identity_for_target_id("windsurf") is seventh_agent
+    assert target.id == "zed"
+    assert target.display_name == "Zed"
+    assert identity_for_target_id("zed") is seventh_agent
 
 
 def test_a_seventh_agent_is_attributed_rather_than_bucketed_as_unknown(
@@ -160,8 +160,8 @@ def test_a_seventh_agent_is_attributed_rather_than_bucketed_as_unknown(
     ``unknown`` permanently — while an adapter that passed the new id directly
     raised instead, on a write path behind live MCP calls.
     """
-    assert resolve_client_identity("Windsurf") == seventh_agent.slug
-    assert resolve_client_identity("Windsurf") != UNKNOWN_AGENT
+    assert resolve_client_identity("Zed") == seventh_agent.slug
+    assert resolve_client_identity("Zed") != UNKNOWN_AGENT
 
 
 def test_a_seventh_agents_events_record_and_report_with_no_savings_edit(
@@ -219,7 +219,7 @@ def test_a_seventh_agents_events_record_and_report_with_no_savings_edit(
         stored = store._conn.execute("SELECT agent, integration FROM savings_events").fetchone()
         assert tuple(stored) == (seventh_agent.slug, seventh_agent.slug)
 
-    assert display_name_for(seventh_agent.slug) == "Windsurf"
+    assert display_name_for(seventh_agent.slug) == "Zed"
 
 
 def test_a_retired_agents_events_still_read_back(tmp_path: Path) -> None:
@@ -277,14 +277,14 @@ def test_writer_and_reader_reject_a_malformed_id_the_same_way(field: str) -> Non
         "delivered_input_tokens": 4,
     }
     with pytest.raises(ValueError, match=f"{field} must be a bounded"):
-        SavingsEvent.from_mapping({**payload, field: "Windsurf!"})
+        SavingsEvent.from_mapping({**payload, field: "Zed!"})
     with pytest.raises(ValueError, match="integration must be a bounded"):
         OpportunityObservation.from_mapping(
             {
                 "observation_id": "obs-2",
                 "occurred_at": "2026-09-18T00:00:05Z",
                 "repository_id": "repo",
-                "integration": "Windsurf!",
+                "integration": "Zed!",
                 "kind": "bypassed_distillation",
                 "estimated_potential_input_tokens": 1,
             }
@@ -321,9 +321,9 @@ def test_an_announced_name_reaches_the_stored_attribution(
     resolved slug is what lands in the ``agent`` column and comes back out of
     the report. Nothing between those two ends enumerates agents.
     """
-    resolved, metadata = normalize_mcp_identity("Windsurf")
+    resolved, metadata = normalize_mcp_identity("Zed")
     assert resolved == seventh_agent.slug
-    assert metadata["client_info_normalized"] == "windsurf"
+    assert metadata["client_info_normalized"] == "zed"
 
     with OmissionStore(tmp_path / "omissions.db") as store:
         repository = SavingsRepository(store._conn)
@@ -350,8 +350,8 @@ def test_an_announced_name_reaches_the_stored_attribution(
             )
         )
         stored = store._conn.execute("SELECT agent FROM savings_events").fetchone()[0]
-    assert stored == "windsurf"
-    assert display_name_for(stored) == "Windsurf"
+    assert stored == "zed"
+    assert display_name_for(stored) == "Zed"
 
 
 def test_an_unannounced_client_is_stored_as_unknown_not_as_the_fallback() -> None:

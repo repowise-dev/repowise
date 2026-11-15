@@ -798,6 +798,18 @@ class SessionStagingStore:
             for r in rows
         ]
 
+    def add_settled_row(
+        self, *, session_id: str, key: str, node_id: str, surface: str, category: str, shown_at: float
+    ) -> bool:
+        """Insert one ledger row that needs no later judgement. False if the key was taken."""
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO injections "
+            "(session_id, decision_id, node_id, shown_at, surface, category, evaluated) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1)",
+            (session_id, key, node_id, shown_at, surface, category),
+        )
+        return cur.rowcount > 0
+
     def mark_injection_evaluated(
         self, session_id: str, decision_id: str, *, verdict: str = ""
     ) -> None:

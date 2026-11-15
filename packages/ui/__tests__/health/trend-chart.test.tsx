@@ -23,9 +23,9 @@ const live = (container: HTMLElement) => container.querySelector("[aria-live]")!
 describe("TrendChart", () => {
   it("names the health bands behind the lines instead of colouring the lines by health", () => {
     const { container } = render(<TrendChart history={history} />);
-    for (const band of ["Healthy", "Warning", "Alert"]) expect(screen.getByText(band)).toBeInTheDocument();
+    for (const band of ["Excellent", "Good", "Fair", "Needs work", "At risk"]) expect(screen.getByText(band)).toBeInTheDocument();
     const strokes = [...container.querySelectorAll("path")].map((p) => p.getAttribute("stroke"));
-    // A code-health line at 3 is not drawn in the Alert red or any verdict colour.
+    // A code-health line at 3 is not drawn in the At risk red or any verdict colour.
     expect(strokes).toContain("var(--color-series-1)");
     expect(strokes.some((s) => /success|warning|error/.test(s ?? ""))).toBe(false);
   });

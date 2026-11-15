@@ -2,6 +2,7 @@
 frontmatter: |
     description: Rebuild the Repowise vector store by re-embedding all documentation pages. No LLM calls, only embedding API calls.
     allowed-tools: Bash(repowise reindex:*), Read, AskUserQuestion
+    disable-model-invocation: true
 ---
 
 # Repowise Reindex

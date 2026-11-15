@@ -7,6 +7,7 @@
 import type { C4LayoutPosition } from "../../c4/layout/elk-c4-layout";
 import { focusMoreId, focusNodeId, type FocusLayout } from "./focus-columns";
 import type { FocusColumnId } from "./level-types";
+import { formatNumber } from "../../lib/format";
 
 /** Room between a heading and the column's first card. */
 const LABEL_GAP = 28;
@@ -45,7 +46,7 @@ export function focusColumnLabels(
     const count = c.entries.length + c.folded.length;
     out.push({
       id: `label:${c.id}`,
-      label: `${FOCUS_COLUMN_TITLES[c.id]} · ${count.toLocaleString()}`,
+      label: `${FOCUS_COLUMN_TITLES[c.id]} · ${formatNumber(count)}`,
       x: Math.min(...placed.map((p) => p.x)),
       y: Math.min(...placed.map((p) => p.y)) - LABEL_GAP,
     });

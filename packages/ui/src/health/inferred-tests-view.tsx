@@ -34,6 +34,7 @@ import type {
   HealthCoverageResponse,
   HealthFinding,
   InferredTestMap,
+  ReachedFileRow,
 } from "@repowise-dev/types/health";
 
 import { OverviewSection } from "../overview/section";
@@ -52,6 +53,26 @@ const AT_RISK_SCORE = 6;
 
 /** The floor statement the hero and the list share. */
 export const UNREACHED_TITLE = "No test reaches these through the graph";
+
+/** A file no test reaches that owes one: generated, vendored, build, tooling,
+ * example and migration code never does. */
+function isGap(f: ReachedFileRow): boolean {
+  return !f.reached && !f.not_applicable;
+}
+
+/** Says how many files owe no test, so the two counts above read as the whole. */
+function NotApplicableNote({ count }: { count: number }) {
+  if (count === 0) return null;
+  const one = count === 1;
+  return (
+    <>
+      {" "}
+      {formatNumber(count)} {one ? "is" : "are"} generated, vendored, build, tooling,
+      example or migration code, which owes no test, so {one ? "it is" : "they are"} not
+      counted as unreached.
+    </>
+  );
+}
 
 export function InferredTestsView({
   data,
@@ -72,7 +93,7 @@ export function InferredTestsView({
   const points = useMemo(
     () =>
       map.files
-        .filter((f) => f.health_score != null)
+        .filter((f) => f.health_score != null && !f.not_applicable)
         .map((f) => ({
           file_path: f.file_path,
           health_score: f.health_score!,
@@ -89,7 +110,7 @@ export function InferredTestsView({
   const atRisk = useMemo(
     () =>
       map.files.filter(
-        (f) => !f.reached && f.health_score != null && f.health_score < AT_RISK_SCORE,
+        (f) => isGap(f) && f.health_score != null && f.health_score < AT_RISK_SCORE,
       ).length,
     [map.files],
   );
@@ -99,7 +120,7 @@ export function InferredTestsView({
   const ranked = useMemo(() => {
     const rank = new Map(untestedFindings.map((f, i) => [f.file_path, i]));
     return map.files
-      .filter((f) => !f.reached)
+      .filter(isGap)
       .sort((a, b) => {
         const ra = rank.get(a.file_path);
         const rb = rank.get(b.file_path);
@@ -174,6 +195,7 @@ export function InferredTestsView({
           </strong>
           . The graph finds no test for the other{" "}
           {formatNumber(map.files_not_reached)}.
+          <NotApplicableNote count={map.files_not_applicable ?? 0} />
         </p>
 
         <p className="mt-2.5">

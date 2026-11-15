@@ -63,6 +63,16 @@ class TestNormalizeHttpPath:
         assert normalize_http_path("orders/{id:int?}/lines") == "/orders/{param}/lines"
         assert normalize_http_path("/users/{id}?page={page}") == "/users/{param}"
 
+    def test_gin_echo_named_catch_all_is_a_param(self) -> None:
+        assert normalize_http_path("/swagger/*any") == "/swagger/{param}"
+        assert normalize_http_path("/static/*filepath") == "/static/{param}"
+        assert normalize_http_path("/v1/*path/sub") == "/v1/{param}/sub"
+
+    def test_star_inside_a_segment_and_double_star_stay_literal(self) -> None:
+        assert normalize_http_path("/a*b") == "/a*b"
+        assert normalize_http_path("/files/*") == "/files/{param}"
+        assert normalize_http_path("/**") == "/**"
+
 
 # ---------------------------------------------------------------------------
 # HttpExtractor
@@ -246,6 +256,24 @@ class TestHttpExtractor:
         """)
         ids = {c.contract_id for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"}
         assert "http::GET::/api/v1/users" in ids
+
+    def test_go_routes_in_a_raw_string_fixture_are_not_providers(self, tmp_path: Path) -> None:
+        # A test writing another program's main.go: only the file's own route counts.
+        self._write_file(tmp_path, "internal/watch/watch_test.go", """
+            const mainGo = `package main
+            func main() {
+                r := gin.Default()
+                r.GET("/users/{id}", getUser)
+                r.POST("/orders", createOrder)
+            }
+            `
+
+            func TestWatch(t *testing.T) {
+                r.GET("/health", healthHandler)
+            }
+        """)
+        providers = [c for c in HttpExtractor().extract(tmp_path, "svc") if c.role == "provider"]
+        assert [(c.contract_id, c.line) for c in providers] == [("http::GET::/health", 11)]
 
     def test_fetch_consumer(self, tmp_path: Path) -> None:
         self._write_file(tmp_path, "src/api.ts", """
@@ -1324,3 +1352,141 @@ class TestContractStorePersistence:
         assert loaded is not None
         assert loaded.contracts == []
         assert loaded.contract_links == []
+
+
+# ---------------------------------------------------------------------------
+# Param-segment matching (a concrete value where the route declares a parameter)
+# ---------------------------------------------------------------------------
+
+
+class TestParamSegmentMatching:
+    def _c(self, **kwargs) -> Contract:
+        defaults = {
+            "repo": "a",
+            "contract_id": "http::GET::/api",
+            "contract_type": "http",
+            "role": "provider",
+            "file_path": "f.py",
+            "symbol_name": "handler",
+            "confidence": 0.85,
+            "service": None,
+            "meta": {},
+        }
+        defaults.update(kwargs)
+        return Contract(**defaults)
+
+    def _provider(self, path: str, repo: str = "render") -> Contract:
+        return self._c(repo=repo, role="provider", contract_id=f"http::GET::{path}")
+
+    def _consumer(self, path: str, **meta) -> Contract:
+        return self._c(
+            repo="web",
+            role="consumer",
+            contract_id=f"http::GET::{path}",
+            file_path="client.py",
+            confidence=0.75,
+            meta=meta,
+        )
+
+    def test_concrete_segment_links_to_param_route(self) -> None:
+        [link] = match_contracts(
+            [self._provider("/api/render/{param}"), self._consumer("/api/render/1")]
+        )
+        assert link.strategy == LinkStrategy.PARAM_SEGMENT
+        assert link.match_type == "candidate"
+        assert link.provider_repo == "render"
+        assert link.contract_id == "http::GET::/api/render/{param}"
+        assert link.consumer_contract_id == "http::GET::/api/render/1"
+        assert link.confidence < 0.75
+
+    def test_a_declared_literal_route_wins_over_the_param_route(self) -> None:
+        links = match_contracts(
+            [
+                self._provider("/api/users/{param}"),
+                self._provider("/api/users/me", repo="render"),
+                self._consumer("/api/users/me"),
+            ]
+        )
+        assert [(lk.strategy, lk.contract_id) for lk in links] == [
+            (LinkStrategy.EXACT_ID, "http::GET::/api/users/me")
+        ]
+
+    def test_the_most_literal_param_route_stands(self) -> None:
+        links = match_contracts(
+            [
+                self._provider("/api/orders/{param}/items"),
+                self._provider("/api/orders/{param}/{param}"),
+                self._consumer("/api/orders/7/items"),
+            ]
+        )
+        assert [lk.contract_id for lk in links] == ["http::GET::/api/orders/{param}/items"]
+
+    def test_different_segment_counts_do_not_link(self) -> None:
+        assert (
+            match_contracts(
+                [self._provider("/api/render/{param}"), self._consumer("/api/render/1/extra")]
+            )
+            == []
+        )
+        assert (
+            match_contracts([self._provider("/api/render/{param}"), self._consumer("/api/render")])
+            == []
+        )
+
+    def test_a_differing_literal_segment_does_not_link(self) -> None:
+        assert (
+            match_contracts([self._provider("/api/render/{param}"), self._consumer("/api/other/1")])
+            == []
+        )
+
+    def test_two_repos_serving_the_route_refuse(self) -> None:
+        consumer = self._consumer("/api/render/1")
+        links = match_contracts(
+            [
+                self._provider("/api/render/{param}", repo="render"),
+                self._provider("/api/render/{param}", repo="render2"),
+                consumer,
+            ]
+        )
+        assert links == []
+        assert consumer.meta.get(AMBIGUOUS_PROVIDER) is True
+
+    def test_a_catch_all_route_is_never_a_target(self) -> None:
+        for path in ("/{param}", "/api/{param}", "/api/v1/{param}", "/{param}/status"):
+            assert (
+                match_contracts(
+                    [self._provider(path), self._consumer(path.replace("{param}", "x"))]
+                )
+                == []
+            ), path
+
+    def test_a_generic_call_path_is_still_held_back(self) -> None:
+        assert (
+            match_contracts([self._provider("/health/{param}"), self._consumer("/health/1")]) == []
+        )
+
+    def test_static_assets_do_not_link(self) -> None:
+        assert (
+            match_contracts([self._provider("/static/{param}"), self._consumer("/static/app.js")])
+            == []
+        )
+
+    def test_method_must_fit(self) -> None:
+        post = self._c(
+            repo="render", role="provider", contract_id="http::POST::/api/render/{param}"
+        )
+        assert match_contracts([post, self._consumer("/api/render/1")]) == []
+
+    def test_a_param_in_the_call_does_not_meet_a_literal_in_the_route(self) -> None:
+        assert (
+            match_contracts(
+                [self._provider("/api/render/latest"), self._consumer("/api/render/{param}")]
+            )
+            == []
+        )
+
+    def test_same_repo_is_not_linked(self) -> None:
+        consumer = self._c(
+            repo="render", role="consumer", contract_id="http::GET::/api/render/1", file_path="c.py"
+        )
+        assert match_contracts([self._provider("/api/render/{param}"), consumer]) == []

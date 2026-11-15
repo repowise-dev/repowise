@@ -16,6 +16,7 @@ from repowise.core.analysis.changed_lines import (
     change_set,
     changed_lines,
     diff_since,
+    split_commit_patches,
 )
 
 
@@ -449,3 +450,13 @@ def test_change_set_and_diff_since_name_files_from_a_nested_checkout(git_repo) -
 
     diffs = diff_since(str(svc), "HEAD", None, ["a.py"])
     assert set(diffs) == {"a.py"} and diffs["a.py"].new_lines == {2}
+
+
+def test_split_commit_patches_starts_a_commit_only_at_a_line_start_commit_id():
+    sha1, sha256 = "a" * 40, "b" * 64
+    raw = f"\0{sha1}\n\n+x = '\0{sha1}'\n+\0;\n\0{sha256}\n\n-y\n\0{sha1}"
+    assert split_commit_patches(raw) == [
+        (sha1, f"\n+x = '\0{sha1}'\n+\0;\n"),
+        (sha256, "\n-y\n"),
+        (sha1, ""),
+    ]

@@ -4,8 +4,8 @@ import { useState } from "react";
 import { ChevronDown, ChevronRight, Clock, Diff, ArrowLeft } from "lucide-react";
 import type { DocPageVersion } from "@repowise-dev/types";
 import { cn } from "../lib/cn";
-import { formatRelativeTime } from "../lib/format";
 import { Badge } from "../ui/badge";
+import { RelativeTime } from "../shared/relative-time";
 
 export interface VersionHistoryProps {
   /** Archived prior versions, newest-first as returned by the engine. */
@@ -131,7 +131,7 @@ export function VersionHistory({
                 </span>
               </div>
               <span className="text-[10px] text-[var(--color-text-tertiary)] shrink-0 ml-2">
-                {formatRelativeTime(v.archived_at)}
+                <RelativeTime date={v.archived_at} />
               </span>
             </button>
           ))}

@@ -17,6 +17,7 @@ from typing import Any
 
 import structlog
 
+from ..index_persistence import IndexWrite, apply_index_persistence
 from .analysis import (
     persist_analysis,
 )
@@ -42,17 +43,20 @@ from .graph import (
     _community_meta,
     _derive_entry_point_scores,
     _edge_row,
-    _edges_predate_cohesion,
     _prune_vanished_symbol_nodes,
     _stamp_betweenness_commit,
     _stored_edges_parser_fingerprint,
+    apply_stored_complexity,
     has_graph_edges,
     persist_graph_nodes,
     persist_incremental_edges,
     persist_incremental_symbols,
     persist_symbol_analysis,
     prune_absent_graph_rows,
+    prune_absent_synthetic_nodes,
+    restore_stored_complexity,
     stamp_edges_parser_fingerprint,
+    stored_symbol_complexity,
 )
 from .health import (
     _analyzed_commit,
@@ -92,6 +96,7 @@ from .sweeps import (
     sweep_retired_pages,
     sweep_store_hygiene,
     sweep_superseded_generated_pages,
+    sweep_unyielded_module_pages,
 )
 from .tombstones import (
     _SPOTLIGHT_PATHS_PER_QUERY,
@@ -245,5 +250,12 @@ async def persist_pipeline_result(
         graph_nodes=result.graph_builder.graph().number_of_nodes(),
         symbols=symbol_count,
         git_files=len(result.git_metadata_list),
+    )
+    await apply_index_persistence(
+        session,
+        repo_id,
+        IndexWrite(
+            "full", result.parsed_files, traversed_paths=frozenset(current_graph_file_paths)
+        ),
     )
     return swept_page_ids

@@ -168,7 +168,9 @@ async def test_prose_query_returns_a_file_that_has_no_page(pageless_mcp, questio
     assert row["symbols"][0].endswith(":12")
     assert {"filename", "symbol"} & set(row["sources"])
     assert "page_id" not in row
-    assert path in [c["path"] for c in result.get("candidates", [])]
+    # ``candidates`` is left out when it only repeats the result paths.
+    openable = result.get("candidates") or result["results"]
+    assert path in [c.get("path") for c in openable]
 
 
 @pytest.mark.asyncio

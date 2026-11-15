@@ -76,12 +76,17 @@ function inLocale(locale: string, messages: Record<string, unknown>, ui: React.R
 }
 
 describe("docs copy", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    // The tree remembers open folders; start each test with them closed.
+    window.localStorage.clear();
+  });
 
   it("renders the tree's own wording in zh-CN, counts included", () => {
     inLocale("zh-CN", zhMessages, <TranslatedTree />);
     expect(screen.getByPlaceholderText("搜索文档...")).toBeTruthy();
-    expect(screen.getByText("代码参考")).toBeTruthy();
+    // The count sits on the Files row inside the collapsed Reference folder.
+    fireEvent.click(screen.getByText("参考"));
     expect(screen.getByText("1 个文件 · 1 个符号")).toBeTruthy();
     expect(screen.getByRole("button", { name: "1 个未撰写" })).toBeTruthy();
   });
@@ -89,6 +94,7 @@ describe("docs copy", () => {
   it("keeps the English plurals when the locale is en", () => {
     inLocale("en", enMessages, <TranslatedTree />);
     expect(screen.getByText("3 pages")).toBeTruthy();
+    fireEvent.click(screen.getByText("Reference"));
     expect(screen.getByText("1 file · 1 symbol")).toBeTruthy();
   });
 

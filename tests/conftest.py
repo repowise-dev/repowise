@@ -107,6 +107,17 @@ def _no_background_commit_health():
     mp.undo()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _no_background_pricing_scan():
+    """Keep servers under test from scanning the developer's agent transcripts."""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    mp = MonkeyPatch()
+    mp.setenv("REPOWISE_PRICING_WARM", "0")
+    yield
+    mp.undo()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_db_url_env():
     """Stop one test's database URL from redirecting every later test.

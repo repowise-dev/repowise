@@ -19,12 +19,21 @@ export interface McpToolInfo {
   presentation: string;
   safety: "read_only" | "generative" | "mutating" | string;
   evidence_basis: "measured" | "inferred" | "unknown";
+  /** About how many tokens the schema costs a client that loads every schema up front. */
+  schema_tokens?: number;
 }
+
+/** Named tool sets; unset means each client gets its own default. */
+export type McpToolProfile = "core" | "lean" | "standard" | "all";
 
 export interface McpToolSurface {
   repo_id: string | null;
   is_workspace: boolean;
   override: string[] | string | null;
+  /** The profile the override names; null when each client gets its default. */
+  profile?: McpToolProfile | null;
+  /** Each profile's tools in this mode. */
+  profiles?: Partial<Record<McpToolProfile, string[]>>;
   tools: McpToolInfo[];
 }
 

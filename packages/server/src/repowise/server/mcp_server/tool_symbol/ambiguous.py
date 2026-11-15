@@ -139,10 +139,10 @@ def _finish_ambiguous(
             " fetch one via get_symbol with its fetch_with range."
         )
 
-    from repowise.core.distill.budget import estimate_tokens
     from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.reads import read_tokens
 
-    full_tokens = sum(estimate_tokens(t) for t in text_cache.values() if t)
+    full_tokens = sum(read_tokens(t) for t in text_cache.values() if t)
     if full_tokens:
         declare_replaced(response, full_tokens)
 

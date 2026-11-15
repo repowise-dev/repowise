@@ -258,3 +258,25 @@ def test_fixture_code_keeps_its_full_run(tmp_path, path) -> None:
     """A test may import fixture code by module name, which no file name search sees."""
     sel = _selection(tmp_path, [path])
     assert sel.run_all
+
+
+def test_production_code_is_only_tokenized_when_it_holds_a_tree_path(monkeypatch) -> None:
+    from repowise.core.analysis import fixture_readers
+
+    texts = {**_TEXTS, "src/indexer.py": 'SAMPLE = "Tests/Fixtures/TS_SAMPLE"\n'}
+    other = [*_OTHER, "src/indexer.py"]
+    seen: list[str] = []
+    real = fixture_readers.code_text
+
+    def counted(path: str, text: str) -> str:
+        seen.append(path)
+        return real(path, text)
+
+    monkeypatch.setattr(fixture_readers, "code_text", counted)
+    out = with_data_file_readers(
+        ["tests/fixtures/ts_sample/b.json"], {}, _TEST_CODE, other, texts.get
+    )
+    # The tree's path in any case still keeps the full run.
+    assert out == {}
+    assert "src/indexer.py" in seen
+    assert "src/app.py" not in seen

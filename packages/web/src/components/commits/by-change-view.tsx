@@ -5,6 +5,7 @@ import { EmptyState } from "@repowise-dev/ui/shared/empty-state";
 import { InfoTip } from "@repowise-dev/ui/shared/info-tip";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { ChangesTable } from "@/components/changes/changes-table";
+import { HistoryGroupToggle } from "./commits-view-toggle";
 import { listChanges } from "@/lib/api/changes";
 import {
   CHANGE_CATEGORIES,
@@ -131,7 +132,11 @@ export async function ByChangeView({ repoId, params }: { repoId: string; params:
   const built = page.checklists_built;
 
   return (
-    <OverviewSection title={t("byChangeTitle")} description={t("byChangeDescription")}>
+    <OverviewSection
+      title={t("byChangeTitle")}
+      description={t("byChangeDescription")}
+      action={<HistoryGroupToggle repoId={repoId} view="changes" />}
+    >
       <FilterChips
         href={href}
         category={category}

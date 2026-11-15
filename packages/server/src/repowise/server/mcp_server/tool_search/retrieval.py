@@ -18,7 +18,8 @@ from repowise.server.mcp_server._answer_pipeline import (
     _SYMBOL_LEG_RRF_K,
     leg_ranks,
 )
-from repowise.server.mcp_server._answer_pipeline.leg_record import vector_leg_within
+from repowise.server.mcp_server._answer_pipeline.leg_record import _record_leg, vector_leg_within
+from repowise.server.mcp_server._call_tasks import cancel_and_wait
 from repowise.server.mcp_server._federation import Federation, merge_ranked
 from repowise.server.mcp_server._helpers import (
     _VECTOR_TIMEOUT_ENV,
@@ -64,13 +65,6 @@ from .serve import (
 _log = logging.getLogger("repowise.mcp.search")
 
 
-async def _wait_for_vector_store(ctx) -> None:
-    """Block (bounded) until the vector store signals readiness, if it tracks it."""
-    if ctx.vector_store_ready is not None:
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(ctx.vector_store_ready.wait(), timeout=30.0)
-
-
 async def _safe_fts(ctx, query: str, limit: int) -> list:
     """FTS search, bounded and failure-swallowing (returns [] on error/timeout)."""
     if ctx.fts is None:
@@ -83,8 +77,8 @@ async def _safe_fts(ctx, query: str, limit: int) -> list:
 async def _safe_vector(ctx, query: str, limit: int) -> list:
     """Vector search, bounded and failure-swallowing (returns [] on error/timeout).
 
-    Readiness is awaited by the caller (``_wait_for_vector_store``) before the
-    fused retrieve runs, so this path does not re-wait.
+    Readiness is awaited by the caller (``_vector_leg``), so this path does
+    not re-wait.
 
     Returns nothing on a keyless index. ``store_has_semantic_vectors`` explains
     why the mock's vectors cannot be ranked on; the reason this is enforced here
@@ -98,8 +92,9 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
             ctx.vector_store.search(query, limit=limit), timeout=vector_search_timeout_s()
         )
     except TimeoutError:
-        # Logged, not silent: a timeout drops the whole semantic leg and the
+        # Logged and recorded: a timeout drops the whole semantic leg and the
         # full-text-only hits that remain look like a normal result set.
+        _record_leg("vector", "timeout")
         _log.warning(
             "Vector search exceeded its %gs budget; returning no semantic hits. "
             "Raise it with %s=<seconds>.",
@@ -107,6 +102,7 @@ async def _safe_vector(ctx, query: str, limit: int) -> list:
             _VECTOR_TIMEOUT_ENV,
         )
     except Exception:
+        _record_leg("vector", "error")
         _log.debug("Vector search failed; returning no semantic hits", exc_info=True)
     return []
 
@@ -144,7 +140,41 @@ def _fused_entry(r) -> dict:
     return entry
 
 
-async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | None) -> list[dict]:
+async def _run_legs(ctx, query: str, fetch_limit: int, *, semantic: bool) -> tuple[list, ...]:
+    """``(vector, fts, symbol, filename)`` hits; the vector leg only when *semantic*.
+
+    The lexical legs run while a store still loading at startup finishes; the
+    grace starts once it is loaded, so a fresh server's first search keeps
+    its semantic hits.
+    """
+    if not semantic:
+        return ([], *await _lexical_legs(ctx, query, fetch_limit))
+    vector_leg = asyncio.ensure_future(_vector_leg(ctx, query, fetch_limit))
+    try:
+        lexical = await _lexical_legs(ctx, query, fetch_limit)
+        await _pkg._wait_for_vector_store(ctx)
+    except BaseException:
+        await cancel_and_wait([vector_leg])
+        raise
+    return (await vector_leg_within(vector_leg, semantic_grace_s()), *lexical)
+
+
+async def _vector_leg(ctx, query: str, fetch_limit: int) -> list:
+    await _pkg._wait_for_vector_store(ctx)
+    return await _pkg._safe_vector(ctx, query, fetch_limit)
+
+
+async def _lexical_legs(ctx, query: str, fetch_limit: int) -> list[list]:
+    return await asyncio.gather(
+        _pkg._safe_fts(ctx, query, fetch_limit),
+        _pkg._safe_symbol_search(ctx, query, pageless=True),
+        _pkg._safe_filename_search(ctx, query),
+    )
+
+
+async def _fused_retrieve(
+    ctx, query: str, fetch_limit: int, page_type: str | None, *, semantic: bool = True
+) -> list[dict]:
     """Retrieve by fusing FTS, vector and symbol search via Reciprocal Rank Fusion.
 
     The retrievers run in parallel; a hit's score is the sum of
@@ -166,18 +196,13 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
     off-topic query return its nearest-but-unrelated neighbours. Rank position
     (for RRF) is the hit's place in the retriever's own list, unchanged by the
     floor.
+
+    ``semantic=False`` runs without the vector leg, for a caller whose
+    question an exact identifier hit already answers.
     """
-    vector_leg = asyncio.ensure_future(_pkg._safe_vector(ctx, query, fetch_limit))
-    try:
-        fts_results, sym_results, name_results = await asyncio.gather(
-            _pkg._safe_fts(ctx, query, fetch_limit),
-            _pkg._safe_symbol_search(ctx, query, pageless=True),
-            _pkg._safe_filename_search(ctx, query),
-        )
-    except BaseException:
-        vector_leg.cancel()
-        raise
-    vec_results = await vector_leg_within(vector_leg, semantic_grace_s())
+    vec_results, fts_results, sym_results, name_results = await _run_legs(
+        ctx, query, fetch_limit, semantic=semantic
+    )
 
     fused: dict[str, dict] = {}
     for rank, r in enumerate(vec_results):
@@ -221,7 +246,13 @@ async def _fused_retrieve(ctx, query: str, fetch_limit: int, page_type: str | No
 
 
 async def _search_single_repo(
-    ctx, query: str, limit: int, page_type: str | None, kind: str | None = None
+    ctx,
+    query: str,
+    limit: int,
+    page_type: str | None,
+    kind: str | None = None,
+    *,
+    semantic: bool = True,
 ) -> list[dict]:
     """Run search against a single repo context.
 
@@ -232,11 +263,11 @@ async def _search_single_repo(
     The ``kind`` filter runs here, on the over-fetched list and BEFORE the
     limit cut — filtering after per-repo truncation returned fewer than
     ``limit`` results (frequently zero) in the federated path.
-    """
-    await _pkg._wait_for_vector_store(ctx)
 
+    ``semantic=False`` neither waits for the vector store nor searches it.
+    """
     fetch_limit = _fetch_limit_for(limit, kind)
-    output = await _fused_retrieve(ctx, query, fetch_limit, page_type)
+    output = await _fused_retrieve(ctx, query, fetch_limit, page_type, semantic=semantic)
 
     _downweight_decisions(output, query)
     output = await _rescue_all_decision_window(ctx, output, query, fetch_limit)

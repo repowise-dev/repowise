@@ -18,6 +18,8 @@ from repowise.core.ingestion import ASTParser, FileTraverser, GraphBuilder
 R_IN_AB = "namespace A.B;\npublic class R\n{\n    public R(int n) { }\n}\n"
 R_IN_AD = "namespace A.D;\npublic class R\n{\n    public R(int n) { }\n}\n"
 CALLER = "namespace A;\nclass C\n{\n    void M()\n    {\n        var r = new R(1);\n    }\n}\n"
+USES_AB_DIRECT = "using A.B;\n" + CALLER
+USES_AB_AND_AD = "using A.B;\nusing A.D;\n" + CALLER
 USES_AB = '<Project Sdk="Microsoft.NET.Sdk">\n  <ItemGroup>\n    <Using Include="A.B" />\n  </ItemGroup>\n</Project>\n'
 
 
@@ -42,6 +44,10 @@ def _calls_from_m(
 
 
 class TestOneVisibleType:
+    def test_one_direct_using_keeps_the_constructor_edge(self, tmp_path: Path) -> None:
+        files = {"R.cs": R_IN_AB, "C.cs": USES_AB_DIRECT}
+        assert _calls_from_m(tmp_path, files) == {("R.cs::R::R", "import_merged")}
+
     def test_a_parent_namespace_sees_its_child_s_type_unique_in_the_repo(
         self, tmp_path: Path
     ) -> None:
@@ -121,6 +127,10 @@ class TestOneVisibleType:
 
 
 class TestRefusals:
+    def test_two_direct_usings_with_the_same_type_name_are_ambiguous(self, tmp_path: Path) -> None:
+        files = {"R.cs": R_IN_AB, "R2.cs": R_IN_AD, "C.cs": USES_AB_AND_AD}
+        assert _calls_from_m(tmp_path, files) == set()
+
     def test_two_types_of_the_name_and_no_using(self, tmp_path: Path) -> None:
         files = {"R.cs": R_IN_AB, "R2.cs": R_IN_AD, "C.cs": CALLER}
         assert _calls_from_m(tmp_path, files) == set()
@@ -151,6 +161,19 @@ class TestRefusals:
         widget = R_IN_AB.replace("class R", "class Widget").replace("public R(", "public Widget(")
         assert _calls_from_m(tmp_path, {"Impl.cs": widget, "C.cs": caller}) == set()
 
+    def test_a_using_alias_does_not_stem_match_a_repo_type_of_the_alias_name(
+        self, tmp_path: Path
+    ) -> None:
+        """``using R = X.Other;`` names an external type, so ``R.cs`` is not imported."""
+        caller = "using R = X.Other;\n" + CALLER
+        assert _calls_from_m(tmp_path, {"R.cs": R_IN_AB, "C.cs": caller}) == set()
+
+    def test_a_using_alias_of_a_bare_name_does_not_stem_match_the_alias(
+        self, tmp_path: Path
+    ) -> None:
+        caller = "using R = Other;\n" + CALLER
+        assert _calls_from_m(tmp_path, {"R.cs": R_IN_AB, "C.cs": caller}) == set()
+
     def test_a_bcl_name_with_one_repo_declaration_is_not_taken(self, tmp_path: Path) -> None:
         """``new List(1)`` with no ``using`` of the repo's namespace may mean the BCL type."""
         repo_list = R_IN_AB.replace("class R", "class List").replace("public R(", "public List(")
@@ -166,3 +189,10 @@ class TestRefusals:
         assert _calls_from_m(tmp_path, {"Pair.cs": pair, "C.cs": caller}) == {
             ("Pair.cs::Pair`2::Pair", "global_unique")
         }
+
+
+class TestAliasOfRepoType:
+    def test_a_using_alias_of_the_repo_type_still_binds(self, tmp_path: Path) -> None:
+        caller = "using R = A.B.R;\n" + CALLER
+        calls = _calls_from_m(tmp_path, {"R.cs": R_IN_AB, "C.cs": caller})
+        assert any(callee == "R.cs::R::R" for callee, _ in calls)

@@ -369,3 +369,62 @@ def test_a_locked_store_is_one_line_not_a_traceback(repo: Path, monkeypatch) -> 
     assert "database is locked" in result.output
     assert "retry once it finishes" in result.output
     assert "Traceback" not in result.output
+
+
+# --- re-adding a title, and evidence given at confirm ---------------------------
+
+
+def test_re_adding_a_title_keeps_the_fields_the_retry_left_out(repo: Path) -> None:
+    first = json.loads(_add(repo, "--agent", "claude_code", "--evidence-commit", "abc1234").output)
+    retry = _run(
+        repo, "add", "--agent", "claude_code",
+        "--title", "Bound the cache at 512", "--decision", "Cap the cache at 512 entries",
+    )
+
+    assert retry.exit_code == 0, retry.output
+    payload = json.loads(retry.output)["decision"]
+    assert payload["id"] == first["decision"]["id"]
+    assert payload["existed"] is True
+    assert payload["kept"] == ["rationale", "affected_files"]
+    shown = json.loads(_run(repo, "show", payload["id"]).output)["decision"]
+    assert shown["affected_files"] == ["src/cache.py"]
+    assert shown["rationale"] == "unbounded growth ran a worker out of memory"
+    assert shown["evidence_commits"] == ["abc1234"]
+
+
+def test_re_adding_a_title_adds_new_commits_to_the_stored_ones(repo: Path) -> None:
+    _add(repo, "--agent", "claude_code", "--evidence-commit", "abc1234")
+    retry = json.loads(_add(repo, "--agent", "claude_code", "--evidence-commit", "def5678").output)
+
+    shown = json.loads(_run(repo, "show", retry["decision"]["id"]).output)["decision"]
+    assert shown["evidence_commits"] == ["abc1234", "def5678"]
+
+
+def test_re_adding_an_accepted_decision_keeps_it_accepted(repo: Path) -> None:
+    decision_id = json.loads(_add(repo, size=256).output)["decision"]["id"]
+    assert _run(repo, "confirm", decision_id).exit_code == 0
+
+    retry = json.loads(_add(repo, size=256).output)["decision"]
+
+    assert retry["existed"] is True
+    assert retry["status"] == "active"
+
+
+def test_a_new_title_reports_that_nothing_existed(repo: Path) -> None:
+    payload = json.loads(_add(repo, "--agent", "claude_code").output)["decision"]
+
+    assert payload["existed"] is False
+    assert "kept" not in payload
+
+
+def test_reaffirm_rests_on_the_evidence_given_at_confirm(repo: Path) -> None:
+    decision_id = json.loads(_add(repo, "--agent", "claude_code").output)["decision"]["id"]
+    confirmed = _run(repo, "confirm", decision_id, "--agent", "claude_code", "--evidence", "abc1234")
+    assert confirmed.exit_code == 0, confirmed.output
+
+    reaffirmed = _run(repo, "reaffirm", decision_id, "--agent", "claude_code", "--reason", "holds")
+
+    assert reaffirmed.exit_code == 0, reaffirmed.output
+    shown = json.loads(_run(repo, "show", decision_id).output)["decision"]
+    assert shown["signature"]["action"] == "reaffirmed"
+    assert shown["signature"]["evidence"] == ["abc1234"]
