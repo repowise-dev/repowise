@@ -42,6 +42,7 @@ def _make_workspace_app(
     ws_config=None,
     enricher=None,
     workspace_root: str | None = None,
+    session_factory=None,
 ) -> FastAPI:
     """Build a minimal FastAPI app with workspace router + injected state."""
 
@@ -58,6 +59,7 @@ def _make_workspace_app(
     app.state.workspace_config = ws_config
     app.state.cross_repo_enricher = enricher
     app.state.workspace_root = workspace_root
+    app.state.session_factory = session_factory
 
     app.include_router(workspace.router)
     return app
@@ -285,6 +287,26 @@ def _create_workspace_repo_db(
             )
 
 
+async def _allow_unscored_health_rows(engine) -> None:
+    """Relax ``score NOT NULL`` so a fixture can seed an unscored row.
+
+    The shipped schema marks ``score`` NOT NULL, but the canonical SQLite
+    read still filters ``score IS NOT NULL`` before weighting, so the
+    configured-DB fallback has to agree when a store carries such a row.
+    Recreating the table without its constraints is the only way to seed
+    one here (SQLite has no ALTER ... DROP NOT NULL).
+    """
+    async with engine.begin() as conn:
+        await conn.exec_driver_sql(
+            "ALTER TABLE health_file_metrics RENAME TO health_file_metrics_strict"
+        )
+        await conn.exec_driver_sql(
+            "CREATE TABLE health_file_metrics AS "
+            "SELECT * FROM health_file_metrics_strict WHERE 0"
+        )
+        await conn.exec_driver_sql("DROP TABLE health_file_metrics_strict")
+
+
 # ---------------------------------------------------------------------------
 # Tests — GET /api/workspace
 # ---------------------------------------------------------------------------
@@ -380,6 +402,134 @@ class TestGetWorkspace:
         assert data["is_workspace"] is True
         assert data["cross_repo_summary"] is None
         assert data["contract_summary"] is None
+
+    @pytest.mark.asyncio
+    async def test_configured_db_repo_reported_as_indexed(self, tmp_path: Path) -> None:
+        """Issue #1034: repos indexed in the configured DB (e.g. PostgreSQL),
+        with no repo-local ``.repowise/wiki.db`` file, must be reconciled as
+        indexed rather than ``needs_index`` with zero stats."""
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from repowise.core.persistence import upsert_repository
+        from repowise.core.persistence.database import get_session, init_db
+
+        ws_root = tmp_path / "ws"
+        backend_dir = ws_root / "backend"
+        backend_dir.mkdir(parents=True)
+
+        # Configured DB — in-memory SQLite standing in for PostgreSQL.
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        await init_db(engine)
+        sf = async_sessionmaker(engine, expire_on_commit=False)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name="backend", local_path=str(backend_dir))
+            repo_id = repo.id
+            await session.flush()
+
+        ws_config = _make_ws_config()
+        app = _make_workspace_app(
+            ws_config=ws_config,
+            workspace_root=str(ws_root),
+            session_factory=sf,
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        backend = next(r for r in data["repos"] if r["alias"] == "backend")
+        # No local wiki.db — the repo must still be reconciled from the DB.
+        assert (backend_dir / ".repowise" / "wiki.db").exists() is False
+        assert backend["status"] == "indexed"
+        assert backend["repo_id"] == repo_id
+        assert backend["file_count"] == 0
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_health_score_matches_the_sqlite_read_with_an_unscored_row(
+        self, tmp_path: Path
+    ) -> None:
+        """The fallback must not count an unscored row's weight.
+
+        ``read_repo_health_score`` filters ``score IS NOT NULL`` before
+        weighting; without the same filter the fallback adds an unscored
+        row's weight to the denominator and answers with a lower score
+        than the SQLite path does for the same rows. Two scored rows with
+        different weights and one unscored row move the answer if either
+        the filter or the weighting drifts.
+        """
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from repowise.core.persistence import upsert_repository
+        from repowise.core.persistence.database import get_session, init_db
+        from repowise.core.workspace.repo_stats import read_repo_health_score
+
+        rows = [(10.0, 0), (5.0, 9), (None, 100)]
+
+        # Expected: what the canonical SQLite read answers for these rows.
+        canonical_db = tmp_path / "canonical" / "wiki.db"
+        canonical_db.parent.mkdir(parents=True)
+        with sqlite3.connect(str(canonical_db)) as conn:
+            conn.execute(
+                "CREATE TABLE health_file_metrics ("
+                "id TEXT PRIMARY KEY, score REAL, nloc INTEGER)"
+            )
+            conn.executemany(
+                "INSERT INTO health_file_metrics (id, score, nloc) VALUES (?, ?, ?)",
+                [(f"row-{i}", score, nloc) for i, (score, nloc) in enumerate(rows)],
+            )
+        expected = read_repo_health_score(canonical_db)
+        assert expected == 55.0
+
+        ws_root = tmp_path / "ws"
+        backend_dir = ws_root / "backend"
+        backend_dir.mkdir(parents=True)
+
+        # Configured DB: in-memory SQLite standing in for PostgreSQL.
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        await init_db(engine)
+        await _allow_unscored_health_rows(engine)
+
+        sf = async_sessionmaker(engine, expire_on_commit=False)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name="backend", local_path=str(backend_dir))
+
+        async with engine.begin() as conn:
+            for i, (score, nloc) in enumerate(rows):
+                await conn.exec_driver_sql(
+                    "INSERT INTO health_file_metrics "
+                    "(id, repository_id, file_path, score, nloc, max_ccn, "
+                    "max_nesting, has_test_file) "
+                    "VALUES (?, ?, ?, ?, ?, 0, 0, 0)",
+                    (f"row-{i}", repo.id, f"src/f{i}.py", score, nloc),
+                )
+
+        app = _make_workspace_app(
+            ws_config=_make_ws_config(),
+            workspace_root=str(ws_root),
+            session_factory=sf,
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.get("/api/workspace")
+
+        assert resp.status_code == 200
+        backend = next(r for r in resp.json()["repos"] if r["alias"] == "backend")
+        assert backend["health_score"] == expected
+
+        await engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -1960,3 +2110,90 @@ async def test_workspace_indexed_at_comes_from_the_member_store(tmp_path: Path) 
     by_alias = {r["alias"]: r["indexed_at"] for r in repos}
     # backend: the store stamp over the config's 2026-04-12; frontend has no store.
     assert by_alias == {"backend": "2026-10-20T19:21:15+00:00", "frontend": None}
+
+
+class TestWorkspaceSync:
+    """The fan-out decisions ``POST /api/workspace/sync`` makes per repo."""
+
+    @pytest.mark.asyncio
+    async def test_configured_db_repo_syncs_instead_of_reindexing(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Issue #1034: a repo with a row in the configured store and no
+        repo-local ``.repowise/wiki.db`` must get a sync job against that
+        store. Gating on the file alone re-indexed it on every sync; gating
+        on the store but still reading the repo id out of the missing file
+        errors instead of syncing."""
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import StaticPool
+
+        from repowise.core.persistence import upsert_repository
+        from repowise.core.persistence.database import get_session, init_db
+        from repowise.core.persistence.models import GenerationJob
+        from repowise.server.routers import repos as repos_module
+
+        # Stub the executor: this covers the decision, not the pipeline.
+        async def _noop_execute(job_id, app_state, session_factory_override=None):
+            return None
+
+        monkeypatch.setattr(repos_module, "execute_job", _noop_execute)
+
+        ws_root = tmp_path / "ws"
+        backend_dir = ws_root / "backend"
+        backend_dir.mkdir(parents=True)
+
+        # Configured DB — in-memory SQLite standing in for PostgreSQL.
+        engine = create_async_engine(
+            "sqlite+aiosqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        await init_db(engine)
+        sf = async_sessionmaker(engine, expire_on_commit=False)
+        async with get_session(sf) as session:
+            repo = await upsert_repository(session, name="backend", local_path=str(backend_dir))
+            await session.commit()
+
+        repo_entry = MagicMock()
+        repo_entry.alias = "backend"
+        repo_entry.path = "./backend"
+        repo_entry.is_primary = True
+        repo_entry.indexed_at = None
+        repo_entry.last_commit_at_index = None
+        ws_config = MagicMock()
+        ws_config.repos = [repo_entry]
+        ws_config.default_repo = "backend"
+
+        app = _make_workspace_app(
+            ws_config=ws_config,
+            workspace_root=str(ws_root),
+            session_factory=sf,
+        )
+        app.state.background_tasks = set()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post("/api/workspace/sync")
+
+        assert resp.status_code == 202, resp.text
+        (result,) = resp.json()["results"]
+        assert result["status"] == "accepted", result
+        assert result["repo_id"] == repo.id
+        assert result["job_id"]
+
+        async with get_session(sf) as session:
+            jobs = (
+                (
+                    await session.execute(
+                        select(GenerationJob).where(GenerationJob.repository_id == repo.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [job.status for job in jobs] == ["pending"]
+        # The repo lives in the configured store; sync must not conjure a
+        # per-repo index for it.
+        assert (backend_dir / ".repowise" / "wiki.db").exists() is False
+
+        await engine.dispose()
