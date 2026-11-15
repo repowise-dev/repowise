@@ -1193,6 +1193,17 @@ _TS_NON_ANNOTATION = re.compile(
 )
 
 
+def _unclosed_parens(segment: str) -> int:
+    """Count unclosed parentheses in *segment*."""
+    depth = 0
+    for ch in segment:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+    return depth
+
+
 def _inside_ts_type(cleaned: str) -> Callable[[int], bool]:
     """Is an offset of *cleaned* inside a TypeScript interface, type alias, or type literal?
 
@@ -1211,7 +1222,10 @@ def _inside_ts_type(cleaned: str) -> Callable[[int], bool]:
             segment = cleaned[segment_start : match.start()]
             is_type = bool(_TS_TYPE_HEADER.search(segment)) or (
                 bool(_TS_ANNOTATION_HEADER.search(segment))
-                and not _TS_NON_ANNOTATION.search(segment)
+                and (
+                    _unclosed_parens(segment) > 0
+                    or not _TS_NON_ANNOTATION.search(segment)
+                )
             )
             stack.append(is_type or (bool(stack) and stack[-1]))
         elif char == "}" and stack:

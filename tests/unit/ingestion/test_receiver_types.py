@@ -1305,3 +1305,57 @@ class TestTypeScriptRefusals:
         assert types["numClient"] == "Client"
         assert types["fallback"] == "Client"
         assert types["inner"] == "Item"
+
+    def test_inline_object_type_in_multiline_parameter_is_not_declaration(self) -> None:
+        source = (
+            "function run(\n"
+            "    options: {\n"
+            "        service: UserService,\n"
+            "        timeout: number\n"
+            "    }\n"
+            ") {\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "service" not in types
+        assert types["realService"] == "RealService"
+
+    def test_inline_object_type_in_subsequent_multiline_parameter_is_not_declaration(self) -> None:
+        source = (
+            "function run(\n"
+            "    id: string,\n"
+            "    options: {\n"
+            "        service: UserService,\n"
+            "        timeout: number\n"
+            "    }\n"
+            ") {\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "service" not in types
+        assert types["realService"] == "RealService"
+
+    def test_inline_object_type_in_arrow_function_multiline_parameter_is_not_declaration(
+        self,
+    ) -> None:
+        source = (
+            "const run = (\n"
+            "    options: {\n"
+            "        service: UserService,\n"
+            "        timeout: number\n"
+            "    }\n"
+            ") => {\n"
+            "    const realService: RealService = make();\n"
+            "};\n"
+        )
+        decls = scan_declarations(source, "typescript")
+        assert [d.name for d in decls] == ["realService"]
+        types = declared_types(source, "typescript")
+        assert "service" not in types
+        assert types["realService"] == "RealService"
