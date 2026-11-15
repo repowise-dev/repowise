@@ -6,18 +6,32 @@ API root, which GitLab CI exposes as ``CI_API_V4_URL``. The token goes in a
 A CI job token does not: GitLab does not let it write merge-request notes.
 
 Errors raise :class:`GitLabError` with a message that says what to check.
+A busy or briefly failing GitLab (429, a 5xx, a dropped connection) is
+retried with backoff first; see :meth:`GitLabClient._send`.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator, Mapping
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx
 
+from repowise.core.providers.llm.base import parse_retry_after
+
 #: Largest page GitLab serves.
 PER_PAGE = 100
+
+#: Answers worth one more try: a busy or briefly failing GitLab.
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+#: Methods safe to send twice. A POST that timed out or met a 5xx may have
+#: landed, and sending it again would post a second note.
+_IDEMPOTENT = frozenset({"GET", "HEAD", "PUT", "DELETE"})
+#: Seconds before each retry; a ``Retry-After`` up to the cap wins.
+_BACKOFF = (1.0, 4.0)
+_RETRY_AFTER_CAP = 30.0
 
 _STATUS_HINTS = {
     401: "GitLab rejected the token (401): it is missing, expired or revoked.",
@@ -104,18 +118,41 @@ class GitLabClient:
         params: Mapping[str, Any] | None,
         json: Any,
     ) -> httpx.Response:
-        try:
-            response = self._http.request(method, url, params=params, json=json)
-        except httpx.HTTPError as exc:
-            raise GitLabError(f"Could not reach GitLab at {self.api_url}: {exc}") from exc
+        """One request, retried after a busy answer or a dropped connection.
+
+        429 and a connection that never opened are retried for every method:
+        GitLab did nothing. A 5xx, a timeout or a broken answer is retried only
+        for idempotent methods: a POST may have landed.
+        """
+        idempotent = method.upper() in _IDEMPOTENT
+        for wait in (*_BACKOFF, None):
+            try:
+                response = self._http.request(method, url, params=params, json=json)
+            except httpx.HTTPError as exc:
+                if wait is None or not _worth_retrying(idempotent, exc=exc):
+                    raise GitLabError(f"Could not reach GitLab at {self.api_url}: {exc}") from exc
+                time.sleep(wait)
+                continue
+            if wait is None or not _worth_retrying(idempotent, status=response.status_code):
+                break
+            time.sleep(min(parse_retry_after(response.headers) or wait, _RETRY_AFTER_CAP))
         if response.is_success:
             return response
-        status = response.status_code
-        if status in _STATUS_HINTS:
-            message = _STATUS_HINTS[status].format(path=path)
-        else:
-            message = f"GitLab answered {status} to {method} {path}: {_reason(response)}"
-        raise GitLabError(message, status)
+        raise _error(response, method, path)
+
+
+def _worth_retrying(idempotent: bool, *, status: int = 0, exc: Exception | None = None) -> bool:
+    if exc is not None:
+        never_sent = isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout)
+        return never_sent or (idempotent and isinstance(exc, httpx.TransportError))
+    return status == 429 or (idempotent and status in _RETRY_STATUSES)
+
+
+def _error(response: httpx.Response, method: str, path: str) -> GitLabError:
+    status = response.status_code
+    if status in _STATUS_HINTS:
+        return GitLabError(_STATUS_HINTS[status].format(path=path), status)
+    return GitLabError(f"GitLab answered {status} to {method} {path}: {_reason(response)}", status)
 
 
 def _decode(response: httpx.Response, path: str) -> Any:
