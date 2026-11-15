@@ -22,7 +22,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from repowise.core.analysis.decisions.commit_mining import pr_candidates, signal_commits
+from repowise.core.analysis.decisions.commit_mining import (
+    drop_subject_restatements,
+    pr_candidates,
+    signal_commits,
+)
 from repowise.core.analysis.decisions.extractor import (
     DecisionExtractor,
     _coerce_paths,
@@ -495,3 +499,82 @@ async def test_an_unindexed_repo_does_not_create_a_store_for_the_pr_history_read
     extractor = _extractor(tmp_path, _payload(affected_files=[_SUBJECT]))
     assert len(await extractor.mine_pr_bodies()) == 1
     assert not (tmp_path / ".repowise" / "wiki.db").exists()
+
+
+# --- a commit subject line returned as the decision ------------------------
+
+_SQUASH_BODY = (
+    "* refactor(review): drop the pull request change kind no server lists\n\n"
+    "No server ever listed a pull_request change, so we chose to remove the "
+    "tab, because only a hand-built fixture reached it.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        # The subject verbatim, header and all.
+        "perf: stop importing the workspace stack from the hook path",
+        # The subject once its header, case and punctuation are set aside.
+        "Stop importing the workspace stack from the hook path.",
+        # Any conventional header marks a commit line, whichever commit it is.
+        "fix(cli): resolve CLI command modules lazily",
+    ],
+)
+async def test_both_miners_drop_a_decision_that_restates_a_commit_subject(tmp_path, decision):
+    """A subject grounds against the commit text, so the gate cannot catch it."""
+    ex = _extractor(tmp_path, _payload(decision=decision))
+
+    assert await ex.mine_pr_bodies() == []
+    assert await ex.mine_git_archaeology() == []
+
+
+async def test_a_body_sentence_from_the_same_commit_is_kept(tmp_path):
+    decision = "We chose instead to resolve CLI command modules lazily"
+    ex = _extractor(tmp_path, _payload(decision=decision))
+
+    (kept,) = await ex.mine_pr_bodies()
+
+    assert kept.decision == decision
+
+
+def _decision(text: str) -> SimpleNamespace:
+    return SimpleNamespace(decision=text)
+
+
+def test_a_squashed_commit_subject_in_the_body_is_a_subject_too():
+    batch = [{"subject": "fix(review): severity in words (#5571)", "body": _SQUASH_BODY}]
+
+    kept = drop_subject_restatements(
+        [_decision("drop the pull request change kind no server lists")], batch, "subject"
+    )
+
+    assert kept == []
+
+
+def test_subject_matching_is_exact_and_ignores_body_prose():
+    batch = [{"subject": "fix(review): severity in words (#5571)", "body": _SQUASH_BODY}]
+    decisions = [
+        # Adds to the subject: the extra clause may be the rule.
+        _decision("severity in words, never by colour alone"),
+        # A body sentence without a header is not a subject.
+        _decision(
+            "No server ever listed a pull_request change, so we chose to remove the "
+            "tab, because only a hand-built fixture reached it."
+        ),
+        # A label that is not a conventional-commit type.
+        _decision("Decision: severity in words"),
+        _decision(""),
+    ]
+
+    assert drop_subject_restatements(decisions, batch, "subject") == decisions
+
+
+def test_a_trailing_change_number_does_not_hide_a_restatement():
+    batch = [{"message": "Collapse init and generate to a single cost question (#1036)"}]
+
+    kept = drop_subject_restatements(
+        [_decision("collapse init and generate to a single cost question")], batch, "message"
+    )
+
+    assert kept == []
