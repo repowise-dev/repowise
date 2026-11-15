@@ -81,6 +81,7 @@ _WALK_RE = re.compile(r"\bwalk (?:me )?through\b", re.IGNORECASE)
 
 # "What happens if X fails" asks about a failure path, which the happy-path
 # call order would answer wrongly.
+_NO_LINE = 1 << 30  # a call edge that recorded no call line sorts last
 _FAILURE_RE = re.compile(
     r"\bwhat happens (?:if|when)\b.*\b(?:fails?|failed|errors?|raises?|throws?|crash(?:es)?"
     r"|times? out|timeouts?|is missing|missing|goes down|is down|breaks?)\b",
@@ -174,7 +175,7 @@ async def _calls(
             lines = [int(n) for n in json.loads(lines_json or "[]")]
         except (TypeError, ValueError):
             lines = []
-        first = min(lines) if lines else 1 << 30
+        first = min(lines) if lines else _NO_LINE
         seen = out.setdefault(src, {})
         seen[tgt] = min(first, seen.get(tgt, first))
     return {
@@ -397,8 +398,16 @@ async def symbol_at(session: Any, repo_id: str, path: str, line: int) -> str | N
 
 
 def _hop_row(caller: str, call_line: int, callee: str, start: int) -> str:
-    at = f":{call_line}" if call_line < 1 << 30 else ""
+    at = f":{call_line}" if call_line < _NO_LINE else ""
     return f"{_leaf(caller)} {node_to_file(caller)}{at} -> {_leaf(callee)} {node_to_file(callee)}:{start}"
+
+
+def _mention(question: str, name: str) -> re.Match | None:
+    """Where *name*, or its last dotted part, stands in *question* as a whole word."""
+    named = None
+    for part in dict.fromkeys((name, name.rsplit(".", 1)[-1])):
+        named = named or re.search(rf"(?<!\w){re.escape(part)}(?!\w)", question, re.IGNORECASE)
+    return named
 
 
 def names_destination(question: str, name: str) -> bool:
@@ -407,9 +416,7 @@ def names_destination(question: str, name: str) -> bool:
     "How does a message reach run_job" ends at ``run_job``; "trace how
     handle flows to the store" starts at ``handle``.
     """
-    named = None
-    for part in dict.fromkeys((name, name.rsplit(".", 1)[-1])):
-        named = named or re.search(rf"(?<!\w){re.escape(part)}(?!\w)", question, re.IGNORECASE)
+    named = _mention(question, name)
     if named is None:
         return False
     motions = [m.start() for m in _PATH_RE.finditer(question)]
@@ -481,3 +488,128 @@ async def call_path(
         if not frontier:
             break
     return rows
+
+
+# "How does X reach Y" names both ends: the route between them answers it, not
+# the heaviest calls out of X. Sized like the walk above: six calls deep at
+# most, a few hundred symbols visited, three destinations.
+_CALL_WORD_RE = re.compile(r"\bcall(?:s|ed|ing)?\b", re.IGNORECASE)
+_ROUTE_DEPTH = 6
+_ROUTE_MAX_VISITED = 600
+_ROUTE_MAX_ENDS = 3
+_ROUTE_HOMONYMS = 8
+
+
+def route_ends(question: str, names: set[str]) -> tuple[str, list[str]] | None:
+    """``(start, destinations)`` when the question names a symbol, then a motion or
+    call word, then the symbols the call should reach; ``None`` otherwise.
+
+    The start is the name closest before the word (its qualified form when the
+    question gives one); the destinations are the names after it, in order.
+    """
+    spans = []
+    for name in names:
+        named = _mention(question, name)
+        if named is not None:
+            spans.append((named.start(), named.end(), name))
+    for word in [*_PATH_RE.finditer(question), *_CALL_WORD_RE.finditer(question)]:
+        before = [s for s in spans if s[1] <= word.start()]
+        after = sorted(s for s in spans if s[0] >= word.end())
+        if before and after:
+            start = max(before, key=lambda s: (s[1], len(s[2])))[2]
+            ends = list(dict.fromkeys(s[2] for s in after if s[2] != start))
+            if ends:
+                return start, ends[:_ROUTE_MAX_ENDS]
+    return None
+
+
+async def symbols_named(session: Any, repo_id: str, name: str) -> list[str]:
+    """Indexed symbols called *name*; ``Owner.leaf`` keeps those under that owner
+    when any are. Shipped code first, at most :data:`_ROUTE_HOMONYMS`."""
+    from repowise.core.code_origin import path_origin
+
+    leaf = name.rsplit(".", 1)[-1]
+    res = await session.execute(
+        select(GraphNode.node_id).where(
+            GraphNode.repository_id == repo_id,
+            GraphNode.node_type == "symbol",
+            GraphNode.name == leaf,
+        )
+    )
+    found = sorted(node_id for (node_id,) in res.all())
+    if "." in name:
+        owned = [n for n in found if n.endswith("::" + name.replace(".", "::"))]
+        found = owned or found
+    shipped = [n for n in found if path_origin(node_to_file(n)) == "production"]
+    return (shipped or found)[:_ROUTE_HOMONYMS]
+
+
+def _route_rows(
+    meet: str, fwd: dict[str, tuple[str, int] | None], bwd: dict[str, tuple[str, int] | None]
+) -> list[tuple[str, int, str]]:
+    """``(caller, call line, callee)`` hops of the route through *meet*, in call order."""
+    head: list[tuple[str, int, str]] = []
+    node = meet
+    while fwd[node] is not None:
+        caller, line = fwd[node]
+        head.append((caller, line, node))
+        node = caller
+    tail: list[tuple[str, int, str]] = []
+    node = meet
+    while bwd[node] is not None:
+        callee, line = bwd[node]
+        tail.append((node, line, callee))
+        node = callee
+    return [*reversed(head), *tail]
+
+
+async def call_route(
+    session: Any, repo_id: str, starts: list[str], ends: list[str], exclude_spec: Any = None
+) -> list[str]:
+    """The shortest call route from any of *starts* to any of *ends*, one row per hop.
+
+    Searched from both ends at once, a level at a time from the smaller side,
+    so a start with many calls does not spend the budget before the route is
+    found. Hops between the ends stay in indexed, shipped code. Among routes of
+    one length, the one with the most call lines wins. Empty when none is found
+    within :data:`_ROUTE_DEPTH` calls.
+    """
+    fwd: dict[str, tuple[str, int] | None] = dict.fromkeys(starts)
+    bwd: dict[str, tuple[str, int] | None] = dict.fromkeys(ends)
+    if set(fwd) & set(bwd):
+        return []
+    fwd_front, bwd_front = list(fwd), list(bwd)
+    for _level in range(_ROUTE_DEPTH):
+        if not fwd_front or not bwd_front or len(fwd) + len(bwd) > _ROUTE_MAX_VISITED:
+            break
+        upstream = len(bwd_front) < len(fwd_front)
+        front, mine, other = (bwd_front, bwd, fwd) if upstream else (fwd_front, fwd, bwd)
+        calls = await _calls(session, repo_id, front, upstream=upstream)
+        found = {t: None for src in front for _line, t in calls.get(src, []) if t not in mine}
+        defined = await _symbol_starts(session, repo_id, list(found))
+        seen = set(mine)
+        walkable = {
+            t for src in front for _line, t in _shipped_steps(calls.get(src, []), defined, seen, exclude_spec)
+        }
+        new: dict[str, None] = {}
+        for src in sorted(front):
+            for line, t in calls.get(src, []):
+                if t not in other and t not in walkable:
+                    continue
+                if t not in mine:
+                    new[t] = None
+                    mine[t] = (src, line)
+                elif t in new and mine[t][1] >= _NO_LINE > line:
+                    # Reached at this level without a call line: one with it wins.
+                    mine[t] = (src, line)
+        meets = [t for t in new if t in other]
+        if meets:
+            routes = [_route_rows(t, fwd, bwd) for t in meets]
+            best = min(routes, key=lambda r: (len(r), sum(1 for hop in r if hop[1] >= _NO_LINE)))
+            defined = await _symbol_starts(session, repo_id, [hop[2] for hop in best])
+            return [_hop_row(caller, line, callee, defined.get(callee, 0)) for caller, line, callee in best]
+        if upstream:
+            bwd_front = list(new)
+        else:
+            fwd_front = list(new)
+    return []
