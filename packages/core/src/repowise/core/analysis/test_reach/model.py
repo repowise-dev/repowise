@@ -5,10 +5,11 @@ from __future__ import annotations
 import sys
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import PurePath
 from typing import Literal, NamedTuple
 
 from repowise.core.analysis.execution_graph import UNRELIABLE_EXECUTION_ORIGINS
-from repowise.core.test_paths import paired_test_names
+from repowise.core.test_paths import names_test_for, paired_test_names
 
 # How many call hops a test may take and still be said to reach a file. The walk
 # saturates here; see the Depth section of the package docstring.
@@ -182,6 +183,30 @@ def rank_reaching(
     return sorted(tests, key=key)
 
 
+_JS_TEST_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".mts", ".cts"})
+_JS_SOURCE_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"})
+
+
+def _language_compatible(target: str, test: str) -> bool:
+    """Whether *test* uses a test tail for *target*'s own language."""
+    test_suffix = PurePath(test).suffix.lower()
+    if test_suffix in _JS_TEST_SUFFIXES:
+        return PurePath(target).suffix.lower() in _JS_SOURCE_SUFFIXES
+    return True
+
+
+def _directory_overlap(target: str, test: str) -> int:
+    """How many trailing directory components *target* and *test* share."""
+    target_dirs = target.split("/")[:-1]
+    test_dirs = test.split("/")[:-1]
+    overlap = 0
+    for target_dir, test_dir in zip(reversed(target_dirs), reversed(test_dirs), strict=False):
+        if target_dir != test_dir:
+            break
+        overlap += 1
+    return overlap
+
+
 def tests_matching_by_name(
     targets: list[str], test_files: Collection[str], indexed_files: Collection[str] = ()
 ) -> dict[str, ReachedBy]:
@@ -193,13 +218,18 @@ def tests_matching_by_name(
     owned by that sibling, though: ``a/index.test.ts`` is not evidence for
     every other ``index.ts`` in the repository.  Tests outside their subject
     directory retain the cross-directory fallback.
+
+    When several tests match, the ones that mirror more of the target's
+    trailing directories win, so ``tests/dead_code/test_analyzer_golden.py``
+    is preferred over ``tests/doc_drift/test_analyzer.py`` for
+    ``pkg/dead_code/analyzer.py``.  A qualified name that
+    :func:`~repowise.core.test_paths.names_test_for` accepts is also eligible,
+    and a test tail for another language (a ``.test.ts`` for a ``.py``) is not.
     """
     all_files = set(targets) | set(test_files) | set(indexed_files)
-    by_name: dict[str, list[str]] = {}
     tests_by_dir_and_name: dict[tuple[str, str], list[str]] = {}
     for path in test_files:
         dir_path, _, name = path.rpartition("/")
-        by_name.setdefault(name, []).append(path)
         tests_by_dir_and_name.setdefault((dir_path, name), []).append(path)
 
     owned_by: dict[str, set[str]] = {}
@@ -209,14 +239,37 @@ def tests_matching_by_name(
             for test in tests_by_dir_and_name.get((dir_path, name), ()):
                 if source != test:
                     owned_by.setdefault(test, set()).add(source)
+
+    test_list = list(test_files)
     out: dict[str, ReachedBy] = {}
     for target in targets:
-        found = [
-            path
-            for name in paired_test_names(target)
-            for path in by_name.get(name, ())
-            if path not in owned_by or target in owned_by[path]
+        target_dir, _, _ = target.rpartition("/")
+        target_stem = PurePath(target).stem.lower()
+        stem_without_unit_prefix = target_stem[1:] if target_stem.startswith("u") else target_stem
+        siblings = [
+            path for path in all_files if path != target and path.rpartition("/")[0] == target_dir
         ]
-        if found:
-            out[target] = capped(target, found, "name-match")
+
+        found: list[str] = []
+        for test in test_list:
+            test_stem = PurePath(test).stem.lower()
+            if target_stem not in test_stem and stem_without_unit_prefix not in test_stem:
+                continue
+            if not _language_compatible(target, test):
+                continue
+            if not names_test_for(test, target, siblings):
+                continue
+            if test in owned_by and target not in owned_by[test]:
+                continue
+            found.append(test)
+
+        if not found:
+            continue
+
+        overlaps = [(_directory_overlap(target, test), test) for test in found]
+        best = max(overlap for overlap, _ in overlaps)
+        if best > 0:
+            found = [test for overlap, test in overlaps if overlap == best]
+
+        out[target] = capped(target, found, "name-match")
     return out

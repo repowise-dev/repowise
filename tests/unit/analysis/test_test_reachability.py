@@ -236,11 +236,23 @@ def test_a_sibling_test_is_not_credited_to_same_named_files_elsewhere() -> None:
 
 
 def test_a_test_without_a_sibling_source_still_matches_across_directories() -> None:
-    found = name_match(
-        ["src/pkg/x.py"], {"tests/test_x.py"}, {"src/pkg/x.py", "tests/test_x.py"}
-    )
+    found = name_match(["src/pkg/x.py"], {"tests/test_x.py"}, {"src/pkg/x.py", "tests/test_x.py"})
 
     assert found["src/pkg/x.py"].tests == ["tests/test_x.py"]
+
+
+def test_a_directory_mirroring_test_wins_over_another_packages_same_name() -> None:
+    src = ["pkg/dead_code/analyzer.py", "pkg/doc_drift/analyzer.py", "pkg/core/constants.py"]
+    tests = {
+        "tests/doc_drift/test_analyzer.py",
+        "tests/dead_code/test_analyzer_golden.py",
+        "ui/__tests__/constants.test.ts",
+    }
+    found = name_match(src, tests, set(src) | tests)
+
+    assert found["pkg/dead_code/analyzer.py"].tests == ["tests/dead_code/test_analyzer_golden.py"]
+    assert found["pkg/doc_drift/analyzer.py"].tests == ["tests/doc_drift/test_analyzer.py"]
+    assert "pkg/core/constants.py" not in found
 
 
 @pytest.mark.parametrize("size", [16, 32, 64])
@@ -277,19 +289,17 @@ def test_a_sibling_test_can_belong_to_multiple_sources() -> None:
         ["src/widget.ts", "src/widget.tsx", "elsewhere/widget.ts"],
         {"src/widget.test.ts"},
     )
-    expected = model.ReachedBy(
-        ["src/widget.test.ts"], "name-match", 1, ("src/widget.test.ts",)
-    )
+    expected = model.ReachedBy(["src/widget.test.ts"], "name-match", 1, ("src/widget.test.ts",))
     assert found == {"src/widget.ts": expected, "src/widget.tsx": expected}
 
 
 def test_unowned_name_matches_keep_their_rank_and_complete_list_beyond_the_cap() -> None:
     tests = {f"tests/{i:03}/test_x.py" for i in range(MAX_TESTS_PER_TARGET)}
     tests.add("tests/pkg/test_x.py")
-    ordered = ("tests/pkg/test_x.py", *sorted(tests - {"tests/pkg/test_x.py"}))
+    ordered = (*sorted(tests - {"tests/pkg/test_x.py"}), "tests/pkg/test_x.py")
 
-    assert name_match(["src/pkg/x.py"], tests) == {
-        "src/pkg/x.py": model.ReachedBy(
+    assert name_match(["src/x.py"], tests) == {
+        "src/x.py": model.ReachedBy(
             list(ordered[:MAX_TESTS_PER_TARGET]), "name-match", len(tests), ordered
         )
     }
