@@ -496,6 +496,7 @@ async def call_path(
 _CALL_WORD_RE = re.compile(r"\bcall(?:s|ed|ing)?\b", re.IGNORECASE)
 _ROUTE_DEPTH = 6
 _ROUTE_MAX_VISITED = 600
+_ROUTE_MAX_FOUND = 5000  # symbols one level may add; keeps the IN list under bind-parameter limits
 _ROUTE_MAX_ENDS = 3
 _ROUTE_HOMONYMS = 8
 
@@ -504,19 +505,27 @@ def route_ends(question: str, names: set[str]) -> tuple[str, list[str]] | None:
     """``(start, destinations)`` when the question names a symbol, then a motion or
     call word, then the symbols the call should reach; ``None`` otherwise.
 
-    The start is the name closest before the word (its qualified form when the
-    question gives one); the destinations are the names after it, in order.
+    The start is the name closest before the word; the destinations are the
+    names after it, in order. A dotted name stands for itself, not for its
+    parts. A plain "call" counts ("does X call Y"); a failure question does not.
     """
-    spans = []
+    if _FAILURE_RE.search(question):
+        return None
+    found = []
     for name in names:
         named = _mention(question, name)
         if named is not None:
-            spans.append((named.start(), named.end(), name))
+            found.append((named.start(), named.end(), name))
+    # ``db`` and ``save`` inside ``db.save`` are parts of that one mention.
+    spans = [
+        s for s in found
+        if not any(o[0] <= s[0] and s[1] <= o[1] and o[1] - o[0] > s[1] - s[0] for o in found)
+    ]
     for word in [*_PATH_RE.finditer(question), *_CALL_WORD_RE.finditer(question)]:
         before = [s for s in spans if s[1] <= word.start()]
         after = sorted(s for s in spans if s[0] >= word.end())
         if before and after:
-            start = max(before, key=lambda s: (s[1], len(s[2])))[2]
+            start = max(before, key=lambda s: s[1])[2]
             ends = list(dict.fromkeys(s[2] for s in after if s[2] != start))
             if ends:
                 return start, ends[:_ROUTE_MAX_ENDS]
@@ -586,6 +595,8 @@ async def call_route(
         front, mine, other = (bwd_front, bwd, fwd) if upstream else (fwd_front, fwd, bwd)
         calls = await _calls(session, repo_id, front, upstream=upstream)
         found = {t: None for src in front for _line, t in calls.get(src, []) if t not in mine}
+        if len(found) > _ROUTE_MAX_FOUND:
+            break
         defined = await _symbol_starts(session, repo_id, list(found))
         seen = set(mine)
         walkable = {

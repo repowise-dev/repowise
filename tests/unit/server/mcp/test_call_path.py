@@ -235,6 +235,13 @@ def test_the_ends_are_the_names_around_the_motion_or_call_word():
     # One name, or nothing named before the word: no route to look for.
     assert route_ends("How does a request reach run_job?", {"run_job"}) is None
     assert route_ends("Who calls run_job?", ids) is None
+    # The parts of a dotted mention are not names of their own.
+    assert route_ends(
+        "How does worker.process reach db.save and audit_log?",
+        {"worker.process", "worker", "process", "db.save", "db", "save", "audit_log"},
+    ) == ("worker.process", ["db.save", "audit_log"])
+    # A failure question is answered by the failure path, not a route.
+    assert route_ends("What happens when handle calls run_job and it fails?", ids) is None
 
 
 @pytest.mark.asyncio
@@ -344,3 +351,31 @@ async def test_a_keyless_reply_serves_the_route_or_says_there_is_none(session, f
         repo,
         None,
     ) == ("", [])
+
+
+@pytest.mark.asyncio
+async def test_a_failed_route_search_still_serves_the_walk(session, factory, repo_id, monkeypatch):
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_answer import degraded
+
+    async def boom(*_args, **_kwargs):
+        raise RuntimeError("too many SQL variables")
+
+    await _seed_route(session, repo_id)
+    await session.commit()
+    monkeypatch.setattr(degraded, "call_route", boom)
+    bodies = [{"name": "handle", "path": _API, "lines": [10, 16]}]
+
+    start, hops = await degraded._call_path_from_named(
+        "no-llm-provider",
+        "How does handle reach run_job?",
+        {"handle", "run_job"},
+        bodies,
+        SimpleNamespace(session_factory=factory),
+        SimpleNamespace(id=repo_id),
+        None,
+    )
+
+    assert start == f"out of handle {_API}:10"
+    assert hops

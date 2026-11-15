@@ -315,18 +315,23 @@ async def _call_path_from_named(
     if ends is None and not is_call_path_question(question):
         return "", []
     no_route = ""
+    if ends is not None:
+        start, wanted = ends
+        try:
+            async with get_session(ctx.session_factory) as session:
+                route = await _route_between(session, repository.id, start, wanted, exclude_spec)
+        except Exception:  # the walk below still answers
+            _log.debug("get_answer: call route failed", exc_info=True)
+            route = None
+        if route:
+            return f"on the route from {start} to {', '.join(wanted)}", route
+        if route is not None:
+            no_route = f" (no route to {', '.join(wanted)} found)"
+    body = _named_body(symbol_bodies, question_ids)
+    if body is None or not is_call_path_question(question):
+        return "", []
     try:
         async with get_session(ctx.session_factory) as session:
-            if ends is not None:
-                start, wanted = ends
-                route = await _route_between(session, repository.id, start, wanted, exclude_spec)
-                if route:
-                    return f"on the route from {start} to {', '.join(wanted)}", route
-                if route is not None:
-                    no_route = f" (no route to {', '.join(wanted)} found)"
-            body = _named_body(symbol_bodies, question_ids)
-            if body is None or not is_call_path_question(question):
-                return "", []
             way, hops = await _hops_around(session, repository.id, body, question, exclude_spec)
             if len(hops) >= 2:
                 return f"{way} {body['name']} {body['path']}:{body['lines'][0]}{no_route}", hops
