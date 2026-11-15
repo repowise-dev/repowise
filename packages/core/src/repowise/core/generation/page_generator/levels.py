@@ -377,17 +377,24 @@ def _execution_flows(graph_builder: Any) -> list[Any]:
         return []
 
 
+def _repo_indexes(run: _GenerationRun) -> tuple[dict[str, Any], set[str], _Resolver, dict]:
+    """The whole-repo lookups every module page reads, built once per call, not per page."""
+    from ..context.graph_intelligence import build_symbol_index
+
+    parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
+    return (
+        parsed_by_path,
+        package_roots_from_paths(set(parsed_by_path)),
+        _Resolver(parsed_by_path),
+        build_symbol_index(run.graph),
+    )
+
+
 def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> list[tuple[str, Any]]:
     """Level 4 (module_page) for *groups* (default: every selected group), allow-set filtered."""
     gen = run.gen
     coros: list[tuple[str, Any]] = []
-    parsed_by_path = indexed_parsed_files(run.graph_builder, run.parsed_files)
-    package_roots = package_roots_from_paths(set(parsed_by_path))
-    from ..context.graph_intelligence import build_symbol_index
-
-    # Built once for every page here: each indexes the whole repo.
-    api_resolver = _Resolver(parsed_by_path)
-    symbol_index = build_symbol_index(run.graph)
+    parsed_by_path, package_roots, api_resolver, symbol_index = _repo_indexes(run)
     flows = _execution_flows(run.graph_builder)
     heads = _heads(run.sel_module_groups)
     for mg in run.sel_module_groups if groups is None else groups:
