@@ -13,6 +13,7 @@ import time
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server._code_rationale import can_lead_answer
 from repowise.server.mcp_server._entry_trace import (
+    _PATH_MAX_ROWS,
     call_path,
     call_route,
     is_call_path_question,
@@ -319,12 +320,14 @@ async def _call_path_from_named(
         start, wanted = ends
         try:
             async with get_session(ctx.session_factory) as session:
-                route = await _route_between(session, repository.id, start, wanted, exclude_spec)
+                route, reached = await _route_between(
+                    session, repository.id, start, wanted, exclude_spec
+                )
         except Exception:  # the walk below still answers
             _log.debug("get_answer: call route failed", exc_info=True)
-            route = None
+            route, reached = None, []
         if route:
-            return f"on the route from {start} to {', '.join(wanted)}", route
+            return f"on the route from {start} to {', '.join(reached)}", route
         if route is not None:
             no_route = f" (no route to {', '.join(wanted)} found)"
     body = _named_body(symbol_bodies, question_ids)
@@ -342,19 +345,24 @@ async def _call_path_from_named(
 
 async def _route_between(
     session, repo_id: str, start: str, wanted: list[str], exclude_spec
-) -> list[str] | None:
-    """The route rows from *start* to each name in *wanted*, shared hops once.
+) -> tuple[list[str] | None, list[str]]:
+    """``(rows, names reached)``: the route from *start* to each name in *wanted*,
+    shared hops once, at most as many rows as the walk serves.
 
-    ``None`` when *start* names no indexed symbol; empty when no route is found.
+    Rows are ``None`` when *start* names no indexed symbol, empty when no route is found.
     """
     starts = await symbols_named(session, repo_id, start)
     if not starts:
-        return None
+        return None, []
     rows: dict[str, None] = {}
+    reached: list[str] = []
     for name in wanted:
         finals = await symbols_named(session, repo_id, name)
-        rows.update(dict.fromkeys(await call_route(session, repo_id, starts, finals, exclude_spec)))
-    return list(rows)
+        route = await call_route(session, repo_id, starts, finals, exclude_spec)
+        if route:
+            reached.append(name)
+            rows.update(dict.fromkeys(route))
+    return list(rows)[:_PATH_MAX_ROWS], reached
 
 
 async def _hops_around(session, repo_id: str, body: dict, question: str, exclude_spec) -> tuple[str, list[str]]:

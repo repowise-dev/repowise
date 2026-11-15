@@ -240,6 +240,8 @@ def test_the_ends_are_the_names_around_the_motion_or_call_word():
         "How does worker.process reach db.save and audit_log?",
         {"worker.process", "worker", "process", "db.save", "db", "save", "audit_log"},
     ) == ("worker.process", ["db.save", "audit_log"])
+    # "Called by" runs the other way.
+    assert route_ends("Is run_job called by handle?", ids) is None
     # A failure question is answered by the failure path, not a route.
     assert route_ends("What happens when handle calls run_job and it fails?", ids) is None
 
@@ -327,6 +329,18 @@ async def test_a_keyless_reply_serves_the_route_or_says_there_is_none(session, f
     )
     assert start == "on the route from handle to run_job"
     assert hops[-1] == f"dispatch {_CORE}:8 -> run_job {_CORE}:30"
+
+    # Of two destinations, only the one reached is named.
+    start, hops = await _call_path_from_named(
+        "no-llm-provider",
+        "How does handle reach run_job and worker_loop?",
+        {"handle", "run_job", "worker_loop"},
+        bodies,
+        ctx,
+        repo,
+        None,
+    )
+    assert start == "on the route from handle to run_job"
 
     # No route: the walk out of the named body is served, and says so.
     start, hops = await _call_path_from_named(

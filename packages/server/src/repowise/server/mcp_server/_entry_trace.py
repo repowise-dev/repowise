@@ -493,7 +493,8 @@ async def call_path(
 # "How does X reach Y" names both ends: the route between them answers it, not
 # the heaviest calls out of X. Sized like the walk above: six calls deep at
 # most, a few hundred symbols visited, three destinations.
-_CALL_WORD_RE = re.compile(r"\bcall(?:s|ed|ing)?\b", re.IGNORECASE)
+# Not "called": "is X called by Y" runs the other way.
+_CALL_WORD_RE = re.compile(r"\bcall(?:s|ing)?\b", re.IGNORECASE)
 _ROUTE_DEPTH = 6
 _ROUTE_MAX_VISITED = 600
 _ROUTE_MAX_FOUND = 5000  # symbols one level may add; keeps the IN list under bind-parameter limits
