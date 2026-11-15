@@ -541,6 +541,7 @@ class ContextAssembler:
         execution_flows: Sequence[Any] = (),
         target_path: str | None = None,
         full_material: bool = False,
+        symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
     ) -> ModulePageContext:
         """Assemble context for the module_page template.
 
@@ -682,7 +683,7 @@ class ContextAssembler:
             [fc.file_path for fc in by_rank],
             source_map or {},
             budget._replace(excerpt_tokens=max(0, budget.excerpt_tokens - api_cost)),
-            symbol_weight(graph, own, execution_flows),
+            symbol_weight(graph, own, execution_flows, symbol_index),
         )
 
         ctx = ModulePageContext(

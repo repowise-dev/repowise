@@ -448,3 +448,22 @@ def test_barrels_that_re_export_each_other_publish_everything_from_every_root(tm
     for root in ("one/index.ts", "two/index.ts"):
         # The cycle cut short while walking the first root must not stick to the second.
         assert sorted(name for name, _, _ in resolver.exported(root)) == ["One", "Two"]
+
+
+def test_a_shared_resolver_gives_every_page_what_a_fresh_one_does(tmp_path):
+    """Module pages share one resolver; each page's API must not depend on that."""
+    parsed = _index(
+        tmp_path,
+        {
+            **_SDK,
+            "one/index.ts": "export * from '../two';\nexport class One {}\n",
+            "two/index.ts": "export * from '../one';\nexport class Two {}\n",
+        },
+    )
+    roots = package_roots_from_paths(set(parsed))
+    shared = _Resolver(parsed)
+    for prefix in ("two/", "packages/py/", "one/", "packages/sdk/", ""):
+        material = [p for p in parsed if p.startswith(prefix)]
+        assert compute_public_api(material, parsed, roots, resolver=shared) == compute_public_api(
+            material, parsed, roots
+        ), prefix

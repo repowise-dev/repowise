@@ -288,6 +288,7 @@ class PerTypeGenerationMixin:
         parsed_files: dict[str, Any] | None = None,
         source_map: dict[str, bytes] | None = None,
         execution_flows: Sequence[Any] = (),
+        symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
     ) -> GeneratedPage:
         ctx = self._assembler.assemble_module_page(
             title,
@@ -311,6 +312,7 @@ class PerTypeGenerationMixin:
             execution_flows=execution_flows,
             target_path=target_path,
             full_material=self._style.name == DEFAULT_STYLE,
+            symbol_index=symbol_index,
         )
         module_git_summary = None
         if git_meta_map:

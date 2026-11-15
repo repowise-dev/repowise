@@ -159,8 +159,9 @@ async def test_build_community_slice_members_and_boundary(async_session, tmp_pat
     assert by_id["src/a.py"].is_boundary is False
     assert by_id["src/b.py"].is_boundary is False
     assert by_id["src/c.py"].is_boundary is True  # outside neighbor stub
-    links = {(link.source, link.target) for link in payload.links}
-    assert links == {("src/a.py", "src/b.py"), ("src/b.py", "src/c.py")}
+    # Each edge once, though a member-to-member edge matches both endpoint reads.
+    links = [(link.source, link.target) for link in payload.links]
+    assert links == [("src/a.py", "src/b.py"), ("src/b.py", "src/c.py")]
 
 
 @pytest.mark.asyncio
