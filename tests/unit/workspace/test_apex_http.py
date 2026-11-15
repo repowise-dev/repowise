@@ -134,6 +134,155 @@ class TestApexCalloutConsumer:
         assert c.meta["base_token"] == "Weather_Endpoint"
         assert c.symbol_name.startswith("apex-callout:GET callout:Weather_Endpoint/weather")
 
+    def test_named_credential_metadata_resolves_base_url(self, tmp_path: Path) -> None:
+        nc_dir = tmp_path / "namedCredentials"
+        nc_dir.mkdir(parents=True)
+        (nc_dir / "Weather_Endpoint.namedCredential-meta.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">\n'
+            "    <endpoint>https://api.weather.example</endpoint>\n"
+            "    <label>Weather Endpoint</label>\n"
+            "</NamedCredential>\n",
+            encoding="utf-8",
+        )
+        source = callout(
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint('callout:Weather_Endpoint/weather?lat=1');\n"
+            "        req.setMethod('GET');\n"
+        )
+        ctx = ScanContext("svc", "classes/Svc.cls", ".cls", source, {}, None, repo_root=tmp_path)
+        [c] = ApexCalloutsDialect().extract(ctx)
+        assert c.contract_id == "http::GET::/weather"
+        assert c.meta["host"] == "api.weather.example"
+        assert c.meta["path"] == "/weather"
+        assert c.meta.get("base_token") is None
+        assert c.symbol_name.startswith("apex-callout:GET callout:Weather_Endpoint/weather")
+
+    def test_named_credential_metadata_under_force_app_resolves_base_url(
+        self, tmp_path: Path
+    ) -> None:
+        nc_dir = tmp_path / "force-app" / "main" / "default" / "namedCredentials"
+        nc_dir.mkdir(parents=True)
+        (nc_dir / "Weather_Endpoint.namedCredential-meta.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">\n'
+            "    <endpoint>https://api.weather.example/api/v1</endpoint>\n"
+            "</NamedCredential>\n",
+            encoding="utf-8",
+        )
+        source = callout(
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint('callout:Weather_Endpoint/weather');\n"
+            "        req.setMethod('GET');\n"
+        )
+        ctx = ScanContext("svc", "classes/Svc.cls", ".cls", source, {}, None, repo_root=tmp_path)
+        [c] = ApexCalloutsDialect().extract(ctx)
+        assert c.contract_id == "http::GET::/api/v1/weather"
+        assert c.meta["host"] == "api.weather.example"
+        assert c.meta["path"] == "/api/v1/weather"
+
+    def test_named_credential_with_malformed_xml_falls_back_to_token(
+        self, tmp_path: Path
+    ) -> None:
+        nc_dir = tmp_path / "namedCredentials"
+        nc_dir.mkdir(parents=True)
+        (nc_dir / "Weather_Endpoint.namedCredential-meta.xml").write_text(
+            "<NamedCredential><broken></NamedCredential>", encoding="utf-8"
+        )
+        source = callout(
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint('callout:Weather_Endpoint/weather');\n"
+            "        req.setMethod('GET');\n"
+        )
+        ctx = ScanContext("svc", "classes/Svc.cls", ".cls", source, {}, None, repo_root=tmp_path)
+        [c] = ApexCalloutsDialect().extract(ctx)
+        assert c.contract_id == "http::GET::/weather"
+        assert c.meta["base_token"] == "Weather_Endpoint"
+        assert c.meta.get("host") is None
+
+    def test_external_credential_with_no_endpoint_falls_back_to_token(
+        self, tmp_path: Path
+    ) -> None:
+        nc_dir = tmp_path / "namedCredentials"
+        nc_dir.mkdir(parents=True)
+        (nc_dir / "Weather_Endpoint.namedCredential-meta.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">\n'
+            "    <label>External Setup</label>\n"
+            "    <namedCredentialType>SecuredEndpoint</namedCredentialType>\n"
+            "</NamedCredential>\n",
+            encoding="utf-8",
+        )
+        source = callout(
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint('callout:Weather_Endpoint/weather');\n"
+            "        req.setMethod('GET');\n"
+        )
+        ctx = ScanContext("svc", "classes/Svc.cls", ".cls", source, {}, None, repo_root=tmp_path)
+        [c] = ApexCalloutsDialect().extract(ctx)
+        assert c.contract_id == "http::GET::/weather"
+        assert c.meta["base_token"] == "Weather_Endpoint"
+
+    def test_named_credential_with_templated_endpoint_falls_back_to_token(
+        self, tmp_path: Path
+    ) -> None:
+        nc_dir = tmp_path / "namedCredentials"
+        nc_dir.mkdir(parents=True)
+        (nc_dir / "Weather_Endpoint.namedCredential-meta.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">\n'
+            "    <endpoint>https://${host}.example</endpoint>\n"
+            "</NamedCredential>\n",
+            encoding="utf-8",
+        )
+        source = callout(
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint('callout:Weather_Endpoint/weather');\n"
+            "        req.setMethod('GET');\n"
+        )
+        ctx = ScanContext("svc", "classes/Svc.cls", ".cls", source, {}, None, repo_root=tmp_path)
+        [c] = ApexCalloutsDialect().extract(ctx)
+        assert c.contract_id == "http::GET::/weather"
+        assert c.meta["base_token"] == "Weather_Endpoint"
+
+    def test_named_credential_under_custom_nested_path_resolves_base_url(
+        self, tmp_path: Path
+    ) -> None:
+        nc_dir = tmp_path / "src" / "metadata" / "namedCredentials"
+        nc_dir.mkdir(parents=True)
+        (nc_dir / "Weather_Endpoint.namedCredential-meta.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<NamedCredential xmlns="http://soap.sforce.com/2006/04/metadata">\n'
+            "    <endpoint>https://api.weather.example</endpoint>\n"
+            "</NamedCredential>\n",
+            encoding="utf-8",
+        )
+        source = callout(
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint('callout:Weather_Endpoint/weather');\n"
+            "        req.setMethod('GET');\n"
+        )
+        ctx = ScanContext("svc", "classes/Svc.cls", ".cls", source, {}, None, repo_root=tmp_path)
+        [c] = ApexCalloutsDialect().extract(ctx)
+        assert c.contract_id == "http::GET::/weather"
+        assert c.meta["host"] == "api.weather.example"
+        assert c.meta["path"] == "/weather"
+        assert c.meta.get("base_token") is None
+
+    def test_named_credential_missing_xml_falls_back_to_token(
+        self, tmp_path: Path
+    ) -> None:
+        source = callout(
+            "        HttpRequest req = new HttpRequest();\n"
+            "        req.setEndpoint('callout:Weather_Endpoint/weather');\n"
+            "        req.setMethod('GET');\n"
+        )
+        ctx = ScanContext("svc", "classes/Svc.cls", ".cls", source, {}, None, repo_root=tmp_path)
+        [c] = ApexCalloutsDialect().extract(ctx)
+        assert c.contract_id == "http::GET::/weather"
+        assert c.meta["base_token"] == "Weather_Endpoint"
+        assert c.meta.get("host") is None
+
     def test_the_verb_may_be_set_before_the_endpoint(self) -> None:
         source = callout(
             "        HttpRequest req = new HttpRequest();\n"

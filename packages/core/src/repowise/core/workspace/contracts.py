@@ -82,7 +82,8 @@ CONTRACTS_FILENAME = "contracts.json"
 # its repo, on either side.
 # An HTTP or gRPC consumer whose id two or more repos serve, with nothing
 # placing it in one, carries ``meta['ambiguous_provider']`` and links to none.
-CONTRACTS_VERSION = 15
+# Version 16 adds Temporal task queues (workers and clients).
+CONTRACTS_VERSION = 16
 
 #: ``meta["kind"]`` of a topic contract: the destination a broker call names.
 #: A queue is read by one consumer group; a topic, subject or channel fans

@@ -11,6 +11,7 @@ import {
   type PointerEvent,
 } from "react";
 import type { ImpactEffortPoint, ImpactEffortResponse } from "@repowise-dev/types/health";
+import { formatNumber } from "../lib/format";
 
 /**
  * Impact against effort for every file the queue's filters keep.
@@ -84,7 +85,7 @@ function niceCeil(v: number): number {
 const Y_TICKS = [0, 1, 2, 5, 10, 20, 50, 100];
 
 function fmt(n: number): string {
-  return n.toLocaleString();
+  return formatNumber(n);
 }
 
 function describe(p: ImpactEffortPoint): string {

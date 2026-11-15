@@ -363,7 +363,7 @@ export function RefactoringBoard({
             </div>
           ) : (
             <h3 className="text-sm font-semibold tabular-nums text-[var(--color-text-primary)]">
-              {resultTotal.toLocaleString()} {STATUS_LABEL[serverState.status].toLowerCase()}{" "}
+              {formatNumber(resultTotal)} {STATUS_LABEL[serverState.status].toLowerCase()}{" "}
               opportunit{resultTotal === 1 ? "y" : "ies"}
               {filtersActive ? (
                 <span className="font-normal text-[var(--color-text-tertiary)]"> matching</span>

@@ -1,18 +1,24 @@
 {#- Deterministic (no-model) flow page: the traced steps as a numbered list.
-    Same steps, same spans and same diagram as the model-written page; what a
-    model adds is the explanation of why each step is there. -#}
+    Same steps and spans as the model-written page, plus a diagram drawn from
+    them; what a model adds is the explanation of why each step is there. -#}
 # {{ ctx.title }}
 
-`{{ ctx.steps[0].name }}` in `{{ ctx.steps[0].path }}` starts this operation. The {{ ctx.steps | length }} steps below are the calls that carry it, in the order the code makes them.
+{% if ctx.kind != "Function" %}{{ ctx.kind }} `{{ ctx.public }}` starts{% else %}This operation starts{% endif %} in `{{ ctx.steps[0].name }}` (`{{ ctx.steps[0].path }}`). The {{ ctx.steps | length }} steps below are the calls that carry it, in the order the code makes them.
 
 <!-- flow-diagram -->
 
 ## Steps
 
 {% for step in ctx.steps -%}
-{{ loop.index }}. `{{ step.name }}` `{{ step.cite }}`{% if step.called_by %}, called by step {{ step.called_by }}{% endif %}{% if step.module %} ({{ step.module }}){% endif %}{% if step.doc %}: {{ step.doc | oneline }}{% endif %}
+{{ loop.index }}. `{{ step.name }}` `{{ step.cite }}`{% if step.called_by %}, called by step {{ step.called_by }}{% if step.how_called != "always" %} ({{ step.how_called | replace("_", " ") }}){% endif %}{% endif %}{% if step.module %} ({{ step.module }}){% endif %}{% if step.doc %}: {{ step.doc | oneline }}{% endif %}
 {% endfor %}
+{% if ctx.exits %}
+## Other ways it ends
 
+{% for step in ctx.exits -%}
+- `{{ step.name }}` `{{ step.cite }}`, {{ "in an error handler" if step.how_called == "handler" else "as an early return" }} of step {{ step.called_by }}
+{% endfor %}
+{% endif %}
 {% if ctx.modules %}
 ## Where these steps live
 
@@ -20,7 +26,3 @@
 - **{{ m }}**
 {% endfor %}
 {% endif %}
-
----
-
-*Traced from the call graph. It shows which functions run and in what order, not why. The explanatory prose is a separate, model-written layer.*

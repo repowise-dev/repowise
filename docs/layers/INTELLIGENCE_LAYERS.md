@@ -23,7 +23,7 @@ few optional extras, and never switches a layer on.
 
 Every file, symbol, import and call in the repository, parsed from an AST in 27
 languages. Each call edge is stamped with how it was resolved (one of 39 named
-resolution origins) and how far to trust it, across 17 edge types. Communities,
+resolution origins) and how far to trust it, across 18 edge types. Communities,
 centrality, cycles and execution flows from each entry point are computed on top.
 
 The graph is what lets every other layer point at the right code: git history

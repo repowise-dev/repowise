@@ -14,17 +14,20 @@ the one gate and comment check every contract type shares.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..base import ScanContext, select_files
 from ..dialect import ContractDialect, run_dialect, union_extensions
 from ..langs import PYTHON
+from .aiohttp_web import AiohttpWebDialect
 from .apex_callouts import ApexCalloutsDialect
 from .apex_rest import ApexRestDialect
 from .aspnet import AspNetDialect
 from .azure_functions import AzureFunctionsDialect
 from .csharp_http import CSharpHttpDialect
 from .django import DjangoDialect
+from .drf import DrfDialect
 from .express import ExpressDialect
 from .fastapi import FastApiDialect
 from .fastify import FastifyDialect
@@ -78,6 +81,8 @@ PROVIDER_DIALECTS: tuple[ContractDialect, ...] = (
     AspNetDialect(),
     RustAxumDialect(),
     DjangoDialect(),
+    DrfDialect(),
+    AiohttpWebDialect(),
     JaxRsDialect(),
     MicronautDialect(),
     KtorServerDialect(),
@@ -177,7 +182,7 @@ class HttpExtractor:
 
         contracts: list[Contract] = []
         for rel_path, suffix, content in scanned:
-            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index)
+            ctx = ScanContext(repo_alias, rel_path, suffix, content, mounts, repo_index, repo_root=Path(repo_path))
             # Python sits in both sets now, so one test covers the provider
             # pass (which reads the declarations above a span) and the consumer
             # pass (which reads the span itself).

@@ -84,7 +84,8 @@ def test_build_meta_exposes_the_persisted_index_scope(tmp_path, monkeypatch):
     # the same, and the diagnostics it leaves out are one get_overview away.
     assert out["index_scope"]["run_mode"] == "fast"
     assert out["index_scope"]["content_provenance"] == "none"
-    assert out["index_scope"]["projection"] == "compact"
+    # Constant for the session and acted on by no agent: left to the whole object.
+    assert not {"projection", "fingerprint", "version"} & set(out["index_scope"])
     assert whole["index_scope"]["run_mode"] == "fast"
     assert whole["index_scope"]["content_provenance"] == "none"
     assert whole["index_scope"]["git_history_coverage"] is None
@@ -108,10 +109,13 @@ def test_unaffected_targets_get_index_behind_not_warning(tmp_path, monkeypatch):
     assert out.get("live_head") == _LIVE[:12]
 
 
-def test_no_targets_keeps_repo_level_warning(tmp_path, monkeypatch):
+def test_no_targets_says_index_behind_without_a_warning(tmp_path, monkeypatch):
+    # A response that names no file that differs repeats no "HEAD has moved"
+    # line on every call; index_behind carries the fact.
     monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
-    assert "stale_warning" in out
+    assert "stale_warning" not in out
+    assert out["index_behind"] is True
 
 
 def test_empty_targets_means_nothing_served_and_never_warns(tmp_path, monkeypatch):
@@ -140,10 +144,14 @@ def test_no_targets_with_zero_changed_files_does_not_warn(tmp_path, monkeypatch)
 
 
 def test_no_targets_with_real_changes_still_warns(tmp_path, monkeypatch):
-    """The zero-change carve-out must not silence a genuinely behind index."""
+    """The zero-change carve-out must not silence a genuinely behind index.
+
+    The repo-wide verdict is asked for by name: a workspace answer names which
+    repository is behind.
+    """
     monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, frozenset({"src/a.py"}))
-    out = _meta.freshness_from_repo(_repo(tmp_path), targets=None)
+    out = _meta.freshness_from_repo(_repo(tmp_path), targets=None, repo_level=True)
     assert "stale_warning" in out
     assert out["index_behind"] is True
 
@@ -182,11 +190,15 @@ def test_empty_commit_over_real_git_is_not_stale(tmp_path):
     assert out.get("index_behind") is True
 
 
-def test_git_diff_failure_falls_back_to_repo_level_warning(tmp_path, monkeypatch):
+def test_git_diff_failure_names_no_served_file(tmp_path, monkeypatch):
     monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
     _prime(tmp_path, None)  # git couldn't answer (rebased-away SHA, timeout)
     out = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])
-    assert "stale_warning" in out
+    # No diff, so nothing says a served file differs: index_behind alone.
+    assert "stale_warning" not in out
+    assert out["index_behind"] is True
+    repo_level = _meta.freshness_from_repo(_repo(tmp_path), targets=None, repo_level=True)
+    assert "stale_warning" in repo_level
 
 
 @pytest.mark.parametrize(
@@ -381,3 +393,29 @@ def test_read_live_head_submodule_gitdir(tmp_path: Path) -> None:
     sha = "9" * 40
     checkout = submodule_checkout(tmp_path, sha)
     assert _meta.read_live_head(str(checkout)) == sha
+
+
+def test_every_stale_warning_is_a_fact_naming_both_commits(tmp_path, monkeypatch):
+    """A stale_warning states what the facts describe; it never tells the agent to run a command."""
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: _LIVE)
+    _prime(tmp_path, frozenset({"src/a.py"}))
+    served = _meta.freshness_from_repo(_repo(tmp_path), targets=["src/a.py"])["stale_warning"]
+    repo_level = _meta.freshness_from_repo(_repo(tmp_path), targets=None, repo_level=True)[
+        "stale_warning"
+    ]
+
+    assert served == (
+        f"Facts below describe {_INDEXED[:12]}; a file this response serves differs at HEAD "
+        f"{_LIVE[:12]}."
+    )
+    assert repo_level == f"Facts below describe {_INDEXED[:12]}; HEAD has moved."
+
+    monkeypatch.setattr(_meta, "read_live_head", lambda p: None)
+    monkeypatch.setattr(
+        "repowise.core.persistence.crud.index_synced_at",
+        lambda _r: _meta.datetime(2020, 1, 1, tzinfo=_meta.UTC),
+    )
+    old = _meta.freshness_from_repo(_repo(tmp_path), targets=None)["stale_warning"]
+    assert old.startswith("Facts below describe an index ") and old.endswith("HEAD is unreadable.")
+    for line in (served, repo_level, old):
+        assert "repowise update" not in line and "run" not in line.lower().split()

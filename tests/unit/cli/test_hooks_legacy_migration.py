@@ -80,12 +80,12 @@ class TestInstallMigratesLegacyHook:
         # Existing file already has both: legacy block (unreachable) AND
         # a marker block. Installer should strip the legacy half and
         # report the migration.
-        from repowise.cli.hooks import _HOOK_SCRIPT
+        from repowise.cli.hooks import _hook_script
 
         hook = git_repo / ".git" / "hooks" / "post-commit"
         hook.parent.mkdir(parents=True, exist_ok=True)
         hook.write_text(
-            _LEGACY_BODY + "\n" + _HOOK_SCRIPT, encoding="utf-8"
+            _LEGACY_BODY + "\n" + _hook_script(), encoding="utf-8"
         )
 
         result = install(git_repo)

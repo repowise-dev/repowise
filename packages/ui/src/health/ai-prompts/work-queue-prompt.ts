@@ -25,7 +25,7 @@ const WORK_QUEUE_GUIDANCE: Record<string, string> = {
   stale_decision:
     "Re-check this architectural decision against the current code; update it, or supersede it if the code has moved on.",
   proposed_decision:
-    "Review this auto-proposed decision: confirm it reflects reality and accept it, or reject it with a reason.",
+    "A background decision record mined from history, not in force. Check it only if it bears on your change; if it holds, you can put it in force with `repowise decision confirm`.",
   knowledge_silo:
     "One person holds the knowledge for this area (low bus factor). Add tests and docs that make it legible to others.",
   ungoverned_hotspot:

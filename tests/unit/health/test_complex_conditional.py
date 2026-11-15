@@ -111,7 +111,8 @@ def _conditions(source: str, language: str, name: str):
         ("a === 1 || b === 2 || c === 3 || d === 4 || e === 5 || g === 6 || h === 7", 6, True),
         ("a && b && c && d && e && g && h", 6, True),
         ("a && b || c && d || e && g || h", 6, False),
-        ("a || b || c || !d || e || g || h", 6, False),
+        ("a || b || c || !d || e || g || h", 6, True),
+        ("a || b || c || !(d || e) || g || h", 6, False),
         ("a !== b || c != d || e || g || h || i || j!", 6, True),
     ],
 )
@@ -128,7 +129,8 @@ def test_flat_chain_typescript(condition: str, count: int, flat: bool):
         ("a or b or c or d", True),
         ("a and b and c is not None and d not in e", True),
         ("a and b or c and d", False),
-        ("a and not b and c and d", False),
+        ("a and not b and c and d", True),
+        ("a and not (b and c) and d", False),
     ],
 )
 def test_flat_chain_python(condition: str, flat: bool):
@@ -143,7 +145,7 @@ def test_flat_chain_has_no_finding_and_mixed_keeps_count_severity():
         "function flat(a, b, c, d, e, g, h) { if (a || b || c || d || e || g || h) { return 1; } }\n"
         "function knot(a, b, c, d, e, g, h) { if (a && b || c && !d || e && g || h) { return 1; } }\n"
         "function mixedLow(a, b, c, d) { if (a && b || c && d) { return 1; } }\n"
-        "function negated(a, b, c, d) { if (a || !b || c || d) { return 1; } }\n"
+        "function negated(a, b, c, d) { if (a || !(b || c) || d) { return 1; } }\n"
     )
     results = walk_file_complexity("x.ts", "typescript", src.encode())
     if not results:
@@ -203,6 +205,60 @@ def test_python_ternary_counts_condition_only(body: str, count: int):
             "swift",
             "func f(xs: [Int], a: Bool, b: Bool, c: Bool) {\n for x in xs where a && b && c { print(x) }\n}\n",
         ),
+        (
+            "swift",
+            "func f(x: Int, a: Bool, b: Bool, c: Bool) -> Int {\n"
+            " switch x {\n"
+            " case 1 where a && b && c:\n"
+            "   return 1\n"
+            " default:\n"
+            "   return 0\n"
+            " }\n"
+            "}\n",
+        ),
+        (
+            "kotlin",
+            "fun f(a: Boolean, b: Boolean, c: Boolean): Int {\n"
+            " return when {\n"
+            "   a && b && c -> 1\n"
+            "   else -> 0\n"
+            " }\n"
+            "}\n",
+        ),
+        (
+            "csharp",
+            "class C {\n"
+            " int f(int x, bool a, bool b, bool c) {\n"
+            "   switch (x) {\n"
+            "     case 1 when a && b && c:\n"
+            "       return 1;\n"
+            "     default:\n"
+            "       return 0;\n"
+            "   }\n"
+            " }\n"
+            "}\n",
+        ),
+        (
+            "csharp",
+            "class C {\n"
+            " int f(int x, bool a, bool b, bool c) {\n"
+            "   return x switch {\n"
+            "     1 when a && b && c => 1,\n"
+            "     _ => 0,\n"
+            "   };\n"
+            " }\n"
+            "}\n",
+        ),
+        (
+            "rust",
+            "fn f(o: Option<i32>, a: bool, b: bool) -> i32 {\n"
+            " if let Some(x) = o && a && b {\n"
+            "   1\n"
+            " } else {\n"
+            "   0\n"
+            " }\n"
+            "}\n",
+        ),
     ],
 )
 def test_guard_counts_once(language: str, src: str):
@@ -225,6 +281,7 @@ def test_guard_counts_once(language: str, src: str):
         ("cpp", "void f(bool a, bool b) { for (auto x : h(a && b || a)) { g(x); } }\n"),
         ("php", "<?php function f($a, $b) { foreach (h($a && $b || $a) as $x) { g($x); } }\n"),
         ("scala", "object O { def f(a: Boolean, b: Boolean) = { for (x <- h(a && b || a)) g(x) } }\n"),
+        ("go", "func f(a, b bool) {\n for _, x := range h(a && b || a) { g(x) }\n}\n"),
     ],
 )
 def test_foreach_iterable_is_not_a_condition(language: str, src: str):

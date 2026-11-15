@@ -203,20 +203,16 @@ class TestDeterministicPath:
             p.structural_key for p in named.pages
         )
 
-    def test_deterministic_titles_are_not_bare_directory_names(self):
-        """The name of this test is what it must actually assert.
+    def test_deterministic_titles_name_a_directory_without_its_path(self):
+        """A keyless title is the directory's own name, never a path.
 
-        A word-count bound alone would pass on "src ingest", which is the
-        exact failure the validator's bare-directory check exists to catch.
+        Without a model there is no capability to name, so the honest label is
+        the place, cased for reading: one to seven words, no separators.
         """
-        from repowise.core.generation.concept_tree.validation import (
-            _is_bare_directory,
-        )
-
         for group in group_files(FILES, params=TINY):
             title = deterministic_title(group)
-            assert 2 <= len(title.split()) <= 7
-            assert not _is_bare_directory(title, group.dirs), title
+            assert 1 <= len(title.split()) <= 7
+            assert "/" not in title and "(" not in title, title
 
 
 class TestValidator:
@@ -392,12 +388,11 @@ class TestPayload:
         assert entry["subdirs"] == ["tool_answer (5 files)", "_savings (1 files)"]
 
 
-def test_layer_prefixed_title_does_not_repeat_the_layer_word():
-    """A ``docs`` group in a "Docs & Tooling" layer is not "Docs Tooling Docs".
+def test_a_layer_label_does_not_prefix_a_title():
+    """A ``docs`` group in a "Docs Tooling" layer is "Docs", not "Docs Tooling Docs".
 
-    The layer prefix exists to disambiguate a one-word directory name. When
-    the label already contains that word the prefix adds nothing and the
-    repetition reads as a generation bug.
+    The layer is a badge beside the row; repeating it in the name pushed the
+    subject to the end ("Application Flask").
     """
     from repowise.core.generation.concept_tree.grouping import ConceptGroup
     from repowise.core.generation.concept_tree.naming import deterministic_title
@@ -407,10 +402,7 @@ def test_layer_prefixed_title_does_not_repeat_the_layer_word():
         dirs=["docs"],
         target_path="docs",
     )
-    title = deterministic_title(group, "Docs Tooling")
-
-    assert title == "Docs Tooling"
-    assert title.lower().split().count("docs") == 1
+    assert deterministic_title(group, "Docs Tooling") == "Docs"
 
 
 def test_a_trailing_number_stays_with_its_word():
@@ -424,12 +416,12 @@ def test_a_trailing_number_stays_with_its_word():
     from repowise.core.generation.concept_tree.naming import deterministic_title
 
     group = ConceptGroup(
-        members=["src/ui/c4/nodes/a.ts", "src/ui/c4/nodes/b.ts"],
-        dirs=["src/ui/c4/nodes"],
-        target_path="src/ui/c4/nodes",
+        members=["src/ui/c4/a.ts", "src/ui/c4/b.ts"],
+        dirs=["src/ui/c4"],
+        target_path="src/ui/c4",
     )
 
-    assert deterministic_title(group) == "C4 Nodes"
+    assert deterministic_title(group) == "C4"
 
 
 class TestCycleNaming:

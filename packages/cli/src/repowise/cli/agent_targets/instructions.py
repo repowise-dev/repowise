@@ -1,8 +1,8 @@
 """The managed instruction block, shared by every host that reads one.
 
-Text only. No imports, and nothing that reads the filesystem, because this is
-reachable from ``codex_config`` which sits behind the self-heal path that runs on
-every CLI invocation.
+Text only. Nothing that reads the filesystem, and one import of a text-only
+leaf, because this is reachable from ``codex_config`` which sits behind the
+self-heal path that runs on every CLI invocation.
 
 The block itself is written by :mod:`.formats.marker_block`; what lives here is
 the *content*, in one place. It used to live inside ``codex_config`` as a private
@@ -18,6 +18,8 @@ The framing stays with each target and only the body is shared.
 
 from __future__ import annotations
 
+from repowise.core.agent_steer import AGENT_STEER
+
 #: Markers delimiting the section repowise owns. Everything outside them is the
 #: user's and round-trips byte for byte.
 DISTILL_MARKER_START = (
@@ -30,7 +32,12 @@ DISTILL_MARKER_END = "<!-- REPOWISE_DISTILL:END -->"
 #: inlined into the section text.
 DISTILL_SECTION_HEADING = "### Output Distillation"
 
-DISTILL_SECTION = f"""{DISTILL_SECTION_HEADING}
+#: Leads with the call-first line: Cursor, Copilot and Kiro get no generated
+#: agent block, so this is where they read it. An ``AGENTS.md`` carrying both
+#: blocks repeats the one line, which costs less than a per-host variant.
+DISTILL_SECTION = f"""{AGENT_STEER}
+
+{DISTILL_SECTION_HEADING}
 
 - Prefer `repowise distill <cmd>` for noisy commands: test runs, builds, `git status`/`log`/`diff`, searches, file listings. It runs the command unchanged (exit code preserved) and prints a compact, errors-first rendering; every error line survives.
 - Output may contain a marker like `[repowise#a1b2c3d4e5f6: 230 lines omitted (~6.1k tokens); restore: repowise expand a1b2c3d4e5f6]`. The omitted content is fully preserved: run `repowise expand <ref>` to retrieve it, or `repowise expand <ref> -q <regex>` for just the matching lines.

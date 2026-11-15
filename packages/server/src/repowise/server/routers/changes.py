@@ -31,6 +31,7 @@ from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.suspects import Symptom
 from repowise.core.suspects.index import find_suspects
+from repowise.server.auth import read_route
 from repowise.server.deps import get_db_session, resolve_request_session_factory, verify_api_key
 from repowise.server.routers._history_filters import HistoryParams, history_params
 from repowise.server.schemas.changes import (
@@ -287,6 +288,7 @@ def _when(value: str | None, field: str) -> datetime | None:
 
 
 @router.post("/{repo_id}/suspects", response_model=SuspectsResponse)
+@read_route
 async def rank_suspects(
     repo_id: str,
     body: SuspectsRequest,

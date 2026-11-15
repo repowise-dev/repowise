@@ -647,14 +647,6 @@ def test_coverage_stale_is_improve_signal() -> None:
     )
 
 
-def test_decisions_unreviewed_is_improve_signal() -> None:
-    (a,) = _run(signal.decisions_unreviewed, _facts(proposed_decisions=6)).actions
-    assert a.tier == "improve_signal"
-    assert (
-        _run(signal.decisions_unreviewed, _facts(proposed_decisions=6, accepted_decisions=1)).actions
-        == ()
-    )
-
 
 # ---------------------------------------------------------------------------
 # engine
@@ -700,7 +692,7 @@ def test_engine_reports_totals_and_every_rule() -> None:
     assert quarter["total"] == len(quarter["actions"]) == 7
     assert quarter["hidden"] == 0
     assert quarter["by_tier"] == {"act_now": 1, "plan": 5, "improve_signal": 1}
-    assert len(view["rules"]) == 12
+    assert len(view["rules"]) == 11
     # The week sees the secret and the coverage prompt, not the quarter's plan work.
     assert view["horizons"]["week"]["total"] == 2
 

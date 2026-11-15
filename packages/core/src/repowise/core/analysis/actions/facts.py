@@ -154,7 +154,6 @@ class RepoFacts:
     drift: tuple[DriftFacts, ...] = ()
     dead: tuple[DeadFacts, ...] = ()
     stale_decisions: tuple[DecisionFacts, ...] = ()
-    proposed_decisions: int = 0
     accepted_decisions: int = 0
     #: Last commit per author identity key, for "their main author has gone quiet".
     author_last_commit: Mapping[str, datetime] = field(default_factory=dict)

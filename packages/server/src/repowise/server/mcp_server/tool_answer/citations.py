@@ -42,10 +42,12 @@ class AnswerFiles:
         """The file the answer names first when it rules out or never names the top hit.
 
         Dominance was measured on the top hit, so its grade does not vouch for
-        an answer resting elsewhere. Any mention of its file name counts.
+        an answer resting elsewhere. Any mention of its file name counts, and a
+        top symbol page (``path::name``) counts as its file.
         """
-        top = hits[0].get("target_path") if hits else None
-        if not (self.named and top) or top in self.citations:
+        target = hits[0].get("target_path") if hits else None
+        top = target.split("::", 1)[0] if target else None
+        if not (self.named and top) or target in self.citations or top in self.citations:
             return None
         if top not in self.ruled_out and re.search(
             rf"(?<![\w.-]){re.escape(top.rsplit('/', 1)[-1])}(?!\w)", answer_text

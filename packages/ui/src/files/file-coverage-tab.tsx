@@ -2,9 +2,10 @@ import type { ReactNode } from "react";
 import { PageLede } from "../shared/page-lede";
 import { coverageBand } from "../health/tokens";
 import { COVERAGE_REPORT_FORMATS } from "../health/coverage-formats";
-import { formatNumber, formatRelativeTime } from "../lib/format";
+import { formatNumber } from "../lib/format";
 import type { FileDetailCoverage } from "@repowise-dev/types/files";
 import { FileSection, Fig } from "./file-section";
+import { RelativeTime } from "../shared/relative-time";
 
 interface FileCoverageTabProps {
   coverage: FileDetailCoverage | null;
@@ -118,7 +119,7 @@ export function FileCoverageTab({
             {coverage.source_format}
           </span>{" "}
           report
-          {coverage.ingested_at && <> ingested {formatRelativeTime(coverage.ingested_at)}</>}
+          {coverage.ingested_at && <> ingested <RelativeTime date={coverage.ingested_at} /></>}
           {coverage.ingested_commit_sha && (
             <>
               {" "}

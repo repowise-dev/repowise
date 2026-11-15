@@ -10,10 +10,13 @@ The surface is resolved from four inputs:
 4. optional :class:`AvailabilityFacts` about the repository, which an entry's
    ``available_when`` predicate reads.
 
-The default surface is every ``default`` tool that is usable in this mode. The
-override can replace that set (an explicit allowlist, ``all``, ``lean``) or
-adjust it (``+name`` / ``-name`` deltas). Nothing here does I/O: the server
-gathers the inputs and applies the result to its FastMCP instance.
+With no override the surface depends on the client: a host that defers tool
+schemas until the model asks for them (Claude Code) gets the ``standard``
+profile, every ``default`` tool usable in this mode; any other client gets
+``core``, because it pays every listed schema on every turn. The override can
+name a profile (``core``, ``lean``, ``standard``, ``all``), adjust one with
+``+name`` / ``-name`` deltas, or give an explicit list. Nothing here does I/O:
+the server gathers the inputs and applies the result to its FastMCP instance.
 """
 
 from __future__ import annotations
@@ -45,6 +48,31 @@ LEAN_TOOLS = frozenset(
 )
 LEAN_WORKSPACE_EXTRAS = frozenset({"list_repos"})
 
+# A value of "core" enables the core profile: the four tools that answer a
+# question about the code, plus get_why for the same history-why reason as
+# lean (list_repos again joins in workspace mode). It is the default for
+# clients that load every schema up front, where the full default surface
+# costs about twice as many tokens per turn.
+CORE = "core"
+CORE_TOOLS = frozenset({"get_answer", "get_context", "get_symbol", "search_codebase", "get_why"})
+
+# The tools ``mcp.always_load`` asks a schema-deferring host to load up front:
+# the core read tools an agent reaches for first. get_why stays deferred, as
+# history questions come later in a task, if at all.
+ALWAYS_LOAD_TOOLS = CORE_TOOLS - {"get_why"}
+
+# A value of "standard" enables every ``default`` tool usable in this mode: the
+# surface a client that defers schemas gets when nothing is configured.
+STANDARD = "standard"
+
+PROFILES = (CORE, LEAN, STANDARD, ALL)
+
+# Agent slugs (repowise.core.agents.identity) whose host defers MCP tool
+# schemas until the model searches for them, so a larger surface costs only
+# its tool names per turn. Every other client, including one that announced no
+# name, gets the core profile by default.
+DEFERRED_SCHEMA_CLIENTS = frozenset({"claude_code"})
+
 
 @dataclass(frozen=True)
 class AvailabilityFacts:
@@ -75,11 +103,9 @@ def normalize_override(override: str | Sequence[str] | None) -> list[str] | None
     """
     if override is None:
         return None
-    if isinstance(override, str):
-        tokens = [t.strip() for t in override.replace(",", " ").split()]
-    else:
-        tokens = [str(t).strip() for t in override]
-    tokens = [t for t in tokens if t]
+    items = [override] if isinstance(override, str) else [str(t) for t in override]
+    # A list item may itself hold several tokens ("core +get_health").
+    tokens = [t for item in items for t in item.replace(",", " ").split()]
     return tokens or None
 
 
@@ -126,16 +152,42 @@ def _resolve_name(
     return None
 
 
-def _is_keyword(tokens: list[str], keyword: str) -> bool:
-    return len(tokens) == 1 and tokens[0].lower() == keyword
-
-
 def _is_delta(tokens: list[str]) -> bool:
     return all(t[0] in "+-" for t in tokens)
 
 
-def _lean_names(is_workspace: bool) -> frozenset[str]:
-    return (LEAN_TOOLS | LEAN_WORKSPACE_EXTRAS) if is_workspace else LEAN_TOOLS
+def default_profile(client: str | None) -> str:
+    """The profile a client gets when nothing is configured.
+
+    ``client`` is an agent slug resolved from the MCP ``clientInfo`` name.
+    ``None`` means there is no MCP client at all (in-product chat, the settings
+    page), which keeps the standard surface.
+    """
+    if client is None or client in DEFERRED_SCHEMA_CLIENTS:
+        return STANDARD
+    return CORE
+
+
+def _profile_names(
+    profile: str, default_surface: set[str], usable: set[str], *, is_workspace: bool
+) -> set[str]:
+    extras = LEAN_WORKSPACE_EXTRAS if is_workspace else frozenset()
+    if profile == ALL:
+        return set(usable)
+    if profile == STANDARD:
+        return set(default_surface)
+    members = CORE_TOOLS if profile == CORE else LEAN_TOOLS
+    return usable & (members | extras)
+
+
+def split_profile(tokens: Sequence[str] | None) -> tuple[str | None, list[str]]:
+    """Split a normalized override into its leading profile and the rest."""
+    if not tokens:
+        return None, []
+    head = tokens[0].lower()
+    if head in PROFILES:
+        return head, list(tokens[1:])
+    return None, list(tokens)
 
 
 def _apply_deltas(
@@ -146,10 +198,13 @@ def _apply_deltas(
     *,
     is_workspace: bool,
 ) -> set[str]:
-    """Apply ``+name`` / ``-name`` tokens, in order, to the default surface."""
+    """Apply ``+name`` / ``-name`` tokens, in order, to *default_surface*.
+
+    A token without a sign after a profile is read as ``+name``.
+    """
     enabled = set(default_surface)
     for token in tokens:
-        op, raw = token[0], token[1:].strip()
+        op, raw = (token[0], token[1:].strip()) if token[0] in "+-" else ("+", token)
         if op == "-":
             enabled.discard(raw)
         elif _resolve_name(raw, catalog, usable, is_workspace=is_workspace):
@@ -174,16 +229,20 @@ def resolve_enabled_tools(
     is_workspace: bool,
     override: str | Sequence[str] | None = None,
     facts: AvailabilityFacts | None = None,
+    client: str | None = None,
 ) -> set[str]:
     """Return the set of tool names a server should expose.
 
     ``override`` semantics:
 
-    - ``None`` / empty: the curated default surface.
-    - ``"all"`` (or ``["all"]``): every tool usable in the current mode.
-    - ``"lean"``: the agent-lean profile (see :data:`LEAN_TOOLS`).
-    - all tokens prefixed ``+``/``-``: deltas applied to the default surface.
+    - ``None`` / empty: the client's default profile (:func:`default_profile`).
+    - a profile name (``core``, ``lean``, ``standard``, ``all``), optionally
+      followed by ``+name`` / ``-name`` deltas applied to it.
+    - all tokens prefixed ``+``/``-``: deltas applied to the client's default.
     - otherwise: an explicit allowlist (only the named tools).
+
+    ``client`` is the agent slug of the MCP client asking; it matters only
+    when the override names no profile and no explicit list.
 
     A tool is usable when its mode fits (workspace-only tools need a workspace)
     and its ``available_when`` predicate, if any, holds for *facts*. No
@@ -194,25 +253,55 @@ def resolve_enabled_tools(
     usable = _usable_names(catalog, is_workspace=is_workspace, facts=facts)
     default_surface = {name for name in usable if catalog[name].default}
 
-    tokens = normalize_override(override)
-    if tokens is None:
-        return default_surface
-    if _is_keyword(tokens, ALL):
-        return usable
-    if _is_keyword(tokens, LEAN):
-        return usable & _lean_names(is_workspace)
-    if _is_delta(tokens):
-        return _apply_deltas(default_surface, tokens, catalog, usable, is_workspace=is_workspace)
-    return _allowlist(tokens, catalog, usable, is_workspace=is_workspace)
+    profile, rest = split_profile(normalize_override(override))
+    if profile is None and rest and not _is_delta(rest):
+        return _allowlist(rest, catalog, usable, is_workspace=is_workspace)
+    base = _profile_names(
+        profile or default_profile(client), default_surface, usable, is_workspace=is_workspace
+    )
+    return _apply_deltas(base, rest, catalog, usable, is_workspace=is_workspace)
+
+
+def _never_called() -> None:
+    """Stand-in callable for the name-only entries :func:`listed_default_tools` builds."""
+
+
+def listed_default_tools(
+    names: Iterable[str],
+    *,
+    client: str | None,
+    override: str | Sequence[str] | None = None,
+) -> frozenset[str]:
+    """Which of *names*, all default tools, a single-repo server lists to *client*.
+
+    For text written ahead of time that names tools (a generated agent file),
+    where no tool catalog is loaded. Every name the override mentions joins the
+    catalog too, so an explicit list or a delta naming an opt-in tool resolves
+    without an "unknown tool" warning.
+    """
+    wanted = set(names)
+    mentioned = {t.lstrip("+-") for t in normalize_override(override) or ()}
+    entries = [ToolEntry(fn=_never_called, name=n) for n in (wanted | mentioned) - {""}]
+    enabled = resolve_enabled_tools(entries, is_workspace=False, override=override, client=client)
+    return frozenset(enabled & wanted)
 
 
 __all__ = [
     "ALL",
+    "ALWAYS_LOAD_TOOLS",
+    "CORE",
+    "CORE_TOOLS",
+    "DEFERRED_SCHEMA_CLIENTS",
     "LEAN",
     "LEAN_TOOLS",
     "LEAN_WORKSPACE_EXTRAS",
+    "PROFILES",
+    "STANDARD",
     "AvailabilityFacts",
+    "default_profile",
     "is_available",
+    "listed_default_tools",
     "normalize_override",
     "resolve_enabled_tools",
+    "split_profile",
 ]

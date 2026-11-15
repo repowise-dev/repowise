@@ -3,7 +3,9 @@
 Where work is actually happening right now: the directories and files
 changing most in the last 90 days, which of them are hotspots, and dead code
 inside them, so a contributor knows which corners are moving before picking a
-task. Counted from git churn signals only.
+task. Counted from git churn signals only, over the system's own code: tests,
+examples, documentation and configuration are left out, because a busy test
+suite or reference page says nothing about where the code is moving.
 
 Gate: ≥ 50 commits in the last 90 days across the indexed corpus AND
 ≥ 10 distinct files touched. Without that floor the page reads like
@@ -22,6 +24,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import PurePosixPath
 
+from ....support_paths import file_population, is_support_path
+from ....test_paths import is_test_related_path
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
 from ..slots import SLOT_ACTIVE_LANDSCAPE, SLOT_TITLES
@@ -137,8 +141,17 @@ def _dead_code_in(hot_files: list[HotFile], signals: OnboardingSignals) -> list[
     return found[:_MAX_DEAD_CODE]
 
 
+def _is_code(path: str, tests: set[str]) -> bool:
+    """Whether *path* is the system's own code rather than tests, docs or examples."""
+    is_test = path in tests or is_test_related_path(path)
+    return file_population(path, is_test=is_test) == "production" and not is_support_path(path)
+
+
 def _build(signals: OnboardingSignals) -> ActiveLandscapeContext | None:
-    git_meta_map = signals.git_meta_map or {}
+    tests = {pf.file_info.path for pf in signals.parsed_files if pf.file_info.is_test}
+    git_meta_map = {
+        path: meta for path, meta in (signals.git_meta_map or {}).items() if _is_code(path, tests)
+    }
     hot_all = _hot_files(git_meta_map)
     total_commits_90d = sum(h.commit_count_90d for h in hot_all)
     if total_commits_90d < _GATE_MIN_COMMITS_90D or len(hot_all) < _GATE_MIN_FILES_TOUCHED:

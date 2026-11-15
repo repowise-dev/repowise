@@ -173,6 +173,16 @@ class TestNamespaceMap:
         assert tmp_path / "user.cs" in type_map["User"]
         assert tmp_path / "order.cs" in type_map["Order"]
 
+    def test_namespace_candidate_order_is_stable(self, tmp_path: Path) -> None:
+        service = tmp_path / "Service.cs"
+        util = tmp_path / "Util.cs"
+        service.write_text("namespace Poc; public class Service {}")
+        util.write_text("namespace Poc; public class Util {}")
+
+        ns_map, _types, _partials = build_namespace_map([util, service])
+
+        assert ns_map["Poc"] == [service, util]
+
 
 class TestGlobalUsings:
     def test_scan_plain_global_using(self) -> None:

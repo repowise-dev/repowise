@@ -73,6 +73,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("coverage", "coverage_cmd:coverage_group"),
     ("components", "components_cmd:components_group"),
     ("packages", "packages_cmd:packages_group"),
+    ("pages", "pages_cmd:pages_group"),
     ("changes", "changes_cmd:changes_group"),
     ("suspects", "suspects_cmd:suspects_command"),
     ("check", "check_cmd:check_command"),
@@ -113,6 +114,7 @@ _OSS_COMMANDS: tuple[tuple[str, str], ...] = (
     ("login", "login_cmd:login_command"),
     ("logout", "login_cmd:logout_command"),
     ("whoami", "login_cmd:whoami_command"),
+    ("hosted", "hosted_cmd:hosted_group"),
     ("workspace", "workspace_cmd:workspace_group"),
     ("plugins", "plugins_cmd:plugins_command"),
 )

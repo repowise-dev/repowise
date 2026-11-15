@@ -36,9 +36,12 @@ claim as a regex over a whole file.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from functools import lru_cache
+from typing import TYPE_CHECKING, NamedTuple
 
 from repowise.core.ingestion.source_mask import mask_source
+
+from ..strings import call_arguments
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -155,29 +158,92 @@ def symbol_body(lines: list[str], symbol: IndexedSymbol) -> str:
 
 # The module qualifier is required and is what makes this safe: a bare
 # ``Session(`` is SQLAlchemy far more often than requests, and binding it would
-# read every ``session.get(Model, pk)`` as an endpoint call.
-_PY_CLIENT_CTOR = (
-    r"(?P<lib>httpx|requests|aiohttp)\s*\.\s*"
-    r"(?:AsyncClient|Client|ClientSession|Session)\s*\("
-)
+# read every ``session.get(Model, pk)`` as an endpoint call. A name imported
+# from the library (``from httpx import AsyncClient``) is as certain as the
+# qualified spelling, so it binds too, but only when nothing else imports it.
+_PY_CLIENT_CLASSES = frozenset({"AsyncClient", "Client", "ClientSession", "Session"})
+_PY_CLIENT_LIBS = ("httpx", "requests", "aiohttp")
 
-# ``client = httpx.AsyncClient(...)``, ``self._c = client or httpx.Client()``.
-_PY_CLIENT_ASSIGN_RE = re.compile(
-    r"^[ \t]*(?P<attr>self\s*\.\s*)?(?P<var>[A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?!=)"
-    r"(?:[^\n=]*?\bor\s+)?(?:await\s+)?" + _PY_CLIENT_CTOR,
+_PY_FROM_IMPORT_RE = re.compile(
+    r"^[ \t]*from[ \t]+(?P<module>[\w.]+)[ \t]+import[ \t]+(?P<names>\([^)]*\)|[^\n]*)",
     re.MULTILINE,
 )
+_PY_IMPORTED_NAME_RE = re.compile(r"(?P<name>\w+)(?:\s+as\s+(?P<alias>\w+))?")
 
-# ``async with httpx.AsyncClient(...) as client:``
-_PY_CLIENT_WITH_RE = re.compile(
-    r"\bwith\s+(?:await\s+)?" + _PY_CLIENT_CTOR + r"[^\n]*?\bas\s+(?P<var>[A-Za-z_]\w*)"
+
+_PY_CLIENT_IMPORT_RE = re.compile(
+    r"^[ \t]*from[ \t]+(?:" + "|".join(_PY_CLIENT_LIBS) + r")[ \t]+import\b", re.MULTILINE
 )
+
+
+def imports_client_library(content: str, suffix: str) -> bool:
+    """Does *content* import a name from an HTTP client library, so a bare ``AsyncClient()`` may bind?"""
+    return suffix.lower() == ".py" and _PY_CLIENT_IMPORT_RE.search(content) is not None
+
+
+def _imported_client_classes(code: str) -> dict[str, str]:
+    """``{local name: library}`` for each client class imported from its library alone."""
+    modules: dict[str, set[str]] = {}
+    written: dict[str, str] = {}
+    for m in _PY_FROM_IMPORT_RE.finditer(code):
+        for item in _PY_IMPORTED_NAME_RE.finditer(m.group("names").strip("()")):
+            local = item.group("alias") or item.group("name")
+            modules.setdefault(local, set()).add(m.group("module"))
+            written[local] = item.group("name")
+    return {
+        local: library
+        for local, found in modules.items()
+        for library in found
+        if len(found) == 1 and library in _PY_CLIENT_LIBS and written[local] in _PY_CLIENT_CLASSES
+    }
+
+
+class BoundClient(NamedTuple):
+    """An HTTP client instance bound to *var*, and the scope that binding holds in."""
+
+    var: str
+    library: str
+    start: int
+    end: int
+    #: The ``base_url`` the constructor passed, as source text; empty when it passed none.
+    base: str = ""
+
+
+@lru_cache(maxsize=64)
+def _client_patterns(bare: tuple[str, ...]) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    """The assignment and ``with`` readers for a file that imports *bare* client names."""
+    ctor = (
+        r"(?:(?P<lib>httpx|requests|aiohttp)\s*\.\s*"
+        r"(?:AsyncClient|Client|ClientSession|Session)"
+    )
+    if bare:
+        ctor += r"|(?<![\w.])(?P<bare>" + "|".join(re.escape(n) for n in bare) + ")"
+    ctor += r")\s*(?P<open>)\("
+    assign = re.compile(
+        r"^[ \t]*(?P<attr>self\s*\.\s*)?(?P<var>[A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?!=)"
+        r"(?:[^\n=]*?\bor\s+)?(?:await\s+)?" + ctor,
+        re.MULTILINE,
+    )
+    with_ = re.compile(
+        r"\bwith\s+(?:await\s+)?" + ctor + r"[^\n]*?\bas\s+(?P<var>[A-Za-z_]\w*)"
+    )
+    return assign, with_
+
+
+def _base_argument(source: str, paren: int) -> str:
+    """The ``base_url=`` argument of the constructor call opening at *paren*, or ``""``."""
+    args = call_arguments(source, paren) or []
+    for arg in args:
+        m = re.match(r"base_url\s*=\s*(.+)", arg, re.DOTALL)
+        if m:
+            return m.group(1).strip()
+    return ""
 
 
 def bound_clients(
-    content: str, suffix: str, symbols: Sequence[IndexedSymbol]
-) -> list[tuple[str, str, int, int]]:
-    """``(var, library, from_line, to_line)`` for each HTTP client instance bound.
+    content: str, suffix: str, symbols: Sequence[IndexedSymbol], source: str | None = None
+) -> list[BoundClient]:
+    """Each HTTP client instance bound in *content*, with the scope it holds in.
 
     Python's dominant client shape binds the client to a variable
     (``async with httpx.AsyncClient() as http``) and calls the endpoint through
@@ -191,10 +257,15 @@ def bound_clients(
     *attribute* binding (``self._client = httpx.Client()``) is file-scoped
     instead, since it is assigned in one method to be read from others.
 
-    Empty for a language with no entry, like the sink tables.
+    *content* is the text with string bodies blanked, so a client named in prose
+    binds nothing; *source* is the same text with them kept, where the
+    constructor's ``base_url=`` is read. Empty for a language with no entry,
+    like the sink tables.
     """
     if suffix.lower() != ".py":
         return []
+    imported = _imported_client_classes(content)
+    assign_re, with_re = _client_patterns(tuple(sorted(imported)))
     # Narrowest span first, so the first hit is the tightest enclosing scope.
     spans = sorted(
         ((s.start_line, s.end_line) for s in symbols if s.kind in _CALLABLE_KINDS),
@@ -210,12 +281,14 @@ def bound_clients(
                 return start, end
         return whole_file  # module level: the client really is file-wide
 
-    out: list[tuple[str, str, int, int]] = []
-    for regex in (_PY_CLIENT_ASSIGN_RE, _PY_CLIENT_WITH_RE):
+    out: list[BoundClient] = []
+    for regex in (assign_re, with_re):
         for m in regex.finditer(content):
             line = content.count("\n", 0, m.start()) + 1
             start, end = scope(line, m.groupdict().get("attr") is not None)
-            out.append((m.group("var"), m.group("lib"), start, end))
+            library = m.group("lib") or imported[m.group("bare")]
+            base = _base_argument(source, m.start("open")) if source is not None else ""
+            out.append(BoundClient(m.group("var"), library, start, end, base))
     return out
 
 

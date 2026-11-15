@@ -75,13 +75,13 @@ def test_score_clamps_floor_at_one():
 
 
 def test_category_curve_applied():
-    # Two structural-complexity hits, 3.68 weighted, saturate to 2.928.
+    # Two structural-complexity hits, 4.94 weighted, saturate to 3.650.
     results = [
-        _r("low_cohesion", Severity.CRITICAL),  # 2.0 x 0.5
+        _r("god_class", Severity.CRITICAL),  # 2.0 x 1.13
         _r("nested_complexity", Severity.CRITICAL),  # 2.0 x 1.34
     ]
     scores, _ = score_file(results)
-    assert round(scores["defect"], 3) == 7.072
+    assert round(scores["defect"], 3) == 6.35
 
 
 def test_compute_kpis_uses_nloc_weighting():

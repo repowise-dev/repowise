@@ -42,7 +42,7 @@ from repowise.core.ci.summary import FAIL, PASS, WARN, GateSummary, SummaryFindi
 from repowise.core.support_paths import DOC_EXTENSIONS
 
 from .change_risk.features import GIT_TIMEOUT_SECONDS, _git, revspec_head, split_revspec
-from .changed_lines import DIFF_ARGS, parse_unified_diff
+from .changed_lines import DIFF_ARGS, parse_unified_diff, split_commit_patches
 from .git_cat_file import cat_file_batch
 from .secret_allowlist import secret_path_allowlist
 from .security_scan import (
@@ -560,13 +560,10 @@ def _history_secrets(
     cut = _shallow_boundary(root, log_range)
     args = ["log", "--no-merges", "--reverse", "-p", "--unified=0"]
     args += [*DIFF_ARGS, "--format=%x00%H", *log_range, "--"]
-    raw = _git(args, root)
-    chunks = raw.split("\0")[1:]
+    commits = split_commit_patches(_git(args, root))
     rows: list[dict] = []
     skipped: set[tuple[str, str]] = set()
-    for chunk in chunks:
-        sha, _, diff = chunk.partition("\n")
-        sha = sha.strip()
+    for sha, diff in commits:
         if sha in cut:
             raise ShallowHistoryError(
                 f"Commit {sha[:7]} in this change has its parents cut off by a shallow "
@@ -591,7 +588,7 @@ def _history_secrets(
             for row in scoped:
                 row["commit"] = sha
                 rows.append(row)
-    return rows, len(chunks), skipped
+    return rows, len(commits), skipped
 
 
 def _shallow_boundary(root: str, log_range: Sequence[str]) -> frozenset[str]:

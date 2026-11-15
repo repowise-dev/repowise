@@ -352,14 +352,13 @@ def test_display_is_a_name_not_a_bare_path():
         assert "/" not in g.display, f"{g.display} is a path, not a name"
 
 
-def test_layer_labels_from_the_kg_reach_the_title():
+def test_layer_labels_from_the_kg_never_reach_the_title():
     """The KG layer map is read when present and absent-safe when not.
 
-    The rescue only fires on a name too short to say anything, so the fixture is
-    a single directory whose path yields one word (``gateway`` -> "Gateway").
-    A group that already yields two words needs no prefix and would show the
-    feature nothing either way — the earlier fixture only exercised this because
-    a grouping bug had swept its files into a one-word "root" page.
+    It steers merging and stamps the page's layer; it is not part of the name.
+    A layer prefix ("Presentation Gateway", "Application Flask") repeated what
+    the tree's layer badge already says and pushed the subject to the second
+    word, so a one-word directory keeps its one-word name.
     """
     gateway = [f"packages/app/src/gateway/f{i}.py" for i in range(8)]
     paths = gateway + [f"packages/app/src/core/analysis/f{i}.py" for i in range(8)] + ["setup.py"]
@@ -377,16 +376,9 @@ def test_layer_labels_from_the_kg_reach_the_title():
     # Membership is unchanged by the layer signal: it steers merging of
     # adjacent runs, it never forces a split.
     assert [g.structural_key for g in with_kg] == [g.structural_key for g in without_kg]
-    assert all(g.display for g in with_kg)
-
-    # The label itself has to reach a title, or the map is being read and
-    # thrown away. Titles differ only where the layer applies: the prefix
-    # exists to rescue a name too short to say anything, so groups whose
-    # paths already yield two words are identical either way.
     titled = [g.display for g in with_kg]
-    untitled = [g.display for g in without_kg]
-    assert titled != untitled, titled
-    assert any("Presentation" in t for t in titled), titled
+    assert titled == [g.display for g in without_kg]
+    assert "Gateway" in titled, titled
 
 
 # ---------------------------------------------------------------------------
@@ -569,7 +561,7 @@ def test_a_chapter_is_named_for_the_directory_it_heads():
 
     out = {g.key: g.display for g in retitle_chapters(groups)}
 
-    assert out["p/ingestion"] == "Ingestion Overview"
+    assert out["p/ingestion"] == "Ingestion"
     # A leaf is never touched: the model names those well.
     assert out["p/ingestion/languages"] == "Language Catalog"
 
@@ -591,8 +583,8 @@ def test_a_chapter_skips_container_and_route_segments():
 
     out = {g.key: g.display for g in retitle_chapters(groups)}
 
-    assert out["packages/ui/src"] == "Ui Overview"
-    assert out["app/repos/[id]"] == "Repos Overview"
+    assert out["packages/ui/src"] == "UI"
+    assert out["app/repos/[id]"] == "Repos"
 
 
 def test_a_chapter_spells_its_subject_the_way_the_repository_does():
@@ -613,7 +605,7 @@ def test_a_chapter_spells_its_subject_the_way_the_repository_does():
         ),
     ]
 
-    assert {g.key: g.display for g in retitle_chapters(groups)}["packages/ui/src"] == "UI Overview"
+    assert {g.key: g.display for g in retitle_chapters(groups)}["packages/ui/src"] == "UI"
 
 
 def test_a_chapter_takes_its_casing_only_from_a_deliberate_spelling():
@@ -630,7 +622,7 @@ def test_a_chapter_takes_its_casing_only_from_a_deliberate_spelling():
         ),
     ]
 
-    assert {g.key: g.display for g in retitle_chapters(groups)}["p/core"] == "Core Overview"
+    assert {g.key: g.display for g in retitle_chapters(groups)}["p/core"] == "Core"
 
 
 def test_a_chapter_does_not_become_a_case_variant_of_a_leaf():
@@ -677,9 +669,9 @@ def test_a_chapter_is_named_from_the_children_the_tree_puts_under_it():
 
     out = {g.key: g.display for g in retitle_chapters(groups)}
 
-    assert out["p/svc"] == "Svc Overview"
+    assert out["p/svc"] == "Svc"
     # "API" comes from the grandchild's title, which is what the tree nests here.
-    assert out["p/svc/api"] == "API Overview"
+    assert out["p/svc/api"] == "API"
 
 
 def test_chapter_skips_near_repo_wide_parent():
@@ -721,17 +713,17 @@ def test_chapters_never_double_claim_a_file():
 
 
 def test_a_chapter_inside_a_same_named_chapter_is_qualified_readably():
-    """No container ("Src Core Overview"), no repeated word ("Web Web Overview")."""
+    """No container ("Src Core"), no repeated word ("Web Web")."""
     from repowise.core.generation.concept_tree.naming import chapter_titles
 
     out = chapter_titles(
         {"p/web/src/lib/chat/a.ts": "Chat State"},
         ["packages/core", "packages/core/src/repowise/core", "p/web", "p/web/src/lib", "p/ui", "p/ui/src"],
     )
-    assert out["packages/core"] == "Core Overview"
-    assert out["packages/core/src/repowise/core"] == "Repowise Core Overview"
-    assert out["p/web/src/lib"] == "Web Library Overview"
-    assert out["p/ui/src"] == "Ui Source Overview"
+    assert out["packages/core"] == "Core"
+    assert out["packages/core/src/repowise/core"] == "Repowise Core"
+    assert out["p/web/src/lib"] == "Web Library"
+    assert out["p/ui/src"] == "UI Source"
 
 
 def test_a_chapter_is_spelled_the_way_the_leaf_titles_spell_it():
@@ -743,7 +735,7 @@ def test_a_chapter_is_spelled_the_way_the_leaf_titles_spell_it():
         "packages/api-client/src": "API Client Operations",
     }
     out = chapter_titles(leaves, ["packages/vscode", "packages/api-client"])
-    assert out == {"packages/vscode": "VS Code Overview", "packages/api-client": "API Client Overview"}
+    assert out == {"packages/vscode": "VS Code", "packages/api-client": "API Client"}
 
 
 def test_a_page_gathered_from_siblings_is_titled_after_them_without_a_model():
@@ -757,30 +749,39 @@ def test_a_page_gathered_from_siblings_is_titled_after_them_without_a_model():
         dirs=["srv/_savings", "srv/tool_answer", "srv/tool_health"],
         target_path="srv/_savings",
     )
-    assert deterministic_title(mixed) == "Tool Answer and Tool Health"
+    # Never two names glued with "and": the largest run names the page.
+    assert deterministic_title(mixed) == "Tool Answer"
 
     dominated = ConceptGroup(
         members=["srv/_savings/s.py", *answer],
         dirs=["srv/_savings", "srv/tool_answer"],
         target_path="srv/_savings",
     )
-    assert deterministic_title(dominated) == "Srv Tool Answer"
+    assert deterministic_title(dominated) == "Tool Answer"
 
 
-def test_a_leaf_title_takes_a_container_qualifier_in_front():
-    """Only an "... Overview" title has a slot before its last word."""
+def test_a_title_takes_its_container_qualifier_after_it():
     from repowise.core.generation.concept_tree.naming import disambiguate_titles
 
     assert disambiguate_titles([("Auth Handler", "a/src"), ("Auth Handler", "b/src")]) == [
         "Auth Handler",
-        "Source Auth Handler",
+        "Auth Handler Source",
     ]
+
+
+def test_a_collision_is_never_resolved_with_a_path():
+    """A third same-named page gets a number, never "(a/b/c)" in a nav label."""
+    from repowise.core.generation.concept_tree.naming import disambiguate_titles
+
+    out = disambiguate_titles([("Health", "x/health"), ("Health", "y/health"), ("Health", "z/health")])
+    assert len({t.lower() for t in out}) == 3, out
+    assert not any("(" in t or "/" in t for t in out), out
 
 
 def test_a_root_container_chapter_is_named_for_what_it_holds():
     from repowise.core.generation.concept_tree.naming import chapter_title
 
-    assert chapter_title("src") == "Source Overview"
+    assert chapter_title("src") == "Source"
 
 
 def test_sibling_runs_count_where_a_gathered_page_files_sit():

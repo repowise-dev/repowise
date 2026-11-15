@@ -464,6 +464,30 @@ def test_a_generated_file_is_excluded_by_reason(make_repo):
     assert not delta.is_clean
 
 
+def test_a_docstring_that_mentions_generated_code_is_still_analysed(make_repo):
+    doc = '"""Readers for protobuf output.\n\nSkips GENERATED CODE and DO NOT EDIT banners.\n"""\n'
+    repo = make_repo()
+    repo.commit("seed", {"reader.py": doc + "x = 1\n"})
+    repo.commit("edit", {"reader.py": doc + python_complex("tangle", 16)})
+
+    delta = compare(repo)
+
+    assert "reader.py" not in delta.skipped
+    assert delta.introduced_total >= 1
+
+
+def test_a_banner_below_a_license_is_excluded(make_repo):
+    head = "# Copyright 2024 Example\n# License: MIT\n# AUTO-GENERATED FILE. DO NOT EDIT.\n"
+    repo = make_repo()
+    repo.commit("seed", {"gen.py": head + "x = 1\n"})
+    repo.commit("edit", {"gen.py": head + python_complex("tangle", 16)})
+
+    delta = compare(repo)
+
+    assert delta.skipped.get("gen.py") == "generated"
+    assert delta.findings == []
+
+
 def test_a_bad_revspec_is_an_explicit_unsupported_range(make_repo):
     repo = make_repo()
     repo.commit("seed", {"app.py": "x = 1\n"})

@@ -106,3 +106,10 @@ def test_a_path_leaving_the_checkout_is_never_cited(tmp_path: Path) -> None:
     got = answer_files("See ../outside.py.", [_hit("a.py")], [], ["a.py"], root)
     assert got.citations == ["a.py"]
     assert not got.named
+
+
+def test_a_top_symbol_page_counts_as_its_file() -> None:
+    answer = f"`_projected_get_answer` is defined in {CASCADE}."
+    got = answer_files(answer, [_hit(CASCADE)], [_hit(CASCADE)], [CASCADE], None)
+    assert got.drops_top_hit([_hit(f"{CASCADE}::get_answer")], answer) is None
+    assert got.drops_top_hit([_hit(f"{DETECTOR}::detect")], answer) == CASCADE

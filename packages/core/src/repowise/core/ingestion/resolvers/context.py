@@ -55,6 +55,8 @@ class ResolverContext:
     # Where pytest collects (``pytest_roots.PytestRoots``), from the traverser's
     # config pass. None when the caller did not walk the repo: collection unknown.
     pytest_roots: Any | None = field(default=None, repr=False)
+    # Per-file framework scan results (``framework_edges.scan_cache.ScanCache``).
+    framework_scans: Any | None = field(default=None, repr=False)
     # Lazy per-language indexes are stashed via getattr/setattr (e.g.
     # ``_php_psr4_map``, ``_composer_manifests``, ``_ts_workspace_map``,
     # ``_kotlin_index``, ``_ruby_rails_index``, ``_swift_targets``,

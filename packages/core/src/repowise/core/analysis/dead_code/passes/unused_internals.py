@@ -63,9 +63,12 @@ class UnusedInternalPass:
                 continue
 
             # A private helper imported by name elsewhere (a dispatch table
-            # entry) is referenced even with no ``calls`` edge.
+            # entry) is referenced even with no ``calls`` edge. A Pascal
+            # ``uses`` wildcard never reaches a unit's private routines: they
+            # are not in its interface.
+            wildcard_rescues = node_data.get("language") != "pascal"
             if any(
-                sym_name in imported or "*" in imported
+                sym_name in imported or ("*" in imported and wildcard_rescues)
                 for imported in self.ctx._imported_names_by_edge(file_path)
             ):
                 continue

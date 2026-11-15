@@ -2,12 +2,17 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, RefObject } from "react";
-import { formatScore } from "@repowise-dev/types/health";
+import {
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_MIN,
+  HEALTH_BAND_ORDER,
+  formatScore,
+} from "@repowise-dev/types/health";
 
 import { EmptyState } from "../shared/empty-state";
 import { seriesColor } from "../shared/series";
 import { formatDate } from "../lib/format";
-import { HEALTH_MARK_BANDS, deltaColor, formatDelta } from "./tokens";
+import { deltaColor, formatDelta, healthBandColor } from "./tokens";
 
 export interface TrendSeriesPoint {
   taken_at: string | null;
@@ -61,16 +66,17 @@ const LINES: Record<LineKey, Series> = {
   },
 };
 
-/** The canonical three bands, top to bottom, as faint grounds behind the lines. */
-const BANDS = HEALTH_MARK_BANDS.map((b, i) => ({
-  label: b.label,
-  from: i === 0 ? 10 : HEALTH_MARK_BANDS[i - 1]!.min,
-  to: b.min,
-  fill: b.color,
+/** The canonical five bands, top to bottom, as faint grounds behind the lines. */
+const BANDS = [...HEALTH_BAND_ORDER].reverse().map((band, i, top) => ({
+  label: HEALTH_BAND_LABEL[band],
+  from: i === 0 ? 10 : HEALTH_BAND_MIN[top[i - 1]!],
+  to: HEALTH_BAND_MIN[band],
+  fill: healthBandColor(band),
 }));
 
 // The right pad holds the band names, outside the lines they would collide with.
-const PAD = { l: 28, r: 56, t: 10, b: 24 };
+// Wide enough for "Needs work" at the 10px label size.
+const PAD = { l: 28, r: 64, t: 10, b: 24 };
 /** Until the container is measured (and in tests, which have no layout). */
 const FALLBACK_WIDTH = 720;
 
@@ -176,7 +182,7 @@ function geometry(history: TrendSeriesPoint[], width: number, height: number): G
 
 const MICRO = { fontSize: 10, fill: "var(--color-text-tertiary)" } as const;
 
-/** The three health bands, named in the right margin. */
+/** The five health bands, named in the right margin. */
 function Bands({ g }: { g: Geometry }) {
   return BANDS.map((b) => (
     <g key={b.label}>

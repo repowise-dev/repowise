@@ -99,3 +99,4 @@ export {
 export { SERIES, SERIES_TAIL, seriesColor, commitCategoryColor } from "./series";
 export { MoreFilters, ActiveFilterChips, type ActiveFilterChip } from "./more-filters";
 export { FilePath, SlashBreaks, type FilePathMode, type FilePathProps } from "./file-path";
+export { RelativeTime, type RelativeTimeProps } from "./relative-time";

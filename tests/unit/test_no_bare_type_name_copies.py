@@ -94,8 +94,9 @@ _KNOWN: dict[str, int] = {
     # Reads the head to decide whether taking a bare name is safe at all: a
     # qualifier that is a type rather than a package must not be discarded.
     # It guards the shared helper and then calls it, so it asks the opposite
-    # question.
-    _PREFIX + "languages/receiver_types.py": 1,
+    # question. The second, in `_builtin_type_name`, splits a C# array's rank
+    # brackets off to keep them (`Item[,]` is not `Item[]`), not to drop them.
+    _PREFIX + "languages/receiver_types.py": 2,
     # Normalises the method name out of `#selector(Type.method)`. The last
     # segment here is a member, not a type.
     _PREFIX + "dynamic_hints/swift.py": 1,

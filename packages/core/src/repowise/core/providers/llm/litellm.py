@@ -27,6 +27,7 @@ import structlog
 from tenacity import RetryError, retry
 
 from repowise.core.providers.llm.base import (
+    LOCAL_CONTEXT_WINDOW,
     BaseProvider,
     ChatStreamEvent,
     GeneratedResponse,
@@ -330,6 +331,16 @@ class LiteLLMProvider(BaseProvider):
 
     def supported_reasoning_modes(self) -> tuple[ReasoningMode, ...]:
         return ("auto", *_litellm_supported_reasoning_modes(self._model))
+
+    def context_window(self) -> int | None:
+        # A local backend behind LiteLLM does not report its window either.
+        from repowise.core.generation.cost_tracker import is_local_model
+        from repowise.core.providers.llm.openai import _is_loopback_url
+
+        local = is_local_model(self._model) or bool(
+            self._api_base and _is_loopback_url(self._api_base)
+        )
+        return LOCAL_CONTEXT_WINDOW if local else None
 
     def available_model_options(self) -> tuple[ProviderModelOption, ...]:
         return _litellm_model_options(self._model)

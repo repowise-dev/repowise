@@ -43,6 +43,11 @@ does not define (Codex prompt frontmatter is `description` and `argument-hint`;
 Write a slash-command reference as `{{cmd:risk}}`. Claude Code renders
 `/repowise:risk`, Codex renders `/prompts:repowise-risk`.
 
+Text only one host should read goes between `{{only:codex}}` and `{{end}}` (or
+`{{only:claude-code}}`), inline or on lines of their own. Codex is listed the
+core MCP tools by default, so where a skill names another tool, the Codex
+text gives its `repowise` CLI form, or says how to list the tool.
+
 ## Where the Codex commands go
 
 Not into `plugins/codex/`. A Codex plugin manifest has no slot for commands: it

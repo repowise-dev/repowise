@@ -84,7 +84,8 @@ def test_many_large_bodies_are_bounded_with_the_top_file_first(tmp_path: Path) -
         assert not any(key.endswith(("_total", "_emitted")) for key in row)
     # The rest shrink to their signature line once the budget is spent.
     assert [len(row["source"].splitlines()) for row in bodies[1:]] == [1]
-    assert out["_meta"]["projection"]["recovery"]["arguments"] == {"include": ["evidence"]}
+    # A keyless reply has one shape, so there is no expanded call to point at.
+    assert "recovery" not in out["_meta"].get("projection", {})
 
 
 @pytest.mark.parametrize("index", range(len(_SHAPES)))
@@ -126,7 +127,7 @@ def test_a_small_keyless_payload_is_byte_identical(tmp_path: Path, monkeypatch) 
 
 @pytest.mark.parametrize(
     ("degraded", "include"),
-    [(None, None), ("synthesis-failed", None), ("no-llm-provider", ["evidence"])],
+    [(None, None), ("synthesis-failed", None), ("synthesis-failed", ["evidence"])],
 )
 def test_keyed_and_expanded_bodies_are_untouched(
     tmp_path: Path, monkeypatch, degraded: str | None, include: list[str] | None
@@ -143,6 +144,18 @@ def test_keyed_and_expanded_bodies_are_untouched(
 
     assert json.dumps(served, sort_keys=True) == json.dumps(unbudgeted, sort_keys=True)
     assert all("source_lines" not in row for row in served.get("symbol_bodies") or [])
+
+
+def test_keyless_evidence_is_the_default_shape(tmp_path: Path) -> None:
+    raw = _raw(tmp_path)
+
+    served = project_answer_payload(
+        copy.deepcopy(raw), question="q", include=["evidence"], repo_root=tmp_path
+    )
+    default = project_answer_payload(copy.deepcopy(raw), question="q", repo_root=tmp_path)
+
+    assert served["_meta"].pop("ignored_arguments") == {"include": ["evidence"]}
+    assert json.dumps(served, sort_keys=True) == json.dumps(default, sort_keys=True)
 
 
 def test_a_form_feed_inside_a_body_does_not_shift_its_lines(tmp_path: Path) -> None:

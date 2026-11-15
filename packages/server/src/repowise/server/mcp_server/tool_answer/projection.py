@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from repowise.server.mcp_server.tool_answer.config import (
     _CANDIDATE_FILES_MAX,
     _LARGE_FILE_BYTES,
 )
+from repowise.server.mcp_server.tool_answer.pointers import attach_pointers
 from repowise.server.mcp_server.tool_answer.symbols import attach_truncation_contract
 from repowise.server.mcp_server.tool_answer.withheld import _parse_continuation
 
@@ -293,7 +295,14 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     reason = payload.get("degraded")
     if not reason:
         return
-    if payload.get("symbol_bodies") and payload.get("grounding"):
+    if payload.get("call_path"):
+        payload["answer"] = (
+            f"Synthesis is unavailable ({reason}). call_path: the calls "
+            f"{payload.get('call_path_from')} in source order, one per row as caller "
+            "file:call line -> callee file:definition line, shipped code only; a call "
+            "may sit on a branch that does not always run."
+        )
+    elif payload.get("symbol_bodies") and payload.get("grounding"):
         payload["answer"] = (
             f"Synthesis is unavailable ({reason}), but symbol_bodies contains live source "
             "for the named code. Use that evidence directly."
@@ -406,7 +415,8 @@ def _first_guess(payload: dict[str, Any]) -> dict[str, Any] | None:
 def _slim_best_guesses(payload: dict[str, Any], facts: dict[str, Any]) -> bool:
     """Swap each low-confidence guess's page excerpt for compact facts about its file.
 
-    Rows, keys and order stay; ``excerpt`` returns with ``include=["evidence"]``.
+    Rows, keys and order stay; ``excerpt`` returns with ``include=["evidence"]``
+    on a keyed reply.
     The row's own ``why_relevant`` and ``score`` win: they come from the same hit.
     Returns whether there were rows to slim, so sizes are stamped on those only.
     """
@@ -538,6 +548,7 @@ def _ranked_list_only(payload: dict[str, Any]) -> bool:
         and payload.get("retrieval_quality") == "weak"
         and payload.get("confidence") == "low"
         and not payload.get("symbol_bodies")
+        and not payload.get("call_path")
         and _first_guess(payload) is not None
     )
 
@@ -547,7 +558,7 @@ def _serve_ranked_list(payload: dict[str, Any]) -> None:
 
     A rationale row from the top guess, or one opening with its file's
     ``why_relevant``, adds nothing; one other row survives, shortened.
-    ``include=["evidence"]`` restores everything.
+    A keyless reply has no expanded shape, so this list is the whole reply.
     """
     top = _nav_path(_first_guess(payload))
     why = {
@@ -715,7 +726,8 @@ def _record_reductions(
         payload.setdefault("_meta", {}).setdefault("reductions", []).append(
             {"field": "evidence", "total": hidden, "emitted": shown, "reason": reason}
         )
-    if reduced and not expanded:
+    # A keyless reply has no expanded shape to recover.
+    if reduced and not expanded and payload.get("degraded") != "no-llm-provider":
         projection = payload.setdefault("_meta", {}).setdefault("projection", {})
         # The caller already holds the question; restating a long one costs
         # tokens on every reduced reply. Short scope and repo stay, so a caller
@@ -755,7 +767,12 @@ def _project(
         for key in _COLLECTIONS
     }
     _deduplicate(payload)
-    expanded = "evidence" in set(include or [])
+    asked = set(include or [])
+    # Keyless replies have one shape: with no prose to check, the expanded rows
+    # are long excerpts of ranked files that stay in the caller's context, and
+    # every file they name is already a guess or a citation to Read.
+    keyless = payload.get("degraded") == "no-llm-provider"
+    expanded = "evidence" in asked and not keyless
     facts = payload.pop("_candidate_file_facts", None)
     slimmed = False
     if not expanded:
@@ -776,9 +793,11 @@ def _project(
         payload, totals, scope=scope, repo=repo, expanded=expanded, ranked=ranked,
         bodies_cut=bodies_cut,
     )
-    if "diagnostics" not in set(include or []):
+    if "diagnostics" not in asked:
         payload.pop("retrieval_quality", None)
-    unknown = sorted(set(include or []) - _INCLUDES)
+    unknown = sorted(asked - _INCLUDES)
+    if keyless and "evidence" in asked:
+        unknown.append("evidence")
     if unknown:
         payload.setdefault("_meta", {})["ignored_arguments"] = {"include": unknown}
     return payload, slimmed, ranked
@@ -796,10 +815,10 @@ def _served_paths(payload: dict[str, Any]) -> list[str]:
 def _hint_with_update_pointer(
     hint: Any, confidence: Any, freshness: dict[str, Any]
 ) -> Any:
-    """Add the update pointer to a low-confidence hint served off a behind index."""
+    """Add the behind-index fact to a low-confidence hint."""
     if freshness.get("index_behind") is not True or confidence != "low":
         return hint
-    # A stale_warning already names the command, so don't say it twice.
+    # A stale_warning already states the index commit, so don't say it twice.
     if freshness.get("stale_warning"):
         return hint
     from repowise.server.mcp_server._meta import INDEX_BEHIND_LOW_CONFIDENCE_HINT
@@ -817,20 +836,12 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
     try:
         from repowise.core.persistence.database import get_session
         from repowise.server.mcp_server._helpers import _get_repo, _resolve_repo_context
-        from repowise.server.mcp_server._index_state import index_state_key
         from repowise.server.mcp_server._meta import freshness_from_repo
-        from repowise.server.mcp_server._scope import unrelated_scope_hint
 
         served = _served_paths(payload)
         ctx = await _resolve_repo_context(repo)
         async with get_session(ctx.session_factory) as session:
             repository = await _get_repo(session)
-            scope_hint = await unrelated_scope_hint(
-                session,
-                repository.id,
-                [path.split("::", 1)[0] for path in served],
-                cache_key=f"{repository.id}:{index_state_key(repository)}",
-            )
         freshness = freshness_from_repo(repository, targets=served)
     except Exception:
         return
@@ -842,12 +853,11 @@ async def _refresh_freshness(payload: dict[str, Any], repo: str | None) -> None:
         "index_behind",
         "stale_warning",
         "working_tree_dirty",
+        # Retired; a cached payload may still carry it.
         "scope_hint",
     ):
         meta.pop(key, None)
     meta.update(freshness)
-    if scope_hint:
-        meta["scope_hint"] = scope_hint
     # An error reply carries confidence "low" too, and its fault is not the
     # index, so the pointer would only misdirect there.
     try:
@@ -875,11 +885,15 @@ def _file_size(root: Path, path: str) -> tuple[int | None, int] | None:
         abs_path = (root / path).resolve()
         # An index row is not a trust boundary; refuse anything outside the repo.
         abs_path.relative_to(root.resolve())
+        from repowise.core.ingestion.document_extractors import is_extracted_document
+
         if not abs_path.is_file():
             return None
         size = abs_path.stat().st_size
         if size > _LINE_COUNT_MAX_BYTES:
             return None, size
+        if is_extracted_document(root / path):
+            return None
         lines, last = 0, b""
         with abs_path.open("rb") as handle:
             while chunk := handle.read(65536):
@@ -992,12 +1006,34 @@ def projected_answer(fn: Callable[..., Any]) -> Callable[..., Any]:
             raw, question=question, scope=scope, repo=repo, include=include, repo_root=root
         )
         await _refresh_freshness(payload, repo)
+        # The lean projection may drop flow_path; the raw reply still says it walked a chain.
+        await attach_pointers(payload, repo, question, chain=bool(raw.get("flow_path")))
         if slimmed:
             await _refresh_file_sizes(payload, repo, ranked=ranked)
         _stamp_completeness(payload)
+        await _declare_replaced_reads(payload, root, repo)
         return payload
 
     return _wrapped
+
+
+async def _declare_replaced_reads(
+    payload: dict[str, Any], root: Path | None, repo: str | None
+) -> None:
+    """Credit what this reply served with the real Read cost of its files. Never raises."""
+    from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.counterfactual import answer_replaced_tokens
+    from repowise.server.mcp_server._savings.reads import file_read_tokens
+
+    if payload.get("error"):
+        return
+    try:
+        root = root or await _resolve_root(repo)
+        read_cost = (lambda p: file_read_tokens(root, p)) if root is not None else None
+        tokens = await asyncio.to_thread(answer_replaced_tokens, payload, read_cost)
+    except Exception:  # savings accounting never breaks a tool call
+        return
+    declare_replaced(payload, tokens)
 
 
 __all__ = ["project_answer_payload", "projected_answer"]

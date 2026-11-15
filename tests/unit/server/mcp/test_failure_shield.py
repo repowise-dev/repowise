@@ -50,6 +50,30 @@ async def test_uninitialized_repo_is_success_shaped(empty_mcp):
 
 
 @pytest.mark.asyncio
+async def test_overview_of_an_unindexed_repo_is_an_answer_not_an_error(empty_mcp):
+    """Orientation's true answer here is "not indexed, run init": an ok result."""
+    from repowise.server.mcp_server import get_overview
+    from repowise.server.mcp_server._savings.wrapper import _telemetry_properties
+
+    result = await shield(get_overview)()
+
+    assert "error" not in result
+    assert "no repowise index" in result["content_md"].lower()
+    assert "repowise init --yes --no-prose" in result["remedy"]
+    assert "file-reading and searching tools" in result["guidance"]
+    assert _telemetry_properties("get_overview", result, 1)["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_overview_of_an_unknown_repo_stays_an_error(setup_mcp):
+    from repowise.server.mcp_server import get_overview
+
+    result = await shield(get_overview)(repo="no-such-repo")
+
+    assert "no-such-repo" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_unknown_repo_alias_is_success_shaped(setup_mcp):
     from repowise.server.mcp_server import get_symbol
 
@@ -160,8 +184,8 @@ async def test_a_server_older_than_the_checkout_says_restart_not_give_up():
 
     result = await shield(stale_server_tool)()
 
-    assert "older repowise code than this checkout" in result["error"]
-    assert "Restart the MCP server" in result["error"]
+    assert "older repowise code than the install" in result["error"]
+    assert "restarting the server" in result["error"]
     assert "user" in result["remedy"]
     assert "guidance" not in result
 
@@ -175,7 +199,7 @@ async def test_a_removed_repowise_module_is_also_a_stale_server():
 
     result = await shield(stale_server_tool)()
 
-    assert "Restart the MCP server" in result["error"]
+    assert "restarting the server" in result["error"]
 
 
 @pytest.mark.asyncio

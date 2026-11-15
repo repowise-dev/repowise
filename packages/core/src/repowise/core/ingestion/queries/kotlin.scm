@@ -115,6 +115,26 @@
   ] @call.arguments
 ) @call.site
 
+; Infix call: ``a shr 4`` is ``a.shr(4)``, the right operand its one argument.
+; The left operand is taken as the member pattern takes a receiver; any other
+; expression there (``a shr 4 and 0xf`` for ``and``) types nothing, so that
+; call is left out.
+(infix_expression
+  .
+  [
+    (identifier) @call.receiver
+    (unary_expression (identifier) @call.receiver)
+    (this_expression) @call.receiver
+    (string_literal) @call.receiver
+    (multiline_string_literal) @call.receiver
+  ]
+  .
+  (identifier) @call.target
+  .
+  (_) @call.arguments
+  .
+) @call.site
+
 ; Call chained on another call: a.b().c(args), a?.b()?.c(args), B.Builder().c().
 ; The inner call is captured whole as ``@call.receiver_call``; the grammar
 ; names no fields on either node, so ``parser._kotlin_call_receiver`` reads its

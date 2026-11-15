@@ -32,9 +32,8 @@ def limit_to_top_pagerank(
     cannot drift between two copies of the same truncation.
     """
     try:
-        import networkx as nx
-
-        ranks = nx.pagerank(graph_builder.graph())
+        # The builder's file PageRank, which skips doc links and co-change edges.
+        ranks = graph_builder.pagerank()
     except Exception:
         ranks = {}
     return sorted(

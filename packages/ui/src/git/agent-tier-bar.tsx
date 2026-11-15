@@ -1,6 +1,7 @@
 "use client";
 
 import { ProportionBar } from "../shared/proportion-bar";
+import { formatNumber } from "../lib/format";
 
 /**
  * Canonical autonomy-tier labels. The same numeric tiers surface on file
@@ -37,7 +38,7 @@ export function AgentTierBar({ tierCounts, className }: AgentTierBarProps) {
           key: tier,
           label: AGENT_TIER_LABELS[tier] ?? `tier ${tier}`,
           value: count,
-          detail: count.toLocaleString(),
+          detail: formatNumber(count),
         };
       })}
     />

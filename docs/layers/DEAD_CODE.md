@@ -197,11 +197,14 @@ against the cross-repo data before the confidence floor and the tiers:
   at the file, confidence is cut to 30% of its value and the `cross_repo_note`
   names the consumer.
 - Otherwise, if the file changes together with files in other repos (git
-  co-change), or the finding is an unused export and another repo depends on
-  this one as a package, the finding keeps its confidence and gains a note.
-  The note names a package dependent only when its link covers the file's
-  package (or records no manifest). These links say a consumer may exist, not
-  that one does.
+  co-change), or the finding is an unused export and another repo's package
+  imports reach its file, the finding keeps its confidence and gains a note.
+  A package import reaches the module or subpath it names and the files that
+  module's re-exports forward the imported names to. An export no import
+  reaches keeps its safety: the dependent cannot import it by package name.
+  Where the workspace has no recorded reach (an overlay from before it was
+  recorded, or an import it could not place), every file inside the package
+  directory counts. These links say a consumer may exist, not that one does.
 
 A finding with a note is never safe to delete, and a lowered one sits in the
 tier its new confidence names, so one cut below `0.4` is hidden by the default

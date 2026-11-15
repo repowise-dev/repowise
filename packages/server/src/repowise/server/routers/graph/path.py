@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
+from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.server.deps import get_db_session
 from repowise.server.routers.graph._common import with_repo
@@ -33,7 +33,7 @@ async def dependency_path(
     When no direct path exists, returns visual context with nearest common
     ancestors, shared neighbors, and bridge suggestions.
     """
-    # Drop the temporal relation only — the same rule the MCP twin
+    # Drop the non-code relations only (history, prose) — the same rule the MCP twin
     # (`get_dependency_path`) applies, for the same reasons. A ``co_changes``
     # edge records that two files move together in history, so leaving it in
     # makes it a free hop and this endpoint reports a "dependency path" no
@@ -48,7 +48,7 @@ async def dependency_path(
     edge_result = await session.execute(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+            GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
         )
     )
     edges = edge_result.scalars().all()

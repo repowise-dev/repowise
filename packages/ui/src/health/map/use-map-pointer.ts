@@ -16,7 +16,7 @@ import type {
   RefObject,
 } from "react";
 
-import { panByScreen, screenToWorld, zoomAbout } from "../../zoom/camera";
+import { panByScreen, screenToWorld, wheelPixels, zoomAbout } from "../../zoom/camera";
 import { discAt } from "./area-view";
 import { hitTest, type HitGrid } from "./hit-test";
 import type { FieldScene } from "./paint";
@@ -46,13 +46,6 @@ interface Drag extends Point {
 }
 
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
-
-/** Scroll distance in px, whatever unit the device reported it in. */
-function wheelPixels(e: WheelEvent, pageHeight: number): number {
-  if (e.deltaMode === 1) return e.deltaY * 16;
-  if (e.deltaMode === 2) return e.deltaY * pageHeight;
-  return e.deltaY;
-}
 
 /** Hover state, and a setter that only re-renders when the target changes. */
 export function useHover(onHoverFile: ((file: CodeHealthMapFile | null) => void) | undefined) {

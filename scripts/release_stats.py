@@ -29,6 +29,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 STATS_JSON = ROOT / "packages/core/src/repowise/core/upgrade/_data/release_stats.json"
@@ -238,8 +239,11 @@ def _resolve_handles(commits: list[dict[str, str]]) -> dict[str, str | None]:
 
 
 def _prior_commit_counts(handles: list[str], until: str) -> dict[str, int | None]:
+    # A tag date carries an offset such as +05:30; an unescaped "+" reads as a space.
+    since_tag = quote(until, safe="")
+
     def _one(handle: str) -> int | None:
-        out = _gh(f"repos/{GITHUB_REPO}/commits?author={handle}&until={until}&per_page=1", "length")
+        out = _gh(f"repos/{GITHUB_REPO}/commits?author={handle}&until={since_tag}&per_page=1", "length")
         return int(out) if out and out.isdigit() else None
 
     with ThreadPoolExecutor(max_workers=8) as pool:

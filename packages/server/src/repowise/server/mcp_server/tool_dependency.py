@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from repowise.core.analysis.communities import has_community
 from repowise.core.co_change import parse_partners
-from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
+from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
     GitMetadata,
@@ -52,12 +52,14 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
     exclude_spec = _get_exclude_spec(ctx.path)
     for _p in (source, target):
         if is_excluded(_p, exclude_spec):
-            return {"error": f"'{_p}' is excluded by exclude_patterns."}
+            from repowise.server.mcp_server._savings.interaction import error_reply
+
+            return error_reply("not_found", {"error": f"'{_p}' is excluded by exclude_patterns."})
 
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
-        # Drop the temporal relation only. A ``co_changes`` edge records that
+        # Drop the non-code relations only (history, prose). A ``co_changes`` edge records that
         # two files move together in history, so leaving it in makes it a free
         # hop and the tool reports a "dependency path" no code creates.
         #
@@ -70,7 +72,7 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
         edge_result = await session.execute(
             select(GraphEdge).where(
                 GraphEdge.repository_id == repository.id,
-                GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+                GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
             )
         )
         edges = edge_result.scalars().all()

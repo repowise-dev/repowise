@@ -35,6 +35,8 @@ attributes instead.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -91,14 +93,70 @@ def _dir(node: str) -> str:
     return "" if parent == "." else parent
 
 
-def build_cpp_package_files(graph: Any) -> dict[str, list[str]]:
+@dataclass(frozen=True)
+class _DirFacts:
+    """What the sibling rescues read about one directory's C/C++ files."""
+
+    entries: frozenset[str]
+    importers: frozenset[str]
+    importers_by_prefix: dict[str, frozenset[str]]
+
+
+class CppPackageFiles(dict[str, list[str]]):
+    """Directory -> C/C++ files, plus each directory's sibling facts, read once.
+
+    Every importer-less file in a directory asks the same questions about its
+    siblings (an entry point among them? one something depends on?), so
+    answering them per file was quadratic in the directory's size: a
+    1,000-file directory cost a million in-edge scans.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._facts: dict[str, _DirFacts] = {}
+
+    def dir_facts(self, graph: Any, directory: str) -> _DirFacts:
+        facts = self._facts.get(directory)
+        if facts is None:
+            facts = self._facts[directory] = _read_dir_facts(graph, self.get(directory, ()))
+        return facts
+
+
+def _read_dir_facts(graph: Any, members: Iterable[str]) -> _DirFacts:
+    from .file_reachability import has_dependency_importer
+
+    entries: set[str] = set()
+    importers: set[str] = set()
+    by_prefix: dict[str, set[str]] = {}
+    for member in members:
+        if is_reachability_root(graph.nodes.get(member, {})) or _file_defines_entry_function(
+            graph, member
+        ):
+            entries.add(member)
+        elif has_dependency_importer(graph, member):
+            importers.add(member)
+            prefix = _stem_prefix(member)
+            if prefix:
+                by_prefix.setdefault(prefix, set()).add(member)
+    return _DirFacts(
+        entries=frozenset(entries),
+        importers=frozenset(importers),
+        importers_by_prefix={k: frozenset(v) for k, v in by_prefix.items()},
+    )
+
+
+def _has_other(members: frozenset[str], node: str) -> bool:
+    return len(members) > (node in members)
+
+
+def build_cpp_package_files(graph: Any) -> CppPackageFiles:
     """Group every C/C++ file node by directory.
 
     Directory is the closest thing to a "compilation neighborhood" the
     graph can derive without the workspace index — siblings in the same
     directory typically share a CMake / Bazel target.
     """
-    packages: dict[str, list[str]] = {}
+    packages = CppPackageFiles()
     for node in graph.nodes():
         s = str(node)
         if is_cpp_path(s):
@@ -197,42 +255,26 @@ def is_cpp_file_reachable(
     if is_header and _any_defined_symbol_is_used(graph, node):
         return True
 
-    siblings = package_files.get(_dir(node), ())
-    stem_prefix = _stem_prefix(node)
-    has_sibling_with_importer = False
-    has_sibling_entry = False
-    has_conditional_pair = False
-    for sibling in siblings:
-        if sibling == node:
-            continue
-        sib_data = graph.nodes.get(sibling, {})
-        sib_has_importer = has_dependency_importer(graph, sibling)
-        if is_reachability_root(sib_data):
-            has_sibling_entry = True
-            break
-        if _file_defines_entry_function(graph, sibling):
-            has_sibling_entry = True
-            break
-        if sib_has_importer:
-            has_sibling_with_importer = True
-            # Conditional-alt pairing: same directory + shared stem
-            # prefix (``env_posix.cc`` ↔ ``env_windows.cc``,
-            # ``crypto_openssl.cc`` ↔ ``crypto_gnutls.cc``).
-            sib_prefix = _stem_prefix(sibling)
-            if stem_prefix and sib_prefix and sib_prefix == stem_prefix:
-                has_conditional_pair = True
-                break
+    if isinstance(package_files, CppPackageFiles):
+        facts = package_files.dir_facts(graph, _dir(node))
+    else:
+        facts = _read_dir_facts(graph, package_files.get(_dir(node), ()))
 
-    if has_sibling_entry:
+    if _has_other(facts.entries, node):
         # Any sibling is an entry point — we are part of an apps / demo
         # / cmd directory. Treat as live regardless of header/source
         # status; helper files alongside ``main.cc`` are not dead.
         return True
 
-    if is_header and has_sibling_with_importer:
+    if is_header and _has_other(facts.importers, node):
         # Internal header sitting next to its implementation .cc whose
         # importer chain we observed — the header is implicitly part
         # of the same TU.
         return True
 
-    return bool(has_conditional_pair)
+    # Conditional-alt pairing: a sibling something depends on shares this
+    # file's stem prefix (``env_posix.cc`` ↔ ``env_windows.cc``,
+    # ``crypto_openssl.cc`` ↔ ``crypto_gnutls.cc``).
+    stem_prefix = _stem_prefix(node)
+    pair = facts.importers_by_prefix.get(stem_prefix, frozenset()) if stem_prefix else frozenset()
+    return _has_other(pair, node)

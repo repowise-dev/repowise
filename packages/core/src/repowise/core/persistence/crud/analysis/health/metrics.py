@@ -282,17 +282,22 @@ async def backfill_module_attribution(
     return changed
 
 
-async def count_health_files(session: AsyncSession, repository_id: str) -> int:
+async def health_file_paths(session: AsyncSession, repository_id: str) -> set[str]:
     """Code files health read, scored or not, inside the health exclude rules.
 
-    The same population :func:`get_health_metrics` returns, counted without
-    loading the rows.
+    The same population :func:`get_health_metrics` returns, without loading the rows.
     """
     result = await session.execute(
         select(HealthFileMetric.file_path).where(HealthFileMetric.repository_id == repository_id)
     )
     rows = result.all()
-    return len(_filter_excluded_paths(rows, await health_exclude_spec(session, repository_id)))
+    kept = _filter_excluded_paths(rows, await health_exclude_spec(session, repository_id))
+    return {row.file_path for row in kept}
+
+
+async def count_health_files(session: AsyncSession, repository_id: str) -> int:
+    """How many files :func:`health_file_paths` names."""
+    return len(await health_file_paths(session, repository_id))
 
 
 async def get_health_metrics(

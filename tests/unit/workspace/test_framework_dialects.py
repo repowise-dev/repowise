@@ -474,3 +474,118 @@ async def _index_of(repo: Path, glob: str, language: str) -> Any:
             sym.file_path = rel
         by_file[rel] = list(pf.symbols)
     return await make_repo_index(repo, by_file, alias="api")
+
+
+# ---------------------------------------------------------------------------
+# Django REST framework
+# ---------------------------------------------------------------------------
+
+DRF_URLS_PY = """\
+from django.urls import include, path
+from rest_framework.routers import DefaultRouter
+
+from .views import UserViewSet
+
+router = DefaultRouter()
+router.register(r"users", UserViewSet)
+# router.register(r"retired", RetiredViewSet)
+
+urlpatterns = [path("api/", include(router.urls))]
+"""
+
+
+class TestDrfContracts:
+    def test_a_registration_publishes_a_list_and_a_detail_route(self, tmp_path: Path) -> None:
+        (tmp_path / "urls.py").write_text(DRF_URLS_PY, encoding="utf-8")
+        ids = _providers(tmp_path)
+        assert {"http::*::/api/users", "http::*::/api/users/{param}"} <= set(ids)
+        assert ids["http::*::/api/users"].meta["framework"] == "drf"
+        assert not [i for i in ids if "retired" in i]
+
+    def test_a_bare_router_urls_takes_the_include_prefix_of_its_module(self, tmp_path: Path) -> None:
+        (tmp_path / "urls.py").write_text(
+            'from django.urls import include, path\n\nurlpatterns = [path("v1/", include("shop.urls"))]\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "shop").mkdir()
+        (tmp_path / "shop" / "urls.py").write_text(
+            "from rest_framework import routers\n\n"
+            "router = routers.SimpleRouter()\n"
+            "router.register('orders', OrderViewSet)\n"
+            "urlpatterns = router.urls\n",
+            encoding="utf-8",
+        )
+        assert "http::*::/v1/orders/{param}" in _providers(tmp_path)
+
+    def test_a_register_call_on_something_that_is_not_a_router_is_not_a_route(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "plugins.py").write_text(
+            "from rest_framework import serializers\n\n"
+            "registry = PluginRegistry()\nregistry.register('users', Plugin)\n",
+            encoding="utf-8",
+        )
+        assert _providers(tmp_path) == {}
+
+    def test_a_file_that_does_not_import_the_framework_is_not_read(self, tmp_path: Path) -> None:
+        (tmp_path / "urls.py").write_text(
+            "router = DefaultRouter()\nrouter.register('users', V)\n", encoding="utf-8"
+        )
+        assert _providers(tmp_path) == {}
+
+
+# ---------------------------------------------------------------------------
+# aiohttp
+# ---------------------------------------------------------------------------
+
+AIOHTTP_APP_PY = """\
+from aiohttp import web
+
+routes = web.RouteTableDef()
+
+
+@routes.get("/users/{id}")
+async def user(request):
+    return web.json_response({})
+
+
+@routes.post("/users")
+async def create(request):
+    return web.json_response({})
+
+
+async def health(request):
+    return web.Response(text="ok")
+
+
+def build():
+    app = web.Application()
+    app.add_routes(routes)
+    app.add_routes([web.get("/health", health), web.route("DELETE", "/users/{id}", user)])
+    app.router.add_put("/users/{id}", user)
+    app.router.add_route("PATCH", "/users/{id}", user)
+    # app.router.add_get("/retired", health)
+    app.router.add_get(PATH, health)
+    return app
+"""
+
+
+class TestAiohttpContracts:
+    def test_every_registration_spelling_is_read(self, tmp_path: Path) -> None:
+        (tmp_path / "app.py").write_text(AIOHTTP_APP_PY, encoding="utf-8")
+        ids = _providers(tmp_path)
+        assert set(ids) == {
+            "http::GET::/users/{param}",
+            "http::POST::/users",
+            "http::GET::/health",
+            "http::DELETE::/users/{param}",
+            "http::PUT::/users/{param}",
+            "http::PATCH::/users/{param}",
+        }
+        assert ids["http::GET::/health"].meta["framework"] == "aiohttp"
+
+    def test_a_file_that_does_not_import_aiohttp_is_not_read(self, tmp_path: Path) -> None:
+        (tmp_path / "web.py").write_text(
+            "from myweb import web\n\nweb.get('/x', h)\n", encoding="utf-8"
+        )
+        assert _providers(tmp_path) == {}

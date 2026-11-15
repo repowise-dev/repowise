@@ -109,6 +109,18 @@ describe("ways in to the model sheet", () => {
     expect(await screen.findByText("Uses your Claude Code sign-in.")).toBeTruthy();
   });
 
+  it("names the plan quota and generate's minutes for a sign-in on a paid plan", async () => {
+    mocks.getProviders.mockResolvedValue({
+      ...PROVIDERS,
+      plan_route: { provider: "claude_cli", cli_name: "Claude Code", minutes: 9 },
+    });
+    renderFresh(<RepoBreadcrumb repoName="orbit-api" docsMode="deterministic" />);
+    fireEvent.click(screen.getByRole("button", { name: /Write with a model/ }));
+    expect(
+      await screen.findByText("Uses your Claude Code sign-in and plan quota, about 9 minutes."),
+    ).toBeTruthy();
+  });
+
   it("the chat no-provider state opens it and keeps the settings link", async () => {
     renderFresh(<ChatHarness message="noProvider" />);
     expect(screen.getByRole("link", { name: "settings" }).getAttribute("href")).toBe("/settings/models");

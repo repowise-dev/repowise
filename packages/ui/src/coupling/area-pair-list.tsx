@@ -7,6 +7,7 @@ import { CleanState } from "../shared/clean-state";
 import { PageLede } from "../shared/page-lede";
 import type { AreaCouplingCopy } from "./area-copy";
 import { areaLabel, type AreaPairRef } from "./area-view-state";
+import { formatNumber } from "../lib/format";
 
 /**
  * The row's reading. Only a hidden pair (no dependency between the two areas)
@@ -101,7 +102,7 @@ function Lede({
     return (
       <PageLede
         label={copy.ledeLabel}
-        value={hidden.toLocaleString()}
+        value={formatNumber(hidden)}
         unit={copy.ledeUnit(hidden)}
         action={
           <PromptForRowsButton

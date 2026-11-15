@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import time_machine
 from httpx import AsyncClient
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import (
@@ -102,6 +102,29 @@ async def _seed_index(session_factory, repo_id: str) -> None:
                     updated_at=_CLOCK,
                 )
             )
+        # Onboarding targets are production code files the health index scored.
+        # The findings seed may already hold a row for a path: class it rather
+        # than add a second.
+        scored = {
+            m.file_path: m
+            for m in (
+                await session.scalars(
+                    select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
+                )
+            )
+        }
+        for path in ("src/core.py", "src/util.py", "web/app.ts"):
+            if path in scored:
+                scored[path].code_origin = "production"
+            else:
+                session.add(
+                    HealthFileMetric(
+                        repository_id=repo_id,
+                        file_path=path,
+                        score=8.0,
+                        code_origin="production",
+                    )
+                )
         for i, (path, status, confidence) in enumerate(
             [("src/core.py", "fresh", 0.9), ("web/app.ts", "stale", 0.5)]
         ):

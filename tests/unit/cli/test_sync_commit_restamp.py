@@ -81,7 +81,7 @@ def test_generate_leaves_both_stamps_on_one_commit(repo) -> None:
         path,
         {"last_sync_commit": _old},
         types.SimpleNamespace(provider_name="mock", model_name="m"),
-        types.SimpleNamespace(total_pages=1, remaining_template_pages=1),
+        types.SimpleNamespace(total_pages=1, remaining_template_pages=1, generated_pages=[]),
     )
     assert _state_commit(path) == new
     assert asyncio.run(_row_commit(path)) == new

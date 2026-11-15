@@ -45,6 +45,7 @@ __all__ = [
     "RE_DERIVED_TIERS",
     "Currency",
     "commits_since",
+    "decision_commits_since",
     "describe_decision_currency",
     "episode_currency",
     "episode_still_true",
@@ -173,6 +174,27 @@ def describe_decision_currency(
     return f"the {files} it governs changed in {commits} since {on}"
 
 
+def decision_commits_since(
+    root: Path | str,
+    *,
+    created_at: datetime | None,
+    nodes: Sequence[str],
+    evidence_commits: Sequence[str] = (),
+    accepted_at: datetime | None = None,
+) -> int | None:
+    """The count :func:`describe_decision_currency` words, from the same anchor.
+
+    ``None`` for an unscoped record or one with no birth date: with no scope,
+    ``git rev-list`` would count the whole repository, which says nothing
+    about the decision.
+    """
+    scope = [n for n in nodes if n]
+    if not scope or created_at is None:
+        return None
+    since_commit, since_date, _ = _anchor(root, created_at, evidence_commits, accepted_at)
+    return commits_since(root, since_commit=since_commit, since_date=since_date, nodes=scope)
+
+
 def _anchor(
     root: Path | str,
     created_at: datetime,
@@ -215,6 +237,10 @@ def recorded_on(birth_at: float) -> str:
 
 def short(sha: str) -> str:
     return sha[:12]
+
+
+#: How an episode sentence ends when its git query failed.
+GIT_UNASKED = "git could not be asked"
 
 
 @dataclass(frozen=True)
@@ -281,7 +307,7 @@ def episode_currency(row: dict, *, root: Path) -> Currency:
         )
         if changed is None:
             return Currency(
-                f"recorded {recorded} at {short(birth_commit)}; git could not be asked", False
+                f"recorded {recorded} at {short(birth_commit)}; {GIT_UNASKED}", False
             )
         if changed > 0:
             plural = "commit has" if changed == 1 else "commits have"

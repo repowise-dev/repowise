@@ -525,6 +525,12 @@ class BaseDefUseDialect:
         Default: none (a language with no override seeds no parameters)."""
         return ()
 
+    def exit_reads(self, fn_node: Node) -> tuple[Occurrence, ...]:
+        """Names the caller reads once *fn_node* returns, as uses at its exit:
+        a Pascal ``Result`` or ``var`` parameter. A span writing one has it as
+        an output. Default: none (every value leaves through a ``return``)."""
+        return ()
+
     def outer_declared(self, node: Node) -> list[Occurrence]:
         """The names statement *node* declares as the module's or an
         enclosing function's (Python ``global`` / ``nonlocal``); none in a

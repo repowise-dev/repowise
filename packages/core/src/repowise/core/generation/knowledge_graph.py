@@ -479,25 +479,34 @@ def build_deterministic_tour(
 # ---------------------------------------------------------------------------
 
 
+# A file's own page outranks another page on the same target: an API contract
+# page is the only page an API file gets, but never beats a file page.
+_FILE_PAGE_TYPES = frozenset({"file_page", "infra_page"})
+
+
 def _backfill_summaries(kg_result: Any, generated_pages: list[Any]) -> None:
     """Populate node summaries from generated wiki pages (zero LLM cost)."""
-    page_summaries: dict[str, str] = {}
+    page_summaries: dict[str, tuple[bool, str]] = {}
     for p in generated_pages:
         summary = getattr(p, "summary", None) or ""
         target = getattr(p, "target_path", None) or ""
-        if summary and target:
-            page_summaries[target] = summary
+        if not (summary and target):
+            continue
+        own = getattr(p, "page_type", None) in _FILE_PAGE_TYPES
+        if own or not page_summaries.get(target, (False, ""))[0]:
+            page_summaries[target] = (own, summary)
 
     for node in kg_result.nodes:
         # Any file-level node (any presentation type — file/config/service/
-        # pipeline/schema/document). Only fill empties: a page summary is the
-        # richest source, and the deterministic curation floor is applied
-        # *after* this backfill so it never blocks a real page summary.
+        # pipeline/schema/document). A page written this run is the richest and
+        # newest source, so it replaces what the node holds: the floor an
+        # index-only init or update already applied, or a summary carried
+        # from an older page.
         if not str(node.get("id", "")).startswith("file:"):
             continue
         path = node.get("filePath") or file_path_of(node["id"]) or node["id"]
-        if path in page_summaries and not node.get("summary"):
-            node["summary"] = page_summaries[path]
+        if path in page_summaries:
+            node["summary"] = page_summaries[path][1]
 
 
 # ---------------------------------------------------------------------------

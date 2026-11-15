@@ -27,7 +27,7 @@ describe("movedTabHref", () => {
     expect(movedTabHref("r1", sp("tab=coverage"))).toBe("/repos/r1/tests");
     expect(movedTabHref("r1", sp("tab=security"))).toBe("/repos/r1/security");
     expect(movedTabHref("r1", sp("tab=doc-drift"))).toBe("/repos/r1/docs/drift");
-    expect(movedTabHref("r1", sp("tab=impact"))).toBe("/repos/r1/commits?view=review");
+    expect(movedTabHref("r1", sp("tab=impact"))).toBe("/repos/r1/review");
   });
 
   it("carries the parameters the new home reads", () => {
@@ -35,7 +35,7 @@ describe("movedTabHref", () => {
       "/repos/r1/docs/drift?document=docs%2Fa%20b.md",
     );
     expect(movedTabHref("r1", sp("tab=impact&file=a.py&file=b/c.py&lens=churn"))).toBe(
-      "/repos/r1/commits?view=review&file=a.py&file=b%2Fc.py",
+      "/repos/r1/review?file=a.py&file=b%2Fc.py",
     );
   });
 

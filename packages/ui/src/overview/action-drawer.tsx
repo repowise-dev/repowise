@@ -17,6 +17,7 @@ import { EFFORT_LABEL } from "../health/labels";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { AdaptivePanel } from "../shared/adaptive-panel";
+import { formatNumber } from "../lib/format";
 
 /** What the evidence link opens, named for the place it lands. */
 const EVIDENCE_LABEL: Record<ActionSurface, string> = {
@@ -141,7 +142,7 @@ export function ActionDrawer({
 
             {action.details.length > 0 ? (
               <Section
-                title={`Evidence (${action.details_total.toLocaleString()})`}
+                title={`Evidence (${formatNumber(action.details_total)})`}
               >
                 <EvidenceList
                   key={action.id}
@@ -336,11 +337,11 @@ function EvidenceList({
               onClick={() => setAll((a) => !a)}
               className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
-              {all ? "Show fewer" : `Show all ${details.length.toLocaleString()}`}
+              {all ? "Show fewer" : `Show all ${formatNumber(details.length)}`}
             </button>
           ) : null}
           {total > details.length ? (
-            <span>{`${(total - details.length).toLocaleString()} more; "Look closer" below lists them.`}</span>
+            <span>{`${formatNumber(total - details.length)} more; "Look closer" below lists them.`}</span>
           ) : null}
         </p>
       ) : null}

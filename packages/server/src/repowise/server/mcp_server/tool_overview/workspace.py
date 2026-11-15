@@ -17,7 +17,7 @@ from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._federation import Federation, sum_fields
 from repowise.server.mcp_server._helpers import _get_repo
 from repowise.server.mcp_server._meta import build_meta as _build_meta
-from repowise.server.mcp_server.tool_overview.pages import _load_overview_page
+from repowise.server.mcp_server.tool_overview.pages import _is_prose_line, _load_overview_page
 from repowise.server.mcp_server.tool_overview.surface import _tool_surface_guide
 
 
@@ -68,16 +68,10 @@ async def _repo_entry(ctx: Any, registry: Any) -> dict[str, Any]:
         }
 
 
-def _is_prose(line: str) -> bool:
-    """Not blank, a heading, a table row, a list item, a quote or a code fence."""
-    text = line.strip()
-    return bool(text) and not text.startswith(("#", "|", "- ", "* ", "```", ">"))
-
-
 def _lead_sentence(markdown: str, limit: int = 140) -> str:
     """The essay's first sentence of prose, past its headings."""
     prose = " ".join(
-        line.strip() for line in markdown.splitlines() if _is_prose(line)
+        line.strip() for line in markdown.splitlines() if _is_prose_line(line)
     )
     head, dot, _ = prose.partition(". ")
     sentence = head + "." if dot else prose

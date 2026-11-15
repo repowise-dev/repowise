@@ -12,6 +12,7 @@ from repowise.cli.providers.cost_tracking import (
     cost_tracking_disabled,
     flush_cost_tracker,
     make_cost_tracker,
+    run_cost_tracker,
 )
 from repowise.cli.providers.embedders import (
     build_embedder,
@@ -51,6 +52,7 @@ __all__ = [
     "resolve_embedder",
     "resolve_embedder_choice",
     "resolve_embedder_for_repo",
+    "run_cost_tracker",
     "semantic_search_command",
     "semantic_search_setup_hint",
     "semantic_search_status",

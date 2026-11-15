@@ -19,6 +19,15 @@ Traced from the entry points outward: which files each run touches, in order. Wh
 {% else %}.
 {% endif %}
 
+{% if ctx.journeys %}
+## Walkthroughs
+
+{% for j in ctx.journeys %}
+- **{{ j.title }}**{% if j.opening %}: {{ j.opening | oneline(240) }}{% endif %}
+
+{% endfor %}
+{% endif %}
+
 {% if ctx.entry_points %}
 ## Entry points
 {% for ep in ctx.entry_points %}

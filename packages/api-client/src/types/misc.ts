@@ -81,6 +81,10 @@ export interface ProvidersResponse {
   /** Registerable providers the catalog leaves out. */
   flag_only_providers?: string[];
   embedders?: EmbedderInfo[];
+  /** With `detect` and a repo: the signed-in agent CLI on a paid plan that
+   *  can write this repo's docs, with about how many minutes `repowise
+   *  generate` takes on it. Null when a model is set up or none is found. */
+  plan_route?: { provider: string; cli_name: string; minutes?: number | null } | null;
 }
 
 /** Models a provider offers. `source: "catalog"` means the live list could

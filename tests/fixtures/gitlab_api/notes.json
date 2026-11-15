@@ -1,0 +1,478 @@
+{
+ "first": [
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/user",
+   "request_json": null,
+   "status": 200,
+   "link": null,
+   "json": {
+    "id": 1001,
+    "username": "project_88814111_bot",
+    "name": "Repowise",
+    "state": "active",
+    "bot": true
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?per_page=1&sort=asc&order_by=created_at",
+   "request_json": null,
+   "status": 200,
+   "link": "<https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=1&sort=asc>; rel=\"first\", <https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=1&sort=asc>; rel=\"last\"",
+   "json": [
+    {
+     "id": 4213537797,
+     "type": null,
+     "body": "Looks good to me, one small question on the wording.",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:37:06.932Z",
+     "updated_at": "2026-11-11T19:37:06.932Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    }
+   ]
+  },
+  {
+   "method": "POST",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes",
+   "request_json": {
+    "body": "<!-- repowise-ci-summary -->\n### Repowise gates: pass\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Pass | No new finding. |\n| Health | Pass | Nothing this change wrote fails the gate. |\n"
+   },
+   "status": 201,
+   "link": null,
+   "json": {
+    "id": 4213537997,
+    "type": null,
+    "body": "<!-- repowise-ci-summary -->\n### Repowise gates: pass\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Pass | No new finding. |\n| Health | Pass | Nothing this change wrote fails the gate. |",
+    "author": {
+     "id": 1001,
+     "username": "project_88814111_bot",
+     "name": "Repowise",
+     "state": "active",
+     "bot": true
+    },
+    "created_at": "2026-11-11T19:37:09.140Z",
+    "updated_at": "2026-11-11T19:37:09.140Z",
+    "system": false,
+    "noteable_type": "MergeRequest",
+    "noteable_iid": 1
+   }
+  }
+ ],
+ "second": [
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/user",
+   "request_json": null,
+   "status": 200,
+   "link": null,
+   "json": {
+    "id": 1001,
+    "username": "project_88814111_bot",
+    "name": "Repowise",
+    "state": "active",
+    "bot": true
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?per_page=1&sort=asc&order_by=created_at",
+   "request_json": null,
+   "status": 200,
+   "link": "<https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=2&per_page=1&sort=asc>; rel=\"next\", <https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=1&sort=asc>; rel=\"first\", <https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=3&per_page=1&sort=asc>; rel=\"last\"",
+   "json": [
+    {
+     "id": 4213537797,
+     "type": null,
+     "body": "Looks good to me, one small question on the wording.",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:37:06.932Z",
+     "updated_at": "2026-11-11T19:37:06.932Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    }
+   ]
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=2&per_page=1&sort=asc",
+   "request_json": null,
+   "status": 200,
+   "link": "<https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=1&sort=asc>; rel=\"prev\", <https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=3&per_page=1&sort=asc>; rel=\"next\", <https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=1&sort=asc>; rel=\"first\", <https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=3&per_page=1&sort=asc>; rel=\"last\"",
+   "json": [
+    {
+     "id": 4213537997,
+     "type": null,
+     "body": "<!-- repowise-ci-summary -->\n### Repowise gates: pass\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Pass | No new finding. |\n| Health | Pass | Nothing this change wrote fails the gate. |",
+     "author": {
+      "id": 1001,
+      "username": "project_88814111_bot",
+      "name": "Repowise",
+      "state": "active",
+      "bot": true
+     },
+     "created_at": "2026-11-11T19:37:09.140Z",
+     "updated_at": "2026-11-11T19:37:09.140Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    }
+   ]
+  },
+  {
+   "method": "PUT",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes/4213537997",
+   "request_json": {
+    "body": "<!-- repowise-ci-summary -->\n### Repowise gates: pass\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Pass | No new finding. |\n| Health | Pass | Nothing this change wrote fails the gate. |\n"
+   },
+   "status": 200,
+   "link": null,
+   "json": {
+    "id": 4213537997,
+    "type": null,
+    "body": "<!-- repowise-ci-summary -->\n### Repowise gates: pass\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Pass | No new finding. |\n| Health | Pass | Nothing this change wrote fails the gate. |",
+    "author": {
+     "id": 1001,
+     "username": "project_88814111_bot",
+     "name": "Repowise",
+     "state": "active",
+     "bot": true
+    },
+    "created_at": "2026-11-11T19:37:09.140Z",
+    "updated_at": "2026-11-11T19:37:09.140Z",
+    "system": false,
+    "noteable_type": "MergeRequest",
+    "noteable_iid": 1
+   }
+  }
+ ],
+ "finding": [
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/user",
+   "request_json": null,
+   "status": 200,
+   "link": null,
+   "json": {
+    "id": 1001,
+    "username": "project_88814111_bot",
+    "name": "Repowise",
+    "state": "active",
+    "bot": true
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?per_page=100&sort=asc&order_by=created_at",
+   "request_json": null,
+   "status": 200,
+   "link": "<https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=100&sort=asc>; rel=\"first\", <https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=100&sort=asc>; rel=\"last\"",
+   "json": [
+    {
+     "id": 4213537797,
+     "type": null,
+     "body": "Looks good to me, one small question on the wording.",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:37:06.932Z",
+     "updated_at": "2026-11-11T19:37:06.932Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    },
+    {
+     "id": 4213537997,
+     "type": null,
+     "body": "<!-- repowise-ci-summary -->\n### Repowise gates: pass\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Pass | No new finding. |\n| Health | Pass | Nothing this change wrote fails the gate. |",
+     "author": {
+      "id": 1001,
+      "username": "project_88814111_bot",
+      "name": "Repowise",
+      "state": "active",
+      "bot": true
+     },
+     "created_at": "2026-11-11T19:37:09.140Z",
+     "updated_at": "2026-11-11T19:37:09.140Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    },
+    {
+     "id": 4213538769,
+     "type": null,
+     "body": "Pushed a fix for the wording.",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:37:17.751Z",
+     "updated_at": "2026-11-11T19:37:17.751Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    },
+    {
+     "id": 4213541047,
+     "type": null,
+     "body": "added 1 commit\n\n<ul><li>83db759630e7175524f41cfae49376decb6c0a02 - Add a debug loader</li></ul>\n\n[Compare with previous version](/repowise-group1/Repowise-project/-/merge_requests/1/diffs?diff_id=2194935644&start_sha=eee3790d87b8ebf83dce5c8259184919cf8237d8)",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:37:45.181Z",
+     "updated_at": "2026-11-11T19:37:45.183Z",
+     "system": true,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    }
+   ]
+  },
+  {
+   "method": "PUT",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes/4213537997",
+   "request_json": {
+    "body": "<!-- repowise-ci-summary -->\n### Repowise gates: fail\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Fail | 1 new finding at high or above. |\n| Health | Pass | Nothing this change wrote fails the gate. |\n\n#### Security\n- error `src/itsdangerous/encoding.py:58` eval_call (high): return eval(text) <!-- repowise-fingerprint:v1:security:dd78ae946e189314f184cbca10085b46 -->\n"
+   },
+   "status": 200,
+   "link": null,
+   "json": {
+    "id": 4213537997,
+    "type": null,
+    "body": "<!-- repowise-ci-summary -->\n### Repowise gates: fail\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Fail | 1 new finding at high or above. |\n| Health | Pass | Nothing this change wrote fails the gate. |\n\n#### Security\n- error `src/itsdangerous/encoding.py:58` eval_call (high): return eval(text) <!-- repowise-fingerprint:v1:security:dd78ae946e189314f184cbca10085b46 -->",
+    "author": {
+     "id": 1001,
+     "username": "project_88814111_bot",
+     "name": "Repowise",
+     "state": "active",
+     "bot": true
+    },
+    "created_at": "2026-11-11T19:37:09.140Z",
+    "updated_at": "2026-11-11T19:37:46.423Z",
+    "system": false,
+    "noteable_type": "MergeRequest",
+    "noteable_iid": 1
+   }
+  }
+ ],
+ "resolved": [
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/user",
+   "request_json": null,
+   "status": 200,
+   "link": null,
+   "json": {
+    "id": 1001,
+    "username": "project_88814111_bot",
+    "name": "Repowise",
+    "state": "active",
+    "bot": true
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?per_page=100&sort=asc&order_by=created_at",
+   "request_json": null,
+   "status": 200,
+   "link": "<https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=100&sort=asc>; rel=\"first\", <https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes?activity_filter=all_notes&id=88814111&noteable_id=1&order_by=created_at&page=1&per_page=100&sort=asc>; rel=\"last\"",
+   "json": [
+    {
+     "id": 4213537797,
+     "type": null,
+     "body": "Looks good to me, one small question on the wording.",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:37:06.932Z",
+     "updated_at": "2026-11-11T19:37:06.932Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    },
+    {
+     "id": 4213537997,
+     "type": null,
+     "body": "<!-- repowise-ci-summary -->\n### Repowise gates: fail\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Fail | 1 new finding at high or above. |\n| Health | Pass | Nothing this change wrote fails the gate. |\n\n#### Security\n- error `src/itsdangerous/encoding.py:58` eval_call (high): return eval(text) <!-- repowise-fingerprint:v1:security:dd78ae946e189314f184cbca10085b46 -->",
+     "author": {
+      "id": 1001,
+      "username": "project_88814111_bot",
+      "name": "Repowise",
+      "state": "active",
+      "bot": true
+     },
+     "created_at": "2026-11-11T19:37:09.140Z",
+     "updated_at": "2026-11-11T19:37:46.423Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    },
+    {
+     "id": 4213538769,
+     "type": null,
+     "body": "Pushed a fix for the wording.",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:37:17.751Z",
+     "updated_at": "2026-11-11T19:37:17.751Z",
+     "system": false,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    },
+    {
+     "id": 4213541047,
+     "type": null,
+     "body": "added 1 commit\n\n<ul><li>83db759630e7175524f41cfae49376decb6c0a02 - Add a debug loader</li></ul>\n\n[Compare with previous version](/repowise-group1/Repowise-project/-/merge_requests/1/diffs?diff_id=2194935644&start_sha=eee3790d87b8ebf83dce5c8259184919cf8237d8)",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:37:45.181Z",
+     "updated_at": "2026-11-11T19:37:45.183Z",
+     "system": true,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    },
+    {
+     "id": 4213542848,
+     "type": null,
+     "body": "added 1 commit\n\n<ul><li>c9c33243825f630b57f9401bb9de6a8c289fb6f5 - Revert &quot;Add a debug loader&quot;</li></ul>\n\n[Compare with previous version](/repowise-group1/Repowise-project/-/merge_requests/1/diffs?diff_id=2194936655&start_sha=83db759630e7175524f41cfae49376decb6c0a02)",
+     "author": {
+      "id": 1002,
+      "username": "reviewer"
+     },
+     "created_at": "2026-11-11T19:38:07.166Z",
+     "updated_at": "2026-11-11T19:38:07.168Z",
+     "system": true,
+     "noteable_type": "MergeRequest",
+     "noteable_iid": 1
+    }
+   ]
+  },
+  {
+   "method": "PUT",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/1/notes/4213537997",
+   "request_json": {
+    "body": "<!-- repowise-ci-summary -->\n### Repowise gates: pass\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Pass | No new finding. |\n| Health | Pass | Nothing this change wrote fails the gate. |\n\nResolved since the last run: 1 finding.\n"
+   },
+   "status": 200,
+   "link": null,
+   "json": {
+    "id": 4213537997,
+    "type": null,
+    "body": "<!-- repowise-ci-summary -->\n### Repowise gates: pass\n\n| Gate | Result | Summary |\n| --- | --- | --- |\n| Doc drift | Pass | No finding fails the gate. |\n| Security | Pass | No new finding. |\n| Health | Pass | Nothing this change wrote fails the gate. |\n\nResolved since the last run: 1 finding.",
+    "author": {
+     "id": 1001,
+     "username": "project_88814111_bot",
+     "name": "Repowise",
+     "state": "active",
+     "bot": true
+    },
+    "created_at": "2026-11-11T19:37:09.140Z",
+    "updated_at": "2026-11-11T19:38:09.931Z",
+    "system": false,
+    "noteable_type": "MergeRequest",
+    "noteable_iid": 1
+   }
+  }
+ ],
+ "bad_token": [
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/user",
+   "request_json": null,
+   "status": 401,
+   "link": null,
+   "json": {
+    "message": "401 Unauthorized"
+   }
+  }
+ ],
+ "no_mr": [
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/user",
+   "request_json": null,
+   "status": 200,
+   "link": null,
+   "json": {
+    "id": 1001,
+    "username": "project_88814111_bot",
+    "name": "Repowise",
+    "state": "active",
+    "bot": true
+   }
+  },
+  {
+   "method": "GET",
+   "url": "https://gitlab.com/api/v4/projects/88814111/merge_requests/999/notes?per_page=100&sort=asc&order_by=created_at",
+   "request_json": null,
+   "status": 404,
+   "link": null,
+   "json": {
+    "message": "404 Not found"
+   }
+  }
+ ],
+ "rows": {
+  "doc-drift": {
+   "gate": "doc-drift",
+   "verdict": "pass",
+   "headline": "No finding fails the gate.",
+   "findings": []
+  },
+  "security": {
+   "gate": "security",
+   "verdict": "pass",
+   "headline": "No new finding.",
+   "findings": []
+  },
+  "health": {
+   "gate": "health",
+   "verdict": "pass",
+   "headline": "Nothing this change wrote fails the gate.",
+   "findings": []
+  }
+ },
+ "finding_rows": {
+  "doc-drift": {
+   "gate": "doc-drift",
+   "verdict": "pass",
+   "headline": "No finding fails the gate.",
+   "findings": []
+  },
+  "security": {
+   "gate": "security",
+   "verdict": "fail",
+   "headline": "1 new finding at high or above.",
+   "findings": [
+    {
+     "level": "error",
+     "file_path": "src/itsdangerous/encoding.py",
+     "line_number": 58,
+     "message": "eval_call (high): return eval(text)",
+     "fingerprint": "dd78ae946e189314f184cbca10085b46"
+    }
+   ]
+  },
+  "health": {
+   "gate": "health",
+   "verdict": "pass",
+   "headline": "Nothing this change wrote fails the gate.",
+   "findings": []
+  }
+ }
+}

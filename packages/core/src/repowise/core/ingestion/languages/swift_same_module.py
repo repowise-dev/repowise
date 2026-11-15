@@ -92,6 +92,7 @@ def resolve_swift_same_module_refs(
     graph: nx.DiGraph,
     swift_targets: dict[str, str],
     texts: dict[str, str],
+    scan_paths: set[str] | None = None,
 ) -> int:
     """Emit same-module ``imports`` edges for Swift files.
 
@@ -136,9 +137,10 @@ def resolve_swift_same_module_refs(
             )
         )
 
+    paths = set(texts) if scan_paths is None else set(texts) & scan_paths
     return emit_scope_edges(
         graph,
-        ((path, texts[path]) for path in sorted(texts)),
+        ((path, texts[path]) for path in sorted(paths)),
         plan,
         skip_names=_SWIFT_COMMON_TYPES,
     )

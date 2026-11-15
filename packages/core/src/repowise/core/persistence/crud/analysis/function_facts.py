@@ -236,6 +236,7 @@ async def tests_in_files(
             )
             .where(
                 FunctionFact.repository_id == repository_id,
+                GraphNode.repository_id == repository_id,
                 GraphNode.file_path.in_(files[start : start + _CHUNK]),
             )
         )

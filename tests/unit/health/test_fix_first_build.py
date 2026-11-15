@@ -744,3 +744,23 @@ def test_a_plan_targets_its_symbol_span_like_a_finding_does() -> None:
     assert (refactor.target.line_start, refactor.target.line_end) == (10, 60)
     assert refactor.action.steps[0].line == 20
     assert (finding.target.line_start, finding.target.line_end) == (5, 40)
+
+
+def test_a_fix_gain_rescores_its_file_with_hidden_findings() -> None:
+    # A hidden type (unused_internal) shares complex_method's saturating
+    # category: leaving it out of the rescore overstated what the fix frees.
+    from repowise.core.analysis.health.fix_first.build import _prepare
+    from repowise.core.analysis.health.gain import removal_gain
+
+    lead = {"file_path": "src/big.py", "biomarker_type": "complex_method", "severity": "high",
+            "function_name": "run", "line_start": 1, "line_end": 60, "health_impact": 0.5,
+            "public_id": "finding_b1", "dimension": "defect", "reason": "run"}
+    rows = [lead, {**lead, "function_name": "go", "public_id": "finding_b2"}]
+    hidden = [{"file_path": "src/big.py", "biomarker_type": "unused_internal",
+               "severity": "medium", "function_name": f"h{i}", "health_impact": 0.4,
+               "public_id": f"finding_u{i}", "dimension": "defect", "reason": "unused"}
+              for i in range(4)]
+    split, files = _prepare([], [*rows, *hidden], [], (), None)
+    assert [f["public_id"] for f in split["src/big.py"][0]] == ["finding_b1", "finding_b2"]
+    assert files.gain(lead) == removal_gain([*rows, *hidden], [(lead, 1.0)])
+    assert files.gain(lead) < removal_gain(rows, [(lead, 1.0)])

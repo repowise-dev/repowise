@@ -210,7 +210,7 @@ def _stored_text(tmp_path: Path, payload: dict) -> str:
 
 
 async def test_a_scan_that_cannot_answer_yields_no_block(tmp_path, monkeypatch):
-    """A timeout or a wedged git is silence, never a half-built block."""
+    """A wedged git is silence; a timeout reports status without a half-built block."""
     from repowise.server.mcp_server import tool_change_risk as module
 
     repo = _repo(tmp_path, others={"overlapping": {"a.py": "a theirs\n"}})
@@ -226,7 +226,40 @@ async def test_a_scan_that_cannot_answer_yields_no_block(tmp_path, monkeypatch):
         raise TimeoutError
 
     monkeypatch.setattr(module, "_scan_overlap", _never_returns)
-    assert await _branch_overlap_block(_ctx(repo), {"a.py": {1}}, collector) is None
+    assert await _branch_overlap_block(_ctx(repo), {"a.py": {1}}, collector) == {
+        "status": "timed_out"
+    }
+
+
+async def test_timed_out_scan_is_not_cached_and_next_call_returns_the_block(
+    tmp_path, monkeypatch
+):
+    """Timeout then healthy call on the same range returns the block on the second call."""
+    from repowise.server.mcp_server import tool_change_risk as module
+
+    repo = _repo(tmp_path, others={"other": {"a.py": "a theirs\n"}})
+
+    async def _context(_: str | None) -> SimpleNamespace:
+        return SimpleNamespace(path=str(repo))
+
+    monkeypatch.setattr(module, "_resolve_repo_context", _context)
+    real_scan = module._scan_overlap
+
+    async def _timed_out(*_args, **_kwargs):
+        raise TimeoutError
+
+    monkeypatch.setattr(module, "_scan_overlap", _timed_out)
+    first = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert first["branch_overlap"] == {"status": "timed_out"}
+
+    monkeypatch.setattr(module, "_scan_overlap", real_scan)
+    second = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert "cached" not in second["_meta"]
+    assert [e["branch"] for e in second["branch_overlap"]["branches"]] == ["other"]
+
+    third = await module.get_change_risk("HEAD~1..HEAD", baseline=0)
+    assert third["_meta"]["cached"] is True
+    assert [e["branch"] for e in third["branch_overlap"]["branches"]] == ["other"]
 
 
 def test_branch_overlap_participates_in_the_response_ceiling(tmp_path):

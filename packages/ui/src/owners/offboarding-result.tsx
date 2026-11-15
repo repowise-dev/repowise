@@ -10,6 +10,7 @@ import { joinNames } from "./knowledge-files";
 import { ownershipLabels, type OwnershipLabels } from "./labels";
 import type { OffboardingArea, OffboardingResult } from "./offboarding";
 import { handoverPromptRequest } from "./prompt-requests";
+import { formatNumber } from "../lib/format";
 
 /**
  * How an off-boarding result reads, wherever it is shown: the what-if on the
@@ -156,10 +157,10 @@ export function OffboardingResultView({
       </div>
       <StatRibbon
         stats={[
-          { label: labels.statAtRisk, value: totals.atRiskFiles.toLocaleString() },
-          { label: labels.statHotspots, value: totals.hotspots.toLocaleString(), hint: labels.statHotspotsHint },
+          { label: labels.statAtRisk, value: formatNumber(totals.atRiskFiles) },
+          { label: labels.statHotspots, value: formatNumber(totals.hotspots), hint: labels.statHotspotsHint },
           { label: labels.statShare, value: share, hint: labels.statShareHint(totals.totalNloc, totals.trackedFiles) },
-          { label: labels.statDirectories, value: result.areas.length.toLocaleString() },
+          { label: labels.statDirectories, value: formatNumber(result.areas.length) },
         ]}
       />
       <OffboardingAreas

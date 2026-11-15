@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
+from typing import Any
 
 from repowise.core.analysis.decisions.lifecycle import ARCHITECTURAL_KIND, DECISION_KINDS
 from repowise.core.analysis.decisions.provenance import normalize_text
@@ -71,6 +72,40 @@ def _extraction_kind(incoming: str | None) -> str:
     safe by luck. Normalising here makes it safe by construction.
     """
     return incoming if incoming in DECISION_KINDS else ARCHITECTURAL_KIND
+
+
+def keeper_order(records: Iterable[Any], accepted: set[str]) -> list[Any]:
+    """*records* in the order they keep a duplicated decision's id.
+
+    Accepted first, then any status a person set, then the caller's own order
+    (oldest first). An id somebody accepted or dismissed is the one everything
+    outside the store already points at, so a reworded copy folds into it and
+    never the other way round.
+    """
+    return sorted(
+        records,
+        key=lambda rec: (rec.id not in accepted, rec.status not in _PROTECTED_STATUSES),
+    )
+
+
+def can_fold_away(rec: Any, accepted: set[str]) -> bool:
+    """Whether *rec* may be folded into another record and retired."""
+    return rec.id not in accepted and rec.status not in _PROTECTED_STATUSES
+
+
+def duplicate_text(rec: Any) -> str:
+    """The text a stored record is compared on for reworded duplicates."""
+    return rec.decision or rec.identity_quote or ""
+
+
+def duplicate_commits(rec: Any) -> list[str]:
+    """A stored record's evidence commits, for the duplicate match."""
+    try:
+        commits = json.loads(rec.evidence_commits_json or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [c for c in commits if isinstance(c, str)] if isinstance(commits, list) else []
+
 
 def identity_quote_for(text: str | None) -> str:
     """The pinned form of a decision's quote, for identity only.

@@ -143,16 +143,16 @@ class TestOrdering:
         by_id = _by_id(pages)
         assert by_id["onboarding:onboarding/project_overview"].section_number == "1"
         assert by_id["module_page:src/web"].section_number == "5"
-        assert by_id["file_page:src/web/app.tsx"].section_number == "5.1"
+        # A file page is reference material: placed and ordered, never numbered.
+        assert by_id["file_page:src/web/app.tsx"].section_number is None
+        assert by_id["file_page:src/web/app.tsx"].display_order == 1
 
-    def test_section_number_reflects_depth(self):
+    def test_numbers_go_two_levels_deep_and_no_further(self):
         pages = _wiki()
         assign_page_tree(pages)
-        by_id = _by_id(pages)
-        module = by_id["module_page:src/ingest"]
-        assert by_id["file_page:src/ingest/a.py"].section_number.startswith(
-            module.section_number + "."
-        )
+        numbers = [p.section_number for p in pages if p.section_number]
+        assert numbers
+        assert all(n.count(".") <= 1 for n in numbers), numbers
 
 
 class TestStability:
@@ -547,10 +547,24 @@ class TestReaderOrder:
         assign_page_tree(pages, list(self.EDGES))
         assert self._top(pages) == ["lib/engine", "lib/small", "apps/cli", "apps/web", "scripts"]
 
-    def test_without_edges_the_larger_chapter_leads(self):
+    def test_without_edges_the_layer_bucket_then_the_larger_chapter_leads(self):
+        """Engine before interfaces even with no edge to say so; size breaks ties."""
         pages = self._pages()
         assign_page_tree(pages)
-        assert self._top(pages) == ["apps/web", "apps/cli", "lib/engine", "lib/small", "scripts"]
+        assert self._top(pages) == ["lib/engine", "lib/small", "apps/web", "apps/cli", "scripts"]
+
+    def test_inside_a_section_the_module_a_walkthrough_enters_reads_first(self):
+        pages = [
+            _page("repo_overview", "demo"),
+            _page("module_page", "app", is_chapter=True, file_paths=["app/x.py"]),
+            _page("module_page", "app/big", file_paths=[f"app/big/f{i}.py" for i in range(5)]),
+            _page("module_page", "app/cmd", file_paths=["app/cmd/main.py"]),
+            _page("flow_page", "app/cmd/main.py::main"),
+        ]
+        assign_page_tree(pages, [])
+        by_id = _by_id(pages)
+        assert by_id["module_page:app/cmd"].section_number == "1.1"
+        assert by_id["module_page:app/big"].section_number == "1.2"
 
     def test_a_rebuild_without_edges_keeps_the_measured_order(self):
         """``update`` rebuilds from stored metadata and reads no edges."""
@@ -591,7 +605,7 @@ class TestReaderOrder:
         assert _by_id(pages)["module_page:pkg/ui"].metadata["layer_id"] == "layer:ui"
 
 
-def test_a_flow_page_reads_after_onboarding_and_before_the_chapters():
+def test_walkthroughs_read_after_the_sections_as_one_numbered_section():
     pages = [
         _page("repo_overview", "demo"),
         _page("module_page", "src/a", file_paths=["src/a/x.py"]),
@@ -604,4 +618,126 @@ def test_a_flow_page_reads_after_onboarding_and_before_the_chapters():
     assert [
         by_id[i].section_number
         for i in ("onboarding:onboarding/getting_started", "flow_page:flows/indexing", "module_page:src/a")
-    ] == ["1", "2", "3"]
+    ] == ["1", "3.1", "2"]
+
+
+def test_project_activity_closes_the_outline_unnumbered():
+    pages = [
+        _page("repo_overview", "demo"),
+        _page("onboarding", "onboarding/active_landscape"),
+        _page("module_page", "src/a", file_paths=["src/a/x.py"]),
+        _page("onboarding", "onboarding/getting_started"),
+    ]
+    assign_page_tree(pages, [])
+    by_id = _by_id(pages)
+    activity = by_id["onboarding:onboarding/active_landscape"]
+    assert activity.section_number is None
+    assert activity.display_order == 3
+    assert by_id["module_page:src/a"].section_number == "2"
+
+
+def test_a_chapter_that_is_most_of_its_section_hands_its_parts_to_the_section():
+    """"Core > Pkg Core > Ingestion" reads "Core > Ingestion"."""
+    inner = "pkg/core/src/core"
+    pages = [
+        _page("repo_overview", "demo"),
+        _page("module_page", "pkg/core", is_chapter=True, file_paths=["pkg/core/setup.py"]),
+        _page("module_page", inner, is_chapter=True, file_paths=[f"{inner}/main.py"]),
+        _page("module_page", f"{inner}/ingest", file_paths=[f"{inner}/ingest/a{i}.py" for i in range(4)]),
+        _page("module_page", f"{inner}/graph", file_paths=[f"{inner}/graph/g{i}.py" for i in range(4)]),
+    ]
+    pages += [
+        _page("file_page", f, layer_id="layer:service")
+        for p in pages
+        if p.page_type == "module_page"
+        for f in p.metadata["file_paths"]
+    ]
+    assign_page_tree(pages, [])
+    by_id = _by_id(pages)
+    section = "module_page:pkg/core"
+    assert by_id[f"module_page:{inner}/ingest"].parent_page_id == section
+    assert by_id[f"module_page:{inner}"].parent_page_id == section
+    assert sorted(
+        by_id[f"module_page:{p}"].section_number for p in (inner, f"{inner}/ingest", f"{inner}/graph")
+    ) == ["1.1", "1.2", "1.3"]
+
+
+def test_many_small_top_level_packages_read_as_one_supporting_section():
+    pages = [_page("repo_overview", "demo")]
+    for i in range(16):
+        n = 20 - i
+        pages.append(_page("module_page", f"p{i:02d}", file_paths=[f"p{i:02d}/f{j}.go" for j in range(n)]))
+    assign_page_tree(pages, [])
+    numbers = {p.target_path: p.section_number for p in pages if p.page_type == "module_page"}
+    # The twelve largest are sections; the rest are numbered inside section 13.
+    assert numbers["p00"] == "1" and numbers["p11"] == "12"
+    assert [numbers[f"p{i}"] for i in range(12, 16)] == ["13.1", "13.2", "13.3", "13.4"]
+
+
+def test_tests_and_tooling_give_up_their_section_before_runtime_packages():
+    pages = [_page("repo_overview", "demo")]
+    for i in range(13):
+        pages.append(_page("module_page", f"p{i:02d}", file_paths=[f"p{i:02d}/f.go"]))
+        pages.append(_page("file_page", f"p{i:02d}/f.go", layer_id="layer:service"))
+    big_docs = [f"docs/d{j}.md" for j in range(30)]
+    pages.append(_page("module_page", "docs", file_paths=big_docs))
+    pages += [_page("file_page", f, layer_id="layer:docs-tooling") for f in big_docs]
+    assign_page_tree(pages, [])
+    assert "." in _by_id(pages)["module_page:docs"].section_number
+
+
+def test_a_page_stamped_as_project_activity_closes_the_outline():
+    pages = [
+        _page("repo_overview", "demo"),
+        _page("onboarding", "onboarding/getting_started"),
+        _page("onboarding", "onboarding/recent_work", nav_section="project_activity"),
+        _page("module_page", "src/a", file_paths=["src/a/x.py"]),
+    ]
+    assign_page_tree(pages, [])
+    stamped = _by_id(pages)["onboarding:onboarding/recent_work"]
+    assert stamped.section_number is None
+    assert stamped.display_order == 3
+
+
+def test_a_part_named_as_its_section_takes_no_number():
+    """It folds into the section's row, so the parts after it count from 1."""
+    pages = [
+        _page("repo_overview", "acme"),
+        _page("module_page", "pkg/core", is_chapter=True, file_paths=["pkg/core/setup.py"]),
+        _page("module_page", "pkg/core/src/acme/core", is_chapter=True, file_paths=["pkg/core/src/acme/core/m.py"]),
+        _page("module_page", "pkg/core/src/acme/core/ingest", file_paths=[f"pkg/core/src/acme/core/ingest/a{i}.py" for i in range(5)]),
+        _page("module_page", "pkg/core/src/acme/core/ingest/langs", file_paths=[f"pkg/core/src/acme/core/ingest/langs/l{i}.py" for i in range(5)]),
+    ]
+    titles = {"module_page:pkg/core": "Core Overview", "module_page:pkg/core/src/acme/core": "Acme Core Overview"}
+    for p in pages:
+        p.title = titles.get(p.page_id, p.title)
+    pages += [
+        _page("file_page", f, layer_id="layer:service")
+        for p in list(pages)
+        if p.page_type == "module_page"
+        for f in p.metadata["file_paths"]
+    ]
+    assign_page_tree(pages, [])
+    by_id = _by_id(pages)
+    assert by_id["module_page:pkg/core/src/acme/core"].section_number is None
+    assert by_id["module_page:pkg/core/src/acme/core/ingest"].section_number == "1.1"
+
+
+def test_what_a_folded_part_holds_is_numbered_as_the_section_s_parts():
+    pages = [
+        _page("repo_overview", "acme"),
+        _page("module_page", "web", is_chapter=True, file_paths=["web/next.config.js"]),
+        _page("module_page", "web/src", is_chapter=True, file_paths=["web/src/i.ts"]),
+        _page("module_page", "web/src/hooks", file_paths=["web/src/hooks/h.ts"]),
+        _page("module_page", "web/src/views", file_paths=["web/src/views/v.ts"]),
+        _page("module_page", "web/pages", file_paths=[f"web/pages/p{i}.ts" for i in range(12)]),
+    ]
+    for p in pages:
+        if p.page_id == "module_page:web/src":
+            p.title = "Web Source"
+    assign_page_tree(pages, [])
+    numbers = sorted(
+        p.section_number for p in pages if p.page_type == "module_page" and p.section_number
+    )
+    # web/src folds into Web; its two parts take numbers beside web/pages.
+    assert numbers == ["1", "1.1", "1.2", "1.3"]

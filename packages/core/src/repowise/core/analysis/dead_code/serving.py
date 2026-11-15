@@ -8,7 +8,6 @@ mappings, read through :func:`field`), plain dicts out; no session.
 from __future__ import annotations
 
 import json
-import posixpath
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -455,8 +454,6 @@ class CrossRepoLookup(Protocol):
 
     def has_cross_repo_consumers(self, repo_alias: str, file_path: str) -> list[dict]: ...
 
-    def get_repos_depending_on(self, repo_alias: str) -> list[str]: ...
-
     def get_package_consumers(self, repo_alias: str) -> list[dict]: ...
 
     def get_contract_links_as_provider(self, repo_alias: str, file_path: str) -> list[dict]: ...
@@ -484,7 +481,8 @@ def cross_repo_cut(
 
     A contract link (HTTP route, generated client) from another repo lowers
     confidence for every kind. Co-change partners in another repo, or a
-    package dependent of an export's repo, only withdraw ``safe_to_delete``.
+    package dependent whose imports reach the export's file, only withdraw
+    ``safe_to_delete``.
     """
     if lookup is None or not alias:
         return None
@@ -502,8 +500,14 @@ def cross_repo_cut(
             f"Not cleanup-ready: changes together with {len(partners)} file(s) in "
             f"{', '.join(repos)}. Verify before deletion.",
         )
-    if kind == "unused_export" and lookup.get_repos_depending_on(alias):
-        return CrossRepoCut(1.0, _package_dependent_note(lookup, alias, file_path))
+    if kind == "unused_export" and (
+        reaching := _package_dependents_reaching(lookup, alias, file_path)
+    ):
+        return CrossRepoCut(
+            1.0,
+            f"Not cleanup-ready: {', '.join(sorted(reaching))} may consume this export. "
+            "Verify before deletion.",
+        )
     return None
 
 
@@ -564,32 +568,12 @@ def _contract_consumers(lookup: CrossRepoLookup, alias: str, file_path: str) -> 
     }
 
 
-def _package_dependent_note(lookup: CrossRepoLookup, alias: str, file_path: str) -> str:
-    """Name only the dependents whose package link reaches *file_path*.
+def _package_dependents_reaching(lookup: CrossRepoLookup, alias: str, file_path: str) -> set[str]:
+    """The dependent repos whose package link reaches *file_path* (file-level, not repo-wide)."""
+    from repowise.core.workspace.package_reach import package_link_reaches
 
-    Safety is withdrawn either way: package links miss consumers (an
-    unresolved PyPI pin, a CLI call), so they can name a consumer but never
-    prove there is none.
-    """
-    reaching = {
+    return {
         link["source_repo"]
         for link in lookup.get_package_consumers(alias)
-        if _inside_manifest(file_path, link.get("target_manifest"))
+        if package_link_reaches(link, file_path)
     }
-    if reaching:
-        return (
-            f"Not cleanup-ready: {', '.join(sorted(reaching))} may consume this export. "
-            "Verify before deletion."
-        )
-    return (
-        "Not cleanup-ready: another workspace repo depends on this one, though no recorded "
-        "package or contract link reaches this file. Verify before deletion."
-    )
-
-
-def _inside_manifest(file_path: str, manifest: str | None) -> bool:
-    """Whether *file_path* sits in the package *manifest* declares; unknown counts as inside."""
-    if not manifest:
-        return True
-    root = posixpath.dirname(manifest)
-    return not root or file_path.startswith(root + "/")

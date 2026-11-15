@@ -10,7 +10,8 @@ The reads here only narrow; the row-to-fact rule is the pure builder in
 Index and update store the rules' output as a read snapshot
 (:func:`write_actions_snapshot`), kept only until a store the facts come from
 is written (``persistence.read_snapshots``); a read that finds it ranks the
-stored actions and skips the facts and the rules.
+stored actions and skips the facts and the rules. A read that finds none
+builds it and stores it for the next one.
 """
 
 from __future__ import annotations
@@ -57,7 +58,10 @@ from repowise.core.analysis.actions.rules.hygiene import PUBLIC_ENV_KIND, SECRET
 from repowise.core.analysis.dead_code.risk_factors import REVIEW_ONLY_KINDS
 from repowise.core.analysis.dead_code.serving import CrossRepoLookup, is_safe, serve_findings
 from repowise.core.analysis.finding_registry import excluded_types
-from repowise.core.analysis.test_reachability import any_tests_reaching
+from repowise.core.analysis.test_reachability import (
+    any_tests_reaching,
+    write_test_masks_snapshot,
+)
 
 from ...models import (
     ActionState,
@@ -76,7 +80,13 @@ from ...models import (
     PerformanceOpportunity,
     SecurityFinding,
 )
-from ...read_snapshots import mark_current, read_snapshot, refresh_snapshot, snapshot_key
+from ...read_snapshots import (
+    build_and_store,
+    mark_current,
+    read_snapshot,
+    refresh_snapshot,
+    snapshot_key,
+)
 from .fix_first import load_fix_first, write_fix_first_snapshot
 
 logger = logging.getLogger(__name__)
@@ -605,7 +615,8 @@ async def write_read_snapshots(
     session: AsyncSession, repo_id: str
 ) -> list[tuple[str, Exception]]:
     """Store the Fix first queue, then the actions view that quotes its head,
-    then the run's component snapshot (:mod:`repowise.core.events`).
+    then the test masks that view's build read, then the run's component
+    snapshot (:mod:`repowise.core.events`).
 
     For a writer whose stores are final for this run, on the session that
     wrote them or a later one. Best-effort, each in its own savepoint: a view
@@ -617,6 +628,7 @@ async def write_read_snapshots(
     for kind, write in (
         ("fix_first", write_fix_first_snapshot),
         (SNAPSHOT_KIND, write_actions_snapshot),
+        ("test_masks", write_test_masks_snapshot),
     ):
         try:
             async with session.begin_nested():
@@ -683,7 +695,9 @@ async def load_actions_view(
     The rules' output is the stored snapshot while it is current, else built
     from the facts here. While a finding stored deletion-ready reads not safe
     as served (in a workspace, *lookup* and *alias* apply the cross-repo cut),
-    the view is built live instead. Never writes.
+    the view is built live instead. A missing snapshot is built and stored
+    for the next process (:func:`build_and_store`); in a workspace the build
+    carries the cut, so it is not stored.
     """
     try:
         async with session.begin_nested():
@@ -692,6 +706,11 @@ async def load_actions_view(
         states = {}
     when = now or datetime.now(UTC)
     stored = await read_snapshot(session, repo_id, SNAPSHOT_KIND, _KEY)
+    if stored is None and lookup is None and alias is None:
+        ruled = await build_and_store(
+            session, repo_id, SNAPSHOT_KIND, _KEY, lambda s: _ruled(s, repo_id)
+        )
+        return _view(ruled, states, when)
     if stored is not None and await _stored_dead_overstated(session, repo_id, lookup, alias):
         stored = None
     view = _stored_view(stored, states, when)

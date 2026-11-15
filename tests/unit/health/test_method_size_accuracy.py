@@ -45,7 +45,8 @@ def test_complex_method_prints_the_judged_ccn_beside_the_raw_one() -> None:
     [finding] = ComplexMethodDetector().detect(_ctx(fn))
     assert finding.severity == "high"
     assert finding.reason == (
-        "tokenize has cyclomatic complexity 15 (30 counting every arm of its dispatch)"
+        "tokenize has 15 independent paths (cyclomatic complexity), "
+        "30 counting every arm of its dispatch"
     )
     assert finding.details["ccn"] == 30
     assert finding.details["judged_ccn"] == 15
@@ -53,7 +54,7 @@ def test_complex_method_prints_the_judged_ccn_beside_the_raw_one() -> None:
 
 def test_complex_method_reason_is_unchanged_without_a_dominant_dispatch() -> None:
     [finding] = ComplexMethodDetector().detect(_ctx(_fn(ccn=12)))
-    assert finding.reason == "tokenize has cyclomatic complexity 12"
+    assert finding.reason == "tokenize has 12 independent paths (cyclomatic complexity)"
     assert "judged_ccn" not in finding.details
 
 
@@ -211,7 +212,7 @@ def test_a_typed_const_data_literal_used_only_as_a_prop_is_markup(cast: str) -> 
     assert card.markup_nloc == 4
 
 
-def test_a_const_data_literal_read_by_logic_stays_code() -> None:
+def test_a_const_data_literal_read_by_logic_keeps_its_declaration_line_code() -> None:
     card = _code_rows(
         """export function Card({ kind }: Props) {
   const labels = {
@@ -222,7 +223,8 @@ def test_a_const_data_literal_read_by_logic_stays_code() -> None:
 }
 """
     )
-    assert card.markup_nloc == 0
+    # The table's rows are literal data; ``const labels = {`` and the return stay code.
+    assert card.markup_nloc == 3
 
 
 def test_brain_method_does_not_count_jsx_markup_lines() -> None:
@@ -230,7 +232,7 @@ def test_brain_method_does_not_count_jsx_markup_lines() -> None:
     assert BrainMethodDetector().detect(_central(_fn(nloc=100, ccn=12, markup_nloc=40))) == []
     [finding] = BrainMethodDetector().detect(_central(_fn(nloc=120, ccn=12, markup_nloc=40)))
     assert finding.reason == (
-        "Brain Method: tokenize is 80 lines besides 40 of JSX markup, CCN 12, "
+        "Brain Method: tokenize is 80 lines besides 40 of markup and data, CCN 12, "
         "in a file imported by 10 others"
     )
     assert finding.details["markup_nloc"] == 40

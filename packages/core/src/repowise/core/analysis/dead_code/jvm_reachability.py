@@ -67,6 +67,8 @@ _STEREOTYPE_ANNOTATIONS: frozenset[str] = frozenset({
     "WebServlet",
     "WebFilter",
     "WebListener",
+    "WebService",               # JAX-WS
+    "WebServiceProvider",
     "Path",                     # JAX-RS
     "Provider",
     "ApplicationScoped",
@@ -81,6 +83,12 @@ _STEREOTYPE_ANNOTATIONS: frozenset[str] = frozenset({
     "RestControllerEndpoint",
     "RegisterForReflection",
     "Module",                   # Dagger / Hilt
+    "ContributesBinding",       # Metro / Anvil
+    "ContributesTo",
+    "ContributesIntoSet",
+    "ContributesIntoMap",
+    "ContributesMultibinding",
+    "BindingContainer",
     "GlideModule",              # Glide annotation processor
     # JMH runs these by reflection; ``Benchmark`` sits on the methods.
     "State",

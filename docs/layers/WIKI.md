@@ -40,10 +40,11 @@ another is generated after it.
 | 7 | `infra_page` | Dockerfile, Makefile, Terraform file or container entrypoint script | structure |
 | 8 | `onboarding` | slot | model, structure when keyless |
 
-The onboarding slots are Project Overview, Getting Started, Key Concepts, How It
-Works, Active Landscape and Glossary. Project Overview is not generated
-separately, the repository overview is tagged into that slot, and Glossary is
-rendered from mined terms with no model in every run, keyed or not.
+The onboarding reading order is Project Overview, Getting Started and How It
+Works. Project Overview is not generated separately: the repository overview is
+tagged into that slot. Active Landscape sits outside the reading order, in the
+project activity section, and is rendered from git history with no model in
+every run, keyed or not.
 
 A flow page follows one operation, such as a CLI command, a route handler or
 an MCP tool, from the function that starts it through the calls that carry it.
@@ -130,7 +131,7 @@ repowise generate                        # every subsystem page still unwritten
 repowise generate --path src/api         # under a path prefix or glob
 repowise generate --stale                # pages whose code changed since writing
 repowise generate --all                  # rewrite the prose everywhere
-repowise update --full                   # the whole wiki at once
+repowise update --full                   # every stale page, or the whole wiki on a fast index
 ```
 
 `generate` writes the model-written pages and only those. Naming a structural
@@ -165,7 +166,8 @@ page stays as a tombstone for 30 days, a renamed file's as a redirect.
 
 `--cascade-budget N` caps how many pages a single update may regenerate from
 cascading changes. It is adaptive when unset, which is what you want except on a
-very large refactor commit.
+very large refactor commit. The pages it leaves stale are listed in the warning;
+`repowise update --full` refreshes all of them.
 
 Pages also carry a freshness status of `fresh`, `stale`, `expired` or `unknown`.
 Expiry by age takes priority, then a source-hash mismatch marks a page stale.

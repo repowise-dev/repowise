@@ -7,6 +7,7 @@ import { LANGUAGE_COLORS } from "../lib/confidence";
 import { edgeColorsForTheme } from "./sigma/constants";
 import { useGraphCommunityFamilies } from "./community-colors";
 import type { ColorMode, ViewMode } from "./graph-toolbar";
+import { formatNumber } from "../lib/format";
 
 /** Community rows shown before the key folds into a "+N" line. */
 const COMMUNITY_ROWS = 8;
@@ -97,20 +98,20 @@ export const GRAPH_LEGEND_COPY: GraphLegendCopy = {
   scopedSummary: (members, boundary, edges) =>
     `${members} file${members === 1 ? "" : "s"}${boundary > 0 ? ` · ${boundary} outside` : ""} · ${edges} edge${edges === 1 ? "" : "s"} shown`,
   outsideGroup: "Outside this group",
-  overviewFiles: (count) => `${count.toLocaleString()} files`,
-  overviewThirdParty: (count) => `${count.toLocaleString()} third-party`,
-  overviewDependencies: (count) => `${count.toLocaleString()} dependencies`,
+  overviewFiles: (count) => `${formatNumber(count)} files`,
+  overviewThirdParty: (count) => `${formatNumber(count)} third-party`,
+  overviewDependencies: (count) => `${formatNumber(count)} dependencies`,
   nodesEdges: (nodes, edges) => `${nodes} nodes · ${edges} edges`,
   thirdPartyShown: "Third-party modules shown",
-  thirdPartyHidden: (count) => `${count.toLocaleString()} third-party modules hidden`,
+  thirdPartyHidden: (count) => `${formatNumber(count)} third-party modules hidden`,
   show: "Show",
   hide: "Hide",
   showThirdParty: "Show third-party modules",
   hideThirdParty: "Hide third-party modules",
-  unlinkedNotDrawn: (count) => `${count.toLocaleString()} unlinked files not drawn`,
+  unlinkedNotDrawn: (count) => `${formatNumber(count)} unlinked files not drawn`,
   unlinkedTitle:
     "Files with no dependency edge to anything drawn have no place in the layout and nothing to reveal on hover.",
-  weakerLinksNotDrawn: (count) => `${count.toLocaleString()} weaker community links not drawn`,
+  weakerLinksNotDrawn: (count) => `${formatNumber(count)} weaker community links not drawn`,
   weakerLinksTitle:
     "Pairs of communities with too few dependencies between them to band. Their edges still show on a hovered or selected file.",
   languageGroup: "Language",

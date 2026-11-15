@@ -68,6 +68,7 @@ def resolve_vbnet_same_namespace_refs(
     dotnet_index: DotNetProjectIndex | None,
     vb_texts: dict[str, str],
     repo_path: Path | None,
+    scan_paths: set[str] | None = None,
 ) -> int:
     """Emit same-namespace / project-import ``imports`` edges for VB.NET files.
 
@@ -149,9 +150,10 @@ def resolve_vbnet_same_namespace_refs(
             shadowed=frozenset(m.group(1) for m in _IMPORTS_ALIAS_RE.finditer(text)),
         )
 
+    paths = set(vb_texts) if scan_paths is None else set(vb_texts) & scan_paths
     return emit_scope_edges(
         graph,
-        ((path, vb_texts[path]) for path in sorted(vb_texts)),
+        ((path, vb_texts[path]) for path in sorted(paths)),
         plan,
         skip_names=_SKIP_NAMES,
         ident_re=_VB_TYPE_IDENT_RE,

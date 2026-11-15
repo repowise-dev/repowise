@@ -30,6 +30,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.cancellation import check_cancelled
+
 logger = structlog.get_logger(__name__)
 
 __all__ = [
@@ -64,6 +66,9 @@ _DEFAULT_MEMORY_MB = 2048
 
 # How long a fresh pool may take to run a no-op before it counts as unusable.
 _STARTUP_TIMEOUT_S = 120
+
+# How often a running pool wakes up to check for a first Ctrl-C.
+_CANCEL_POLL_S = 0.25
 
 
 class ParseTimeoutError(Exception):
@@ -181,11 +186,11 @@ class _Run:
         if self.on_done is not None:
             self.on_done(idx, result)
 
-    def wait_budget(self, in_flight: dict[Future, tuple[int, float]]) -> float | None:
+    def wait_budget(self, in_flight: dict[Future, tuple[int, float]]) -> float:
         if self.timeout is None:
-            return None
+            return _CANCEL_POLL_S
         oldest = min(started for _idx, started in in_flight.values())
-        return max(0.05, oldest + self.timeout - time.monotonic())
+        return min(_CANCEL_POLL_S, max(0.05, oldest + self.timeout - time.monotonic()))
 
     def expire(self, in_flight: dict[Future, tuple[int, float]]) -> bool:
         """Record every task past its deadline; True when any was."""
@@ -259,6 +264,8 @@ class _Run:
             while queue or in_flight:
                 self.dispatch(pool, queue, in_flight, limit)
                 done, _ = wait(in_flight, self.wait_budget(in_flight), FIRST_COMPLETED)
+                # A first Ctrl-C drops the queue; the ``finally`` kills the running workers.
+                check_cancelled()
                 if self.collect(done, in_flight):
                     self.on_broken(in_flight, solo)
                     return
