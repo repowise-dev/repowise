@@ -502,6 +502,18 @@ _ROUTE_MAX_ENDS = 3
 _ROUTE_HOMONYMS = 8
 
 
+def _name_spans(question: str, names: set[str]) -> list[tuple[int, int, str]]:
+    """``(start, end, name)`` of each name the question mentions on its own.
+
+    ``db`` and ``save`` inside ``db.save`` are parts of that one mention.
+    """
+    found = [(m.start(), m.end(), name) for name in names if (m := _mention(question, name))]
+    return [
+        s for s in found
+        if not any(o[0] <= s[0] and s[1] <= o[1] and o[1] - o[0] > s[1] - s[0] for o in found)
+    ]
+
+
 def route_ends(question: str, names: set[str]) -> tuple[str, list[str]] | None:
     """``(start, destinations)`` when the question names a symbol, then a motion or
     call word, then the symbols the call should reach; ``None`` otherwise.
@@ -512,16 +524,7 @@ def route_ends(question: str, names: set[str]) -> tuple[str, list[str]] | None:
     """
     if _FAILURE_RE.search(question):
         return None
-    found = []
-    for name in names:
-        named = _mention(question, name)
-        if named is not None:
-            found.append((named.start(), named.end(), name))
-    # ``db`` and ``save`` inside ``db.save`` are parts of that one mention.
-    spans = [
-        s for s in found
-        if not any(o[0] <= s[0] and s[1] <= o[1] and o[1] - o[0] > s[1] - s[0] for o in found)
-    ]
+    spans = _name_spans(question, names)
     for word in [*_PATH_RE.finditer(question), *_CALL_WORD_RE.finditer(question)]:
         before = [s for s in spans if s[1] <= word.start()]
         after = sorted(s for s in spans if s[0] >= word.end())
@@ -573,6 +576,48 @@ def _route_rows(
     return [*reversed(head), *tail]
 
 
+async def _route_level(
+    session: Any, repo_id: str, front: list[str], mine: dict, other: dict, upstream: bool,
+    exclude_spec: Any,
+) -> dict[str, None] | None:
+    """Reach one level out of *front*, recording each new symbol's parent hop in *mine*.
+
+    Returns the symbols reached (between the ends, only indexed shipped code),
+    or ``None`` when the level is too wide to query.
+    """
+    calls = await _calls(session, repo_id, front, upstream=upstream)
+    found = {t: None for src in front for _line, t in calls.get(src, []) if t not in mine}
+    if len(found) > _ROUTE_MAX_FOUND:
+        return None
+    defined = await _symbol_starts(session, repo_id, list(found))
+    seen = set(mine)
+    walkable = {
+        t for src in front for _line, t in _shipped_steps(calls.get(src, []), defined, seen, exclude_spec)
+    }
+    new: dict[str, None] = {}
+    steps = [(src, line, t) for src in sorted(front) for line, t in calls.get(src, [])]
+    for src, line, t in steps:
+        if t not in other and t not in walkable:
+            continue
+        if t not in mine:
+            new[t] = None
+            mine[t] = (src, line)
+        elif t in new and mine[t][1] >= _NO_LINE > line:
+            # Reached at this level without a call line: one with it wins.
+            mine[t] = (src, line)
+    return new
+
+
+async def _best_route(
+    session: Any, repo_id: str, meets: list[str], fwd: dict, bwd: dict
+) -> list[str]:
+    """Rows of the shortest route through one of *meets*, fewest hops without a call line first."""
+    routes = [_route_rows(t, fwd, bwd) for t in meets]
+    best = min(routes, key=lambda r: (len(r), sum(1 for hop in r if hop[1] >= _NO_LINE)))
+    defined = await _symbol_starts(session, repo_id, [hop[2] for hop in best])
+    return [_hop_row(caller, line, callee, defined.get(callee, 0)) for caller, line, callee in best]
+
+
 async def call_route(
     session: Any, repo_id: str, starts: list[str], ends: list[str], exclude_spec: Any = None
 ) -> list[str]:
@@ -594,32 +639,12 @@ async def call_route(
             break
         upstream = len(bwd_front) < len(fwd_front)
         front, mine, other = (bwd_front, bwd, fwd) if upstream else (fwd_front, fwd, bwd)
-        calls = await _calls(session, repo_id, front, upstream=upstream)
-        found = {t: None for src in front for _line, t in calls.get(src, []) if t not in mine}
-        if len(found) > _ROUTE_MAX_FOUND:
+        new = await _route_level(session, repo_id, front, mine, other, upstream, exclude_spec)
+        if new is None:
             break
-        defined = await _symbol_starts(session, repo_id, list(found))
-        seen = set(mine)
-        walkable = {
-            t for src in front for _line, t in _shipped_steps(calls.get(src, []), defined, seen, exclude_spec)
-        }
-        new: dict[str, None] = {}
-        for src in sorted(front):
-            for line, t in calls.get(src, []):
-                if t not in other and t not in walkable:
-                    continue
-                if t not in mine:
-                    new[t] = None
-                    mine[t] = (src, line)
-                elif t in new and mine[t][1] >= _NO_LINE > line:
-                    # Reached at this level without a call line: one with it wins.
-                    mine[t] = (src, line)
         meets = [t for t in new if t in other]
         if meets:
-            routes = [_route_rows(t, fwd, bwd) for t in meets]
-            best = min(routes, key=lambda r: (len(r), sum(1 for hop in r if hop[1] >= _NO_LINE)))
-            defined = await _symbol_starts(session, repo_id, [hop[2] for hop in best])
-            return [_hop_row(caller, line, callee, defined.get(callee, 0)) for caller, line, callee in best]
+            return await _best_route(session, repo_id, meets, fwd, bwd)
         if upstream:
             bwd_front = list(new)
         else:
