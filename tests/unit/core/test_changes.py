@@ -399,6 +399,7 @@ async def _db(tmp_path: Path, repo_root: Path):
 @pytest.mark.usefixtures("_private_user_config")
 async def test_refresh_rebuilds_then_extends(tmp_path, history):
     from repowise.core.persistence.crud import (
+        LISTED_ID_CHARS,
         ChangeFilter,
         get_change,
         list_changes,
@@ -427,6 +428,12 @@ async def test_refresh_rebuilds_then_extends(tmp_path, history):
             # The forge ref is what `changes list` prints, so `show` takes it too.
             assert (await get_change(session, repo_id, "#13")).change_id == "pr-13"
             assert await get_change(session, repo_id, "#999") is None
+            # A long id is listed cut short, and `show` takes it as listed.
+            rows, _ = await list_changes(session, repo_id, limit=None)
+            long_id = next(r.change_id for r in rows if len(r.change_id) > LISTED_ID_CHARS)
+            listed = long_id[:LISTED_ID_CHARS]
+            assert (await get_change(session, repo_id, listed)).change_id == long_id
+            assert await get_change(session, repo_id, "commit-ffffffffffff") is None
 
         newer = r.commit("z.py", "chore: z (#40)")
         async with get_session(factory) as session:
