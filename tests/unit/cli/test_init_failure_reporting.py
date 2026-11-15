@@ -616,7 +616,7 @@ class TestInitClosingKeylessNote:
     it hears about the upgrades.
     """
 
-    def _output(self, monkeypatch, *, setup, pages, state=None) -> str:
+    def _output(self, monkeypatch, *, setup, pages, state=None, terminal=False) -> str:
         import io
 
         from rich.console import Console
@@ -624,7 +624,9 @@ class TestInitClosingKeylessNote:
         buf = io.StringIO()
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.console",
-            Console(file=buf, width=200, force_terminal=False, theme=THEME),
+            Console(
+                file=buf, width=200, force_terminal=terminal, color_system=None, theme=THEME
+            ),
         )
         monkeypatch.setattr(
             "repowise.cli.commands.init_cmd.reporting.load_state",
@@ -659,11 +661,19 @@ class TestInitClosingKeylessNote:
         ids=["no-setup", "editor-setup-disabled", "editor-setup-done"],
     )
     def test_note_prints_with_and_without_editor_setup(self, monkeypatch, setup):
-        out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")])
+        # At a terminal: off one, editor setup off is a server run (below).
+        out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")], terminal=True)
         # Once, as a step row: the duplicate closing sentence is gone.
         assert out.count("repowise generate") == 1
         assert "Semantic search is off: repowise reindex turns it on" in out
         assert "--embedder ..." not in out
+
+    def test_a_server_run_keeps_the_model_note_and_drops_the_reindex_hint(self, monkeypatch):
+        setup = SimpleNamespace(editor_setup_disabled=True)
+        out = self._output(monkeypatch, setup=setup, pages=[_page("file_page:a")])
+        assert out.count("repowise generate") == 1
+        assert "Semantic search is off" not in out
+        assert "What's next" not in out
 
     def test_note_drops_the_search_half_when_semantic_search_is_available(self, monkeypatch):
         state = {
