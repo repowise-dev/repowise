@@ -393,3 +393,17 @@ async def test_a_failed_route_search_still_serves_the_walk(session, factory, rep
 
     assert start == f"out of handle {_API}:10"
     assert hops
+
+
+@pytest.mark.asyncio
+async def test_every_homonym_of_an_end_is_searched(session, repo_id):
+    await _seed(session, repo_id)
+    # Nine shipped ``run_job`` homonyms sort before the one ``dispatch`` calls.
+    session.add_all([_node(repo_id, f"app/a{i}/jobs.py::run_job", 1) for i in range(9)])
+    await session.flush()
+
+    ends = await symbols_named(session, repo_id, "run_job")
+    rows = await call_route(session, repo_id, [f"{_API}::handle"], ends)
+
+    assert len(ends) == 10
+    assert rows[-1] == f"dispatch {_CORE}:8 -> run_job {_CORE}:30"

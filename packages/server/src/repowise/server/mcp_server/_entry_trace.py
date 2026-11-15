@@ -499,7 +499,6 @@ _ROUTE_DEPTH = 6
 _ROUTE_MAX_VISITED = 600
 _ROUTE_MAX_FOUND = 5000  # symbols one level may add; keeps the IN list under bind-parameter limits
 _ROUTE_MAX_ENDS = 3
-_ROUTE_HOMONYMS = 8
 
 
 def _name_spans(question: str, names: set[str]) -> list[tuple[int, int, str]]:
@@ -538,7 +537,8 @@ def route_ends(question: str, names: set[str]) -> tuple[str, list[str]] | None:
 
 async def symbols_named(session: Any, repo_id: str, name: str) -> list[str]:
     """Indexed symbols called *name*; ``Owner.leaf`` keeps those under that owner
-    when any are. Shipped code first, at most :data:`_ROUTE_HOMONYMS`."""
+    when any are, and shipped ones when any are. All of them: the search starts
+    from every homonym at once, so it is not told which one the question means."""
     from repowise.core.code_origin import path_origin
 
     leaf = name.rsplit(".", 1)[-1]
@@ -554,7 +554,7 @@ async def symbols_named(session: Any, repo_id: str, name: str) -> list[str]:
         owned = [n for n in found if n.endswith("::" + name.replace(".", "::"))]
         found = owned or found
     shipped = [n for n in found if path_origin(node_to_file(n)) == "production"]
-    return (shipped or found)[:_ROUTE_HOMONYMS]
+    return shipped or found
 
 
 def _route_rows(
