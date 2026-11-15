@@ -50,6 +50,9 @@ describe("momentum", () => {
 describe("gapLabel and ageLabel", () => {
   it("switch units at sensible points", () => {
     expect(gapLabel(30)).toEqual({ value: "30", unit: "hours" });
+    expect(gapLabel(0.4)).toEqual({ value: "Under", unit: "an hour" });
+    expect(gapLabel(1.2)).toEqual({ value: "1", unit: "hour" });
+    expect(gapLabel(5.6)).toEqual({ value: "6", unit: "hours" });
     expect(gapLabel(312)).toEqual({ value: "13", unit: "days" });
     expect(ageLabel(235)).toEqual({ value: "235", unit: "days" });
     expect(ageLabel(365)).toEqual({ value: "1", unit: "year" });

@@ -61,9 +61,13 @@ function countTrend(recent: number, prior: number): string {
   return `${recent > prior ? "up" : "down"} from ${formatNumber(prior)}`;
 }
 
-/** A gap in hours, as hours under two days and whole days above. */
+/** A gap in hours: "Under an hour", whole hours under two days, whole days above. */
 export function gapLabel(hours: number): { value: string; unit: string } {
-  if (hours < 48) return { value: formatNumber(hours), unit: hours === 1 ? "hour" : "hours" };
+  if (hours < 1) return { value: "Under", unit: "an hour" };
+  if (hours < 48) {
+    const whole = Math.round(hours);
+    return { value: formatNumber(whole), unit: whole === 1 ? "hour" : "hours" };
+  }
   const days = Math.round(hours / 24);
   return { value: formatNumber(days), unit: "days" };
 }

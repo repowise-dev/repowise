@@ -207,7 +207,7 @@ const MICRO = "font-mono text-[10px] font-medium uppercase tracking-[0.12em] tex
 
 /** One record: name, holder (linked when it has a page) and figure. */
 function RecordTableRow({ row, A }: { row: RecordRow; A: React.ElementType }) {
-  const text = row.isPath ? <FilePath path={row.primary} mode="full" /> : row.primary;
+  const text = row.isPath ? <FilePath path={row.primary} mode="name-first" fold /> : row.primary;
   return (
     <tr className="border-b border-[var(--color-border-default)] align-baseline">
       <th

@@ -49,6 +49,19 @@ function quietStretch(hours: number[]): { from: number; to: number } | null {
 
 type Cell = { wd: number; hr: number };
 
+/**
+ * Below this many commits an empty run of hours is as likely chance as habit,
+ * so "Quiet hours" stays off. Ceiling: a flat count, blind to how the commits
+ * spread; a per-hour expected-count test would be the upgrade.
+ */
+export const QUIET_MIN_COMMITS = 200;
+
+/** Weekday indices the matrix can hold (0 = Monday .. 6 = Sunday); anything else is dropped. */
+function validWeekend(days: readonly number[]): readonly number[] {
+  const ok = days.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6);
+  return ok.length > 0 ? ok : DEFAULT_WEEKEND_PRESET.days;
+}
+
 const ARROWS: Record<string, [number, number]> = {
   ArrowLeft: [0, -1],
   ArrowRight: [0, 1],
@@ -90,12 +103,15 @@ export function PunchCard({
   data,
   weekendDays = DEFAULT_WEEKEND_PRESET.days,
   scope,
+  partialCommits,
 }: {
   data: StatsPunchCard;
   /** Weekday indices (0 = Monday) counted as the weekend. */
   weekendDays?: readonly number[];
   /** How much history the matrix was drawn from, shown under the chart. */
   scope?: string | undefined;
+  /** Set when the matrix covers only the latest N commits, not the whole history. */
+  partialCommits?: number | undefined;
 }) {
   const [hover, setHover] = React.useState<Cell | null>(null);
   const [pinned, setPinned] = React.useState<Cell | null>(null);
@@ -120,10 +136,12 @@ export function PunchCard({
 
   const peak = data.peak;
   const max = peak.count || 1;
-  const weekendPct = Math.round(weekendShare(data.matrix, weekendDays));
-  const weekendNames = weekendDays.map((d) => WEEKDAY_NAMES[d]).join(" and ");
+  const weekend = validWeekend(weekendDays);
+  const weekendPct = Math.round(weekendShare(data.matrix, weekend));
+  const weekendNames = weekend.map((d) => WEEKDAY_NAMES[d]).join(" and ");
   const isLocal = data.timezone_mode === "author_local";
-  const { hourTotals, dayTotals, hourMax, dayMax, quiet } = derived;
+  const { hourTotals, dayTotals, hourMax, dayMax } = derived;
+  const quiet = data.total >= QUIET_MIN_COMMITS ? derived.quiet : null;
   const busiestDay = dayTotals.indexOf(dayMax);
   const active = hover ?? pinned;
 
@@ -180,6 +198,11 @@ export function PunchCard({
           role="group"
           aria-label="Commits by weekday and hour. Use the arrow keys to read each hour."
           onKeyDown={onKeyDown}
+          onBlur={(e) => {
+            // Focus leaving the grid drops the pinned hour, so neither the
+            // outline nor the readout sticks once the reader has moved on.
+            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setPinned(null);
+          }}
           onMouseLeave={() => setHover(null)}
           className="rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[var(--color-focus-ring)]"
         >
@@ -292,16 +315,15 @@ export function PunchCard({
         <RailItem label="Weekend share">
           <b className={strong}>{weekendPct}%</b> of commits land on {weekendNames}.
         </RailItem>
-        <RailItem label="Quiet hours">
-          {quiet ? (
-            <>
-              No commit has ever landed between <b className={strong}>{hourLabel(quiet.from)}</b>{" "}
-              and <b className={strong}>{hourLabel((quiet.to + 1) % 24)}</b>.
-            </>
-          ) : (
-            "Every hour of the day has seen a commit."
-          )}
-        </RailItem>
+        {quiet && (
+          <RailItem label="Quiet hours">
+            {partialCommits
+              ? `None of the latest ${formatNumber(partialCommits)} commits`
+              : "No commit has ever"}{" "}
+            landed between <b className={strong}>{hourLabel(quiet.from)}</b> and{" "}
+            <b className={strong}>{hourLabel((quiet.to + 1) % 24)}</b>.
+          </RailItem>
+        )}
         <RailItem label="Busiest weekday">
           <b className={strong}>{WEEKDAY_NAMES[busiestDay]}</b>, with {formatNumber(dayMax)} commits.
         </RailItem>

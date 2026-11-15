@@ -254,7 +254,12 @@ export function StatsReport({
       />
 
       <div className={block}>
-        <PunchCard data={rhythm.punch_card} weekendDays={weekendDays} scope={scopeSentence(data)} />
+        <PunchCard
+          data={rhythm.punch_card}
+          weekendDays={weekendDays}
+          scope={scopeSentence(data)}
+          partialCommits={partial ? sample.commits : undefined}
+        />
       </div>
 
       {tempo.length > 0 && (

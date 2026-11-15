@@ -117,7 +117,7 @@ describe("RecordsList", () => {
     expect(screen.getByText("Flow")).toBeInTheDocument();
   });
 
-  it("links records to their file and commit, with the full path", () => {
+  it("links records to their file and commit", () => {
     const path = "packages/a/very/deep/directory/structure/that/used/to/be/cut/module.py";
     render(
       <RecordsList
@@ -129,9 +129,9 @@ describe("RecordsList", () => {
         commitHref={(sha) => `/commits?commit=${sha}`}
       />,
     );
-    // Wrap points after each slash split the text, so match on content, not name.
-    const fileLink = screen.getAllByRole("link").find((a) => a.textContent === path);
-    expect(fileLink).toHaveAttribute("href", `/files/${path}`);
+    // Name first with the directory clipped; the link still goes to the full path.
+    const fileLink = screen.getAllByRole("link").find((a) => a.getAttribute("href") === `/files/${path}`);
+    expect(fileLink).toHaveTextContent("module.py");
     expect(screen.getByRole("link", { name: "Big one" })).toHaveAttribute(
       "href",
       "/commits?commit=abc123",

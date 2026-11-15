@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { StatsPunchCard } from "@repowise-dev/types/stats";
 import { describe, expect, it } from "vitest";
 import { PunchCard } from "../../src/stats/punch-card.js";
@@ -65,13 +65,45 @@ describe("PunchCard", () => {
     expect(screen.getByText(/Busiest hour/)).toHaveTextContent("Busiest hour: Wednesday, 2pm, 6 commits.");
   });
 
-  it("reports the stretch nobody has ever committed in", () => {
-    render(<PunchCard data={makePunchCard()} />);
-    // The fixture only ever commits at 10, 11, 12 and 14, so the longest silent
-    // run wraps midnight: 15:00 through 09:59.
+  it("reports the stretch nobody has ever committed in, on enough history", () => {
+    const data = makePunchCard();
+    data.matrix[2]![14] = 196;
+    data.total = 200;
+    render(<PunchCard data={data} />);
+    // Commits only ever land at 10, 11, 12 and 14, so the longest silent run
+    // wraps midnight: 15:00 through 09:59.
     expect(screen.getByText("Quiet hours")).toBeInTheDocument();
     expect(screen.getByText("3pm")).toBeInTheDocument();
-    expect(screen.getByText("10am")).toBeInTheDocument();
+    expect(screen.getByText(/No commit has ever landed/)).toBeInTheDocument();
+  });
+
+  it("keeps quiet hours off on thin history", () => {
+    render(<PunchCard data={makePunchCard()} />);
+    expect(screen.queryByText("Quiet hours")).not.toBeInTheDocument();
+  });
+
+  it("does not say ever when the matrix is a partial window", () => {
+    const data = makePunchCard();
+    data.matrix[2]![14] = 196;
+    data.total = 200;
+    render(<PunchCard data={data} partialCommits={2000} />);
+    expect(screen.getByText(/None of the latest 2,000 commits landed/)).toBeInTheDocument();
+    expect(screen.queryByText(/ever/)).not.toBeInTheDocument();
+  });
+
+  it("ignores weekend indexes outside the week", () => {
+    render(<PunchCard data={makePunchCard()} weekendDays={[5, 6, 9, -1]} />);
+    expect(screen.getByText("20%")).toBeInTheDocument();
+    expect(screen.getByText(/land on Saturday and Sunday\./)).toBeInTheDocument();
+  });
+
+  it("drops the pinned hour when focus leaves the grid", () => {
+    const { container } = render(<PunchCard data={makePunchCard()} />);
+    const grid = screen.getByRole("group");
+    fireEvent.keyDown(grid, { key: "ArrowRight" });
+    expect(screen.getByText(/Wednesday, 3pm/)).toBeInTheDocument();
+    fireEvent.blur(grid, { relatedTarget: null });
+    expect(container.textContent).toContain("Busiest hour");
   });
 
   it("says which clock the hours are in, in visible text", () => {
