@@ -22,6 +22,7 @@ from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_
 from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
 from repowise.server.mcp_server._helpers import filter_dicts_by_key
 from repowise.server.mcp_server._index_state import index_state_key
+from repowise.server.mcp_server._symbol_facts import shows_call_origin
 from repowise.server.mcp_server._wrapper_callers import forwarding_wrapper_callers
 from repowise.server.schemas.intelligence import SYMBOL_RELATION_GROUP_OF
 
@@ -511,7 +512,8 @@ def _attach_relations(
     ):
         reached = ", ".join(f"{r['total']} {r['edge_type']}" for r in inbound_kinds)
         run.result_data["_call_graph_note"] = (
-            f"Nothing calls '{run.node.name}'; it is reached by {reached}. See `relations`."
+            f"No resolved call reaches '{run.node.name}'; it is reached by {reached}. "
+            "See `relations`."
         )
 
 
@@ -626,7 +628,9 @@ async def _file_inbound_calls(
     if not sym_ids:
         return calls_by_file, {}
     edge_res = await session.execute(
-        select(GraphEdge.source_node_id, GraphEdge.confidence).where(
+        select(
+            GraphEdge.source_node_id, GraphEdge.confidence, GraphEdge.resolution_origin
+        ).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.target_node_id.in_(sym_ids),
             GraphEdge.edge_type == "calls",
@@ -634,8 +638,10 @@ async def _file_inbound_calls(
     )
     # The shared projection rule every calls-onto-files surface uses. Its
     # same-extension guard drops genuine cross-language calls: a known ceiling.
-    for src_id, confidence in edge_res.all():
+    for src_id, confidence, origin in edge_res.all():
         src_file = node_to_file(src_id)
+        if not shows_call_origin(origin, target_file):
+            continue
         if not keep_projected_edge(src_file, target_file, "calls", confidence):
             continue
         calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1

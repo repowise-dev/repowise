@@ -167,6 +167,118 @@ async def test_embed_raises_when_api_returns_wrong_width():
     assert "_DIMS" in msg   # points at the table entry
 
 
+@pytest.mark.parametrize("model", sorted(OpenRouterEmbedder._DIMS))
+async def test_every_known_model_requests_its_declared_width(monkeypatch, model):
+    # OpenRouter serves google/gemini-embedding-001 (the default) at 3072 unless
+    # a width is requested, so a request without ``dimensions`` could never match
+    # the 768 declared in _DIMS. For every model in the table, the width the
+    # request asks for must equal the width the code declares.
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    emb = OpenRouterEmbedder(api_key="k", model=model)
+
+    with patch("openai.OpenAI") as mock_client:
+        create = mock_client.return_value.embeddings.create
+        create.return_value = _make_mock_response([[1.0] * emb.dimensions])
+        await emb.embed(["hello"])
+
+    assert (
+        create.call_args.kwargs["dimensions"] == emb.dimensions == OpenRouterEmbedder._DIMS[model]
+    )
+
+
+async def test_default_model_requests_768(monkeypatch):
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    emb = OpenRouterEmbedder(api_key="k")
+
+    with patch("openai.OpenAI") as mock_client:
+        create = mock_client.return_value.embeddings.create
+        create.return_value = _make_mock_response([[1.0] * 768])
+        await emb.embed(["hello"])
+
+    assert create.call_args.kwargs["dimensions"] == 768
+
+
+async def test_configured_width_is_sent_to_the_api(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "1536")
+    emb = OpenRouterEmbedder(api_key="k")
+    assert emb.dimensions == 1536
+
+    with patch("openai.OpenAI") as mock_client:
+        create = mock_client.return_value.embeddings.create
+        create.return_value = _make_mock_response([[1.0] * 1536])
+        vectors = await emb.embed(["hello"])
+
+    assert create.call_args.kwargs["dimensions"] == 1536
+    assert len(vectors[0]) == 1536
+
+
+@pytest.fixture
+def _no_width_env(monkeypatch):
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DECLARED_DIMS", raising=False)
+
+
+@pytest.mark.usefixtures("_no_width_env")
+@pytest.mark.parametrize("source", ["arg", "env"])
+async def test_declared_width_is_never_sent_to_the_api(monkeypatch, source):
+    # For a fixed-width model that refuses ``dimensions`` outright, the width is
+    # declared without being requested, as on OpenAIEmbedder.
+    if source == "env":
+        monkeypatch.setenv("REPOWISE_EMBEDDING_DECLARED_DIMS", "3072")
+        emb = OpenRouterEmbedder(api_key="k")
+    else:
+        emb = OpenRouterEmbedder(api_key="k", declared_dimensions=3072)
+    assert emb.dimensions == 3072
+
+    with patch("openai.OpenAI") as mock_client:
+        create = mock_client.return_value.embeddings.create
+        create.return_value = _make_mock_response([[1.0] * 3072])
+        vectors = await emb.embed(["hello"])
+
+    assert "dimensions" not in create.call_args.kwargs
+    assert len(vectors[0]) == 3072
+
+
+@pytest.mark.usefixtures("_no_width_env")
+async def test_configured_width_wins_over_declared_width(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "1536")
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DECLARED_DIMS", "3072")
+    emb = OpenRouterEmbedder(api_key="k", declared_dimensions=3072)
+
+    with patch("openai.OpenAI") as mock_client:
+        create = mock_client.return_value.embeddings.create
+        create.return_value = _make_mock_response([[1.0] * 1536])
+        await emb.embed(["hello"])
+
+    assert emb.dimensions == 1536
+    assert create.call_args.kwargs["dimensions"] == 1536
+
+
+@pytest.mark.usefixtures("_no_width_env")
+async def test_declared_width_mismatch_names_the_declared_setting():
+    emb = OpenRouterEmbedder(api_key="k", declared_dimensions=768)
+
+    with patch("openai.OpenAI") as mock_client:
+        mock_client.return_value.embeddings.create.return_value = _make_mock_response([[1.0] * 3])
+        with pytest.raises(ValueError, match="REPOWISE_EMBEDDING_DECLARED_DIMS"):
+            await emb.embed(["hello"])
+
+
+@pytest.mark.usefixtures("_no_width_env")
+@pytest.mark.parametrize("kwarg", ["dimensions", "declared_dimensions"])
+@pytest.mark.parametrize("value", [0, -1, True])
+def test_bad_explicit_width_raises(kwarg, value):
+    with pytest.raises(ValueError, match="dimensions must be a positive integer"):
+        OpenRouterEmbedder(api_key="k", **{kwarg: value})
+
+
+def test_malformed_declared_env_raises_the_same_message(monkeypatch):
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DECLARED_DIMS", "abc")
+    with pytest.raises(ValueError, match="dimensions must be a positive integer"):
+        OpenRouterEmbedder(api_key="k")
+
+
 async def test_embed_width_check_not_triggered_on_empty():
     emb = OpenRouterEmbedder(api_key="k")
     assert await emb.embed([]) == []

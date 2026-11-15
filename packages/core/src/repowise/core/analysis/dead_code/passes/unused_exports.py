@@ -314,9 +314,13 @@ class UnusedExportPass:
         # ``export { local as alias }`` publishes the symbol under the
         # alias; importers carry the alias in ``imported_names``.
         export_alias = self.ctx._ts_export_aliases.get(str(node), {}).get(sym_name)
+        # A Pascal ``uses`` brings in the whole interface, so its ``*`` names
+        # no symbol: a use is a call, type or name edge, or the name written in
+        # an importer (``pascal_name_uses``).
+        wildcard_rescues = file_ctx.node_data.get("language") != "pascal"
         has_importers = any(
             sym_name in imported_names
-            or "*" in imported_names
+            or ("*" in imported_names and wildcard_rescues)
             or (export_alias is not None and export_alias in imported_names)
             for imported_names in (
                 self.graph[pred][node].get("imported_names", [])

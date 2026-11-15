@@ -83,7 +83,7 @@ async def test_get_overview_hotspot_health_is_none_without_hotspots(
     repository = await crud.get_repository(session, health_data)
     block = await _build_code_health(session, repository)
 
-    assert block["hotspot_health"] is None
+    assert "hotspot_health" not in block
 
 
 @pytest.mark.asyncio

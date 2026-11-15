@@ -61,6 +61,7 @@ def _row(pid: str, **kw) -> SimpleNamespace:
         "parent_page_id": None,
         "display_order": 0,
         "section_number": None,
+        "metadata_json": None,
     }
     base.update(kw)
     return SimpleNamespace(**base)

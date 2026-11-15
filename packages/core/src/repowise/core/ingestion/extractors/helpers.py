@@ -254,15 +254,8 @@ def find_preceding_jsdoc(node: Node, src: str) -> str | None:
 
 def find_preceding_block_comment(node: Node, src: str, prefix: str) -> str | None:
     """Return the block comment immediately before *node* that starts with *prefix*."""
-    parent = node.parent
-    if parent is None:
-        return None
-    siblings = list(parent.children)
-    idx = next((i for i, s in enumerate(siblings) if s.id == node.id), -1)
-    if idx <= 0:
-        return None
-    prev = siblings[idx - 1]
-    if prev.type in ("block_comment", "comment"):
+    prev = node.prev_sibling
+    if prev is not None and prev.type in ("block_comment", "comment"):
         text = node_text(prev, src).strip()
         if text.startswith(prefix):
             return clean_jsdoc(text)

@@ -105,13 +105,20 @@ def _read_changes(
             repo.close()
 
 
+# Deepest change window. ``commit_limit`` has no upper bound, but the change
+# filters bind matching change ids as one ``IN`` list, and SQLite allows 32k
+# bind variables. 10,000 is the window ``commit_limit`` used to cap at; going
+# deeper means moving those filters into SQL over a stored per-change rollup.
+_CHANGE_WINDOW_CEILING = 10_000
+
+
 async def refresh_changes(
     session: Any, repo_id: str, repo_path: Path | str, *, rebuild: bool
 ) -> int:
     """Rebuild (full index) or extend (update) the repository's changes.
 
     The window is the repo's ``commit_limit`` first-parent commits, like the
-    commit table. An update reads only changes after the newest stored one and
+    commit table, up to :data:`_CHANGE_WINDOW_CEILING`. An update reads only changes after the newest stored one and
     rebuilds when that one is no longer on HEAD's history. Provenance is read
     from the stored commit labels, so it runs after those are written, and is
     left out while attribution is off. Returns how many rows were written;
@@ -130,7 +137,10 @@ async def refresh_changes(
 
     repo_path = Path(repo_path)
     try:
-        limit = int(load_repo_config(repo_path).get("commit_limit") or _DEFAULT_COMMIT_LIMIT)
+        limit = min(
+            int(load_repo_config(repo_path).get("commit_limit") or _DEFAULT_COMMIT_LIMIT),
+            _CHANGE_WINDOW_CEILING,
+        )
         since = None if rebuild else await get_newest_change_head(session, repo_id)
         taken = {} if since is None else await get_change_heads(session, repo_id)
         changes = await asyncio.to_thread(_read_changes, repo_path, limit, since, taken)

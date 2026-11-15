@@ -7,11 +7,19 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import networkx as nx
 
 from repowise.core.generation.context.contexts import ModulePageContext
-from repowise.core.generation.context.module_facts import build_module_facts, module_base
+from repowise.core.generation.context.module_facts import (
+    build_module_facts,
+    git_activity,
+    importing_tests,
+    module_base,
+    module_budget,
+    symbol_weight,
+)
 
 _FILES = [
     "src/shop/orders/place.py",
@@ -83,8 +91,68 @@ def test_parts_and_the_imports_between_them():
 def test_neighbours_are_named_by_directory_and_tests_do_not_count():
     facts = build_module_facts(_ctx(), [], _graph())
 
-    assert facts["depends_on"] == [{"area": "src/db/", "imports": 1}]
-    assert facts["used_by"] == [{"area": "src/web/", "imports": 1}]
+    assert facts["depends_on"] == [{"area": "src/db/", "imports": 1, "names": ["session"]}]
+    assert facts["used_by"] == [{"area": "src/web/", "imports": 1, "names": ["place_order"]}]
+
+
+def test_parts_with_pages_of_their_own_are_the_parts_drawn():
+    ctx = _ctx()
+    ctx.child_pages = [{"title": "Ordering", "path": "src/shop/orders"}]
+    facts = build_module_facts(ctx, [], _graph())
+
+    edges = {(e["from"], e["to"]) for e in facts["imports_between_parts"]}
+    assert ("Ordering", "billing/") in edges
+    assert facts["child_pages"] == ctx.child_pages
+
+
+def test_tests_that_import_the_module_are_listed_with_their_names():
+    parsed = {"tests/test_shop.py": SimpleNamespace(symbols=[
+        SimpleNamespace(name="test_places_an_order"), SimpleNamespace(name="helper"),
+    ])}
+    assert importing_tests(_graph(), _FILES, parsed) == [
+        {"file": "tests/test_shop.py", "tests": ["test_places_an_order"]}
+    ]
+    assert importing_tests(_graph(), ["src/shop/stock/reserve.py"], parsed) == []
+
+
+def test_change_history_names_where_changes_and_fixes_cluster():
+    meta = {
+        "src/shop/orders/place.py": {"file_path": "src/shop/orders/place.py",
+                                     "commit_count_90d": 5, "prior_defect_count": 2},
+        "src/shop/stock/reserve.py": {"file_path": "src/shop/stock/reserve.py",
+                                      "commit_count_90d": 1, "prior_defect_count": 0},
+    }
+    assert git_activity(_FILES, meta, "src/shop") == {
+        "commits_90d": 6,
+        "most_changed_90d": [
+            {"file": "orders/place.py", "commit_count_90d": 5},
+            {"file": "stock/reserve.py", "commit_count_90d": 1},
+        ],
+        "most_bug_fixes": [{"file": "orders/place.py", "prior_defect_count": 2}],
+    }
+    assert git_activity(_FILES, None, "src/shop") == {}
+
+
+def test_symbols_other_code_runs_through_weigh_more():
+    g = _graph()
+    g.add_node("src/shop/billing/charge.py::charge", node_type="symbol",
+               file_path="src/shop/billing/charge.py")
+    g.add_edge("src/shop/orders/place.py::place_order", "src/shop/billing/charge.py::charge",
+               edge_type="calls")
+    flow = _Flow(["src/shop/orders/place.py::place_order", "src/shop/billing/charge.py::charge"])
+    weight = symbol_weight(g, _FILES, [flow])
+    assert weight["src/shop/billing/charge.py::charge"] == 3
+    assert weight["src/shop/orders/place.py::place_order"] == 2
+
+
+def test_the_default_style_reads_and_writes_more_for_a_bigger_module():
+    small, big = module_budget(4, 4, True), module_budget(400, 30, True)
+    assert small.words == (550, 750) and big.words == (900, 1100)
+    assert small.excerpt_tokens < big.excerpt_tokens == 15_000
+    # A map page owning no files of its own reads little code.
+    assert module_budget(400, 0, True).excerpt_tokens == 4_000
+    # Other styles keep one size for every module.
+    assert module_budget(4, 4, False) == module_budget(400, 30, False)
 
 
 def test_connected_parts_get_a_flowchart():

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.analysis.decisions.landing import evidence_landings, record_landing
+from repowise.core.analysis.decisions.landing import evidence_landings, main_line, record_landing
 from repowise.core.analysis.decisions.staleness import compute_staleness
 from repowise.core.precedent.currency import describe_decision_currency
 
@@ -137,5 +137,49 @@ def test_a_same_named_commit_that_changes_none_of_its_files_does_not_land_it(rep
     (repo / "other.py").write_text("x\n", encoding="utf-8")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "fix typo (#900)", when=_SQUASH)
+
+    assert evidence_landings(repo, [branch]) == {}
+
+
+def test_a_commit_a_merge_commit_brought_in_lands_in_that_merge(repo: Path) -> None:
+    branch = _branch_commit(repo, "feat: keep the rule")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "Merge topic", "topic", when=_SQUASH)
+    merge = _git(repo, "rev-parse", "HEAD")
+
+    landing = evidence_landings(repo, [branch])[branch]
+
+    assert (landing.sha, landing.at) == (merge, _SQUASH)
+
+
+def test_landings_are_read_against_the_ref_asked_for(repo: Path) -> None:
+    """HEAD on the branch holds the commit; the default branch does not, yet."""
+    branch = _branch_commit(repo, "feat: keep the rule")
+    _git(repo, "checkout", "-q", "topic")
+
+    assert evidence_landings(repo, [branch])[branch].sha == branch
+    assert evidence_landings(repo, [branch], ref="main") == {}
+    line = main_line(repo, [branch])
+    assert line is not None and line.ref == "main"
+    assert line.waiting([branch]) and line.landed([branch]) is None
+
+
+def test_a_record_lands_only_when_every_commit_it_cites_has(repo: Path) -> None:
+    old = _git(repo, "rev-parse", "HEAD")
+    branch = _branch_commit(repo, "feat: keep the rule")
+    line = main_line(repo, [old, branch])
+
+    assert line is not None and line.landed([old, branch]) is None
+    assert line.landed([old]) is not None
+    # A value git does not hold cannot hold a record back, nor land it.
+    assert not line.waiting(["deadbeefdeadbeef"])
+    assert line.landed(["deadbeefdeadbeef"]) is None
+
+
+def test_a_same_named_commit_missing_one_of_its_files_does_not_land_it(repo: Path) -> None:
+    _git(repo, "checkout", "-q", "-b", "topic")
+    (repo / "other.py").write_text("x\n", encoding="utf-8")
+    branch = _commit(repo, "fix typo", _BRANCH, "branch\n")
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, "fix typo (#900)", _SQUASH, "branch\n")
 
     assert evidence_landings(repo, [branch]) == {}

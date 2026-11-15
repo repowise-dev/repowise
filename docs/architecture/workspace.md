@@ -146,7 +146,7 @@ links are appended after it.
    (`common.shared_idl`); the other copies are vendored IDL, never linked or listed as
    orphans. A .NET project's `<Protobuf GrpcServices="Client">` proto provides nothing.
 4. **Type passes**, in `MATCHERS` order: HTTP `gateway_pass` (`gateway_route`),
-   `base_resolved_pass`, `candidate_pass` (`unique_path`, `ambiguous_path`, `prefix_stripped`) and `service_pass`; topic
+   `base_resolved_pass`, `candidate_pass` (`unique_path`, `ambiguous_path`, `prefix_stripped`), `segment_pass` (`param_segment`) and `service_pass`; topic
    `binding_pass` (`binding_routed`); data `shared_table_pass` (`shared_table`).
    HTTP's `accepts` (`matching/http.py`) holds every pass to one rule: a generic
    operational path (`/health`, `/metrics`, the root) links only to the consumer's
@@ -325,7 +325,7 @@ Rules that follow from them:
 - A dialect picks an existing origin; it never sets a number. A new way of
   establishing a contract adds one `ContractOrigin` row.
 - `match_type` is derived from the strategy, never set on its own. Candidate
-  strategies are `ambiguous_path`, `prefix_stripped` and `host_only`.
+  strategies are `ambiguous_path`, `prefix_stripped`, `param_segment` and `host_only`.
 - A system-graph edge carries the strategy of the link that gave it its confidence,
   `manifest` for a package edge, and none for co-change.
 - A stored link without a strategy is read through `legacy_strategy`; that store's

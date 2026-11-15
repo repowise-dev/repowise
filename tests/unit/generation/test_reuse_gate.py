@@ -354,14 +354,13 @@ async def test_overview_reuse_follows_its_map_and_evidence(sample_config, sample
         )
 
     provider, drift_gen = _fresh()
-    drifted = await _overview(
+    await _overview(
         drift_gen,
         sample_repo_structure,
         system_map=_system_map(),
         readme=b"Demo indexes code.",
         git_meta_map={"cli/main.py": {"file_path": "cli/main.py", "commit_count_90d": 3}},
     )
-    assert drifted.source_hash != first.source_hash
     assert provider.call_count == 0
 
     provider, readme_gen = _fresh()

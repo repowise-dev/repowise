@@ -1,18 +1,14 @@
 """Selecting and rendering the repository's own vocabulary.
 
-Two pages present mined house terms: the overview's capability table names the
-six the repository is most about, and the glossary defines all of them. They are
-the same computation at two depths — one ranked, corroborated list, sliced
-short for the front page and long for the lookup page — so the selection lives
-here and both callers read it rather than each deriving its own.
+The overview presents mined house terms: its capability table names the six
+the repository is most about, from one ranked, corroborated list built here.
 
 Everything in this module is deterministic. A term, the repository's own
 sentence about it, and the path that sentence was read from are facts the run
 already holds, and facts written by a model are resampled on every render: two
 calls with the same prompt, the same model and the same temperature produced
 overviews that disagreed on their row count and on which paths they cited. So
-these tables are built here and embedded after the page comes back, and the
-glossary is rendered without a model at all.
+these tables are built here and embedded after the page comes back.
 """
 
 from __future__ import annotations
@@ -44,19 +40,6 @@ class SelectedTerm:
     #: rather than a fact about the repository, so it ranks and it logs; the
     #: overview does not render it.
     corroborating_pages: int
-    #: Whether the codebase defines a symbol by this name. A term that is also
-    #: a symbol may be rendered in backticks; a coined one may not, because the
-    #: grounding pass strips backticks off any token it cannot resolve.
-    is_indexed_symbol: bool = False
-    #: What the structural side calls the parts of the system that name this
-    #: term, in corpus order. This is the honest answer to "where is this used"
-    #: — every entry is a module group cut from the dependency graph, so it
-    #: points at code rather than at more prose.
-    corroborating_names: tuple[str, ...] = ()
-    #: The nearest authoritative prose retained for a later synthesis pass even
-    #: when it is not semantically adequate to publish as the definition.
-    definition_evidence: str | None = None
-    definition_evidence_source: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +250,6 @@ def clamp(text: str, limit: int) -> str:
 def select_terms(
     house_terms: Sequence[HouseTerm],
     module_names: Iterable[str],
-    *,
-    limit: int | None = None,
 ) -> list[SelectedTerm]:
     """The mined terms worth publishing, in the order they go on a page.
 
@@ -304,14 +285,9 @@ def select_terms(
     every term ties at one) and a junk row is expensive on a short page.
 
     Ordering is total and derived only from the inputs, so two runs over an
-    unchanged repository select the same terms in the same order. *limit*
-    slices the tail: the whole list is one computation, and the front page
-    takes its head while the glossary takes more of it.
+    unchanged repository select the same terms in the same order.
     """
     corpus = [name for name in module_names if name]
-    # Each entry is a group's title followed by its summary, so the first line
-    # is the group's name — what to call the place a term turned up.
-    titles = [entry.split("\n", 1)[0].strip() for entry in corpus]
     # The regex is the expensive part and nearly every (term, group) pair is a
     # miss, so a substring test on the term's first word rejects most pairs
     # before it runs. The same trick is what made the miner itself 3.3× faster.
@@ -328,22 +304,14 @@ def select_terms(
         # terms skip the prefilter and pay the regex.
         lead = words[0].lower() if words[0].isascii() else None
         pattern = phrase_pattern(term.term)
-        # Sorted, not in corpus order. Everything else this function returns is
-        # derived only from its inputs' *contents*, and a field that reordered
-        # with the corpus would make two runs over an unchanged repository
-        # disagree whenever module grouping shuffled.
-        matched = tuple(
-            sorted(
-                titles[i]
-                for i, entry in enumerate(corpus)
-                if (lead is None or lead in folded[i]) and pattern.search(entry)
-            )
+        hits = sum(
+            1
+            for i, entry in enumerate(corpus)
+            if (lead is None or lead in folded[i]) and pattern.search(entry)
         )
-        hits = len(matched)
         if not hits:
             continue
-        definition_evidence = term.definition
-        definition = plain_inline_markup(definition_evidence) if definition_evidence else None
+        definition = plain_inline_markup(term.definition) if term.definition else None
         # No "the definition must name the term" test. It was built, measured
         # and dropped: a heading gloss is the commonest definition shape there
         # is, and it does not restate its own heading. "## Blast radius" over
@@ -379,23 +347,15 @@ def select_terms(
                 definition=definition,
                 source_path=source,
                 corroborating_pages=hits,
-                is_indexed_symbol=term.is_indexed_symbol,
-                corroborating_names=matched,
-                definition_evidence=definition_evidence,
-                definition_evidence_source=(
-                    term.definition_source if definition_evidence else None
-                ),
             )
         )
 
     selected.sort(key=lambda t: (len(term_words(t.term)) == 1, -t.corroborating_pages, t.term))
-    kept = selected if limit is None else selected[:limit]
     log.info(
         "house_vocabulary.selected",
         mined=len(house_terms),
         corroborated=len(selected),
-        kept=len(kept),
-        terms=[t.term for t in kept[:12]],
+        terms=[t.term for t in selected[:12]],
     )
     if house_terms and not selected:
         # The documents name things the structure does not. That is a real
@@ -408,4 +368,4 @@ def select_terms(
             mined=len(house_terms),
             module_names=len(corpus),
         )
-    return kept
+    return selected

@@ -57,6 +57,7 @@ import {
 import { usePerformanceFilters } from "./performance/use-filters";
 import { usePerformanceQueue } from "./performance/use-queue";
 import { PerformanceVerdict, verdictOf } from "./performance/verdict";
+import { formatNumber } from "../lib/format";
 
 /**
  * The Performance tab: how many changes are worth making now, where they sit,
@@ -341,7 +342,7 @@ export function PerformanceView({
             />
             {data.areas && data.areas.more > 0 ? (
               <p className="text-xs text-[var(--color-text-tertiary)]">
-                {data.areas.more.toLocaleString()} more{" "}
+                {formatNumber(data.areas.more)} more{" "}
                 {data.areas.more === 1 ? "cause sits" : "causes sit"} in smaller areas not
                 listed here.
               </p>
@@ -351,7 +352,7 @@ export function PerformanceView({
 
         {filters.scope === "now" && items.length > 0 && otherProduction > 0 ? (
           <Button variant="outline" size="sm" onClick={() => toScope("production")}>
-            Show the {otherProduction.toLocaleString()} other production{" "}
+            Show the {formatNumber(otherProduction)} other production{" "}
             {otherProduction === 1 ? "cause" : "causes"}
           </Button>
         ) : null}

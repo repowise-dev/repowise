@@ -189,8 +189,8 @@ class ApexPerfDialect(JavaPerfDialect):
     def is_iteration_loop(self, node: Node) -> bool:
         return node.type in ("for_statement", "enhanced_for_statement")
 
-    def runs_once_in_loop(self, call: Node) -> bool:
-        return _loop_ends_after(call)
+    def runs_once_in_loop(self, node: Node, loop_kinds: frozenset[str]) -> bool:
+        return _loop_ends_after(node)
 
 
 def _walks_chunks(loop: Node) -> bool:

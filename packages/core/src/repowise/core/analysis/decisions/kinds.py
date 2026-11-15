@@ -32,8 +32,11 @@ __all__ = ["classify_kind"]
 #: agreement about conducting the work is ever stated. ``session_discovery``
 #: reads the same transcripts through a broader gate, so it sees the same
 #: sentences. ``agent`` is a coding agent proposing a choice in its own words,
-#: which is where it states how the work is conducted too.
-_PROSE_SOURCES: frozenset[str] = frozenset({"session", "session_discovery", "agent"})
+#: which is where it states how the work is conducted too. ``pr_review`` is a
+#: reviewer's reply on a PR thread, where review conventions are stated.
+_PROSE_SOURCES: frozenset[str] = frozenset(
+    {"session", "session_discovery", "agent", "pr_review"}
+)
 
 #: Acts of conducting work, grouped by what they name. Each is something a
 #: person does to the repository or around it, never something the repository

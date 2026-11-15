@@ -63,7 +63,7 @@ describe("RepoRows", () => {
     expect(screen.getByText("—")).toBeTruthy();
   });
 
-  it("reads the score on the three bands of a health mark", () => {
+  it("reads the score on the five canonical bands", () => {
     render(
       <RepoRows
         repos={[
@@ -74,18 +74,19 @@ describe("RepoRows", () => {
       />,
     );
 
-    expect(screen.getByText("Healthy")).toBeTruthy();
-    expect(screen.getByText("Warning")).toBeTruthy();
-    expect(screen.getByText("Alert")).toBeTruthy();
+    expect(screen.getByText("Excellent")).toBeTruthy();
+    expect(screen.getByText("Good")).toBeTruthy();
+    expect(screen.getByText("At risk")).toBeTruthy();
   });
 
-  // The bug this guards: a 7.4 repo read green "Good" here and amber
-  // "Warning" on the system map.
-  it("reads a mid-seven score as Warning, as the system map does", () => {
-    render(<RepoRows repos={[row({ health: 7.4 })]} />);
+  // One scale everywhere: a 7.7 repo reads Good in green here, as on its own
+  // Overview, the system map and every file pill.
+  it("reads 7.7 as Good, as every other health surface does", () => {
+    render(<RepoRows repos={[row({ health: 7.7 })]} />);
 
-    expect(screen.getByText("Warning")).toBeTruthy();
-    expect(screen.queryByText("Good")).toBeNull();
+    const word = screen.getByText("Good");
+    expect(word.getAttribute("style")).toContain("var(--color-success)");
+    expect(screen.queryByText("Warning")).toBeNull();
   });
 
   it("does not quote figures for a repo that was never indexed", () => {

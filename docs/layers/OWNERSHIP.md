@@ -157,7 +157,7 @@ The detectors use the code-health rules file, `.repowise/health-rules.json`:
 - `severity_overrides` sets a detector's label; an explicit entry wins over the
   profile.
 - History depth: `repowise init --commit-limit N` sets how many commits per file
-  are read (default 5000, maximum 10000). `--follow-renames` follows a file
+  are read (default 5000; set it above the commit count for full history). `--follow-renames` follows a file
   across renames, so ownership survives a move. Both are saved to config.
 - `--mode fast` skips blame. Owners then come from commit counts alone and
   `owner_line_pct` stays empty.
@@ -201,7 +201,7 @@ Full schema: [CONFIG.md](../reference/CONFIG.md#the-health-rulesjson-file).
 | `repowise risk` | `--target PATH` | Score a file's history, including owners and bus factor |
 | `repowise risk` | `--changed-file PATH` | With `--target`: PR mode; `--format json` includes `recommended_reviewers` |
 | `repowise health` | `--file PATH` | One file's findings, including the ownership detectors |
-| `repowise init` | `--commit-limit N` | Commits read per file (default 5000, max 10000) |
+| `repowise init` | `--commit-limit N` | Newest commits read (default 5000, no upper bound) |
 | `repowise init` | `--follow-renames` | Track files across renames |
 | `repowise init` | `--mode fast` | Skip blame; commit-count ownership only |
 

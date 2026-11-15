@@ -7,6 +7,7 @@ import {
   type HealthBand,
 } from "@repowise-dev/types/health";
 import { LedeLink, PageLede } from "../shared/page-lede";
+import { formatNumber } from "../lib/format";
 
 export interface HealthLedeCopy {
   label: string;
@@ -95,7 +96,7 @@ export function HealthLede({
       label={c.label}
       labelHint={c.hint(
         hot != null && fileCount > 0
-          ? { hotspots: hotspotCount.toLocaleString(), files: fileCount.toLocaleString() }
+          ? { hotspots: formatNumber(hotspotCount), files: formatNumber(fileCount) }
           : null,
       )}
       value={formatScore(score)}

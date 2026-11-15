@@ -451,14 +451,15 @@ def _call_from_match(
         and not receiver_call_nodes
         and _java_object_is_unnamed(site_node)
     )
-    arguments = _overload_arguments(language, arg_nodes)
+    arguments, argument_count = _call_arguments(language, site_node, arg_nodes)
     call = CallSite(
         target_name=target_name,
         receiver_name=receiver_name,
         caller_symbol_id=_find_enclosing_symbol(line, symbol_ranges),
         line=line,
-        argument_count=_count_arguments(arg_nodes[0]) if arg_nodes else None,
+        argument_count=argument_count,
         receiver_call=receiver_call,
+        start_byte=target_nodes[0].start_byte,
         argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
         scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else None,
@@ -473,6 +474,19 @@ def _call_from_match(
         bare_name_fallback=on_unnamed_object,
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
+
+
+def _call_arguments(
+    language: str, site_node: Node, arg_nodes: list[Node]
+) -> tuple[list[Node], int | None]:
+    """A call's argument expressions for overload reading, and how many it passes.
+
+    A Kotlin infix call's argument capture is its right operand, the one argument.
+    """
+    if language == "kotlin" and site_node.type == "infix_expression":
+        return arg_nodes, 1
+    count = _count_arguments(arg_nodes[0]) if arg_nodes else None
+    return _overload_arguments(language, arg_nodes), count
 
 
 def _java_object_is_unnamed(site_node: Node) -> bool:

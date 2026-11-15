@@ -48,12 +48,12 @@ export function useZoomMap(
   const key = repoId
     ? `zoom-map:${repoId}:${params?.max_depth ?? ""}:${params?.focus ?? ""}`
     : null;
-  const { data, error, isLoading } = useSWR<ZoomMap>(
+  const { data, error, isLoading, mutate } = useSWR<ZoomMap>(
     key,
     () => getZoomMap(repoId!, params),
     SWR_OPTS,
   );
-  return { zoomMap: data, error, isLoading };
+  return { zoomMap: data, error, isLoading, retry: mutate };
 }
 
 export function useGraph(repoId: string | null, limit?: number) {

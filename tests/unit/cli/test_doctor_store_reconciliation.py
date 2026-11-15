@@ -222,3 +222,135 @@ def test_repair_does_not_reembed_a_whole_wiki_on_a_paid_embedder(tmp_path: Path,
     out = " ".join(" ".join(printed).split())
     assert "2 page(s) need embedding with openai" in out
     assert "repowise reindex" in out
+
+
+def test_missing_lancedb_with_real_embedder_reports_missing_and_reindex_fix(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When .repowise/lancedb is absent and a non-mock embedder is configured,
+    all indexable pages are reported missing with fix `repowise reindex`."""
+    import shutil
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    shutil.rmtree(repo_path / ".repowise" / "lancedb")
+    (repo_path / ".repowise" / "config.yaml").write_text(
+        "embedder: openai\n", encoding="utf-8"
+    )
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    by_id = {c.id: c for c in checks}
+
+    vec = by_id["vector-store-sync"]
+    assert vec.ok is False
+    assert vec.detail == "2 missing, 0 orphaned"
+    assert vec.fix == "repowise reindex"
+
+    coord = by_id["coordinator-drift"]
+    assert coord.ok is False
+    assert coord.detail == "SQL=2, Vector=0, Drift=100.0%"
+    assert coord.fix == "repowise reindex"
+
+
+def test_missing_lancedb_with_mock_embedder_stays_ok(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fast/keyless mode (mock embedder) without .repowise/lancedb stays in sync."""
+    import shutil
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    shutil.rmtree(repo_path / ".repowise" / "lancedb")
+    monkeypatch.setattr(
+        "repowise.cli.providers.resolve_embedder_for_repo", lambda _p: "mock"
+    )
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    by_id = {c.id: c for c in checks}
+
+    vec = by_id["vector-store-sync"]
+    assert vec.ok is True
+    assert vec.detail == "in sync"
+    assert vec.fix is None
+
+    coord = by_id["coordinator-drift"]
+    assert coord.ok is True
+    assert coord.detail == "SQL=2, Vector=unknown, Drift=N/A"
+
+
+def test_missing_lancedb_with_real_embedder_and_no_indexable_pages_stays_ok(
+    tmp_path: Path,
+) -> None:
+    """When no indexable pages exist (e.g. excluded),
+    a missing lancedb with a real embedder stays OK."""
+    import shutil
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    shutil.rmtree(repo_path / ".repowise" / "lancedb")
+    (repo_path / ".repowise" / "config.yaml").write_text(
+        "embedder: openai\nexclude_patterns:\n  - '*.py'\n", encoding="utf-8"
+    )
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    by_id = {c.id: c for c in checks}
+
+    vec = by_id["vector-store-sync"]
+    assert vec.ok is True
+    assert vec.detail == "in sync"
+    assert vec.fix is None
+    assert by_id["coordinator-drift"].ok is True
+
+
+def test_coordinator_drift_counts_decisions_with_live_vector_store(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When a live LanceDB store holds decision embeddings, _decision_aware_drift
+    counts them on the SQL side (including when list_page_ids raises)."""
+    from repowise.core.analysis.decisions.semantic_match import DECISION_VECTOR_PREFIX
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+    from repowise.core.persistence.models import DecisionRecord
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    repo_path = asyncio.run(_build_repo(tmp_path))
+    repowise_dir = repo_path / ".repowise"
+
+    async def _seed_decision_and_missing_page() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{repowise_dir / 'wiki.db'}")
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            rec = DecisionRecord(
+                repository_id=repo.id, title="Use SQLite", decision="because local"
+            )
+            session.add(rec)
+            await session.commit()
+            dec_vid = f"{DECISION_VECTOR_PREFIX}{rec.id}"
+        await engine.dispose()
+
+        store = LanceDBVectorStore(str(repowise_dir / "lancedb"), embedder=MockEmbedder())
+        await store.embed_and_upsert(PAGE_MISSING, "Body.", {"title": "File: dropped.py"})
+        await store.embed_and_upsert(dec_vid, "because local", {"title": "Use SQLite"})
+        await store.close()
+
+    asyncio.run(_seed_decision_and_missing_page())
+
+    _all_ok, checks = repo_checks._run_repo_checks(repo_path, repair=False)
+    by_id = {c.id: c for c in checks}
+    assert by_id["coordinator-drift"].ok is True
+    assert by_id["coordinator-drift"].detail == "SQL=3, Vector=3, Drift=0.0%"
+
+    async def _check_fallback_and_missing() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{repowise_dir / 'wiki.db'}")
+        sf = create_session_factory(engine)
+        async with get_session(sf) as session:
+            res_present = {"sql_pages": 2, "vector_count": 3, "drift": 0.5}
+            await stores._decision_aware_drift(session, repo_path, res_present, object())
+            assert res_present == {"sql_pages": 3, "vector_count": 3, "drift": 0.0}
+
+            res_missing = {"sql_pages": 2, "vector_count": 0, "drift": 1.0}
+            await stores._decision_aware_drift(session, repo_path, res_missing, None)
+            assert res_missing == {"sql_pages": 2, "vector_count": 0, "drift": 1.0}
+        await engine.dispose()
+
+    asyncio.run(_check_fallback_and_missing())
+

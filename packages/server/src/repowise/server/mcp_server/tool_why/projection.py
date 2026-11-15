@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.analysis.decisions.lifecycle import status_rank
 from repowise.server.mcp_server._budget import (
     OmissionCollector,
@@ -83,12 +82,11 @@ def _cap_affected_files(
 
 def _merge_decisions(
     keyword_matches: list[tuple[Any, list[str]]],
-    decision_results: list,
     lineage_by_id: dict[str, list[dict]],
     collector: OmissionCollector | None = None,
     accepted: set[str] | None = None,
 ) -> list[dict]:
-    """Project collapsed keyword hits, then append semantic hits not already in.
+    """Project collapsed keyword hits, best-first.
 
     *keyword_matches* arrives from :func:`_collapse_restatements`, so the folded
     ids ride along on ``restates``: nothing becomes unaddressable and the store
@@ -120,20 +118,95 @@ def _merge_decisions(
         if folded:
             entry["restates"] = folded
         merged_decisions.append(entry)
-
-    for r in decision_results:
-        # Strip the "decision:" prefix so the returned id matches the SQL primary key.
-        real_id = r.page_id[len(DECISION_VECTOR_PREFIX) :]
-        if real_id in seen_ids:
-            continue
-        seen_ids.add(real_id)
-        merged_decisions.append(
-            {
-                "id": real_id,
-                "title": r.title,
-                "snippet": r.snippet,
-                "relevance_score": r.score,
-                "authority": _authority_of(real_id, accepted or set()),
-            }
-        )
     return merged_decisions
+
+
+#: A quoted rule or background claim. Enough for the ruling; the rest is one id call away.
+_QUOTED_DECISION_CHARS = 300
+
+#: What a background row leaves out: it is context, not a rule, so it stays small.
+_BACKGROUND_DETAIL_FIELDS = (
+    "context",
+    "consequences",
+    "alternatives",
+    "staleness_score",
+    "review_state",
+)
+
+
+def bounded(text: str) -> str:
+    """*text* cut to :data:`_QUOTED_DECISION_CHARS`, marked when cut."""
+    if len(text) > _QUOTED_DECISION_CHARS:
+        return text[: _QUOTED_DECISION_CHARS - 3].rstrip() + "..."
+    return text
+
+
+def trim_background(rows: list[dict]) -> None:
+    """Drop the detail fields from every row not in force, in place."""
+    for row in rows:
+        if isinstance(row, dict) and row.get("authority") != "accepted":
+            for key in _BACKGROUND_DETAIL_FIELDS:
+                row.pop(key, None)
+
+
+#: The lanes whose rows are decision records.
+_DECISION_LANES = (
+    "decisions",
+    "candidates",
+    "history",
+    "governing_decisions",
+    "candidate_decisions",
+    "stale_decisions",
+    "proposed_awaiting_review",
+)
+
+#: What a served evidence ref keeps; ``get_why(id=...)`` returns the full one.
+_REF_KEYS = ("id", "kind", "commit", "commit_prefix", "path", "range", "line", "verification")
+
+
+def lean_response(value: Any, *, keep_repository: bool = False) -> Any:
+    """Drop empty decision fields and shorten evidence refs and commits, in place.
+
+    A ref keeps ``provenance`` and ``source`` only where they differ from its
+    row's, and ``repository`` only where several repositories are served.
+    """
+    if isinstance(value, list):
+        for item in value:
+            lean_response(item, keep_repository=keep_repository)
+    elif isinstance(value, dict):
+        _lean_row(value, keep_repository)
+        for key, child in value.items():
+            if key in _DECISION_LANES and isinstance(child, list):
+                _drop_empty_fields(child)
+            if key != "evidence_refs":
+                lean_response(child, keep_repository=keep_repository)
+    return value
+
+
+def _lean_row(value: dict, keep_repository: bool) -> None:
+    refs = value.get("evidence_refs")
+    if isinstance(refs, list):
+        value["evidence_refs"] = [_lean_ref(r, value, keep_repository) for r in refs]
+    if isinstance(value.get("commit"), str):
+        value["commit"] = value["commit"][:12]
+
+
+def _lean_ref(ref: Any, row: dict, keep_repository: bool) -> Any:
+    if not isinstance(ref, dict):
+        return ref
+    keys = (*_REF_KEYS, "repository") if keep_repository else _REF_KEYS
+    out = {k: ref[k] for k in keys if k in ref}
+    # Only where a row cites several kinds of evidence.
+    for k in ("provenance", "source"):
+        if row.get(k) is not None and ref.get(k) not in (None, row[k]):
+            out[k] = ref[k]
+    if isinstance(out.get("commit"), str):
+        out["commit"] = out["commit"][:12]
+    return out
+
+
+def _drop_empty_fields(rows: list) -> None:
+    for row in rows:
+        if isinstance(row, dict):
+            for key in [k for k, v in row.items() if v in ("", None) or v == [] or v == {}]:
+                del row[key]

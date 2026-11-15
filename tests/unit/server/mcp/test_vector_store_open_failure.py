@@ -9,6 +9,9 @@ index at all is a keyless repo, not a failure.
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -123,6 +126,89 @@ def test_the_workspace_registry_reports_an_unopenable_index(tmp_path, broken_lan
 
 
 @pytest.fixture
+def no_lancedb_open(monkeypatch):
+    """Fails the test if LanceDB is imported or opened."""
+    real_to_thread = asyncio.to_thread
+
+    async def _to_thread(fn, *args, **kwargs):
+        assert args != ("lancedb",), "lancedb imported"
+        return await real_to_thread(fn, *args, **kwargs)
+
+    async def _open(self):
+        raise AssertionError("LanceDB opened")
+
+    monkeypatch.setattr(asyncio, "to_thread", _to_thread)
+    monkeypatch.setattr(LanceDBVectorStore, "_ensure_connected", _open)
+
+
+def test_a_keyless_server_never_imports_or_opens_lancedb(tmp_path, no_lancedb_open, monkeypatch):
+    """A keyless store is never searched, so its first tool call waits on nothing."""
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True)
+    monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
+    for name in ("_vector_store", "_decision_store", "_vector_store_ready", "_embedder_status"):
+        monkeypatch.setattr(_state, name, None, raising=False)
+    monkeypatch.setattr(_server, "_configured_embedder_name", lambda: "mock")
+
+    async def _go():
+        _state._lancedb_ready = asyncio.Event()
+        try:
+            await _server._warm_lancedb()
+            assert _state._lancedb_ready.is_set()
+        finally:
+            _state._lancedb_ready = None
+        await _server._load_vector_stores(str(tmp_path))
+
+    asyncio.run(_go())
+
+    assert isinstance(_state._vector_store, InMemoryVectorStore)
+    assert isinstance(_state._vector_store._embedder, KeylessEmbedder)
+    assert build_meta(timing_ms=1.0)["embedder_degraded"] is False
+
+
+def test_stdio_loads_numpy_before_the_transport_reads_stdin(monkeypatch):
+    """On Windows numpy's first load never returns while a stdin read is
+    pending, and the transport keeps one pending all session, so a tool that
+    first imported numpy mid-call hung. It is loaded before the transport runs.
+    """
+    from repowise.server.mcp_server import _stdio_logging, _watchdog
+
+    order = []
+    monkeypatch.setattr(_stdio_logging, "route_logging_to_stderr", lambda: None)
+    monkeypatch.setattr(_watchdog, "start_parent_watchdog", lambda: None)
+    monkeypatch.setattr(_server, "_load_native_libraries", lambda: order.append("numpy"))
+    monkeypatch.setattr(_server.mcp, "run", lambda transport: order.append(transport))
+    _server._run_stdio_transport()
+    assert order == ["numpy", "stdio"]
+
+
+def test_the_workspace_registry_skips_a_keyless_store(tmp_path, no_lancedb_open):
+    from repowise.core.providers.embedding.base import KeylessEmbedder
+    from repowise.core.workspace.registry import RepoRegistry
+
+    (tmp_path / ".repowise" / "lancedb").mkdir(parents=True)
+    placeholder = InMemoryVectorStore(embedder=KeylessEmbedder())
+
+    async def _go():
+        ctx = SimpleNamespace(
+            alias="api", vector_store=placeholder, vector_store_ready=asyncio.Event()
+        )
+        registry = SimpleNamespace(
+            _on_vector_store_error=lambda alias, exc: None,
+            _contexts={"api": ctx},
+            _vs_tasks={},
+        )
+        await RepoRegistry._load_vector_stores(registry, ctx, tmp_path, KeylessEmbedder())
+        return ctx
+
+    ctx = asyncio.run(_go())
+
+    assert ctx.vector_store is placeholder
+    assert ctx.vector_store_ready.is_set()
+
+
+@pytest.fixture
 def bridge_repo(tmp_path, monkeypatch):
     monkeypatch.setattr(_state, "_embedder_status", None, raising=False)
     monkeypatch.setattr(
@@ -168,3 +254,53 @@ def test_the_cli_bridge_does_not_open_the_store_for_other_tools(bridge_repo, mon
     assert isinstance(store, LanceDBVectorStore)
     assert connected == []
     assert {"search_codebase", "get_answer"} <= tool_bridge._VECTOR_TOOLS
+
+
+@pytest.mark.parametrize(("mode", "opens"), [("symbol", False), ("path", False), ("concept", True)])
+def test_cli_search_opens_the_store_only_for_a_mode_that_reads_it(monkeypatch, mode, opens):
+    """Symbol and path search are SQL lookups; opening the store costs ~2 s."""
+    from repowise.cli.commands import search_cmd
+
+    seen: dict = {}
+
+    def _run(repo_path, factory, tool_name, **kwargs):
+        seen.update(kwargs, tool_name=tool_name)
+        return {}
+
+    monkeypatch.setattr(search_cmd._ta, "run", _run)
+    search_cmd._run_search(Path("."), "q", 5, mode)
+
+    assert seen == {"tool_name": "search_codebase", "reads_vectors": opens}
+
+
+def test_the_cli_bridge_skips_the_store_when_told_the_call_reads_no_vectors(
+    bridge_repo, monkeypatch
+):
+    from repowise.cli import tool_bridge
+
+    connected: list[bool] = []
+
+    async def _spy(store):
+        connected.append(True)
+        return store
+
+    monkeypatch.setattr(tool_bridge, "_connect_or_degrade", _spy)
+
+    async def _tool():
+        return {"ok": True}
+
+    tool_bridge.call_tool(bridge_repo, _tool, "search_codebase", reads_vectors=False)
+    assert connected == []
+    tool_bridge.call_tool(bridge_repo, _tool, "search_codebase")
+    assert connected == [True]
+
+
+def test_the_native_preload_imports_numpy():
+    """The server does not import numpy before the transport by itself."""
+    code = (
+        "import sys; from repowise.server.mcp_server import _server; "
+        "before = 'numpy' in sys.modules; _server._load_native_libraries(); "
+        "print(before, 'numpy' in sys.modules)"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.split() == ["False", "True"]

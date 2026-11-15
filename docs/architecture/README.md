@@ -25,5 +25,6 @@ curious; you don't need them to *use* repowise (start with
 | [structurizr-export.md](structurizr-export.md) | Exporting the architecture as Structurizr DSL: the two-file model, health and layer tags, and how to render it |
 | [editor-files.md](editor-files.md) | How `CLAUDE.md` / `AGENTS.md` generation works (no LLM: pure DB + filesystem derivation) and how to add a new editor file |
 | [pluggable-storage.md](pluggable-storage.md) | Plugins, seams and pluggable storage: the storage contracts, the registries, and how to add a new seam (plugin authors start at [PLUGINS.md](../reference/PLUGINS.md)) |
+| [retired-page-archive.md](retired-page-archive.md) | Transactional retirement, complete prose/version preservation, successor notes, native readers and archive retention |
 
 For the design-token and theme tooling, see [../design/](../design/).

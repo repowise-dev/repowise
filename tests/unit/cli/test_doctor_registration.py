@@ -1,12 +1,12 @@
 """Doctor's wedged Claude Code MCP registration detection.
 
-A leaked or stale ``mcpServers.repowise`` entry in ``~/.claude/settings.json``
+A leaked or stale ``mcpServers.repowise`` entry in ``~/.claude.json``
 (a moved repo, a deleted venv's pinned binary, a temp path) silently breaks
 the MCP server in every session. The check must flag exactly those cases and
 treat "not registered" / "can't check" as informational, never a failure.
 
 The autouse ``_isolated_home`` conftest fixture points ``Path.home()`` at a
-temp dir, so these tests write their own settings.json freely.
+temp dir, so these tests write their own ~/.claude.json freely.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from repowise.cli.commands.doctor_cmd.repo_checks import (
 
 
 def _write_settings(entry: dict) -> Path:
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = Path.home() / ".claude.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps({"mcpServers": {"repowise": entry}}), encoding="utf-8")
     return settings_path
@@ -91,7 +91,7 @@ def test_bare_command_name_is_never_checked(tmp_path: Path) -> None:
 
 
 def test_malformed_settings_is_informational() -> None:
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = Path.home() / ".claude.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text("{ not json", encoding="utf-8")
     check, wedged = _claude_registration_check()
@@ -186,9 +186,11 @@ def test_local_scope_entry_in_claude_json_counts(tmp_path: Path) -> None:
     other, repo = tmp_path / "other", tmp_path / "repo"
     other.mkdir()
     repo.mkdir()
-    _write_settings(_entry(other))
+    local = {"mcpServers": {"repowise": _entry(repo)}}
     (Path.home() / ".claude.json").write_text(
-        json.dumps({"projects": {str(repo): {"mcpServers": {"repowise": _entry(repo)}}}}),
+        json.dumps(
+            {"mcpServers": {"repowise": _entry(other)}, "projects": {str(repo): local}}
+        ),
         encoding="utf-8",
     )
     check, _ = _claude_registration_check(repo)
@@ -199,9 +201,11 @@ def test_local_scope_entry_for_another_repo_does_not_count(tmp_path: Path) -> No
     other, repo = tmp_path / "other", tmp_path / "repo"
     other.mkdir()
     repo.mkdir()
-    _write_settings(_entry(other))
+    local = {"mcpServers": {"repowise": _entry(repo)}}
     (Path.home() / ".claude.json").write_text(
-        json.dumps({"projects": {str(other): {"mcpServers": {"repowise": _entry(repo)}}}}),
+        json.dumps(
+            {"mcpServers": {"repowise": _entry(other)}, "projects": {str(other): local}}
+        ),
         encoding="utf-8",
     )
     check, _ = _claude_registration_check(repo)

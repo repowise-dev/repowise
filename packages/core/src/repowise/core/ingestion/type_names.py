@@ -235,9 +235,28 @@ def is_resolvable_type_name(name: str, language: str) -> bool:
     starters = "_$" if language in _DOLLAR_START_LANGUAGES else "_"
     if not name[0].isalpha() and name[0] not in starters:
         return False
-    if name in get_builtin_types(language):
+    if builtin_type_spelling(name, language) is not None:
         return False
     return not (len(name) == 1 and name.isupper())
+
+
+# Languages whose type names are case-insensitive, so ``string`` is ``String``.
+_CASE_INSENSITIVE_TYPE_LANGUAGES = frozenset({"pascal"})
+_FOLDED_BUILTINS: dict[str, dict[str, str]] = {}
+
+
+def builtin_type_spelling(name: str, language: str) -> str | None:
+    """The builtin type *name* spells, as the language's table writes it, or None."""
+    builtins = get_builtin_types(language)
+    if name in builtins:
+        return name
+    if language not in _CASE_INSENSITIVE_TYPE_LANGUAGES:
+        return None
+    folded = _FOLDED_BUILTINS.get(language)
+    if folded is None:
+        folded = {builtin.lower(): builtin for builtin in builtins}
+        _FOLDED_BUILTINS[language] = folded
+    return folded.get(name.lower())
 
 
 # The receiver of a C# extension method, as the parameter list spells it.

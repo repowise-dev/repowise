@@ -1,0 +1,17 @@
+{
+  "name": "repowise",
+  "owner": {
+    "name": "Repowise",
+    "email": "hello@repowise.dev"
+  },
+  "metadata": {
+    "description": "Repowise plugins for Cursor."
+  },
+  "plugins": [
+    {
+      "name": "repowise",
+      "source": "plugins/cursor",
+      "description": "Ask how a codebase works: architecture, symbols, change risk, code health, dead code and design decisions, from repositories indexed on repowise.dev."
+    }
+  ]
+}

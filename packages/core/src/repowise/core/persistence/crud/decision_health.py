@@ -158,6 +158,47 @@ def _history_lane(d: DecisionRecord, currency: str) -> str:
     return "deprecated" if currency == "dismissed" and d.status == "deprecated" else currency
 
 
+#: Paths per ``IN`` clause, under SQLite's bound-parameter ceiling.
+_PATH_CHUNK = 500
+
+
+async def decision_hotspot_files(
+    session: AsyncSession, repository_id: str, decisions: list[DecisionRecord]
+) -> dict[str, list[str]]:
+    """The files each of *decisions* names that are churn hotspots, in its own order.
+
+    Test files are left out, as in ``_ungoverned_hotspots``: churn in a test is
+    not a reason to review a design choice sooner. A decision naming no hotspot
+    is absent from the result.
+
+    Only records whose scope binds to its paths are read. A commit footprint
+    lists what one commit touched as provenance, so a footprint record sharing
+    a commit with a hotspot does not name that hotspot.
+    """
+    named = {
+        d.id: json.loads(d.affected_files_json or "[]")
+        for d in decisions
+        if binds_to_paths(d.scope_basis)
+    }
+    wanted = sorted({f for files in named.values() for f in files if not is_test_related_path(f)})
+    hot: set[str] = set()
+    for start in range(0, len(wanted), _PATH_CHUNK):
+        result = await session.execute(
+            select(GitMetadata.file_path).where(
+                GitMetadata.repository_id == repository_id,
+                GitMetadata.is_hotspot.is_(True),
+                GitMetadata.file_path.in_(wanted[start : start + _PATH_CHUNK]),
+            )
+        )
+        hot.update(result.scalars().all())
+    out: dict[str, list[str]] = {}
+    for decision_id, files in named.items():
+        hits = [f for f in files if f in hot]
+        if hits:
+            out[decision_id] = hits
+    return out
+
+
 async def _ungoverned_hotspots(
     session: AsyncSession, repository_id: str, governed_files: set[str]
 ) -> list[str]:

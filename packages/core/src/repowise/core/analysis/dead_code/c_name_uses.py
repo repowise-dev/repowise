@@ -33,7 +33,8 @@ from pathlib import PurePosixPath
 from ...ingestion.languages.registry import REGISTRY
 from .constants import _NON_CODE_LANGUAGES, _PREPROCESSED_LANGUAGES
 from .models import DeadCodeFindingData, drop_used
-from .name_occurrences import IDENTIFIER_RE, occurrence_files
+from .name_occurrences import IDENTIFIER_RE, file_identifiers, occurrence_files
+from .token_cache import scanned
 
 #: Kinds a C/C++ type declaration's finding can carry.
 TYPE_KINDS: frozenset[str] = frozenset({"struct", "class", "enum", "union", "type_alias"})
@@ -149,6 +150,17 @@ class _CodeOnly(Mapping[str, bytes]):
         blob = self._source[path]
         return _COMMENT_OR_STRING.sub(_blank_prose, blob) if is_preprocessed(path) else blob
 
+    def identifiers(self, path: str) -> frozenset[bytes]:
+        """The identifiers of the code-only text of *path*, without blanking a cached file."""
+        blob = self._source[path]
+        if not is_preprocessed(path):
+            return file_identifiers(blob)
+        return scanned(
+            "code_identifiers",
+            blob,
+            lambda: IDENTIFIER_RE.findall(_COMMENT_OR_STRING.sub(_blank_prose, blob)),
+        )
+
     def __iter__(self) -> Iterator[str]:
         return iter(self._paths)
 
@@ -180,7 +192,7 @@ class _UseIndex:
         self._source = _CodeOnly(source_map)
         self._wanted = wanted
         self._declarations = declarations
-        self._writers = occurrence_files(self._source, wanted)
+        self._writers = occurrence_files(self._source, wanted, self._source.identifiers)
         self._lines: dict[str, dict[bytes, list[int]]] = {}
 
     def written_outside_declarations(self, finding: DeadCodeFindingData, name: str) -> bool:

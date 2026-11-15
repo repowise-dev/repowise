@@ -19,6 +19,7 @@ from repowise.core.ingestion.git_indexer.file_history import (
     index_file,
 )
 from repowise.core.ingestion.git_indexer.fix_shape_cache import FixShapeCache
+from repowise.core.ingestion.git_indexer.fix_walk_cache import FixWalkCache
 
 _FILES = ("a.py", "b.py", "c.py", "test_a.py", "README.md")
 
@@ -140,7 +141,7 @@ def _sampled(repo, cache_dir: Path | None) -> dict[str, list[tuple]]:
     return {p: [(r.sha, r.ts, r.added) for r in recs] for p, recs in sample.commits.items()}
 
 
-def test_skewed_commit_times_fall_back_to_a_fresh_walk(tmp_path) -> None:
+def test_skewed_commit_times_match_a_fresh_walk(tmp_path) -> None:
     """A child older than its parent puts git's walk out of time order."""
     import git as gitpython
 
@@ -164,4 +165,135 @@ def test_skewed_commit_times_fall_back_to_a_fresh_walk(tmp_path) -> None:
     repo.index.commit("c4", author_date=stamp, commit_date=stamp)
 
     assert _sampled(repo, cache_dir) == _sampled(repo, None)
+    repo.close()
+
+
+def test_every_deep_region_is_cached_and_matches_a_fresh_walk(tmp_path, monkeypatch) -> None:
+    """Below the first deep region each region keeps its own cache, so an
+    update diffs only the commits that moved between regions."""
+    import git as gitpython
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = gitpython.Repo.init(root)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    cache_dir = root / ".repowise"
+    cache_dir.mkdir()
+    # b.py is touched only by the root commit, so every region is walked to find it.
+    (root / "b.py").write_text("y = 0\n")
+    repo.index.add(["b.py"])
+    for i in range(12):
+        (root / "a.py").write_text(f"x = {i}\n")
+        repo.index.add(["a.py"])
+        repo.index.commit(f"c{i}")
+
+    def sampled(cache):
+        sample = git_commit_index.load_sampled_commit_index(
+            repo, 2, {"a.py", "b.py"}, deep_limit=3, deep_threshold=1, cache_dir=cache
+        )
+        return {p: [(r.sha, r.added) for r in recs] for p, recs in sample.commits.items()}
+
+    sampled(cache_dir)
+    assert (cache_dir / "commit_deep_cache_2.json").is_file()
+    (root / "a.py").write_text("x = 99\n")
+    repo.index.add(["a.py"])
+    repo.index.commit("c12")
+
+    walks: list[tuple[str, ...]] = []
+    real_log = git_commit_index._log_records
+    monkeypatch.setattr(
+        git_commit_index,
+        "_log_records",
+        lambda r, *revs: walks.append(revs) or real_log(r, *revs),
+    )
+    warm = sampled(cache_dir)
+    assert not any(arg.startswith("--skip=") for revs in walks for arg in revs)
+    monkeypatch.undo()
+    assert warm == sampled(None)
+    repo.close()
+
+
+def test_fix_walk_cache_reads_only_new_commits_and_matches_a_fresh_walk(
+    tmp_path, monkeypatch
+) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = _build_repo(root)
+    cache_dir = root / ".repowise"
+    cache_dir.mkdir()
+    files = {"a.py", "b.py", "c.py", "test_a.py"}
+
+    def walk(cached: bool):
+        cache = FixWalkCache.load(cache_dir, repo) if cached else None
+        return prior_defects.collect_fix_commits(repo, files, as_of_ts=None, walk_cache=cache)
+
+    walk(cached=True)  # what init leaves behind
+    assert (cache_dir / "fix_walk_cache.json").is_file()
+
+    # A rename re-keys the older fixes of a.py, so the cached rows must be replayed.
+    repo.git.mv("a.py", "a2.py")
+    repo.git.commit("-m", "refactor: rename a")
+    _commit(repo, root, {"c.py": "z = 2\n"}, "fix: c again")
+    new = [c.hexsha for c in repo.iter_commits("HEAD", max_count=2)]
+    files = (files - {"a.py"}) | {"a2.py"}
+
+    reads: list[tuple[str, ...]] = []
+    real_read = prior_defects._read_commits
+    monkeypatch.setattr(
+        prior_defects,
+        "_read_commits",
+        lambda r, *revs: reads.append(revs) or real_read(r, *revs),
+    )
+    warm = walk(cached=True)
+    assert reads == [("--no-walk=unsorted", *new)]
+
+    fresh = walk(cached=False)
+    assert warm == fresh
+    counts = prior_defects.compute_prior_defects(repo, files, as_of_ts=None, walk=warm)
+    assert counts.counts["a2.py"] == 1
+    assert counts == prior_defects.compute_prior_defects(repo, files, as_of_ts=None, walk=fresh)
+    repo.close()
+
+
+def test_fix_walk_cache_from_other_code_is_discarded(tmp_path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = _build_repo(root)
+    cache = FixWalkCache.load(tmp_path, repo)
+    prior_defects.collect_fix_commits(repo, {"a.py"}, as_of_ts=None, walk_cache=cache)
+    assert FixWalkCache.load(tmp_path, repo).records
+
+    path = tmp_path / "fix_walk_cache.json"
+    path.write_text(path.read_text().replace(cache._key["code"], "stale"))
+    assert FixWalkCache.load(tmp_path, repo).records == {}
+    repo.close()
+
+
+def test_a_full_index_seeds_the_update_caches(tmp_path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    _build_repo(root).close()
+    (root / ".repowise").mkdir()
+    GitIndexer(root)._repo_wide_passes({"a.py", "b.py", "c.py", "test_a.py"}, None, None)
+    assert FixShapeCache.load(root / ".repowise").shapes
+    assert (root / ".repowise" / "fix_walk_cache.json").is_file()
+
+
+def test_a_misshapen_fix_walk_cache_is_dropped(tmp_path) -> None:
+    import json
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    repo = _build_repo(root)
+    prior_defects.collect_fix_commits(
+        repo, {"a.py"}, as_of_ts=None, walk_cache=FixWalkCache.load(tmp_path, repo)
+    )
+    path = tmp_path / "fix_walk_cache.json"
+    data = json.loads(path.read_text())
+    sha = next(s for s, r in data["records"].items() if isinstance(r, dict))
+    del data["records"][sha]["t"]
+    path.write_text(json.dumps(data))
+    assert FixWalkCache.load(tmp_path, repo).records == {}
     repo.close()

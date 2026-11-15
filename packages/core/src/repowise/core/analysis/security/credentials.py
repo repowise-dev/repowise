@@ -42,6 +42,14 @@ def _is_valid_credential_value(val: str) -> bool:
     return not any(p in v for p in _CREDENTIAL_SUBSTRING_PLACEHOLDERS)
 
 
+# Names matching keyword patterns that are public manifest attributes or
+# non-secret metadata rather than credentials.
+_KEYWORD_EXCLUDED_NAMES: frozenset[str] = frozenset(
+    {
+        "publickeytoken",
+    }
+)
+
 # A snake_case or kebab-case name (``x-api-key``, ``repowise-security-ignore``)
 # is a key's or marker's name, a constant holding its own name, and a template
 # placeholder or shell substitution is filled in when it runs; none of them is a
@@ -61,6 +69,16 @@ _KEY_NAME_VALUE = re.compile(r"[a-z]+(?:[_-][a-z]+)+|[a-z_]*_[a-z_]*")
 # consecutive digits are credential-shaped, so keep those values reportable.
 _UPPER_KEY_NAME_VALUE = re.compile(r"[A-Z_][A-Z0-9_]*")
 _LONG_DIGIT_RUN = re.compile(r"[0-9]{4,}")
+# Lookup/reference paths (``@group:reference:api``, ``secrets/db/password``):
+# either a leading ``@`` lookup, a leading ``/`` path, or 3+ slash/colon
+# segments with no mid-string ``@`` so embedded ``user:pass@host`` credentials
+# and lowercase dotted/colon-joined passwords stay flagged.
+_REFERENCE_PATH_VALUE = re.compile(
+    r"@[a-z]+(?:[:/.][a-z]+)+"
+    r"|/[a-z]+(?:/[a-z]+)+"
+    r"|[a-z]+(?:/[a-z]+){2,}"
+    r"|[a-z]+(?::[a-z]+){2,}"
+)
 
 
 def _is_own_name_value(value: str, name: str) -> bool:
@@ -98,6 +116,8 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         return mixed >= 3 or (mixed >= 2 and len(val) >= 12)
     if kind not in _KEYWORD_KINDS:
         return True
+    if name.lower() in _KEYWORD_EXCLUDED_NAMES:
+        return False
     value = val.strip()
     if kind == "hardcoded_secret" and (
         _KEY_NAME_VALUE.fullmatch(value)
@@ -116,6 +136,7 @@ def _is_secret_value(kind: str, val: str, name: str = "") -> bool:
         or _SCHEME_TEMPLATE_VALUE.search(value)
         or _REGEX_VALUE.search(value)
         or _is_plain_word(value)
+        or bool(_REFERENCE_PATH_VALUE.fullmatch(value))
         or value.startswith("--")
     )
 

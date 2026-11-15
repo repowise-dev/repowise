@@ -506,7 +506,6 @@ def build_decisions(summary: Mapping[str, Any]) -> dict[str, Any]:
             DecisionFacts(field(d, "id"), field(d, "title"))
             for d in summary.get("stale_decisions") or []
         ),
-        "proposed_decisions": int(counts.get("proposed") or 0),
         "accepted_decisions": int(counts.get("active") or 0),
     }
 

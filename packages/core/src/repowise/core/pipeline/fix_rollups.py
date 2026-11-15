@@ -3,7 +3,8 @@
 The one impure half of the fix-history feature: :mod:`analysis.health.fix_attribution`
 does the arithmetic, this module does the reads and writes. It runs after both
 ``fix_events`` and ``wiki_symbols`` are persisted — a full index (end of
-``persist_git``) and an update (end of ``persist_incremental_fix_events``) — and
+``persist_git``) and an update (its ``Git rollups`` step, after the symbol
+write and the deleted-file prune) — and
 recomputes the whole repo's rollups from the stored rows each time.
 
 Recomputing everything rather than patching the files an update touched is
@@ -57,10 +58,10 @@ async def apply_fix_rollups(session: Any, repo_id: str) -> int:
         .scalars()
         .all()
     )
-    if not events:
-        return 0
-
     paths = {e.file_path for e in events}
+    cleared = await _clear_rollups_without_events(session, repo_id, paths)
+    if not events:
+        return cleared
 
     symbols_by_path: dict[str, list[SymbolSpan]] = defaultdict(list)
     for symbol_id, file_path, start_line, end_line in (
@@ -109,7 +110,7 @@ async def apply_fix_rollups(session: Any, repo_id: str) -> int:
     # Pass 2: roll the counted events up onto git metadata. Files with events but
     # no metadata row are skipped rather than created: git_metadata's key set is
     # owned by the git indexer.
-    written = 0
+    written = cleared
     for file_path, meta in meta_by_path.items():
         rollup = roll_up_file(counted.get(file_path, []), as_of)
         meta.fix_mass = rollup.fix_mass
@@ -127,6 +128,48 @@ async def apply_fix_rollups(session: Any, repo_id: str) -> int:
         magnets=sum(1 for m in meta_by_path.values() if m.bug_magnet),
     )
     return written
+
+
+async def _clear_rollups_without_events(session: Any, repo_id: str, paths: set[str]) -> int:
+    """Reset the rollup of every file outside *paths* that still carries one.
+
+    The pass below writes only files that have events, so a file whose last fix
+    aged out of the window kept the mass, magnet flag and symbol counts of fixes
+    that are gone, where a fresh index writes the empty rollup.
+    """
+    from sqlalchemy import or_, select
+
+    from repowise.core.persistence.models import GitMetadata
+
+    rows = (
+        (
+            await session.execute(
+                select(GitMetadata).where(
+                    GitMetadata.repository_id == repo_id,
+                    or_(
+                        GitMetadata.fix_mass != 0.0,
+                        GitMetadata.bug_magnet.is_(True),
+                        GitMetadata.last_fix_at.is_not(None),
+                        GitMetadata.fix_symbol_counts_json != "{}",
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    cleared = 0
+    for meta in rows:
+        if meta.file_path in paths:
+            continue
+        meta.fix_mass = 0.0
+        meta.bug_magnet = False
+        meta.last_fix_at = None
+        meta.fix_symbol_counts_json = "{}"
+        cleared += 1
+    if cleared:
+        await session.flush()
+    return cleared
 
 
 def _old_ranges(event: Any) -> list[list[int]]:

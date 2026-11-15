@@ -7,6 +7,7 @@ import type { HealthFinding, PerformanceOpportunityEvidence } from "@repowise-de
 import { PaginationControls } from "../../shared/pagination-controls";
 import { Skeleton, SkeletonRegion } from "../../ui/skeleton";
 import type { PerformanceViewAdapter } from "./adapter";
+import { formatNumber } from "../../lib/format";
 
 /**
  * Raw observations behind one cause, fetched only when asked for.
@@ -60,7 +61,7 @@ export function RawObservations({
         className="rounded text-sm font-medium text-[var(--color-text-secondary)] underline-offset-2 hover:text-[var(--color-text-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
       >
         {open ? "Hide" : "Read"} the raw observations
-        <span className="tabular-nums"> ({reportedTotal.toLocaleString()})</span>
+        <span className="tabular-nums"> ({formatNumber(reportedTotal)})</span>
       </button>
 
       {open ? (
@@ -105,8 +106,8 @@ export function RawObservations({
             />
           ) : previewTruncated || preview.length < reportedTotal ? (
             <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-              Showing <span className="tabular-nums">{preview.length.toLocaleString()}</span> of{" "}
-              <span className="tabular-nums">{reportedTotal.toLocaleString()}</span>. This host
+              Showing <span className="tabular-nums">{formatNumber(preview.length)}</span> of{" "}
+              <span className="tabular-nums">{formatNumber(reportedTotal)}</span>. This host
               does not page the remaining observations.
             </p>
           ) : null}

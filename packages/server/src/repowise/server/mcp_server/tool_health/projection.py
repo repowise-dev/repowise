@@ -119,18 +119,7 @@ def _project(
     keep = (
         set(req.only_list)
         | _ALWAYS_KEPT
-        | {
-            suffix
-            for k in req.only_list
-            for suffix in (
-                f"{k}_total",
-                f"{k}_emitted",
-                f"{k}_reduced_reason",
-                f"{k}_scope",
-                f"{k}_hidden",
-                f"{k}_counts",
-            )
-        }
+        | {f"{k}{suffix}" for k in req.only_list for suffix in _SIBLING_SUFFIXES}
     )
     # Which reading the numbers are on, only when it is not the default.
     if reported_scope != DEFAULT_SCOPE:
@@ -144,16 +133,32 @@ def _project(
     unknown = sorted(
         raw for raw, resolved in zip(req.only, req.only_list, strict=True) if resolved not in result
     )
+    hint = _unknown_only_hint(req, unknown, result) if unknown else ""
     result = {k: v for k, v in result.items() if k in keep}
     if unknown:
         result["unknown_only_keys"] = unknown
         _stamp_collection(result, "unknown_only_keys", total=len(unknown))
-        result["unknown_only_keys_hint"] = _unknown_only_hint(req, unknown)
+        result["unknown_only_keys_hint"] = hint
     return result
 
 
-def _unknown_only_hint(req: HealthRequest, unknown: list[str]) -> str:
-    """The generic hint, led by the include each include-gated miss needs."""
+#: Suffixes of a collection's accounting siblings, which ``only`` keeps with it.
+_SIBLING_SUFFIXES = ("_total", "_emitted", "_reduced_reason", "_scope", "_hidden", "_counts")
+
+
+def _targeted_keys(result: dict[str, Any]) -> list[str]:
+    """The keys a targeted call can keep with ``only``. Unlike the dashboard,
+    whose blocks are built on demand, a targeted result is whole before the
+    projection; ``trends`` is built only when wanted, so it is always named."""
+    skip = _ALWAYS_KEPT | {"_meta", "scope", "counts"}
+    keys = (k for k in (*result, "trends") if k not in skip and not k.endswith(_SIBLING_SUFFIXES))
+    return list(dict.fromkeys(keys))
+
+
+def _unknown_only_hint(req: HealthRequest, unknown: list[str], result: dict[str, Any]) -> str:
+    """The generic hint, led by the include each include-gated miss needs. A
+    targeted call names its own keys (#4089): the dashboard keys the generic
+    hint lists are never in a targeted response."""
     needs = [
         f'only=["{raw}"] needs include=["{include}"].'
         for raw, resolved in zip(req.only, req.only_list, strict=True)
@@ -161,4 +166,10 @@ def _unknown_only_hint(req: HealthRequest, unknown: list[str]) -> str:
         and (include := _INCLUDE_OF_KEY.get(resolved))
         and include not in req.include_set
     ]
-    return " ".join(dict.fromkeys([*needs, _UNKNOWN_ONLY_HINT]))
+    generic = _UNKNOWN_ONLY_HINT
+    if result.get("mode") == "targets":
+        generic = (
+            f"`only` names response keys; this call has {', '.join(_targeted_keys(result))}. "
+            "A dimension such as performance is an `include` value."
+        )
+    return " ".join(dict.fromkeys([*needs, generic]))

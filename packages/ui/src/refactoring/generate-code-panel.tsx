@@ -10,6 +10,7 @@ import {
 } from "./types";
 import type { GeneratedCode, RefactoringPlan } from "@repowise-dev/types/refactoring";
 import { toFriendlyMessage } from "../lib/errors";
+import { formatNumber } from "../lib/format";
 
 /**
  * Run the opt-in LLM code generation for one plan: takes a deterministic plan,
@@ -130,7 +131,7 @@ function GeneratedResult({
           </span>
         ) : tokens > 0 ? (
           <span className="rounded-full border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 py-1 text-xs tabular-nums text-[var(--color-text-tertiary)]">
-            {tokens.toLocaleString()} tokens
+            {formatNumber(tokens)} tokens
           </span>
         ) : null}
         {verdict ? (

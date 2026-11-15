@@ -1,52 +1,42 @@
 """Onboarding subkind: Getting Started.
 
-The page where reading stops and doing starts — clone, install, build,
-run, test. Purely mechanical, grounded in either a recognised manifest
-(``package.json``, ``pyproject.toml``, ``go.mod`` …) or a README section
-that already explains setup.
+The page where reading stops and doing starts. Part one is the user path:
+install the project, use it for the first time, see that it worked. Part two
+is working on the repository itself.
 
-Gate: at least one parsed manifest **or** a README at the repo root with
-a recognisable install/run/build/test heading. Skip for pure-docs or
-config-only repos with no detectable build system.
+The two parts read different documents. The user path comes from the README
+and the user guides (quickstart, install, usage, ``docs/start``), in Markdown or
+reStructuredText; the contributor path comes from CONTRIBUTING and development
+guides. Ranking contributing documents first made the page a guide to
+building the repository's own frontend, and never said how to run the product.
+
+Gate: some setup source exists, a user or contributor document, a declared
+manifest script, or a recognised package ecosystem.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from ...entry_points import orientation_entry_points
+from ..docs import DocSection, doc_sections, is_dev_doc, is_user_doc, rank_sections
 from ..registry import SubkindSpec, register
 from ..signals import OnboardingSignals
-from ..slots import SLOT_GETTING_STARTED, SLOT_TITLES
+from ..slots import SLOT_GETTING_STARTED, SLOT_HOW_IT_WORKS, SLOT_TITLES
+from ..surface import Surface, Surfaces
 
-# Heading patterns we treat as "setup-relevant" when scanning a README.
-# Lowercased; matched against the trimmed line after the leading `#`s.
-_README_HEADINGS: tuple[tuple[str, str], ...] = (
-    ("install", "Install"),
-    ("installation", "Install"),
-    ("quickstart", "Quickstart"),
-    ("quick start", "Quickstart"),
-    ("getting started", "Getting Started"),
-    ("setup", "Setup"),
-    ("run", "Run"),
-    ("running", "Run"),
-    ("usage", "Usage"),
-    ("build", "Build"),
-    ("test", "Test"),
-    ("testing", "Test"),
-    ("development", "Development"),
-    ("contributing", "Contributing"),
-)
-
-_README_FILENAMES = ("README.md", "readme.md", "README.MD", "README", "Readme.md")
-_MAX_README_SECTION_CHARS = 800
-_MAX_SETUP_DOCUMENTS = 4
-_MAX_SETUP_SECTIONS = 10
 _MAX_MANIFEST_SCRIPTS = 16
 _MAX_DEPS_LISTED = 12
+#: Prose range under the default style: user path, then the develop block.
+_WORDS = (800, 1000)
+
+_USER_WORDS = (
+    "install", "quickstart", "quick start", "getting started", "set it up", "set up",
+    "setup", "usage", "first run", "requirements",
+)
+_DEV_WORDS = ("develop", "contribut", "local", "from source", "test", "build", "lint")
 
 _SCRIPT_PRIORITY = {
     "install": 0,
@@ -60,25 +50,6 @@ _SCRIPT_PRIORITY = {
     "type-check": 7,
 }
 
-_SETUP_DOCUMENT_STEMS = {
-    "contributing": 0,
-    "development": 1,
-    "developing": 1,
-    "install": 2,
-    "installation": 2,
-    "getting_started": 3,
-    "getting-started": 3,
-    "setup": 3,
-}
-
-
-@dataclass
-class ReadmeSection:
-    heading: str
-    body: str
-    source_path: str = "README.md"
-    source_kind: str = "setup_document"
-
 
 @dataclass(frozen=True)
 class ManifestScript:
@@ -91,112 +62,25 @@ class ManifestScript:
     source_kind: str = "manifest_script"
 
 
-@dataclass(frozen=True)
-class ManifestSource:
-    manifest_path: str
-    working_directory: str
-    runner: str
-    source_kind: str = "manifest_script"
-
-
 @dataclass
 class GettingStartedContext:
     repo_name: str
     package_managers: list[str] = field(default_factory=list)
     runtime_dependencies: list[dict] = field(default_factory=list)
     dev_dependencies: list[dict] = field(default_factory=list)
-    readme_sections: list[ReadmeSection] = field(default_factory=list)
+    #: The user path: README and user-guide sections, best first.
+    user_docs: list[DocSection] = field(default_factory=list)
+    #: The contributor path: CONTRIBUTING and development guides.
+    dev_docs: list[DocSection] = field(default_factory=list)
+    programs: list[str] = field(default_factory=list)
+    commands: list[Surface] = field(default_factory=list)
+    tools: list[Surface] = field(default_factory=list)
+    api: list[Surface] = field(default_factory=list)
     manifest_scripts: list[ManifestScript] = field(default_factory=list)
-    manifest_sources: list[ManifestSource] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)
-
-
-def _setup_document_priority(path: str) -> tuple[int, int, str] | None:
-    """Return a deterministic authority rank for a setup-bearing document."""
-    normalized = path.replace("\\", "/").strip("/")
-    pure = PurePosixPath(normalized)
-    name = pure.name.lower()
-    stem = name.rsplit(".", 1)[0]
-    depth = len(pure.parts) - 1
-    if depth == 0 and name in {candidate.lower() for candidate in _README_FILENAMES}:
-        return (10, depth, normalized.lower())
-    if stem not in _SETUP_DOCUMENT_STEMS or pure.suffix.lower() not in {".md", ".rst", ".txt"}:
-        return None
-    # Root and conventional contributor/documentation locations outrank deep,
-    # package-local files while remaining repository-generic.
-    conventional = 0 if depth == 0 or pure.parts[0].lower() in {".github", "docs"} else 1
-    return (_SETUP_DOCUMENT_STEMS[stem] + conventional, depth, normalized.lower())
-
-
-def _find_setup_documents(source_map: dict[str, bytes]) -> list[tuple[str, bytes]]:
-    ranked: list[tuple[tuple[int, int, str], str, bytes]] = []
-    for path, data in source_map.items():
-        if not data:
-            continue
-        priority = _setup_document_priority(path)
-        if priority is not None:
-            ranked.append((priority, path.replace("\\", "/"), data))
-    ranked.sort(key=lambda item: item[0])
-    root_readme = next(
-        (item for item in ranked if item[0][0] == 10 and item[0][1] == 0),
-        None,
-    )
-    selected = ranked[:_MAX_SETUP_DOCUMENTS]
-    if root_readme is not None and root_readme not in selected:
-        selected = [*ranked[: _MAX_SETUP_DOCUMENTS - 1], root_readme]
-        selected.sort(key=lambda item: item[0])
-    return [(path, data) for _, path, data in selected]
-
-
-def _extract_setup_sections(
-    readme: bytes, *, source_path: str = "README.md"
-) -> list[ReadmeSection]:
-    """Pull setup-relevant sections out of a README body.
-
-    Stops each section at the next heading of any level, then truncates to
-    keep the prompt budget small.
-    """
-    try:
-        text = readme.decode("utf-8", errors="replace")
-    except Exception:
-        return []
-
-    lines = text.splitlines()
-    sections: list[ReadmeSection] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        heading_match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
-        if not heading_match:
-            i += 1
-            continue
-        heading_text = heading_match.group(2).strip().lower()
-        # Match against any of our known setup headings.
-        canonical: str | None = None
-        for pattern, label in _README_HEADINGS:
-            if pattern == heading_text or heading_text.startswith(pattern + " "):
-                canonical = label
-                break
-        if canonical is None:
-            i += 1
-            continue
-        # Collect body until the next heading of any depth.
-        body_lines: list[str] = []
-        j = i + 1
-        while j < len(lines) and not re.match(r"^#{1,6}\s+\S", lines[j]):
-            body_lines.append(lines[j])
-            j += 1
-        body = "\n".join(body_lines).strip()
-        if body:
-            sections.append(
-                ReadmeSection(
-                    heading=canonical,
-                    body=body[:_MAX_README_SECTION_CHARS],
-                    source_path=source_path,
-                )
-            )
-        i = j
-    return sections
+    #: Wiki pages the reader can open next, by title.
+    neighbours: list[str] = field(default_factory=list)
+    word_budget: tuple[int, int] = _WORDS
 
 
 def _package_runner(path: str, source_map: dict[str, bytes]) -> str:
@@ -268,16 +152,9 @@ def _partition_dependencies(
 ) -> tuple[list[str], list[dict], list[dict]]:
     """Split external_systems into (package_managers, runtime_deps, dev_deps).
 
-    The manifest parsers already record ``ecosystem`` (npm/pypi/cargo/…),
-    ``version`` and ``is_dev_dep``. Anything we can't classify falls into
-    runtime.
-
-    Key names must match what the orchestrator actually emits (see
-    ``pipeline/orchestrator.py``, which builds these dicts straight off
-    ``ExternalSystemRecord``). Reading ``is_dev`` instead of ``is_dev_dep``
-    silently sorted every dev dependency into runtime, and omitting
-    ``version`` made the template's ``{% if d.version %}`` raise under
-    StrictUndefined, which lost the whole getting-started page.
+    Key names must match what the orchestrator emits (``is_dev_dep``,
+    ``version``); a missing ``version`` key would raise under StrictUndefined
+    in the template and lose the page.
     """
     package_managers: list[str] = []
     runtime: list[dict] = []
@@ -293,80 +170,62 @@ def _partition_dependencies(
             "name": sys.get("name", ""),
             "ecosystem": eco,
             "category": sys.get("category", "library"),
-            # Always present, so the template can test it without tripping
-            # StrictUndefined. Normalized to "" because the record's version is
-            # Optional and a None would render as "None".
             "version": str(sys.get("version") or "").strip(),
         }
-        if sys.get("is_dev_dep"):
-            dev.append(entry)
-        else:
-            runtime.append(entry)
+        (dev if sys.get("is_dev_dep") else runtime).append(entry)
 
     return package_managers, runtime[:_MAX_DEPS_LISTED], dev[:_MAX_DEPS_LISTED]
 
 
+def _user_doc_filter(path: str) -> bool:
+    return is_user_doc(path) and not is_dev_doc(path)
+
+
 def _build(signals: OnboardingSignals) -> GettingStartedContext | None:
     package_managers, runtime, dev = _partition_dependencies(signals.external_systems)
-    contributor_sections: list[ReadmeSection] = []
-    root_readme_sections: list[ReadmeSection] = []
-    for source_path, document in _find_setup_documents(signals.source_map):
-        sections = _extract_setup_sections(document, source_path=source_path)
-        if "/" not in source_path and source_path.lower().startswith("readme"):
-            root_readme_sections.extend(sections)
-        else:
-            contributor_sections.extend(sections)
-    if root_readme_sections:
-        readme_sections = [
-            *contributor_sections[: _MAX_SETUP_SECTIONS - 1],
-            root_readme_sections[0],
-        ]
-    else:
-        readme_sections = contributor_sections[:_MAX_SETUP_SECTIONS]
+    sections = doc_sections(signals.doc_sources or signals.source_map)
+    found = signals.surfaces or Surfaces()
+    programs = found.programs
+    typed = [f"{p} " for p in programs]
+    user_docs = rank_sections(
+        sections, typed + list(_USER_WORDS), heading_words=_USER_WORDS,
+        path_filter=_user_doc_filter, char_cap=16000, per_section=3000,
+    )
+    dev_docs = rank_sections(
+        sections, typed + list(_DEV_WORDS + _USER_WORDS), heading_words=_DEV_WORDS,
+        path_filter=is_dev_doc, char_cap=7000, per_section=2400,
+    )
     manifest_scripts = _manifest_scripts(signals.source_map)
-    manifest_sources: list[ManifestSource] = []
-    seen_manifests: set[str] = set()
-    for script in manifest_scripts:
-        if script.manifest_path in seen_manifests:
-            continue
-        seen_manifests.add(script.manifest_path)
-        manifest_sources.append(
-            ManifestSource(
-                manifest_path=script.manifest_path,
-                working_directory=script.working_directory,
-                runner=script.runner,
-            )
-        )
-
-    # Gate: need at least one signal source. Without a manifest *and*
-    # without a README setup section, the page would be all speculation.
-    if not package_managers and not readme_sections and not manifest_scripts:
+    if not (package_managers or user_docs or dev_docs or manifest_scripts):
         return None
-
+    neighbours = [SLOT_TITLES[SLOT_HOW_IT_WORKS], *(j.title for j in signals.journeys)]
     return GettingStartedContext(
         repo_name=signals.repo_name,
         package_managers=package_managers,
         runtime_dependencies=runtime,
         dev_dependencies=dev,
-        readme_sections=readme_sections,
+        user_docs=user_docs,
+        dev_docs=dev_docs,
+        programs=programs,
+        commands=found.commands[:8],
+        tools=found.tools[:8],
+        api=found.api,
         manifest_scripts=manifest_scripts,
-        manifest_sources=manifest_sources,
         entry_points=orientation_entry_points(signals.repo_structure, limit=6),
+        neighbours=neighbours,
     )
 
 
 def _evidence_references(ctx: object) -> tuple[str, ...]:
-    """Prioritize setup documents and manifests in the shared evidence channel."""
+    """The manifests whose scripts the page may run.
+
+    Script keys are untrusted repository text, so they reach the model only
+    inside the bounded evidence channel, never in the prompt's own words. The
+    documentation sections are already in the prompt, each with its span.
+    """
     if not isinstance(ctx, GettingStartedContext):
         return ()
-    references: list[str] = []
-    for section in ctx.readme_sections:
-        if section.source_path not in references:
-            references.append(section.source_path)
-    for script in ctx.manifest_scripts:
-        if script.manifest_path not in references:
-            references.append(script.manifest_path)
-    return tuple(references)
+    return tuple(dict.fromkeys(s.manifest_path for s in ctx.manifest_scripts))
 
 
 register(

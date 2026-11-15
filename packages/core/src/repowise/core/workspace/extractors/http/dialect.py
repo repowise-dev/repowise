@@ -9,6 +9,7 @@ in one place.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from repowise.core.workspace.origins import ContractOrigin
@@ -20,6 +21,7 @@ from .paths import (
     extract_path_from_url,
     flatten_interpolations,
     is_unusable_consumer_path,
+    names_a_target,
     normalize_http_path,
     strip_leading_base_expr,
     strip_trailing_query_expr,
@@ -123,12 +125,19 @@ def build_consumer_contract(
     client: str,
     line: int | None = None,
     origin: ContractOrigin = ContractOrigin.CLIENT_CALL,
+    bound_bases: Collection[str] = (),
 ) -> Contract | None:
     """Build a consumer contract from a raw client-call URL.
 
     Returns ``None`` for URLs that can never be a meaningful match key — a
     truncated template literal or a path with no concrete segment (see
     :func:`is_unusable_consumer_path`).
+
+    The one exception is the service root: ``POST /`` is a real route, and a
+    call to it is kept when its host, or a base placeholder one of
+    *bound_bases* names, places it on a target (:func:`names_a_target`), so the
+    matcher can resolve it. A root call with neither is still dropped, as the
+    path alone would match any service.
     """
     host = absolute_host(url)
     path = extract_path_from_url(url)
@@ -137,7 +146,9 @@ def build_consumer_contract(
         path = flatten_interpolations(path)
     path = strip_trailing_query_expr(path)
     norm_path = normalize_http_path(path)
-    if is_unusable_consumer_path(norm_path):
+    if is_unusable_consumer_path(norm_path) and not (
+        norm_path == "/" and names_a_target(host, base_token, bound_bases)
+    ):
         return None
     return build_contract(
         ctx,

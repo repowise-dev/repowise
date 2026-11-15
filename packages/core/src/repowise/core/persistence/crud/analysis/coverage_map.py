@@ -255,24 +255,31 @@ async def covered_source_files(
     session: AsyncSession,
     repository_id: str,
     source_files: set[str],
-) -> set[str]:
-    """Return the subset of *source_files* that have >=1 per-test coverage row.
+) -> dict[str, list[str]]:
+    """The files among *source_files* with >=1 per-test coverage row, and their tests.
 
     A file with a row is coverage-*proven* to be exercised by some test - the
     honest basis for "this changed file is tested". A file with no row is
     "unknown" (the coverage run may simply not have exercised it), never a
     proof of absence, so callers fall back to a labelled filename guess for
-    those rather than asserting a test gap.
+    those rather than asserting a test gap. Each file maps to its covering
+    test files, sorted; a row without a test file path (a coverage.py
+    dynamic-context id) is named by its test id.
     """
     if not source_files:
-        return set()
+        return {}
     result = await session.execute(
-        select(TestCoverageEntry.source_file).where(
+        select(
+            TestCoverageEntry.source_file, TestCoverageEntry.test_file, TestCoverageEntry.test_id
+        ).where(
             TestCoverageEntry.repository_id == repository_id,
             TestCoverageEntry.source_file.in_(source_files),
         )
     )
-    return {row[0] for row in result.all()}
+    out: dict[str, set[str]] = {}
+    for source, test_file, test_id in result.all():
+        out.setdefault(source, set()).add(test_file or test_id)
+    return {source: sorted(tests) for source, tests in out.items()}
 
 
 async def files_covered_by(

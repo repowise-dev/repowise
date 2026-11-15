@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field  # noqa: F401  — re-exported
 from pathlib import Path
+from typing import Any
 
 from ..models import DynamicKind
 from ._walk import iter_glob
@@ -44,8 +45,21 @@ class DynamicHintExtractor(ABC):
     # bytes. None (or a missing path) -> read from disk.
     _source_map = None
 
+    # :class:`.scan_cache.ScanCache`, attached by HintRegistry.extract_all when
+    # the caller keeps one. None -> every file is scanned.
+    _scan_cache = None
+
     @abstractmethod
     def extract(self, repo_root: Path) -> list[DynamicEdge]: ...
+
+    def _scan(self, rel: str, text: str, scan: Callable[[str, str], Any]) -> Any:
+        """``scan(text, rel)``, reused from the last run for a file whose text is unchanged.
+
+        *scan* must be a pure function of its arguments that returns JSON lists.
+        """
+        if self._scan_cache is None:
+            return scan(text, rel)
+        return self._scan_cache.scan(self.name, rel, text, scan)
 
     def _rglob(self, root: Path, pattern: str) -> Iterator[Path]:
         """Pruned replacement for :py:meth:`pathlib.Path.rglob`.

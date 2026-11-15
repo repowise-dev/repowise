@@ -219,7 +219,7 @@ async def test_the_namer_never_titles_a_chapter(tmp_path):
     chapter = pages.get("module_page:src/ingestion")
     assert chapter is not None, f"fixture grew no chapter: {sorted(pages)}"
     assert chapter.metadata.get("is_chapter") is True
-    assert chapter.title == "Ingestion Overview"
+    assert chapter.title == "Ingestion"
     # The leaves under it still carry what the model called them.
     assert any(
         p.title.startswith("Title ")

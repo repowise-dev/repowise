@@ -27,8 +27,8 @@ from .scoring import (
     deduction_split,
     destacked,
     dimensions_for,
+    finding_is_advisory,
     history_cap,
-    is_advisory,
     severity_deduction,
 )
 from .shape_curve import ceiling, continuous_base, group_by_function
@@ -181,7 +181,7 @@ def severity_breakdown(findings: Iterable[Any]) -> dict[str, int]:
     """
     out = dict.fromkeys(SEVERITY_ORDER, 0)
     for finding in findings:
-        if is_advisory(field(finding, "biomarker_type", "") or ""):
+        if finding_is_advisory(finding):
             continue
         severity = _severity_key(field(finding, "severity", None))
         if severity in out:
@@ -333,7 +333,10 @@ def score_breakdown(findings: Sequence[Any]) -> dict[str, Any]:
     # Findings outside the defect dimension deduct nothing; left in, they
     # report a raw deduction the file never paid.
     kept = [
-        f for f in findings if "defect" in dimensions_for(field(f, "biomarker_type", None) or "")
+        f
+        for f in findings
+        if "defect" in dimensions_for(field(f, "biomarker_type", None) or "")
+        and not finding_is_advisory(f)
     ]
     per_category: dict[str, list[tuple[Any, float]]] = {}
     for finding, raw in zip(kept, _scored_raw(kept), strict=True):

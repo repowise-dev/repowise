@@ -74,11 +74,23 @@ class InvalidMermaidError(InvalidGeneratedContentError):
 
 @dataclass(frozen=True)
 class ArtifactRule:
-    """One phrasing that must never reach a reader, and why."""
+    """One phrasing that must never reach a reader, why, and what to write instead.
+
+    ``remedy`` goes into the corrective re-ask only. It says what the page
+    should do in place of the rejected sentence without quoting it, because a
+    retry told only which rule it broke tends to rephrase the same sentence
+    into the same rule.
+    """
 
     name: str
     pattern: re.Pattern[str]
     explanation: str
+    remedy: str
+
+    @property
+    def retry_hint(self) -> str:
+        """The complaint and its remedy, without the phrase that broke the rule."""
+        return f"{self.name}: {self.explanation}. {self.remedy}"
 
 
 GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
@@ -102,6 +114,7 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             re.IGNORECASE,
         ),
         explanation="offers the reader further work, which no page can deliver",
+        remedy="End the page on its last fact about the code and offer nothing further.",
     ),
     ArtifactRule(
         name="first_person",
@@ -128,19 +141,72 @@ GENERATION_ARTIFACT_RULES: tuple[ArtifactRule, ...] = (
             r"|\bmyself\b"
         ),
         explanation="speaks as the generator rather than describing the code",
+        remedy="Write in the third person about the code, with no narrator.",
     ),
     ArtifactRule(
         name="supplied_context",
         # The model narrating the shape of its own prompt.  The reader has no
         # idea what was "provided" and cannot go and look at it.
+        #
+        # Only nouns that name prompt material.  "the supplied input", "the
+        # given data", "the provided list" and "the given files" describe a
+        # function's arguments in plain English, and rejecting them cost whole
+        # pages.  "context", "code", "files", "snippet" and "documentation"
+        # count only after a reasoning frame ("based on the provided code",
+        # "not shown in the given context"): "runs in the given context" is a
+        # Go ``context.Context`` argument and "executes the provided code" is
+        # a sandbox's.
         pattern=re.compile(
             r"\bthe (?:provided|supplied|given|attached|above) "
-            r"(?:information|context|data|input|material|details|excerpt|"
-            r"snippet|list|files?|documents?)\b"
-            r"|\byou (?:provided|supplied|gave|listed)\b",
+            r"(?:information|material|excerpts)\b"
+            r"|\b(?:based on|according to|judging (?:by|from)) the "
+            r"(?:provided|supplied|given|attached|above) "
+            r"(?:context|code|source|files?|details|snippets?|documentation)\b"
+            r"|\b(?:not|never) (?:shown|visible|included|present|defined|described|specified) "
+            r"(?:in|within) the (?:provided|supplied|given|attached|above)\b"
+            r"|\b(?:provided|supplied|shared|pasted|attached) above\b"
+            r"|\byou (?:provided|supplied|gave|listed|shared|pasted|attached)\b"
+            r"|\byou were (?:given|shown|provided|supplied)\b"
+            # What the page was written from, named as a source that falls
+            # short ("the available record names no functions", "the record
+            # does not provide excerpts"). "The record does not include" and
+            # "the facts do not match" are left alone: they describe data, and
+            # so do "the given record" and "the supplied record type" in a
+            # module about records. The qualified noun therefore matches only
+            # when a shortfall follows it, or as "the available facts".
+            r"|\bthe (?:available|provided|supplied|given) (?:record|facts|material) "
+            r"(?:(?:names?|lists?|shows?|has|have|contains?) no\b|"
+            r"(?:does|do|did|can|could) ?not (?:provide|show|name|say|state|mention|give|"
+            r"supply|reveal|include|list|describe|establish)\b)"
+            r"|\bthe available (?:facts|material)\b"
+            r"|\bthe record (?:does|did) not "
+            r"(?:provide|show|name|say|state|mention|give|supply|reveal)\b",
             re.IGNORECASE,
         ),
         explanation="refers to the prompt, which the reader cannot see",
+        remedy=(
+            "State what the code does. Where a detail is unknown, either leave it "
+            "out or say it about the code (for example: the caller of a function is "
+            "not traced here), never about what this request did or did not include."
+        ),
+    ),
+    ArtifactRule(
+        name="instruction_echo",
+        # A line of the page templates' own shape guidance copied into the
+        # page, which small local models do. Each alternative is phrasing only
+        # an instruction uses: the uppercase ONE, a sentence cap with its word
+        # range, a section count with its heading rule. Inline code is already
+        # stripped, so "`##` sections" arrives as "  sections".
+        pattern=re.compile(
+            r"never text to copy into it"
+            r"|\b(?-i:ONE) paragraph of at most \d+ sentences"
+            r"|\bat most \d+ sentences \(about \d+ to \d+ words\)"
+            r"|\b(?:\d+|two|three) (?:or|to) (?:\d+|three|five)\s+sections"
+            r"(?: on what| in the order|, each with its own)",
+            re.IGNORECASE,
+        ),
+        explanation="repeats the page's writing instructions as if they were content",
+        remedy="Write only the page itself; follow the shape instructions without restating them.",
     ),
 )
 
@@ -169,8 +235,8 @@ def _artifact_detail(content: str) -> tuple[str, str] | None:
     """Describe the first generation artifact in ``content``, if any.
 
     Returns ``(detail, retry_hint)``: the first quotes the offending phrase for
-    the log, the second names only the rule so a re-ask built from it does not
-    repeat the words that failed.
+    the log, the second names the rule and its remedy but not the phrase, so a
+    re-ask built from it does not repeat the words that failed.
     """
     prose = prose_text(content)
     for rule in GENERATION_ARTIFACT_RULES:
@@ -179,7 +245,7 @@ def _artifact_detail(content: str) -> tuple[str, str] | None:
             _artifact_check_counts["rejected"] += 1
             _artifact_check_counts[f"rejected:{rule.name}"] += 1
             detail = f"{rule.name}: {rule.explanation} ({match.group(0).strip()!r})"
-            return detail, f"{rule.name}: {rule.explanation}"
+            return detail, rule.retry_hint
     return None
 
 
@@ -240,10 +306,14 @@ _HOUSE_JARGON = re.compile(
 #: Two stray uses are tolerated: "word boundary" on a regex page and "error
 #: boundary" on a React one are the code's own words.
 _MAX_JARGON_HITS = 2
-_MAX_TABLES = 1
-_MAX_TABLE_ROWS = 8
-#: The template asks for 500 to 800 words before the questions.
-_MAX_PROSE_WORDS = 900
+#: A map page tabulates its parts, one row each, and a leaf may put a few sets
+#: of parallel options in tables; past these the page has become a reference.
+_MAX_TABLES = 3
+_MAX_TABLE_ROWS = 30
+#: The template asks for at most 1100 words before the questions on the largest
+#: module. This is the runaway guard above that, not the budget: a retry spent
+#: on length alone is money spent on a page a reader could already use.
+_MAX_PROSE_WORDS = 1400
 _TABLE_DIVIDER = re.compile(r"^\s*\|[-:| ]+\|\s*$")
 
 
@@ -275,11 +345,11 @@ def _module_page_shape(content: str) -> str | None:
     if len(tables) > _MAX_TABLES or any(rows > _MAX_TABLE_ROWS for rows in tables):
         return (
             f"has {len(tables)} tables (largest {max(tables)} rows); at most "
-            f"{_MAX_TABLES} table of at most {_MAX_TABLE_ROWS} rows is allowed"
+            f"{_MAX_TABLES} tables of at most {_MAX_TABLE_ROWS} rows are allowed"
         )
     words = prose_word_count(body)
     if words > _MAX_PROSE_WORDS:
-        return f"runs to {words} words of prose; it must stay within 500 to 800"
+        return f"runs to {words} words of prose; it must stay within the length it was asked for"
     return None
 
 

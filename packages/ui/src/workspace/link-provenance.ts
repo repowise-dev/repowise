@@ -62,6 +62,11 @@ const STRATEGIES = {
     label: "Matched after stripping a prefix",
     meaning: "The paths match only after removing a mount, version or base prefix. Verify before relying on it.",
   },
+  param_segment: {
+    label: "Matched a route parameter",
+    meaning:
+      "The call names a concrete value where the route declares a parameter, such as /render/1 against /render/{id}. Verify before relying on it.",
+  },
   manual: {
     label: "Declared by hand",
     meaning: "Declared in the workspace config.",
@@ -150,6 +155,7 @@ const WEAK_STRATEGIES: ReadonlySet<string> = new Set<LinkStrategy>([
   "unique_path",
   "ambiguous_path",
   "prefix_stripped",
+  "param_segment",
   "host_only",
 ]);
 

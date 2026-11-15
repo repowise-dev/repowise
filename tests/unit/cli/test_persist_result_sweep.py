@@ -66,6 +66,8 @@ def _result(
     return SimpleNamespace(
         repo_name=repo_name,
         index_persisted_incrementally=True,
+        parsed_files=[],
+        file_infos=[],
         generated_pages=generated_pages,
         tech_stack=None,
         vector_store=vector_store,

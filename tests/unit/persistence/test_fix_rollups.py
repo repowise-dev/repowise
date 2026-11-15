@@ -210,3 +210,22 @@ async def test_rerunning_the_pass_is_idempotent(async_session) -> None:
 async def test_no_fix_events_is_a_no_op(async_session) -> None:
     repo = await insert_repo(async_session)
     assert await apply_fix_rollups(async_session, repo.id) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_file_whose_fixes_aged_out_reads_the_empty_rollup(async_session) -> None:
+    """Rollups follow the stored events, also when a file has none left."""
+    repo = await insert_repo(async_session)
+    await _seed(async_session, repo.id, events=[{"at": HEAD}, {"at": HEAD - timedelta(days=5)}])
+    await apply_fix_rollups(async_session, repo.id)
+    assert (await _meta(async_session, repo.id)).fix_mass > 0
+
+    # The window moved past both fixes and the update pruned them.
+    for event in (await async_session.execute(select(FixEvent))).scalars().all():
+        await async_session.delete(event)
+    await async_session.flush()
+    assert await apply_fix_rollups(async_session, repo.id) == 1
+
+    meta = await _meta(async_session, repo.id)
+    assert (meta.fix_mass, meta.bug_magnet, meta.last_fix_at) == (0.0, False, None)
+    assert json.loads(meta.fix_symbol_counts_json) == {}

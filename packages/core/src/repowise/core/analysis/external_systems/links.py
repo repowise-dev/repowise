@@ -14,6 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from .jvm_packages import jvm_coordinate_candidates
 from .records import field, package_key
 
 #: Graph nodes standing for a third-party package carry this ``node_id`` prefix.
@@ -44,12 +45,19 @@ def declaration_name_candidates(external_name: str) -> tuple[str, ...]:
     Resolver output is ecosystem-shaped (npm subpaths, Rust ``::`` paths,
     Python dotted modules), so the declared package is a prefix of the node
     rather than the whole of it.
+
+    JVM imports are the exception: a Java or Kotlin package never equals its
+    Maven ``group:artifact``, so those come from a curated table (see
+    :mod:`.jvm_packages`) and sit ahead of the generic first-segment fallback.
+    A name the table does not know adds nothing, and a candidate only links
+    when a manifest declared it, so non-JVM names are unaffected.
     """
     candidates = [external_name]
     if external_name.startswith("@"):
         parts = external_name.split("/")
         if len(parts) >= 2:
             candidates.append("/".join(parts[:2]))
+    candidates.extend(jvm_coordinate_candidates(external_name))
     for separator in ("::", ".", "/"):
         if separator in external_name:
             candidates.append(external_name.split(separator, 1)[0])

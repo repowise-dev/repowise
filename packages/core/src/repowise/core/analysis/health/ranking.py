@@ -111,7 +111,7 @@ def split_in_scope(rows: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     """``(production, tests)``: the rows in Fix first's scope and the test rows.
 
     The one split behind ``worst_performer`` and ``production_average``, so
-    both leave out the same tooling, vendored, generated and docs example
+    both leave out the same tooling, build, vendored, generated and docs example
     files. A row in neither list is out of scope for another reason.
     """
     in_scope: list[Any] = []

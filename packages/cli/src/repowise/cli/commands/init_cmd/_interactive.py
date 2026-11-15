@@ -20,16 +20,18 @@ def offer_distill_rewrite_hook(
     yes: bool = False,
     no_editor_setup: bool = False,
 ) -> None:
-    """Opt-in install of the distill command-rewrite hook (Claude Code).
+    """Install the distill command-rewrite hook (Claude Code), on by default.
 
     ``flag`` is the resolved ``--distill-hook/--no-distill-hook`` value:
     True installs without prompting, False skips AND gates the repos off in
     config (so a hook installed globally from another repo stays inert
-    there), None prompts when interactive (defaulting to yes) and does
-    nothing otherwise.
+    there), None prompts when interactive (defaulting to yes) and installs
+    otherwise (``--yes`` or no terminal), printing the line that undoes it:
+    the consent pattern the post-commit hook uses for a default that is on.
 
-    When ``yes`` is True any prompt that would arise from ``flag=None`` is
-    skipped (no hook is installed silently).
+    An undecided run never overrides a recorded opt-out. A key the repo's
+    config already holds is kept, and when every repo opted out of rewriting
+    nothing is installed and nothing is asked.
 
     The hook itself is user-level (one install covers every repo), but the
     verdict is recorded per repo as ``distill.commands.enabled`` in each
@@ -61,54 +63,96 @@ def offer_distill_rewrite_hook(
         # `flag is None` decided nothing, so it writes nothing.
         return
 
-    # --yes with an undecided flag: skip the interactive prompt entirely.
-    if flag is None and yes:
-        return
-    if flag is None and not sys.stdin.isatty():
-        return
-
     from repowise.cli.agent_adapters.claude_code import ClaudeCodeAdapter
 
     adapter = ClaudeCodeAdapter()
     if flag is None:
-        if not adapter.detect():
-            return
-        console_obj.print()
-        console_obj.print(
-            "[bold]Distill:[/bold] Rewrite noisy agent commands (tests, builds, "
-            "git, searches) to `repowise distill ...` for compact output?"
-        )
-        scope = f"Applies to all {len(repo_paths)} selected repos. " if len(repo_paths) > 1 else ""
-        console_obj.print(
-            f"  [dim]{scope}Rewrites run without a prompt and only ever wrap a "
-            "recognized command; set `permission: ask` in .repowise/config.yaml to "
-            "approve each one. Raw output stays recoverable via `repowise expand`.[/dim]"
-        )
-        # Named here because a yes turns them on. The question stays one
-        # question: this is the same consent, and the thing being consented to
-        # is "hooks may compact what your agent sees", not three features.
-        # Every surface a yes covers has to be named, or it is not consent.
-        console_obj.print(
-            "  [dim]Also shrinks three big tool results, all reversible: a "
-            "whole-file Read comes back as a skeleton, a grep matching many "
-            "files comes back as a per-file summary, and re-reading a file you "
-            "already read — unchanged, unedited — comes back as a one-line "
-            "pointer instead of the content. Each says how to get the rest, and "
-            "reading again always returns it. Toggle later: "
-            "`repowise hook read-skeleton`, `repowise hook search-digest`, "
-            "`repowise hook read-reread`.[/dim]"
-        )
-        try:
-            flag = click.confirm("  Install the Claude Code rewrite hook?", default=True)
-        except (click.Abort, EOFError):
-            # Same unanswerable-terminal case as the post-commit hook offer
-            # above: decline an optional extra rather than fail a finished run.
-            console_obj.print(
-                "\n  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
-            )
-            return
+        _apply_default_verdict(console_obj, adapter, repo_paths, yes=yes)
+    else:
+        _apply_verdict(console_obj, adapter, repo_paths, enabled=flag)
 
-    if flag:
+
+def _apply_default_verdict(
+    console_obj: Any,
+    adapter: Any,
+    repo_paths: list[Path],
+    *,
+    yes: bool,
+) -> None:
+    """Resolve an undecided ``--distill-hook``: ask when someone can answer, else on."""
+    if not adapter.detect():
+        return
+    if all(_distill_opted_out(rp) for rp in repo_paths):
+        console_obj.print(
+            "  [dim]Rewrite hook left off: this repo opted out. Run "
+            "'repowise hook rewrite install' to turn it on.[/dim]"
+        )
+        return
+    if yes or not sys.stdin.isatty():
+        _apply_verdict(console_obj, adapter, repo_paths, enabled=True, keep_recorded=True)
+        console_obj.print(
+            "  [dim]Hooks now compact what your agent sees: noisy commands run "
+            "through `repowise distill`, and whole-file Reads, many-file greps and "
+            "unchanged re-reads come back shortened with a way to get the rest. "
+            "Run 'repowise hook rewrite uninstall' or re-run init with "
+            "--no-distill-hook to turn them off.[/dim]"
+        )
+        return
+    enabled = _ask_hooks_question(console_obj, len(repo_paths))
+    if enabled is not None:
+        # A yes still keeps what a repo recorded (a workspace can mix opt-outs
+        # into the question); a no is an explicit decline and turns every key off.
+        _apply_verdict(console_obj, adapter, repo_paths, enabled=enabled, keep_recorded=enabled)
+
+
+def _ask_hooks_question(console_obj: Any, repo_count: int) -> bool | None:
+    """Ask the one hooks question; None when the terminal cannot answer."""
+    console_obj.print()
+    console_obj.print(
+        "[bold]Distill:[/bold] Rewrite noisy agent commands (tests, builds, "
+        "git, searches) to `repowise distill ...` for compact output?"
+    )
+    scope = f"Applies to all {repo_count} selected repos. " if repo_count > 1 else ""
+    console_obj.print(
+        f"  [dim]{scope}Rewrites run without a prompt and only ever wrap a "
+        "recognized command; set `permission: ask` in .repowise/config.yaml to "
+        "approve each one. Raw output stays recoverable via `repowise expand`.[/dim]"
+    )
+    # Named here because a yes turns them on. The question stays one
+    # question: this is the same consent, and the thing being consented to
+    # is "hooks may compact what your agent sees", not three features.
+    # Every surface a yes covers has to be named, or it is not consent.
+    console_obj.print(
+        "  [dim]Also shrinks three big tool results, all reversible: a "
+        "whole-file Read comes back as a skeleton, a grep matching many "
+        "files comes back as a per-file summary, and re-reading a file you "
+        "already read — unchanged, unedited — comes back as a one-line "
+        "pointer instead of the content. Each says how to get the rest, and "
+        "reading again always returns it. Toggle later: "
+        "`repowise hook read-skeleton`, `repowise hook search-digest`, "
+        "`repowise hook read-reread`.[/dim]"
+    )
+    try:
+        return click.confirm("  Install the Claude Code rewrite hook?", default=True)
+    except (click.Abort, EOFError):
+        # Same unanswerable-terminal case as the post-commit hook offer
+        # above: decline an optional extra rather than fail a finished run.
+        console_obj.print(
+            "\n  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
+        )
+        return None
+
+
+def _apply_verdict(
+    console_obj: Any,
+    adapter: Any,
+    repo_paths: list[Path],
+    *,
+    enabled: bool,
+    keep_recorded: bool = False,
+) -> None:
+    """Install (or skip) the user-level hook, then record the verdict per repo."""
+    if enabled:
         path = adapter.install_rewrite_hook()
         if path:
             console_obj.print(f"  [{OK}]{glyph('ok')}[/] Rewrite hook installed ({path})")
@@ -118,8 +162,28 @@ def offer_distill_rewrite_hook(
         console_obj.print(
             "  [dim]Skipped. Run 'repowise hook rewrite install' later to set up.[/dim]"
         )
+    _record_distill_verdict(console_obj, repo_paths, enabled=enabled, keep_recorded=keep_recorded)
 
-    _record_distill_verdict(console_obj, repo_paths, enabled=bool(flag))
+
+def _distill_opted_out(repo_path: Path) -> bool:
+    """True when this repo's config records ``distill.commands.enabled: false``."""
+    return _recorded_hook_verdicts(repo_path).get("distill") is False
+
+
+def _recorded_hook_verdicts(repo_path: Path) -> dict[str, bool]:
+    """The hook verdicts this repo's config holds, keyed ``distill`` or by surface."""
+    from repowise.cli.helpers import load_config
+
+    cfg = load_config(repo_path)
+    hooks = cfg.get("hooks")
+    found = (
+        {k: v for k, v in hooks.items() if isinstance(v, bool)} if isinstance(hooks, dict) else {}
+    )
+    distill = cfg.get("distill")
+    commands = distill.get("commands") if isinstance(distill, dict) else None
+    if isinstance(commands, dict) and isinstance(commands.get("enabled"), bool):
+        found["distill"] = commands["enabled"]
+    return found
 
 
 def _record_distill_verdict(
@@ -127,8 +191,12 @@ def _record_distill_verdict(
     repo_paths: list[Path],
     *,
     enabled: bool,
+    keep_recorded: bool = False,
 ) -> None:
     """Persist the hook-intervention verdict for every repo in this run.
+
+    ``keep_recorded`` keeps every key the repo already holds, so an undecided
+    run never turns back on a surface someone switched off by hand.
 
     Several keys, one answer. ``distill.commands.enabled`` gates rewriting a
     Bash command into ``repowise distill``; ``hooks.read_skeleton`` gates
@@ -154,9 +222,12 @@ def _record_distill_verdict(
 
     for repo_path in repo_paths:
         try:
-            save_distill_commands_enabled(repo_path, enabled=enabled)
+            recorded = _recorded_hook_verdicts(repo_path) if keep_recorded else {}
+            if "distill" not in recorded:
+                save_distill_commands_enabled(repo_path, enabled=enabled)
             for surface in HOOK_REPLACEMENT_SURFACES:
-                save_hook_surface_enabled(repo_path, surface, enabled=enabled)
+                if surface not in recorded:
+                    save_hook_surface_enabled(repo_path, surface, enabled=enabled)
         except Exception as exc:  # init must not crash on a config write
             console_obj.print(
                 f"  [{WARN}]Could not record hook verdict for {repo_path.name}: {exc}[/]"
@@ -313,3 +384,37 @@ def _offer_hook_install_prompts(
             console_obj.print(
                 "  [dim]Skipped. Run 'repowise hook install --workspace' later.[/dim]"
             )
+
+
+def warn_unresolved_hooks(
+    console_obj: Any, repo_paths: list[Path] | None = None, *, no_editor_setup: bool = False
+) -> None:
+    """Say so when an installed repowise hook would not find its script.
+
+    Those hooks exit quietly by design, so a missing script would otherwise
+    mean hooks that never run and a savings ledger that stays empty.
+    """
+    from repowise.cli.editor_setup import (
+        describe_unresolved_hooks,
+        is_editor_setup_disabled,
+        unresolved_hook_scripts,
+        unresolved_hooks_fix,
+    )
+
+    if is_editor_setup_disabled(no_editor_setup):
+        return
+    missing: list[tuple[str, str]] = []
+    try:
+        for repo_path in repo_paths or [None]:
+            missing += [m for m in unresolved_hook_scripts(repo_path) if m not in missing]
+        command, advice = unresolved_hooks_fix(missing)
+    except Exception:  # a finished init is never failed by an advisory line
+        return
+    if missing:
+        console_obj.print(
+            f"  [{WARN}]Hooks cannot find their script, so they do nothing: "
+            f"{describe_unresolved_hooks(missing)}."
+            + (f" Run '{command}'." if command else "")
+            + (f" {advice}" if advice else "")
+            + "[/]"
+        )

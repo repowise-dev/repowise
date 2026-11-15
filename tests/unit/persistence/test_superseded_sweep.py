@@ -21,8 +21,12 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
+from repowise.core.generation.models import STUB_FALLBACK_ERROR
 from repowise.core.persistence.models import Page, Repository
-from repowise.core.pipeline.persist import sweep_superseded_generated_pages
+from repowise.core.pipeline.persist import (
+    sweep_superseded_generated_pages,
+    sweep_unyielded_module_pages,
+)
 
 
 @pytest.fixture
@@ -190,3 +194,138 @@ async def test_a_different_repository_is_untouched(session, repo_id, other_repo_
     )
     assert swept == []
     assert "module_page:src/old" in await _ids(session, other_repo_id)
+
+
+# ---------------------------------------------------------------------------
+# Module pages the whole-repository plan no longer yields
+# ---------------------------------------------------------------------------
+
+_PLAN = {"src/a.py": "module_page:src/new", "src/b.py": "module_page:src/new", "x/c.py": "module_page:x"}
+
+
+@pytest.mark.asyncio
+async def test_a_planned_module_page_the_plan_no_longer_yields_is_retired(session, repo_id):
+    await _add(session, repo_id, "module_page:src/old", "module_page", ["src/a.py", "src/b.py", "src/z.py"])
+    swept = await sweep_unyielded_module_pages(
+        session,
+        repo_id,
+        {"module_page:src/old", "module_page:src/new"},
+        _PLAN,
+        {"module_page:src/new"},
+    )
+    assert swept == ["module_page:src/old"]
+    assert "module_page:src/old" not in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_page_the_run_did_not_plan_is_left_alone(session, repo_id):
+    """A scoped run judges only the pages it was asked for."""
+    await _add(session, repo_id, "module_page:src/old", "module_page", ["src/a.py"])
+    swept = await sweep_unyielded_module_pages(
+        session, repo_id, {"module_page:src/new"}, _PLAN, {"module_page:src/new"}
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_page_the_plan_still_yields_is_kept(session, repo_id):
+    await _add(session, repo_id, "module_page:src/new", "module_page", ["src/a.py"])
+    swept = await sweep_unyielded_module_pages(
+        session, repo_id, {"module_page:src/new"}, _PLAN, set()
+    )
+    assert swept == []
+    assert "module_page:src/new" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_an_empty_plan_retires_nothing(session, repo_id):
+    await _add(session, repo_id, "module_page:src/old", "module_page", ["src/a.py"])
+    swept = await sweep_unyielded_module_pages(
+        session, repo_id, {"module_page:src/old"}, {}, set()
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_row_with_no_membership_or_a_stub_is_left_alone(session, repo_id):
+    await _add(session, repo_id, "module_page:src/bare", "module_page", [])
+    await _add(session, repo_id, "module_page:src/stub", "module_page", ["src/a.py"])
+    stub = await session.get(Page, "module_page:src/stub")
+    stub.metadata_json = json.dumps({"file_paths": ["src/a.py"], STUB_FALLBACK_ERROR: "boom"})
+    await session.flush()
+    swept = await sweep_unyielded_module_pages(
+        session,
+        repo_id,
+        {"module_page:src/bare", "module_page:src/stub"},
+        _PLAN,
+        {"module_page:src/new"},
+    )
+    assert swept == []
+    assert {"module_page:src/bare", "module_page:src/stub"} <= await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_member_does_not_keep_a_row_stale(session, repo_id):
+    """A produced page can never claim a deleted file, so it must not block retirement."""
+    await _add(
+        session, repo_id, "module_page:src/old", "module_page", ["src/a.py", "src/gone.py"]
+    )
+    swept = await sweep_superseded_generated_pages(
+        session,
+        repo_id,
+        [_Generated("module_page:src/new", "module_page", ["src/a.py"])],
+        existing_files={"src/a.py"},
+    )
+    assert swept == ["module_page:src/old"]
+    assert "module_page:src/old" not in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_surviving_members_only_partly_covered_keep_the_row(session, repo_id):
+    await _add(
+        session,
+        repo_id,
+        "module_page:src/old",
+        "module_page",
+        ["src/a.py", "src/b.py", "src/gone.py"],
+    )
+    swept = await sweep_superseded_generated_pages(
+        session,
+        repo_id,
+        [_Generated("module_page:src/new", "module_page", ["src/a.py"])],
+        existing_files={"src/a.py", "src/b.py"},
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_row_with_no_surviving_member_is_left_alone(session, repo_id):
+    await _add(session, repo_id, "module_page:src/old", "module_page", ["src/gone.py"])
+    swept = await sweep_superseded_generated_pages(
+        session,
+        repo_id,
+        [_Generated("module_page:src/new", "module_page", ["src/a.py"])],
+        existing_files={"src/a.py"},
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)
+
+
+@pytest.mark.asyncio
+async def test_a_stub_fallback_page_is_kept_with_a_deleted_member(session, repo_id):
+    """The stub carve-out holds when the file set narrows membership."""
+    from repowise.core.generation.models import STUB_FALLBACK_ERROR
+
+    await _add(
+        session, repo_id, "module_page:src/old", "module_page", ["src/a.py", "src/gone.py"]
+    )
+    stub = _Generated("module_page:src/new", "module_page", ["src/a.py"])
+    stub.metadata[STUB_FALLBACK_ERROR] = "provider failed"
+    swept = await sweep_superseded_generated_pages(
+        session, repo_id, [stub], existing_files={"src/a.py"}
+    )
+    assert swept == []
+    assert "module_page:src/old" in await _ids(session, repo_id)

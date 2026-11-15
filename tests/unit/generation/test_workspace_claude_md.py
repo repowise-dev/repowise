@@ -106,7 +106,8 @@ def test_render_contains_mcp_tools_section(gen):
     result = gen.render(_make_data())
     assert "get_overview" in result
     assert "get_context" in result
-    assert "search_codebase" in result
+    assert "`mcp__repowise__<tool>`" in result
+    assert "| Tool | When and why |" not in result
 
 
 def test_render_contains_workspace_query_note(gen):

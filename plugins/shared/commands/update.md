@@ -2,6 +2,7 @@
 frontmatter: |
     description: Trigger an incremental Repowise update to sync documentation with recent code changes.
     allowed-tools: Bash(repowise update:*), Read
+    disable-model-invocation: true
 ---
 
 # Repowise Update

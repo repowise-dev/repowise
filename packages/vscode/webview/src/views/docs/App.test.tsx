@@ -100,10 +100,10 @@ describe("docs App", () => {
     );
 
     // Domain view (the default) files every deterministic page into the
-    // collapsed "Code reference" folder; the leaf is a deliberate
+    // collapsed "Reference" folder; the leaf is a deliberate
     // drill-in, so on load the folder — not the basename — is what renders.
     // (The expand-to-leaf behaviour is covered by the shared DocsTree test.)
-    expect(await screen.findByText("Code reference")).toBeTruthy();
+    expect(await screen.findByText("Reference")).toBeTruthy();
 
     // With no params, the reader lands on the repo overview page.
     expect(
