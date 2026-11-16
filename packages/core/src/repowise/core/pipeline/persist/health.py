@@ -158,8 +158,7 @@ async def save_full_health_report(
     # that were never stored. It runs on an empty finding set too: the queue
     # has to be reconciled to nothing just the same.
     async with session.begin_nested():
-        if findings:
-            await save_health_findings(session, repo_id, findings)
+        await save_health_findings(session, repo_id, findings)
         # Structured refactoring suggestions (Extract Class, ...). Repo-wide
         # reconciliation: an unchanged plan keeps its id and its triage state,
         # and one nobody detects any more resolves rather than disappearing.
