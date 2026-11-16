@@ -92,6 +92,27 @@ def test_celery_links_delay_call_to_task_across_repos(tmp_path: Path) -> None:
     ]
 
 
+def test_celery_send_task_does_not_link_by_suffix_alone(tmp_path: Path) -> None:
+    worker = _extract(
+        tmp_path / "worker",
+        "tasks.py",
+        "from celery import shared_task\n\n"
+        '@shared_task(name="orders.create_order")\n'
+        "def create_order(x):\n"
+        "    pass\n",
+        "worker",
+    )
+    web = _extract(
+        tmp_path / "web",
+        "views.py",
+        "from celery import current_app\n\n"
+        "def submit():\n"
+        '    current_app.send_task("legacy.create_order", args=[10])\n',
+        "web",
+    )
+    assert [lk for lk in match_contracts(worker + web) if lk.contract_type == "topic"] == []
+
+
 def test_celery_does_not_meet_kafka_or_bullmq_topic(tmp_path: Path) -> None:
     celery = _extract(
         tmp_path / "c",

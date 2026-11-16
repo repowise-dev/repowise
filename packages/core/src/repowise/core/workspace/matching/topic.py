@@ -109,13 +109,19 @@ def _celery_suffix_keys(
 ) -> list[str]:
     """Keys whose dotted function suffix matches a Celery consumer's suffix."""
     function = str(consumer.meta.get("topic", "")).lower().split(".")[-1]
+    if not function:
+        return []
     return [
         key
         for key, providers in provider_index.items()
         if key.startswith(TOPIC_PREFIX)
         and key not in known
         and key[len(TOPIC_PREFIX) :].lower().split(".")[-1] == function
-        and any(p.meta.get("broker") == "celery" for p in providers)
+        and any(
+            p.meta.get("broker") == "celery"
+            and p.symbol_name.startswith(("celery.delay(", "celery.apply_async("))
+            for p in providers
+        )
     ]
 
 
