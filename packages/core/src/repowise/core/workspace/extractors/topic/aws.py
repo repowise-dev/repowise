@@ -119,81 +119,84 @@ class EventBridgeTopicDialect:
     requires = _EVENTBRIDGE_GATES
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
-        out: list[Contract] = []
+        return [*self._extract_publishers(ctx), *self._extract_consumers(ctx)]
+
+    def _extract_publishers(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
-
-        # 1. Publishers: PutEventsCommand, put_events, putEvents
-        if "PutEvents" in content or "put_events" in content or "putEvents" in content:
-            for pm in _PUT_EVENTS_HEAD.finditer(content):
-                open_idx = pm.end() - 1
-                close_idx = match_paren(content, open_idx)
-                call_body = (
-                    content[open_idx:close_idx]
-                    if close_idx != -1
-                    else content[open_idx : open_idx + 2000]
+        if not any(g in content for g in ("PutEvents", "put_events", "putEvents")):
+            return []
+        out: list[Contract] = []
+        for pm in _PUT_EVENTS_HEAD.finditer(content):
+            open_idx = pm.end() - 1
+            close_idx = match_paren(content, open_idx)
+            call_body = (
+                content[open_idx:close_idx]
+                if close_idx != -1
+                else content[open_idx : open_idx + 2000]
+            )
+            sources = [m.group(1) for m in _SOURCE_VAL.finditer(call_body)]
+            details = [m.group(1) for m in _DETAIL_TYPE_VAL.finditer(call_body)]
+            for s, d in zip(sources, details, strict=False):
+                out.append(
+                    topic_contract(
+                        ctx,
+                        name=f"{s}/{d}",
+                        broker="eventbridge",
+                        kind=TOPIC_KIND_TOPIC,
+                        role="provider",
+                        label="eventbridge.PutEvents",
+                        origin=ContractOrigin.CLIENT_CALL,
+                        offset=pm.start(),
+                    )
                 )
-                sources = [m.group(1) for m in _SOURCE_VAL.finditer(call_body)]
-                details = [m.group(1) for m in _DETAIL_TYPE_VAL.finditer(call_body)]
-                for s, d in zip(sources, details, strict=False):
-                    event_id = f"{s}/{d}"
-                    out.append(
-                        topic_contract(
-                            ctx,
-                            name=event_id,
-                            broker="eventbridge",
-                            kind=TOPIC_KIND_TOPIC,
-                            role="provider",
-                            label="eventbridge.PutEvents",
-                            origin=ContractOrigin.CLIENT_CALL,
-                            offset=pm.start(),
-                        )
-                    )
+        return out
 
-        # 2. Consumers: CDK rule patterns or SAM / CloudFormation
-        if any(g in content for g in ("eventPattern", "EventPattern", "EventBridgeRule")):
-            if ctx.suffix in _YAML_EXT:
-                s_m = _YAML_SOURCE_RE.search(content)
-                d_m = _YAML_DETAIL_RE.search(content)
-                if s_m and d_m:
-                    event_id = f"{s_m.group(1)}/{d_m.group(1)}"
-                    out.append(
-                        topic_contract(
-                            ctx,
-                            name=event_id,
-                            broker="eventbridge",
-                            kind=TOPIC_KIND_TOPIC,
-                            role="consumer",
-                            label="EventBridgeRule",
-                            origin=ContractOrigin.ROUTE_REGISTRATION,
-                            offset=0,
-                        )
+    def _extract_consumers(self, ctx: ScanContext) -> list[Contract]:
+        content = ctx.content
+        if not any(g in content for g in ("eventPattern", "EventPattern", "EventBridgeRule")):
+            return []
+        out: list[Contract] = []
+        if ctx.suffix in _YAML_EXT:
+            s_m = _YAML_SOURCE_RE.search(content)
+            d_m = _YAML_DETAIL_RE.search(content)
+            if s_m and d_m:
+                out.append(
+                    topic_contract(
+                        ctx,
+                        name=f"{s_m.group(1)}/{d_m.group(1)}",
+                        broker="eventbridge",
+                        kind=TOPIC_KIND_TOPIC,
+                        role="consumer",
+                        label="EventBridgeRule",
+                        origin=ContractOrigin.ROUTE_REGISTRATION,
+                        offset=0,
                     )
-            else:
-                for rm in _RULE_PATTERN_HEAD.finditer(content):
-                    open_idx = rm.end() - 1
-                    close_idx = match_paren(content, open_idx, closer="}")
-                    block = (
-                        content[open_idx:close_idx]
-                        if close_idx != -1
-                        else content[open_idx : open_idx + 2000]
-                    )
-                    s_m = _SOURCE_VAL.search(block)
-                    d_m = _DETAIL_TYPE_VAL.search(block)
-                    if s_m and d_m:
-                        event_id = f"{s_m.group(1)}/{d_m.group(1)}"
-                        out.append(
-                            topic_contract(
-                                ctx,
-                                name=event_id,
-                                broker="eventbridge",
-                                kind=TOPIC_KIND_TOPIC,
-                                role="consumer",
-                                label="EventBridgeRule",
-                                origin=ContractOrigin.ROUTE_REGISTRATION,
-                                offset=rm.start(),
-                            )
-                        )
+                )
+            return out
 
+        for rm in _RULE_PATTERN_HEAD.finditer(content):
+            open_idx = rm.end() - 1
+            close_idx = match_paren(content, open_idx, closer="}")
+            block = (
+                content[open_idx:close_idx]
+                if close_idx != -1
+                else content[open_idx : open_idx + 2000]
+            )
+            s_m = _SOURCE_VAL.search(block)
+            d_m = _DETAIL_TYPE_VAL.search(block)
+            if s_m and d_m:
+                out.append(
+                    topic_contract(
+                        ctx,
+                        name=f"{s_m.group(1)}/{d_m.group(1)}",
+                        broker="eventbridge",
+                        kind=TOPIC_KIND_TOPIC,
+                        role="consumer",
+                        label="EventBridgeRule",
+                        origin=ContractOrigin.ROUTE_REGISTRATION,
+                        offset=rm.start(),
+                    )
+                )
         return out
 
 
