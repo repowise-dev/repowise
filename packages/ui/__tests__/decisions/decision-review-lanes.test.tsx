@@ -432,6 +432,50 @@ describe("a row hands its record to the reader's agent", () => {
     );
   });
 
+  it("falls back to a plain write where promised clipboard items are refused", async () => {
+    const writeText = vi.fn(async () => undefined);
+    const write = vi.fn(async () => Promise.reject(new Error("unsupported")));
+    Object.assign(navigator, { clipboard: { writeText, write } });
+    vi.stubGlobal("ClipboardItem", class {
+      constructor(public items: unknown) {}
+    });
+    try {
+      renderLanes("candidates", { loadRecordPrompt: async () => "check d1" });
+
+      fireEvent.click(screen.getByRole("button", { name: /Copy prompt to check it/ }));
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith("check d1"));
+      expect(write).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("reports the latest copy, not a slower earlier one", async () => {
+    clipboard();
+    let finishFirst: (t: string) => void = () => {};
+    const loadRecordPrompt = vi.fn((d: DecisionRecord) =>
+      d.id === "d1"
+        ? new Promise<string>((resolve) => {
+            finishFirst = resolve;
+          })
+        : Promise.resolve("check d2"),
+    );
+    renderLanes("candidates", {
+      decisions: [record({ id: "d1" }), record({ id: "d2", title: "Other" })],
+      loadRecordPrompt,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt to check it: Use JWT/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Copy prompt to check it: Other/ }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/"Other"/));
+    await act(async () => {
+      finishFirst("check d1");
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent(/"Other"/);
+  });
+
   it("offers no prompt on a retired record, and no lane-wide queue button", () => {
     const first = renderLanes("history", {
       decisions: [record({ currency: "superseded" })],
@@ -537,6 +581,16 @@ describe("the queue is a table with a drawer", () => {
     expect(
       within(screen.getByRole("dialog")).getByRole("heading", { name: "Second record" }),
     ).toBeInTheDocument();
+  });
+
+  it("moves focus to the list after a verb takes the row away", async () => {
+    renderLanes("candidates", { onDismiss: vi.fn() });
+
+    fireEvent.click(openRowMenu().getByRole("menuitem", { name: "Dismiss" }));
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("table").closest("[tabindex='-1']")),
+    );
   });
 
   it("does not open the drawer when a row verb is pressed", () => {
@@ -693,6 +747,22 @@ describe("dismissing a selection of candidates", () => {
     fireEvent.click(screen.getByRole("button", { name: "Done selecting" }));
     expect(screen.queryByRole("checkbox")).toBeNull();
     expect(screen.queryByText("1 selected")).toBeNull();
+  });
+
+  it("turns selection off when the reader leaves the section", () => {
+    const view = renderLanes("candidates", { decisions: two(), onDismissMany: vi.fn() });
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+    expect(screen.getAllByRole("checkbox").length).toBeGreaterThan(0);
+
+    view.rerender(
+      <DecisionReviewLanes lane="history" onLaneChange={vi.fn()} decisions={two()} repoId="r1" onDismissMany={vi.fn()} />,
+    );
+    view.rerender(
+      <DecisionReviewLanes lane="candidates" onLaneChange={vi.fn()} decisions={two()} repoId="r1" onDismissMany={vi.fn()} />,
+    );
+
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.getByRole("button", { name: "Select" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("offers selection only in the background section", () => {

@@ -323,6 +323,7 @@ export function DecisionReviewLanes({
   const bulkRun = useBulkSelection(rows, lane, selectable ? onDismissMany : undefined);
   const { selected, bulk, selecting } = bulkRun;
   const copies = useRecordPromptCopy(loadRecordPrompt);
+  const listRef = React.useRef<HTMLDivElement>(null);
 
   // Acting from the drawer moves it to the next record, which is what makes
   // the drawer a queue and not a detour. Read before the host refreshes
@@ -354,6 +355,7 @@ export function DecisionReviewLanes({
     openRecord: (d) => setOpenId(d.id),
     recordHref: (d) => `${prefix}/decisions/${d.id}`,
     Link,
+    afterRemove: () => requestAnimationFrame(() => listRef.current?.focus()),
   });
 
   const tabs: ViewTab[] = DECISION_SECTIONS.map((id) => {
@@ -419,16 +421,18 @@ export function DecisionReviewLanes({
               the quote is clamped here and read in full in the drawer, so the
               queue scans as columns and a reviewer can compare what is
               waiting instead of reading it top to bottom. */}
-          <ResponsiveTable
-            columns={columns}
-            rows={rows}
-            rowKey={(d) => d.id}
-            onRowClick={(d) => setOpenId(d.id)}
-            selectedKey={openId}
-            caption={`${SECTION_LABEL[lane]} decisions`}
-            bare
-            className="border-y border-[var(--color-border-subtle)]"
-          />
+          <div ref={listRef} tabIndex={-1} className="focus:outline-none">
+            <ResponsiveTable
+              columns={columns}
+              rows={rows}
+              rowKey={(d) => d.id}
+              onRowClick={(d) => setOpenId(d.id)}
+              selectedKey={openId}
+              caption={`${SECTION_LABEL[lane]} decisions`}
+              bare
+              className="border-y border-[var(--color-border-subtle)]"
+            />
+          </div>
         </>
       )}
       <DecisionReviewDrawer
@@ -601,6 +605,11 @@ interface ColumnContext {
   openRecord?: ((decision: DecisionRecord) => void) | undefined;
   recordHref: (decision: DecisionRecord) => string;
   Link: LinkLike;
+  /**
+   * After a verb that takes the row out of the section: focus moves to the
+   * list, so it does not fall to the page with the row's menu button.
+   */
+  afterRemove?: (() => void) | undefined;
 }
 
 
@@ -904,12 +913,23 @@ function backgroundManualItems(
             key: "accept",
             label: PUT_IN_FORCE_LABEL,
             disabled: pending,
-            onSelect: () => onAccept(d),
+            onSelect: () => {
+              onAccept(d);
+              ctx.afterRemove?.();
+            },
           },
     );
   }
   if (onDismiss) {
-    items.push({ key: "dismiss", label: "Dismiss", disabled: pending, onSelect: () => onDismiss(d) });
+    items.push({
+      key: "dismiss",
+      label: "Dismiss",
+      disabled: pending,
+      onSelect: () => {
+        onDismiss(d);
+        ctx.afterRemove?.();
+      },
+    });
   }
   return items;
 }
@@ -929,6 +949,8 @@ function inForceManualItems(
       label: pinned ? UNPIN_LABEL : PIN_LABEL,
       description: pinned ? UNPIN_TITLE : PIN_TITLE,
       disabled: pending,
+      // The row stays, so focus goes back to its menu button.
+      restoresFocus: true,
       onSelect: () => onPin(d, !pinned),
     });
   }
@@ -939,6 +961,7 @@ function inForceManualItems(
       label: "Still holds (reaffirm)",
       description: "Still right after re-reading it: mark it current again",
       disabled: pending,
+      restoresFocus: true,
       onSelect: () => reaffirm(d),
     });
   }
@@ -1102,6 +1125,9 @@ function useRecordPromptCopy(load: DecisionReviewLanesProps["loadRecordPrompt"])
   const [note, setNote] = React.useState("");
   const [copied, setCopied] = React.useState<string | null>(null);
   const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The latest copy wins: a slower earlier read must not report over a later
+  // one, or the line would name a record the clipboard does not hold.
+  const latest = React.useRef(0);
   React.useEffect(
     () => () => {
       if (timer.current) clearTimeout(timer.current);
@@ -1112,7 +1138,9 @@ function useRecordPromptCopy(load: DecisionReviewLanesProps["loadRecordPrompt"])
     (d: DecisionRecord, kind: DecisionRecordPromptKind) => {
       if (!load) return;
       const title = stripMarkdown(d.title);
+      const run = ++latest.current;
       void copyPending(load(d, kind)).then((ok) => {
+        if (run !== latest.current) return;
         setCopied(ok ? d.id : null);
         setNote(
           ok
@@ -1148,7 +1176,8 @@ async function copyPending(pending: Promise<string | null | undefined>): Promise
         ]);
         return true;
       } catch {
-        // No promised clipboard items here: the plain write below.
+        // No promised clipboard items here: the plain write below. Safari has
+        // let go of the gesture by then, so it reports false there.
       }
     }
     await navigator.clipboard.writeText(await text);
