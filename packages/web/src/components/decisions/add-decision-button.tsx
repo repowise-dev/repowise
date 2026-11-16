@@ -144,8 +144,12 @@ function useDecisionAgentPromptState(
   kind: DecisionAgentPromptKind | null,
   decisionId?: string,
 ) {
-  return useSWR(kind ? decisionPromptKey(repoId, kind, decisionId) : null, () =>
-    getDecisionAgentPrompt(repoId, kind!, decisionId),
+  // No retry loop on a failed read: a server that refuses the kind keeps
+  // refusing it. Focus revalidation still recovers from a passing failure.
+  return useSWR(
+    kind ? decisionPromptKey(repoId, kind, decisionId) : null,
+    () => getDecisionAgentPrompt(repoId, kind!, decisionId),
+    { shouldRetryOnError: false },
   );
 }
 

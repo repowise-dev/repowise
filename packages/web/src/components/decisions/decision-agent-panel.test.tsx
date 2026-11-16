@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { NextIntlClientProvider } from "next-intl";
 import { SWRConfig } from "swr";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -80,7 +80,10 @@ describe("DecisionAgentPanel", () => {
     await waitFor(() =>
       expect(vi.mocked(getDecisionAgentPrompt)).toHaveBeenCalledWith("r1", "review_all", undefined),
     );
-    await new Promise((r) => setTimeout(r, 0));
+    // Let the rejection settle before checking that nothing shows for it.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
     expect(screen.queryByRole("button", { name: "Review all records" })).toBeNull();
     refused.unmount();
 
