@@ -123,8 +123,8 @@ def render_review_all() -> str:
             KEEP_TEST,
             "",
             f"1. List a page: `{page}`, starting with N = 0. A record you confirm or dismiss "
-            "leaves the list; every record still on it after you act (left, or a command "
-            "refused) adds 1 to N. An empty page means you are done.",
+            "leaves the list; every record still on it after you act (left, refused, or held "
+            "until its commit lands) adds 1 to N. An empty page means you are done.",
             "2. Check the page's records in parallel (a subagent each, if you have them): "
             "`repowise decision show <id>`, its evidence commits and the files it names today.",
             "3. Holds and passes the test: `repowise decision confirm <id> --agent <slug> "

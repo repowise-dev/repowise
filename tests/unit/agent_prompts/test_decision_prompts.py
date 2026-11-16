@@ -167,7 +167,8 @@ def test_review_all_pages_the_queue_and_cannot_skip_or_spin():
     assert "starting with N = 0" in text
     # Acted-on records leave the list, so only what stays moves the offset.
     assert "A record you confirm or dismiss leaves the list" in text
-    assert "a command refused) adds 1 to N" in text
+    # A refused or held confirm leaves the record listed, so it moves the offset too.
+    assert "(left, refused, or held until its commit lands) adds 1 to N" in text
     assert "An empty page means you are done." in text
     assert "stop after the current page and report" in text
 

@@ -137,6 +137,19 @@ def test_dismissing_a_candidate_records_who_did_it(repo: Path) -> None:
     assert (signed["verb"], signed["kind"], signed["session"]) == ("Dismissed", "agent", "s-1")
 
 
+def test_confirmed_and_dismissed_records_leave_the_open_list(repo: Path) -> None:
+    """The whole-queue prompt pages past only what is left, so both verbs must empty it."""
+
+    def open_ids() -> set[str]:
+        return {c["id"] for c in json.loads(_run(repo, "candidates").output)["candidates"]}
+
+    assert {"a" * 32, "b" * 32} <= open_ids()
+    assert _run(repo, "confirm", "bbbb").exit_code == 0
+    assert _run(repo, "dismiss", "aaaa", "--reason", "noise").exit_code == 0
+
+    assert not {"a" * 32, "b" * 32} & open_ids()
+
+
 def test_a_split_request_is_signed(repo: Path) -> None:
     result = _run(repo, "split", "aaaa", "--agent", "claude_code", "--reason", "two choices")
     assert result.exit_code == 0, result.output
