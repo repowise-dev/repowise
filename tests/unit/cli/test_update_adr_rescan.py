@@ -6,9 +6,12 @@ from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.cli.commands.update_cmd import decision_passes
 from repowise.core.analysis.decision_extractor import DecisionExtractor
 from repowise.core.analysis.decisions.policy import preset_policy
+from repowise.core.pipeline.phase_timing import PhaseTimings
 
 _ADR = """\
 ---
@@ -92,9 +95,10 @@ async def test_rescan_still_excludes_ignored_and_non_adr_files(tmp_path: Path) -
     assert found == []
 
 
-def test_update_reads_an_added_adr_and_skips_unchanged_ones(tmp_path: Path) -> None:
+@pytest.mark.parametrize("status", ["added", "modified"])
+def test_update_reads_a_changed_adr_and_skips_unchanged_ones(tmp_path: Path, status: str) -> None:
     _write_adrs(tmp_path)
-    run, docs = _run_and_docs(tmp_path, {"docs/adr/0002-new.md": "added", "src/app.py": "modified"})
+    run, docs = _run_and_docs(tmp_path, {"docs/adr/0002-new.md": status, "src/app.py": "modified"})
 
     _rescan(run, docs)
 
@@ -111,3 +115,60 @@ def test_a_deleted_adr_is_not_read(tmp_path: Path) -> None:
     _rescan(run, docs)
 
     assert docs.new_decision_markers == []
+
+
+def test_update_decision_passes_reach_the_real_adr_rescan(tmp_path: Path, monkeypatch) -> None:
+    _write_adrs(tmp_path)
+    run, docs = _run_and_docs(tmp_path, {"docs/adr/0002-new.md": "modified"})
+    run.cfg = {}
+    run.config = SimpleNamespace(
+        git_changed=False, traversal_changed=False, generation_changed=False,
+    )
+    run.timings = PhaseTimings()
+    monkeypatch.setattr(decision_passes, "_build_update_vector_store", lambda *_a, **_kw: None)
+    monkeypatch.setattr(decision_passes, "_run_session_passes", lambda *_a: None)
+    monkeypatch.setattr(decision_passes, "_evolve_decisions", lambda *_a: None)
+
+    decision_passes.run_decision_passes(SimpleNamespace(verbose=False), run, docs)
+
+    assert [decision.title for decision in docs.new_decision_markers] == ["New Choice"]
+    assert run.degraded == []
+
+
+def test_disabled_adr_source_skips_the_rescan(tmp_path: Path, monkeypatch) -> None:
+    _write_adrs(tmp_path)
+    run, docs = _run_and_docs(tmp_path, {"docs/adr/0002-new.md": "modified"})
+
+    async def unexpected_rescan(*_a, **_kw):
+        pytest.fail("disabled ADR source was scanned")
+
+    monkeypatch.setattr(DecisionExtractor, "rescan_adrs", unexpected_rescan)
+
+    decision_passes._rescan_adrs(
+        SimpleNamespace(verbose=False), run, docs, preset_policy("off"), None,
+    )
+
+    assert docs.new_decision_markers == []
+    assert run.degraded == []
+
+
+def test_adr_rescan_failure_is_reported_without_losing_other_decisions(
+    tmp_path: Path, monkeypatch, capsys,
+) -> None:
+    _write_adrs(tmp_path)
+    run, docs = _run_and_docs(tmp_path, {"docs/adr/0002-new.md": "modified"})
+    earlier = object()
+    docs.new_decision_markers.append(earlier)
+
+    async def failing_rescan(*_a, **_kw):
+        raise RuntimeError("ADR scanner unavailable")
+
+    monkeypatch.setattr(DecisionExtractor, "rescan_adrs", failing_rescan)
+
+    decision_passes._rescan_adrs(
+        SimpleNamespace(verbose=True), run, docs, preset_policy("default"), None,
+    )
+
+    assert docs.new_decision_markers == [earlier]
+    assert run.degraded == ["ADR re-scan: ADR scanner unavailable"]
+    assert "ADR re-scan skipped: ADR scanner unavailable" in capsys.readouterr().out
