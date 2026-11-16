@@ -42,6 +42,9 @@ def seen(monkeypatch):
         async def scan_inline_markers(self, *, restrict_to_files):
             return []
 
+        async def rescan_adrs(self, changed_files):
+            return []
+
     monkeypatch.setattr(extractor_mod, "DecisionExtractor", _Extractor)
     monkeypatch.setattr(extractor_shim, "DecisionExtractor", _Extractor)
     monkeypatch.setattr(evolution, "commits_in_range", lambda *_a: {"bbbb2222"})
@@ -108,8 +111,8 @@ def test_update_mining_on_hands_every_pass_the_provider(tmp_path, seen):
     run, _ = _run(tmp_path, {"decisions": {"update_mining": True}})
     assert run.docs.git_history_remined is True
     names = [name for name, p in seen if p is not None]
-    # Re-run, new-history mining, marker rescan, and evolution.
-    assert names.count("extractor") == 3
+    # Re-run, new-history mining, marker rescan, ADR re-read, and evolution.
+    assert names.count("extractor") == 4
     assert "evolution" in names
 
 
