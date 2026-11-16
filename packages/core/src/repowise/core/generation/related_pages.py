@@ -14,6 +14,7 @@ prose never names its collaborators is still connected to them.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from typing import Any
 
 import structlog
@@ -199,7 +200,8 @@ def attach_related_pages(
     for pid in prior_page_ids or ():
         _, _, tpath = str(pid).partition(":")
         if tpath:
-            titles.setdefault(str(pid), tpath)
+            prior = prior_page_ids.get(pid) if isinstance(prior_page_ids, Mapping) else None
+            titles.setdefault(str(pid), getattr(prior, "title", "") or tpath)
     pr = pagerank or {}
 
     # Adjacency from the import graph: src imports dst.

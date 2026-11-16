@@ -159,6 +159,8 @@ class PriorPage:
     #: Persisted ``freshness_status``. A ``tombstone`` row is kept for its
     #: inbound links, not served as a page.
     freshness_status: str = ""
+    #: Stored reader-facing name, retained even when bodies are not loaded.
+    title: str = ""
 
 
 class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin):

@@ -366,6 +366,7 @@ async def load_prior_pages(
             metadata=metadata,
             provider_name=row.provider_name,
             freshness_status=row.freshness_status or "",
+            title=row.title,
         )
     return prior
 
@@ -378,7 +379,7 @@ async def _prior_rows(
     if not include_content:
         query = query.options(load_only(
             Page.id, Page.source_hash, Page.content_hash, Page.model_name,
-            Page.metadata_json, Page.provider_name, Page.freshness_status,
+            Page.metadata_json, Page.provider_name, Page.freshness_status, Page.title,
         ))
     if page_ids is None:
         return list((await session.execute(query)).scalars())
