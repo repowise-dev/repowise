@@ -502,7 +502,7 @@ def _rhythm(
 
 
 def build_churn(repo_totals: Row | None) -> dict[str, Any] | None:
-    """Lifetime lines written vs. taken back, from whole-history repo totals.
+    """Historical Git line additions, deletions and net historical line change in scope.
 
     Never summed from the bounded commit sample; None when the totals are absent.
     """

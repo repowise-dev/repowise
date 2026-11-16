@@ -298,6 +298,12 @@ class GitIndexer:
         read_only: bool = False,
     ) -> None:
         self.repo_path = Path(repo_path)
+        from repowise.core.repo_config import analysis_git_pathspecs, load_repo_config
+
+        config = load_repo_config(self.repo_path)
+        if exclude_patterns is not None:
+            config = {**config, "exclude_patterns": exclude_patterns}
+        self._analysis_pathspecs = analysis_git_pathspecs(config)
         # Normalised here, the one place every caller's config value meets
         # git: a quoted "false" or a limit above the maximum reads the same on
         # update as it did at init.
@@ -319,8 +325,8 @@ class GitIndexer:
 
         import pathspec
 
-        self._exclude_patterns = exclude_patterns
-        self._exclude = pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns or [])
+        self._exclude_patterns = exclude_patterns if exclude_patterns is not None else config.get("exclude_patterns")
+        self._exclude = pathspec.PathSpec.from_lines("gitwildmatch", self._exclude_patterns or [])
 
     async def index_repo(
         self,
@@ -645,6 +651,30 @@ class GitIndexer:
         from repowise.core.pipeline.phase_timing import timed
 
         from ..git_commit_index import load_sampled_commit_index
+
+        if self._analysis_pathspecs:
+            from ..git_commit_index import load_commit_index
+
+            allowed = set(indexable_files) | history_files
+            stats: dict[str, int | bool] = {}
+            with timed(timings, "git.commit_index"), _step(
+                progress, "git.history"
+            ) as on_commits:
+                on_commits(0, None)
+                commits = load_commit_index(
+                    repo,
+                    self.commit_limit,
+                    allowed,
+                    commit_sink=commit_sink,
+                    provenance_classifier=prov_clf,
+                    trace_index=trace_index,
+                    stats_sink=stats,
+                    pathspecs=self._analysis_pathspecs,
+                )
+                count = int(stats.get("commits", 0))
+                on_commits(count, None)
+            fallback = allowed if count >= self.commit_limit or not stats.get("succeeded") else set()
+            return CommitSample(commits, fallback, set(commits), set(), count, 0, count)
 
         with timed(timings, "git.commit_index"), _step(progress, "git.history") as on_commits:
             sample = load_sampled_commit_index(
@@ -1129,6 +1159,7 @@ class GitIndexer:
                 commit_sink=sink,
                 since_ts=since_ts,
                 provenance_classifier=self._provenance_classifier(),
+                pathspecs=self._analysis_pathspecs,
             )
             rows = build_commit_rows(sink)
             files = build_commit_file_rows(sink, self._scope_prefix(repo))
@@ -1162,7 +1193,8 @@ class GitIndexer:
         try:
             if repo.git.rev_parse("--is-shallow-repository").strip() == "true":
                 return None
-            out = repo.git.rev_list("--no-merges", "HEAD")
+            path_args = ["--", *self._analysis_pathspecs] if self._analysis_pathspecs else []
+            out = repo.git.rev_list("--no-merges", "HEAD", *path_args)
         except Exception as exc:
             logger.debug("reachable_shas_failed", error=str(exc))
             return None
@@ -1301,7 +1333,7 @@ class GitIndexer:
                 except Exception as exc:
                     logger.debug("prior_defect_pass_failed", error=str(exc))
             with timed(timings, "git.repo_totals"):
-                totals = capture_repo_totals(repo)
+                totals = capture_repo_totals(repo, pathspecs=self._analysis_pathspecs)
         finally:
             repo.close()
         return fix_walk, prior_defects, totals
@@ -1356,7 +1388,7 @@ class GitIndexer:
         if repo is None:
             return RepoTotals()
         try:
-            return capture_repo_totals(repo, prior)
+            return capture_repo_totals(repo, prior, pathspecs=self._analysis_pathspecs)
         finally:
             with contextlib.suppress(Exception):
                 repo.close()
@@ -1570,7 +1602,11 @@ class GitIndexer:
     def _get_tracked_files(self, repo: Any) -> list[str]:
         try:
             prefix = self._scope_prefix(repo)
-            output = repo.git.ls_files("--", prefix) if prefix else repo.git.ls_files()
+            if self._analysis_pathspecs:
+                includes = [spec for spec in self._analysis_pathspecs if ",exclude," not in spec]
+                output = repo.git.ls_files("--", *includes)
+            else:
+                output = repo.git.ls_files("--", prefix) if prefix else repo.git.ls_files()
             paths = [f for f in output.splitlines() if f.strip()]
             if self._exclude.patterns:
                 paths = [p for p in paths if not self._exclude.match_file(p)]

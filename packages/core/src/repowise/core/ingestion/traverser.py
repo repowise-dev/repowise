@@ -447,6 +447,9 @@ class FileTraverser:
         keep_unparsed: frozenset[str] = frozenset(),
     ) -> None:
         self.repo_root = repo_root.resolve()
+        from ..repo_config import analysis_paths, load_repo_config
+
+        self._analysis_paths = analysis_paths(load_repo_config(self.repo_root))
         self._keep_unparsed = keep_unparsed
         self.max_file_size_bytes = max_file_size_kb * 1024
         self._extra_ignore_filename = extra_ignore_filename
@@ -579,6 +582,11 @@ class FileTraverser:
     def traverse(self) -> Iterator[FileInfo]:
         """Yield FileInfo for every includable source file in the repo."""
         for abs_path in self._walk():
+            relative = abs_path.relative_to(self.repo_root).as_posix()
+            if self._analysis_paths and not any(
+                relative == path or relative.startswith(path + "/") for path in self._analysis_paths
+            ):
+                continue
             info = self._build_file_info(abs_path)
             if info is not None:
                 with self._count_lock:
@@ -736,6 +744,11 @@ class FileTraverser:
         dir_ignore: _DirIgnore | None = None,
     ) -> bool:
         rel_str = rel_path.as_posix()
+        if self._analysis_paths and not any(
+            rel_str == path or rel_str.startswith(path + "/") or path.startswith(rel_str + "/")
+            for path in self._analysis_paths
+        ):
+            return True
         # Submodules and nested repos are hard boundaries; negation rules never bypass them.
         if self._is_repo_boundary(rel_str, self.repo_root / rel_path):
             return True

@@ -42,7 +42,12 @@ async def churn_complexity(
     metrics = await crud.get_health_metrics(session, repo_id)
     git_meta = await crud.get_all_git_metadata(session, repo_id)
     points = churn_complexity_points(metrics, git_meta)
+    scored = {m.file_path for m in metrics}
+    changes = [
+        g.last_commit_at for path, g in git_meta.items() if path in scored and g.last_commit_at is not None
+    ]
     return {
         "points": [_churn_complexity_to_dict(p) for p in points[:limit]],
         "total": len(points),
+        "latest_change_at": max(changes).isoformat() if changes else None,
     }

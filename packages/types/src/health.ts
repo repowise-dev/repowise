@@ -1628,4 +1628,5 @@ export interface ChurnComplexityPoint {
 export interface ChurnComplexityResponse {
   points: ChurnComplexityPoint[];
   total: number;
+  latest_change_at?: string | null;
 }

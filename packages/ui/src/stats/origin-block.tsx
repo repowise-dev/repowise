@@ -23,13 +23,19 @@ export function utcDate(iso: string): string {
  * Degrades a rung at a time: without a subject it is still a dated founding,
  * without a date it renders nothing.
  */
-export function OriginBlock({ data }: { data: StatsOrigin }) {
+export function OriginBlock({
+  data,
+  isScoped = false,
+}: {
+  data: StatsOrigin;
+  isScoped?: boolean;
+}) {
   if (!data.first_commit_at) return null;
   const author = data.first_commit_author;
 
   return (
     <p className="break-words text-xs leading-relaxed text-[var(--color-text-secondary)]">
-      Root commit, {utcDate(data.first_commit_at)}
+      {isScoped ? "First commit in scope" : "Root commit"}, {utcDate(data.first_commit_at)}
       {data.first_commit_subject && (
         <>
           :{" "}

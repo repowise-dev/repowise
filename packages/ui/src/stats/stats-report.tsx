@@ -70,7 +70,7 @@ function Headline({ data, weekendDays }: { data: StatsHighlights; weekendDays: r
       <p className="max-w-[60ch] text-[18px] leading-snug text-[var(--color-text-secondary)] [text-wrap:pretty]">
         {archetype ? archetype.because : size.blurb}
       </p>
-      <OriginBlock data={data.origin} />
+      <OriginBlock data={data.origin} isScoped={Boolean(data.scope)} />
       {data.index_storage_bytes ? (
         <p className="-mt-2 text-xs text-[var(--color-text-tertiary)]">
           Its Repowise index (documentation, symbols and vectors) takes{" "}
@@ -247,6 +247,12 @@ export function StatsReport({
   return (
     <div className="flex min-w-0 flex-col">
       <Headline data={data} weekendDays={weekendDays} />
+      {data.scope && (
+        <p className="-mt-5 mb-4 break-words text-xs text-[var(--color-text-secondary)]">
+          Analysis scope: <strong>{data.scope.label}</strong>
+          {data.scope.exclude_patterns.length > 0 ? " · configured exclusions applied" : ""}
+        </p>
+      )}
       <Gauges
         gauges={leadGauges(data, contributorsHref)}
         LinkComponent={links.LinkComponent}

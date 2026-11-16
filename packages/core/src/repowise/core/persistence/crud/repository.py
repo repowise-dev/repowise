@@ -329,6 +329,7 @@ async def update_repo_git_totals(
     total_lines_added: int | None = None,
     total_lines_deleted: int | None = None,
     churn_anchor_sha: str | None = None,
+    history_pathspecs: tuple[str, ...] | None = None,
 ) -> None:
     """Store a repo's whole-history git totals, captured at index time (#730).
 
@@ -353,14 +354,20 @@ async def update_repo_git_totals(
         # past the other.
         "churn_anchor_sha": churn_anchor_sha,
     }
-    if all(v is None for v in updates.values()):
+    if history_pathspecs is None and all(v is None for v in updates.values()):
         return
     repo = await session.get(Repository, repo_id)
     if repo is None:
         return
+    settings = json.loads(repo.settings_json or "{}")
+    scope_changed = history_pathspecs is not None and settings.get("history_pathspecs", []) != list(
+        history_pathspecs
+    )
     for attr, value in updates.items():
-        if value is not None:
+        if value is not None or scope_changed:
             setattr(repo, attr, value)
+    if history_pathspecs is not None:
+        repo.settings_json = json.dumps({**settings, "history_pathspecs": list(history_pathspecs)})
     # Index persist is the only caller, so this is a sync; it also moves the
     # stamp ``index_stamp`` caches whole-history answers on.
     repo.updated_at = _now_utc()

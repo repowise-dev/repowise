@@ -75,6 +75,24 @@ describe("StatsReport", () => {
     expect(screen.getByText("70")).toBeInTheDocument();
   });
 
+  it("identifies the configured analysis boundary", () => {
+    render(
+      <StatsReport
+        data={{
+          ...makeData(),
+          scope: {
+            paths: ["subflows/innovus"],
+            label: "subflows/innovus",
+            exclude_patterns: ["*.pdf"],
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("subflows/innovus")).toBeInTheDocument();
+    expect(screen.getByText(/configured exclusions applied/)).toBeInTheDocument();
+    expect(screen.getByText(/First commit in scope/)).toBeInTheDocument();
+  });
+
   it("states the index size when the server measured it", () => {
     render(<StatsReport data={{ ...makeData(), index_storage_bytes: 5 * 1024 * 1024 }} />);
     expect(document.body.textContent).toMatch(/Repowise index .* takes 5(\.0)? MB on disk/);

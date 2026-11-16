@@ -251,7 +251,7 @@ def _log_records(repo: object, *revisions: str) -> list[str]:
     # ``-M`` explicitly: the rename trail needs rename rows whatever the
     # repository's ``diff.renames`` says.
     raw = repo.git.log(  # type: ignore[attr-defined]
-        *revisions, "-M", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}"
+        "-M", "--numstat", "--no-merges", f"--format={_LOG_FORMAT}", *revisions
     )
     # Without the trailing newline, which only the last record of a call lacks,
     # a record reads the same whichever call it came from.
@@ -611,6 +611,7 @@ def load_commit_index(
     cache_writable: bool = True,
     stats_sink: dict[str, int | bool] | None = None,
     renames: RenameTrail | None = None,
+    pathspecs: tuple[str, ...] = (),
 ) -> dict[str, list[_CommitRec]]:
     """Bucket every commit in the recent history by the files it touched.
 
@@ -665,7 +666,7 @@ def load_commit_index(
     # ``ts <= since_ts`` check in the walk stays, this only stops git from
     # diffing commits whose fate is already known.
     depth = commit_limit
-    if since_ts is not None:
+    if since_ts is not None and not pathspecs:
         newer = _depth_newer_than(repo, commit_limit, since_ts)
         if newer is None:
             return {}
@@ -681,12 +682,15 @@ def load_commit_index(
             return {}
 
     try:
-        records = _window_records(
-            repo,
-            depth,
-            cache_dir if since_ts is None else None,
-            cache_writable=cache_writable,
-        )
+        if pathspecs:
+            records = _log_records(repo, f"-{depth}", "--no-renames", "--", *pathspecs)
+        else:
+            records = _window_records(
+                repo,
+                depth,
+                cache_dir if since_ts is None else None,
+                cache_writable=cache_writable,
+            )
     except Exception as exc:
         logger.warning("repo_commit_index_failed", error=str(exc))
         return {}

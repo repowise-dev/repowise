@@ -20,7 +20,7 @@ MANIFEST_BASENAME = "decisions.yaml"
 # a setting invalidates.  Unknown keys get their own conservative bucket: they
 # are never silently folded into an unrelated health-only refresh.
 CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
-    "traversal": frozenset({"exclude_patterns"}),
+    "traversal": frozenset({"exclude_patterns", "analysis_paths"}),
     "git_history": frozenset({"commit_limit", "follow_renames"}),
     "health": frozenset({"assertions", "coverage", "refactoring"}),
     "generation": frozenset(
@@ -72,6 +72,41 @@ class RepoConfigError(ValueError):
     is broken\" (something the user must fix). The message names the file and
     the underlying parse error.
     """
+
+
+def analysis_paths(config: dict[str, Any]) -> tuple[str, ...]:
+    """Validated literal repository-relative boundaries, not today's file inventory."""
+    paths = config.get("analysis_paths", [])
+    if not isinstance(paths, list) or any(not isinstance(value, str) for value in paths):
+        raise RepoConfigError("analysis_paths must be a list of relative directory paths")
+    normalized = []
+    for value in paths:
+        path = value.rstrip("/")
+        if not path or path.startswith(("/", ":", "-")) or any(
+            part in ("", ".", "..") for part in path.split("/")
+        ) or any(char in path for char in "\\*?[]"):
+            raise RepoConfigError(f"Invalid literal analysis path: {value!r}")
+        normalized.append(path)
+    return tuple(sorted(set(normalized)))
+
+
+def analysis_git_pathspecs(config: dict[str, Any]) -> tuple[str, ...]:
+    """Git boundaries plus configured exclusions, including deleted historical files."""
+    paths = analysis_paths(config)
+    if not paths:
+        return ()
+    specs = [f":(top,literal){path}" for path in paths]
+    for pattern in config.get("exclude_patterns", []) or []:
+        if not pattern or pattern.startswith("#"):
+            continue
+        if pattern.startswith("!") or "\\" in pattern:
+            raise RepoConfigError("Scoped history does not support negated or escaped exclusions")
+        rooted = pattern.startswith("/")
+        glob = pattern.strip("/")
+        if not rooted and "/" not in glob:
+            glob = f"**/{glob}"
+        specs.extend((f":(top,exclude,glob){glob}", f":(top,exclude,glob){glob}/**"))
+    return tuple(specs)
 
 
 def get_repowise_dir(repo_path: Path | str) -> Path:

@@ -62,6 +62,69 @@ def _fresh(repo) -> RepoTotals:
     return capture_repo_totals(repo)
 
 
+def test_scoped_totals_include_deleted_files_but_not_other_subflows(tmp_path) -> None:
+    repo = _init(tmp_path)
+    (tmp_path / "selected").mkdir()
+    (tmp_path / "other").mkdir()
+    _commit(repo, tmp_path, "other/a.py", "outside = 1\n" * 10)
+    _commit(repo, tmp_path, "selected/deleted.py", "inside = 1\n" * 3)
+    first_selected = repo.head.commit
+    repo.index.remove(["selected/deleted.py"], working_tree=True)
+    repo.index.commit("remove selected file")
+    (tmp_path / "selected").mkdir(exist_ok=True)
+    _commit(repo, tmp_path, "selected/current.py", "current = 1\n")
+
+    totals = capture_repo_totals(repo, pathspecs=("selected",))
+
+    assert totals.total_commit_count == 3
+    assert _churn(totals) == (4, 3)
+    assert totals.first_commit_at == first_selected.committed_datetime
+    assert totals.first_commit_subject == first_selected.summary
+    assert totals.total_contributor_count == 1
+    assert capture_repo_totals(repo, totals) == capture_repo_totals(repo)
+
+
+def test_indexer_and_traversal_share_declared_scope_and_exclusions(tmp_path) -> None:
+    from repowise.core.ingestion.git_indexer import GitIndexer
+    from repowise.core.ingestion.traverser import FileTraverser
+    from repowise.core.repo_config import analysis_git_pathspecs, save_repo_config
+
+    repo = _init(tmp_path)
+    (tmp_path / "selected").mkdir()
+    (tmp_path / "other").mkdir()
+    _commit(repo, tmp_path, "other/a.py", "outside = 1\n" * 10)
+    _commit(repo, tmp_path, "selected/a.py", "inside = 1\n" * 3)
+    _commit(repo, tmp_path, "selected/skip.py", "excluded = 1\n" * 20)
+    save_repo_config(tmp_path, {
+        "analysis_paths": ["selected"], "exclude_patterns": ["skip.py"],
+    })
+
+    indexer = GitIndexer(tmp_path, exclude_patterns=["skip.py"])
+    assert indexer._get_tracked_files(repo) == ["selected/a.py"]
+    totals = indexer.capture_repo_totals(capture_repo_totals(repo))
+    file_rows: list[dict] = []
+    rows = indexer.capture_new_commit_rows(file_rows_sink=file_rows)
+
+    assert _churn(totals) == (3, 0)
+    assert totals.total_commit_count == 1
+    assert len(rows) == 1
+    assert {row["file_path"] for row in file_rows} == {"selected/a.py"}
+    assert {info.path for info in FileTraverser(
+        tmp_path, extra_exclude_patterns=["skip.py"],
+    ).traverse()} == {"selected/a.py"}
+    assert totals.history_pathspecs == analysis_git_pathspecs({
+        "analysis_paths": ["selected"], "exclude_patterns": ["skip.py"],
+    })
+
+
+@pytest.mark.parametrize("paths", ["selected", ["../escape"], ["/absolute"], ["selected/*"]])
+def test_analysis_scope_rejects_nonliteral_boundaries(paths) -> None:
+    from repowise.core.repo_config import RepoConfigError, analysis_paths
+
+    with pytest.raises(RepoConfigError):
+        analysis_paths({"analysis_paths": paths})
+
+
 # ---------------------------------------------------------------------------
 # The fold itself
 # ---------------------------------------------------------------------------
