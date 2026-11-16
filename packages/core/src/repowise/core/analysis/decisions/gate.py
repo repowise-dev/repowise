@@ -93,6 +93,14 @@ def apply_substring_gate(decisions: list[_C]) -> tuple[list[_C], int]:
             rejected += 1
             continue
 
+        # An echoed decision ("why" identical to "what") is not rationale.
+        # Clear it so downstream blockers (NO_RATIONALE_BLOCKER) fire rather
+        # than storing an echo as institutional memory.
+        dec_val = getattr(d, "decision", "") or ""
+        rat_val = getattr(d, "rationale", "") or ""
+        if dec_val and rat_val and normalize_text(rat_val) == normalize_text(dec_val):
+            d.rationale = ""
+
         if "exact" in verdicts:
             d.verification = "exact"
         elif "fuzzy" in verdicts:
