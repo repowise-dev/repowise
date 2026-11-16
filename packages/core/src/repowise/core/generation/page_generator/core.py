@@ -162,6 +162,8 @@ class PriorPage:
     #: Persisted ``summary``: what a later run reads for a page it does not
     #: rewrite when the vector store holds none (a keyless index embeds nothing).
     summary: str = ""
+    #: Stored reader-facing name, retained even when bodies are not loaded.
+    title: str = ""
 
 
 class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin):

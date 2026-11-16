@@ -243,6 +243,67 @@ def test_checkpointed_pages_have_related_links_and_preserve_tour_links(tmp_path)
     assert {page.page_id for page in pages} == {"file_page:a.py", "file_page:b.py"}
 
 
+@pytest.mark.parametrize("language", ["en", "de"])
+@pytest.mark.parametrize("saved_prose", [False, True])
+def test_checkpointed_related_titles_survive_saved_batch_resume(tmp_path, language, saved_prose):
+    import json
+    import sqlite3
+
+    from .test_update_reconciles_stale_pages import _seed
+
+    parsed, source, builder, structure = _repository(tmp_path)
+    config = GenerationConfig(deterministic=True, max_concurrency=1,
+                              enable_onboarding=False, language=language)
+    generator = PageGenerator(TemplateProvider(), ContextAssembler(config), config,
+                              language=language)
+    expected = {page.page_id: page.title for page in run_async(generator.generate_all(
+        parsed, source, builder, structure, tmp_path.name,
+    ))}
+    (tmp_path / ".repowise").mkdir()
+    run_async(_seed(tmp_path, {name: "stale" for name in source}))
+    if saved_prose:
+        expected.pop("file_page:b.py")
+        with sqlite3.connect(tmp_path / ".repowise" / "wiki.db") as db:
+            db.execute("UPDATE wiki_pages SET title=?, provider_name=?, freshness_status=? "
+                       "WHERE id=?", ("Reviewed B", "model", "fresh", "file_page:b.py"))
+    committed = set()
+    related_targets = set()
+    for _ in range(len(expected) + 1):
+        stats, degraded = {}, []
+        pages = deterministic.regenerate_deterministic_pages(
+            repo_path=tmp_path, parsed_files=parsed, source_map=source,
+            graph_builder=builder, repo_structure=structure, git_meta_map={},
+            regenerate_paths=list(source), cfg={"embedder": "mock", "language": language,
+                                                "enable_onboarding": False},
+            concurrency=1, degraded=degraded, full_scope=True, render_budget=1,
+            prior_page_ids=deterministic.load_prior_page_ids(tmp_path, load_revisions=True),
+            stats_out=stats,
+        )
+        assert not degraded
+        assert not committed.intersection(page.page_id for page in pages)
+        committed.update(page.page_id for page in pages)
+        with sqlite3.connect(tmp_path / ".repowise" / "wiki.db") as db:
+            rows = db.execute("SELECT id, metadata_json FROM wiki_pages").fetchall()
+        for pid, metadata in rows:
+            if pid not in committed:
+                continue
+            for link in json.loads(metadata).get("related_pages", []):
+                target = link["target_page_id"]
+                related_targets.add(target)
+                assert link["title"] == ("Reviewed B" if saved_prose and target == "file_page:b.py"
+                                         else expected[target])
+        if stats["render_backlog"] == 0:
+            break
+    assert committed == set(expected)
+    assert related_targets
+    if saved_prose:
+        with sqlite3.connect(tmp_path / ".repowise" / "wiki.db") as db:
+            row = db.execute("SELECT title, content, provider_name, metadata_json FROM wiki_pages "
+                             "WHERE id='file_page:b.py'").fetchone()
+        assert row[:3] == ("Reviewed B", "# b.py\n", "model")
+        assert "render_revision" not in json.loads(row[3])
+
+
 def test_revision_planning_reads_metadata_without_page_bodies(tmp_path):
     from sqlalchemy import event
 
@@ -275,10 +336,37 @@ def test_revision_planning_reads_metadata_without_page_bodies(tmp_path):
     prior, queries = run_async(read_revisions())
     assert prior["file_page:a.py"].content == ""
     assert prior["file_page:a.py"].provider_name == "template"
+    assert prior["file_page:a.py"].title == "File: a.py"
     page_reads = [sql for sql in queries if "FROM wiki_pages" in sql]
     assert page_reads
     assert all("wiki_pages.content," not in sql and "wiki_pages.digest" not in sql
                for sql in page_reads)
+
+
+def test_checkpoint_links_use_module_names_and_saved_titles_outside_scope():
+    from types import SimpleNamespace
+
+    from repowise.core.generation.page_generator.render_budget import _record_plan
+    from repowise.core.generation.selection import ModuleGroup
+
+    groups = [ModuleGroup("src/ingest", "Ingestion", "python", ("a.py",)),
+              ModuleGroup("src/store", "Storage", "python", ("b.py",))]
+    run = SimpleNamespace(
+        gen=SimpleNamespace(_prior_pages={"file_page:c.py": PriorPage(
+            source_hash="", model_name="model", content="", provider_name="model",
+            title="Reviewed C",
+        )}, _language="en"),
+        sel_module_groups=groups, parsed_files=[], git_meta_map={}, pagerank={},
+        render_stats=None, _file_import_edges=lambda: [("a.py", "b.py"), ("a.py", "c.py")],
+    )
+    candidates = {"file_page:a.py", "file_page:b.py", "module_page:src/ingest",
+                  "module_page:src/store"}
+    _record_plan(run, candidates, [(False, "file_page:a.py")], 1)
+    assert {link["target_page_id"]: link["title"] for link in
+            run.render_related_pages["file_page:a.py"]} == {
+                "file_page:b.py": "File: b.py", "file_page:c.py": "Reviewed C",
+            }
+    assert run.render_related_pages["module_page:src/ingest"][0]["title"] == "Storage"
 
 
 def test_checkpoint_failure_keeps_old_rows_stale(tmp_path, monkeypatch):

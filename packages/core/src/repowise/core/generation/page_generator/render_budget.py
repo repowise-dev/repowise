@@ -13,6 +13,7 @@ from ..interlinking import LinkIndex
 from ..models import compute_page_id
 from ..related_pages import attach_related_pages
 from ..scope import selection_page_ids
+from ..structural_labels import structural_page_title
 from . import levels
 from .reuse import files_digest
 
@@ -130,10 +131,22 @@ def _record_plan(run: Any, candidates: set[str], stale: list, budget: int) -> No
         prior_pages.setdefault(pid, None)
     members = {compute_page_id("module_page", group.key): list(group.file_paths)
                for group in run.sel_module_groups}
-    links = [SimpleNamespace(page_id=pid, page_type=pid.split(":", 1)[0],
-                             target_path=pid.split(":", 1)[1], title=pid.split(":", 1)[1],
-                             metadata={"file_paths": members.get(pid, [])})
-             for pid in sorted(candidates)]
+    titles = {compute_page_id("module_page", group.key): group.display
+              for group in run.sel_module_groups}
+    links = []
+    for pid in sorted(candidates):
+        kind, target = pid.split(":", 1)
+        prior = prior_pages.get(pid)
+        if prior is not None and prior.provider_name != "template":
+            title = prior.title or target
+        elif kind in _FILE_TYPES:
+            title = structural_page_title(run.gen._language, kind, target)
+        else:
+            title = titles.get(pid, target)
+        links.append(SimpleNamespace(
+            page_id=pid, page_type=kind, target_path=target, title=title,
+            metadata={"file_paths": members.get(pid, [])},
+        ))
     run.render_link_index = LinkIndex.build(links, run.parsed_files)
     run.render_link_index.add_prior_page_ids(prior_pages)
     attach_related_pages(links, import_edges=run._file_import_edges(),
