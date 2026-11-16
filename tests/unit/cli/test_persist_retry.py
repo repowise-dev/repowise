@@ -1,9 +1,9 @@
 """A dropped connection during persist is retried, and nothing else is (#5338).
 
-Slice 1 left every domain committed, so a replay costs the unfinished work
-rather than the run. The classifier is the part that has to be narrow: retrying
-a constraint violation or a bug in an ``update_fn`` only moves the failure to a
-second stack trace, and it makes a broken run look transient.
+Each domain commits independently, so a retry replays only its persist writes.
+The classifier must stay narrow: retrying a constraint violation or a bug in an
+``update_fn`` only moves the failure to a second stack trace, and makes a broken
+run look transient.
 """
 
 from __future__ import annotations

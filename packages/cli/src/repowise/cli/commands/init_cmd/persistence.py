@@ -8,8 +8,10 @@ their persistence through here.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import structlog
 
@@ -43,6 +45,11 @@ from repowise.core.pipeline.index_persistence import (
     publish_index_persistence,
 )
 from repowise.core.repo_config import config_dependency_fingerprints
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+_T = TypeVar("_T")
 
 logger = structlog.get_logger(__name__)
 
@@ -96,6 +103,46 @@ def _is_connection_loss(exc: BaseException) -> bool:
             if isinstance(nested, BaseException):
                 pending.append(nested)
     return False
+
+
+async def _persist_domain(
+    sf: async_sessionmaker[AsyncSession],
+    domain: str,
+    work: Callable[[AsyncSession], Awaitable[_T]],
+    timings: Any | None = None,
+) -> _T:
+    """Retry only this transaction, returning its output after commit and close.
+
+    Each callback invocation owns its output; failed-attempt IDs must never be
+    accumulated by its caller. A fresh session is not necessarily a new physical
+    connection: SQLAlchemy's pool handles invalidated driver connections.
+    """
+    import asyncio
+
+    from repowise.core.persistence import get_session
+    from repowise.core.pipeline import timed
+
+    for attempt in range(len(_RETRY_BACKOFF_S) + 1):
+        try:
+            # Enter the timer after work, but exit it after get_session commits.
+            # ExitStack also closes the timer when the context-exit commit fails.
+            with ExitStack() as commit_timer:
+                async with get_session(sf) as session:
+                    output = await work(session)
+                    commit_timer.enter_context(timed(timings, f"persist.commit.{domain}"))
+            return output
+        except Exception as exc:
+            if attempt == len(_RETRY_BACKOFF_S) or not _is_connection_loss(exc):
+                raise
+            logger.warning(
+                "persist_connection_lost", domain=domain, attempt=attempt + 1, error=str(exc)
+            )
+            print(
+                f"The database connection was lost during persist ({domain}, "
+                f"{type(exc).__name__}); retrying on a fresh session."
+            )
+            await asyncio.sleep(_RETRY_BACKOFF_S[attempt])
+    raise AssertionError("unreachable")
 
 
 async def build_resume_controller(repo_path: Path, *, resume: bool) -> tuple[Any, Any]:
@@ -205,7 +252,6 @@ async def persist_result(
 
     from repowise.core.persistence import (
         FullTextSearch,
-        get_session,
         refresh_planner_stats,
         upsert_repository,
     )
@@ -228,19 +274,11 @@ async def persist_result(
     # graph and a redundant full index write).
     index_done = bool(getattr(result, "index_persisted_incrementally", False))
 
-    fts = None
-    if result.generated_pages:
-        fts = FullTextSearch(engine)
-        await fts.ensure_index()
+    persisted_repo_id: str = _repo_id
 
-    async def _persist_all(session: Any) -> list[str]:
-        # Slice 1 (#5338): this function commits one domain at a time instead of
-        # once at the end, so a dropped connection costs the domain in flight
-        # rather than the whole persist. Committing mid-session would normally
-        # expire every loaded row; nothing here re-reads a mutated row from the
-        # database afterwards, so expiry is off rather than re-fetching `repo`
-        # after every boundary.
-        session.expire_on_commit = False
+    async def _repository(session: AsyncSession) -> str:
+        # Only the primitive ID crosses this transaction boundary. The factory
+        # already configures the underlying sync session with expiry disabled.
         repo = await upsert_repository(
             session,
             name=result.repo_name,
@@ -263,27 +301,22 @@ async def persist_result(
                 existing = {}
             existing["tech_stack"] = result.tech_stack
             repo.settings_json = _json.dumps(existing)
-        # Commit boundary 1 of 5: the repository row and its settings.
-        with timed(timings, "persist.commit.repository"):
-            await session.commit()
-        swept_page_ids: list[str] = []
+        return repo.id
+
+    async def _analysis(session: AsyncSession) -> None:
+        # Health runs after the INDEX checkpoint. Reconcile the analysed symbol
+        # complexities again so the ledger cannot claim parser defaults as done.
+        with timed(timings, "persist.analysis"):
+            if getattr(result, "health_report", None) is not None:
+                await persist_symbol_analysis(
+                    session, persisted_repo_id, getattr(result, "parsed_files", None)
+                )
+            await persist_analysis(result, session, persisted_repo_id)
+
+    async def _generation(session: AsyncSession) -> list[str]:
         if index_done:
-            # Health runs after the INDEX checkpoint and mutates the in-memory
-            # symbol complexities. Reconcile them again in this final required
-            # transaction: it heals a best-effort checkpoint failure, and if
-            # this write also fails the ledger below cannot claim ANALYSIS is
-            # complete with parser-default complexity still on disk.
-            with timed(timings, "persist.analysis"):
-                if getattr(result, "health_report", None) is not None:
-                    await persist_symbol_analysis(
-                        session, repo.id, getattr(result, "parsed_files", None)
-                    )
-                await persist_analysis(result, session, repo.id)
-            # Commit boundary 2 of 5: analysis.
-            with timed(timings, "persist.commit.analysis"):
-                await session.commit()
             with timed(timings, "persist.generation"):
-                await persist_generation(result, session, repo.id)
+                await persist_generation(result, session, persisted_repo_id)
             # persist_generation has already upserted the current pages, so the
             # sweep only retires structurally-keyed pages this run did not
             # reproduce. Without it the incremental-index path (every normal
@@ -296,17 +329,17 @@ async def persist_result(
             # ``generated_pages`` precisely because they already exist.
             swept_page_ids = await sweep_stale_generated_pages(
                 session,
-                repo.id,
+                persisted_repo_id,
                 result.generated_pages,
                 getattr(result, "authoritative_page_types", None),
                 getattr(result, "preserved_page_ids", None),
             )
             swept_page_ids += await sweep_store_hygiene(
-                session, repo.id, getattr(result, "parsed_files", None)
+                session, persisted_repo_id, getattr(result, "parsed_files", None)
             )
             await apply_index_persistence(
                 session,
-                repo.id,
+                persisted_repo_id,
                 IndexWrite(
                     "full",
                     result.parsed_files,
@@ -314,7 +347,7 @@ async def persist_result(
             )
         else:
             swept_page_ids = await persist_pipeline_result(
-                result, session, repo.id, scan_commit_health=False
+                result, session, persisted_repo_id, scan_commit_health=False
             )
         # The vector side of what the branch retired goes before the SQL side
         # commits. A drop between them then leaves embeddings gone and rows
@@ -323,33 +356,25 @@ async def persist_result(
         store = getattr(result, "vector_store", None)
         if store is not None and swept_page_ids:
             await store.delete_many(swept_page_ids)
-        # Commit boundary 3 of 5: generation and its structural sweep (or the
-        # pipeline result), together with the vector deletions that retire them.
-        with timed(timings, "persist.commit.generation"):
-            await session.commit()
-        persisted_repo_id = repo.id
+        return swept_page_ids
 
-        # Tombstone pages whose file is simply gone. The other tombstone path
-        # reads a diff, and an init compares nothing, so until here a page
-        # written before its file was deleted stayed ``fresh`` through every
-        # later index. Outside the branch above because both branches need it.
-        # Its ids join the swept ones so they leave the vector store and the
-        # full-text index together, below, after this session closes.
-        tombstoned: list[str] = []
+    async def _tombstones(session: AsyncSession) -> list[str]:
+        # An init has no diff: retire pages whose files have simply disappeared.
+        # Keep ordinary sweep errors best-effort, but never swallow a connection
+        # loss (which must retry the entire domain, including vector deletions).
         try:
-            tombstoned = await tombstone_absent_file_pages(session, repo.id, repo_path)
-            swept_page_ids = [*swept_page_ids, *tombstoned]
-        except Exception as exc:  # one stale page must not fail a whole index
+            tombstoned = await tombstone_absent_file_pages(session, persisted_repo_id, repo_path)
+        except Exception as exc:
+            if _is_connection_loss(exc):
+                raise
             logger.warning("tombstone_absent_sweep_failed", error=str(exc))
-        # Same ordering as the sweep above, for the same reason: the embeddings
-        # go before the rows that name them, so an interruption cannot leave a
-        # committed tombstone pointing at an embedding nothing will delete.
+            return []
+        store = getattr(result, "vector_store", None)
         if store is not None and tombstoned:
             await store.delete_many(tombstoned)
-        # Commit boundary 4 of 5: the tombstone sweep.
-        with timed(timings, "persist.commit.prune"):
-            await session.commit()
+        return tombstoned
 
+    async def _job(session: AsyncSession) -> None:
         # Record a completed GenerationJob so the web UI can show
         # "last synced" / "last re-indexed" timestamps.
         now = datetime.now(UTC)
@@ -362,7 +387,7 @@ async def persist_result(
         stub_fallbacks = count_stub_fallbacks(_pages)
         job = await upsert_generation_job(
             session,
-            repository_id=repo.id,
+            repository_id=persisted_repo_id,
             status="completed",
             total_pages=page_count,
             config={"mode": "full_resync", "source": "cli_init"},
@@ -371,83 +396,58 @@ async def persist_result(
         job.failed_pages = stub_fallbacks
         job.started_at = now
         job.finished_at = now
-        # Commit boundary 5 of 5: the generation job record.
-        with timed(timings, "persist.commit.job"):
-            await session.commit()
 
-        # Nothing is deleted from the vector store here: each batch of retired
-        # pages was deleted immediately before the commit that made its SQL side
-        # durable, which is the ordering the invariant needs. Deleting after the
-        # Nothing is deleted from the vector store here: each batch of retired
-        # pages was deleted immediately before the commit that made its SQL side
-        # durable, which is the ordering the invariant needs. Deleting after the
-        # commits would leave a committed row whose embedding outlives it.
-        return swept_page_ids, persisted_repo_id
-
-    # Slice 2 (#5338): a dropped connection is retried on a fresh session
-    # instead of failing the run. The replay is cheap because slice 1 leaves
-    # every completed domain committed and every write an upsert, so a second
-    # pass re-applies them idempotently and finishes the one that died.
-    swept_page_ids: list[str] = []
-    persisted_repo_id: Any = None
-    for attempt in (1, 2):
-        try:
-            async with get_session(sf) as session:
-                swept_page_ids, persisted_repo_id = await _persist_all(session)
-            break
-        except BaseException as exc:
-            if attempt == 2 or not _is_connection_loss(exc):
-                raise
-            logger.warning("persist_connection_lost", attempt=attempt, error=str(exc))
-            print(
-                f"The database connection was lost during persist "
-                f"({type(exc).__name__}); retrying on a fresh connection."
-            )
-            import asyncio as _asyncio
-
-            await _asyncio.sleep(_RETRY_BACKOFF_S[attempt - 1])
-
-    # FTS deletes/indexing run outside the session: the FTS index lives in the
-    # *same* SQLite file as the session, so touching it while the session still
-    # holds a write lock raises "database is locked". The swept-id delete must
-    # therefore stay here (it cannot move ahead of the SQL commit like the
-    # vector delete can); it is idempotent and narrow (orphan FTS rows only).
-    with timed(timings, "persist.fts"):
-        if fts is not None and swept_page_ids:
-            await fts.delete_many(swept_page_ids)
-        if fts is not None and result.generated_pages:
-            await fts.index_pages(result.generated_pages)
-        await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
-
-    # After commit, so the scan never holds the write lock; the rest drains in the background.
-    if not index_done:
-        from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
-
-        with timed(timings, "persist.commit_health"):
-            await refresh_commit_health_after_update(
-                sf, persisted_repo_id, str(repo_path), background=True
-            )
-
-    # Stamp the analysis (+ generation) phases in the resume ledger now that
-    # they're persisted, so a future resume can skip them too.
-    if index_done:
-        from repowise.core.pipeline.resume import ResumeLedger, ResumePhase
-
-        async with get_session(sf) as _ls:
-            repo_id = (
-                await upsert_repository(_ls, name=result.repo_name, local_path=str(repo_path))
-            ).id
-        ledger = ResumeLedger(sf, repo_id)
-        await ledger.mark_completed(ResumePhase.ANALYSIS)
+    async def _persist() -> str:
+        nonlocal persisted_repo_id
+        fts = None
         if result.generated_pages:
-            await ledger.mark_completed(ResumePhase.GENERATION)
+            fts = FullTextSearch(engine)
+            await fts.ensure_index()
 
-    with timed(timings, "persist.planner_stats"):
-        await refresh_planner_stats(engine)
-    await engine.dispose()
-    # Closed here rather than after the indexing loop: the preserved-page
-    # backfill and the ledger stamp are persistence too, and a phase that
-    # stopped short of them reported a different span per run mode.
+        persisted_repo_id = await _persist_domain(sf, "repository", _repository, timings)
+        if index_done:
+            await _persist_domain(sf, "analysis", _analysis, timings)
+        swept_page_ids = await _persist_domain(sf, "generation", _generation, timings)
+        tombstoned = await _persist_domain(sf, "prune", _tombstones, timings)
+        swept_page_ids = [*swept_page_ids, *tombstoned]
+        await _persist_domain(sf, "job", _job, timings)
+
+        # FTS shares SQLite's file: delete/index only after the writer sessions
+        # have closed, otherwise its connection would contend with their locks.
+        with timed(timings, "persist.fts"):
+            if fts is not None and swept_page_ids:
+                await fts.delete_many(swept_page_ids)
+            if fts is not None and result.generated_pages:
+                await fts.index_pages(result.generated_pages)
+            await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
+
+        if not index_done:
+            from repowise.core.pipeline.commit_health import refresh_commit_health_after_update
+
+            with timed(timings, "persist.commit_health"):
+                await refresh_commit_health_after_update(
+                    sf, persisted_repo_id, str(repo_path), background=True
+                )
+
+        # Stamp the ledger only after all required SQL and full-text work lands.
+        if index_done:
+            from repowise.core.pipeline.resume import ResumeLedger, ResumePhase
+
+            ledger = ResumeLedger(sf, persisted_repo_id)
+            await ledger.mark_completed(ResumePhase.ANALYSIS)
+            if result.generated_pages:
+                await ledger.mark_completed(ResumePhase.GENERATION)
+
+        with timed(timings, "persist.planner_stats"):
+            await refresh_planner_stats(engine)
+        return persisted_repo_id
+
+    try:
+        persisted_repo_id = await _persist()
+    finally:
+        await engine.dispose()
+    # The preserved-page backfill and ledger stamp are persistence too; close
+    # the progress phase only after they and engine cleanup have finished.
     if progress is not None:
         progress.on_phase_done("persist")
     await publish_index_persistence(persisted_repo_id, repo_path)
