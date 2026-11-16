@@ -25,7 +25,7 @@ from repowise.core.analysis.finding_registry import stored_origin
 from repowise.core.code_origin import path_origin
 
 from ..models import DecisionCandidateMeta, DecisionRecord, GitMetadata, HealthFileMetric
-from .authority import accepted_predicate, candidate_predicate
+from .authority import accepted_predicate, candidate_predicate, list_candidates
 
 #: Paths per ``IN`` clause, under SQLite's bound-parameter ceiling.
 _PATH_CHUNK = 500
@@ -151,7 +151,11 @@ async def agreement_records(
 
 
 async def decision_prompt_for(session: AsyncSession, repository_id: str, kind: str) -> DecisionPrompt:
-    """The decision prompt *kind* (``discover``, ``add``, ``agreements``) over this store."""
+    """The decision prompt *kind* (``discover``, ``review_all``, ``add``, ``agreements``) over this store."""
+    if kind == "review_all":
+        # The queue ``repowise decision candidates`` pages through: one row says it is not empty.
+        rows = await list_candidates(session, repository_id, limit=1)
+        return decision_prompt(kind, [{"id": rec.id} for rec, _meta in rows])
     if kind == "agreements":
         return decision_prompt(kind, await agreement_records(session, repository_id))
     if kind == "add":

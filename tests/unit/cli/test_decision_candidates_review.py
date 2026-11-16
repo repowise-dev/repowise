@@ -113,3 +113,13 @@ def test_the_table_says_which_rows_are_acceptable(review_repo: Path) -> None:
     unscoped = next(line for line in lines if "aaaaaaaa" in line)
     assert "yes" in acceptable and "no scope" not in acceptable
     assert "no scope" in unscoped and "yes" not in unscoped
+
+
+def test_offset_pages_the_list(review_repo: Path) -> None:
+    """The whole-queue prompt pages with --offset, so each page starts where the last left."""
+    first = _candidates(review_repo, "--limit", "1")["candidates"]
+    second = _candidates(review_repo, "--limit", "1", "--offset", "1")["candidates"]
+    past_end = _candidates(review_repo, "--offset", "2")
+
+    assert [row["title"] for row in first + second] == ["Acceptable", "Unscoped"]
+    assert past_end == {"candidates": [], "count": 0}

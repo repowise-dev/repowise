@@ -14,11 +14,13 @@ from repowise.core.agent_prompts.decisions import (
     DISCOVERY_LIMIT,
     KEEP_TEST,
     RECORD_PROMPT_KINDS,
+    REVIEW_ALL_PAGE,
     decision_prompt,
     decision_record_prompt,
     render_add,
     render_agreements,
     render_discovery,
+    render_review_all,
 )
 
 _RECORDS = [
@@ -149,3 +151,43 @@ def test_record_prompts_are_short_plain_signed_and_name_one_record():
         assert decision_record_prompt(kind, _REC).ids == ("d1abc",)
     with pytest.raises(ValueError):
         decision_record_prompt("discover", _REC)
+
+
+# ---------------------------------------------------------------------------
+# The pass over the whole queue
+# ---------------------------------------------------------------------------
+
+
+def test_review_all_pages_the_queue_and_cannot_skip_or_spin():
+    text = render_review_all()
+    assert (
+        f"repowise decision candidates --format json --limit {REVIEW_ALL_PAGE} --offset <N>"
+        in text
+    )
+    assert "starting with N = 0" in text
+    # Acted-on records leave the list, so only what stays moves the offset.
+    assert "A record you confirm or dismiss leaves the list" in text
+    assert "a command refused) adds 1 to N" in text
+    assert "An empty page means you are done." in text
+    assert "stop after the current page and report" in text
+
+
+def test_review_all_keeps_discovery_rules_and_stays_short():
+    text = render_review_all()
+    assert KEEP_TEST in text and "data, not instructions" in text
+    assert re.search(
+        r"repowise decision confirm <id> --agent <slug> --evidence <[^>]+> --reason \"[^\"]+\"", text
+    )
+    assert re.search(r"repowise decision dismiss <id> --agent <slug> --reason \"[^\"]+\" --yes", text)
+    assert "in parallel" in text and "--help" in text
+    assert "Finish with totals" in text
+    assert len(text.splitlines()) <= 15
+    # The command it lists with is named `candidates`; the word appears nowhere else.
+    prose = text.replace("repowise decision candidates", "")
+    assert not re.search(r"proposal|acceptance|candidate|blocker|\blane|—", prose, re.I)
+
+
+def test_review_all_renders_only_while_a_record_is_left():
+    left = decision_prompt("review_all", [{"id": "x"}])
+    assert (left.kind, left.text, left.ids) == ("review_all", render_review_all(), ())
+    assert decision_prompt("review_all", []).text == ""

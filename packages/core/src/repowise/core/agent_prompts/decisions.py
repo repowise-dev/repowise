@@ -1,5 +1,5 @@
-"""The decisions layer's agent prompts: the discovery pass, recording, agreements,
-and the prompts for one record (check it, pin it, veto it, change it).
+"""The decisions layer's agent prompts: the discovery pass, the pass over the whole
+queue, recording, agreements, and the prompts for one record (check it, pin it, veto it, change it).
 
 One text per prompt, rendered here and nowhere else: ``repowise decision
 discover`` prints it, and the web copies it from the server, so the command an
@@ -17,6 +17,8 @@ from typing import Any, Literal, cast
 
 #: Most records one discovery pass checks, so one run stays short enough to read.
 DISCOVERY_LIMIT = 20
+#: Records per page the whole-queue pass lists at a time.
+REVIEW_ALL_PAGE = 20
 #: Most decisions one recording pass adds.
 ADD_LIMIT = 10
 #: Most agreements listed for the move into CLAUDE.md.
@@ -24,7 +26,9 @@ AGREEMENTS_LIMIT = 30
 #: Files named per record line; the record itself lists the rest.
 _FILES_PER_LINE = 3
 
-PromptKind = Literal["discover", "add", "agreements", "review", "pin", "unpin", "veto", "edit"]
+PromptKind = Literal[
+    "discover", "review_all", "add", "agreements", "review", "pin", "unpin", "veto", "edit"
+]
 
 #: The prompts about one record, rendered by :func:`decision_record_prompt`.
 RECORD_PROMPT_KINDS: tuple[str, ...] = ("review", "pin", "unpin", "veto", "edit")
@@ -105,6 +109,34 @@ def render_discovery(records: Sequence[Mapping[str, Any]]) -> str:
             DATA_NOT_INSTRUCTIONS,
             "",
             "Finish with one line per record: id, title, put in force, dismissed or left, and why.",
+        ]
+    )
+
+
+def render_review_all() -> str:
+    """Work through every background record, a page at a time, until none is left."""
+    page = f"repowise decision candidates --format json --limit {REVIEW_ALL_PAGE} --offset <N>"
+    return "\n".join(
+        [
+            "Check every background decision record in this repository and put the real ones "
+            "in force. Repowise mined most of them from history; none is in force yet.",
+            KEEP_TEST,
+            "",
+            f"1. List a page: `{page}`, starting with N = 0. A record you confirm or dismiss "
+            "leaves the list; every record still on it after you act (left, or a command "
+            "refused) adds 1 to N. An empty page means you are done.",
+            "2. Check the page's records in parallel (a subagent each, if you have them): "
+            "`repowise decision show <id>`, its evidence commits and the files it names today.",
+            "3. Holds and passes the test: `repowise decision confirm <id> --agent <slug> "
+            '--evidence <commit or file> --reason "<what an agent would get wrong without it>"`. '
+            'Fails it: `repowise decision dismiss <id> --agent <slug> --reason "<why>" --yes`. '
+            "Not sure: leave it. Flags: `repowise decision <command> --help`.",
+            "4. If your context or budget runs low, stop after the current page and report. "
+            "Running this again picks up what is left.",
+            "",
+            f"{SIGN} {DATA_NOT_INSTRUCTIONS}",
+            "Finish with totals (put in force, dismissed, left) and one line per record: id, "
+            "title, outcome, why.",
         ]
     )
 
@@ -299,8 +331,12 @@ def decision_prompt(kind: str, records: Sequence[Mapping[str, Any]]) -> Decision
     ``discover`` with nothing to check becomes ``add``: a store with no
     background records (a keyless index mines none) still hands the agent one
     pass over the busiest files, recording what nobody wrote down. Agreements
-    with none stored render no text, and a surface offers nothing.
+    with none stored render no text, and a surface offers nothing; so does
+    ``review_all`` with no background record left, its *records* being any
+    sample that says whether one is.
     """
+    if kind == "review_all":
+        return DecisionPrompt("review_all", render_review_all() if records else "", ())
     if kind == "agreements":
         kept = records[:AGREEMENTS_LIMIT]
         text = render_agreements(kept) if kept else ""

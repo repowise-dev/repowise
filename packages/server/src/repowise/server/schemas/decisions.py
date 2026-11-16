@@ -173,10 +173,13 @@ class DecisionAgentPromptResponse(BaseModel):
 
     ``kind`` is the prompt served: ``discover`` asked with no background
     records to check comes back as ``add``. ``text`` is empty only for
-    ``agreements`` with none stored, and then a surface offers nothing.
+    ``agreements`` with none stored and ``review_all`` with no background
+    record left, and then a surface offers nothing.
     """
 
-    kind: Literal["discover", "add", "agreements", "review", "pin", "unpin", "veto", "edit"]
+    kind: Literal[
+        "discover", "review_all", "add", "agreements", "review", "pin", "unpin", "veto", "edit"
+    ]
     text: str
     #: The records the prompt names, in its order.
     ids: list[str]

@@ -37,3 +37,33 @@ def test_agreements_with_none_stored_say_so(tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "No working agreements are stored." in result.output
+
+
+def test_all_prints_the_whole_queue_prompt(tmp_path):
+    from repowise.core.agent_prompts.decisions import render_review_all
+
+    _seed_wiki_db(tmp_path, [{"id": "c" * 32, "title": "Keep it", "status": "proposed"}])
+
+    result = CliRunner().invoke(cli, ["decision", "discover", str(tmp_path), "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output == render_review_all() + "\n"
+
+
+def test_all_with_nothing_left_says_so(tmp_path):
+    _seed_wiki_db(tmp_path, [])
+
+    result = CliRunner().invoke(cli, ["decision", "discover", str(tmp_path), "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert "No background records left." in result.output
+
+
+def test_all_and_agreements_are_one_or_the_other(tmp_path):
+    _seed_wiki_db(tmp_path, [])
+
+    result = CliRunner().invoke(
+        cli, ["decision", "discover", str(tmp_path), "--all", "--agreements"]
+    )
+
+    assert result.exit_code != 0 and "pass one" in result.output
