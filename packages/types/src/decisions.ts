@@ -531,6 +531,9 @@ export type { DecisionRecentInfo } from "./generated/http.js";
 /** `GET .../decisions/agent-prompt?kind=`: the prompt served, its text and the records it names. */
 export type { DecisionAgentPromptResponse } from "./generated/http.js";
 
+/** `GET /api/repos/{id}/decisions/health`: stale, background and ungoverned hotspots. */
+export type { DecisionHealthResponse } from "./generated/http.js";
+
 /**
  * Records per review lane.
  *

@@ -28,6 +28,10 @@ type DismissMany = (
 /**
  * Selection over the rows on screen and one bulk dismiss run over it.
  *
+ * Opt in: `selecting` starts off and the checkboxes show only once the reader
+ * turns it on, so a section reads as a list, not a form. Turning it off, or
+ * leaving the lane, drops the selection.
+ *
  * A new page is a different set of records, so ids that left the rows drop
  * out of the selection; a new lane clears it and orphans any run still in
  * flight, so that run cannot write its outcome into a lane the reader left.
@@ -39,6 +43,7 @@ export function useBulkSelection(
 ) {
   const [selected, setSelected] = React.useState<ReadonlySet<string>>(new Set());
   const [bulk, setBulk] = React.useState<BulkState | null>(null);
+  const [selecting, setSelectingState] = React.useState(false);
   const runRef = React.useRef(0);
   // The rows as they are when a run settles, which may be a later page than
   // the one it started on.
@@ -57,6 +62,7 @@ export function useBulkSelection(
     runRef.current += 1;
     setSelected(new Set());
     setBulk(null);
+    setSelectingState(false);
   }, [lane]);
 
   const allSelected = rows.length > 0 && rows.every((d) => selected.has(d.id));
@@ -96,7 +102,12 @@ export function useBulkSelection(
     setBulk(null);
   };
 
-  return { selected, bulk, selection, dismissSelected, clear };
+  const setSelecting = (on: boolean) => {
+    setSelectingState(on);
+    if (!on) clear();
+  };
+
+  return { selected, bulk, selection, dismissSelected, clear, selecting, setSelecting };
 }
 
 /**

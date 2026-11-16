@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { recordPromptKinds } from "./add-decision-button";
+import { recordPromptKinds } from "@repowise-dev/ui/decisions/decision-review-lanes";
 
 describe("recordPromptKinds", () => {
   it("checks a background record, and never a dismissed one", () => {

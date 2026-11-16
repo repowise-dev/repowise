@@ -17,6 +17,7 @@ import type {
 import type {
   DecisionAgentPromptKind,
   DecisionAgentPromptResponse,
+  DecisionHealthResponse,
 } from "@repowise-dev/types/decisions";
 
 export async function listDecisions(
@@ -169,6 +170,14 @@ export async function getDecisionLineage(
     `/api/repos/${repoId}/decisions/${decisionId}/lineage`,
   );
   return res.lineage;
+}
+
+/**
+ * The governance rollup. It scans every record, so read it once per page
+ * render rather than per interaction.
+ */
+export async function getDecisionHealth(repoId: string): Promise<DecisionHealthResponse> {
+  return apiGet<DecisionHealthResponse>(`/api/repos/${repoId}/decisions/health`);
 }
 
 export async function getDecisionGraph(repoId: string): Promise<DecisionGraph> {

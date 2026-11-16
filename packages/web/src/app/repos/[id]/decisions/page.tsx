@@ -1,18 +1,18 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
-import { OverviewSection } from "@repowise-dev/ui/overview";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
 import { CheckoutFactsDisclosure } from "@repowise-dev/ui/decisions";
 import {
   getDecisionCounts,
+  getDecisionHealth,
   getDecisionLaneCounts,
   listDecisions,
 } from "@/lib/api/decisions";
 import { listEpisodes } from "@/lib/api/episodes";
 import { ApiClientError } from "@/lib/api/client";
-import { AddDecisionButton } from "@/components/decisions/add-decision-button";
-import { DecisionReviewWrapper } from "@/components/decisions/decision-review-wrapper";
+import { DecisionAgentPanel } from "@/components/decisions/add-decision-button";
+import { DecisionsBoard } from "@/components/decisions/decision-review-wrapper";
 import { getTranslations } from "next-intl/server";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 
@@ -99,6 +99,12 @@ export default async function DecisionsPage({ params }: Props) {
   // and falls back to the projection rather than losing the page.
   const lanes = await getDecisionLaneCounts(repoId).catch(() => undefined);
 
+  // The digest's ungoverned-hotspots row. The rollup scans every record and
+  // ships the stale and background lists too, which this page does not show;
+  // it is read once per render (cached for `revalidate`), and a failure only
+  // drops the row. Upgrade path: a counts-only health read on the server.
+  const health = await getDecisionHealth(repoId).catch(() => undefined);
+
   // Facts about the checkout, which is the structural tier of the episode
   // store. Five rows on this repository and none of them need history, a key
   // or a transcript, so this is the one section that says something on a
@@ -134,6 +140,10 @@ export default async function DecisionsPage({ params }: Props) {
       : (counts?.active ??
         decisions.filter((d) => d.status === "active").length);
   const measuredByLane = lanes !== undefined;
+  // The lede's figure is what governs, the same number as the In force tab.
+  // `in_force` is absent on a backend that predates it; the acceptance sum is
+  // the same set there.
+  const inForce = lanes?.in_force ?? accepted;
   const empty = total === 0;
   const denominator =
     total !== undefined
@@ -147,14 +157,14 @@ export default async function DecisionsPage({ params }: Props) {
     >
       {/* The headline used to be the size of the review queue, so the largest
           number on the page pointed at the work nobody had done rather than at
-          what the repository actually stands behind. The accepted count leads
-          now; the queue keeps its sentence, because a few hundred unreviewed
-          candidates are worth knowing about, just not worth 52px.
+          what the repository actually stands behind. What is in force leads
+          now; the background keeps its sentence, because a few hundred
+          unreviewed records are worth knowing about, just not worth 52px.
 
           It counts acceptance rows, not the status column, so it is every
-          record somebody accepted: the ones that govern plus the ones that
-          were accepted and then drifted or turned out to name nothing. Those
-          are separate lanes below and the four numbers add up.
+          record somebody accepted and nobody retired: the ones that govern
+          plus the ones that were accepted and then drifted or turned out to
+          name nothing. It is the In force tab's own count.
 
           The count is not de-duplicated. A live index carries near-identical
           pairs, two spellings of one fix landing as two accepted records, and
@@ -166,7 +176,7 @@ export default async function DecisionsPage({ params }: Props) {
           can be superseded. */}
       <PageLede
         label={measuredByLane ? t("ledeAccepted") : t("ledeConfirmed")}
-        value={formatNumber(accepted)}
+        value={formatNumber(inForce)}
         unit={denominator}
         layout="beside"
       >
@@ -176,7 +186,7 @@ export default async function DecisionsPage({ params }: Props) {
               code: (chunks) => <code>{chunks}</code>,
             })}
           </p>
-        ) : accepted === 0 ? (
+        ) : inForce === 0 ? (
           // A repository with records and no accepted one is not an empty
           // repository, and it used to get the copy for one: "decisions land
           // here as the indexer mines them" on a store already holding five
@@ -190,7 +200,7 @@ export default async function DecisionsPage({ params }: Props) {
           </>
         ) : (
           <>
-            <p>{t("ledeAcceptedRecords", { count: accepted })}</p>
+            <p>{t("ledeAcceptedRecords", { count: inForce })}</p>
             {proposed > 0 && (
               <p>{t("ledeAcceptedMore", { count: proposed })}</p>
             )}
@@ -198,15 +208,20 @@ export default async function DecisionsPage({ params }: Props) {
         )}
       </PageLede>
 
-      {/* Visible in both states on purpose: the table section below is not
-          rendered at all on an empty repo, which is exactly when somebody
-          needs to record the first one. */}
-      <div className="flex justify-end">
-        <AddDecisionButton repoId={repoId} />
-      </div>
+      {/* The one handoff: the agent maintains the record, the person audits
+          it. Visible on an empty store too, where the server hands the add
+          pass instead, which is exactly when somebody needs the first one. */}
+      <DecisionAgentPanel repoId={repoId} />
+
+      <DecisionsBoard
+        repoId={repoId}
+        pageSize={PAGE_SIZE}
+        ungovernedHotspots={health?.ungoverned_hotspots}
+        hasRecords={!empty}
+      />
 
       {/* Closed by default, with every fact's heading on the toggle: the
-          review queue below is what this page is visited for. */}
+          digest and the record above are what this page is visited for. */}
       {facts && (
         <CheckoutFactsDisclosure
           title={t("checkoutTitle")}
@@ -216,17 +231,6 @@ export default async function DecisionsPage({ params }: Props) {
           total={facts.total}
         />
       )}
-
-      {!empty && (
-        <OverviewSection
-          title={t("reviewTitle")}
-          description={t("reviewDescription")}
-        >
-          <DecisionReviewWrapper repoId={repoId} pageSize={PAGE_SIZE} />
-        </OverviewSection>
-      )}
-
-
     </PageShell>
   );
 }
