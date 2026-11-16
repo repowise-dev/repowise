@@ -87,7 +87,14 @@ SNS = TopicDialect(
     ),
 )
 
-_EVENTBRIDGE_GATES = ("PutEvents", "put_events", "eventPattern", "EventPattern", "EventBridgeRule")
+_EVENTBRIDGE_GATES = (
+    "PutEvents",
+    "put_events",
+    "putEvents",
+    "eventPattern",
+    "EventPattern",
+    "EventBridgeRule",
+)
 _YAML_EXT = frozenset({".yaml", ".yml"})
 _EVENTBRIDGE_EXT = JS_TS | PYTHON | _YAML_EXT
 
@@ -116,7 +123,7 @@ class EventBridgeTopicDialect:
         content = ctx.content
 
         # 1. Publishers: PutEventsCommand, put_events, putEvents
-        if "PutEvents" in content or "put_events" in content:
+        if "PutEvents" in content or "put_events" in content or "putEvents" in content:
             for pm in _PUT_EVENTS_HEAD.finditer(content):
                 open_idx = pm.end() - 1
                 close_idx = match_paren(content, open_idx)

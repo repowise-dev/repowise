@@ -40,6 +40,26 @@ def test_eventbridge_put_events_command_ts(tmp_path: Path) -> None:
     assert c.origin == ContractOrigin.CLIENT_CALL
 
 
+def test_eventbridge_put_events_v2_js(tmp_path: Path) -> None:
+    src = (
+        "const AWS = require('aws-sdk');\n"
+        "const client = new AWS.EventBridge();\n"
+        "await client.putEvents({\n"
+        "  Entries: [\n"
+        "    {\n"
+        "      Source: 'com.shop.orders',\n"
+        "      DetailType: 'OrderCreated',\n"
+        "      Detail: JSON.stringify({ id: '1' }),\n"
+        "    }\n"
+        "  ]\n"
+        "}).promise();\n"
+    )
+    [c] = _extract(tmp_path, "publish_v2.js", src)
+    assert (c.contract_id, c.role) == ("topic::com.shop.orders/ordercreated", "provider")
+    assert c.meta == {"topic": "com.shop.orders/OrderCreated", "broker": "eventbridge", "kind": "topic"}
+    assert c.origin == ContractOrigin.CLIENT_CALL
+
+
 def test_eventbridge_put_events_python(tmp_path: Path) -> None:
     src = (
         "import boto3\n"
