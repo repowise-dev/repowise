@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from typing import Any
 
 import pathspec
@@ -20,6 +21,41 @@ def historical_pathspecs(
     dirs = pathspec.PathSpec.from_lines("gitwildmatch", directory_patterns(patterns))
     paths: set[str] = set()
     excluded: set[str] = set()
+    for path in _history_paths(repo, revision):
+        if path in paths or path in excluded:
+            continue
+        if _included(path, prefix, boundaries, spec, dirs):
+            paths.add(path)
+        else:
+            excluded.add(path)
+    if not paths:
+        return (":(top,glob)**", ":(top,exclude,glob)**")
+    if not excluded:
+        return (":(top,glob)**",)
+
+    includes = _compress_paths(paths, excluded, exclude=False)
+    excludes = _compress_paths(excluded, paths, exclude=True)
+    if len(excludes) + 1 < len(includes):
+        return (":(top,glob)**", *excludes)
+    return tuple(includes)
+
+
+def _included(
+    path: str, prefix: str, boundaries: tuple[str, ...],
+    files: pathspec.PathSpec, directories: pathspec.PathSpec,
+) -> bool:
+    if prefix:
+        if not path.startswith(prefix + "/"):
+            return False
+        path = path[len(prefix) + 1:]
+    return (
+        not excluded_file(path, files, directories)
+        and (not boundaries or any(path == b or path.startswith(b + "/") for b in boundaries))
+    )
+
+
+def _history_paths(repo: Any, revision: str) -> Iterator[str]:
+    """Stream all path names touched by the selected history."""
     with tempfile.TemporaryFile() as errors:
         process = subprocess.Popen(
             [
@@ -35,24 +71,8 @@ def historical_pathspecs(
             entries = (pending + chunk).split(b"\0")
             pending = entries.pop()
             for entry in entries:
-                if not entry:
-                    continue
-                path = os.fsdecode(entry)
-                if path in paths or path in excluded:
-                    continue
-                relative = path
-                if prefix:
-                    relative = path[len(prefix) + 1:] if path.startswith(prefix + "/") else ""
-                included = bool(relative) and not excluded_file(relative, spec, dirs)
-                if included and boundaries and not any(
-                    relative == boundary or relative.startswith(boundary + "/")
-                    for boundary in boundaries
-                ):
-                    included = False
-                if included:
-                    paths.add(path)
-                else:
-                    excluded.add(path)
+                if entry:
+                    yield os.fsdecode(entry)
         process.stdout.close()
         returncode = process.wait()
         if returncode:
@@ -61,16 +81,6 @@ def historical_pathspecs(
             raise RuntimeError(f"Could not enumerate Git history paths: {message}")
         if pending:
             raise RuntimeError("Git history path output ended without a NUL delimiter")
-    if not paths:
-        return (":(top,glob)**", ":(top,exclude,glob)**")
-    if not excluded:
-        return (":(top,glob)**",)
-
-    includes = _compress_paths(paths, excluded, exclude=False)
-    excludes = _compress_paths(excluded, paths, exclude=True)
-    if len(excludes) + 1 < len(includes):
-        return (":(top,glob)**", *excludes)
-    return tuple(includes)
 
 
 def _compress_paths(paths: set[str], opposite: set[str], *, exclude: bool) -> list[str]:
