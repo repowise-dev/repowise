@@ -397,8 +397,15 @@ def _walk_churn(
     shows no diff for them without ``-m`` — so the two forms compose exactly.
     """
     try:
-        path_args = ["--no-renames", "--", *pathspecs] if pathspecs else []
-        out = repo.git.log("--shortstat", "--pretty=tformat:", rev, *path_args)
+        if pathspecs:
+            from .history_scope import history_git
+
+            out = history_git(
+                repo, "log", ["--shortstat", "--pretty=tformat:", "--no-renames"],
+                rev, tuple(pathspecs),
+            )
+        else:
+            out = repo.git.log("--shortstat", "--pretty=tformat:", rev)
     except Exception:
         return None, None
     added = deleted = 0
@@ -537,12 +544,16 @@ def count_people(repo: Any, rev: str, pathspecs: Sequence[str] = ()) -> int:
     """
     from repowise.core.analysis.owners import people_resolver
 
-    out = repo.git.log(
+    options = [
         "--no-merges",
         "--format=%aN%x00%aE%x00%(trailers:key=Co-authored-by,valueonly,separator=%x1f)",
-        rev,
-        *(["--", *pathspecs] if pathspecs else []),
-    )
+    ]
+    if pathspecs:
+        from .history_scope import history_git
+
+        out = history_git(repo, "log", options, rev, tuple(pathspecs))
+    else:
+        out = repo.git.log(*options, rev)
     rows = []
     for line in out.splitlines():
         name, _, rest = line.partition("\0")
@@ -557,7 +568,8 @@ def count_people(repo: Any, rev: str, pathspecs: Sequence[str] = ()) -> int:
 
 
 def capture_repo_totals(
-    repo: Any, prior: RepoTotals | None = None, *, pathspecs: Sequence[str] = ()
+    repo: Any, prior: RepoTotals | None = None, *, pathspecs: Sequence[str] = (),
+    head_sha: str | None = None,
 ) -> RepoTotals:
     """Whole-history stats for *repo* via a handful of cheap git calls.
 
@@ -592,30 +604,36 @@ def capture_repo_totals(
     """
     totals = RepoTotals(history_pathspecs=tuple(pathspecs))
 
-    head_sha: str | None = None
-    with contextlib.suppress(Exception):
-        head_sha = repo.head.commit.hexsha
+    if head_sha is None:
+        with contextlib.suppress(Exception):
+            head_sha = repo.head.commit.hexsha
     # An unresolvable HEAD (unborn, no repo) leaves every call below on the name,
     # exactly as before; the anchor is simply not stored for such a capture.
     rev = head_sha or "HEAD"
-    path_args = ["--", *pathspecs] if pathspecs else []
+    def history(command: str, options: list[str]) -> str:
+        if pathspecs:
+            from .history_scope import history_git
+
+            return history_git(repo, command, options, rev, tuple(pathspecs))
+        return getattr(repo.git, command)(*options, rev)
+
     if prior is not None and prior.history_pathspecs != tuple(pathspecs):
         prior = None
 
     with contextlib.suppress(Exception):
         totals.total_commit_count = int(
-            repo.git.rev_list("--count", "--no-merges", rev, *path_args).strip()
+            history("rev_list", ["--count", "--no-merges"]).strip()
         )
     with contextlib.suppress(Exception):
         totals.total_merge_commit_count = int(
-            repo.git.rev_list("--count", "--merges", rev, *path_args).strip()
+            history("rev_list", ["--count", "--merges"]).strip()
         )
 
     try:
         # A shallow clone lists its cut commits as roots; they found nothing.
         cut = shallow_roots(str(repo.working_dir))
         if pathspecs:
-            dated = repo.git.log("--no-merges", "--format=%ct %H", rev, *path_args).splitlines()
+            dated = history("log", ["--no-merges", "--format=%ct %H"]).splitlines()
             earliest = min(reversed(dated), key=lambda row: int(row.split()[0])) if dated else ""
             roots = [earliest.split()[1]] if earliest else []
         else:

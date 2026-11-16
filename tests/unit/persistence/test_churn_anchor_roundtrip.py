@@ -47,6 +47,24 @@ async def test_stats_rejects_stale_scope_then_reports_refreshed_scope(async_sess
 
 
 @pytest.mark.asyncio
+async def test_stats_normalizes_null_exclusions(async_session, tmp_path) -> None:
+    from repowise.core.repo_config import analysis_git_pathspecs, save_repo_config
+    from repowise.server.routers.stats import stats_highlights
+
+    repo = await insert_repo(async_session)
+    repo.local_path = str(tmp_path)
+    config = {"analysis_paths": ["selected"], "exclude_patterns": None}
+    save_repo_config(tmp_path, config)
+    await update_repo_git_totals(
+        async_session, repo.id, history_pathspecs=analysis_git_pathspecs(config)
+    )
+
+    payload = await stats_highlights(repo.id, session=async_session)
+
+    assert payload["scope"]["exclude_patterns"] == []
+
+
+@pytest.mark.asyncio
 async def test_scope_change_clears_incompatible_totals_and_preserves_settings(async_session) -> None:
     repo = await insert_repo(async_session)
     repo.settings_json = json.dumps({"wiki_style": "compact"})

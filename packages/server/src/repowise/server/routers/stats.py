@@ -260,7 +260,7 @@ async def stats_highlights(
         "repo": {"id": repo.id, "name": repo.name},
         "scope": {
             "paths": list(paths),
-            "exclude_patterns": config.get("exclude_patterns", []),
+            "exclude_patterns": config.get("exclude_patterns") or [],
             "label": ", ".join(paths) if paths else "Whole repository",
         },
         "scale": sh.build_scale(file_nodes, metrics, await crud.count_symbols(session, repo_id)),

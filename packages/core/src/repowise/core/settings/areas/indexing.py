@@ -110,6 +110,13 @@ SETTINGS: tuple[Setting, ...] = (
         suggest_when=_suggest_exclude,
     ),
     _s(
+        "analysis_paths",
+        "list",
+        [],
+        "Repository-relative literal directories to include in analysis; empty means all.",
+        parser="repowise.core.repo_config:parse_analysis_paths",
+    ),
+    _s(
         "commit_limit",
         "int",
         5000,

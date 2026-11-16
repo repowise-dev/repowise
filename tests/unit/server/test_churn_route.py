@@ -14,7 +14,10 @@ async def test_quiet_window_reports_newest_change_to_a_scored_file(monkeypatch) 
         return SimpleNamespace(id="r")
 
     async def metrics(_session, _repo_id):
-        return [SimpleNamespace(file_path="a.tcl", score=7.0, max_ccn=9, nloc=40, scored=True)]
+        return [
+            SimpleNamespace(file_path="a.tcl", score=7.0, max_ccn=9, nloc=40, scored=True),
+            SimpleNamespace(file_path="unscored.ini", score=None, max_ccn=0, nloc=0, scored=False),
+        ]
 
     async def git_meta(_session, _repo_id):
         return {

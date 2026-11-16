@@ -90,22 +90,19 @@ def analysis_paths(config: dict[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(set(normalized)))
 
 
+def parse_analysis_paths(value: Any) -> list[str]:
+    """Validate analysis boundaries when written through settings."""
+    return list(analysis_paths({"analysis_paths": value}))
+
+
 def analysis_git_pathspecs(config: dict[str, Any]) -> tuple[str, ...]:
-    """Git boundaries plus configured exclusions, including deleted historical files."""
+    """Stable identity for the configured history boundaries and exclusions."""
     paths = analysis_paths(config)
-    if not paths:
-        return ()
     specs = [f":(top,literal){path}" for path in paths]
-    for pattern in config.get("exclude_patterns", []) or []:
-        if not pattern or pattern.startswith("#"):
-            continue
-        if pattern.startswith("!") or "\\" in pattern:
-            raise RepoConfigError("Scoped history does not support negated or escaped exclusions")
-        rooted = pattern.startswith("/")
-        glob = pattern.strip("/")
-        if not rooted and "/" not in glob:
-            glob = f"**/{glob}"
-        specs.extend((f":(top,exclude,glob){glob}", f":(top,exclude,glob){glob}/**"))
+    patterns = config.get("exclude_patterns") or []
+    if not isinstance(patterns, list) or any(not isinstance(p, str) for p in patterns):
+        raise RepoConfigError("exclude_patterns must be a list of gitignore patterns")
+    specs.extend(f"exclude:{pattern}" for pattern in patterns)
     return tuple(specs)
 
 

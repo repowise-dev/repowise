@@ -457,7 +457,10 @@ class FileTraverser:
         self._extra_ignore = load_extra_ignore_spec(self.repo_root, extra_ignore_filename)
         self._blocked_patterns = _BLOCKED_FILENAME_SPEC
         patterns = extra_exclude_patterns or []
-        self._extra_exclude = _compile_gitignore(patterns)
+        from .exclusions import directory_patterns, file_patterns
+
+        self._extra_exclude = _compile_gitignore(file_patterns(patterns))
+        self._extra_exclude_dirs = _compile_gitignore(directory_patterns(patterns))
         root_ignore_lines: list[str] = []
         root_ignore_file = self.repo_root / extra_ignore_filename
         if root_ignore_file.exists():
@@ -728,7 +731,7 @@ class FileTraverser:
 
     def _is_dir_ignored(self, dirname: str, rel_str: str, dir_ignore: _DirIgnore | None) -> bool:
         dir_slash = f"{dirname}/"
-        if self._extra_ignore.match_file(f"{rel_str}/") or self._extra_exclude.match_file(
+        if self._extra_ignore.match_file(f"{rel_str}/") or self._extra_exclude_dirs.match_file(
             f"{rel_str}/"
         ):
             return True
