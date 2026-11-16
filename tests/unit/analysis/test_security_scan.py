@@ -644,6 +644,9 @@ class TestScanFile:
             ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
             # Python source quoted inside a string, as a test fixture holds it.
             ("src = 'q = f\"SELECT * FROM t WHERE id = {uid}\"'\n", False),
+            # An earlier f-string on the same line must not swallow the SQL f-string.
+            ('q = f"{prefix}" + f"SELECT * FROM users WHERE id = {user_id}"\n', True),
+            ('q = f"{prefix}" + f"SELECT * FROM users"\n', False),
         ],
     )
     def test_fstring_sql_needs_a_value_written_into_a_query(self, source: str, expected: bool) -> None:

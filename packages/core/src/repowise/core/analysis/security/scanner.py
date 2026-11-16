@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -70,6 +71,26 @@ def _deduplicate_line_secrets(
             findings.remove(finding)
 
 
+def _match_fstring_sql(
+    pattern: re.Pattern[str],
+    line: str,
+    masked: str,
+    lines: list[str],
+    lineno: int,
+) -> re.Match[str] | None:
+    """Return the first *pattern* match starting in code whose f-string interpolates SQL."""
+    pos = 0
+    while (match := pattern.search(line, pos)) is not None:
+        if (
+            match.start() < len(masked)
+            and masked[match.start()] == line[match.start()]
+            and _interpolates_sql_value(line, match.start(), lines, lineno)
+        ):
+            return match
+        pos = match.start() + 1
+    return None
+
+
 def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> list[dict]:
     """Scan *source* text and symbol names; return finding dicts. No I/O."""
     findings: list[dict] = []
@@ -130,10 +151,9 @@ def scan_source(file_path: str, source: str, symbols: Iterable[Any] = ()) -> lis
                         match = None
             elif kind == "fstring_sql":
                 # The ``f`` must open a literal in code, not sit inside another
-                # string, and the query must interpolate a value.
-                match = _match_starting_in(pattern, line, masked_line(lineno, line))
-                if match and not _interpolates_sql_value(line, match.start(), lines, lineno):
-                    match = None
+                # string, and the query must interpolate a value. Scan past any
+                # earlier non-SQL f-string on the same line.
+                match = _match_fstring_sql(pattern, line, masked_line(lineno, line), lines, lineno)
             elif kind == "weak_hash":
                 # Written in code, and not a declared or visible id (refinements).
                 match = _match_starting_in(pattern, line, masked_line(lineno, line))
