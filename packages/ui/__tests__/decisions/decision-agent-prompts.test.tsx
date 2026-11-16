@@ -115,6 +115,32 @@ describe("DecisionAgentHero", () => {
     expect(screen.getByRole("button", { name: "Open in editor" })).toBeInTheDocument();
   });
 
+  it("offers the whole-queue prompt as a second copy button and copies its own text", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(
+      <DecisionAgentHero
+        prompt={discover}
+        reviewAll={{ text: "Check every background record.", label: "Review all records" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Review all records" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Check every background record."));
+    // The main prompt stays the primary action.
+    expect(screen.getByRole("button", { name: "Copy prompt for your agent" })).toBeInTheDocument();
+  });
+
+  it("hides the whole-queue button when the host has no text for it", () => {
+    const none = render(<DecisionAgentHero prompt={discover} reviewAll={null} />);
+    expect(screen.queryByRole("button", { name: "Review all records" })).toBeNull();
+    none.unmount();
+
+    render(<DecisionAgentHero prompt={discover} reviewAll={{ text: "", label: "Review all records" }} />);
+    expect(screen.queryByRole("button", { name: "Review all records" })).toBeNull();
+  });
+
   it("gives a reader who cannot act one line instead of the prompt", () => {
     render(
       <DecisionAgentHero prompt={discover} readOnlyNote="Maintainers hand this to their agent." />,

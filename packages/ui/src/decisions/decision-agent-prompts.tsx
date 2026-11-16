@@ -90,6 +90,12 @@ export interface DecisionAgentHeroProps {
   /** A host's handoff beside the copy button, such as opening the prompt in an editor. */
   handoff?: React.ReactNode;
   /**
+   * The pass over every background record, not only the ones the main prompt
+   * names, as a secondary copy button beside it. Pass it only when the server
+   * served the prompt (`?kind=review_all`) with text; otherwise nothing shows.
+   */
+  reviewAll?: DecisionAgentPrompt | null;
+  /**
    * For a reader who cannot act on the repository: shown as one line in
    * place of the prompt and the button.
    */
@@ -131,6 +137,7 @@ export function DecisionAgentHero({
   footnote,
   links,
   handoff,
+  reviewAll,
   readOnlyNote,
   previewLines = 6,
   className,
@@ -203,6 +210,7 @@ export function DecisionAgentHero({
           {result === "copied" ? <Check aria-hidden /> : <ClipboardCopy aria-hidden />}
           {copyLabel}
         </Button>
+        <DecisionAgentPrompts prompts={[reviewAll]} />
         {handoff}
         <span role="status" aria-live="polite" className="text-xs text-[var(--color-text-secondary)]">
           {result === "copied" ? copiedLabel : result === "failed" ? failedLabel : ""}

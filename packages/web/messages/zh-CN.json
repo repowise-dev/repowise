@@ -2020,7 +2020,8 @@
       "copyFailed": "复制失败。请选中预览内容手动复制。",
       "footnote": "与 <code>repowise decision discover</code> 输出的文本相同。",
       "recordMissed": "记录遗漏的决策",
-      "addByHand": "手动添加一条"
+      "addByHand": "手动添加一条",
+      "reviewAll": "审阅全部记录"
     },
     "board": {
       "movedOnly": "正在显示 {count} 条生效中、且所涉代码在确认后发生过变化的决策。",

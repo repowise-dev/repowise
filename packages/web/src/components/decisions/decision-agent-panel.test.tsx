@@ -11,6 +11,10 @@ const prompts = vi.hoisted(() => ({
   discover: { kind: "discover", text: "Check these 3 records\n- `a1` One", ids: ["a1"], count: 3 },
   add: { kind: "add", text: "Record what nobody wrote down", ids: [], count: 0 },
   agreements: { kind: "agreements", text: "", ids: [], count: 0 },
+  // `null`: the server refuses the kind, as one that predates it does.
+  reviewAll: { kind: "review_all", text: "Check every background record", ids: [], count: 0 } as
+    | { kind: string; text: string; ids: string[]; count: number }
+    | null,
 }));
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
@@ -19,10 +23,15 @@ vi.mock("@/lib/api/decisions", () => ({
   getDecisionAgentPrompt: vi.fn(async (_repo: string, kind: DecisionAgentPromptKind) => {
     if (kind === "discover") return prompts.discover;
     if (kind === "add") return prompts.add;
+    if (kind === "review_all") {
+      if (!prompts.reviewAll) throw new Error("422 Unprocessable Entity");
+      return prompts.reviewAll;
+    }
     return prompts.agreements;
   }),
 }));
 
+import { getDecisionAgentPrompt } from "@/lib/api/decisions";
 import { DecisionAgentPanel } from "./add-decision-button";
 
 function renderPanel() {
@@ -52,6 +61,33 @@ describe("DecisionAgentPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy prompt for your agent" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(prompts.discover.text));
+  });
+
+  it("offers the whole-queue prompt beside the main button and copies it", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Review all records" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("Check every background record"));
+  });
+
+  it("hides the whole-queue button when the server refuses the kind or has nothing left", async () => {
+    prompts.reviewAll = null;
+    const refused = renderPanel();
+    await screen.findByRole("button", { name: "Copy prompt for your agent" });
+    // Asked, refused, and nothing shows for it.
+    await waitFor(() =>
+      expect(vi.mocked(getDecisionAgentPrompt)).toHaveBeenCalledWith("r1", "review_all", undefined),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByRole("button", { name: "Review all records" })).toBeNull();
+    refused.unmount();
+
+    prompts.reviewAll = { kind: "review_all", text: "", ids: [], count: 0 };
+    renderPanel();
+    await screen.findByRole("button", { name: "Copy prompt for your agent" });
+    expect(screen.queryByRole("button", { name: "Review all records" })).toBeNull();
   });
 
   it("becomes the add pass on a store with nothing to check, and keeps the manual path", async () => {

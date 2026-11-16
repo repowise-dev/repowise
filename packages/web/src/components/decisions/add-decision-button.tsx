@@ -42,6 +42,8 @@ export function DecisionAgentPanel({ repoId }: { repoId: string }) {
   const { data: discover, error } = useDecisionAgentPromptState(repoId, "discover");
   const agreements = useDecisionAgentPrompt(repoId, "agreements");
   const add = useDecisionAgentPrompt(repoId, "add");
+  // A server that predates the kind refuses it; the read then fails and no button shows.
+  const reviewAll = useDecisionAgentPrompt(repoId, "review_all");
 
   const handleSubmit = React.useCallback(
     async (input: DecisionCreateInput) => {
@@ -73,6 +75,7 @@ export function DecisionAgentPanel({ repoId }: { repoId: string }) {
         copyLabel={t("hero.copy")}
         copiedLabel={t("hero.copied")}
         failedLabel={t("hero.copyFailed")}
+        reviewAll={reviewAll && { text: reviewAll.text, label: t("hero.reviewAll") }}
         footnote={
           <span>
             {t.rich("hero.footnote", { code: (chunks) => <code>{chunks}</code> })}

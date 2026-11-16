@@ -2020,7 +2020,8 @@
       "copyFailed": "Couldn't copy. Select the preview and copy it by hand.",
       "footnote": "Same text as <code>repowise decision discover</code>.",
       "recordMissed": "Record missed decisions",
-      "addByHand": "Add one by hand"
+      "addByHand": "Add one by hand",
+      "reviewAll": "Review all records"
     },
     "board": {
       "movedOnly": "Showing the {count, plural, one {# decision} other {# decisions}} in force whose code changed after {count, plural, one {it was} other {they were}} accepted.",
