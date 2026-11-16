@@ -479,10 +479,7 @@ class DecisionExtractor:
         prose miner when a provider is available. Highest source rank.
         *restrict_to_files* keeps only the ADRs among those repo-relative paths.
         """
-        adr_paths = find_adr_files(self._repo_path)
-        if restrict_to_files is not None:
-            wanted = set(restrict_to_files)
-            adr_paths = [p for p in adr_paths if self._rel_path(p) in wanted]
+        adr_paths = find_adr_files(self._repo_path, restrict_to_files=restrict_to_files)
         if not adr_paths:
             return []
         provider = self._llm("adr")

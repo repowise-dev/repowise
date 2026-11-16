@@ -64,6 +64,34 @@ async def test_discovery_keeps_only_the_named_adrs(tmp_path: Path) -> None:
     assert [d.title for d in found] == ["New Choice"]
 
 
+async def test_rescan_finds_changed_adr_beyond_discovery_cap(tmp_path: Path) -> None:
+    from repowise.core.analysis.decisions.adr import find_adr_files
+
+    adr_dir = tmp_path / "docs" / "adr"
+    adr_dir.mkdir(parents=True)
+    for i in range(61):
+        (adr_dir / f"{i:04d}.md").write_text(_ADR.format(title=f"Choice {i}"), encoding="utf-8")
+    all_files = set(adr_dir.glob("*.md"))
+    omitted = (all_files - set(find_adr_files(tmp_path))).pop()
+    relative = omitted.relative_to(tmp_path).as_posix()
+
+    found = await DecisionExtractor(repo_path=tmp_path).rescan_adrs([relative])
+
+    assert [d.evidence_file for d in found] == [relative]
+
+
+async def test_rescan_still_excludes_ignored_and_non_adr_files(tmp_path: Path) -> None:
+    _write_adrs(tmp_path)
+    (tmp_path / ".gitignore").write_text("docs/adr/0001-old.md\n", encoding="utf-8")
+    (tmp_path / "notes.md").write_text(_ADR.format(title="Not an ADR"), encoding="utf-8")
+
+    found = await DecisionExtractor(repo_path=tmp_path).rescan_adrs(
+        ["docs/adr/0001-old.md", "notes.md"]
+    )
+
+    assert found == []
+
+
 def test_update_reads_an_added_adr_and_skips_unchanged_ones(tmp_path: Path) -> None:
     _write_adrs(tmp_path)
     run, docs = _run_and_docs(tmp_path, {"docs/adr/0002-new.md": "added", "src/app.py": "modified"})
