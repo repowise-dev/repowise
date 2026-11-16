@@ -684,10 +684,12 @@ class FullTextSearch:
             async with self._engine.connect() as conn:
                 rows = await conn.execute(text("SELECT page_id FROM page_fts"))
                 return {r[0] for r in rows.fetchall()}
-        # PostgreSQL: all wiki_pages rows are automatically indexed via GIN,
-        # so the set of "indexed" ids is all page ids in the table.
+        # PostgreSQL: all live wiki_pages rows are automatically indexed via GIN,
+        # excluding tombstones retained for stale-path tracking.
         async with self._engine.connect() as conn:
-            rows = await conn.execute(text("SELECT id FROM wiki_pages"))
+            rows = await conn.execute(
+                text("SELECT id FROM wiki_pages WHERE freshness_status != 'tombstone'")
+            )
             return {r[0] for r in rows.fetchall()}
 
     async def search(
@@ -884,11 +886,12 @@ class FullTextSearch:
         if term:
             sql = (
                 f"SELECT count(*) FROM wiki_pages "
-                f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q)"
+                f"WHERE freshness_status != 'tombstone' "
+                f"  AND {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q)"
             )
             params = {"q": _pg_term(term)}
         else:
-            sql = "SELECT count(*) FROM wiki_pages"
+            sql = "SELECT count(*) FROM wiki_pages WHERE freshness_status != 'tombstone'"
             params = {}
         try:
             row = await conn.execute(text(sql), params)
@@ -949,6 +952,7 @@ class FullTextSearch:
                         f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
                         f"FROM wiki_pages "
                         f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
+                        f"  AND freshness_status != 'tombstone' "
                         f"  AND repository_id = :repo_id "
                         f"ORDER BY rank DESC "
                         f"LIMIT :lim",
@@ -962,6 +966,7 @@ class FullTextSearch:
                         f"  ts_rank({PG_FTS_EXPRESSION}, to_tsquery('english', :q)) AS rank "
                         f"FROM wiki_pages "
                         f"WHERE {PG_FTS_EXPRESSION} @@ to_tsquery('english', :q) "
+                        f"  AND freshness_status != 'tombstone' "
                         f"ORDER BY rank DESC "
                         f"LIMIT :lim",
                     ),

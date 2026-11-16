@@ -242,3 +242,47 @@ async def test_api_contract_page_is_tombstoned_and_returned_with_file_page(sessi
     assert sorted(marked) == [f"api_contract:{path}", f"file_page:{path}"]
     assert (await _status(session, f"file_page:{path}"))[0] == "tombstone"
     assert (await _status(session, f"api_contract:{path}"))[0] == "tombstone"
+
+
+async def test_postgresql_fts_queries_exclude_tombstoned_pages():
+    """PostgreSQL keeps tombstoned wiki_pages rows, so FTS queries must exclude them."""
+    from types import SimpleNamespace
+
+    from repowise.core.persistence.search import FullTextSearch
+
+    executed_sql: list[str] = []
+
+    class _FakeResult:
+        def fetchall(self):
+            return []
+
+        def scalar(self):
+            return 0
+
+    class _FakeConn:
+        async def execute(self, stmt, params=None):
+            executed_sql.append(str(stmt))
+            return _FakeResult()
+
+    class _FakeCtx:
+        async def __aenter__(self):
+            return _FakeConn()
+
+        async def __aexit__(self, *args):
+            return False
+
+    class _FakeEngine:
+        dialect = SimpleNamespace(name="postgresql")
+
+        def connect(self):
+            return _FakeCtx()
+
+    fts = FullTextSearch(_FakeEngine())
+    await fts.list_indexed_ids()
+    await fts.search("xylophone", limit=5)
+    await fts.search("xylophone", limit=5, repository_id="repo-1")
+
+    assert executed_sql, "expected PostgreSQL FTS queries to run"
+    for sql in executed_sql:
+        if "FROM wiki_pages" in sql:
+            assert "freshness_status != 'tombstone'" in sql, sql
