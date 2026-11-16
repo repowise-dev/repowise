@@ -68,8 +68,6 @@ export function DecisionDigest({
   LinkComponent = "a",
   className,
 }: DecisionDigestProps) {
-  const attentionId = React.useId();
-  const recentId = React.useId();
   const moved = needsReview ?? 0;
   const hot = ungovernedHotspots ?? [];
   const attention = moved > 0 || hot.length > 0;
@@ -78,86 +76,139 @@ export function DecisionDigest({
   return (
     <div className={cn("grid gap-8", className)}>
       {attention && (
-        <section aria-labelledby={attentionId} className="grid gap-2.5">
-          <div className={HEAD}>
-            <h2 id={attentionId} className={H}>
-              Needs attention
-            </h2>
-          </div>
-          <div className="border-t border-[var(--color-border-subtle)]">
-            {moved > 0 && (
-              <div className={ROW}>
-                <p className="min-w-0 text-sm text-[var(--color-text-primary)]">
-                  <Dot tone="warning" />
-                  <span className="font-mono font-semibold tabular-nums">{formatNumber(moved)}</span>{" "}
-                  {moved === 1
-                    ? "decision in force names code that changed after it was accepted."
-                    : "decisions in force name code that changed after they were accepted."}
-                </p>
-                <p className={META}>
-                  Agents still hear {moved === 1 ? "it" : "them"}. Check {moved === 1 ? "it holds" : "they hold"}, or hand each one to your agent from its menu.
-                </p>
-                {onReviewNeedsReview && (
-                  <div className={ACTION_CELL}>
-                    <button type="button" className={TEXT_BUTTON} onClick={onReviewNeedsReview}>
-                      Review {formatNumber(moved)}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            {hot.length > 0 && (
-              <div className={ROW}>
-                <p className="min-w-0 text-sm text-[var(--color-text-primary)]">
-                  <Dot tone="neutral" />
-                  <span className="font-mono font-semibold tabular-nums">{formatNumber(hot.length)}</span>{" "}
-                  {hot.length === 1
-                    ? "churn hotspot file has no decision in force."
-                    : "churn hotspot files have no decision in force."}
-                </p>
-                <p className={META}>
-                  {hot.slice(0, 2).map((path) => (
-                    <span key={path} className="font-mono text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
-                      {path}
-                    </span>
-                  ))}
-                  {hot.length > 2 && <span className="font-mono tabular-nums">+{formatNumber(hot.length - 2)}</span>}
-                </p>
-                {ungovernedAction && <div className={ACTION_CELL}>{ungovernedAction}</div>}
-              </div>
-            )}
-          </div>
-        </section>
+        <NeedsAttention
+          moved={moved}
+          onReviewNeedsReview={onReviewNeedsReview}
+          hot={hot}
+          ungovernedAction={ungovernedAction}
+        />
       )}
       {recentRows.length > 0 && (
-        <section aria-labelledby={recentId} className="grid gap-2.5">
-          <div className={HEAD}>
-            <h2 id={recentId} className={H}>
-              This week
-            </h2>
-            <span className="text-xs text-[var(--color-text-tertiary)]">Put in force in the last 7 days</span>
-          </div>
-          <ul className="border-t border-[var(--color-border-subtle)]">
-            {recentRows.map((d) => (
-              <RecentRow
-                key={d.id}
-                d={d}
-                actions={renderRecentActions?.(d)}
-                href={recentHref?.(d)}
-                LinkComponent={LinkComponent}
-              />
-            ))}
-          </ul>
-          {onShowAllRecent && recentTotal != null && recentTotal > recentRows.length && (
-            <div>
-              <button type="button" className={TEXT_BUTTON} onClick={onShowAllRecent}>
-                See all {formatNumber(recentTotal)} in Recent
-              </button>
-            </div>
-          )}
-        </section>
+        <ThisWeek
+          rows={recentRows}
+          total={recentTotal}
+          onShowAll={onShowAllRecent}
+          renderActions={renderRecentActions}
+          href={recentHref}
+          LinkComponent={LinkComponent}
+        />
       )}
     </div>
+  );
+}
+
+function NeedsAttention({
+  moved,
+  onReviewNeedsReview,
+  hot,
+  ungovernedAction,
+}: {
+  moved: number;
+  onReviewNeedsReview?: (() => void) | undefined;
+  hot: readonly string[];
+  ungovernedAction?: React.ReactNode;
+}) {
+  const id = React.useId();
+  return (
+    <section aria-labelledby={id} className="grid gap-2.5">
+      <div className={HEAD}>
+        <h2 id={id} className={H}>
+          Needs attention
+        </h2>
+      </div>
+      <div className="border-t border-[var(--color-border-subtle)]">
+        {moved > 0 && <MovedRow moved={moved} onReview={onReviewNeedsReview} />}
+        {hot.length > 0 && <HotspotRow hot={hot} action={ungovernedAction} />}
+      </div>
+    </section>
+  );
+}
+
+function MovedRow({ moved, onReview }: { moved: number; onReview?: (() => void) | undefined }) {
+  const one = moved === 1;
+  return (
+    <div className={ROW}>
+      <p className="min-w-0 text-sm text-[var(--color-text-primary)]">
+        <Dot tone="warning" />
+        <span className="font-mono font-semibold tabular-nums">{formatNumber(moved)}</span>{" "}
+        {one
+          ? "decision in force names code that changed after it was accepted."
+          : "decisions in force name code that changed after they were accepted."}
+      </p>
+      <p className={META}>
+        Agents still hear {one ? "it" : "them"}. Check {one ? "it holds" : "they hold"}, or hand each one to your agent from its menu.
+      </p>
+      {onReview && (
+        <div className={ACTION_CELL}>
+          <button type="button" className={TEXT_BUTTON} onClick={onReview}>
+            Review {formatNumber(moved)}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HotspotRow({ hot, action }: { hot: readonly string[]; action?: React.ReactNode }) {
+  return (
+    <div className={ROW}>
+      <p className="min-w-0 text-sm text-[var(--color-text-primary)]">
+        <Dot tone="neutral" />
+        <span className="font-mono font-semibold tabular-nums">{formatNumber(hot.length)}</span>{" "}
+        {hot.length === 1
+          ? "churn hotspot file has no decision in force."
+          : "churn hotspot files have no decision in force."}
+      </p>
+      <p className={META}>
+        {hot.slice(0, 2).map((path) => (
+          <span key={path} className="font-mono text-[var(--color-text-secondary)] [overflow-wrap:anywhere]">
+            {path}
+          </span>
+        ))}
+        {hot.length > 2 && <span className="font-mono tabular-nums">+{formatNumber(hot.length - 2)}</span>}
+      </p>
+      {action && <div className={ACTION_CELL}>{action}</div>}
+    </div>
+  );
+}
+
+function ThisWeek({
+  rows,
+  total,
+  onShowAll,
+  renderActions,
+  href,
+  LinkComponent,
+}: {
+  rows: readonly DecisionRecord[];
+  total?: number | null | undefined;
+  onShowAll?: (() => void) | undefined;
+  renderActions?: ((decision: DecisionRecord) => React.ReactNode) | undefined;
+  href?: ((decision: DecisionRecord) => string) | undefined;
+  LinkComponent: NonNullable<DecisionDigestProps["LinkComponent"]>;
+}) {
+  const id = React.useId();
+  return (
+    <section aria-labelledby={id} className="grid gap-2.5">
+      <div className={HEAD}>
+        <h2 id={id} className={H}>
+          This week
+        </h2>
+        <span className="text-xs text-[var(--color-text-tertiary)]">Put in force in the last 7 days</span>
+      </div>
+      <ul className="border-t border-[var(--color-border-subtle)]">
+        {rows.map((d) => (
+          <RecentRow key={d.id} d={d} actions={renderActions?.(d)} href={href?.(d)} LinkComponent={LinkComponent} />
+        ))}
+      </ul>
+      {onShowAll && total != null && total > rows.length && (
+        <div>
+          <button type="button" className={TEXT_BUTTON} onClick={onShowAll}>
+            See all {formatNumber(total)} in Recent
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 

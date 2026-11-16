@@ -216,7 +216,8 @@ export function DocsMoreMenu({
           className={cn(
             "flex h-7 shrink-0 items-center gap-1.5 rounded-md border text-xs transition-colors hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
             iconOnly
-              ? "w-7 justify-center border-transparent text-[var(--color-text-secondary)] hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] aria-expanded:border-[var(--color-border-default)] aria-expanded:bg-[var(--color-bg-elevated)]"
+              ? // 28px beside the row's text, a 40px touch target on phones.
+                "w-7 justify-center max-sm:h-10 max-sm:w-10 border-transparent text-[var(--color-text-secondary)] hover:border-[var(--color-border-default)] hover:bg-[var(--color-bg-elevated)] aria-expanded:border-[var(--color-border-default)] aria-expanded:bg-[var(--color-bg-elevated)]"
               : // A view inside the menu is on screen: the trigger takes the
                 // active-tab look, so the bar still says where the reader is.
                 current
