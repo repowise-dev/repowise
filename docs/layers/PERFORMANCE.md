@@ -22,7 +22,7 @@ Performance risk is one of the three signals in [Code Health](CODE_HEALTH.md).
 That is 21 performance detectors plus `sql_cartesian_join`. They never move the
 defect score, and six of them are listed without moving any score: `io_in_loop`, `nested_loop_with_io`, `lock_in_loop`, `string_concat_in_loop`,
 `membership_test_against_list_in_loop` and `list_insert_zero_in_loop`. In a blind
-study of 705 findings on 64 repositories, 1 in 10 or fewer were worth acting on:
+review of 705 findings on 64 repositories, 1 in 10 or fewer were worth acting on:
 the code was real but sat on a cold path (setup, once per connection, the error
 path), which a static read cannot tell from a hot one.
 
@@ -107,8 +107,9 @@ leaves the loop unknown.
 
 The default queue holds production opportunities in the `plan_ready` and
 `advisory` states. They are ranked by cost first; state only breaks ties. Only
-opportunities whose cost is measured are in it. A loop whose size nothing measured
-is `cost_proof = unproven`, never leads, and shows only with the `proof=unproven`
+opportunities whose loop size is known from the code (it grows with the data, or
+it is bounded) are in it. A loop whose size the code does not show is
+`cost_proof = unproven`, never leads, and shows only with the `proof=unproven`
 filter.
 
 Each opportunity also says what runs its loop (`execution_role`: request, event
