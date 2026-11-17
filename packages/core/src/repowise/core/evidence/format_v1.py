@@ -100,6 +100,31 @@ class EvidenceDocument:
 
 def parse_evidence(text: str) -> EvidenceDocument:
     """Validate a ``repowise-evidence-v1`` document and normalize its entries."""
+    data, kind, raw_entries = _envelope(text)
+    commit = _commit_sha(data)
+    value_kind, unit = _value_kind_and_unit(kind, data)
+    tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+
+    skipped: Counter[str] = Counter(_converter_skips(data.get("skipped")))
+    entries = _read_entries(kind, raw_entries, skipped)
+
+    return EvidenceDocument(
+        kind=kind,
+        commit_sha=commit,
+        dirty=data["dirty"] if isinstance(data.get("dirty"), bool) else None,
+        tool_name=_token(tool.get("name")),
+        tool_version=_token(tool.get("version")),
+        value_kind=value_kind,
+        unit=unit,
+        total=_amount(data.get("total")),
+        explained=_amount(data.get("explained")),
+        entries=tuple(entries),
+        skipped=dict(skipped),
+    )
+
+
+def _envelope(text: str) -> tuple[dict[str, Any], str, list[Any]]:
+    """The JSON object, its kind and its entry list, or the document-level error."""
     data = load_json_object(text)
     if data is None:
         raise EvidenceFormatError(
@@ -124,16 +149,23 @@ def parse_evidence(text: str) -> EvidenceDocument:
             f"a {kind} document needs a {ENTRY_LISTS[kind]!r} list",
             f"put the entries under \"{ENTRY_LISTS[kind]}\": [...]",
         )
+    return data, kind, raw_entries
+
+
+def _commit_sha(data: dict[str, Any]) -> str | None:
     commit = data.get("commit_sha")
     if commit is not None and not (isinstance(commit, str) and _COMMIT_RE.match(commit)):
         raise EvidenceFormatError(
             "commit_sha is not a full 40-character lowercase hex SHA",
             "use the output of `git rev-parse HEAD` at measurement, or leave it out",
         )
-    value_kind, unit = _value_kind_and_unit(kind, data)
-    tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+    return commit
 
-    skipped: Counter[str] = Counter(_converter_skips(data.get("skipped")))
+
+def _read_entries(
+    kind: str, raw_entries: list[Any], skipped: Counter[str]
+) -> list[dict[str, Any]]:
+    """The valid entries in order; each one not read is counted in *skipped*."""
     entries: list[dict[str, Any]] = []
     seen: set[Any] = set()
     read = _ENTRY_READERS[kind]
@@ -149,20 +181,7 @@ def parse_evidence(text: str) -> EvidenceDocument:
             skipped[reason or "invalid"] += 1
         else:
             entries.append(entry)
-
-    return EvidenceDocument(
-        kind=kind,
-        commit_sha=commit,
-        dirty=data["dirty"] if isinstance(data.get("dirty"), bool) else None,
-        tool_name=_token(tool.get("name")),
-        tool_version=_token(tool.get("version")),
-        value_kind=value_kind,
-        unit=unit,
-        total=_amount(data.get("total")),
-        explained=_amount(data.get("explained")),
-        entries=tuple(entries),
-        skipped=dict(skipped),
-    )
+    return entries
 
 
 def _value_kind_and_unit(kind: str, data: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -317,12 +336,21 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
     }, None
 
 
-def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def _query_scope(raw: dict[str, Any]) -> tuple[tuple[str, str] | None, str | None]:
+    """``((kind, id), None)`` for the test or request a count belongs to."""
     scope = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
     scope_kind = scope.get("kind")
     scope_id, reason = _name(scope.get("id"))
     if scope_kind not in QUERY_SCOPES or scope_id is None:
         return None, "no_scope" if reason in (None, "no_name") else reason
+    return (scope_kind, scope_id), None
+
+
+def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    scope, reason = _query_scope(raw)
+    if scope is None:
+        return None, reason
+    scope_kind, scope_id = scope
     site, reason = _location(raw.get("site"))
     if site is None:
         return None, reason
