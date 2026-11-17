@@ -12,10 +12,13 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import useSWR from "swr";
 import {
+  CoverageSkeleton,
   CoverageView,
   type CodeHealthAdapter,
   type CoverageViewCopy,
 } from "@repowise-dev/ui/health";
+import { ApiError } from "@repowise-dev/ui/shared/api-error";
+import { toFriendlyMessage } from "@repowise-dev/ui/lib/errors";
 import { fileEntityPath } from "@repowise-dev/ui/shared/entity";
 import { formatNumber } from "@repowise-dev/ui/lib/format";
 import { getOverviewSummary } from "@/lib/api/overview";
@@ -60,7 +63,12 @@ export function TestsView({ repoId: id }: { repoId: string }) {
   const t = useTranslations("views.tests");
   const prefix = `/repos/${id}`;
 
-  const { data: summary } = useSWR(
+  const {
+    data: summary,
+    error: summaryError,
+    isLoading: summaryLoading,
+    mutate: mutateSummary,
+  } = useSWR(
     id ? `overview-summary:${id}` : null,
     () => getOverviewSummary(id),
     { revalidateOnFocus: false },
@@ -71,19 +79,22 @@ export function TestsView({ repoId: id }: { repoId: string }) {
     [summary?.languages],
   );
 
-  const adapter: CodeHealthAdapter = {
-    cacheKey: id,
-    getOverview: (limit) => getHealthOverview(id, limit),
-    listFindings: (opts) => listHealthFindings(id, opts),
-    getHealthWorkQueue: (opts) => getHealthWorkQueue(id, opts),
-    updateFindingStatus: (findingId, status) =>
-      updateFindingStatus(id, findingId, status),
-    getCoverage: (opts) => getHealthCoverage(id, opts),
-    getTestsReaching: (path) => getTestsReaching(id, path),
-    fileHref: (path) => fileEntityPath(prefix, path),
-    navigate: (href) => router.push(href),
-    renderFileDrawer: () => null,
-  };
+  const adapter: CodeHealthAdapter = useMemo(
+    () => ({
+      cacheKey: id,
+      getOverview: (limit) => getHealthOverview(id, limit),
+      listFindings: (opts) => listHealthFindings(id, opts),
+      getHealthWorkQueue: (opts) => getHealthWorkQueue(id, opts),
+      updateFindingStatus: (findingId, status) =>
+        updateFindingStatus(id, findingId, status),
+      getCoverage: (opts) => getHealthCoverage(id, opts),
+      getTestsReaching: (path) => getTestsReaching(id, path),
+      fileHref: (path) => fileEntityPath(prefix, path),
+      navigate: (href) => router.push(href),
+      renderFileDrawer: () => null,
+    }),
+    [id, prefix, router],
+  );
 
   const copy = useMemo<CoverageViewCopy>(
     () => ({
@@ -97,6 +108,20 @@ export function TestsView({ repoId: id }: { repoId: string }) {
     }),
     [t],
   );
+
+  if (summaryError) {
+    return (
+      <ApiError
+        title="Couldn't load repository summary"
+        message={toFriendlyMessage(summaryError)}
+        onRetry={() => void mutateSummary()}
+      />
+    );
+  }
+
+  if (summaryLoading || summary === undefined) {
+    return <CoverageSkeleton />;
+  }
 
   return (
     <CoverageView
