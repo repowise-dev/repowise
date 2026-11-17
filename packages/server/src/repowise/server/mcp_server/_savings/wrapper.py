@@ -112,8 +112,10 @@ def _include_facets(tool: str, include: Any) -> list[str] | None:
         include = [include]
     if not isinstance(include, (list, tuple, set, frozenset)) or not include:
         return None
-    known = _include_vocabulary(tool)
-    return sorted({v if isinstance(v, str) and v in known else "other" for v in include})
+    # The vocabulary's own string is sent, never the caller's object.
+    known = {name: name for name in _include_vocabulary(tool)}
+    return sorted({known.get(v, "other") if isinstance(v, str) else "other" for v in include})
+
 
 #: Tool calls started in this process; the first one is the cold start.
 _calls_started = 0
@@ -318,7 +320,11 @@ def _telemetry_properties(
     index_mode = _index_mode()
     if index_mode is not None:
         props["index_mode"] = index_mode
-    facets = _include_facets(tool, include)
+    try:
+        facets = _include_facets(tool, include)
+    except Exception:  # pragma: no cover - a missing vocabulary drops only this field
+        logger.debug("mcp include facets failed for %s", tool, exc_info=True)
+        facets = None
     if facets is not None:
         props["include"] = facets
     props.update(_call_facts(tool, result))

@@ -502,6 +502,23 @@ class TestIncludeFacets:
             "include"
         ] == ["history"]
 
+    @pytest.mark.parametrize(
+        ("include", "expected"),
+        [("skeleton", ["skeleton"]), (5, None), ({"skeleton": 1}, None), ([["x"]], ["other"])],
+    )
+    def test_any_argument_shape_reports_only_known_names(self, include, expected):
+        props = wrapper._telemetry_properties("get_context", {}, 1, include=include)
+        assert props.get("include") == expected
+
+    def test_the_vocabulary_string_is_sent_not_the_callers(self):
+        class Sneaky(str):
+            def __str__(self) -> str:
+                return "secret"
+
+        props = wrapper._telemetry_properties("get_context", {}, 1, include=[Sneaky("callers")])
+        assert type(props["include"][0]) is str
+        assert "secret" not in json.dumps(props)
+
     def test_no_include_reports_nothing(self):
         assert "include" not in wrapper._telemetry_properties("get_context", {}, 1)
         assert "include" not in wrapper._telemetry_properties("get_context", {}, 1, include=[])
