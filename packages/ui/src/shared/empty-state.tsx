@@ -2,6 +2,7 @@ import * as React from "react";
 import { Check } from "lucide-react";
 import { cn } from "../lib/cn";
 import { Button } from "../ui/button";
+import { IllustrationSlot, type IllustrationKind } from "./illustration";
 
 /**
  * What the empty view means, which decides how loud it is.
@@ -24,7 +25,10 @@ export type EmptyStateAction =
   | { label: string; href: string; onClick?: never };
 
 export interface EmptyStateProps {
-  /** Bare icon; the component sizes and tints it. Not shown for `filtered`. */
+  /**
+   * Bare icon; the component sizes and tints it. Not shown for `filtered`.
+   * Passing one keeps it over any host illustration, except on `positive`.
+   */
   icon?: React.ReactNode;
   title: string;
   description?: React.ReactNode;
@@ -151,7 +155,14 @@ export function EmptyState({
   const compact = (size ?? (tone === "filtered" ? "compact" : "default")) === "compact";
   const isError = tone === "error";
 
-  const mark = stateMark(tone, icon, compact);
+  const builtIn = stateMark(tone, icon, compact);
+  // Host art never on compact (rows, panels) or filtered states; a call-site icon wins except on clean, which hosts celebrate.
+  const kind = compact || (icon && tone !== "positive") ? undefined : ILLUSTRATION_KIND[tone];
+  const mark = kind ? (
+    <IllustrationSlot kind={kind} title={title} size={ILLUSTRATION_SIZE} fallback={builtIn} />
+  ) : (
+    builtIn
+  );
 
   if (compact) {
     return (
@@ -203,6 +214,15 @@ export function EmptyState({
     </div>
   );
 }
+
+const ILLUSTRATION_KIND: Record<EmptyStateTone, IllustrationKind | undefined> = {
+  neutral: "empty",
+  positive: "clean",
+  error: "error",
+  filtered: undefined,
+};
+
+const ILLUSTRATION_SIZE = 96;
 
 /** The leading mark: a check for positive, a red icon or dot for error, else the tinted icon. */
 function stateMark(tone: EmptyStateTone, icon: React.ReactNode, compact: boolean): React.ReactNode {

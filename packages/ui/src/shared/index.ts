@@ -26,6 +26,7 @@ export { Toaster, toast, type ToasterProps } from "./toast";
 export * from "./breadcrumb";
 export * from "./empty-state";
 export * from "./clean-state";
+export * from "./illustration";
 export { Callout, type CalloutProps, type CalloutTone } from "./callout";
 export {
   RouteError,
