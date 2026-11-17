@@ -192,6 +192,7 @@ async def save_full_health_report(
                 fact_rows,
                 roles=getattr(hr, "execution_roles", None),
                 tests=getattr(hr, "function_tests", None),
+                commit=analyzed_commit,
             )
         # Group the stored performance findings into the materialized causal
         # read model, then reconcile lifecycle and plans.
