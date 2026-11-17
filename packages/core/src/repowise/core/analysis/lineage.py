@@ -98,29 +98,69 @@ def pair_lineage(
     lineage: dict[str, str] = {}
     events: list[LineageEvent] = []
 
-    def lineage_of(body: FunctionBody) -> str:
-        return body.lineage_id or mint_lineage(body.symbol_id, None)
-
     # A kept id first, so a file renamed onto an existing one cannot take
     # the lineage of a function that never left.
+    _carry_kept(old_by_id, new_by_id, lineage)
+    removed = _carry_file_renames(old_by_id, new_by_id, renames, lineage, events)
+    added = [body for sid, body in new_by_id.items() if sid not in lineage]
+
+    # Only ``path::name`` ids round-trip through the move passes' keys.
+    base = [_as_body(b) for b in removed if b.digest is not None and "::" in b.symbol_id]
+    head = [_as_body(b) for b in added if b.digest is not None and "::" in b.symbol_id]
+
+    paired_old = _carry_moves(base, head, old_by_id, renames, similar, lineage, events)
+    _record_broken(base, head, paired_old, old_by_id, renames, similar is not None, lineage, events)
+    for body in added:
+        lineage.setdefault(body.symbol_id, mint_lineage(body.symbol_id, commit))
+    return LineagePlan(lineage, events)
+
+
+def _lineage_of(body: FunctionBody) -> str:
+    return body.lineage_id or mint_lineage(body.symbol_id, None)
+
+
+def _carry_kept(
+    old_by_id: Mapping[str, FunctionBody],
+    new_by_id: Mapping[str, FunctionBody],
+    lineage: dict[str, str],
+) -> None:
+    """An id present on both sides keeps its lineage."""
     for sid, body in old_by_id.items():
         if sid in new_by_id:
-            lineage[sid] = lineage_of(body)
+            lineage[sid] = _lineage_of(body)
+
+
+def _carry_file_renames(
+    old_by_id: Mapping[str, FunctionBody],
+    new_by_id: Mapping[str, FunctionBody],
+    renames: Mapping[str, str],
+    lineage: dict[str, str],
+    events: list[LineageEvent],
+) -> list[FunctionBody]:
+    """Carry an id whose file was renamed; return the old functions left unpaired."""
     removed: list[FunctionBody] = []
     for sid, body in old_by_id.items():
         if sid in lineage:
             continue
         target = _renamed(sid, renames)
         if target != sid and target in new_by_id and target not in lineage:
-            lineage[target] = lineage_of(body)
+            lineage[target] = _lineage_of(body)
             events.append(LineageEvent(lineage[target], sid, target, "file_rename"))
         else:
             removed.append(body)
-    added = [body for sid, body in new_by_id.items() if sid not in lineage]
+    return removed
 
-    # Only ``path::name`` ids round-trip through the move passes' keys.
-    base = [_as_body(b) for b in removed if b.digest is not None and "::" in b.symbol_id]
-    head = [_as_body(b) for b in added if b.digest is not None and "::" in b.symbol_id]
+
+def _carry_moves(
+    base: list[SymbolBody],
+    head: list[SymbolBody],
+    old_by_id: Mapping[str, FunctionBody],
+    renames: Mapping[str, str],
+    similar: SimilarFn | None,
+    lineage: dict[str, str],
+    events: list[LineageEvent],
+) -> set[str]:
+    """Pair the rest through the move passes; return the old ids they took."""
 
     def kept(old_body: SymbolBody, new_body: SymbolBody) -> bool:
         # The size gate first: it needs only the stored counts, and the
@@ -141,19 +181,29 @@ def pair_lineage(
             method = "verbatim_move"
         else:
             method = "body_rename"
-        lineage[new_id] = lineage_of(old_by_id[old_id])
+        lineage[new_id] = _lineage_of(old_by_id[old_id])
         paired_old.add(old_id)
         events.append(LineageEvent(lineage[new_id], old_id, new_id, method))
+    return paired_old
 
+
+def _record_broken(
+    base: list[SymbolBody],
+    head: list[SymbolBody],
+    paired_old: set[str],
+    old_by_id: Mapping[str, FunctionBody],
+    renames: Mapping[str, str],
+    can_compare: bool,
+    lineage: Mapping[str, str],
+    events: list[LineageEvent],
+) -> None:
+    """A ``broken`` event for each unpaired old function that had a candidate."""
     leftover_new = [b for b in head if _id_of(b) not in lineage]
     leftover_old = [b for b in base if _id_of(b) not in paired_old]
-    for body, reason in _broken(leftover_old, leftover_new, renames, similar is not None):
+    for body, reason in _broken(leftover_old, leftover_new, renames, can_compare):
         events.append(
-            LineageEvent(lineage_of(old_by_id[_id_of(body)]), _id_of(body), None, "broken", reason)
+            LineageEvent(_lineage_of(old_by_id[_id_of(body)]), _id_of(body), None, "broken", reason)
         )
-    for body in added:
-        lineage.setdefault(body.symbol_id, mint_lineage(body.symbol_id, commit))
-    return LineagePlan(lineage, events)
 
 
 def similar_by_source(repo_path: Any, base_commit: str | None) -> SimilarFn | None:
