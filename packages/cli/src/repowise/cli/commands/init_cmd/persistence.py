@@ -111,7 +111,7 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
                             Page.summary,
                             Page.target_path,
                             Page.digest,
-                        ).where(Page.id.in_(batch))
+                        ).where(Page.id.in_(batch), Page.freshness_status != "tombstone")
                     )
                 ).all()
             await fts.index_many(
@@ -129,6 +129,28 @@ async def _index_preserved_pages(sf: Any, fts: Any, preserved_page_ids: set[str]
             )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("persist.preserved_fts_backfill_failed", error=str(exc))
+
+
+async def _delete_page_vectors(repo_path: Path, store: Any, page_ids: set[str]) -> None:
+    """Delete retired vectors, opening an existing fast-mode store only for cleanup."""
+    if not page_ids:
+        return
+    if store is not None:
+        await store.delete_many(sorted(page_ids))
+        return
+    lance_dir = repo_path / ".repowise" / "lancedb"
+    if not lance_dir.is_dir():
+        return
+
+    from repowise.core.persistence.vector_store import LanceDBVectorStore
+    from repowise.core.providers.embedding.base import MockEmbedder
+
+    # Delete-only access never embeds or checks dimensions.
+    temporary = LanceDBVectorStore(str(lance_dir), embedder=MockEmbedder())
+    try:
+        await temporary.delete_many(sorted(page_ids))
+    finally:
+        await temporary.close()
 
 
 async def persist_result(
@@ -152,6 +174,8 @@ async def persist_result(
     """
     from datetime import UTC, datetime
 
+    from sqlalchemy import select
+
     from repowise.core.persistence import (
         FullTextSearch,
         get_session,
@@ -159,6 +183,7 @@ async def persist_result(
         upsert_repository,
     )
     from repowise.core.persistence.crud import upsert_generation_job
+    from repowise.core.persistence.models import Page
     from repowise.core.pipeline import (
         persist_analysis,
         persist_generation,
@@ -167,15 +192,27 @@ async def persist_result(
         timed,
         tombstone_absent_file_pages,
     )
-    from repowise.core.pipeline.persist import persist_symbol_analysis, sweep_store_hygiene
+    from repowise.core.pipeline.cleanup_debt import (
+        clear_cleanup_debt,
+        load_cleanup_debt,
+        record_cleanup_debt,
+    )
+    from repowise.core.pipeline.persist import (
+        persist_symbol_analysis,
+        reconcile_full_index_scope,
+        sweep_store_hygiene,
+    )
 
     engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
     # When a ResumeController persisted the INDEX phase incrementally during
-    # the run, the graph + git + symbols are already on disk — write only the
-    # analysis + generation outputs here (avoids re-persisting a rehydrated
-    # graph and a redundant full index write).
+    # the run, the graph + git + symbols are already on disk. Reconcile its
+    # complete traversal before generation, without writing the
+    # rehydrated graph and index a second time.
     index_done = bool(getattr(result, "index_persisted_incrementally", False))
+
+    debt = load_cleanup_debt(repo_path)
+    store = getattr(result, "vector_store", None)
 
     fts = None
     if result.generated_pages:
@@ -231,6 +268,14 @@ async def persist_result(
             # Commit boundary 2 of 5: analysis.
             with timed(timings, "persist.commit.analysis"):
                 await session.commit()
+            traversed_paths = {info.path for info in result.file_infos}
+            git_paths = {
+                metadata["file_path"] if isinstance(metadata, dict) else metadata.file_path
+                for metadata in result.git_metadata_list
+            }
+            swept_page_ids = await reconcile_full_index_scope(
+                session, repo.id, traversed_paths, git_paths
+            )
             with timed(timings, "persist.generation"):
                 await persist_generation(result, session, repo.id)
             # persist_generation has already upserted the current pages, so the
@@ -243,7 +288,7 @@ async def persist_result(
             # 1:1 with a layer); types that are neither stay protected. Pages a
             # resumed run skipped count as reproduced — they are absent from
             # ``generated_pages`` precisely because they already exist.
-            swept_page_ids = await sweep_stale_generated_pages(
+            swept_page_ids += await sweep_stale_generated_pages(
                 session,
                 repo.id,
                 result.generated_pages,
@@ -259,6 +304,7 @@ async def persist_result(
                 IndexWrite(
                     "full",
                     result.parsed_files,
+                    traversed_paths=frozenset(traversed_paths),
                 ),
             )
         else:
@@ -269,13 +315,16 @@ async def persist_result(
         # commits. A drop between them then leaves embeddings gone and rows
         # present, which the next run re-creates — never the reverse, where a
         # committed deletion keeps an embedding nothing will ever remove.
-        store = getattr(result, "vector_store", None)
-        if store is not None and swept_page_ids:
-            await store.delete_many(swept_page_ids)
+        vector_ids = set(swept_page_ids) | debt["vectors"]
+        await _delete_page_vectors(repo_path, store, vector_ids)
+        clear_cleanup_debt(repo_path, "vectors", vector_ids)
         # Commit boundary 3 of 5: generation and its structural sweep (or the
         # pipeline result), together with the vector deletions that retire them.
         with timed(timings, "persist.commit.generation"):
             await session.commit()
+        # FTS shares this SQL file and must wait for commit. Preserve the ids
+        # now that their retirement is durable, before later work can fail.
+        record_cleanup_debt(repo_path, "fts", set(swept_page_ids))
         persisted_repo_id = repo.id
 
         # Tombstone pages whose file is simply gone. The other tombstone path
@@ -284,17 +333,26 @@ async def persist_result(
         # later index. Outside the branch above because both branches need it.
         # Its ids join the swept ones so they leave the vector store and the
         # full-text index together, below, after this session closes.
-        tombstoned: list[str] = []
         try:
-            tombstoned = await tombstone_absent_file_pages(session, repo.id, repo_path)
-            swept_page_ids = [*swept_page_ids, *tombstoned]
+            await tombstone_absent_file_pages(session, repo.id, repo_path)
         except Exception as exc:  # one stale page must not fail a whole index
             logger.warning("tombstone_absent_sweep_failed", error=str(exc))
+        # Older fast inits may have committed the tombstone without removing
+        # its search rows. Retry every tombstone, preserving its body and history.
+        tombstoned = list(
+            (
+                await session.execute(
+                    select(Page.id).where(
+                        Page.repository_id == repo.id, Page.freshness_status == "tombstone"
+                    )
+                )
+            ).scalars()
+        )
+        swept_page_ids = [*swept_page_ids, *tombstoned]
         # Same ordering as the sweep above, for the same reason: the embeddings
         # go before the rows that name them, so an interruption cannot leave a
         # committed tombstone pointing at an embedding nothing will delete.
-        if store is not None and tombstoned:
-            await store.delete_many(tombstoned)
+        await _delete_page_vectors(repo_path, store, set(tombstoned))
         # Commit boundary 4 of 5: the tombstone sweep.
         with timed(timings, "persist.commit.prune"):
             await session.commit()
@@ -334,12 +392,22 @@ async def persist_result(
     # holds a write lock raises "database is locked". The swept-id delete must
     # therefore stay here (it cannot move ahead of the SQL commit like the
     # vector delete can); it is idempotent and narrow (orphan FTS rows only).
-    with timed(timings, "persist.fts"):
-        if fts is not None and swept_page_ids:
-            await fts.delete_many(swept_page_ids)
-        if fts is not None and result.generated_pages:
-            await fts.index_pages(result.generated_pages)
-        await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
+    try:
+        with timed(timings, "persist.fts"):
+            cleanup_ids = set(swept_page_ids) | debt["fts"]
+            record_cleanup_debt(repo_path, "fts", cleanup_ids)
+            if fts is None and (cleanup_ids or getattr(result, "preserved_page_ids", None)):
+                fts = FullTextSearch(engine)
+                await fts.ensure_index()
+            if fts is not None and cleanup_ids:
+                await fts.delete_many(sorted(cleanup_ids))
+                clear_cleanup_debt(repo_path, "fts", cleanup_ids)
+            if fts is not None and result.generated_pages:
+                await fts.index_pages(result.generated_pages)
+            await _index_preserved_pages(sf, fts, getattr(result, "preserved_page_ids", None))
+    except Exception:
+        await engine.dispose()
+        raise
 
     # After commit, so the scan never holds the write lock; the rest drains in the background.
     if not index_done:
