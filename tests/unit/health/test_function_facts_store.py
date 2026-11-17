@@ -70,6 +70,40 @@ class _File:
         self.file_info = type("FI", (), {"path": path, "is_test": is_test})()
 
 
+def test_the_walk_digests_each_body_as_the_move_map_does() -> None:
+    """The stored digest is the move passes' digest: one normaliser, a stable hash."""
+    from repowise.core.analysis.change_health.moves import symbol_bodies
+    from repowise.core.ingestion.models import Symbol
+
+    fcs = walk_file("store.py", "python", _PY).functions
+    symbols = [
+        Symbol(
+            id=f"store.py::{fc.name}",
+            name=fc.name,
+            qualified_name=fc.name,
+            kind="function",
+            signature="",
+            start_line=fc.start_line,
+            end_line=fc.end_line,
+            docstring=None,
+        )
+        for fc in fcs
+    ]
+    moved = {b.name: (b.digest, b.tokens) for b in symbol_bodies("store.py", _PY, symbols)}
+    assert {fc.name: (fc.body_digest, fc.body_tokens) for fc in fcs} == moved
+    assert all(len(fc.body_digest or "") == 32 for fc in fcs)
+
+    # A rename, a reindent and a comment leave the body alone; an edit does not.
+    renamed = _PY.replace(b"def plain(a):", b"def simple(a):  # renamed").replace(
+        b"        raise", b"        raise  "
+    )
+    edited = _PY.replace(b"return a\n", b"return a + 1\n")
+    digest = {fc.name: fc.body_digest for fc in walk_file("store.py", "python", renamed).functions}
+    assert digest["simple"] == {fc.name: fc.body_digest for fc in fcs}["plain"]
+    changed = {fc.name: fc.body_digest for fc in walk_file("store.py", "python", edited).functions}
+    assert changed["plain"] != digest["simple"]
+
+
 def test_fact_rows_are_keyed_on_the_graph_symbol_and_skip_tests() -> None:
     fcx = walk_file("store.py", "python", _PY)
     graph = nx.DiGraph()
@@ -92,6 +126,9 @@ def test_fact_rows_are_keyed_on_the_graph_symbol_and_skip_tests() -> None:
     assert set(by_id) == {"store.py::save", "store.py::each", "store.py::plain"}
     assert by_id["store.py::save"]["receiver_assigns"] == ("cache", "count")
     assert by_id["store.py::save"]["receiver_assigns_known"] is True
+    walked = {fc.name: fc for fc in fcx.functions}
+    assert by_id["store.py::plain"]["body_digest"] == walked["plain"].body_digest
+    assert by_id["store.py::plain"]["body_tokens"] == walked["plain"].body_tokens
 
 
 @pytest.fixture
@@ -173,6 +210,12 @@ async def test_facts_rewrite_walked_files_and_roles_restamp_every_row(store) -> 
         "a.py::f": ("request", False, False, None),
         "b.py::g": ("request", False, False, None),
     }
+    # The body digest and size are stored as given.
+    await write_function_facts(
+        session, repo, [_row("a.py::f", body_digest="ab" * 16, body_tokens=40)], file_paths={"a.py"}
+    )
+    stored = (await get_function_facts(session, repo, ["a.py::f"]))["a.py::f"]
+    assert (stored.body_digest, stored.body_tokens, stored.lineage_id) == ("ab" * 16, 40, None)
     # A walked file whose function is gone loses its row.
     await write_function_facts(session, repo, [], file_paths={"a.py"}, roles=None)
     assert set(await get_function_facts(session, repo, ["a.py::f", "b.py::g"])) == {"b.py::g"}

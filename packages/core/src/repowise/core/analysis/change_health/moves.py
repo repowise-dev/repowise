@@ -12,16 +12,15 @@ rename carried it to, is not a move.
 
 from __future__ import annotations
 
-import hashlib
-from bisect import bisect_left, bisect_right
 from collections import Counter
-from collections.abc import Callable, Hashable, Iterable, Mapping
+from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import pairwise
 from types import MappingProxyType
 
 from ...ingestion.models import Symbol
 from ..health.duplication.tokenizer import TokenRow, tokenize_file_rows
+from ..symbol_body import body_digest, body_parts, rows_between
 from .analyzer import language_of
 
 #: ``(path, symbol name)``.
@@ -38,9 +37,6 @@ _MAX_EDITED_GROWTH = 3
 
 #: An edited move keeps at least this share of its adjacent token pairs.
 _MIN_EDITED_OVERLAP = 0.5
-
-_NAME_MARK = b"\x00"
-_SEPARATOR = b"\x1f"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,8 +115,7 @@ def symbol_bodies(path: str, raw: bytes, symbols: Iterable[Symbol]) -> list[Symb
     for symbol in symbols:
         if not symbol.name or symbol.is_declaration or symbol.kind in _SKIPPED_KINDS:
             continue
-        # Line-bounded: code sharing a line with the symbol joins its body.
-        span = rows[bisect_left(starts, symbol.start_line) : bisect_right(starts, symbol.end_line)]
+        span = rows_between(rows, starts, symbol.start_line, symbol.end_line)
         if span:
             out.append(_body(symbol, path, raw, span))
     return out
@@ -222,10 +217,11 @@ def _length(span: tuple[int, int]) -> int:
     return span[1] - span[0]
 
 
-def _body(symbol: Symbol, path: str, raw: bytes, rows: list[TokenRow]) -> SymbolBody:
+def _body(symbol: Symbol, path: str, raw: bytes, rows: Sequence[TokenRow]) -> SymbolBody:
     name = symbol.name
-    parts = [_NAME_MARK if row[5] == name else raw[row[3] : row[4]] for row in rows]
-    digest = hashlib.blake2b(_SEPARATOR.join(parts), digest_size=16).hexdigest()
+    parts = body_parts(rows, raw, name)
+    digest = body_digest(parts)
+    # In-process only: ``hash`` is salted per process, so pairs are never stored.
     pairs = frozenset(hash(pair) for pair in pairwise(parts))
     span = (symbol.start_line, symbol.end_line)
     return SymbolBody(path, name, digest, len(parts), pairs, span)

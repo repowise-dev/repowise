@@ -157,6 +157,12 @@ class FunctionComplexity:
     facts: FunctionFacts | None = None
     # Of ``nloc``, the lines holding only JSX markup or literal data. ``complexity/markup.py``.
     markup_nloc: int = 0
+    # The normalized body's digest and token count (``analysis.symbol_body``)
+    # over this walk's span (decorators excluded), stored so a later walk can
+    # tell the same body under a new name or path. Compare it only with other
+    # walk digests. None where the file yields no token rows.
+    body_digest: str | None = None
+    body_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.complex_conditions is None:

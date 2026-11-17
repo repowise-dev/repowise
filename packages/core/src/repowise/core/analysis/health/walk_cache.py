@@ -39,6 +39,8 @@ _CACHE_VERSION = 2
 #: relative to ``repowise/core``.
 WALK_INPUTS: tuple[str, ...] = (
     "analysis/health/complexity/*.py",
+    "analysis/health/duplication/tokenizer.py",
+    "analysis/symbol_body.py",
     "analysis/health/dataflow/**/*.py",
     "analysis/health/perf/dialects/*.py",
     "analysis/health/perf/io_boundaries.py",
@@ -61,8 +63,14 @@ WALK_INPUTS: tuple[str, ...] = (
 
 
 def walker_fingerprint() -> str:
-    """The stamp a cached walk must carry to be served."""
-    return source_fingerprint(WALK_INPUTS, grammar_choices())
+    """The stamp a cached walk must carry to be served.
+
+    The body digest drops each language's import kinds, which come from
+    ingestion's language configs, so their values join the code.
+    """
+    from .duplication.tokenizer import import_kinds_signature
+
+    return source_fingerprint(WALK_INPUTS, f"{grammar_choices()}{import_kinds_signature()}")
 
 
 class HealthWalkCache:
