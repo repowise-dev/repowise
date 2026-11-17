@@ -727,7 +727,7 @@ Findings carry `health_impact: 0` and never blend into the score. `perf_rank` is
 
 - Bare `get_health()` ranks them in `fix_first` as `perf_fix`. `opportunity_id="perf..."` adds `plan_steps`, `validation`, `siblings`; `only=["performance_evidence"]` + `cursor` pages evidence; rows carry a public `finding_id`.
 - Ids are stable per model version; older ones resolve to `model_state.state: "stale_model"` with `refresh_required`. `lifecycle_status` is `open` or `resolved`.
-- `performance_opportunities` holds `cost_proof` `proven` causes. `unproven` (loop size unmeasured) never sets `may_lead` and no list shows it; counted in `performance_summary.default_queue.excluded.unmeasured_cost`, `performance_summary.proof` and the `proof` facet. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
+- `performance_opportunities` holds `cost_proof` `proven` causes. `unproven` (loop size unknown) never sets `may_lead` and no list shows it; counted in `performance_summary.default_queue.excluded.unmeasured_cost`, `performance_summary.proof` and the `proof` facet. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
 - The `growth_source` facet (`loop`, `registry`, `cold_path`, `none`, `n/a`) names the loop showing growth. `fix_first`, Do next and `performance_summary.lead` take only `plan_ready` causes with `loop` (or per-call causes an entry point reaches); `fix_first.totals.excluded.unconfirmed_cost` counts the rest.
 
 ### Coverage
