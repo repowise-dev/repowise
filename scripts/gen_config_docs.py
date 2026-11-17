@@ -94,6 +94,7 @@ _ENV_AREA_ORDER = (
     "decisions",
     "distill",
     "events",
+    "evidence",
     "health",
 )
 
@@ -121,6 +122,7 @@ BLOCKS: tuple[Block, ...] = (
     _block("attribution"),
     _block("agent_provenance"),
     _block("events"),
+    _block("evidence"),
     _block("refactoring"),
     _block("assertions"),
     _block("tests"),
