@@ -351,33 +351,51 @@ def _find_assigned_lambda_name(node: Node) -> str | None:
 
 # Lambda kinds that can be a unit of their own when nested in a function. Only
 # the JS/TS ``arrow_function`` qualifies: PHP's ``arrow_function`` (``fn() =>
-# expr``) never has a block body, and no other grammar binds a block-bodied
-# lambda to a name often enough to read it as a function.
+# expr``) shares the node type and is left out by its ``fn`` keyword
+# (:func:`_is_php_arrow`), and no other grammar binds a lambda to a name often
+# enough to read it as a function.
 _UNIT_LAMBDA_KINDS = frozenset({"arrow_function"})
 # Where a lambda is bound to a name: ``const f = ...``, ``obj.f = ...``,
 # ``{ f: ... }``.
 _UNIT_LAMBDA_HOLDERS = frozenset({"variable_declarator", "assignment_expression", "pair"})
 
 
-def is_named_block_lambda(node: Node, lmap: LanguageNodeMap) -> bool:
+def is_named_lambda(node: Node, lmap: LanguageNodeMap) -> bool:
     """True for a lambda that is a function in every practical sense.
 
-    A JS/TS arrow function with a ``{ ... }`` body bound to a name, as a
-    variable's value, the right side of an assignment or an object property's
-    value, read through parentheses and ``as`` / ``satisfies``. Nested in a
-    function, it is measured as a unit of its own, like a nested ``function``.
-    An arrow passed as an argument (an inline callback) or with an expression
-    body is not one and stays with the function that holds it.
+    A JS/TS arrow function bound to a name, as a variable's value or the right
+    side of an assignment, read through parentheses and ``as`` / ``satisfies``,
+    whatever its body: ``const f = (x) => (x ? a : b)`` is
+    ``const f = (x) => { return x ? a : b; }`` written shorter (#5725; the block
+    form since #4575). With a ``{ ... }`` body an object property's value is one
+    too. Nested in a function, it is measured as a unit of its own, like a
+    nested ``function``. An arrow passed as an argument (an inline callback),
+    returned, in an array or a parameter default is not one and stays with the
+    function that holds it, as does PHP's ``fn() => expr``. So does an object of
+    one-line arrows (``{ onA: (e) => run(e, 1), ... }``): a table of handlers,
+    whose rows count as its function's code (#5441).
     """
     if node.type not in _UNIT_LAMBDA_KINDS or node.type not in lmap.lambda_kinds:
         return False
-    body = node.child_by_field_name("body")
-    if body is None or body.type != "statement_block":
+    if _is_php_arrow(node):
         return False
     holder = _binding_holder(node)
-    return (
-        holder is not None and holder.type in _UNIT_LAMBDA_HOLDERS and _is_bound_value(node, holder)
-    )
+    if (
+        holder is None
+        or holder.type not in _UNIT_LAMBDA_HOLDERS
+        or not _is_bound_value(node, holder)
+    ):
+        return False
+    if holder.type == "pair":
+        body = node.child_by_field_name("body")
+        return body is not None and body.type == "statement_block"
+    return True
+
+
+def _is_php_arrow(node: Node) -> bool:
+    """*node* is PHP's ``fn(...) => expr``: it holds the ``fn`` keyword, which a
+    JS/TS arrow function never does."""
+    return any(not c.is_named and c.type.lower() == "fn" for c in node.children)
 
 
 def _binding_holder(node: Node) -> Node | None:
@@ -578,10 +596,10 @@ def _declares_only(statement: Node, declarator: Node) -> bool:
 
 
 def _is_nested_unit(node: Node, lmap: LanguageNodeMap) -> bool:
-    """A function unit, or a named block-bodied lambda."""
+    """A function unit, or a named lambda."""
     if is_function_node(node, lmap):
         return _is_function_unit(node, lmap)
-    return is_named_block_lambda(node, lmap)
+    return is_named_lambda(node, lmap)
 
 
 def _nested_function_nodes(
@@ -595,10 +613,10 @@ def _nested_function_nodes(
     function or lambda it meets and descends everything else, so a function it
     did not return sits below one it did: a nested ``def``, a function
     expression, a local function, a method of a local or anonymous class, or a
-    block-bodied arrow function bound to a name (:func:`is_named_block_lambda`).
+    JS/TS arrow function bound to a name (:func:`is_named_lambda`).
     Each is a unit of its own, which the enclosing function's walk skips. Other
-    lambdas (inline callbacks, expression bodies) stay with the function that
-    holds them. A local value that shares a function's node type
+    lambdas (inline callbacks and the like) stay with the function that holds
+    them. A local value that shares a function's node type
     (``lmap.local_value``) is no unit either.
     """
     seen = {node.id for node in collected}

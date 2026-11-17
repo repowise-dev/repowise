@@ -1,12 +1,14 @@
-"""A named, block-bodied arrow function is a unit of its own, and a function's
-NLOC leaves out the lines of the units nested in it (#4575).
+"""A named arrow function is a unit of its own, and a function's NLOC leaves
+out the lines of the units nested in it (#4575, #5725).
 
 Since #3281 a ``function`` nested in another function has its own entry and
 its branches leave the enclosing function's CCN and nesting. An arrow function
-bound to a name with a block body, ``const check = () => { ... }``, is the same
-thing written another way, but it rolled up into its enclosing function, and a
-function's NLOC still counted the lines of every unit nested in it. Inline
-callbacks and expression-bodied arrows still roll up.
+bound to a name, ``const check = () => { ... }``, is the same thing written
+another way, but it rolled up into its enclosing function, and a function's
+NLOC still counted the lines of every unit nested in it (#4575). Its body does
+not change that: ``const pick = (x) => (x ? a : b)`` is
+``const pick = (x) => { return x ? a : b; }`` written shorter (#5725). Inline
+callbacks still roll up, and so does PHP's ``fn() => expr``.
 
 Every nested body here is three nested ``if``s: CCN 4, nesting 3.
 """
@@ -147,13 +149,75 @@ def test_an_arrow_that_is_not_bound_to_a_name_rolls_up(source):
         assert shape == {"outer": (4, 3)}
 
 
-def test_an_expression_bodied_arrow_bound_to_a_name_rolls_up():
-    source = "function outer(){ const pick = (x) => (x ? (a ? 1 : 2) : 3); }\n"
+# Two nested ternaries: CCN 3, nesting 2 (as the block twin ``{ return ...; }``).
+_E2 = "(x ? (a ? 1 : 2) : 3)"
 
+# (id, path, language, source, name of the nested unit), expression-bodied (#5725)
+_EXPRESSION_UNITS = [
+    ("const", "a.js", "javascript", f"function outer(){{ const pick = (x) => {_E2}; }}\n", "pick"),
+    ("assignment", "a.js", "javascript", f"function outer(){{ api.pick = (x) => {_E2}; }}\n", "api.pick"),
+    ("parenthesized", "a.js", "javascript", f"function outer(){{ const pick = ((x) => {_E2}); }}\n", "pick"),
+    ("typescript-as", "a.ts", "typescript", f"function outer(){{ const pick = ((x: number) => {_E2}) as Pick; }}\n", "pick"),
+    ("inside-an-arrow-wrapper", "a.js", "javascript", f"(() => {{ const pick = (x) => {_E2}; pick(1); }})();\n", "pick"),
+    ("inside-a-method", "a.ts", "typescript", f"class A {{ outer() {{ const pick = (x: number) => {_E2}; }} }}\n", "pick"),
+]
+
+
+@pytest.mark.parametrize(
+    ("path", "language", "source", "nested"),
+    [pytest.param(*row[1:], id=row[0]) for row in _EXPRESSION_UNITS],
+)
+def test_a_named_expression_bodied_arrow_is_a_unit_of_its_own(path, language, source, nested):
+    shape = _shape(_walk(path, language, source))
+
+    outer = next(name for name in shape if name != nested)
+    assert shape == {outer: (1, 0), nested: (3, 2)}
+
+
+@pytest.mark.parametrize(
+    ("source",),
+    [
+        pytest.param(f"function outer(){{ return items.map((x) => {_E2}); }}\n", id="inline-callback"),
+        pytest.param(f"function outer(){{ return (x) => {_E2}; }}\n", id="returned"),
+        pytest.param(f"function outer(){{ return [(x) => {_E2}]; }}\n", id="array-element"),
+        # An object of one-line arrows is a table of handlers, its function's code (#5441).
+        pytest.param(f"function outer(){{ return {{ pick: (x) => {_E2} }}; }}\n", id="object-pair"),
+    ],
+)
+def test_an_unnamed_expression_bodied_arrow_rolls_up(source):
     shape = _shape(_walk("a.js", "javascript", source))
+
+    assert shape == {"outer": (3, 2)}
+
+
+def test_a_php_arrow_function_bound_to_a_name_rolls_up():
+    # PHP's ``fn() => expr`` is an ``arrow_function`` node too; it stays with its holder.
+    source = "<?php\nfunction outer() { $pick = fn($x) => $x ? ($a ? 1 : 2) : 3; }\n"
+
+    shape = _shape(_walk("a.php", "php", source))
 
     assert list(shape) == ["outer"]
     assert shape["outer"][0] == 3
+
+
+def test_the_three_ways_to_write_a_check_measure_the_same():
+    # #5725: the same checks as one-line arrows, block-bodied arrows and functions.
+    body = "el.a ? (el.b && el.c ? 'x' : 'y') : el.d || el.e ? 'z' : 'w'"
+    shapes = {
+        "expression": f"  const check{{i}} = (el) => ({body});\n",
+        "block": f"  const check{{i}} = (el) => {{{{ return {body}; }}}};\n",
+        "function": f"  function check{{i}}(el) {{{{ return {body}; }}}}\n",
+    }
+    measured = {}
+    for shape_name, line in shapes.items():
+        checks = "".join(line.format(i=i) for i in range(3))
+        source = f"(() => {{\n  const out = [];\n{checks}  out.push(check0(1), check1(2), check2(3));\n  return out;\n}})();\n"
+        fcx = _walk("a.js", "javascript", source)
+        measured[shape_name] = sorted((fc.name, fc.ccn, fc.nloc) for fc in fcx.functions)
+
+    assert measured["expression"] == measured["block"] == measured["function"]
+    wrapper = next(row for row in measured["expression"] if row[0].startswith("<anonymous"))
+    assert wrapper[1:] == (1, 5)
 
 
 def test_a_unit_inside_a_unit_belongs_to_the_inner_one():

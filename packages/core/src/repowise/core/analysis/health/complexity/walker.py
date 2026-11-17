@@ -16,8 +16,8 @@ through its body, accumulating:
 Anonymous functions (lambdas, arrow functions, closures) recurse for
 their containing function's metrics when they are nested in a named
 function. Module-level lambdas, such as route callbacks, produce their
-own ``FunctionComplexity`` row, and so does a JS/TS arrow function with a
-block body bound to a name wherever it sits. A function's NLOC leaves out
+own ``FunctionComplexity`` row, and so does a JS/TS arrow function bound
+to a name wherever it sits, whatever its body. A function's NLOC leaves out
 the rows only the units nested in it cover.
 
 This module is the orchestrator: ``walk_file`` parses the source once and

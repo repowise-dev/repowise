@@ -99,7 +99,11 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
 
 
 async def _model_page_records(session: Any, repo_id: str) -> list[PageRecord]:
-    """The stored pages of the types a model writes, as the planner reads them."""
+    """The stored pages of the types a model writes, as the planner reads them.
+
+    Tombstones are left out because generation never schedules a retired page
+    (the same filter as ``_load_page_rows``).
+    """
     from sqlalchemy import select
 
     from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
@@ -110,6 +114,7 @@ async def _model_page_records(session: Any, repo_id: str) -> list[PageRecord]:
             select(Page).where(
                 Page.repository_id == repo_id,
                 Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
+                Page.freshness_status != "tombstone",
             )
         )
     ).scalars()
