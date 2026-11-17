@@ -45,7 +45,17 @@ CONFIG_DEPENDENCY_KEYS: dict[str, frozenset[str]] = {
     # update after every init into a full rebuild. `managed_checkout` says how
     # the server keeps the checkout current, not what the index holds.
     "state_only": frozenset(
-        {"distill", "editor_files", "editor_setup", "events", "hooks", "managed_checkout", "mcp"}
+        {
+            "distill",
+            "editor_files",
+            "editor_setup",
+            "events",
+            # Caps read by `evidence add`; the index does not depend on them.
+            "evidence",
+            "hooks",
+            "managed_checkout",
+            "mcp",
+        }
     ),
 }
 
