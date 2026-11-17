@@ -329,7 +329,9 @@ async def persist_result(
         # commits. A drop between them then leaves embeddings gone and rows
         # present, which the next run re-creates — never the reverse, where a
         # committed deletion keeps an embedding nothing will ever remove.
-        vector_ids = set(swept_page_ids) | debt["vectors"]
+        # Generation already wrote replacement vectors for revived pages.
+        regenerated_ids = {page.page_id for page in result.generated_pages or []}
+        vector_ids = set(swept_page_ids) | (debt["vectors"] - regenerated_ids)
         record_cleanup_debt(repo_path, "vectors", vector_ids)
         await _delete_page_vectors(repo_path, store, vector_ids)
         clear_cleanup_debt(repo_path, "vectors", vector_ids)
@@ -337,6 +339,7 @@ async def persist_result(
         # pipeline result), together with the vector deletions that retire them.
         with timed(timings, "persist.commit.generation"):
             await session.commit()
+        clear_cleanup_debt(repo_path, "vectors", regenerated_ids)
         # FTS shares this SQL file and must wait for commit. Preserve the ids
         # now that their retirement is durable, before later work can fail.
         record_cleanup_debt(repo_path, "fts", set(swept_page_ids))

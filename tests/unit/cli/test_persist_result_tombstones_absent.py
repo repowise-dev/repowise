@@ -353,3 +353,30 @@ async def test_fast_reinit_closes_delete_only_store_when_cleanup_fails(
         assert await reopened.list_page_ids() == set()
     finally:
         await reopened.close()
+
+
+async def test_legacy_cleanup_keeps_a_page_regenerated_in_this_init(tmp_path):
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    (repo_path / "kept.py").write_text("x", encoding="utf-8")
+    await _seed_file_pages(repo_path, "kept.py")
+    engine, sf, _ = await open_repo_db(repo_path, repo_name="r")
+    try:
+        async with get_session(sf) as session:
+            page = await session.get(Page, "file_page:kept.py")
+            page.freshness_status = "tombstone"
+    finally:
+        await engine.dispose()
+    store = LanceDBVectorStore(str(repo_path / ".repowise" / "lancedb"), MockEmbedder())
+    try:
+        # Generation writes the new vector before final CLI persistence.
+        await store.embed_batch([("file_page:kept.py", "regenerated content", {})])
+        result = _result("r", [_generated_page("file_page", "kept.py")])
+        result.vector_store = store
+
+        await persist_result(result, repo_path)
+
+        assert await _status(repo_path, "file_page:kept.py") == "fresh"
+        assert await store.list_page_ids() == {"file_page:kept.py"}
+    finally:
+        await store.close()
