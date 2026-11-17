@@ -1351,6 +1351,42 @@ repowise coverage suggest-gates --format json
 
 **Output.** First two sources need no index. Writes nothing, sets no `fail_under`. Pastes below `coverage:`; repeated names get `-2`, so it is valid config as printed.
 
+### `repowise evidence`
+
+Ingest runtime evidence: a profile, benchmark results, test timings or query counts, as one
+[`repowise-evidence-v1`](../layers/PERFORMANCE.md#runtime-evidence-format) file per run.
+
+```bash
+repowise evidence add prof.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
+repowise evidence add bench.json --workload "go bench" --class benchmark --format json
+```
+
+| Flag | What it does | Default |
+|------|--------------|---------|
+| `--workload` | What ran, e.g. `cli build`. Required. | |
+| `--class` | `unit_test`, `benchmark`, `entry_point` or `load_test`. Required. `production` is refused: only a verified source sets it. | |
+| `--commit` | The full SHA measured. Required when the file has no `commit_sha`; must agree with it otherwise. | the file's `commit_sha` |
+| `--checkout-root` | The checkout the run used. | the repository root |
+| `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
+| `--environment` | Where it ran, one word (`local`, `ci`). | `unknown` |
+| `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
+| `--format` | `table` or `json`. | `table` |
+
+- Entries join to indexed functions by exact path and qualified name (the start line settles
+  overloads). Anything else is skipped and counted by reason: `unknown_file`, `unknown_symbol`,
+  `ambiguous_symbol`, `generated` or `vendored` code, `dirty_file` (edited since the commit,
+  checked when the commit is HEAD), `duplicate`, and the file's own reasons such as `outside_repo`.
+- Evidence from another commit than HEAD is stored with its commit and reads as stale; it is never
+  re-mapped. The same file ingested again for the same workload at the same commit restamps the
+  stored run.
+- Caps come from the [`evidence:` block](CONFIG.md#the-evidence-block): file size, functions per
+  profile, rows per run, runs kept per workload and per kind.
+- Exits `1` when nothing was stored (no index, an invalid or oversized file, nothing matched, over
+  half unmapped without `--allow-partial`), `2` on a usage error. With `--format json`, stdout is
+  one document either way.
+
+---
+
 ### `repowise components`
 
 Validate, list and audit ownership of declared components.

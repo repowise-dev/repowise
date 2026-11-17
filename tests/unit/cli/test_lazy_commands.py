@@ -36,7 +36,7 @@ _EXPECTED_NAMES = frozenset(
         "agents", "ask", "attribution", "augment", "changes", "check", "ci-summary", "components", "config", "context", "corrections",
         "costs", "coverage",
         "dead-code", "decision", "delete", "distill", "doc-drift", "doctor",
-        "events", "expand",
+        "events", "evidence", "expand",
         "export", "generate", "generate-claude-md", "grammars", "health", "hook", "hosted",
         "impacted-tests", "init", "login", "logout", "mcp", "next", "overlap", "packages", "pages", "plugins",
         "publish", "reindex", "report",
