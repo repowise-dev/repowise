@@ -48,6 +48,10 @@ def test_only_a_real_embedder_that_failed_is_an_error():
     assert "5 page(s)" in message
     assert "repowise reindex" in message
     assert "pip install --force-reinstall lancedb" in message
+    # The reinstall is advice for one cause, not the fix for any failed embed
+    # (issue #5738: a refused dimension setting was sent to reinstall LanceDB).
+    assert message.index("repowise reindex") < message.index("lancedb")
+    assert "Only when that warning names LanceDB" in message
 
 
 def test_the_full_init_scope_marks_a_failed_embed_unavailable(tmp_path):

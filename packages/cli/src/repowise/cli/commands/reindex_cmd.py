@@ -263,7 +263,8 @@ async def _reindex(repo_path, embedder_name: str, batch_size: int) -> None:
     if provider_circuit_error is not None:
         raise click.ClickException(
             "Embedding provider failed in two consecutive batches; stopped the reindex "
-            f"before the outage multiplied across the corpus. Last error: {provider_circuit_error}"
+            "so the same failure is not repeated across the corpus. "
+            f"Last error: {provider_circuit_error}"
         )
 
     # Record the embedder we actually built the table with. Without this, a
