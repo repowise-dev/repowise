@@ -77,7 +77,11 @@ def _record_ingest_outcome(outcome: str, files_matched: int | None = None) -> No
 
 
 async def _repo_file_keys(session, repo_id: str) -> set[str]:
-    """Canonical repo file keys to resolve report paths against."""
+    """Canonical repo file keys to resolve report paths against.
+
+    Kept as this module's name because ``coverage check`` imports it and
+    tests replace it; ``coverage add`` passes it on as the key loader.
+    """
     return await indexed_file_keys(session, repo_id)
 
 

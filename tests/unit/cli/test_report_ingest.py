@@ -96,3 +96,11 @@ def test_unmapped_and_partial_messages(printed: io.StringIO) -> None:
     assert "More than half the report did not map" in text
     assert "set coverage.strip_prefix: build and re-run" in text
     assert "the stored evidence is flagged partial" in text
+
+
+def test_messages_escape_what_they_quote(printed: io.StringIO) -> None:
+    _report_ingest.refuse_partial("report", "set coverage.path_prefix: [web]")
+    _report_ingest.report_unmapped(["build/[gen]/a.py"], "report file(s)")
+    text = printed.getvalue()
+    assert "path_prefix: [web] and re-run" in text
+    assert "(e.g. build/[gen]/a.py)" in text
