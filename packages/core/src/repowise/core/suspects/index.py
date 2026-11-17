@@ -28,6 +28,7 @@ from .rank import (
     Symptom,
     prepare,
     rank_suspects,
+    resolvable,
     resolve_trace,
 )
 
@@ -73,6 +74,8 @@ async def _resolve_trace(
 
     Unchanged when the index records no commit or git cannot say which trace
     files differ from it: a frame is joined only against the code that ran.
+    ``head_commit`` is the commit the last index run stamped; an index whose
+    symbols were written from another commit is not detected here.
     """
     from sqlalchemy import select
 
@@ -88,7 +91,7 @@ async def _resolve_trace(
     if not head:
         return prepared
     changed = await asyncio.to_thread(
-        _git, repo_path, "diff", "--name-only", "--relative", head, "--", *files
+        _git, repo_path, "--literal-pathspecs", "diff", "--name-only", "--relative", head, "--", *files
     )
     if changed is None:
         return prepared
@@ -204,7 +207,7 @@ async def find_suspects(
     ]
     repo_files = await asyncio.to_thread(_tracked_files, repo_path)
     prepared = prepare(symptom, SuspectContext(repo_files=repo_files))
-    if prepared.frames:
+    if any(resolvable(f) for f in prepared.frames):
         prepared = await _resolve_trace(session, repo_id, repo_path, prepared)
     named = prepared.files
     ctx = SuspectContext(

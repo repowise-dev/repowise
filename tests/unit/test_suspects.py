@@ -447,3 +447,43 @@ async def test_find_suspects_keeps_file_matching_when_the_file_changed_since_ind
         "frame file app/compiler.py",
         "frame function as_sql",
     ]
+
+
+async def test_find_suspects_skips_resolution_when_the_indexed_commit_is_unknown(traced_repo):
+    from repowise.core.persistence.models import Repository
+    from repowise.core.suspects.index import find_suspects
+
+    session, repo_id, path, trace = traced_repo
+    repo = await session.get(Repository, repo_id)
+    repo.head_commit = "0" * 40  # not in this checkout: git cannot diff against it
+    out = await find_suspects(session, repo_id, path, Symptom(trace=trace, at=NOW))
+    rows = {r["id"]: r for r in out["suspects"]}
+    assert rows["touched"]["signals"]["trace"]["evidence"] == [
+        "frame file app/compiler.py",
+        "frame function as_sql",
+    ]
+
+
+async def test_find_suspects_does_no_resolution_work_for_a_trace_without_python_frames(
+    traced_repo, monkeypatch
+):
+    from repowise.core.suspects import index
+    from repowise.core.suspects.index import find_suspects
+
+    session, repo_id, path, _trace = traced_repo
+
+    async def boom(*_args):
+        raise AssertionError("resolution ran")
+
+    monkeypatch.setattr(index, "_resolve_trace", boom)
+    trace = f"Error: x\n    at as_sql ({path}/app/compiler.js:3:5)\n"
+    await find_suspects(session, repo_id, path, Symptom(trace=trace, at=NOW))
+
+
+def test_two_frames_in_one_symbol_give_one_evidence_row():
+    trace = TRACE + '  File "/srv/app/django/db/models/sql/compiler.py", line 12, in as_sql\n'
+    symptom = Symptom(text=trace, at=NOW)
+    prepared = resolve_trace(
+        prepare(symptom, _ctx()), root="/srv/app", symbols_by_file={COMPILER: [AS_SQL]}
+    )
+    assert len(prepared.frame_symbols) == 1

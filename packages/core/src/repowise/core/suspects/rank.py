@@ -157,6 +157,11 @@ def prepare(symptom: Symptom, ctx: SuspectContext) -> PreparedSymptom:
     return PreparedSymptom(symptom, at, files, frames, trace_files)
 
 
+def resolvable(frame: Frame) -> bool:
+    """Whether :func:`resolve_trace` can join *frame*: a named Python frame of the repo."""
+    return bool(frame.function) and not frame.vendored and frame.path.endswith(".py")
+
+
 def resolve_trace(
     prepared: PreparedSymptom,
     *,
@@ -173,11 +178,7 @@ def resolve_trace(
     start, so neither has the second signal :func:`resolve_frames` requires.
     Those frames, and any that do not resolve, keep matching by file and name.
     """
-    picked = [
-        (i, f)
-        for i, f in enumerate(prepared.frames)
-        if f.function and not f.vendored and f.path.endswith(".py")
-    ]
+    picked = [(i, f) for i, f in enumerate(prepared.frames) if resolvable(f)]
     if not picked:
         return prepared
     resolution = resolve_frames(
@@ -267,6 +268,7 @@ __all__ = [
     "bounded",
     "prepare",
     "rank_suspects",
+    "resolvable",
     "resolve_trace",
     "suspect_signals",
 ]
