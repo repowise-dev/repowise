@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from repowise.core.fs_walk import glob_via
+from repowise.core.symbol_spans import symbol_at
 
 from ..framework_facts import SALESFORCE
 from ..languages.apex_namespace import apex_namespaces
@@ -282,12 +283,8 @@ def _one_flow_edges(graph: nx.DiGraph, idx: _Index, path: str, flow_sym: str, re
 
 def _enclosing(parsed: Any, line: int, path: str) -> str:
     """The innermost method (else class) declared around *line*, else the module."""
-    spans = [
-        (s.end_line - s.start_line, s.id)
-        for s in parsed.symbols
-        if s.kind in ("method", "class") and s.start_line <= line <= s.end_line
-    ]
-    return min(spans)[1] if spans else f"{path}::__module__"
+    sym = symbol_at((s for s in parsed.symbols if s.kind in ("method", "class")), line)
+    return sym.id if sym is not None else f"{path}::__module__"
 
 
 def _apex_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int:

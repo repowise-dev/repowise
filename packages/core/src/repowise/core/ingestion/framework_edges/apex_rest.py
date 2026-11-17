@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ...symbol_spans import symbol_at
 from ..framework_routes import apex_rest_routes
 from .base import DetectionContext, FrameworkHandler, add_symbol_edge, source_text
 
@@ -37,9 +38,8 @@ class _ApexRestHandler:
             for route in apex_rest_routes(text):
                 line = text.count("\n", 0, route.offset) + 1
                 # An Apex method's span starts at its annotations.
-                holders = [s for s in methods if s.start_line <= line <= s.end_line]
-                if holders:
-                    handler = max(holders, key=lambda s: s.start_line)
+                handler = symbol_at(methods, line)
+                if handler is not None:
                     count += add_symbol_edge(graph, f"{path}::__module__", handler.id)
         return count
 
