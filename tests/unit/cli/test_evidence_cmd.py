@@ -246,3 +246,31 @@ def test_a_file_over_the_size_cap_is_refused_before_it_is_read(indexed) -> None:
                   "--commit", head, "--format", "json")
     assert result.exit_code == 1
     assert _json(result)["error"] == "file_too_large"
+
+
+def _status(*args: str):
+    return CliRunner(mix_stderr=False).invoke(evidence_cmd.evidence_group, ["status", *args])
+
+
+def test_status_names_the_newest_run_of_each_workload(indexed) -> None:
+    root, head = indexed
+    empty = _json(_status("--format", "json"))
+    assert (empty["indexed"], empty["workloads"]) == (True, [])
+
+    for workload in ("cli build", "cli build", "cli test"):
+        _add(str(_write(root, total=200 if workload == "cli test" else 100)),
+             "--workload", workload, "--class", "entry_point", "--commit", head)
+    payload = _json(_status("--format", "json"))
+    assert payload["runs_stored"] == {"profile": 2}
+    assert [w["workload"] for w in payload["workloads"]] == ["cli test", "cli build"]
+    newest = payload["workloads"][0]
+    # The fixture's index row names no commit, so freshness is unknown, never current.
+    assert newest["freshness"] == "unknown"
+    assert newest["explained_share"] == 0.3
+    assert newest["units"] == {
+        "total": 7, "matched": 1, "skipped": 1, "outside_repo": 5, "truncated": 0,
+    }
+
+    table = _status()
+    assert table.exit_code == 0
+    assert "repo code explains 30% of 200 samples" in table.stdout

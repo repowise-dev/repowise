@@ -1359,6 +1359,7 @@ Ingest runtime evidence: a profile, benchmark results, test timings or query cou
 ```bash
 repowise evidence add prof.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add bench.json --workload "go bench" --class benchmark --format json
+repowise evidence status --format json   # newest run of each workload
 ```
 
 | Flag | What it does | Default |
@@ -1385,6 +1386,10 @@ repowise evidence add bench.json --workload "go bench" --class benchmark --forma
 - Exits `1` when nothing was stored (no index, an invalid or oversized file, nothing matched, over
   half unmapped without `--allow-partial`), `2` on a usage error. With `--format json`, stdout is
   one document either way.
+- `status` lists the newest run of each workload (kind, name, environment) and how many runs each
+  kind keeps. Each run says its freshness against the indexed commit (`current`, `stale`, or
+  `unknown` when either commit is missing), how much of the run repo code explains
+  (`explained_share`, unknown when the file gave no `total` and `explained`), and its counts.
 
 ---
 

@@ -71,6 +71,7 @@ from .evidence import (
     EVIDENCE_ROW_TABLES,
     EvidenceWrite,
     delete_evidence_runs,
+    list_evidence_runs,
     prune_evidence_runs,
     save_evidence_run,
 )
@@ -205,6 +206,7 @@ __all__ = [
     "health_finding_priorities",
     "is_new_doc_drift_row",
     "list_evidence_for_opportunities",
+    "list_evidence_runs",
     "list_health_snapshots",
     "list_opportunity_evidence",
     "list_performance_opportunities",
