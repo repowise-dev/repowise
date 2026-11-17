@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from repowise.core.symbol_spans import symbol_at, symbols_overlapping
+from repowise.core.symbol_spans import innermost, symbol_at, symbols_overlapping
 
 
 @dataclass(frozen=True)
@@ -89,3 +89,9 @@ def test_symbol_at_crossing_spans_go_to_the_later_start() -> None:
 
 def test_symbols_overlapping_takes_iterators() -> None:
     assert symbols_overlapping(iter(SPANS), iter([(15, 15)])) == [CLASS, OTHER]
+
+
+def test_innermost_drops_spans_that_contain_another() -> None:
+    assert innermost(SPANS) == [NESTED, OTHER]
+    same = _S("same", 5, 12)
+    assert innermost([METHOD, same]) == [METHOD, same]
