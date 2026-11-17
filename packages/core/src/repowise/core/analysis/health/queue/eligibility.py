@@ -411,7 +411,7 @@ DEFAULT_QUEUE_CONTEXTS = frozenset({"production"})
 DEFAULT_QUEUE_STATES = frozenset({"plan_ready", "advisory"})
 DEFAULT_QUEUE_PROOFS = frozenset({"proven"})
 """What the performance queue holds when a caller names no filter: production
-work with a strategy whose cost is measured.
+work with a strategy whose loop size is known.
 
 Test, tooling and unclassified code, ``expected`` repetition, causes with no
 supported strategy (``investigate``, whose plan state is always ``no_safe_plan``)

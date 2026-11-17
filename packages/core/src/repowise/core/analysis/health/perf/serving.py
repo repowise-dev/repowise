@@ -418,7 +418,7 @@ class PerformanceQuery:
     @property
     def proofs(self) -> frozenset[str] | None:
         """``unproven`` when asked for; else, under another context or state,
-        the measured causes, so every surface lists what the default queue
+        the proven causes, so every surface lists what the default queue
         counts. ``None`` for the default queue. The ``proof`` facet says how
         many unproven ones sit one filter away."""
         if self.default_queue or self.proof == ANY:
