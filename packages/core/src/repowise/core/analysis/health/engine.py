@@ -1125,6 +1125,17 @@ class HealthAnalyzer:
                 )
         return rows
 
+    def function_blame_rows(self, config: dict | None = None) -> list[dict]:
+        """Build the function blame rollup over every file, as a full index does.
+
+        A full history refresh has blame indexes for unchanged files too.
+        Reuse their cached walks without re-running health detectors or Git.
+        """
+        walked = self._walk_files(
+            self._target_files(None), _RunConfig.read(config).vocab, None, partial=True
+        )
+        return self._function_blame_rows(walked)
+
     def _function_blame_rows(self, walked: list[tuple[Any, FileComplexity]]) -> list[dict]:
         """Build the per-function blame rollup from the walked files + the
         FULL-tier blame indexes attached to ``git_meta_map``.

@@ -53,6 +53,7 @@ def run_partial_analysis(
     timings: PhaseTimings | None = None,
     dead_code: bool = True,
     health: bool = True,
+    full_git_history: bool = False,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -91,8 +92,13 @@ def run_partial_analysis(
     they are never folded into one row.
 
     ``dead_code=False`` skips the dead-code pass and returns ``None`` for it,
-    which keeps the stored findings. ``health=False`` skips the health pass
-    the same way, for a caller that re-scores every file afterwards.
+    which keeps the stored findings. ``health=False`` skips the findings and
+    metrics pass, for a caller that re-scores every file afterwards.
+
+    ``full_git_history=True`` means the Git walk refreshed every file's blame
+    index. Rebuild the whole function rollup before those transient indexes
+    are discarded, even with no changed files or ``health=False``. A report
+    with no health scope then carries only the blame rows.
     """
     log = log or _noop_log
 
@@ -101,7 +107,7 @@ def run_partial_analysis(
     # The full file-list is needed because duplication is cross-file —
     # but only files in ``changed_paths`` produce new findings/metrics.
     partial_health_report = None
-    if health:
+    if health or full_git_history:
         if timings is not None:
             timings.start("analysis.health")
         try:
@@ -115,13 +121,14 @@ def run_partial_analysis(
             from repowise.core.analysis.health.config import HealthConfig
             from repowise.core.analysis.health.scope import scores_language
 
-            _health_changed = {
-                fd.path for fd in file_diffs if fd.status in ("added", "modified", "renamed")
-            }
+            _health_changed = (
+                {fd.path for fd in file_diffs if fd.status in ("added", "modified", "renamed")}
+                if health else set()
+            )
             parsed_paths = {pf.file_info.path for pf in parsed_files}
             execution_index = ExecutionGraphIndex(graph_builder.graph())
             _performance_changed = execution_index.affected_files(_health_changed) & parsed_paths
-            if stored_performance_callers is not None:
+            if health and stored_performance_callers is not None:
                 historical_callers = stored_performance_callers & parsed_paths
                 _performance_changed |= (
                     execution_index.affected_files(historical_callers) & parsed_paths
@@ -148,18 +155,19 @@ def run_partial_analysis(
                 repo_root=repo_path,
                 coverage_map=coverage_map,
             )
-            if _health_scope:
+            _analyzer_config = None
+            if _health_scope or full_git_history:
                 _hcfg = HealthConfig.load(repo_path)
                 _analyzer_config = (
                     _hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
                     if _hcfg.has_overrides()
                     else None
                 )
-                _analyzer_config = _performance_only_config(
-                    _analyzer_config, (_performance_changed | _sink_files) - _health_changed
-                )
+            if _health_scope:
                 partial_health_report = _health_analyzer.analyze(
-                    _analyzer_config,
+                    _performance_only_config(
+                        _analyzer_config, (_performance_changed | _sink_files) - _health_changed
+                    ),
                     changed_files=_health_scope,
                     repo_function_mod_p80=repo_function_mod_p80,
                     timings=timings,
@@ -217,6 +225,18 @@ def run_partial_analysis(
                     f"[cyan]{len(_performance_changed)} performance-affected[/cyan], "
                     f"[yellow]{len(partial_health_report.findings)} findings[/yellow]"
                 )
+            if full_git_history:
+                # After the changed-file filter: a full walk's unchanged rows
+                # must survive, including when health will be re-scored later.
+                blame_rows = _health_analyzer.function_blame_rows(_analyzer_config)
+                if partial_health_report is None and blame_rows:
+                    from datetime import UTC, datetime
+
+                    from repowise.core.analysis.health import HealthReport
+
+                    partial_health_report = HealthReport(repo_id="", analyzed_at=datetime.now(UTC))
+                if partial_health_report is not None:
+                    partial_health_report.function_blame_rows = blame_rows
         except Exception as exc:
             log(f"[yellow]Health analysis skipped: {exc}[/yellow]")
         finally:

@@ -228,6 +228,7 @@ def _run_partial_analysis(
     repo_function_mod_p80: int | None = None,
     timings: PhaseTimings | None = None,
     dead_code: bool = True,
+    full_git_history: bool = False,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -259,6 +260,7 @@ def _run_partial_analysis(
         log=console.print,
         timings=timings,
         dead_code=dead_code,
+        full_git_history=full_git_history,
     )
 
 
