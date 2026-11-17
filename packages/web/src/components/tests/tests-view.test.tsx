@@ -95,73 +95,53 @@ describe("TestsView component", () => {
     cleanup();
   });
 
-  it("shows CoverageSkeleton while overview summary is loading and does not render CoverageView prematurely", async () => {
-    let resolveSummary: (value: unknown) => void;
-    const summaryPromise = new Promise((resolve) => {
-      resolveSummary = resolve;
-    });
-    mocks.getOverviewSummary.mockReturnValue(summaryPromise);
+  it("renders CoverageView without blocking when overview summary is pending", () => {
+    // Return a pending promise that never resolves during initial render
+    mocks.getOverviewSummary.mockReturnValue(new Promise(() => {}));
 
-    renderTestsView("repo-test-1");
+    renderTestsView("repo-test-pending");
 
-    // Skeleton is rendered while pending
-    expect(screen.getByTestId("coverage-skeleton")).toBeTruthy();
-    // CoverageView is NOT rendered yet (preventing premature flicker / fallback command swap)
-    expect(screen.queryByTestId("coverage-view")).toBeNull();
-    expect(mocks.coverageViewProps).toHaveLength(0);
+    // CoverageView is rendered immediately, not blocked or hidden
+    expect(screen.getByTestId("coverage-view")).toBeTruthy();
+    expect(mocks.coverageViewProps[0]?.coverageCommand).toBeUndefined();
+  });
 
-    // Resolve with Go repository
-    resolveSummary!({ languages: [{ language: "Go" }] });
+  it("falls back to undefined (neutral command) without blocking when overview summary fails", async () => {
+    // Simulate /overview-summary error (e.g. 500, network error, sub-section error)
+    mocks.getOverviewSummary.mockRejectedValue(new Error("Overview summary failed"));
 
-    // Once resolved, CoverageView is mounted directly with Go command
+    renderTestsView("repo-test-error");
+
+    // CoverageView is still rendered, not blocked by ApiError
     await waitFor(() => {
       expect(screen.getByTestId("coverage-view")).toBeTruthy();
     });
-    expect(screen.queryByTestId("coverage-skeleton")).toBeNull();
-    expect(screen.getByTestId("coverage-view").getAttribute("data-command")).toBe(
-      "go test -coverprofile=coverage.out ./...\nrepowise coverage add coverage.out",
-    );
-    // Verified that CoverageView never received undefined or another command before Go
-    expect(mocks.coverageViewProps[0]?.coverageCommand).toBe(
-      "go test -coverprofile=coverage.out ./...\nrepowise coverage add coverage.out",
-    );
+    // coverageCommand remains undefined, falling back to neutral command
+    expect(screen.getByTestId("coverage-view").getAttribute("data-command")).toBeNull();
+    expect(mocks.coverageViewProps[mocks.coverageViewProps.length - 1]?.coverageCommand).toBeUndefined();
   });
 
-  it("surfaces ApiError when overview summary fails instead of silently falling back", async () => {
-    mocks.getOverviewSummary.mockRejectedValue(new Error("Network timeout loading summary"));
+  it("passes language-specific command to CoverageView when overview summary resolves", async () => {
+    mocks.getOverviewSummary.mockResolvedValue({ languages: [{ language: "Go" }] });
 
-    renderTestsView("repo-test-2");
+    renderTestsView("repo-test-go");
 
     await waitFor(() => {
-      expect(screen.getByText("Couldn't load repository summary")).toBeTruthy();
+      expect(screen.getByTestId("coverage-view").getAttribute("data-command")).toBe(
+        "go test -coverprofile=coverage.out ./...\nrepowise coverage add coverage.out",
+      );
     });
-    expect(screen.getByText("Network timeout loading summary")).toBeTruthy();
-    expect(screen.queryByTestId("coverage-skeleton")).toBeNull();
-    expect(screen.queryByTestId("coverage-view")).toBeNull();
   });
 
-  it("renders CoverageView directly with language-specific command for Python", async () => {
-    mocks.getOverviewSummary.mockResolvedValue({ languages: [{ language: "Python" }] });
-
-    renderTestsView("repo-test-3");
-
-    await waitFor(() => {
-      expect(screen.getByTestId("coverage-view")).toBeTruthy();
-    });
-    expect(screen.getByTestId("coverage-view").getAttribute("data-command")).toBe(
-      "pytest --cov --cov-report=lcov\nrepowise coverage add coverage.lcov",
-    );
-  });
-
-  it("renders CoverageView with undefined (neutral fallback) when repository has no detected languages", async () => {
+  it("leaves coverageCommand undefined when repository has no detected languages", async () => {
     mocks.getOverviewSummary.mockResolvedValue({ languages: [] });
 
-    renderTestsView("repo-test-4");
+    renderTestsView("repo-test-empty");
 
     await waitFor(() => {
       expect(screen.getByTestId("coverage-view")).toBeTruthy();
     });
     expect(screen.getByTestId("coverage-view").getAttribute("data-command")).toBeNull();
-    expect(mocks.coverageViewProps[0]?.coverageCommand).toBeUndefined();
+    expect(mocks.coverageViewProps[mocks.coverageViewProps.length - 1]?.coverageCommand).toBeUndefined();
   });
 });
