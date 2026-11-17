@@ -16,6 +16,13 @@ import click
 from rich.markup import escape
 
 from repowise.cli._setup import configure_cli_logging
+from repowise.cli.commands._report_ingest import (
+    indexed_file_keys,
+    open_ingest_target,
+    refuse_partial,
+    report_stored_partial,
+    report_unmapped,
+)
 from repowise.cli.commands.coverage_check_cmd import coverage_check
 from repowise.cli.commands.coverage_suggest_gates_cmd import coverage_suggest_gates
 from repowise.cli.helpers import (
@@ -32,7 +39,6 @@ from repowise.core.analysis.health.coverage.contexts import (
     PER_TEST_COVERAGE_COMMAND,
     is_coverage_data_file,
 )
-from repowise.core.workspace.update import get_head_commit
 
 
 def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
@@ -71,15 +77,8 @@ def _record_ingest_outcome(outcome: str, files_matched: int | None = None) -> No
 
 
 async def _repo_file_keys(session, repo_id: str) -> set[str]:
-    """Canonical repo file keys to resolve report paths against.
-
-    Sourced from the persisted health metrics (one row per indexed file);
-    these already carry the repo-relative POSIX key the resolver needs.
-    """
-    from repowise.core.persistence.crud import get_health_metrics
-
-    metrics = await get_health_metrics(session, repo_id)
-    return {m.file_path for m in metrics}
+    """Canonical repo file keys to resolve report paths against."""
+    return await indexed_file_keys(session, repo_id)
 
 
 @click.group("coverage")
@@ -220,11 +219,7 @@ def coverage_add(
             create_session_factory,
             get_session,
         )
-        from repowise.core.persistence.crud import (
-            get_repository_by_path,
-            save_coverage_files,
-            save_test_coverage,
-        )
+        from repowise.core.persistence.crud import save_coverage_files, save_test_coverage
 
         url = get_db_url_for_repo(repo_path)
         # An index from an older repowise lacks newer columns; back-fill them.
@@ -232,32 +227,17 @@ def coverage_add(
         engine = create_engine(url)
         sf = create_session_factory(engine)
         async with get_session(sf) as session:
-            repo_row = await get_repository_by_path(session, str(repo_path))
-            if repo_row is None:
-                console.print(
-                    "[yellow]No index yet. Run `repowise init` once before "
-                    "adding coverage.[/yellow]"
-                )
-                return "no_index", None
-            repo_keys = await _repo_file_keys(session, repo_row.id)
-            if not repo_keys:
-                console.print("[yellow]No indexed files found. Run `repowise init` first.[/yellow]")
-                return "no_index", None
-
-            # Stamp the *live* HEAD, not ``repo_row.head_commit``. The stored
-            # column names the last *indexed* commit; coverage describes the
-            # working tree. They diverge when you commit, run your tests, then
-            # ``coverage add`` without an intervening ``repowise update`` — the
-            # report would be labelled with the older indexed commit (issue
-            # #1747). HEAD is the right answer for a report written since the
-            # last commit; one left over from earlier measures the tree as of
-            # its own date, so the stamp moves back to the commit that was HEAD
-            # then (issue #3901). Resolve both from disk — the same source the
-            # health pass uses.
-            head_sha = (
-                get_head_commit(Path(repo_path))
-                or getattr(repo_row, "head_commit", None)
+            target = await open_ingest_target(
+                session, repo_path, what="coverage", load_keys=_repo_file_keys
             )
+            if target is None:
+                return "no_index", None
+            repo_row, repo_keys = target.repo, target.file_keys
+
+            # The live HEAD (#1747). A report left over from earlier measures
+            # the tree as of its own date, so its stamp moves back to the
+            # commit that was HEAD then (#3901, below).
+            head_sha = target.head_sha
 
             # --- Per-file aggregate coverage (any format in COVERAGE_PARSERS).
             # The same read init runs; a ``.coverage`` comes back in *errors*
@@ -336,13 +316,8 @@ def coverage_add(
                         map_skipped, repo_keys, mapped={r.file_path for r in map_records}
                     )
                 )
-                hint = prefix_hint(suggested)
                 part = "report" if resolved.mapping_partial else "per-test map"
-                console.print(
-                    f"[red]More than half the {part} did not map to the repo tree, so "
-                    f"nothing was stored.[/red] To fix it, {escape(hint)} and re-run, "
-                    "or pass [cyan]--allow-partial[/cyan] to store the fragment."
-                )
+                refuse_partial(part, prefix_hint(suggested))
                 return "mostly_unmapped", files_matched
 
             agg_matched = 0
@@ -369,12 +344,7 @@ def coverage_add(
                     f"[green]Ingested coverage for {resolved.matched} file(s)[/green] "
                     f"({resolved.matched_exact} exact, {resolved.matched_suffix} resolved)."
                 )
-                if skipped:
-                    sample = ", ".join(skipped[:5])
-                    console.print(
-                        f"[yellow]{len(skipped)} report file(s) did not map to the "
-                        f"repo tree[/yellow] (e.g. {escape(sample)})."
-                    )
+                report_unmapped(skipped, "report file(s)")
             if map_records:
                 saved = await save_test_coverage(
                     session,
@@ -396,11 +366,7 @@ def coverage_add(
                         "runs every test while the map is truncated.[/yellow]"
                     )
             if partial:
-                console.print(
-                    "[yellow]Stored a fragment (--allow-partial): more than half the "
-                    "report did not map to the repo tree, and the stored coverage is "
-                    "flagged partial.[/yellow]"
-                )
+                report_stored_partial("coverage")
 
             if not agg_matched and not map_records:
                 if resolved.alignment.reasons:

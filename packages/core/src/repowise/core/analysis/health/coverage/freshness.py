@@ -22,6 +22,18 @@ from .decay import measurement_ref
 FreshnessStatus = Literal["current", "stale", "unknown"]
 
 
+def live_head_commit(repo_root: str | Path, repo: object | None) -> str | None:
+    """The HEAD on disk, else the commit *repo* (a repository row) was indexed at.
+
+    Not the indexed commit first: that names the last index, while evidence
+    ingested now describes the working tree. They diverge when you commit,
+    run the suite, then ingest without an update in between (#1747).
+    """
+    from repowise.core.workspace.update import get_head_commit
+
+    return get_head_commit(Path(repo_root)) or getattr(repo, "head_commit", None)
+
+
 def measurement_commit(
     repo_root: str | Path | None,
     measured_at: datetime | None,

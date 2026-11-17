@@ -329,15 +329,12 @@ async def _save_reingested_coverage(
     session: Any, repo: Any, repo_path: Any, coverage: RescoreCoverage
 ) -> None:
     """Store the re-read coverage, stamped with the commit it measured."""
-    from repowise.core.analysis.health.coverage import measurement_commit
+    from repowise.core.analysis.health.coverage import live_head_commit, measurement_commit
     from repowise.core.persistence.crud import save_coverage_files
-    from repowise.core.workspace.update import get_head_commit
 
-    # The live HEAD, not ``repo.head_commit``: that names the last indexed
-    # commit, and the coverage just scored describes the working tree
-    # (issue #1747). A report older than the last commit measures the tree as
-    # of its own date, so the stamp moves back to that commit (issue #3901).
-    live_head = get_head_commit(Path(repo_path)) or getattr(repo, "head_commit", None)
+    # A report older than the last commit measures the tree as of its own
+    # date, so the stamp moves back to that commit (issue #3901).
+    live_head = live_head_commit(repo_path, repo)
     await save_coverage_files(
         session,
         repo.id,
