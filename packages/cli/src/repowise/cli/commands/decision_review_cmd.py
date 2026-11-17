@@ -148,9 +148,22 @@ def migrate_command(path: str | None, apply_: bool, limit: int, fmt: str) -> Non
 @click.option(
     "--offset", default=0, show_default=True, help="Skip this many records first, to page the list."
 )
+@click.option(
+    "--background",
+    is_flag=True,
+    default=False,
+    help="Only the records the discovery pass checks (open, not an agreement, not an "
+    "agent's pending record, naming a production file), busiest first.",
+)
 @format_option()
 def candidates_command(
-    path: str | None, state: str, lane: str | None, limit: int, offset: int, fmt: str
+    path: str | None,
+    state: str,
+    lane: str | None,
+    limit: int,
+    offset: int,
+    background: bool,
+    fmt: str,
 ) -> None:
     """List background records: mined or recorded, and not in force.
 
@@ -159,6 +172,8 @@ def candidates_command(
     """
     from repowise.cli.commands.decision_cmd import _resolve_decision_repo
 
+    if background and (state != "open" or lane is not None):
+        raise click.UsageError("--background lists open records only; drop --state and --lane.")
     repo_path = _resolve_decision_repo(path, fmt)
 
     async def _run():
@@ -167,19 +182,24 @@ def candidates_command(
             list_candidates,
             record_blockers,
         )
+        from repowise.core.persistence.crud.decision_discovery import background_records
 
         engine, sf = await _open(repo_path)
         try:
             async with get_session(sf) as session:
                 repo_id = await _repository_id(session, repo_path)
-                rows = await list_candidates(
-                    session,
-                    repo_id,
-                    review_state=None if state == "all" else state,
-                    lane=lane,
-                    limit=limit,
-                    offset=offset,
-                )
+                if background:
+                    found = await background_records(session, repo_id)
+                    rows = [(rec, meta) for rec, meta, _files in found[offset : offset + limit]]
+                else:
+                    rows = await list_candidates(
+                        session,
+                        repo_id,
+                        review_state=None if state == "all" else state,
+                        lane=lane,
+                        limit=limit,
+                        offset=offset,
+                    )
                 return [
                     {
                         "id": rec.id,

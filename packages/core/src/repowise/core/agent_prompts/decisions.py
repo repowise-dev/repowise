@@ -115,7 +115,10 @@ def render_discovery(records: Sequence[Mapping[str, Any]]) -> str:
 
 def render_review_all() -> str:
     """Work through every background record, a page at a time, until none is left."""
-    page = f"repowise decision candidates --format json --limit {REVIEW_ALL_PAGE} --offset <N>"
+    page = (
+        "repowise decision candidates --background --format json "
+        f"--limit {REVIEW_ALL_PAGE} --offset <N>"
+    )
     return "\n".join(
         [
             "Check every background decision record in this repository and put the real ones "

@@ -45,6 +45,7 @@ def _seed_wiki_db(repo_root: Path, decisions: list[dict]) -> None:
                         context=spec.get("context", "forced by Z"),
                         status=spec.get("status", "active"),
                         source=spec.get("source", "cli"),
+                        kind=spec.get("kind"),
                         confidence=spec.get("confidence", 0.9),
                         staleness_score=spec.get("staleness", 0.0),
                         affected_files_json=json.dumps(

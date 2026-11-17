@@ -161,7 +161,8 @@ def test_record_prompts_are_short_plain_signed_and_name_one_record():
 def test_review_all_pages_the_queue_and_cannot_skip_or_spin():
     text = render_review_all()
     assert (
-        f"repowise decision candidates --format json --limit {REVIEW_ALL_PAGE} --offset <N>"
+        "repowise decision candidates --background --format json "
+        f"--limit {REVIEW_ALL_PAGE} --offset <N>"
         in text
     )
     assert "starting with N = 0" in text
