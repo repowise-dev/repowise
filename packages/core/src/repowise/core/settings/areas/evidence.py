@@ -46,7 +46,7 @@ SETTINGS = (
         "evidence.max_runs",
         "int",
         50,
-        "Runs kept per evidence kind across all workloads; oldest go first.",
+        "Runs kept per evidence kind across all workloads, whatever history_runs allows; oldest go first.",
         minimum=1,
     ),
 )

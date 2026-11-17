@@ -933,7 +933,7 @@ never as zero.
 | `max_symbols_per_run` | `1500` | >= 1 | Most functions stored from one profile, costliest first; the rest are counted. |
 | `max_rows_per_run` | `30000` | >= 1 | Most benchmark, test or query rows stored from one run; the rest are counted. |
 | `history_runs` | `20` | >= 1 | Runs kept per workload and environment for each evidence kind; oldest go first. |
-| `max_runs` | `50` | >= 1 | Runs kept per evidence kind across all workloads; oldest go first. |
+| `max_runs` | `50` | >= 1 | Runs kept per evidence kind across all workloads, whatever history_runs allows; oldest go first. |
 <!-- END GENERATED settings:evidence -->
 
 ## The `refactoring:` block

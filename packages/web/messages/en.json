@@ -1228,6 +1228,7 @@
         "distill": "Command output",
         "editor": "Editor files",
         "events": "Change events",
+        "evidence": "Runtime evidence",
         "generation": "Documentation",
         "health": "Code health",
         "hooks": "Agent hooks",
