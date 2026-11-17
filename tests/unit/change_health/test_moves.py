@@ -163,3 +163,65 @@ def test_a_same_named_function_with_a_different_body_is_not_an_edited_move():
     head = {"tool.py": "", "knots.py": other}
 
     assert moves(base, head).moved_total == 0
+
+
+SAME_NAMES = (
+    "class Parser:\n"
+    "    def __init__(self, source):\n"
+    "        self.source = source\n"
+    "        self.cursor = 0\n"
+    "\n"
+    "    def parse_file(self, path):\n"
+    "        text = self.source.read(path)\n"
+    "        return [line.strip() for line in text.splitlines() if line]\n"
+    "\n"
+    "\n"
+    "class Writer:\n"
+    "    def __init__(self, sink):\n"
+    "        self.sink = sink\n"
+    "        self.count = 1\n"
+    "\n"
+    "\n"
+    "def parse_file(path):\n"
+    "    with open(path) as handle:\n"
+    "        return [row.split(',') for row in handle if row.strip()]\n"
+)
+
+
+def test_a_method_and_a_function_sharing_a_name_both_map_to_their_origins():
+    base = {"tool.py": SAME_NAMES, "keep.py": "VALUE = 1\n"}
+    head = {"parsing.py": SAME_NAMES, "keep.py": "VALUE = 1\n"}
+
+    result = moves(base, head)
+
+    assert result.origin_of("parsing.py", "parse_file", 6) == ("tool.py", "Parser.parse_file")
+    assert result.origin_of("parsing.py", "parse_file", 18) == ("tool.py", "parse_file")
+    assert result.origin_of("parsing.py", "parse_file") is None
+    assert result.origin_of("parsing.py", "__init__", 2) == ("tool.py", "Parser.__init__")
+    assert result.origin_of("parsing.py", "__init__", 12) == ("tool.py", "Writer.__init__")
+
+
+def test_a_key_stays_bare_where_its_name_is_unique_in_the_file():
+    result = moves({"tool.py": SAME_NAMES}, {"parsing.py": SAME_NAMES})
+
+    assert result.origin_of("parsing.py", "Parser") == ("tool.py", "Parser")
+    assert result.origin_of("parsing.py", "Writer") == ("tool.py", "Writer")
+
+
+def test_same_named_methods_pair_when_only_their_bodies_were_edited():
+    edited = SAME_NAMES.replace("if line]", "if line and line != '#']")
+    result = moves({"tool.py": SAME_NAMES}, {"parsing.py": edited})
+
+    assert result.origin_of("parsing.py", "parse_file", 6) == ("tool.py", "Parser.parse_file")
+    assert ("parsing.py", "Parser.parse_file") in result.edited
+
+
+def test_a_same_named_method_that_stayed_put_is_not_a_move():
+    head_tool = SAME_NAMES.split("def parse_file(path)")[0]
+    result = moves(
+        {"tool.py": SAME_NAMES},
+        {"tool.py": head_tool, "parsing.py": SAME_NAMES.split("\n\n\n")[-1]},
+    )
+
+    assert result.origin_of("parsing.py", "parse_file", 1) == ("tool.py", "parse_file")
+    assert result.origin_of("tool.py", "parse_file", 6) is None

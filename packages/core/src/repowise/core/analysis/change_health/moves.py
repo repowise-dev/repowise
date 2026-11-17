@@ -8,6 +8,12 @@ only keys unique on both sides: same name and body, then same body under a new
 name, then same name with an edited body that kept most of its token pairs. A
 move is cross-file only; a symbol that stays in its file, or in the file a
 rename carried it to, is not a move.
+
+A name alone does not always pick out one symbol: a method and a module function
+can share it, and so can the ``__init__`` of several classes. The passes tell
+them apart by the scoped name (``Parser.parse_file``, from the parent symbol),
+trying it before the bare name. A move map key stays the bare name, and is scoped
+only where its file holds the bare name twice.
 """
 
 from __future__ import annotations
@@ -55,10 +61,24 @@ class SymbolBody:
     pairs: frozenset[int] = field(default=frozenset(), compare=False, repr=False)
     #: ``(start_line, end_line)`` in its file.
     span: tuple[int, int] = field(default=(0, 0), compare=False)
+    #: The containing symbol's name (a method's class), empty at module level.
+    scope: str = ""
+    #: The name this body goes by in a move map key: the bare name, or the scoped
+    #: one where its file holds the bare name twice. Empty means the bare name.
+    ident: str = ""
 
     @property
     def key(self) -> SymbolKey:
-        return (self.path, self.name)
+        return (self.path, self.ident or self.name)
+
+    @property
+    def scoped_name(self) -> str:
+        return f"{self.scope}.{self.name}" if self.scope else self.name
+
+    @property
+    def identity(self) -> SymbolKey:
+        """``(path, scoped name)``: what the passes count to tell same-named symbols apart."""
+        return (self.path, self.scoped_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,15 +97,36 @@ class MoveMap:
         default_factory=lambda: MappingProxyType({})
     )
 
-    def origin_of(self, path: str, symbol: str | None) -> SymbolKey | None:
-        return self.by_new.get((path, symbol)) if symbol else None
+    def origin_of(self, path: str, symbol: str | None, line: int | None = None) -> SymbolKey | None:
+        key = self.locate(path, symbol, line) if symbol else None
+        return self.by_new[key] if key is not None else None
 
     def locate(self, path: str, symbol: str | None, line: int | None) -> SymbolKey | None:
-        """The moved key owning a finding: its symbol, else the innermost span at *line*."""
+        """The moved key owning a finding: its symbol, else the innermost span at *line*.
+
+        A bare *symbol* that several moved keys in *path* answer to (a method and a
+        function, or the ``__init__`` of two classes) is told apart by *line*.
+        """
         if symbol:
-            return (path, symbol) if (path, symbol) in self.by_new else None
+            named = [k for k in self.by_new if k[0] == path and _is_named(k[1], symbol)]
+            if len(named) == 1:
+                # A scoped key means its file holds the bare name twice: only a line settles it.
+                span = self.new_spans.get(named[0])
+                fits = (
+                    named[0][1] == symbol if line is None else span is None or _within(span, line)
+                )
+                return named[0] if fits else None
+            named = [k for k in named if _within(self.new_spans.get(k), line)]
+            return min(named, key=lambda k: _length(self.new_spans[k]), default=None)
         held = [k for k, span in self.new_spans.items() if k[0] == path and _within(span, line)]
         return min(held, key=lambda k: _length(self.new_spans[k]), default=None)
+
+    def owns(self, old_key: SymbolKey, symbol: str | None, line: int | None) -> bool:
+        """True when a base finding on *symbol* at *line* sits in the origin symbol *old_key*."""
+        if not symbol or not _is_named(old_key[1], symbol):
+            return False
+        twins = [k for k in self.old_spans if k[0] == old_key[0] and _is_named(k[1], symbol)]
+        return len(twins) < 2 or self.holds(old_key, line)
 
     def offset(self, key: SymbolKey, line: int | None, *, old: bool = False) -> int:
         """*line* relative to the start of *key*'s span, which travels with the code."""
@@ -123,7 +164,8 @@ def symbol_bodies(path: str, raw: bytes, symbols: Iterable[Symbol]) -> list[Symb
         span = rows[bisect_left(starts, symbol.start_line) : bisect_right(starts, symbol.end_line)]
         if span:
             out.append(_body(symbol, path, raw, span))
-    return out
+    held = Counter(b.name for b in out)
+    return [replace(b, ident=b.scoped_name) if held[b.name] > 1 else b for b in out]
 
 
 def bodies_for(
@@ -148,21 +190,28 @@ def build_move_map(
     renamed = dict(rename_map or {})
     based = [(b, replace(b, path=renamed.get(b.path, b.path))) for b in sorted(base, key=_order)]
     head_rows = sorted(head, key=_order)
-    base_keys = Counter(on_head.key for _, on_head in based)
-    head_keys = Counter(h.key for h in head_rows)
+    base_keys = Counter(on_head.identity for _, on_head in based)
+    head_keys = Counter(h.identity for h in head_rows)
     # A key still present on the other side did not move, and one held twice
     # on its own side cannot name a single symbol.
-    removed = [p for p in based if p[1].key not in head_keys and base_keys[p[1].key] == 1]
-    added = [h for h in head_rows if h.key not in base_keys and head_keys[h.key] == 1]
+    removed = [p for p in based if p[1].identity not in head_keys and base_keys[p[1].identity] == 1]
+    added = [h for h in head_rows if h.identity not in base_keys and head_keys[h.identity] == 1]
 
-    verbatim = _pair_unique(removed, added, lambda b: (b.name, b.digest))
+    # Each pass tries the scoped name first, so same-named symbols pair one to
+    # one, then the bare name, for a method that changed class on the way.
+    verbatim = _pair_unique(
+        removed,
+        added,
+        lambda b: (b.scoped_name, b.digest),
+        lambda b: (b.name, b.digest),
+    )
     removed, added = _rest(removed, added, verbatim)
     sized = [h for h in added if h.tokens >= MIN_RENAMED_TOKENS]
     verbatim += _pair_unique(removed, sized, lambda b: b.digest)
     removed, added = _rest(removed, added, verbatim)
     edited = [
         (old, new)
-        for old, new in _pair_unique(removed, added, lambda b: b.name)
+        for old, new in _pair_unique(removed, added, lambda b: b.scoped_name, lambda b: b.name)
         if _similar(old, new)
     ]
     by_new = {new.key: old.key for old, new in verbatim + edited}
@@ -177,9 +226,25 @@ def build_move_map(
 def _pair_unique(
     removed: list[tuple[SymbolBody, SymbolBody]],
     added: list[SymbolBody],
+    *keys: Callable[[SymbolBody], Hashable],
+) -> list[tuple[SymbolBody, SymbolBody]]:
+    """``(old, new)`` pairs whose key occurs once on each side, across files.
+
+    The *keys* are tried in order, each over what the ones before it left unpaired.
+    """
+    pairs: list[tuple[SymbolBody, SymbolBody]] = []
+    for key in keys:
+        found = _pair_once(removed, added, key)
+        pairs += found
+        removed, added = _rest(removed, added, found)
+    return pairs
+
+
+def _pair_once(
+    removed: list[tuple[SymbolBody, SymbolBody]],
+    added: list[SymbolBody],
     key: Callable[[SymbolBody], Hashable],
 ) -> list[tuple[SymbolBody, SymbolBody]]:
-    """``(old, new)`` pairs whose *key* occurs once on each side, across files."""
     removed_counts = Counter(key(on_head) for _, on_head in removed)
     added_counts = Counter(key(h) for h in added)
     added_by_key = {key(h): h for h in added}
@@ -214,6 +279,11 @@ def _similar(old: SymbolBody, new: SymbolBody) -> bool:
     return shared >= _MIN_EDITED_OVERLAP * max(len(old.pairs), len(new.pairs), 1)
 
 
+def _is_named(key_name: str, symbol: str) -> bool:
+    """*key_name* is *symbol*, bare or scoped (``Parser.parse_file`` answers to ``parse_file``)."""
+    return key_name == symbol or key_name.endswith(f".{symbol}")
+
+
 def _within(span: tuple[int, int] | None, line: int | None) -> bool:
     return span is not None and line is not None and span[0] <= line <= span[1]
 
@@ -228,7 +298,7 @@ def _body(symbol: Symbol, path: str, raw: bytes, rows: list[TokenRow]) -> Symbol
     digest = hashlib.blake2b(_SEPARATOR.join(parts), digest_size=16).hexdigest()
     pairs = frozenset(hash(pair) for pair in pairwise(parts))
     span = (symbol.start_line, symbol.end_line)
-    return SymbolBody(path, name, digest, len(parts), pairs, span)
+    return SymbolBody(path, name, digest, len(parts), pairs, span, symbol.parent_name or "")
 
 
 def _order(body: SymbolBody) -> tuple[str, str, str]:

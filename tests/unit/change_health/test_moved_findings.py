@@ -50,6 +50,43 @@ def test_a_finding_that_moved_with_its_code_pairs_with_its_origin():
     assert result.moved_total == 1
 
 
+SAME_NAMED_MOVED = MoveMap(
+    MappingProxyType(
+        {
+            ("pkg/parsing.py", "Parser.parse_file"): ("tool.py", "Parser.parse_file"),
+            ("pkg/parsing.py", "parse_file"): ("tool.py", "parse_file"),
+        }
+    ),
+    new_spans=MappingProxyType(
+        {
+            ("pkg/parsing.py", "Parser.parse_file"): (5, 20),
+            ("pkg/parsing.py", "parse_file"): (30, 40),
+        }
+    ),
+    old_spans=MappingProxyType(
+        {("tool.py", "Parser.parse_file"): (105, 120), ("tool.py", "parse_file"): (130, 140)}
+    ),
+)
+
+
+def test_findings_on_a_method_and_a_function_of_one_name_each_pair_with_their_own_origin():
+    base = [finding("tool.py", "parse_file", line=110), finding("tool.py", "parse_file", line=131)]
+    head = [
+        finding("pkg/parsing.py", "parse_file", line=6),
+        finding("pkg/parsing.py", "parse_file", line=31),
+    ]
+
+    result = FindingMatcher(moves=SAME_NAMED_MOVED).match(base, head)
+
+    assert [m.kind for m in result.matched] == ["moved", "moved"]
+    assert [m.moved_from for m in result.matched] == [
+        ("tool.py", "Parser.parse_file"),
+        ("tool.py", "parse_file"),
+    ]
+    assert result.resolved == []
+    assert result.moved_total == 2
+
+
 def test_a_moved_finding_that_measures_worse_is_worsened():
     base = [finding("tool.py", "knot", severity=Severity.MEDIUM)]
     head = [finding("pkg/knot.py", "knot", severity=Severity.CRITICAL, ccn=60)]
