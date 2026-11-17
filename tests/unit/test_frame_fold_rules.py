@@ -171,13 +171,13 @@ def test_javascript_named_function_at_one_one_is_not_the_wrapper() -> None:
 
 def test_javascript_function_on_the_last_line_is_not_folded() -> None:
     lines = [*JS_SOURCE[:11], "}, function after() {"]
-    assert _run(_js(12, 4), JS, lines).skipped == {"ambiguous": 1}
+    assert _run(_js(12, 4), JS, lines).skipped == {"second_signal_mismatch": 1}
 
 
 def test_javascript_function_in_the_signature_is_not_folded() -> None:
     syms = [_sym("lib/app.js", "app.f", 1, 4)]
     lines = ["function f(", "  cb = () => 1,", ") {", "}"]
-    assert _run(_js(2, 8), syms, lines).skipped == {"ambiguous": 1}
+    assert _run(_js(2, 8), syms, lines).skipped == {"second_signal_mismatch": 1}
 
 
 def test_javascript_callback_on_a_one_line_function_is_not_folded() -> None:
@@ -189,3 +189,49 @@ def test_javascript_callback_on_a_one_line_function_is_not_folded() -> None:
 
 def test_javascript_fold_needs_source() -> None:
     assert _run(_js(6, 5), JS).skipped == {"no_source": 1}
+
+
+# -- review cases ------------------------------------------------------------------
+
+
+def test_python_comprehensions_fold() -> None:
+    for name in ("App.run.<locals>.<listcomp>", "App.run.<locals>.<dictcomp>", "App.run.<locals>.<setcomp>"):
+        assert _hit(_run(_py(8, name), PY)) == (PY[1], True), name
+
+
+def test_python_folds_into_the_nearest_indexed_scope() -> None:
+    g = _sym("app.py", "app.App.run.g", 7, 12)
+    assert _hit(_run(_py(9, "App.run.<locals>.g.<locals>.h"), [*PY, g])) == (g, True)
+
+
+def test_python_bare_genexpr_in_a_class_is_not_the_file() -> None:
+    assert _run(_py(25, "<genexpr>"), PY).skipped == {"second_signal_mismatch": 1}
+
+
+def test_python_stacked_and_class_decorators() -> None:
+    syms = [_sym("app.py", "app.Widget", 4, 10, "class"), _sym("app.py", "app.Widget.draw", 7, 9, "method")]
+    lines = ["", "", "@dataclass", "class Widget:", "", "    @staticmethod", "    def draw():", "        pass", "", ""]
+    lines[1] = "@register"
+    assert _hit(_run(_py(2, "Widget"), syms, lines)) == (syms[0], False)
+    assert _hit(_run(_py(3, "Widget"), syms, lines)) == (syms[0], False)
+    assert _hit(_run(_py(6, "Widget.draw"), syms, lines)) == (syms[1], False)
+
+
+def test_go_same_line_closure_is_marked_folded() -> None:
+    assert _hit(_run(_go(10, 10, "example.com/cmd.(*Command).Execute.func1"), GO)) == (GO[0], True)
+
+
+def test_go_method_named_init_is_not_the_package_initializer() -> None:
+    assert _run(_go(3, 3, "example.com/cmd.(*T).init"), GO).skipped == {"no_span": 1}
+
+
+def test_javascript_reads_each_file_once() -> None:
+    calls = []
+
+    def read(path: str):
+        calls.append(path)
+        return JS_SOURCE
+
+    frames = [_js(6, 15), _js(6, 15, "x"), _js(5, 23, "handle")]
+    resolve_frames(frames, root=ROOT, symbols_by_file={"lib/app.js": JS}, read_lines=read)
+    assert calls == ["lib/app.js"]

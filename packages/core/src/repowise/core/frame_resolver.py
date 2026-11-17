@@ -145,10 +145,11 @@ def resolve_frames(
     decorator line resolves to the function it decorates.
     """
     paths = _PathMap(root, symbols_by_file, dirty_paths)
+    reader = _read_once(read_lines) if read_lines is not None else None
     resolved: list[ResolvedFrame] = []
     reasons: list[SkipReason | None] = []
     for i, frame in enumerate(frames):
-        outcome = _resolve(frame, paths, symbols_by_file, origins, read_lines)
+        outcome = _resolve(frame, paths, symbols_by_file, origins, reader)
         if isinstance(outcome, tuple):
             path, (symbol, folded) = outcome
             resolved.append(ResolvedFrame(i, path, symbol, folded))
@@ -163,7 +164,7 @@ def _resolve(
     paths: _PathMap,
     symbols_by_file: Mapping[str, Sequence[IndexedSymbol]],
     origins: Mapping[str, str] | None,
-    read_lines: Callable[[str], Sequence[str] | None] | None,
+    read_lines: Callable[[str], list[str] | None] | None,
 ) -> tuple[str, _Hit] | SkipReason:
     if frame.language not in ("go", "python", "javascript"):
         return "unsupported_language"
@@ -187,7 +188,7 @@ def _resolve(
     symbols = symbols_by_file[rel]
     source = rel
 
-    def lines() -> Sequence[str] | None:
+    def lines() -> list[str] | None:
         return read_lines(source) if read_lines is not None else None
 
     if frame.language == "javascript":
@@ -215,12 +216,15 @@ def _go(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> _Hit | SkipRea
     base = name[: closure.start()] if closure else name
     if symbol is None:
         # ``pkg.init`` is the initializer the compiler writes for package-level
-        # vars: module body, so the file. A user ``func init()`` is ``init.0``.
-        return (None, closure is not None) if base.endswith(".init") else "no_span"
+        # vars: module body, so the file. A user ``func init()`` is ``init.0``,
+        # and a method named init carries a receiver.
+        package_init = re.fullmatch(r"[^.()]+\.init", base.rsplit("/", 1)[-1])
+        return (None, closure is not None) if package_init else "no_span"
     if frame.start_line is None:
         return "no_second_signal"
     if symbol.start_line == frame.start_line:
-        return (symbol, False)
+        # A closure opening on its parent's first line shares its start line.
+        return (symbol, closure is not None and base.rsplit(".", 1)[-1] == symbol.name)
     if (
         closure is not None
         and symbol.start_line < frame.start_line <= symbol.end_line
@@ -240,7 +244,7 @@ _PY_DECORATOR_RE = re.compile(r"\s*@")
 def _python(
     frame: ProfileFrame,
     symbols: Sequence[IndexedSymbol],
-    lines: Callable[[], Sequence[str] | None],
+    lines: Callable[[], list[str] | None],
 ) -> _Hit | SkipReason:
     name = frame.function
     if name == "<module>":
@@ -255,37 +259,36 @@ def _python(
     decorated = _decorated(frame.line, symbols, lines)
     if decorated is not None and _qualname_tail(plain, decorated.qualified_name):
         return (decorated, False)
-    enclosing = _python_enclosing(name)
-    if enclosing is None:
+    scopes = _python_scopes(name)
+    if not scopes:
         return "no_span" if symbol is None else "second_signal_mismatch"
-    if enclosing == "":
+    if scopes == [""]:
         # A lambda or generator expression at module level: the file's.
-        if symbol is None or symbol.kind not in _CALLABLE_KINDS:
-            return (None, True)
-        return "second_signal_mismatch"
-    if symbol is not None and _qualname_tail(enclosing, symbol.qualified_name):
+        return (None, True) if symbol is None else "second_signal_mismatch"
+    # The innermost indexed symbol at the line must be one of the scopes the
+    # frame runs inside; the nearest such scope is the one it folds into.
+    if symbol is not None and any(_qualname_tail(sc, symbol.qualified_name) for sc in scopes):
         return (symbol, True)
     return "no_span" if symbol is None else "second_signal_mismatch"
 
 
-def _python_enclosing(qualname: str) -> str | None:
-    """The qualified name of the scope a nested code object runs in.
+def _python_scopes(qualname: str) -> list[str]:
+    """The scopes a nested code object runs inside, innermost first.
 
-    ``App.run.<locals>.inner`` -> ``App.run``; ``App.<lambda>`` -> ``App``;
-    ``<genexpr>`` -> ``""`` (module level); None when *qualname* is not nested.
+    ``A.f.<locals>.g.<locals>.h`` -> ``["A.f.g", "A.f"]``; ``A.<lambda>`` ->
+    ``["A"]``; ``<genexpr>`` -> ``[""]`` (module level); empty when
+    *qualname* is not nested.
     """
     parts = qualname.split(".")
-    if "<locals>" in parts:
-        cut = parts.index("<locals>")
-    elif parts[-1] in _PY_ANONYMOUS:
-        cut = len(parts) - 1
-    else:
-        return None
-    return ".".join(parts[:cut])
+    cuts = [i for i, part in enumerate(parts) if part == "<locals>"]
+    if parts[-1] in _PY_ANONYMOUS and (len(parts) == 1 or parts[-2] != "<locals>"):
+        cuts.append(len(parts) - 1)
+    scopes = [".".join(p for p in parts[:cut] if p != "<locals>") for cut in reversed(cuts)]
+    return list(dict.fromkeys(scopes))
 
 
 def _decorated(
-    line: int, symbols: Sequence[IndexedSymbol], lines: Callable[[], Sequence[str] | None]
+    line: int, symbols: Sequence[IndexedSymbol], lines: Callable[[], list[str] | None]
 ) -> IndexedSymbol | None:
     """The symbol a decorator on *line* applies to, or None.
 
@@ -316,7 +319,7 @@ def _qualname_tail(frame_name: str, qualified_name: str) -> bool:
 def _javascript(
     frame: ProfileFrame,
     symbols: Sequence[IndexedSymbol],
-    lines: Callable[[], Sequence[str] | None],
+    lines: Callable[[], list[str] | None],
 ) -> _Hit | SkipReason:
     if frame.column is None or frame.column < 1:
         return "no_second_signal"
@@ -343,10 +346,10 @@ def _javascript(
         return "second_signal_mismatch" if starting else "no_span"
     if _in_body(frame.line, enclosing, text):
         return (enclosing, True)
-    return "second_signal_mismatch" if starting else "ambiguous"
+    return "second_signal_mismatch"
 
 
-def _in_body(line: int, symbol: IndexedSymbol, text: Sequence[str]) -> bool:
+def _in_body(line: int, symbol: IndexedSymbol, text: list[str]) -> bool:
     """Whether 1-based *line* is a body line of *symbol*, short of its last line.
 
     A function starting on the signature lines may be a default parameter,
@@ -354,9 +357,23 @@ def _in_body(line: int, symbol: IndexedSymbol, text: Sequence[str]) -> bool:
     """
     if symbol.end_line > len(text):
         return False
-    rows = text if isinstance(text, list) else list(text)
-    first, last = body_span(rows, symbol.start_line - 1, symbol.end_line - 1)
+    first, last = body_span(text, symbol.start_line - 1, symbol.end_line - 1)
     return first + 1 <= line <= min(last + 1, symbol.end_line - 1)
+
+
+def _read_once(
+    read_lines: Callable[[str], Sequence[str] | None],
+) -> Callable[[str], list[str] | None]:
+    """*read_lines* with each file read at most once, as a list."""
+    cache: dict[str, list[str] | None] = {}
+
+    def read(rel: str) -> list[str] | None:
+        if rel not in cache:
+            text = read_lines(rel)
+            cache[rel] = list(text) if text is not None else None
+        return cache[rel]
+
+    return read
 
 
 class _PathMap:
