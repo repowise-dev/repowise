@@ -35,6 +35,7 @@ from __future__ import annotations
 import math
 import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -53,14 +54,14 @@ VALUE_KINDS = frozenset({"cpu", "wall"})
 TEST_OUTCOMES = frozenset({"passed", "failed", "skipped", "error"})
 QUERY_SCOPES = frozenset({"test", "request"})
 
-_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 # A statement digest, never statement text: hex only, so SQL cannot pass.
-_DIGEST_RE = re.compile(r"^[0-9a-f]{8,32}$")
+_DIGEST_RE = re.compile(r"[0-9a-f]{8,32}")
 #: Longest name, id or path an entry may carry; longer ones are skipped.
 _LONG_TEXT = 512
 # A tool name, version or unit is one token, so it cannot carry a command line.
-_TOKEN_RE = re.compile(r"^[A-Za-z0-9._+/-]{1,64}$")
-_REASON_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+_TOKEN_RE = re.compile(r"[A-Za-z0-9._+/-]{1,64}")
+_REASON_RE = re.compile(r"[a-z0-9_]{1,40}")
 # Integers past this are not exact as floats and overflow the store's columns.
 _MAX_INT = 2**53
 _BENCH_STATS = ("median", "mean", "min", "max", "stddev")
@@ -137,10 +138,10 @@ def _envelope(text: str) -> tuple[dict[str, Any], str, list[Any]]:
             f"format is {tag!r}, expected {EVIDENCE_FORMAT!r}",
             f"set \"format\": \"{EVIDENCE_FORMAT}\", or convert the tool's output first",
         )
-    kind = data.get("kind")
-    if kind not in ENTRY_LISTS:
+    kind = _member(data.get("kind"), ENTRY_LISTS)
+    if kind is None:
         raise EvidenceFormatError(
-            f"unknown kind {kind!r}",
+            f"unknown kind {data.get('kind')!r}",
             "kind is one of " + ", ".join(sorted(ENTRY_LISTS)),
         )
     raw_entries = data.get(ENTRY_LISTS[kind])
@@ -154,7 +155,7 @@ def _envelope(text: str) -> tuple[dict[str, Any], str, list[Any]]:
 
 def _commit_sha(data: dict[str, Any]) -> str | None:
     commit = data.get("commit_sha")
-    if commit is not None and not (isinstance(commit, str) and _COMMIT_RE.match(commit)):
+    if commit is not None and not (isinstance(commit, str) and _COMMIT_RE.fullmatch(commit)):
         raise EvidenceFormatError(
             "commit_sha is not a full 40-character lowercase hex SHA",
             "use the output of `git rev-parse HEAD` at measurement, or leave it out",
@@ -189,12 +190,12 @@ def _value_kind_and_unit(kind: str, data: dict[str, Any]) -> tuple[str | None, s
         return "wall", "s"
     if kind == "query_count":
         return None, "count"
-    value_kind = data.get("value_kind")
+    value_kind = _member(data.get("value_kind"), VALUE_KINDS)
     unit = _token(data.get("unit"))
     if kind == "profile":
-        if value_kind not in VALUE_KINDS:
+        if value_kind is None:
             raise EvidenceFormatError(
-                f"a profile needs value_kind cpu or wall, got {value_kind!r}",
+                f"a profile needs value_kind cpu or wall, got {data.get('value_kind')!r}",
                 "say whether the profiler sampled CPU time or wall-clock time",
             )
         if unit is None:
@@ -204,7 +205,7 @@ def _value_kind_and_unit(kind: str, data: dict[str, Any]) -> tuple[str | None, s
             )
         return value_kind, unit
     # Benchmarks carry a unit per entry; the document's is optional.
-    return (value_kind if value_kind in VALUE_KINDS else None), unit
+    return value_kind, unit
 
 
 def _converter_skips(raw: Any) -> dict[str, int]:
@@ -214,7 +215,7 @@ def _converter_skips(raw: Any) -> dict[str, int]:
     for reason, count in raw.items():
         if _is_count(count):
             # A reason is a word, never free text; anything else is "other".
-            key = reason if isinstance(reason, str) and _REASON_RE.match(reason) else "other"
+            key = reason if isinstance(reason, str) and _REASON_RE.fullmatch(reason) else "other"
             out[key] += count
     return dict(out)
 
@@ -240,8 +241,13 @@ def _amount(value: Any) -> float | None:
     return number if math.isfinite(number) and number >= 0 else None
 
 
+def _member(value: Any, allowed: Collection[str]) -> str | None:
+    """*value* when it is one of *allowed*; a list or object is never hashed."""
+    return value if isinstance(value, str) and value in allowed else None
+
+
 def _token(value: Any) -> str | None:
-    return value if isinstance(value, str) and _TOKEN_RE.match(value) else None
+    return value if isinstance(value, str) and _TOKEN_RE.fullmatch(value) else None
 
 
 def _name(value: Any) -> tuple[str | None, str | None]:
@@ -321,7 +327,7 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
     test_id, reason = _name(raw.get("id"))
     if test_id is None:
         return None, "no_id" if reason == "no_name" else reason
-    outcome = raw.get("outcome") if raw.get("outcome") in TEST_OUTCOMES else None
+    outcome = _member(raw.get("outcome"), TEST_OUTCOMES)
     duration = _amount(raw.get("duration_s"))
     if duration is None and outcome is None:
         return None, "no_value"
@@ -339,9 +345,9 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
 def _query_scope(raw: dict[str, Any]) -> tuple[tuple[str, str] | None, str | None]:
     """``((kind, id), None)`` for the test or request a count belongs to."""
     scope = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
-    scope_kind = scope.get("kind")
+    scope_kind = _member(scope.get("kind"), QUERY_SCOPES)
     scope_id, reason = _name(scope.get("id"))
-    if scope_kind not in QUERY_SCOPES or scope_id is None:
+    if scope_kind is None or scope_id is None:
         return None, "no_scope" if reason in (None, "no_name") else reason
     return (scope_kind, scope_id), None
 
@@ -355,7 +361,7 @@ def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None
     if site is None:
         return None, reason
     fp = raw.get("statement_fp")
-    if not isinstance(fp, str) or not _DIGEST_RE.match(fp):
+    if not isinstance(fp, str) or not _DIGEST_RE.fullmatch(fp):
         return None, "statement_not_digest"
     count = _count(raw.get("count"))
     if count is None:

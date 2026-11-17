@@ -57,7 +57,11 @@ def test_a_profile_reads_its_run_fields_and_symbols() -> None:
         (json.dumps({"format": "repowise-coverage-v1", "files": {}}), "expected"),
         (json.dumps({"format": EVIDENCE_FORMAT, "kind": "trace", "symbols": []}), "unknown kind"),
         (json.dumps({"format": EVIDENCE_FORMAT, "kind": "benchmark"}), "'benchmarks' list"),
+        (json.dumps({"format": EVIDENCE_FORMAT, "kind": ["profile"]}), "unknown kind"),
+        (json.dumps({"format": EVIDENCE_FORMAT, "kind": {"a": 1}}), "unknown kind"),
         (_doc(commit_sha="abc123"), "commit_sha"),
+        (_doc(commit_sha=SHA + "\n"), "commit_sha"),
+        (_doc(value_kind=["wall"]), "value_kind"),
         (_doc(value_kind="alloc"), "value_kind"),
         (_doc(unit=None), "needs a unit"),
     ],
@@ -218,3 +222,28 @@ def test_values_and_text_that_cannot_be_stored_are_dropped() -> None:
     assert doc.skipped == {
         "other": 6, "vendored": 4, "no_value": 1, "bad_name": 1, "duplicate": 1,
     }
+
+
+def test_non_string_outcomes_and_scope_kinds_are_unknown_not_a_crash() -> None:
+    tests = parse_evidence(
+        _doc(
+            "test_timing",
+            tests=[
+                {"id": "t::a", "outcome": {"passed": True}, "duration_s": 1.0},
+                {"id": "t::b", "outcome": ["passed"]},
+            ],
+        )
+    )
+    (entry,) = tests.entries
+    assert entry["outcome"] is None
+    assert tests.skipped == {"no_value": 1}
+
+    site = {"path": "src/a.py", "function": "f"}
+    queries = parse_evidence(
+        _doc(
+            "query_count",
+            queries=[{"scope": {"kind": ["test"], "id": "x"}, "site": site,
+                      "statement_fp": "9f2c1a0b", "count": 1}],
+        )
+    )
+    assert (queries.entries, queries.skipped) == ((), {"no_scope": 1})
