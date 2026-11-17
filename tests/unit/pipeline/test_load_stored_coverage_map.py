@@ -19,7 +19,7 @@ from repowise.core.persistence.database import init_db, resolve_db_url
 from repowise.core.pipeline.incremental import load_stored_coverage_map
 
 
-async def _seed(repo_path, files: list[dict]) -> None:
+async def _seed(repo_path, files: list[dict], *, commit: str | None = None) -> None:
     engine = create_engine(resolve_db_url(repo_path))
     try:
         await init_db(engine)
@@ -36,7 +36,11 @@ async def _seed(repo_path, files: list[dict]) -> None:
                 )
                 await session.commit()
             await save_coverage_files(
-                session, repo.id, files, source_format="lcov"
+                session,
+                repo.id,
+                files,
+                source_format="lcov",
+                ingested_commit_sha=commit,
             )
             await session.commit()
     finally:
@@ -177,3 +181,67 @@ async def test_a_failed_reread_still_loads_the_stored_rows(tmp_path, monkeypatch
     cm = await load_stored_coverage_map(repo_path, log=logged.append)
     assert cm["src/a.py"]["line_coverage_pct"] == 0.0
     assert any("Coverage re-read skipped" in line for line in logged)
+
+
+async def test_reread_stamps_commit_when_report_was_written(tmp_path, monkeypatch):
+    """When commits landed after the report was written, the older commit is stored."""
+    import os
+    import subprocess
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+
+    def _git(*args, when=None):
+        env = {**os.environ, "GIT_COMMITTER_DATE": when, "GIT_AUTHOR_DATE": when} if when else None
+        return subprocess.run(["git", *args], cwd=repo_path, check=True, capture_output=True, text=True, env=env).stdout
+
+    _git("init", "-q")
+    _git("config", "user.email", "test@test.local")
+    _git("config", "user.name", "Tester")
+
+    (repo_path / "src").mkdir(parents=True)
+    (repo_path / "src" / "a.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    _git("add", "-A")
+    t1 = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    _git("commit", "-qm", "commit A", when=t1)
+    commit_a = _git("rev-parse", "HEAD").strip()
+
+    await _seed(
+        repo_path,
+        [{"file_path": "src/a.py", "line_coverage_pct": 0.0, "total_coverable_lines": 2}],
+        commit=commit_a,
+    )
+
+    report_path = repo_path / "coverage" / "lcov.info"
+    report_path.parent.mkdir()
+    report_path.write_text("SF:src/a.py\nDA:1,1\nDA:2,0\nend_of_record\n", encoding="utf-8")
+    report_mtime = (datetime.now(UTC) - timedelta(hours=1)).timestamp()
+    os.utime(report_path, (report_mtime, report_mtime))
+
+    t2 = datetime.now(UTC).isoformat()
+    (repo_path / "src" / "b.py").write_text("z = 3\n", encoding="utf-8")
+    _git("add", "-A")
+    _git("commit", "-qm", "commit B", when=t2)
+    commit_b = _git("rev-parse", "HEAD").strip()
+    assert commit_a != commit_b
+
+    async def _metrics(_session, _repo_id):
+        return [SimpleNamespace(file_path="src/a.py")]
+
+    monkeypatch.setattr("repowise.core.persistence.crud.get_health_metrics", _metrics)
+
+    await load_stored_coverage_map(repo_path)
+
+    engine = create_engine(resolve_db_url(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            from repowise.core.persistence.crud.analysis.coverage import load_newest_ingest
+            ingest = await load_newest_ingest(session, repo.id)
+            assert ingest is not None
+            assert ingest.ingested_commit_sha == commit_a
+    finally:
+        await engine.dispose()
+
