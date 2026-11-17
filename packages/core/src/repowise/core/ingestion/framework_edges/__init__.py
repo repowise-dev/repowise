@@ -49,6 +49,7 @@ from . import (
     python_job_roots,
     quarkus,
     rails,
+    registrations,
     remix,
     rust,
     salesforce_metadata,
@@ -118,6 +119,7 @@ _HANDLERS: list[FrameworkHandler] = [
     *mainframe.HANDLERS,
     # Last, so an LWC or Aura handler's own edge to the same file wins.
     *salesforce_metadata.HANDLERS,
+    *registrations.HANDLERS,
 ]
 
 
