@@ -62,6 +62,15 @@ agent such as `opencode` (`unknown` when nothing matches).
 reports `served_no_index` (`true` when it serves a directory with no index),
 and an `update` that defers to one already running reports `outcome: deferred`.
 
+`coverage add` reports how the ingest ended as `outcome`. Coverage was stored
+for `ingested` and `partial` (a fragment kept with `--allow-partial`). Nothing
+was stored for `no_report` (none found), `no_index`, `mostly_unmapped` (more
+than half of the report, or all of it, did not map to the repo tree),
+`misaligned`, `unreadable` and `unmapped` (no file mapped). `strict_unmapped`
+is a `--strict` failure, after any coverage that mapped was stored. It also
+reports `files_matched_bucket`, a range of the indexed files the reports
+mapped to, never the files themselves.
+
 For `init` and `update`, a few coarse **buckets and enums** describe the shape
 of the run so we can see the size of repos people index and whether docs
 generation is used. Never exact counts, never repo or file names:
