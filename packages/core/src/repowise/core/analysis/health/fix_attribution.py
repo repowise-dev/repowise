@@ -30,6 +30,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from repowise.core.symbol_spans import symbols_overlapping
+
 __all__ = [
     "BUG_MAGNET_MASS",
     "FIX_HALF_LIFE_DAYS",
@@ -102,15 +104,7 @@ def attribute_ranges(
     Returns ids in file order. Empty when the fix was a pure insertion (no old
     side to intersect) or the file has no parsed symbols.
     """
-    if not old_ranges or not symbols:
-        return []
-
-    hits: list[SymbolSpan] = []
-    for sym in symbols:
-        if sym.start_line <= 0 or sym.end_line < sym.start_line:
-            continue
-        if any(sym.start_line <= int(hi) and int(lo) <= sym.end_line for lo, hi in old_ranges):
-            hits.append(sym)
+    hits = symbols_overlapping(symbols, old_ranges)
 
     leaves = [
         sym

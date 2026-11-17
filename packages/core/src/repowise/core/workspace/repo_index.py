@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from repowise.core.symbol_spans import symbol_at
+
 if TYPE_CHECKING:
     from collections.abc import Collection, Coroutine, Iterable, Mapping, Sequence
 
@@ -215,13 +217,7 @@ class RepoIndex:
 
     def symbol_at(self, rel_path: str, line: int) -> IndexedSymbol | None:
         """The innermost symbol whose span contains *line*, or None."""
-        best: IndexedSymbol | None = None
-        for sym in self._by_file.get(rel_path, ()):
-            if sym.start_line <= line <= sym.end_line and (
-                best is None or sym.start_line >= best.start_line
-            ):
-                best = sym
-        return best
+        return symbol_at(self._by_file.get(rel_path, ()), line)
 
     def declared_symbol_at(self, rel_path: str, line: int) -> IndexedSymbol | None:
         """The symbol a declaration on *line* names, or None.
