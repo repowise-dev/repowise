@@ -329,10 +329,11 @@ def _javascript(
 ) -> _Hit | SkipReason:
     if frame.column is None or frame.column < 1:
         return "no_second_signal"
-    if _js_module_body(frame):
-        return (None, False)
     callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
     starting = [s for s in callables if s.start_line == frame.line]
+    # An indexed function starting at 1:1 owns the frame before the wrapper does.
+    if not starting and _js_module_body(frame):
+        return (None, False)
     if len(starting) > 1:
         return "ambiguous"
     text = lines()

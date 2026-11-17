@@ -165,6 +165,12 @@ def test_javascript_module_wrapper_attributes_to_the_file() -> None:
     assert _hit(_run(_js(1, 1), JS, JS_SOURCE)) == (None, False)
 
 
+def test_javascript_indexed_callable_at_one_one_beats_the_wrapper() -> None:
+    syms = [_sym("lib/app.js", "app.<anonymous>", 1, 3)]
+    lines = ["(function () {", "  run();", "})();"]
+    assert _hit(_run(_js(1, 1), syms, lines)) == (syms[0], False)
+
+
 def test_javascript_named_function_at_one_one_is_not_the_wrapper() -> None:
     assert _run(_js(1, 1, "main"), JS, JS_SOURCE).skipped == {"no_span": 1}
 
