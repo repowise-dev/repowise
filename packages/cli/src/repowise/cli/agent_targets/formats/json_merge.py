@@ -25,7 +25,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import stat
 from pathlib import Path
 from typing import Any
 
@@ -149,44 +148,10 @@ def dumps_config(data: dict) -> str:
 
 
 def atomic_write_text(path: Path, content: str, *, newline: str | None = None) -> None:
-    """Write *content* atomically, preserving what a plain write would preserve.
-
-    The atomic mechanics are ``core.fsutils.atomic_write_text`` — temp file in
-    the destination directory, then rename — rather than a second copy of the
-    same eight lines. What this wrapper adds is the two things a temp-file
-    rename silently loses that a plain ``write_text`` kept:
-
-    * **Symlinks.** ``os.replace`` replaces the *link*; a plain write follows
-      it. Dotfile setups do symlink ``.mcp.json``, so the link is resolved
-      first and the write lands on its target.
-    * **Permissions.** The temp file's mode is umask-derived, so replacing an
-      existing file would quietly reset its bits. The prior mode is restored.
-
-    Parent directories are **not** created. Every caller that needs one already
-    creates it at the point where it knows the directory is legitimately
-    absent; creating them here turned a missing repo path from a loud
-    ``FileNotFoundError`` into a silently-created tree.
-
-    *newline* is passed through rather than defaulted, because the two
-    disciplines in this codebase are both deliberate: config files take the
-    platform translation (``None``), and the marker-managed markdown files pass
-    ``"\\n"`` explicitly so a repo-shared file does not change line endings
-    depending on who ran the command. Getting this wrong is a whole-file diff.
-    """
+    """Write *content* atomically, preserving what a plain write would preserve."""
     from repowise.core.fsutils import atomic_write_text as _atomic_write_text
 
-    target = Path(os.path.realpath(path)) if path.is_symlink() else path
-
-    mode: int | None = None
-    with contextlib.suppress(OSError):
-        if target.exists():
-            mode = stat.S_IMODE(target.stat().st_mode)
-
-    _atomic_write_text(target, content, newline=newline)
-
-    if mode is not None:
-        with contextlib.suppress(OSError):
-            os.chmod(target, mode)
+    _atomic_write_text(path, content, newline=newline)
 
 
 def write_json_config(path: Path, data: dict) -> FileAction:

@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
-import tempfile
+import secrets
+import stat
 import time
 from collections.abc import Iterable
 from pathlib import Path, PurePath
 from typing import Any
+
+
+def _create_temp_file(
+    dir_path: Path, prefix: str = ".tmp.", suffix: str = ".tmp"
+) -> tuple[int, str]:
+    """Create a temporary file in *dir_path* with standard 0666 permissions subject to umask."""
+    for _ in range(100):
+        candidate = dir_path / f"{prefix}{secrets.token_hex(8)}{suffix}"
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o666)
+            return fd, str(candidate)
+        except FileExistsError:
+            continue
+    raise FileExistsError(f"Could not allocate temporary file in {dir_path}")
 
 
 def atomic_write_text(
@@ -23,20 +39,36 @@ def atomic_write_text(
     created in the destination directory (same filesystem, so the rename is
     atomic) and either replaces *path* wholesale or is cleaned up on failure.
 
+    Preserves the mode of an existing file, and creates a new file with the
+    standard file mode subject to the process's umask (0666 & ~umask), rather
+    than locking it to 0600. Symlinks are followed so the target is replaced.
+
     With *fsync*, the bytes are on the platter before the rename, so the file
     also survives a power loss rather than only a concurrent read. Off by
     default: it costs a disk round-trip, and most callers here are rewriting
     something they can regenerate.
     """
-    parent = path.parent
-    fd, tmp = tempfile.mkstemp(dir=parent, suffix=".tmp")
+    target = Path(os.path.realpath(path)) if path.is_symlink() else path
+    parent = target.parent
+
+    existing_mode: int | None = None
+    with contextlib.suppress(OSError):
+        if target.exists():
+            existing_mode = stat.S_IMODE(target.stat().st_mode)
+
+    fd, tmp = _create_temp_file(parent, suffix=".tmp")
     try:
         with open(fd, "w", encoding="utf-8", newline=newline) as f:
             f.write(content)
             if fsync:
                 f.flush()
                 os.fsync(f.fileno())
-        Path(tmp).replace(path)
+
+        if existing_mode is not None:
+            with contextlib.suppress(OSError):
+                os.chmod(tmp, existing_mode)
+
+        replace_with_retry(tmp, target)
     except Exception:
         Path(tmp).unlink(missing_ok=True)
         raise
