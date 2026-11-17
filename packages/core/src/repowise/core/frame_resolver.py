@@ -259,17 +259,23 @@ def _python(
     decorated = _decorated(frame.line, symbols, lines)
     if decorated is not None and _qualname_tail(plain, decorated.qualified_name):
         return (decorated, False)
+    return _python_fold(name, symbol)
+
+
+def _python_fold(name: str, symbol: IndexedSymbol | None) -> _Hit | SkipReason:
+    """A nested code object charged to the scope it runs inside, or why not."""
     scopes = _python_scopes(name)
+    miss: SkipReason = "no_span" if symbol is None else "second_signal_mismatch"
     if not scopes:
-        return "no_span" if symbol is None else "second_signal_mismatch"
+        return miss
     if scopes == [""]:
         # A lambda or generator expression at module level: the file's.
-        return (None, True) if symbol is None else "second_signal_mismatch"
+        return (None, True) if symbol is None else miss
     # The innermost indexed symbol at the line must be one of the scopes the
     # frame runs inside; the nearest such scope is the one it folds into.
     if symbol is not None and any(_qualname_tail(sc, symbol.qualified_name) for sc in scopes):
         return (symbol, True)
-    return "no_span" if symbol is None else "second_signal_mismatch"
+    return miss
 
 
 def _python_scopes(qualname: str) -> list[str]:
@@ -323,8 +329,7 @@ def _javascript(
 ) -> _Hit | SkipReason:
     if frame.column is None or frame.column < 1:
         return "no_second_signal"
-    # The CommonJS wrapper (and an ES module's top level) starts at 1:1, unnamed.
-    if frame.line == 1 and frame.column == 1 and not frame.function:
+    if _js_module_body(frame):
         return (None, False)
     callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
     starting = [s for s in callables if s.start_line == frame.line]
@@ -334,17 +339,44 @@ def _javascript(
     if text is None or frame.line > len(text):
         return "no_source"
     if starting:
-        # V8 counts columns in UTF-16 code units.
-        units = text[frame.line - 1].encode("utf-16-le")
-        if (frame.column - 1) * 2 > len(units):
-            return "second_signal_mismatch"
-        head = units[: (frame.column - 1) * 2].decode("utf-16-le", errors="replace")
-        if _JS_HEAD_RE.fullmatch(head):
-            return (starting[0], False)
-    enclosing = symbol_at(callables, frame.line)
+        return _js_starting(frame.line, frame.column, starting[0], callables, text)
+    return _js_fold(frame.line, callables, text, "no_span")
+
+
+def _js_module_body(frame: ProfileFrame) -> bool:
+    """The CommonJS wrapper (and an ES module's top level) starts at 1:1, unnamed."""
+    return frame.line == 1 and frame.column == 1 and not frame.function
+
+
+def _js_starting(
+    line: int,
+    column: int,
+    symbol: IndexedSymbol,
+    callables: Sequence[IndexedSymbol],
+    text: list[str],
+) -> _Hit | SkipReason:
+    """*symbol*, the one function starting on *line*, when the column picks it out."""
+    # V8 counts columns in UTF-16 code units.
+    units = text[line - 1].encode("utf-16-le")
+    if (column - 1) * 2 > len(units):
+        return "second_signal_mismatch"
+    head = units[: (column - 1) * 2].decode("utf-16-le", errors="replace")
+    if _JS_HEAD_RE.fullmatch(head):
+        return (symbol, False)
+    return _js_fold(line, callables, text, "second_signal_mismatch")
+
+
+def _js_fold(
+    line: int,
+    callables: Sequence[IndexedSymbol],
+    text: list[str],
+    no_enclosing: SkipReason,
+) -> _Hit | SkipReason:
+    """The indexed function whose body holds *line*, for a function folded into it."""
+    enclosing = symbol_at(callables, line)
     if enclosing is None:
-        return "second_signal_mismatch" if starting else "no_span"
-    if _in_body(frame.line, enclosing, text):
+        return no_enclosing
+    if _in_body(line, enclosing, text):
         return (enclosing, True)
     return "second_signal_mismatch"
 
