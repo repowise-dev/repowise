@@ -153,6 +153,31 @@ async def _delete_page_vectors(repo_path: Path, store: Any, page_ids: set[str]) 
         await temporary.close()
 
 
+async def _load_search_cleanup_debt(session: Any, repo_id: str, repo_path: Path) -> dict:
+    """Seed historical tombstones once, then return only pending search cleanup."""
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import Page
+    from repowise.core.pipeline.cleanup_debt import (
+        load_cleanup_debt,
+        seed_tombstone_cleanup_debt,
+        tombstone_cleanup_seeded,
+    )
+
+    if not tombstone_cleanup_seeded(repo_path):
+        legacy_ids = set(
+            (
+                await session.execute(
+                    select(Page.id).where(
+                        Page.repository_id == repo_id, Page.freshness_status == "tombstone"
+                    )
+                )
+            ).scalars()
+        )
+        seed_tombstone_cleanup_debt(repo_path, legacy_ids)
+    return load_cleanup_debt(repo_path)
+
+
 async def persist_result(
     result: Any,
     repo_path: Path,
@@ -174,8 +199,6 @@ async def persist_result(
     """
     from datetime import UTC, datetime
 
-    from sqlalchemy import select
-
     from repowise.core.persistence import (
         FullTextSearch,
         get_session,
@@ -183,7 +206,6 @@ async def persist_result(
         upsert_repository,
     )
     from repowise.core.persistence.crud import upsert_generation_job
-    from repowise.core.persistence.models import Page
     from repowise.core.pipeline import (
         persist_analysis,
         persist_generation,
@@ -194,10 +216,7 @@ async def persist_result(
     )
     from repowise.core.pipeline.cleanup_debt import (
         clear_cleanup_debt,
-        load_cleanup_debt,
         record_cleanup_debt,
-        seed_tombstone_cleanup_debt,
-        tombstone_cleanup_seeded,
     )
     from repowise.core.pipeline.persist import (
         persist_symbol_analysis,
@@ -213,7 +232,6 @@ async def persist_result(
     # rehydrated graph and index a second time.
     index_done = bool(getattr(result, "index_persisted_incrementally", False))
 
-    debt = load_cleanup_debt(repo_path)
     store = getattr(result, "vector_store", None)
 
     fts = None
@@ -254,18 +272,7 @@ async def persist_result(
         # Commit boundary 1 of 5: the repository row and its settings.
         with timed(timings, "persist.commit.repository"):
             await session.commit()
-        if not tombstone_cleanup_seeded(repo_path):
-            legacy_ids = set(
-                (
-                    await session.execute(
-                        select(Page.id).where(
-                            Page.repository_id == repo.id, Page.freshness_status == "tombstone"
-                        )
-                    )
-                ).scalars()
-            )
-            seed_tombstone_cleanup_debt(repo_path, legacy_ids)
-            debt = load_cleanup_debt(repo_path)
+        debt = await _load_search_cleanup_debt(session, repo.id, repo_path)
         swept_page_ids: list[str] = []
         if index_done:
             # Health runs after the INDEX checkpoint and mutates the in-memory
