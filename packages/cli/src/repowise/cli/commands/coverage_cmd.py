@@ -321,6 +321,9 @@ def coverage_add(
                     map_paths.append(report_path)
                 map_records.extend(rtc.records)
                 map_format = map_format or creport.source_format
+            # Reported as a bucket: the files either leg mapped, so a map-only
+            # ``.coverage`` ingest does not read as zero.
+            files_matched = max(resolved.matched, len({r.file_path for r in map_records}))
 
             # A fragment is stored only with --allow-partial: of the per-file
             # coverage or of the map, either one withholds both.
@@ -340,7 +343,7 @@ def coverage_add(
                     f"nothing was stored.[/red] To fix it, {escape(hint)} and re-run, "
                     "or pass [cyan]--allow-partial[/cyan] to store the fragment."
                 )
-                return "mostly_unmapped", resolved.matched
+                return "mostly_unmapped", files_matched
 
             agg_matched = 0
             # Both writes stamp the commit that was HEAD when their own reports
@@ -403,27 +406,27 @@ def coverage_add(
                 if resolved.alignment.reasons:
                     # Every mapped file was dropped as misaligned; the warning above says why.
                     console.print("[red]Nothing was stored.[/red]")
-                    return "misaligned", resolved.matched
+                    return "misaligned", files_matched
                 if len(errors) == len(report_paths) and not map_readable:
                     # No report was readable as coverage; the lines above say why.
                     console.print("[red]Nothing was stored.[/red]")
-                    return "unreadable", resolved.matched
+                    return "unreadable", files_matched
                 console.print(
                     "[red]No report files mapped to indexed source files.[/red] "
                     "If paths look prefixed (e.g. build/…), set "
                     "[cyan]coverage.strip_prefix[/cyan] in .repowise/config.yaml."
                 )
-                return "unmapped", resolved.matched
+                return "unmapped", files_matched
             if strict and unmapped:
                 console.print(
                     f"[red]--strict: {unmapped} report file(s) did not map to the repo tree.[/red]"
                 )
-                return "strict_unmapped", resolved.matched
+                return "strict_unmapped", files_matched
             console.print(
                 "Run [cyan]repowise health --recompute[/cyan] to fold coverage into the defect "
                 "scores, or [cyan]repowise coverage status[/cyan] to review it."
             )
-            return ("partial" if partial else "ingested"), resolved.matched
+            return ("partial" if partial else "ingested"), files_matched
 
     # A refresh is commonly scripted as `coverage add ... || exit 1`, so a run
     # that stored nothing has to be distinguishable from a complete one by its

@@ -76,8 +76,9 @@ def test_coverage_add_exit_status_follows_whether_anything_was_stored(
     monkeypatch: pytest.MonkeyPatch, tmp_path, stored: tuple, expected_exit: int
 ) -> None:
     """
-    Every no-op branch inside the ingest returns False -- no index, no indexed
-    files, nothing mapped, or --strict with unmapped report files. This pins
+    Every no-op branch inside the ingest returns an outcome that stored nothing
+    -- no index, no indexed files, nothing mapped, or --strict with unmapped
+    report files. This pins
     the wiring that turns that answer into the process exit status.
     """
     monkeypatch.setattr(coverage_cmd, "_resolve_coverage_repo", lambda _p: tmp_path)
@@ -490,6 +491,24 @@ def test_coverage_add_dot_coverage_builds_the_map_and_says_why_no_per_file(
     assert stored == []
     assert [(r.file_path, r.covered_lines) for r in mapped] == [("src/a.py", [1, 2])]
     assert "coverage lcov" in " ".join(result.output.split())
+
+
+def test_a_map_only_ingest_reports_the_files_it_mapped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _fake_ingest(monkeypatch, tmp_path, {"src/a.py"})
+
+    async def _save_map(session, repository_id, records, **kwargs):
+        return TestMapWrite(written=len(records))
+
+    monkeypatch.setattr("repowise.core.persistence.crud.save_test_coverage", _save_map)
+    _coverage_data(tmp_path / ".coverage", "tests/test_a.py::test_one|run", tmp_path / "src" / "a.py")
+    seen = _outcomes(monkeypatch)
+
+    result = CliRunner().invoke(cli, ["coverage", "add", ".coverage"])
+
+    assert result.exit_code == 0, result.output
+    assert seen == [{"outcome": "ingested", "files_matched_bucket": "1-9"}]
 
 
 def test_coverage_add_dot_coverage_without_contexts_stores_nothing(
