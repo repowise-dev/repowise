@@ -59,6 +59,7 @@ from ..pytest_roots import (
 from ..support_paths import is_doc_or_config_path
 from ..test_paths import is_test_related_path
 from .cobol.source import is_cobol_dclgen
+from .languages.lpc_support import is_lpc_path
 from .languages.registry import REGISTRY as _LANG_REGISTRY
 from .languages.specs.aura import is_aura_markup_path
 from .languages.specs.cpp import INCLUDE_FRAGMENT_EXTENSIONS
@@ -1104,6 +1105,8 @@ def _language_from_name_or_ext(abs_path: Path) -> LanguageTag | None:
     Returns None when the extension is not recognised, signalling that the
     caller should fall back to binary detection and shebang sniffing.
     """
+    if is_lpc_path(abs_path):
+        return "lpc"
     filename = abs_path.name
     if filename in SPECIAL_FILENAMES:
         return SPECIAL_FILENAMES[filename]

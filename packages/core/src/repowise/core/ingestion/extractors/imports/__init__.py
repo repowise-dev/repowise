@@ -11,6 +11,7 @@ from .elixir import ELIXIR_IMPORTS
 from .fsharp import FSHARP_IMPORTS
 from .generic import GENERIC_IMPORTS
 from .jvm import JVM_IMPORTS
+from .lpc import LPC_IMPORTS
 from .pascal import PASCAL_IMPORTS
 from .php import PHP_IMPORTS
 from .python import PYTHON_IMPORTS
@@ -25,6 +26,7 @@ __all__ = [
     "FSHARP_IMPORTS",
     "GENERIC_IMPORTS",
     "JVM_IMPORTS",
+    "LPC_IMPORTS",
     "PASCAL_IMPORTS",
     "PHP_IMPORTS",
     "PYTHON_IMPORTS",

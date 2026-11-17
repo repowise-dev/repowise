@@ -43,6 +43,7 @@ from .json import SPEC as _JSON
 from .julia import SPEC as _JULIA
 from .kotlin import SPEC as _KOTLIN
 from .lean import SPEC as _LEAN
+from .lpc import SPEC as _LPC
 from .luau import SPEC as _LUAU
 from .makefile import SPEC as _MAKEFILE
 from .markdown import SPEC as _MARKDOWN
@@ -191,6 +192,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _NIM,
     _DLANG,
     # Sentinel for unclassified files
+    _LPC,
     _UNKNOWN,
 )
 

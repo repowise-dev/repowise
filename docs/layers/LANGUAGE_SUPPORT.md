@@ -52,6 +52,14 @@ Cross-repo contracts (HTTP routes, gRPC, queues, sockets, database tables) are
 listed per language and framework in
 [WORKSPACES.md](../scale/WORKSPACES.md#api-contract-extraction).
 
+## Experimental optional languages
+
+[LPC (LDMud)](../reference/LPC.md) supports explicit mudlib-root routing, AST
+symbols and call sites, and literal inherit/include resolution. Its grammar
+currently requires a pinned source install. It is outside the tier counts above;
+macro imports and runtime dispatch are not modeled, and dead-code claims are
+disabled.
+
 ## What the pipeline gives each tier
 
 | Stage | Full | Good | Partial | Lightweight | Structural |

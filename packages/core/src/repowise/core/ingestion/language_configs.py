@@ -24,6 +24,7 @@ from .extractors.imports import (
     FSHARP_IMPORTS,
     GENERIC_IMPORTS,
     JVM_IMPORTS,
+    LPC_IMPORTS,
     PASCAL_IMPORTS,
     PHP_IMPORTS,
     PYTHON_IMPORTS,
@@ -33,6 +34,7 @@ from .extractors.imports import (
     TS_JS_IMPORTS,
     ImportExtractor,
 )
+from .extractors.lpc import lpc_visibility
 from .extractors.visibility import (
     apex_visibility,
     csharp_visibility,
@@ -50,6 +52,7 @@ from .extractors.visibility import (
     ts_visibility,
     vbnet_visibility,
 )
+from .languages.lpc_support import lpc_call_target
 from .languages.perl_packages import perl_sub_name
 
 
@@ -120,6 +123,22 @@ class LanguageConfig:
 
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
+    "lpc": LanguageConfig(
+        symbol_node_types={
+            "function_definition": "function",
+            "global_var": "variable",
+            "struct_definition": "struct",
+            "preproc_def": "variable",
+            "preproc_function_def": "function",
+        },
+        import_node_types=["inheritance", "preproc_include"],
+        export_node_types=[],
+        visibility_fn=lpc_visibility,
+        parent_extraction="none",
+        modifier_node_types=frozenset({"type_modifier"}),
+        call_target_name_fn=lpc_call_target,
+        import_extractor=LPC_IMPORTS,
+    ),
     "python": LanguageConfig(
         import_extractor=PYTHON_IMPORTS,
         symbol_node_types={

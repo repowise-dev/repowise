@@ -45,6 +45,7 @@ LanguageTag = Literal[
     "perl",
     "cobol",
     "gdscript",
+    "lpc",
     "vbnet",
     "apex",
     # Passthrough code languages (no AST parser yet — empty ParsedFile,

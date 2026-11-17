@@ -200,6 +200,7 @@ _FULL = {
     "vbnet",
 }
 _PARTIAL = {
+    "lpc",
     "luau",
     "scala",
     # Lightweight regex-tier resolvers (module-name index + import regexes).
@@ -275,7 +276,7 @@ class TestImportSupportTiers:
 
     def test_runtime_entered_languages_are_exempt_from_static_dead_code_claims(self) -> None:
         # Apex models its platform entry points instead (apex_reachability).
-        assert REGISTRY.dead_code_exempt_languages() == frozenset({"cobol"})
+        assert REGISTRY.dead_code_exempt_languages() == frozenset({"cobol", "lpc"})
 
 
 class TestLanguageTagParity:

@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -810,16 +810,16 @@ name = "fastembed"
 version = "0.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "huggingface-hub", marker = "python_full_version < '3.13'" },
-    { name = "loguru", marker = "python_full_version < '3.13'" },
-    { name = "mmh3", marker = "python_full_version < '3.13'" },
-    { name = "numpy", marker = "python_full_version < '3.13'" },
-    { name = "onnxruntime", marker = "python_full_version < '3.13'" },
-    { name = "pillow", marker = "python_full_version < '3.13'" },
-    { name = "py-rust-stemmers", marker = "python_full_version < '3.13'" },
-    { name = "requests", marker = "python_full_version < '3.13'" },
-    { name = "tokenizers", marker = "python_full_version < '3.13'" },
-    { name = "tqdm", marker = "python_full_version < '3.13'" },
+    { name = "huggingface-hub" },
+    { name = "loguru" },
+    { name = "mmh3" },
+    { name = "numpy" },
+    { name = "onnxruntime" },
+    { name = "pillow" },
+    { name = "py-rust-stemmers" },
+    { name = "requests" },
+    { name = "tokenizers" },
+    { name = "tqdm" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/75/36/e5faec3c37878a22216241f32e375a754fb519db4564fefd1ba0e9135547/fastembed-0.9.1.tar.gz", hash = "sha256:8b4b2881ea85a4d36e8f284466671437b3fed869c33cdc71d6f6c48ddff115c7", size = 106290, upload-time = "2026-10-24T18:23:46.233Z" }
 wheels = [
@@ -1869,8 +1869,8 @@ name = "loguru"
 version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "python_full_version < '3.13' and sys_platform == 'win32'" },
-    { name = "win32-setctime", marker = "python_full_version < '3.13' and sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "win32-setctime", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3a/05/a1dae3dffd1116099471c643b8924f5aa6524411dc6c63fdae648c4f1aca/loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6", size = 63559, upload-time = "2024-12-06T11:20:56.608Z" }
 wheels = [
@@ -2498,10 +2498,10 @@ name = "onnxruntime"
 version = "1.32.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "flatbuffers", marker = "python_full_version < '3.13'" },
-    { name = "numpy", marker = "python_full_version < '3.13'" },
-    { name = "packaging", marker = "python_full_version < '3.13'" },
-    { name = "protobuf", marker = "python_full_version < '3.13'" },
+    { name = "flatbuffers" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "protobuf" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b7/5d/50be370b540a6cb9ea173503f5418e8315dfe5757400ad7720542d348b94/onnxruntime-1.32.0-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:366b9e53d07812cc5c92822cecf7563b76a8a0f32ba3bb8dd232a206ac3bcb6c", size = 22506162, upload-time = "2026-11-13T11:05:56.87Z" },
@@ -3592,6 +3592,9 @@ graph-extra = [
 local-embed = [
     { name = "fastembed", marker = "python_full_version < '3.13'" },
 ]
+lpc = [
+    { name = "tree-sitter-lpc" },
+]
 postgres = [
     { name = "asyncpg" },
     { name = "pgvector" },
@@ -3667,6 +3670,7 @@ requires-dist = [
     { name = "tree-sitter-javascript", specifier = ">=0.23,<1" },
     { name = "tree-sitter-kotlin", specifier = ">=1,<2" },
     { name = "tree-sitter-language-pack", specifier = ">=1.14,<2" },
+    { name = "tree-sitter-lpc", marker = "extra == 'lpc'", specifier = ">=0.1,<0.2" },
     { name = "tree-sitter-luau", specifier = ">=1.2,<2" },
     { name = "tree-sitter-objc", specifier = ">=3.0.2,<4" },
     { name = "tree-sitter-pascal", specifier = ">=0.11,<1" },
@@ -3683,7 +3687,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<1" },
     { name = "watchdog", specifier = ">=4,<5" },
 ]
-provides-extras = ["postgres", "graph-extra", "local-embed", "dev"]
+provides-extras = ["postgres", "graph-extra", "local-embed", "lpc", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -4667,6 +4671,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/bf/5c/70fa8a6d2bcc2578d38e1853382591134584eea8fa9556477c533d793f0c/tree_sitter_language_pack-1.14.3-cp310-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:c9df8545df48ee11744f9fbd1dcc972a270df9ea485321ce29e352dd64cb1a4c", size = 2357083, upload-time = "2026-08-05T19:15:30.787Z" },
     { url = "https://files.pythonhosted.org/packages/4a/0a/8525e8ac227504bb4cb1691cb07f8c13eae21e8017bf5b3aa126157d4060/tree_sitter_language_pack-1.14.3-cp310-abi3-win_amd64.whl", hash = "sha256:7aa7786929058d948179e99d1ad16a67d105a3d0bdeca2a11ed2b098edeb0a03", size = 2135211, upload-time = "2026-08-05T19:15:31.928Z" },
     { url = "https://files.pythonhosted.org/packages/8b/b9/3b7ff538a73ecbfa66d0067be7273fa9775bb8ce361b7a436b921f51358f/tree_sitter_language_pack-1.14.3-cp310-abi3-win_arm64.whl", hash = "sha256:4b0874abbc577e6f81c08a81457fdbea7bb10f50d62ebf33aab54f3fef7d6105", size = 2043231, upload-time = "2026-08-05T19:15:33.074Z" },
+]
+
+[[package]]
+name = "tree-sitter-lpc"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/12/5e/86e7077f3e07ffb8711963c06c1714955a848414d56843bf1ae480edb18a/tree_sitter_lpc-0.1.0.tar.gz", hash = "sha256:fd598d212e35b529781d5c39cf4f79636c4a873a4cb199a76db7d50e14e5f460", size = 149354, upload-time = "2026-11-22T06:14:52.281Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/db/17/b021f3c05333c9c28af87aaeed722585077ae2cc6e90a42dd2ca2201f4a4/tree_sitter_lpc-0.1.0-cp310-abi3-macosx_10_9_x86_64.whl", hash = "sha256:4209631033aee2955aa855749d832390a0346650fde501f9abe1e4ff73a6f73d", size = 62553, upload-time = "2026-11-22T06:14:47.81Z" },
+    { url = "https://files.pythonhosted.org/packages/37/42/3a570a54f92c4303093ca5ad8638dfc06d10f29e468da4b486a45b999ef0/tree_sitter_lpc-0.1.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:b48cd9f68db9f1ee70d8988268ac780683d91958ac5633b8e524c71c1aa29048", size = 66497, upload-time = "2026-11-22T06:14:49.073Z" },
+    { url = "https://files.pythonhosted.org/packages/51/ba/b859d2823ed57790b09998eea9cd0ee3a59702cc20873497e1638f9da20c/tree_sitter_lpc-0.1.0-cp310-abi3-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:de6764df23e3386edf2fb4df8c32402aca9f24ff324049f5cdcc2683cdf27a17", size = 78125, upload-time = "2026-11-22T06:14:50.077Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/bd/9f063959663282be0fd7e3d3aada5ca3d64f6a04abe26633a453e30e781d/tree_sitter_lpc-0.1.0-cp310-abi3-win_amd64.whl", hash = "sha256:9bb63da2bdafe6b0abd9d60f4287d1d6192b814287aa73bec14de07b1ecf06b7", size = 65402, upload-time = "2026-11-22T06:14:50.98Z" },
 ]
 
 [[package]]
