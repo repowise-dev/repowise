@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import select
@@ -216,6 +217,16 @@ async def test_fast_reinit_reconciles_source_and_search_without_generating_pages
 
     await persist_result(result, repo_path)
 
+    # A successful repair must not reopen search stores on an unchanged rerun.
+    async def redundant_cleanup(*args, **kwargs):
+        raise AssertionError("retired search rows were already removed")
+
+    with (
+        patch.object(LanceDBVectorStore, "delete_many", redundant_cleanup),
+        patch.object(FullTextSearch, "delete_many", redundant_cleanup),
+    ):
+        await persist_result(result, repo_path)
+
     engine, sf, _ = await open_repo_db(repo_path, repo_name="r")
     try:
         async with get_session(sf) as session:
@@ -249,13 +260,18 @@ async def test_fast_reinit_reconciles_source_and_search_without_generating_pages
         await reopened.close()
 
 
-async def test_fast_reinit_retries_failed_search_cleanup(tmp_path, monkeypatch):
+@pytest.mark.parametrize("already_tombstoned", [False, True])
+async def test_fast_reinit_retries_failed_search_cleanup(tmp_path, monkeypatch, already_tombstoned):
     repo_path = tmp_path / "repo"
     repo_path.mkdir()
     (repo_path / "kept.py").write_text("x", encoding="utf-8")
     await _seed_file_pages(repo_path, "kept.py", "gone.py")
-    engine, _, _ = await open_repo_db(repo_path, repo_name="r")
+    engine, sf, _ = await open_repo_db(repo_path, repo_name="r")
     try:
+        if already_tombstoned:
+            async with get_session(sf) as session:
+                page = await session.get(Page, "file_page:gone.py")
+                page.freshness_status = "tombstone"
         fts = FullTextSearch(engine)
         await fts.ensure_index()
         await fts.index(
@@ -290,11 +306,22 @@ async def test_fast_reinit_retries_failed_search_cleanup(tmp_path, monkeypatch):
         await engine.dispose()
 
 
-async def test_fast_reinit_closes_delete_only_store_when_cleanup_fails(tmp_path, monkeypatch):
+@pytest.mark.parametrize("already_tombstoned", [False, True])
+async def test_fast_reinit_closes_delete_only_store_when_cleanup_fails(
+    tmp_path, monkeypatch, already_tombstoned
+):
     repo_path = tmp_path / "repo"
     repo_path.mkdir()
     (repo_path / "kept.py").write_text("x", encoding="utf-8")
     await _seed_file_pages(repo_path, "kept.py", "gone.py")
+    if already_tombstoned:
+        engine, sf, _ = await open_repo_db(repo_path, repo_name="r")
+        try:
+            async with get_session(sf) as session:
+                page = await session.get(Page, "file_page:gone.py")
+                page.freshness_status = "tombstone"
+        finally:
+            await engine.dispose()
     store = LanceDBVectorStore(str(repo_path / ".repowise" / "lancedb"), MockEmbedder())
     await store.embed_batch([("file_page:gone.py", "gone", {})])
     await store.close()
@@ -313,10 +340,14 @@ async def test_fast_reinit_closes_delete_only_store_when_cleanup_fails(tmp_path,
     assert len(opened) == 1
     assert opened[0]._db is None
     assert opened[0]._table is None
-    assert await _status(repo_path, "file_page:gone.py") == "fresh"
+    assert await _status(repo_path, "file_page:gone.py") == (
+        "tombstone" if already_tombstoned else "fresh"
+    )
+    assert load_cleanup_debt(repo_path)["vectors"] == {"file_page:gone.py"}
 
     await persist_result(_result("r", []), repo_path)
     assert await _status(repo_path, "file_page:gone.py") == "tombstone"
+    assert load_cleanup_debt(repo_path)["vectors"] == set()
     reopened = LanceDBVectorStore(str(repo_path / ".repowise" / "lancedb"), MockEmbedder())
     try:
         assert await reopened.list_page_ids() == set()

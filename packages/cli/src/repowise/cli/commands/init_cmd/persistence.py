@@ -196,6 +196,8 @@ async def persist_result(
         clear_cleanup_debt,
         load_cleanup_debt,
         record_cleanup_debt,
+        seed_tombstone_cleanup_debt,
+        tombstone_cleanup_seeded,
     )
     from repowise.core.pipeline.persist import (
         persist_symbol_analysis,
@@ -252,6 +254,18 @@ async def persist_result(
         # Commit boundary 1 of 5: the repository row and its settings.
         with timed(timings, "persist.commit.repository"):
             await session.commit()
+        if not tombstone_cleanup_seeded(repo_path):
+            legacy_ids = set(
+                (
+                    await session.execute(
+                        select(Page.id).where(
+                            Page.repository_id == repo.id, Page.freshness_status == "tombstone"
+                        )
+                    )
+                ).scalars()
+            )
+            seed_tombstone_cleanup_debt(repo_path, legacy_ids)
+            debt = load_cleanup_debt(repo_path)
         swept_page_ids: list[str] = []
         if index_done:
             # Health runs after the INDEX checkpoint and mutates the in-memory
@@ -316,6 +330,7 @@ async def persist_result(
         # present, which the next run re-creates — never the reverse, where a
         # committed deletion keeps an embedding nothing will ever remove.
         vector_ids = set(swept_page_ids) | debt["vectors"]
+        record_cleanup_debt(repo_path, "vectors", vector_ids)
         await _delete_page_vectors(repo_path, store, vector_ids)
         clear_cleanup_debt(repo_path, "vectors", vector_ids)
         # Commit boundary 3 of 5: generation and its structural sweep (or the
@@ -333,26 +348,19 @@ async def persist_result(
         # later index. Outside the branch above because both branches need it.
         # Its ids join the swept ones so they leave the vector store and the
         # full-text index together, below, after this session closes.
+        tombstoned: list[str] = []
         try:
-            await tombstone_absent_file_pages(session, repo.id, repo_path)
+            tombstoned = await tombstone_absent_file_pages(session, repo.id, repo_path)
         except Exception as exc:  # one stale page must not fail a whole index
             logger.warning("tombstone_absent_sweep_failed", error=str(exc))
-        # Older fast inits may have committed the tombstone without removing
-        # its search rows. Retry every tombstone, preserving its body and history.
-        tombstoned = list(
-            (
-                await session.execute(
-                    select(Page.id).where(
-                        Page.repository_id == repo.id, Page.freshness_status == "tombstone"
-                    )
-                )
-            ).scalars()
-        )
         swept_page_ids = [*swept_page_ids, *tombstoned]
         # Same ordering as the sweep above, for the same reason: the embeddings
         # go before the rows that name them, so an interruption cannot leave a
         # committed tombstone pointing at an embedding nothing will delete.
+        record_cleanup_debt(repo_path, "vectors", set(tombstoned))
         await _delete_page_vectors(repo_path, store, set(tombstoned))
+        clear_cleanup_debt(repo_path, "vectors", set(tombstoned))
+        record_cleanup_debt(repo_path, "fts", set(tombstoned))
         # Commit boundary 4 of 5: the tombstone sweep.
         with timed(timings, "persist.commit.prune"):
             await session.commit()
