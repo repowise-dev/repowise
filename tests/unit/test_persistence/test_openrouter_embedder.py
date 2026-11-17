@@ -51,10 +51,33 @@ def test_dimensions_openai_large():
     assert emb.dimensions == 3072
 
 
+def test_dimensions_mongodb_voyage():
+    emb = OpenRouterEmbedder(api_key="k", model="mongodb/voyage-code-4")
+    assert emb.dimensions == 1024
+
+
 def test_unknown_model_raises_at_construction():
     """Unknown models must fail fast — a silent dim fallback would corrupt the vector store."""
     with pytest.raises(ValueError, match="Unknown embedding model"):
         OpenRouterEmbedder(api_key="k", model="some/future-model")
+
+
+def test_unknown_model_with_explicit_dimensions_succeeds():
+    emb = OpenRouterEmbedder(api_key="k", model="some/future-model", dimensions=1024)
+    assert emb.dimensions == 1024
+    assert emb._request_dimensions == 1024
+
+
+def test_unknown_model_with_declared_dimensions_succeeds():
+    emb = OpenRouterEmbedder(api_key="k", model="some/future-model", declared_dimensions=2048)
+    assert emb.dimensions == 2048
+    assert emb._request_dimensions is None
+
+
+def test_unknown_model_with_env_dims_succeeds(monkeypatch):
+    monkeypatch.setenv("REPOWISE_EMBEDDING_DIMS", "512")
+    emb = OpenRouterEmbedder(api_key="k", model="some/future-model")
+    assert emb.dimensions == 512
 
 
 def test_malformed_env_raises_the_same_message(monkeypatch):

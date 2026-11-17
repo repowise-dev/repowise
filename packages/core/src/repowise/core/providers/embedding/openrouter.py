@@ -47,6 +47,7 @@ class OpenRouterEmbedder:
 
     _DIMS: ClassVar[dict[str, int]] = {
         "google/gemini-embedding-001": 768,
+        "mongodb/voyage-code-4": 1024,
         "openai/text-embedding-3-small": 1536,
         "openai/text-embedding-3-large": 3072,
     }
@@ -66,20 +67,12 @@ class OpenRouterEmbedder:
             raise ValueError(
                 "OpenRouter API key required. Pass api_key= or set OPENROUTER_API_KEY env var."
             )
-        if model not in self._DIMS:
-            known = ", ".join(sorted(self._DIMS))
-            raise ValueError(
-                f"Unknown embedding model {model!r}. Stored vectors would be mis-sized "
-                f"against the model's real output, silently corrupting the vector store. "
-                f"Add {model!r} to OpenRouterEmbedder._DIMS with its correct dimension count, "
-                f"or pick a known model: {known}."
-            )
+        self._dimensions, self._request_dimensions = self._resolve_dimensions(
+            dimensions, declared_dimensions, model
+        )
         self._model = model
         self._timeout = resolve_embedding_timeout(
             timeout, self._DEFAULT_TIMEOUT, provider_env="OPENROUTER_EMBEDDING_TIMEOUT"
-        )
-        self._dimensions, self._request_dimensions = self._resolve_dimensions(
-            dimensions, declared_dimensions, model
         )
         self._client: object | None = None
 
@@ -113,6 +106,17 @@ class OpenRouterEmbedder:
                 declared_dimensions = _parse_dimensions_env(env)
         if declared_dimensions is not None:
             return _validate_dimensions(declared_dimensions), None
+
+        if model not in cls._DIMS:
+            known = ", ".join(sorted(cls._DIMS))
+            raise ValueError(
+                f"Unknown embedding model {model!r}. Stored vectors would be mis-sized "
+                f"against the model's real output, silently corrupting the vector store. "
+                f"Add {model!r} to OpenRouterEmbedder._DIMS with its correct dimension count, "
+                f"declare its width with dimensions= / declared_dimensions= (or "
+                f"REPOWISE_EMBEDDING_DIMS / REPOWISE_EMBEDDING_DECLARED_DIMS), "
+                f"or pick a known model: {known}."
+            )
 
         width = cls._DIMS[model]
         return width, width
