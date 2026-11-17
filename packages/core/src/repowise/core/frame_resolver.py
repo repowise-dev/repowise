@@ -51,9 +51,11 @@ SkipReason = Literal[
 
 _CALLABLE_KINDS = frozenset({"function", "method", "constructor"})
 _DRIVE_RE = re.compile(r"^[A-Za-z]:/")
-# Where a JavaScript function's body opens: a function starting after one of
-# these on its line is a nested function, not the one the line declares.
-_JS_BODY_OPENER_RE = re.compile(r"\{|=>")
+# What may stand on a JavaScript line before the function that line declares:
+# keywords, a binding or property name, ``=`` and ``:``. A bracket, a call, a
+# string, a separator or an arrow before the frame's column means some other
+# function could start there, so the column does not single out the symbol.
+_JS_HEAD_RE = re.compile(r"[\w$.\s=:*#\[\]\ufeff]*")
 
 
 @dataclass(frozen=True)
@@ -120,8 +122,9 @@ def resolve_frames(
     Second signals, after the span lookup: Go needs the index start line to
     equal the frame's ``start_line``; Python needs the frame's qualified name
     to be a dotted tail of the symbol's; JavaScript joins by position only:
-    exactly one indexed function starts on the frame's line, and the frame's
-    column lies before that line's first body opener.
+    exactly one indexed function starts on the frame's line, and nothing but
+    names, keywords, ``=`` and ``:`` stands before the frame's column, so it is
+    the first function the line can start.
     """
     paths = _PathMap(root, symbols_by_file, dirty_paths)
     resolved: list[ResolvedFrame] = []
@@ -172,7 +175,12 @@ def _resolve(
 
 
 def _by_span(frame: ProfileFrame, symbols: Sequence[IndexedSymbol]) -> IndexedSymbol | SkipReason:
-    symbol = symbol_at(symbols, frame.line)
+    if frame.language == "go":
+        # Go frames run in functions only; a type or var span is never the answer.
+        symbol = symbol_at((s for s in symbols if s.kind in _CALLABLE_KINDS), frame.line)
+    else:
+        # A Python class body runs as a frame of its own, named for the class.
+        symbol = symbol_at(symbols, frame.line)
     if symbol is None:
         return "no_span"
     if frame.language == "go":
@@ -205,10 +213,12 @@ def _javascript(
     lines = read_lines(rel) if read_lines is not None else None
     if lines is None or frame.line > len(lines):
         return "no_source"
-    text = lines[frame.line - 1]
-    opener = _JS_BODY_OPENER_RE.search(text)
-    head_end = opener.start() if opener else len(text)
-    return starting[0] if frame.column - 1 < head_end else "second_signal_mismatch"
+    # V8 counts columns in UTF-16 code units.
+    units = lines[frame.line - 1].encode("utf-16-le")
+    if (frame.column - 1) * 2 > len(units):
+        return "second_signal_mismatch"
+    head = units[: (frame.column - 1) * 2].decode("utf-16-le", errors="replace")
+    return starting[0] if _JS_HEAD_RE.fullmatch(head) else "second_signal_mismatch"
 
 
 class _PathMap:
@@ -225,9 +235,10 @@ class _PathMap:
         dirty_paths: Collection[str],
     ) -> None:
         self._root = posixpath.normpath(root.replace("\\", "/"))
-        self._fold = bool(_DRIVE_RE.match(self._root))
+        # Windows paths (a drive, "C:" alone, or a UNC share) compare without case.
+        self._fold = bool(re.match(r"[A-Za-z]:(?:/|$)", self._root)) or self._root.startswith("//")
         self._files = symbols_by_file
-        self._dirty = {self._key(p.replace("\\", "/")) for p in dirty_paths}
+        self._dirty = {self._key(posixpath.normpath(p.replace("\\", "/"))) for p in dirty_paths}
         self._folded: dict[str, str | None] = {}
         if self._fold:
             for path in symbols_by_file:
@@ -239,7 +250,7 @@ class _PathMap:
 
     def relative(self, raw: str) -> str | None:
         path = raw.replace("\\", "/")
-        if path.startswith("file://"):
+        if path[:7].lower() == "file://":
             path = unquote(path[len("file://") :])
             if _DRIVE_RE.match(path[1:]):
                 path = path[1:]  # file:///C:/x -> C:/x

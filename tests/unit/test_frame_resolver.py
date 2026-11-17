@@ -263,3 +263,79 @@ def test_reasons_align_with_input_and_counts_hold_only_reasons_seen() -> None:
 def test_no_frames_is_empty_not_zero() -> None:
     res = _resolve()
     assert res.resolved == () and res.skipped == {}
+
+
+# -- review cases ----------------------------------------------------------------
+
+
+def _js_line(text: str, column: int, start: int = 1):
+    sym = _sym("lib/x.js", "x.handler", start, start + 3)
+    lines = [""] * (start - 1) + [text, "", "", ""]
+    frame = ProfileFrame(f"{ROOT}/lib/x.js", start, "javascript", column=column)
+    return resolve_frames(
+        [frame], root=ROOT, symbols_by_file={"lib/x.js": [sym]}, read_lines=lambda _p: lines
+    )
+
+
+def test_javascript_unindexed_function_earlier_on_the_line_is_not_the_symbol() -> None:
+    text = "items.map(x => x.id); function handler() {}"
+    assert _js_line(text, text.index("x =>") + 1).skipped == {"second_signal_mismatch": 1}
+    assert _js_line(text, text.index("() {}") + 1).skipped == {"second_signal_mismatch": 1}
+
+
+def test_javascript_shapes_a_line_declares() -> None:
+    for text in (
+        "app.handle = function handle(req, res) {",
+        "  get: function getrouter() {",
+        "const handler = (a, b) => {",
+        "const handler = async x => x + 1",
+        "  static async *handler(a) {",
+        "export default function (req) {",
+        "app[method] = function (path) {",
+    ):
+        column = text.index("x =>") + 1 if "x =>" in text else text.index("(") + 1
+        assert len(_js_line(text, column).resolved) == 1, text
+
+
+def test_javascript_string_before_the_function_is_skipped_not_guessed() -> None:
+    text = 'const s = "{"; function handler() {}'
+    assert _js_line(text, text.index("() {}") + 1).skipped == {"second_signal_mismatch": 1}
+
+
+def test_javascript_columns_count_utf16_units() -> None:
+    text = "const \U0001d465 = function () {"
+    # The astral letter takes two UTF-16 units, so V8's column is one past the code point index.
+    column = text.index("(") + 2
+    assert len(_js_line(text, column).resolved) == 1
+
+
+def test_javascript_column_past_the_line_is_a_mismatch() -> None:
+    assert _js_line("function handler() {}", 99).skipped == {"second_signal_mismatch": 1}
+
+
+def test_drive_root_without_slash_and_unc_roots_fold_case() -> None:
+    syms = {"a.py": [_sym("a.py", "a.f", 1, 3)]}
+    frame = ProfileFrame("C:/A.py", 2, "python", function="f")
+    assert len(resolve_frames([frame], root="C:", symbols_by_file=syms).resolved) == 1
+    unc = ProfileFrame(r"\\SRV\share\repo\a.py", 2, "python", function="f")
+    assert len(resolve_frames([unc], root="//srv/share/repo", symbols_by_file=syms).resolved) == 1
+
+
+def test_file_url_scheme_is_case_insensitive() -> None:
+    frame = ProfileFrame("FILE:///C:/work/repo/pkg/app.py", 5, "python", function="App.__init__")
+    assert _one(_resolve(frame)) is PY_INIT
+
+
+def test_dirty_paths_are_normalised() -> None:
+    assert _resolve(_py(5, "App.__init__"), dirty_paths={"./pkg/app.py"}).skipped == {"dirty": 1}
+
+
+def test_dirty_wins_over_generated() -> None:
+    res = _resolve(_py(5, "App.__init__"), dirty_paths={"pkg/app.py"}, origins={"pkg/app.py": "generated"})
+    assert res.skipped == {"dirty": 1}
+
+
+def test_go_span_lookup_sees_functions_only() -> None:
+    syms = {"t.go": [_sym("t.go", "t.T", 10, 20, "struct"), _sym("t.go", "t.f", 30, 40)]}
+    frame = ProfileFrame(f"{ROOT}/t.go", 12, "go", function="t.x", start_line=10)
+    assert resolve_frames([frame], root=ROOT, symbols_by_file=syms).skipped == {"no_span": 1}
