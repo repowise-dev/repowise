@@ -245,7 +245,7 @@ export default async function ConformancePage() {
         ) : cycles.length === 0 ? (
           <EmptyState
             className="p-6"
-            {...(cycleCount === 0 ? { tone: "positive" as const } : {})}
+            {...(metrics && cycleCount === 0 ? { tone: "positive" as const } : {})}
             title={
               cycleCount > 0
                 ? cycleCountCapped
