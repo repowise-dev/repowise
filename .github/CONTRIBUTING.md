@@ -340,6 +340,8 @@ and commit the budget diff.
 - Write a clear description of what and why
 - Reference any related issues
 - Ensure CI passes before requesting review
+- Once you have a merged PR here, comment `/rerun` on any open PR to re-run its
+  failed checks, for example a flaky test.
 - All PRs require at least one code owner approval
 - Commits do not list a coding agent as author or co-author (for example a
   `Co-authored-by: Copilot` or `Co-Authored-By: Claude` trailer); maintainers ask
