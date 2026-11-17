@@ -190,10 +190,52 @@ async def test_pruning_is_per_workload_under_a_cap_per_kind(async_session) -> No
     # The busy workload keeps its newest two and leaves the rare one alone.
     assert kept == {ids["rare"][0], *ids["busy"][-2:]}
 
+    # The cap per kind trims the busy workload, never the rare one's only run.
     await prune_evidence_runs(async_session, repo.id, "profile", per_workload=2, per_kind=2)
-    assert set((await async_session.execute(select(EvidenceRun.id))).scalars()) == set(
-        ids["busy"][-2:]
+    assert set((await async_session.execute(select(EvidenceRun.id))).scalars()) == {
+        ids["rare"][0],
+        ids["busy"][-1],
+    }
+
+
+async def test_a_busy_workload_past_the_cap_keeps_a_rare_workloads_old_run(
+    async_session,
+) -> None:
+    repo = await insert_repo(async_session)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    rare = await save_evidence_run(
+        async_session,
+        repo.id,
+        _run("rare", workload_name="rare", ingested_at=base),
+        _costs(1),
+        history_runs=5,
+        max_runs=3,
     )
+    busy = []
+    for i in range(6):
+        write = await save_evidence_run(
+            async_session,
+            repo.id,
+            _run(f"b{i}", workload_name="busy", ingested_at=base + timedelta(days=i + 1)),
+            _costs(1),
+            history_runs=5,
+            max_runs=3,
+        )
+        busy.append(write.run_id)
+    await async_session.commit()
+
+    kept = set((await async_session.execute(select(EvidenceRun.id))).scalars())
+    assert kept == {rare.run_id, *busy[-2:]}
+    cost_runs = set((await async_session.execute(select(EvidenceSymbolCost.run_id))).scalars())
+    assert cost_runs == kept
+
+    # More workloads than the cap: each keeps only its newest run.
+    assert (
+        await prune_evidence_runs(async_session, repo.id, "profile", per_workload=5, per_kind=1)
+        == 1
+    )
+    kept = set((await async_session.execute(select(EvidenceRun.id))).scalars())
+    assert kept == {rare.run_id, busy[-1]}
 
 
 async def test_writer_mistakes_raise(async_session) -> None:

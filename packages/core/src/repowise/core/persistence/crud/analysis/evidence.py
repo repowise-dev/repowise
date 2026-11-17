@@ -64,8 +64,8 @@ async def save_evidence_run(
     nothing else is written, like ``coverage._record_ingest``, so ``run_key``
     must cover everything the run row records. A run with no commit is
     always new, since it cannot be told apart from another. Pruning keeps
-    *history_runs* per workload and *max_runs* per kind
-    (:func:`prune_evidence_runs`).
+    *history_runs* per workload and *max_runs* per kind, never dropping a
+    workload's newest run (:func:`prune_evidence_runs`).
     """
     kind = run["kind"]
     table = EVIDENCE_ROW_TABLES.get(kind)
@@ -128,10 +128,13 @@ async def prune_evidence_runs(
     per_workload: int,
     per_kind: int,
 ) -> int:
-    """Drop runs of *kind* past the newest *per_workload* of their workload
-    (name and environment) or past the newest *per_kind* overall, oldest
-    first. One busy workload so cannot evict another's history, and many
-    workload names cannot grow the store without bound. Returns how many."""
+    """Drop runs of *kind*, oldest first, past the newest *per_workload* of
+    their workload (name and environment), then past *per_kind* overall.
+
+    The newest run of every workload always stays, so one busy workload
+    cannot evict another's history. The kind so holds at most
+    ``max(per_kind, number of workloads)`` runs: past *per_kind* workloads,
+    each keeps only its newest. Returns how many runs were dropped."""
     runs = (
         await session.execute(
             select(EvidenceRun.id, EvidenceRun.workload_name, EvidenceRun.environment)
@@ -140,12 +143,20 @@ async def prune_evidence_runs(
         )
     ).all()
     seen: dict[tuple[str, str], int] = {}
+    newest: list[str] = []
+    older: list[str] = []
     stale: list[str] = []
-    for position, (run_id, workload, environment) in enumerate(runs):
+    for run_id, workload, environment in runs:
         series = (workload, environment)
         seen[series] = seen.get(series, 0) + 1
-        if position >= per_kind or seen[series] > per_workload:
+        if seen[series] == 1:
+            newest.append(run_id)
+        elif seen[series] <= per_workload:
+            older.append(run_id)
+        else:
             stale.append(run_id)
+    # ``older`` is newest first, so the cap keeps the most recent of them.
+    stale.extend(older[max(per_kind - len(newest), 0) :])
     await delete_evidence_runs(session, stale)
     return len(stale)
 
