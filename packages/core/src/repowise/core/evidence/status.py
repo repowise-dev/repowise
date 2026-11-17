@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import UTC
 from typing import Any
 
 from repowise.core.analysis.health.coverage.freshness import coverage_freshness
@@ -35,7 +36,12 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         "commit_sha": run.commit_sha,
         "freshness": coverage_freshness(run.commit_sha, reference_commit),
         "dirty": run.dirty,
-        "ingested_at": run.ingested_at.isoformat() if run.ingested_at else None,
+        # SQLite hands back the stored UTC time without its zone.
+        "ingested_at": (
+            run.ingested_at.replace(tzinfo=run.ingested_at.tzinfo or UTC).isoformat()
+            if run.ingested_at
+            else None
+        ),
         "units": {
             "total": run.units_total,
             "matched": run.units_matched,

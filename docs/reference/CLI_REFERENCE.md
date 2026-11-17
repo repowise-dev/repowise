@@ -1389,7 +1389,8 @@ repowise evidence status --format json   # newest run of each workload
 - `status` lists the newest run of each workload (kind, name, environment) and how many runs each
   kind keeps. Each run says its freshness against the indexed commit (`current`, `stale`, or
   `unknown` when either commit is missing), how much of the run repo code explains
-  (`explained_share`, unknown when the file gave no `total` and `explained`), and its counts.
+  (`explained_share`, unknown when the run gave no total or explained value, or a total of 0),
+  and its counts.
 
 ---
 

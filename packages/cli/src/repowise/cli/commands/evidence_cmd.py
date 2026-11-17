@@ -469,20 +469,29 @@ def evidence_status_command(repo: str | None, fmt: str) -> None:
         )
         return
     for run in payload["workloads"]:
-        share = run["explained_share"]
-        explained = (
-            f"repo code explains {share:.0%} of {run['total_value']:g} {run['unit']}"
-            if share is not None
-            else "explained share unknown"
-        )
-        units = run["units"]
-        notices.print(
-            f"[bold]{escape(run['workload'])}[/bold] ({run['kind']}, {run['class']}, "
-            f"{escape(run['environment'])}): {run['freshness']} at "
-            f"{(run['commit_sha'] or 'unknown')[:12]}; {units['matched']} of "
-            f"{units['total']} entries stored; {explained}."
-            + (" [red](partial)[/red]" if run["mapping_partial"] else "")
-        )
+        notices.print(_status_line(run))
+
+
+def _status_line(run: dict[str, Any]) -> str:
+    """One workload's newest run, in words; an unknown value says so, never 0."""
+    share = run["explained_share"]
+    if share is None:
+        explained = "explained share unknown"
+    else:
+        unit = f" {escape(run['unit'])}" if run["unit"] else ""
+        explained = f"repo code explains {share:.0%} of {run['total_value']:g}{unit}"
+    units = run["units"]
+    stored = (
+        f"{units['matched']} of {units['total']} entries stored"
+        if units["matched"] is not None and units["total"] is not None
+        else "entry counts unknown"
+    )
+    return (
+        f"[bold]{escape(run['workload'])}[/bold] ({run['kind']}, {run['class']}, "
+        f"{escape(run['environment'])}): {run['freshness']} at "
+        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}; {explained}."
+        + (" [red](partial)[/red]" if run["mapping_partial"] else "")
+    )
 
 
 async def _status(repo_path: Path) -> dict[str, Any]:

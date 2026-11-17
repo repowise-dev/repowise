@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from repowise.core.evidence.status import evidence_status, explained_share
+from repowise.cli.commands.evidence_cmd import _status_line
+from repowise.core.evidence.status import evidence_status, explained_share, run_status
 
 
 def _run(run_id: str, workload: str, commit: str | None, **fields) -> SimpleNamespace:
@@ -42,3 +43,17 @@ def test_explained_share_needs_both_values() -> None:
     assert explained_share(None, 5) is None
     assert explained_share(0, 0) is None
     assert explained_share(10, 12) == 1.0
+
+
+def test_unknown_values_read_as_unknown_in_the_table() -> None:
+    run = run_status(
+        _run("r1", "[b]x[/b]", None, ingested_at=datetime(2026, 1, 1), total_value=10.0,
+             explained_value=5.0, unit=None),
+        None,
+    )
+    assert run["ingested_at"] == "2026-01-01T00:00:00+00:00"
+    line = _status_line(run)
+    assert "entry counts unknown" in line
+    assert "explains 50% of 10." in line
+    assert "None" not in line
+    assert "\\[b]x\\[/b]" in line
