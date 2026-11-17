@@ -123,6 +123,21 @@ Example `command_run` payload:
 }
 ```
 
+### `view_opened` - once per web view opened
+
+Emitted by the local server when the web UI opens one of its navigation views,
+so we can see which views people use. The browser sends only the view's fixed
+id to its own server, which refuses any id not on the list and records the
+event through the same opt-out as every other event. **Never the repo, the
+page path, or anything shown on the page**:
+
+| Field | Example | Purpose |
+|---|---|---|
+| `properties.view` | `repo.codeHealth` / `workspace.contracts` / `global.dashboard` | Which view was opened: `global.` (`dashboard`, `settings`), `workspace.` (`overview`, `systemMap`, `conformance`, `contracts`, `coChanges`, `estateReport`) or `repo.` (`overview`, `chat`, `review`, `docs`, `architecture`, `knowledgeGraph`, `files`, `codeHealth`, `refactoring`, `tests`, `security`, `contributors`, `commits`, `decisions`, `stats`, `usageAndSavings`, `settings`) |
+
+Moving between pages inside one view (two files under Files), or to the same
+view in another repo, sends nothing new.
+
 ## What is **never** collected
 
 - Source code or file contents
