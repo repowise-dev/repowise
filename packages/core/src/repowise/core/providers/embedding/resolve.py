@@ -302,10 +302,25 @@ def _gemini_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
     return {"output_dimensionality": dims} if dims else {}
 
 
+def _openrouter_kwargs(repo_path: Path | str | None = None) -> dict[str, Any]:
+    # The model pin is read from the repo's .env, so its width must be too:
+    # a model outside OpenRouterEmbedder._DIMS is only accepted with one.
+    lookup = repo_getenv(repo_path)
+    kwargs: dict[str, Any] = {}
+    dims = _positive_int("REPOWISE_EMBEDDING_DIMS", lookup)
+    if dims:
+        kwargs["dimensions"] = dims
+    declared = _positive_int("REPOWISE_EMBEDDING_DECLARED_DIMS", lookup)
+    if declared:
+        kwargs["declared_dimensions"] = declared
+    return kwargs
+
+
 #: Constructor arguments only some embedders take.
 _EXTRA_KWARGS: dict[str, Callable[[Path | str | None], dict[str, Any]]] = {
     "ollama": _ollama_kwargs,
     "gemini": _gemini_kwargs,
+    "openrouter": _openrouter_kwargs,
 }
 
 
