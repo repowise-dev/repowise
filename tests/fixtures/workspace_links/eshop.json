@@ -1,0 +1,1070 @@
+{
+ "nodes": [
+  {
+   "id": "basket.api",
+   "repo": "basket.api",
+   "service_path": null,
+   "name": "basket.api"
+  },
+  {
+   "id": "catalog.api",
+   "repo": "catalog.api",
+   "service_path": null,
+   "name": "catalog.api"
+  },
+  {
+   "id": "clientapp",
+   "repo": "clientapp",
+   "service_path": null,
+   "name": "clientapp"
+  },
+  {
+   "id": "eshop.servicedefaults",
+   "repo": "eshop.servicedefaults",
+   "service_path": null,
+   "name": "eshop.servicedefaults"
+  },
+  {
+   "id": "eventbus",
+   "repo": "eventbus",
+   "service_path": null,
+   "name": "eventbus"
+  },
+  {
+   "id": "eventbusrabbitmq",
+   "repo": "eventbusrabbitmq",
+   "service_path": null,
+   "name": "eventbusrabbitmq"
+  },
+  {
+   "id": "hybridapp",
+   "repo": "hybridapp",
+   "service_path": null,
+   "name": "hybridapp"
+  },
+  {
+   "id": "identity.api",
+   "repo": "identity.api",
+   "service_path": null,
+   "name": "identity.api"
+  },
+  {
+   "id": "integrationeventlogef",
+   "repo": "integrationeventlogef",
+   "service_path": null,
+   "name": "integrationeventlogef"
+  },
+  {
+   "id": "ordering.api",
+   "repo": "ordering.api",
+   "service_path": null,
+   "name": "ordering.api"
+  },
+  {
+   "id": "ordering.domain",
+   "repo": "ordering.domain",
+   "service_path": null,
+   "name": "ordering.domain"
+  },
+  {
+   "id": "ordering.infrastructure",
+   "repo": "ordering.infrastructure",
+   "service_path": null,
+   "name": "ordering.infrastructure"
+  },
+  {
+   "id": "orderprocessor",
+   "repo": "orderprocessor",
+   "service_path": null,
+   "name": "orderprocessor"
+  },
+  {
+   "id": "paymentprocessor",
+   "repo": "paymentprocessor",
+   "service_path": null,
+   "name": "paymentprocessor"
+  },
+  {
+   "id": "webapp",
+   "repo": "webapp",
+   "service_path": null,
+   "name": "webapp"
+  },
+  {
+   "id": "webappcomponents",
+   "repo": "webappcomponents",
+   "service_path": null,
+   "name": "webappcomponents"
+  },
+  {
+   "id": "webhookclient",
+   "repo": "webhookclient",
+   "service_path": null,
+   "name": "webhookclient"
+  },
+  {
+   "id": "webhooks.api",
+   "repo": "webhooks.api",
+   "service_path": null,
+   "name": "webhooks.api"
+  }
+ ],
+ "contracts": [
+  {
+   "repo": "ordering.api",
+   "contract_id": "http::PUT::/api/orders/cancel",
+   "contract_type": "http",
+   "role": "provider",
+   "file_path": "Apis/OrdersApi.cs",
+   "symbol_name": "aspnet-minimal:PUT /api/orders/cancel",
+   "confidence": 0.85,
+   "line": 11,
+   "symbol_id": "Apis/OrdersApi.cs::OrdersApi::CancelOrderAsync",
+   "origin": "route_registration"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "http::PUT::/api/orders/ship",
+   "contract_type": "http",
+   "role": "provider",
+   "file_path": "Apis/OrdersApi.cs",
+   "symbol_name": "aspnet-minimal:PUT /api/orders/ship",
+   "confidence": 0.85,
+   "line": 12,
+   "symbol_id": "Apis/OrdersApi.cs::OrdersApi::ShipOrderAsync",
+   "origin": "route_registration"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "http::GET::/api/orders/{param}",
+   "contract_type": "http",
+   "role": "provider",
+   "file_path": "Apis/OrdersApi.cs",
+   "symbol_name": "aspnet-minimal:GET /api/orders/{orderId:int}",
+   "confidence": 0.85,
+   "line": 13,
+   "symbol_id": "Apis/OrdersApi.cs::OrdersApi::MapOrdersApiV1",
+   "origin": "route_registration"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "http::GET::/api/orders",
+   "contract_type": "http",
+   "role": "provider",
+   "file_path": "Apis/OrdersApi.cs",
+   "symbol_name": "aspnet-minimal:GET /api/orders/",
+   "confidence": 0.85,
+   "line": 14,
+   "symbol_id": "Apis/OrdersApi.cs::OrdersApi::GetOrdersByUserAsync",
+   "origin": "route_registration"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "http::GET::/api/orders/cardtypes",
+   "contract_type": "http",
+   "role": "provider",
+   "file_path": "Apis/OrdersApi.cs",
+   "symbol_name": "aspnet-minimal:GET /api/orders/cardtypes",
+   "confidence": 0.85,
+   "line": 15,
+   "symbol_id": "Apis/OrdersApi.cs::OrdersApi::MapOrdersApiV1",
+   "origin": "route_registration"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "http::POST::/api/orders/draft",
+   "contract_type": "http",
+   "role": "provider",
+   "file_path": "Apis/OrdersApi.cs",
+   "symbol_name": "aspnet-minimal:POST /api/orders/draft",
+   "confidence": 0.85,
+   "line": 16,
+   "symbol_id": "Apis/OrdersApi.cs::OrdersApi::CreateOrderDraftAsync",
+   "origin": "route_registration"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "http::POST::/api/orders",
+   "contract_type": "http",
+   "role": "provider",
+   "file_path": "Apis/OrdersApi.cs",
+   "symbol_name": "aspnet-minimal:POST /api/orders/",
+   "confidence": 0.85,
+   "line": 17,
+   "symbol_id": "Apis/OrdersApi.cs::OrdersApi::CreateOrderAsync",
+   "origin": "route_registration"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstartedintegrationevent",
+   "contract_type": "topic",
+   "role": "provider",
+   "file_path": "Application/Commands/CreateOrderCommandHandler.cs",
+   "symbol_name": "new('OrderStartedIntegrationEvent')",
+   "confidence": 0.7,
+   "line": 32,
+   "symbol_id": "Application/Commands/CreateOrderCommandHandler.cs::CreateOrderCommandHandler::Handle",
+   "origin": "dataflow"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstatuschangedtocancelledintegrationevent",
+   "contract_type": "topic",
+   "role": "provider",
+   "file_path": "Application/DomainEventHandlers/OrderCancelledDomainEventHandler.cs",
+   "symbol_name": "new('OrderStatusChangedToCancelledIntegrationEvent')",
+   "confidence": 0.7,
+   "line": 30,
+   "symbol_id": "Application/DomainEventHandlers/OrderCancelledDomainEventHandler.cs::OrderCancelledDomainEventHandler::Handle",
+   "origin": "dataflow"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstatuschangedtoshippedintegrationevent",
+   "contract_type": "topic",
+   "role": "provider",
+   "file_path": "Application/DomainEventHandlers/OrderShippedDomainEventHandler.cs",
+   "symbol_name": "new('OrderStatusChangedToShippedIntegrationEvent')",
+   "confidence": 0.7,
+   "line": 30,
+   "symbol_id": "Application/DomainEventHandlers/OrderShippedDomainEventHandler.cs::OrderShippedDomainEventHandler::Handle",
+   "origin": "dataflow"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstatuschangedtoawaitingvalidationintegrationevent",
+   "contract_type": "topic",
+   "role": "provider",
+   "file_path": "Application/DomainEventHandlers/OrderStatusChangedToAwaitingValidationDomainEventHandler.cs",
+   "symbol_name": "new('OrderStatusChangedToAwaitingValidationIntegrationEvent')",
+   "confidence": 0.7,
+   "line": 33,
+   "symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToAwaitingValidationDomainEventHandler.cs::OrderStatusChangedToAwaitingValidationDomainEventHandler::Handle",
+   "origin": "dataflow"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstatuschangedtopaidintegrationevent",
+   "contract_type": "topic",
+   "role": "provider",
+   "file_path": "Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs",
+   "symbol_name": "new('OrderStatusChangedToPaidIntegrationEvent')",
+   "confidence": 0.7,
+   "line": 32,
+   "symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs::OrderStatusChangedToPaidDomainEventHandler::Handle",
+   "origin": "dataflow"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstatuschangedtostockconfirmedintegrationevent",
+   "contract_type": "topic",
+   "role": "provider",
+   "file_path": "Application/DomainEventHandlers/OrderStatusChangedToStockConfirmedDomainEventHandler.cs",
+   "symbol_name": "new('OrderStatusChangedToStockConfirmedIntegrationEvent')",
+   "confidence": 0.7,
+   "line": 30,
+   "symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToStockConfirmedDomainEventHandler.cs::OrderStatusChangedToStockConfirmedDomainEventHandler::Handle",
+   "origin": "dataflow"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstatuschangedtosubmittedintegrationevent",
+   "contract_type": "topic",
+   "role": "provider",
+   "file_path": "Application/DomainEventHandlers/ValidateOrAddBuyerAggregateWhenOrderStartedDomainEventHandler.cs",
+   "symbol_name": "new('OrderStatusChangedToSubmittedIntegrationEvent')",
+   "confidence": 0.7,
+   "line": 50,
+   "symbol_id": "Application/DomainEventHandlers/ValidateOrAddBuyerAggregateWhenOrderStartedDomainEventHandler.cs::ValidateOrAddBuyerAggregateWhenOrderStartedDomainEventHandler::Handle",
+   "origin": "dataflow"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::graceperiodconfirmedintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('GracePeriodConfirmedIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 55,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstockconfirmedintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderStockConfirmedIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 56,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderstockrejectedintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderStockRejectedIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 57,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderpaymentfailedintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderPaymentFailedIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 58,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "ordering.api",
+   "contract_id": "topic::orderpaymentsucceededintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderPaymentSucceededIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 59,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "http::*::/api/catalog/items/{param}/pic",
+   "contract_type": "http",
+   "role": "consumer",
+   "file_path": "Program.cs",
+   "symbol_name": "yarp-forwarder:* https+http://catalog-api/api/catalog/items/{id}/pic",
+   "confidence": 0.75,
+   "line": 32,
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "http::GET::/api/orders",
+   "contract_type": "http",
+   "role": "consumer",
+   "file_path": "Services/OrderingService.cs",
+   "symbol_name": "httpclient:GET https+http://ordering-api/api/Orders/",
+   "confidence": 0.75,
+   "line": 9,
+   "symbol_id": "Services/OrderingService.cs::OrderingService::GetOrders",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "http::POST::/api/orders",
+   "contract_type": "http",
+   "role": "consumer",
+   "file_path": "Services/OrderingService.cs",
+   "symbol_name": "httpclient:POST https+http://ordering-api/api/Orders/",
+   "confidence": 0.75,
+   "line": 14,
+   "symbol_id": "Services/OrderingService.cs::OrderingService::CreateOrder",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "grpc::Basket/*",
+   "contract_type": "grpc",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "cs:AddGrpcClient<Basket.BasketClient>",
+   "confidence": 0.75,
+   "line": 31,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddApplicationServices",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "grpc::Basket/*",
+   "contract_type": "grpc",
+   "role": "consumer",
+   "file_path": "Services/BasketService.cs",
+   "symbol_name": "cs:Basket.BasketClient",
+   "confidence": 0.65,
+   "line": 3,
+   "origin": "name_heuristic"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "topic::orderstatuschangedtoawaitingvalidationintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderStatusChangedToAwaitingValidationIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 45,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "topic::orderstatuschangedtopaidintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderStatusChangedToPaidIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 46,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "topic::orderstatuschangedtostockconfirmedintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderStatusChangedToStockConfirmedIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 47,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "topic::orderstatuschangedtoshippedintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderStatusChangedToShippedIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 48,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "topic::orderstatuschangedtocancelledintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderStatusChangedToCancelledIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 49,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  },
+  {
+   "repo": "webapp",
+   "contract_id": "topic::orderstatuschangedtosubmittedintegrationevent",
+   "contract_type": "topic",
+   "role": "consumer",
+   "file_path": "Extensions/Extensions.cs",
+   "symbol_name": "AddSubscription('OrderStatusChangedToSubmittedIntegrationEvent')",
+   "confidence": 0.75,
+   "line": 50,
+   "symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "origin": "client_call"
+  }
+ ],
+ "contract_links": [
+  {
+   "contract_id": "topic::orderstartedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/Commands/CreateOrderCommandHandler.cs",
+   "provider_symbol": "new('OrderStartedIntegrationEvent')",
+   "consumer_repo": "basket.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStartedIntegrationEvent')",
+   "provider_symbol_id": "Application/Commands/CreateOrderCommandHandler.cs::CreateOrderCommandHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddApplicationServices",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtoawaitingvalidationintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderStatusChangedToAwaitingValidationDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToAwaitingValidationIntegrationEvent')",
+   "consumer_repo": "catalog.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToAwaitingValidationIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToAwaitingValidationDomainEventHandler.cs::OrderStatusChangedToAwaitingValidationDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddApplicationServices",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtopaidintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToPaidIntegrationEvent')",
+   "consumer_repo": "catalog.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToPaidIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs::OrderStatusChangedToPaidDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddApplicationServices",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::graceperiodconfirmedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "orderprocessor",
+   "provider_file": "Services/GracePeriodManagerService.cs",
+   "provider_symbol": "new('GracePeriodConfirmedIntegrationEvent')",
+   "consumer_repo": "ordering.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('GracePeriodConfirmedIntegrationEvent')",
+   "provider_symbol_id": "Services/GracePeriodManagerService.cs::GracePeriodManagerService::CheckConfirmedGracePeriodOrders",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstockconfirmedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "catalog.api",
+   "provider_file": "IntegrationEvents/EventHandling/OrderStatusChangedToAwaitingValidationIntegrationEventHandler.cs",
+   "provider_symbol": "new('OrderStockConfirmedIntegrationEvent')",
+   "consumer_repo": "ordering.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStockConfirmedIntegrationEvent')",
+   "provider_symbol_id": "IntegrationEvents/EventHandling/OrderStatusChangedToAwaitingValidationIntegrationEventHandler.cs::OrderStatusChangedToAwaitingValidationIntegrationEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstockrejectedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "catalog.api",
+   "provider_file": "IntegrationEvents/EventHandling/OrderStatusChangedToAwaitingValidationIntegrationEventHandler.cs",
+   "provider_symbol": "new('OrderStockRejectedIntegrationEvent')",
+   "consumer_repo": "ordering.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStockRejectedIntegrationEvent')",
+   "provider_symbol_id": "IntegrationEvents/EventHandling/OrderStatusChangedToAwaitingValidationIntegrationEventHandler.cs::OrderStatusChangedToAwaitingValidationIntegrationEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderpaymentfailedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "paymentprocessor",
+   "provider_file": "IntegrationEvents/EventHandling/OrderStatusChangedToStockConfirmedIntegrationEventHandler.cs",
+   "provider_symbol": "new('OrderPaymentFailedIntegrationEvent')",
+   "consumer_repo": "ordering.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderPaymentFailedIntegrationEvent')",
+   "provider_symbol_id": "IntegrationEvents/EventHandling/OrderStatusChangedToStockConfirmedIntegrationEventHandler.cs::OrderStatusChangedToStockConfirmedIntegrationEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderpaymentsucceededintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "paymentprocessor",
+   "provider_file": "IntegrationEvents/EventHandling/OrderStatusChangedToStockConfirmedIntegrationEventHandler.cs",
+   "provider_symbol": "new('OrderPaymentSucceededIntegrationEvent')",
+   "consumer_repo": "ordering.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderPaymentSucceededIntegrationEvent')",
+   "provider_symbol_id": "IntegrationEvents/EventHandling/OrderStatusChangedToStockConfirmedIntegrationEventHandler.cs::OrderStatusChangedToStockConfirmedIntegrationEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtostockconfirmedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderStatusChangedToStockConfirmedDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToStockConfirmedIntegrationEvent')",
+   "consumer_repo": "paymentprocessor",
+   "consumer_file": "Program.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToStockConfirmedIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToStockConfirmedDomainEventHandler.cs::OrderStatusChangedToStockConfirmedDomainEventHandler::Handle",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "http::GET::/api/catalog/items/{param}/pic",
+   "contract_type": "http",
+   "match_type": "exact",
+   "confidence": 0.75,
+   "provider_repo": "catalog.api",
+   "provider_file": "Apis/CatalogApi.cs",
+   "provider_symbol": "aspnet-minimal:GET /api/catalog/items/{id:int}/pic",
+   "consumer_repo": "webapp",
+   "consumer_file": "Program.cs",
+   "consumer_symbol": "yarp-forwarder:* https+http://catalog-api/api/catalog/items/{id}/pic",
+   "provider_symbol_id": "Apis/CatalogApi.cs::CatalogApi::GetItemPictureById",
+   "consumer_contract_id": "http::*::/api/catalog/items/{param}/pic",
+   "strategy": "service_mapped"
+  },
+  {
+   "contract_id": "http::GET::/api/orders",
+   "contract_type": "http",
+   "match_type": "exact",
+   "confidence": 0.75,
+   "provider_repo": "ordering.api",
+   "provider_file": "Apis/OrdersApi.cs",
+   "provider_symbol": "aspnet-minimal:GET /api/orders/",
+   "consumer_repo": "webapp",
+   "consumer_file": "Services/OrderingService.cs",
+   "consumer_symbol": "httpclient:GET https+http://ordering-api/api/Orders/",
+   "provider_symbol_id": "Apis/OrdersApi.cs::OrdersApi::GetOrdersByUserAsync",
+   "consumer_symbol_id": "Services/OrderingService.cs::OrderingService::GetOrders",
+   "strategy": "service_mapped"
+  },
+  {
+   "contract_id": "http::POST::/api/orders",
+   "contract_type": "http",
+   "match_type": "exact",
+   "confidence": 0.75,
+   "provider_repo": "ordering.api",
+   "provider_file": "Apis/OrdersApi.cs",
+   "provider_symbol": "aspnet-minimal:POST /api/orders/",
+   "consumer_repo": "webapp",
+   "consumer_file": "Services/OrderingService.cs",
+   "consumer_symbol": "httpclient:POST https+http://ordering-api/api/Orders/",
+   "provider_symbol_id": "Apis/OrdersApi.cs::OrdersApi::CreateOrderAsync",
+   "consumer_symbol_id": "Services/OrderingService.cs::OrderingService::CreateOrder",
+   "strategy": "service_mapped"
+  },
+  {
+   "contract_id": "grpc::Basket/*",
+   "contract_type": "grpc",
+   "match_type": "exact",
+   "confidence": 0.75,
+   "provider_repo": "basket.api",
+   "provider_file": "Grpc/BasketService.cs",
+   "provider_symbol": "cs:extends Basket.BasketServiceBase",
+   "consumer_repo": "webapp",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "cs:AddGrpcClient<Basket.BasketClient>",
+   "provider_symbol_id": "Grpc/BasketService.cs::BasketService",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddApplicationServices",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "grpc::Basket/*",
+   "contract_type": "grpc",
+   "match_type": "exact",
+   "confidence": 0.65,
+   "provider_repo": "basket.api",
+   "provider_file": "Grpc/BasketService.cs",
+   "provider_symbol": "cs:extends Basket.BasketServiceBase",
+   "consumer_repo": "webapp",
+   "consumer_file": "Services/BasketService.cs",
+   "consumer_symbol": "cs:Basket.BasketClient",
+   "provider_symbol_id": "Grpc/BasketService.cs::BasketService",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtoawaitingvalidationintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderStatusChangedToAwaitingValidationDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToAwaitingValidationIntegrationEvent')",
+   "consumer_repo": "webapp",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToAwaitingValidationIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToAwaitingValidationDomainEventHandler.cs::OrderStatusChangedToAwaitingValidationDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtopaidintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToPaidIntegrationEvent')",
+   "consumer_repo": "webapp",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToPaidIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs::OrderStatusChangedToPaidDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtostockconfirmedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderStatusChangedToStockConfirmedDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToStockConfirmedIntegrationEvent')",
+   "consumer_repo": "webapp",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToStockConfirmedIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToStockConfirmedDomainEventHandler.cs::OrderStatusChangedToStockConfirmedDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtoshippedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderShippedDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToShippedIntegrationEvent')",
+   "consumer_repo": "webapp",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToShippedIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderShippedDomainEventHandler.cs::OrderShippedDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtocancelledintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderCancelledDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToCancelledIntegrationEvent')",
+   "consumer_repo": "webapp",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToCancelledIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderCancelledDomainEventHandler.cs::OrderCancelledDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtosubmittedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/ValidateOrAddBuyerAggregateWhenOrderStartedDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToSubmittedIntegrationEvent')",
+   "consumer_repo": "webapp",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToSubmittedIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/ValidateOrAddBuyerAggregateWhenOrderStartedDomainEventHandler.cs::ValidateOrAddBuyerAggregateWhenOrderStartedDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtoshippedintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderShippedDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToShippedIntegrationEvent')",
+   "consumer_repo": "webhooks.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToShippedIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderShippedDomainEventHandler.cs::OrderShippedDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "topic::orderstatuschangedtopaidintegrationevent",
+   "contract_type": "topic",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs",
+   "provider_symbol": "new('OrderStatusChangedToPaidIntegrationEvent')",
+   "consumer_repo": "webhooks.api",
+   "consumer_file": "Extensions/Extensions.cs",
+   "consumer_symbol": "AddSubscription('OrderStatusChangedToPaidIntegrationEvent')",
+   "provider_symbol_id": "Application/DomainEventHandlers/OrderStatusChangedToPaidDomainEventHandler.cs::OrderStatusChangedToPaidDomainEventHandler::Handle",
+   "consumer_symbol_id": "Extensions/Extensions.cs::Extensions::AddEventBusSubscriptions",
+   "strategy": "exact_id"
+  },
+  {
+   "contract_id": "http::POST::/api/orders",
+   "contract_type": "http",
+   "match_type": "exact",
+   "confidence": 0.65,
+   "provider_repo": "ordering.api",
+   "provider_file": "Apis/OrdersApi.cs",
+   "provider_symbol": "aspnet-minimal:POST /api/orders/",
+   "consumer_repo": "clientapp",
+   "consumer_file": "Services/Order/OrderService.cs",
+   "consumer_symbol": "httpclient:POST ${_settingsService.GatewayOrdersEndpointBase}/api/orders",
+   "provider_symbol_id": "Apis/OrdersApi.cs::OrdersApi::CreateOrderAsync",
+   "consumer_symbol_id": "Services/Order/OrderService.cs::OrderService::CreateOrderAsync",
+   "strategy": "unique_path"
+  },
+  {
+   "contract_id": "http::GET::/api/orders",
+   "contract_type": "http",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Apis/OrdersApi.cs",
+   "provider_symbol": "aspnet-minimal:GET /api/orders/",
+   "consumer_repo": "clientapp",
+   "consumer_file": "Services/Order/OrderService.cs",
+   "consumer_symbol": "GetAsync:GET ${_settingsService.GatewayOrdersEndpointBase}/api/orders",
+   "provider_symbol_id": "Apis/OrdersApi.cs::OrdersApi::GetOrdersByUserAsync",
+   "consumer_symbol_id": "Services/Order/OrderService.cs::OrderService::GetOrdersAsync",
+   "strategy": "unique_path"
+  },
+  {
+   "contract_id": "http::GET::/api/orders/{param}",
+   "contract_type": "http",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Apis/OrdersApi.cs",
+   "provider_symbol": "aspnet-minimal:GET /api/orders/{orderId:int}",
+   "consumer_repo": "clientapp",
+   "consumer_file": "Services/Order/OrderService.cs",
+   "consumer_symbol": "GetAsync:GET ${_settingsService.GatewayOrdersEndpointBase}/api/orders/${orderId}",
+   "provider_symbol_id": "Apis/OrdersApi.cs::OrdersApi::MapOrdersApiV1",
+   "consumer_symbol_id": "Services/Order/OrderService.cs::OrderService::GetOrderAsync",
+   "strategy": "unique_path"
+  },
+  {
+   "contract_id": "http::PUT::/api/orders/cancel",
+   "contract_type": "http",
+   "match_type": "exact",
+   "confidence": 0.7,
+   "provider_repo": "ordering.api",
+   "provider_file": "Apis/OrdersApi.cs",
+   "provider_symbol": "aspnet-minimal:PUT /api/orders/cancel",
+   "consumer_repo": "clientapp",
+   "consumer_file": "Services/Order/OrderService.cs",
+   "consumer_symbol": "PutAsync:PUT ${_settingsService.GatewayOrdersEndpointBase}/api/orders/cancel",
+   "provider_symbol_id": "Apis/OrdersApi.cs::OrdersApi::CancelOrderAsync",
+   "consumer_symbol_id": "Services/Order/OrderService.cs::OrderService::CancelOrderAsync",
+   "strategy": "unique_path"
+  }
+ ],
+ "service_links": [
+  {
+   "contract_id": "http::*::/product-images/**",
+   "contract_type": "http",
+   "match_type": "exact",
+   "confidence": 0.85,
+   "provider_repo": "catalog.api",
+   "provider_file": "",
+   "provider_symbol": "catalog-api (yarp_forwarder)",
+   "consumer_repo": "webapp",
+   "consumer_file": "Program.cs",
+   "consumer_symbol": "/product-images/** -> ?",
+   "strategy": "gateway_route"
+  }
+ ],
+ "package_deps": [
+  {
+   "source_repo": "ordering.api",
+   "target_repo": "eshop.servicedefaults",
+   "source_manifest": "Ordering.API.csproj",
+   "kind": "dotnet_project_ref",
+   "target_package": "",
+   "target_manifest": "",
+   "requested_version": null,
+   "scope": "",
+   "resolution_basis": ""
+  },
+  {
+   "source_repo": "ordering.api",
+   "target_repo": "eventbusrabbitmq",
+   "source_manifest": "Ordering.API.csproj",
+   "kind": "dotnet_project_ref",
+   "target_package": "",
+   "target_manifest": "",
+   "requested_version": null,
+   "scope": "",
+   "resolution_basis": ""
+  },
+  {
+   "source_repo": "ordering.api",
+   "target_repo": "integrationeventlogef",
+   "source_manifest": "Ordering.API.csproj",
+   "kind": "dotnet_project_ref",
+   "target_package": "",
+   "target_manifest": "",
+   "requested_version": null,
+   "scope": "",
+   "resolution_basis": ""
+  },
+  {
+   "source_repo": "ordering.api",
+   "target_repo": "ordering.domain",
+   "source_manifest": "Ordering.API.csproj",
+   "kind": "dotnet_project_ref",
+   "target_package": "",
+   "target_manifest": "",
+   "requested_version": null,
+   "scope": "",
+   "resolution_basis": ""
+  },
+  {
+   "source_repo": "ordering.api",
+   "target_repo": "ordering.infrastructure",
+   "source_manifest": "Ordering.API.csproj",
+   "kind": "dotnet_project_ref",
+   "target_package": "",
+   "target_manifest": "",
+   "requested_version": null,
+   "scope": "",
+   "resolution_basis": ""
+  },
+  {
+   "source_repo": "webapp",
+   "target_repo": "eshop.servicedefaults",
+   "source_manifest": "WebApp.csproj",
+   "kind": "dotnet_project_ref",
+   "target_package": "",
+   "target_manifest": "",
+   "requested_version": null,
+   "scope": "",
+   "resolution_basis": ""
+  },
+  {
+   "source_repo": "webapp",
+   "target_repo": "eventbusrabbitmq",
+   "source_manifest": "WebApp.csproj",
+   "kind": "dotnet_project_ref",
+   "target_package": "",
+   "target_manifest": "",
+   "requested_version": null,
+   "scope": "",
+   "resolution_basis": ""
+  },
+  {
+   "source_repo": "webapp",
+   "target_repo": "webappcomponents",
+   "source_manifest": "WebApp.csproj",
+   "kind": "dotnet_project_ref",
+   "target_package": "",
+   "target_manifest": "",
+   "requested_version": null,
+   "scope": "",
+   "resolution_basis": ""
+  }
+ ],
+ "co_changes": [],
+ "repo_provenance": {
+  "basket.api": {
+   "head": "b80aab99f422cc5711d55f6d840d96400cc95fe0",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "catalog.api": {
+   "head": "fe49004bed18e00396912f3572ebbdbf7bcab6e8",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "clientapp": {
+   "head": "b67e31c1190c94d4b1e93e35ee5b7f6ac3c76129",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "eshop.apphost": {
+   "head": "2b8bd2d54ba695f00bc3cc9bc1a6e03a008dbf42",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "eshop.servicedefaults": {
+   "head": "d86fcfbeaeaa2c295925c9f20d089fcaf3b9d37a",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "eventbus": {
+   "head": "d43cbc98a852e11efe167683bce8ff9d64329fdf",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "eventbusrabbitmq": {
+   "head": "d69fed8205360a6fedd99e9250f76874884ee286",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "hybridapp": {
+   "head": "c6118241f772f53806f4b6852d9bc6e4dfd89c5e",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "identity.api": {
+   "head": "9d01ff7bd729d2c62e37c69763c2768fa2338af1",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "integrationeventlogef": {
+   "head": "34290a1c3e5b2bd143d7f24e57e6160eb8968df7",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "ordering.api": {
+   "head": "d079a9e8537ae2e65d1bcc2f7c28cf90709bae15",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "ordering.domain": {
+   "head": "6ba73fe5d31ea6caac91c0f021116d3d80fc5614",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "ordering.infrastructure": {
+   "head": "b349083becc2c4fd315005fd0a4ae55533601771",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "orderprocessor": {
+   "head": "aaede1f5fdc096b290ef4cbab2147eddf1f962db",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "paymentprocessor": {
+   "head": "d50e1e0cae8a98a418ab5a26d77a0510c5876024",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "shared": {
+   "head": "9d9684e0c43cd77de1948f1616c0513fedf61fb0",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "webapp": {
+   "head": "16ee25205ae8aa76461f9019ebee854d49dc372e",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "webappcomponents": {
+   "head": "2d404794ee49793cb4bddafde3a03bc7c0e6f653",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "webhookclient": {
+   "head": "47c67aa9895dd2375ac1cb8e7bef2f2caef53ea5",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  },
+  "webhooks.api": {
+   "head": "41e0f14fc5c930ebf08ee83c3577fd78ad3b93b2",
+   "extracted_at": "2026-10-23T20:58:09.942554+00:00",
+   "config_fp": "f02e1ebcb01fe3f4"
+  }
+ }
+}

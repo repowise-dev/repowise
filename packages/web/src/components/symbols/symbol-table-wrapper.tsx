@@ -84,7 +84,7 @@ export function SymbolTableWrapper({ repoId }: Props) {
     <div className="space-y-6">
       {fileFilter && (
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-muted)] px-2.5 py-1 text-xs font-mono text-[var(--color-accent-primary)]">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] px-2.5 py-1 text-xs font-mono text-[var(--color-text-primary)]">
             {fileFilter}
             <button
               type="button"

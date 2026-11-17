@@ -53,7 +53,11 @@ _BOILERPLATE_MERGE = (
     "Merged in ",
 )
 _AZURE_MERGED = re.compile(r"^Merged PR \d+:\s*(.+)$")
-_TRAILER_LINE = re.compile(r"^[A-Za-z][\w-]*:\s|^See merge request ")
+#: A git trailer's key has no digits, so an issue key (``FINERACT-2455: …``)
+#: never reads as one.
+_TRAILER_KEY = re.compile(r"^([A-Za-z][A-Za-z-]*):\s")
+_KNOWN_TRAILERS = frozenset({"change-id", "cc", "reviewed-on"})
+_GITLAB_MERGE_REF = "See merge request "
 #: Shas per ``git log --no-walk`` call, well under Windows' command-line limit.
 _SHA_BATCH = 200
 
@@ -103,6 +107,27 @@ class _Commit:
         return len(self.parents) > 1
 
 
+def _is_trailer(line: str, in_final_paragraph: bool) -> bool:
+    if not (m := _TRAILER_KEY.match(line)):
+        return False
+    key = m.group(1).lower()
+    return in_final_paragraph or key.endswith("-by") or key in _KNOWN_TRAILERS
+
+
+def _body_title(body: str) -> str | None:
+    """A merge body's first line that is neither a trailer nor git's own text."""
+    lines = [line.strip() for line in body.strip().splitlines()]
+    # Git keeps trailers in the final paragraph; a body of one paragraph is
+    # the title (``fix: x``), save a known trailer such as ``Signed-off-by``.
+    final = next((i for i in range(len(lines) - 1, 0, -1) if not lines[i - 1] and lines[i]), 0)
+    for i, line in enumerate(lines):
+        if line in ("Conflicts:", "# Conflicts:"):
+            return None  # git's conflict list, kept when a merge commit is not edited
+        if line and not line.startswith(_GITLAB_MERGE_REF) and not _is_trailer(line, 0 < final <= i):
+            return line
+    return None
+
+
 def change_title(subject: str, body: str, is_merge: bool) -> str:
     """The change's title: a merge's own boilerplate subject gives way to its body."""
     if not is_merge:
@@ -110,12 +135,7 @@ def change_title(subject: str, body: str, is_merge: bool) -> str:
     if m := _AZURE_MERGED.match(subject):
         return m.group(1).strip()
     if subject.startswith(_BOILERPLATE_MERGE):
-        for line in body.splitlines():
-            line = line.strip()
-            if line in ("Conflicts:", "# Conflicts:"):
-                break  # git's conflict list, kept when a merge commit is not edited
-            if line and not _TRAILER_LINE.match(line):
-                return line
+        return _body_title(body) or subject
     return subject
 
 

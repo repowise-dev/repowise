@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import func, select
 
+from repowise.core.persistence.crud import get_latest_snapshot_analyzer_version
 from repowise.core.persistence.models import HealthFileMetric
 
 
@@ -59,6 +60,15 @@ async def _attach_repository_analysis_meta(
         latest_commit=latest[1] if latest else None,
         distinct_commits=distinct,
     )
+    await _attach_analyzer_version(session, repository, meta)
+
+
+async def _attach_analyzer_version(session: Any, repository: Any, meta: dict[str, Any]) -> None:
+    """Which scoring the stored figures came from, so a moved score can be told
+    apart from a scoring change. Absent when no snapshot recorded it."""
+    version = await get_latest_snapshot_analyzer_version(session, repository.id)
+    if version is not None:
+        meta["health_analysis"]["analyzer_version"] = version
 
 
 def _write_health_analysis_meta(
@@ -79,43 +89,22 @@ def _write_health_analysis_meta(
     status = (
         "available" if latest_commit else "provenance_unknown" if metrics else "unavailable"
     )
-    analysis: dict[str, Any] = {
-        "status": status,
-        "source": "stored_health_analysis",
-        "recomputed_this_call": False,
-        "live_verification": {
-            "basis": (
-                "index_commit_and_live_git_head"
-                if meta.get("indexed_commit") and meta.get("live_head")
-                else "unavailable"
-            ),
-            "source_bytes_verified": False,
-        },
-        "refresh": {
-            "command": "repowise update",
-            "precondition": "commit health-relevant working-tree changes first",
-            "required_before_comparison": True,
-        },
-    }
+    # Only what varies: when and which commit sit beside it in ``health_analyzed_*``,
+    # and a block that never changes (where the figures come from, how to refresh
+    # them) would only repeat on every call.
+    analysis: dict[str, Any] = {"status": status}
     if not metrics:
         analysis["reason"] = "no_stored_health_metrics"
     if analyzed:
-        analyzed_at = latest_at.isoformat()
-        analysis["analyzed_at"] = analyzed_at
-        meta["health_analyzed_at"] = analyzed_at
+        meta["health_analyzed_at"] = latest_at.isoformat()
         if latest_commit:
-            analyzed_commit = latest_commit[:12]
-            analysis["analyzed_commit"] = analyzed_commit
-            meta["health_analyzed_commit"] = analyzed_commit
+            meta["health_analyzed_commit"] = latest_commit[:12]
         if commits_count > 1:
-            analysis["analyzed_commits_distinct"] = commits_count
             meta["health_analyzed_commits_distinct"] = commits_count
         if not latest_commit:
             analysis["reason"] = "analysis_commit_not_recorded"
-            analysis["analyzed_commit"] = None
-    else:
-        analysis["recorded_at"] = None
-        analysis["recorded_commit"] = None
-        if metrics:
-            analysis["reason"] = "analysis_timestamp_not_recorded"
+    elif metrics:
+        analysis["reason"] = "analysis_timestamp_not_recorded"
+    if status != "available":
+        analysis["refresh"] = "repowise update"
     meta["health_analysis"] = analysis

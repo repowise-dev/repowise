@@ -373,16 +373,19 @@ class GeminiProvider(BaseProvider):
             stop_reason, provider_stop_reason = normalize_stop_reason(
                 getattr(candidate, "finish_reason", None)
             )
+            thoughts_token_count = _thought_token_count(usage)
             return GeneratedResponse(
                 content=response.text or "",
                 input_tokens=getattr(usage, "prompt_token_count", 0) or 0,
-                output_tokens=getattr(usage, "candidates_token_count", 0) or 0,
+                output_tokens=(getattr(usage, "candidates_token_count", 0) or 0)
+                + thoughts_token_count,
                 cached_tokens=getattr(usage, "cached_content_token_count", 0) or 0,
                 stop_reason=stop_reason,
                 provider_stop_reason=provider_stop_reason,
                 usage={
                     "prompt_token_count": getattr(usage, "prompt_token_count", 0) or 0,
                     "candidates_token_count": getattr(usage, "candidates_token_count", 0) or 0,
+                    "thoughts_token_count": thoughts_token_count,
                     "total_token_count": getattr(usage, "total_token_count", 0) or 0,
                 }
                 if usage
@@ -570,6 +573,12 @@ class GeminiProvider(BaseProvider):
             )
 
 
+def _thought_token_count(metadata: Any) -> int:
+    """Return a valid Gemini thinking-token count, or zero when it is malformed."""
+    value = getattr(metadata, "thoughts_token_count", None)
+    return value if type(value) is int and value >= 0 else 0
+
+
 class _UsageTotal:
     """Token counts summed over the internal tool loop's calls."""
 
@@ -583,7 +592,7 @@ class _UsageTotal:
         output = getattr(metadata, "candidates_token_count", None)
         if isinstance(prompt, int):
             self.input_tokens += prompt
-            self.output_tokens += output if isinstance(output, int) else 0
+            self.output_tokens += (output if isinstance(output, int) else 0) + _thought_token_count(metadata)
             self.reported = True
 
 

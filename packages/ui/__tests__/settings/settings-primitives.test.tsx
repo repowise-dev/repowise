@@ -4,9 +4,12 @@ import {
   CopyLine,
   EnvVarLine,
   SaveIndicator,
+  SettingsAdvanced,
   SettingsRow,
   StatusLine,
+  useSaveState,
 } from "../../src/settings/settings-primitives.js";
+import { act, renderHook } from "@testing-library/react";
 
 describe("SaveIndicator", () => {
   it("renders nothing at rest", () => {
@@ -101,5 +104,70 @@ describe("SettingsRow", () => {
     );
     expect(screen.getByLabelText("Server URL")).toHaveAttribute("id", "api-url");
     expect(screen.getByText("Where to reach it.")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsRow save tick", () => {
+  it("shows its own save state beside the label, nothing at rest", () => {
+    const { rerender } = render(
+      <SettingsRow label="Name">
+        <input />
+      </SettingsRow>,
+    );
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+    rerender(
+      <SettingsRow label="Name" saveState="saved">
+        <input />
+      </SettingsRow>,
+    );
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsAdvanced", () => {
+  it("is folded by default and names what it holds", () => {
+    render(
+      <SettingsAdvanced hint="Rare knobs.">
+        <p>inside</p>
+      </SettingsAdvanced>,
+    );
+    const details = screen.getByText("Advanced").closest("details");
+    expect(details).not.toHaveAttribute("open");
+    expect(screen.getByText("Rare knobs.")).toBeInTheDocument();
+  });
+});
+
+describe("useSaveState", () => {
+  it("reports saved, then failed, and ignores a stale write", async () => {
+    const { result } = renderHook(() => useSaveState());
+    let outcome: string = "";
+    await act(async () => {
+      outcome = await result.current.track(() => Promise.resolve());
+    });
+    expect(outcome).toBe("saved");
+    expect(result.current.state).toBe("saved");
+
+    await act(async () => {
+      outcome = await result.current.track(
+        () => Promise.reject(new Error("x")),
+        () => "Disk full",
+      );
+    });
+    expect(outcome).toBe("failed");
+    expect(result.current.state).toBe("error");
+    expect(result.current.error).toBe("Disk full");
+
+    let release: () => void = () => {};
+    const slow = new Promise<void>((r) => (release = r));
+    let first: Promise<string> = Promise.resolve("");
+    await act(async () => {
+      first = result.current.track(() => slow);
+      await result.current.track(() => Promise.resolve());
+    });
+    await act(async () => {
+      release();
+      expect(await first).toBe("stale");
+    });
+    expect(result.current.state).toBe("saved");
   });
 });

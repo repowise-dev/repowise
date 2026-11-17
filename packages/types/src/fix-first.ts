@@ -47,7 +47,11 @@ export type FixExclusion =
   | "low_value_kind"
   | "kind_unaudited"
   | "terminal_flow"
-  | "moderate_quiet";
+  | "moderate_quiet"
+  | "unmeasured_cost"
+  | "cold_role"
+  | "background_unproven"
+  | "unconfirmed_cost";
 
 /** `all` keeps test files, labelled in `context`. */
 export type FixScope = "production" | "all";
@@ -76,6 +80,8 @@ export interface FixStep {
   call?: string | null;
   /** The command that checks this step, when it differs from the item's. */
   command?: string | null;
+  /** What the helper's code cannot say: a type a guard narrows, a parameter object to declare. */
+  notes?: string[];
 }
 
 /** A due item's first edit, inline in the compact projection. */

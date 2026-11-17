@@ -101,3 +101,20 @@ async def test_a_failed_read_leaves_causes_unassessed(async_session):
         object(), "r", [_lost("src/a.py")], {"tests/test_a.py"}, set()
     )
     assert causes is None
+
+
+async def test_a_failed_indexed_file_read_leaves_causes_unassessed(async_session, monkeypatch):
+    async def succeeds(*_args, **_kwargs):
+        return {}
+
+    async def fails(*_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr("repowise.core.analysis.patch_coverage.causes._read", succeeds)
+    monkeypatch.setattr("repowise.core.analysis.test_reachability.cached_file_paths", fails)
+
+    causes = await read_indirect_causes(
+        async_session, "r", [_lost("src/a.py")], {"tests/test_a.py"}, set()
+    )
+
+    assert causes is None

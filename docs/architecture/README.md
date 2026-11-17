@@ -15,6 +15,7 @@ curious; you don't need them to *use* repowise (start with
 | [security.md](security.md) | Security signals internals: per-kind matching rules, placeholder skipping, baseline keys, and the JS/TS precision checks |
 | [test-intelligence.md](test-intelligence.md) | The inferred test tier: call and import walks, their measured precision and recall, the resolution-origin filter, and why nothing is stored |
 | [language-support.md](language-support.md) | The language pipeline internals and the step-by-step recipe for adding a new language |
+| [workspace.md](workspace.md) | The multi-repo workspace layer: per-repo contract extraction, matching, the system graph and its evidence state, artifacts and incremental rules, and the recipes for adding a contract dialect or a service-name source |
 | [forges.md](forges.md) | Git host support: the forges package, its invariants, and the recipes for adding a host or a CI system |
 | [agent-platform.md](agent-platform.md) | Agent identities, provider specs, integration targets and adapters, and the recipes for adding an agent integration or an agent CLI indexing backend |
 | [graph-algorithms.md](graph-algorithms.md) | The graph algorithms (PageRank, betweenness, Tarjan SCC, Leiden/Louvain community detection, shortest path) with the math and complexity |
@@ -23,6 +24,7 @@ curious; you don't need them to *use* repowise (start with
 | [chat.md](chat.md) | The Codebase Chat feature: schema, `ChatProvider` protocol, SSE streaming, the agentic loop, and per-provider notes |
 | [structurizr-export.md](structurizr-export.md) | Exporting the architecture as Structurizr DSL: the two-file model, health and layer tags, and how to render it |
 | [editor-files.md](editor-files.md) | How `CLAUDE.md` / `AGENTS.md` generation works (no LLM: pure DB + filesystem derivation) and how to add a new editor file |
-| [pluggable-storage.md](pluggable-storage.md) | Extension guide for authoring storage / graph / job-store plugins and adding CLI subcommands or MCP tools |
+| [pluggable-storage.md](pluggable-storage.md) | Plugins, seams and pluggable storage: the storage contracts, the registries, and how to add a new seam (plugin authors start at [PLUGINS.md](../reference/PLUGINS.md)) |
+| [retired-page-archive.md](retired-page-archive.md) | Transactional retirement, complete prose/version preservation, successor notes, native readers and archive retention |
 
 For the design-token and theme tooling, see [../design/](../design/).

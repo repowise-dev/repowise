@@ -12,7 +12,7 @@ markdown, HTML, and JSON — no LLM key required. For Structurizr DSL, see
 
 ```bash
 cd /path/to/your-repo
-repowise init --index-only --yes
+repowise init --yes --no-prose
 ```
 
 ## 1. Export wiki pages

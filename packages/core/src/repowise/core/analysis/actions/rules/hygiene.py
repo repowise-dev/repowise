@@ -305,9 +305,11 @@ def stale_decision(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             tier="plan",
             horizons=("quarter",),
             severity="medium",
-            title=f"Update the decision “{d.title}”: the code it governs has moved on",
-            impact="Agents and reviewers still follow it, so they are steered by a rule the code no longer keeps.",
-            why=(WhyFact("status", "Accepted, drifting"),),
+            # The evidence is commits to its files, not a broken rule, so the
+            # row asks for a review and claims nothing more.
+            title=f"Review the decision “{d.title}”: the files it governs changed since it was recorded or last accepted",
+            impact="Agents and reviewers still follow it, and nobody has checked it against those changes.",
+            why=(WhyFact("status", "Accepted, its files changed since"),),
             target_kind="decision",
             target_path=d.id,
             surface="decisions",
@@ -316,7 +318,7 @@ def stale_decision(facts: RepoFacts, ctx: RepoContext) -> RuleOutcome:
             done_when="The decision is re-accepted, amended or superseded.",
             commands=(
                 ActionCommand.call(
-                    "The decision, the code it governs, and how it drifted",
+                    "The decision, the files it governs, and what changed",
                     "get_why",
                     {"id": d.id},
                     cli="repowise decision health",

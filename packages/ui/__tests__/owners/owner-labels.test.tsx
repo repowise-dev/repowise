@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { OwnerListEntry, OwnerProfile } from "@repowise-dev/types/owners";
 
+import { OwnerDirectory } from "../../src/owners/owner-directory";
 import { OwnerProfileView } from "../../src/owners/owner-profile";
 import { OwnerTable } from "../../src/owners/owner-table";
 
@@ -79,5 +80,44 @@ describe("ownership labels on the person page and the people table", () => {
     expect(screen.getByText("贡献者")).toBeTruthy();
     expect(screen.getByText("机器人")).toBeTruthy();
     expect(screen.getByText("Files owned")).toBeTruthy();
+  });
+});
+
+describe("payloads and callers from the previous release", () => {
+  it("renders a profile with no kind, no aliases and no dependsOn", () => {
+    const { kind: _k, aliases: _a, ...older } = profile;
+    render(<OwnerProfileView owner={older} base="/repos/1" />);
+    expect(screen.queryByText("What depends on them")).toBeNull();
+    expect(screen.queryByText("Also commits as")).toBeNull();
+    expect(screen.getByText("Where they work")).toBeTruthy();
+  });
+
+  it("shows no kind badge when the row carries no kind", () => {
+    const { kind: _k, ...older } = owner;
+    render(<OwnerTable owners={[older]} sort="files_owned" />);
+    expect(screen.getByText("renovate[bot]")).toBeTruthy();
+    expect(screen.queryByText("Bot")).toBeNull();
+    expect(screen.queryByText("Person")).toBeNull();
+  });
+
+  it("accepts the older directory props and still loads more", () => {
+    let loads = 0;
+    render(
+      <OwnerDirectory
+        owners={[owner]}
+        distributionOwners={[owner]}
+        base="/repos/1"
+        isLoading={false}
+        isValidating={false}
+        total={40}
+        hasMore
+        filters={{ q: "", sort: "files_owned" }}
+        onFiltersChange={() => {}}
+        onLoadMore={() => (loads += 1)}
+        onSelect={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText("Show all 40 people"));
+    expect(loads).toBe(1);
   });
 });

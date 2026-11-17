@@ -69,7 +69,7 @@ function ImportanceBar({ score }: { score: number | null | undefined }) {
   const pct = Math.min(100, Math.max(0, Math.round((score ?? 0) * 100)));
   const color =
     pct >= 70
-      ? "bg-[var(--color-accent-primary)]"
+      ? "bg-[var(--color-progress-fill)]"
       : pct >= 40
         ? "bg-[var(--color-warning)]"
         : "bg-[var(--color-text-tertiary)]";
@@ -171,7 +171,7 @@ function FacetToggle({
       className={cn(
         "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs transition-colors",
         active
-          ? "border-[var(--color-accent-primary)] bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+          ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
           : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
       )}
     >

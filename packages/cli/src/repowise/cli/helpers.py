@@ -31,6 +31,9 @@ from repowise.cli._helpers.config import (
     load_config as load_config,
 )
 from repowise.cli._helpers.config import (
+    load_config_for_write as load_config_for_write,
+)
+from repowise.cli._helpers.config import (
     resolve_max_file_pages as resolve_max_file_pages,
 )
 from repowise.cli._helpers.config import (
@@ -80,6 +83,9 @@ from repowise.cli._helpers.db import (
 )
 from repowise.cli._helpers.db import (
     _missing_sqlite_file as _missing_sqlite_file,
+)
+from repowise.cli._helpers.db import (
+    adopt_moved_repo_best_effort as adopt_moved_repo_best_effort,
 )
 from repowise.cli._helpers.db import (
     db_configured as db_configured,
@@ -214,6 +220,9 @@ from repowise.cli._helpers.state import (
     load_state as load_state,
 )
 from repowise.cli._helpers.state import (
+    read_state as read_state,
+)
+from repowise.cli._helpers.state import (
     save_state as save_state,
 )
 from repowise.cli._helpers.state import (
@@ -224,6 +233,9 @@ from repowise.cli._helpers.target import (
 )
 from repowise.cli._helpers.target import (
     WorkspaceNotFound as WorkspaceNotFound,
+)
+from repowise.cli._helpers.target import (
+    cross_repo_cut_inputs as cross_repo_cut_inputs,
 )
 from repowise.cli._helpers.target import (
     resolve_command_target as resolve_command_target,

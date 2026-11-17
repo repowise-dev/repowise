@@ -28,8 +28,9 @@ Precision-first, the gate demands a block genuinely worth a helper:
   vendored bundles) the block still duplicates across ``>= 2`` sites — test
   fixtures and migration boilerplate duplicate constantly but a shared
   helper is the wrong fix for them;
-- the recovered impact is the block's share of the file's ``dry_violation``
-  finding when it overlaps the block, else ``0``: the finding grades the
+- the recovered impact is the file rescored without the block's share of the
+  file's ``dry_violation`` finding when it overlaps the block, else ``0``
+  (``health.gain``): the finding grades the
   file's cross-file duplication, so one block is credited the lines of it it
   removes here, not the whole finding (:func:`clone_share`). A block inside
   one file recovers ``0``: that finding does not grade it, so it stays
@@ -52,9 +53,10 @@ from ....code_origin import is_migration_path, is_vendored_or_generated_path
 from ....test_paths import is_test_related_path
 from ..duplication.detector import clone_ranges, union_line_count
 from ..effort import effort_bucket
+from ..gain import removal_gain
 from .graph_signals import defined_symbols
 from .language_family import same_language_family
-from .models import RefactoringContext, RefactoringSuggestion
+from .models import RECOVERED_SHARE, RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, register
 from .reuse import find_reuse
 
@@ -139,8 +141,25 @@ _DECL_LINE = re.compile(
         | (async\s+)?(def|function|fn|func|class|interface|type|struct)\s+[\w<>]+\s*[(<{:]?\s*
         | (async\s+)?(def|function|fn|func|class|interface|type|struct)\s+[\w<>]+\s*
             \( (?: [^()] | \([^()]*\) )* \)      # its parameter list, and nothing past it
-            \s* (->[^:{;]*)? \s* [:{]? \s*     # a signature joined back whole
+            \s* (->[^:{;]*)? \s*               # a signature joined back whole,
+            (: \s* \.\.\. | [:{])? \s*          # or a stub whose whole body is `...`
         | @[\w.]+ \s* \(?                       # decorator / annotation
+    )$""",
+    re.VERBOSE,
+)
+# A declaration head whose parameter list is still open where the block ends: a
+# clone window can stop at the last parameter two signatures share, before the
+# closing `) -> T:` line. Only the parameters themselves may follow the `(`.
+_OPEN_DECL_HEAD = re.compile(
+    r"^\s*(async\s+)?(def|function|fn|func|class|interface)\s+[\w<>]+\s*\((?P<params>.*)$"
+)
+# One parameter: `name`, `name: type`, `name: type = default`, `*args`, `**kw`,
+# a bare `*` or `/`, an optional `name?: type`, or Go's `name type`.
+_PARAM = re.compile(
+    r"""^(
+        (\.\.\.)? \*{0,2} &? (mut\s+)? [\w$]+ \?? \s* (: [^=]*)? (= .+)?
+        | [\w$]+ \s+ [\w.*\[\]&]+
+        | [*/]
     )$""",
     re.VERBOSE,
 )
@@ -191,6 +210,50 @@ def _continuation_depth(line: str) -> int:
     return sum(bare.count(o) - bare.count(c) for o, c in ("()", "[]"))
 
 
+def _is_open_declaration_head(line: str) -> bool:
+    """True when *line* is a ``def``/``class``/... head cut off inside its
+    parameter list, with nothing but parameters after the ``(``.
+
+    Only a line still open at the end of the block qualifies, so a statement
+    folded into it by ``_logical_lines`` (``def f( emit(a)``) has to read as a
+    parameter to pass, and does not.
+    """
+    if _continuation_depth(line) <= 0:
+        return False
+    m = _OPEN_DECL_HEAD.match(line)
+    if m is None:
+        return False
+    params = _split_top_level(m.group("params"))
+    return all(_PARAM.match(p) for p in params if p)
+
+
+def _strip_trailing_comment(line: str) -> str:
+    """*line* without a trailing ``#``/``//`` comment; one inside a string stays."""
+    masked = _STRING_LITERAL.sub(lambda s: "_" * len(s.group(0)), line)
+    found = re.search(r"#|//", masked)
+    return line[: found.start()].rstrip() if found else line
+
+
+def _split_top_level(text: str) -> list[str]:
+    """*text* split on the commas outside any bracket or string, each piece
+    stripped. A string's contents are blanked first (``"a,b"`` -> ``""``), so
+    a comma or bracket in a default value is not read as syntax."""
+    text = _STRING_LITERAL.sub('""', text)
+    pieces: list[str] = []
+    depth = 0
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            pieces.append(text[start:i].strip())
+            start = i + 1
+    pieces.append(text[start:].strip())
+    return pieces
+
+
 def _code_lines(block: list[str]) -> list[str]:
     """*block* minus blanks and whole-line comments.
 
@@ -238,10 +301,14 @@ def _is_declaration_only(block: list[str]) -> bool:
     and the defect here is the advice, not the measurement. The block still
     counts as duplication; it just no longer produces a plan to extract it.
     """
-    lines = _logical_lines(_code_lines(block))
+    code = _code_lines(block)
+    lines = _logical_lines(code)
     if not lines:
         return True
-    for line in lines:
+    # Only the last logical line can still be open. It is read for parameters
+    # without its trailing comments, whose commas do not separate anything.
+    open_tail = _logical_lines([_strip_trailing_comment(c) for c in code])[-1]
+    for i, line in enumerate(lines):
         if _CONTROL_FLOW.search(line):
             return False
         if line.startswith(_IMPORT_PREFIXES) or line in ("(", ")", "):", "}", "];", "{"):
@@ -249,6 +316,8 @@ def _is_declaration_only(block: list[str]) -> bool:
         if _TABLE_DECL.match(line) or _DUNDER_ATTR.match(line):
             continue
         if _DECL_LINE.match(line):
+            continue
+        if i == len(lines) - 1 and _is_open_declaration_head(open_tail):
             continue
         # An assignment is a declaration only by what it assigns. A constant
         # RHS is inert either way; an annotated line may additionally use a
@@ -368,12 +437,12 @@ class ExtractHelperDetector(RefactoringDetector):
         if not blocks:
             return []
 
-        impact_lookup = self._impact_for_dry_violation(ctx)
+        dry = self._dry_violations(ctx)
         spans_cache: dict[str, list[tuple[int, int]]] = {}
         read = _cached_reader(ctx)
         out: list[RefactoringSuggestion] = []
         for block in blocks:
-            suggestion = self._build_suggestion(ctx, block, impact_lookup, spans_cache)
+            suggestion = self._build_suggestion(ctx, block, dry, spans_cache)
             if suggestion is not None:
                 suggestion.plan.update(_reuse_fields(ctx, suggestion.plan["occurrences"], read))
                 out.append(suggestion)
@@ -425,7 +494,7 @@ class ExtractHelperDetector(RefactoringDetector):
         self,
         ctx: RefactoringContext,
         block: _Block,
-        impact_lookup: list[tuple[int, int, float]],
+        dry: list[tuple[int, int, Any]],
         spans_cache: dict[str, list[tuple[int, int]]],
     ) -> RefactoringSuggestion | None:
         # Drop test-file occurrences — duplication among fixtures is noise —
@@ -478,12 +547,8 @@ class ExtractHelperDetector(RefactoringDetector):
             return None
 
         is_intra = len(occ_files) == 1
-        impact = (
-            0.0
-            if is_intra
-            else self._impact_for_block(anchor_region, impact_lookup)
-            * clone_share(occurrences, ctx.file_path, _cross_file_lines(ctx))
-        )
+        share = 0.0 if is_intra else clone_share(occurrences, ctx.file_path, _cross_file_lines(ctx))
+        impact = self._gain_for_block(ctx, anchor_region, dry, share) if share else 0.0
 
         suggested_site = self._suggested_site(occ_files)
         snippet, snippet_start, snippet_truncated = self._snippet_for(ctx, anchor_region)
@@ -502,6 +567,7 @@ class ExtractHelperDetector(RefactoringDetector):
             "token_count": block.token_count,
             "co_change_count": block.co_change,
             "is_intra_file": is_intra,
+            RECOVERED_SHARE: round(share, 3),
         }
         other_files = [f for f in occ_files if f != ctx.file_path]
         blast_radius = {
@@ -518,7 +584,7 @@ class ExtractHelperDetector(RefactoringDetector):
             line_end=anchor_region[1],
             plan=plan,
             evidence=evidence,
-            impact_delta=round(float(impact), 3),
+            impact_delta=impact,
             effort_bucket=effort_bucket(duplicated_lines),
             blast_radius=blast_radius,
             confidence="high" if block.co_change >= ACTIVE_CO_CHANGE else "medium",
@@ -599,35 +665,40 @@ class ExtractHelperDetector(RefactoringDetector):
         return "\n".join(block), lo, truncated
 
     @staticmethod
-    def _impact_for_dry_violation(ctx: RefactoringContext) -> list[tuple[int, int, float]]:
+    def _dry_violations(ctx: RefactoringContext) -> list[tuple[int, int, Any]]:
         """The file's ``dry_violation`` findings as (line_start, line_end,
-        impact) so a block can claim the impact of the clone it overlaps."""
-        out: list[tuple[int, int, float]] = []
+        finding) so a block can claim the clone finding it overlaps."""
+        out: list[tuple[int, int, Any]] = []
         for f in ctx.findings:
             if getattr(f, "biomarker_type", "") != _SOURCE_BIOMARKER:
                 continue
             start = getattr(f, "line_start", None)
             end = getattr(f, "line_end", None)
-            impact = float(getattr(f, "health_impact", 0.0) or 0.0)
             if start is None or end is None:
                 # No region — attribute to the whole file (matches any block).
-                out.append((0, 1_000_000_000, impact))
+                out.append((0, 1_000_000_000, f))
             else:
-                out.append((int(start), int(end), impact))
+                out.append((int(start), int(end), f))
         return out
 
     @staticmethod
-    def _impact_for_block(
-        region: tuple[int, int], impact_lookup: list[tuple[int, int, float]]
+    def _gain_for_block(
+        ctx: RefactoringContext,
+        region: tuple[int, int],
+        dry: list[tuple[int, int, Any]],
+        share: float,
     ) -> float:
-        """Recovered impact for the block whose anchor region overlaps a
-        ``dry_violation`` finding; 0 when none does (precision-first)."""
+        """Gain from removing *share* of the ``dry_violation`` finding the
+        block's anchor region overlaps; 0 when none does (precision-first)."""
         start, end = region
-        best = 0.0
-        for f_start, f_end, impact in impact_lookup:
-            if start <= f_end and end >= f_start and impact > best:
-                best = impact
-        return best
+        return max(
+            (
+                removal_gain(ctx.findings, [(f, share)])
+                for f_start, f_end, f in dry
+                if start <= f_end and end >= f_start
+            ),
+            default=0.0,
+        )
 
 
 def _cached_reader(ctx: RefactoringContext) -> Callable[[str], list[str] | None] | None:

@@ -16,6 +16,7 @@ import networkx as nx
 import pytest
 from structlog.testing import capture_logs
 
+from repowise.core.analysis.communities import CommunityInfo
 from repowise.core.analysis.execution_flows import ExecutionFlow, ExecutionFlowReport
 from repowise.core.generation.context_assembler import ContextAssembler
 
@@ -77,6 +78,41 @@ def test_overview_context_carries_traced_flows(sample_config, sample_repo_struct
     assert first["entry_point_name"] == "main"
     assert first["score"] == 0.912
     assert first["trace_length"] == 3
+
+
+def test_overview_context_carries_communities(sample_config, sample_repo_structure):
+    """``community_info()`` is a dict keyed by community id, not a list."""
+
+    class _CommunityBuilder(_Builder):
+        def community_info(self):
+            return {
+                3: CommunityInfo(
+                    community_id=3,
+                    label="cli",
+                    members=["a.py"],
+                    size=1,
+                    cohesion=0.5,
+                    dominant_language="python",
+                ),
+                7: CommunityInfo(
+                    community_id=7,
+                    label="core",
+                    members=["b.py", "c.py"],
+                    size=2,
+                    cohesion=0.12345,
+                    dominant_language="python",
+                ),
+            }
+
+    assembler = ContextAssembler(sample_config)
+    ctx = assembler.assemble_repo_overview(
+        sample_repo_structure, {}, [], {}, graph_builder=_CommunityBuilder([])
+    )
+
+    assert ctx.communities == [
+        {"id": 7, "label": "core", "size": 2, "cohesion": 0.12},
+        {"id": 3, "label": "cli", "size": 1, "cohesion": 0.5},
+    ]
 
 
 def test_overview_context_ranks_flows_by_score(sample_config, sample_repo_structure):
@@ -397,14 +433,14 @@ def test_overview_context_no_builder_is_silent(sample_config, sample_repo_struct
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("template", ["repo_overview.j2", "stub/repo_overview.j2"])
+@pytest.mark.parametrize("template", ["stub/repo_overview.j2"])
 def test_rendered_overview_names_the_entry_point(
     sample_config, sample_repo_structure, flows, template
 ):
-    """Both templates were always correct — they read the context dict, whose
-    keys never changed. They rendered nothing because the list reaching them
-    was empty. Asserted on both so a future key rename fails here rather than
-    quietly emptying the section again."""
+    """The keyless template reads the context dict, and rendered nothing while
+    the list reaching it was empty. Asserted so a future key rename fails here
+    rather than quietly emptying the section again. The written page names its
+    operations from the walkthrough pages instead."""
     from repowise.core.generation.page_generator import PageGenerator
     from repowise.core.providers.llm.mock import MockProvider
 

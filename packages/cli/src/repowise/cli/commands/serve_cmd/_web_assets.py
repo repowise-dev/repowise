@@ -73,11 +73,7 @@ def _find_local_web() -> Path | None:
             candidate = candidate.parent
             pkg_web = candidate / "packages" / "web"
             if (pkg_web / "package.json").exists():
-                # Next.js standalone in monorepos nests server under package path
-                standalone = pkg_web / ".next" / "standalone" / "packages" / "web" / "server.js"
-                if standalone.exists():
-                    return pkg_web
-                return pkg_web  # exists but may need build
+                return pkg_web
     return None
 
 
@@ -122,7 +118,7 @@ def _local_build_is_stale(web_dir: Path) -> bool:
         if not root.exists():
             continue
         for path in root.rglob("*"):
-            if any(part in skip_dirs for part in path.parts):
+            if any(part in skip_dirs for part in path.relative_to(root).parts):
                 continue
             try:
                 if path.is_file() and path.stat().st_mtime > build_mtime:

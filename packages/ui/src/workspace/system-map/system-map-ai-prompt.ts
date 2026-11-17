@@ -18,11 +18,12 @@ import {
   type AiPromptFlavor,
   type PreambleParts,
 } from "../../health/ai-prompts/shared";
+import { linkStrategyCopy } from "../link-provenance";
 
 /** Evidence rows listed in full before the prompt says how many it left out. */
 export const SYSTEM_MAP_PROMPT_MAX_ROWS = 25;
 
-const PREAMBLE_PARTS: PreambleParts = {
+export const SYSTEM_MAP_PREAMBLE: PreambleParts = {
   role: WORKSPACE_ROLE,
   source: "The facts below come from repowise's system graph, which is built from code and git history.",
   open: "the files behind each relationship in each repository",
@@ -35,7 +36,7 @@ function countsLine(counts: Record<string, number>): string {
   return entries.length === 0 ? "none" : entries.map(([t, n]) => `${n} ${t}`).join(", ");
 }
 
-function capped<T>(rows: T[], render: (row: T) => string, noun: string): string {
+export function capped<T>(rows: T[], render: (row: T) => string, noun: string): string {
   const shown = rows.slice(0, SYSTEM_MAP_PROMPT_MAX_ROWS).map(render).join("\n");
   const hidden = rows.length - SYSTEM_MAP_PROMPT_MAX_ROWS;
   return hidden > 0 ? `${shown}\n- ...and ${hidden} more ${noun} not listed here.` : shown;
@@ -113,7 +114,7 @@ export function buildServiceAiPrompt(o: BuildServicePromptOptions): string {
   // These prompts keep a blank line between sections, so each section after
   // the preamble carries its own leading newline.
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    preamble(flavor, SYSTEM_MAP_PREAMBLE),
     `\n## Service: ${s.name} (\`${s.id}\`)`,
     `\n${bulletList([
       `Location: \`${location}\``,
@@ -160,6 +161,8 @@ export interface PromptEdgeEvidence {
   consumer_repo: string;
   consumer_file: string;
   match_type?: string;
+  /** The matching rule that made the link, a core `LinkStrategy` value. */
+  strategy?: string | null;
   confidence?: number;
 }
 
@@ -168,6 +171,8 @@ export interface BuildEdgePromptOptions {
     id: string;
     kind: string;
     match_type: string;
+    /** Strategy of the link that gave the edge its confidence. */
+    strategy?: string | null;
     confidence: number;
     weight: number;
     structural: boolean;
@@ -181,11 +186,19 @@ export interface BuildEdgePromptOptions {
   evidence: PromptEdgeEvidence[];
   /** Contract ids from the edge itself, used when no links were resolved. */
   refs: string[];
+  /** Distinct contract ids the graph kept, when `refs` came without them (the lean map view). */
+  refCount?: number;
   /** Co-change file pairs, for behavioral edges. */
   pairs?: [string, string | null][];
   /** Cycles this edge sits on, as service names. */
   cycles?: string[][];
   flavor?: AiPromptFlavor;
+}
+
+/** `, matched by service name (service_mapped)`, or nothing when the link names no strategy. */
+export function matchedBy(strategy: string | null | undefined): string {
+  const copy = linkStrategyCopy(strategy);
+  return copy ? `, ${copy.label.toLowerCase()} (\`${strategy}\`)` : "";
 }
 
 export function buildEdgeAiPrompt(o: BuildEdgePromptOptions): string {
@@ -196,12 +209,14 @@ export function buildEdgeAiPrompt(o: BuildEdgePromptOptions): string {
       ? capped(
           o.evidence,
           (l) =>
-            `- \`${l.contract_id}\`: provider \`${l.provider_repo}:${l.provider_file}\`, consumer \`${l.consumer_repo}:${l.consumer_file}\``,
+            `- \`${l.contract_id}\`: provider \`${l.provider_repo}:${l.provider_file}\`, consumer \`${l.consumer_repo}:${l.consumer_file}\`${matchedBy(l.strategy)}`,
           "links",
         )
       : o.refs.length > 0
         ? capped(o.refs, (r) => `- \`${r}\``, "contract ids")
-        : "No evidence rows were returned for this edge."
+        : (o.refCount ?? 0) > 0
+          ? `The graph kept ${o.refCount} contract ids for this edge; list them from the contracts between \`${o.source.name}\` and \`${o.target.name}\` before you start.`
+          : "No evidence rows were returned for this edge."
     : (o.pairs ?? []).length > 0
       ? capped(o.pairs ?? [], ([a, b]) => `- \`${a}\`${b ? ` with \`${b}\`` : ""}`, "file pairs")
       : "No file pairs were returned for this edge.";
@@ -211,11 +226,11 @@ export function buildEdgeAiPrompt(o: BuildEdgePromptOptions): string {
     : `Check whether this co-change hides a real dependency. Files that change together without a declared contract often share an undocumented format, a copied type or a coordinated release. Decide which it is for the pairs above.`;
 
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    preamble(flavor, SYSTEM_MAP_PREAMBLE),
     `\n## Relationship: ${o.source.name} -> ${o.target.name} (\`${e.id}\`)`,
     `\n${bulletList([
       o.sentence,
-      `Kind: ${e.kind}. Match: ${e.match_type}. Confidence: ${Math.round(e.confidence * 100)}%.`,
+      `Kind: ${e.kind}. Match: ${e.match_type}${matchedBy(e.strategy)}. Confidence: ${Math.round(e.confidence * 100)}%.`,
       `Weight: ${o.weightLabel}.`,
       e.structural
         ? "Structural: built from a contract or import in code. Changing the provider side can break the consumer."
@@ -279,7 +294,7 @@ export function buildCycleAiPrompt(o: BuildCyclePromptOptions): string {
     .join("\n");
 
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    preamble(flavor, SYSTEM_MAP_PREAMBLE),
     `\n## Dependency cycle: ${loop}`,
     `\n${bulletList([
       `Services: ${o.ids.map((id) => `\`${id}\``).join(", ")}`,
@@ -334,7 +349,7 @@ export function buildBlastRadiusAiPrompt(o: BuildBlastRadiusPromptOptions): stri
     `- **${n.name}** (\`${n.id}\`, repo ${n.repo}): ${n.distance} ${n.distance === 1 ? "hop" : "hops"}, impact ${n.score.toFixed(2)}, via ${n.edge_kinds.join(", ")}`;
 
   return joinSections([
-    preamble(flavor, PREAMBLE_PARTS),
+    preamble(flavor, SYSTEM_MAP_PREAMBLE),
     `\n## Blast radius of ${o.target.name} (\`${o.target.id}\`)`,
     `\n${bulletList([
       `${o.impacted.length} downstream ${o.impacted.length === 1 ? "service is" : "services are"} reachable: ${structural.length} through structural dependencies, ${behavioral.length} only through co-change.`,

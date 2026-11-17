@@ -58,6 +58,8 @@ log = structlog.get_logger(__name__)
 
 
 HEALTH_RULES_FILENAME = "health-rules.json"
+#: Where the rules file sits, repo-relative, as a git revision holds it.
+HEALTH_RULES_PATH = f".repowise/{HEALTH_RULES_FILENAME}"
 
 # Confidence floor labels a repo may set under ``refactoring.min_confidence``.
 # Ordered low -> high; mirrors ``refactoring.models.CONFIDENCE_LEVELS`` without
@@ -274,11 +276,10 @@ class HealthConfig:
         if not rules_path.exists():
             return cfg
         try:
-            raw = json.loads(rules_path.read_text(encoding="utf-8"))
+            rules_cfg = cls.from_json(rules_path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             log.warning("health_rules_load_failed", path=str(rules_path), error=str(exc))
             return cfg
-        rules_cfg = cls.from_dict(raw)
         rules_cfg.refactoring_enabled = cfg.refactoring_enabled
         rules_cfg.disabled_refactorings = cfg.disabled_refactorings
         rules_cfg.refactoring_min_confidence = cfg.refactoring_min_confidence
@@ -334,15 +335,30 @@ class HealthConfig:
         something here would change the analysis: a disabled/severity-remapped
         biomarker, or any refactoring-layer knob set away from its default.
         """
-        return bool(
-            self.disabled_biomarkers
-            or self.rules
-            or self.severity_overrides
-            or self.profile
-            or not self.refactoring_enabled
-            or self.disabled_refactorings
-            or self.refactoring_min_confidence
+        return any(
+            (
+                self.disabled_biomarkers,
+                self.rules,
+                self.severity_overrides,
+                self.profile,
+                not self.refactoring_enabled,
+                self.disabled_refactorings,
+                self.refactoring_min_confidence,
+                self.assert_extra_names,
+            )
         )
+
+    @classmethod
+    def from_json(cls, text: str) -> HealthConfig:
+        """The rules in a ``health-rules.json`` text, from any revision.
+
+        Raises ``ValueError`` when it is not a JSON object; a bad entry inside
+        one is dropped with a warning, as :meth:`load` does.
+        """
+        raw = json.loads(text)
+        if not isinstance(raw, dict):
+            raise ValueError(f"{HEALTH_RULES_FILENAME} must be a JSON object")
+        return cls.from_dict(raw)
 
     @classmethod
     def from_dict(cls, raw: object) -> HealthConfig:
@@ -354,7 +370,9 @@ class HealthConfig:
         rules: list[HealthRule] = []
         raw_rules = raw.get("rules")
         if raw_rules is not None and not isinstance(raw_rules, list | tuple):
-            log.warning("health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__)
+            log.warning(
+                "health_rules_field_not_a_list", field="rules", got=type(raw_rules).__name__
+            )
             raw_rules = []
         for entry in raw_rules or []:
             if not isinstance(entry, dict):

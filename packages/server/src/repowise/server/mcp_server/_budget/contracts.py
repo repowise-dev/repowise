@@ -24,7 +24,7 @@ from repowise.server.mcp_server._budget.budgeter import (
 )
 from repowise.server.mcp_server._budget.collector import OmissionCollector
 from repowise.server.mcp_server._budget.hooks import run_post_enforce, run_post_shed
-from repowise.server.mcp_server._meta import full_meta
+from repowise.server.mcp_server._meta import collapse_omission, full_meta
 
 DEFAULT_RESPONSE_CHARS = 24_000
 EXPANDED_RESPONSE_CHARS = 32_000
@@ -154,6 +154,10 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "health_delta.skipped",
             "health_delta.files[]",
             "health_delta.top_findings[]",
+            # A requested checklist sheds its rows' detail lists, then their
+            # details, before the block itself: every row keeps its verdict.
+            "evidence.items[].details[]",
+            "evidence.items[].details",
             "evidence",
         ),
         protected=(
@@ -163,7 +167,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "risk_percentile",
         ),
         # Present only when asked for, and then it is the answer.
-        requested_projections=(("evidence", ("evidence",)),),
+        requested_projections=(
+            ("evidence", ("evidence", "evidence.items[].details[]", "evidence.items[].details")),
+        ),
     ),
     "get_answer": ResponseBudgetContract(
         "blocks",
@@ -303,6 +309,9 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             ("graph", ("community_summary",)),
             ("ownership", ("knowledge_map",)),
             ("content", ("content_md",)),
+            ("tools", ("tool_surface.opt_in", "tool_surface.tools[]",
+                       "tool_surface.recipes[]", "tool_surface")),
+            ("actions", ("next_actions.quarter.actions[]",)),
         ),
     ),
     "get_health": ResponseBudgetContract(
@@ -313,6 +322,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "trend.recent[]",
             "trend.alerts[]",
             "churn_complexity[]",
+            "untested_complexity[]",
             "doc_drift.findings[]",
             "test_findings[]",
             "top_findings[]",
@@ -440,18 +450,32 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
         "blocks",
         ("role_breakdown",),
         expansion_argument=None,
-        protected=("summary", "architecture_type", "score", "core_members", "error"),
+        protected=("summary", "architecture_type", "score", "core_members", "evidence", "error"),
     ),
     "get_conformance": ResponseBudgetContract(
         "blocks",
         expansion_argument=None,
-        protected=("summary", "violation_count", "cycle_count", "total_cycles", "error"),
+        protected=(
+            "summary",
+            "violation_count",
+            "cycle_count",
+            "total_cycles",
+            "total_capped",
+            "cycles_determined",
+            "error",
+        ),
     ),
     "get_blast_radius": ResponseBudgetContract(
         "blocks",
         ("impact_score_semantics",),
         expansion_argument=None,
-        protected=("summary", "targets", "total_impacted", "unresolved_targets"),
+        protected=(
+            "summary",
+            "targets",
+            "total_impacted",
+            "unresolved_targets",
+            "undetermined_targets",
+        ),
     ),
     "list_repos": ResponseBudgetContract(
         "blocks",
@@ -918,7 +942,12 @@ def enforce_response_budget(
         emergency.attach(result)
         trimmed = True
 
-    run_post_enforce(tool, result, _call_arguments(signature, args, kwargs))
+    call = _call_arguments(signature, args, kwargs)
+    run_post_enforce(tool, result, call)
+    if call is not None:
+        # An MCP call, not a bridged CLI one, whose commands print the marker.
+        # Before the accounting below, so the stamped size is the delivered one.
+        collapse_omission(result)
 
     if result.get("truncated"):
         result.setdefault("_meta", {}).setdefault("state", {})["truncated"] = True

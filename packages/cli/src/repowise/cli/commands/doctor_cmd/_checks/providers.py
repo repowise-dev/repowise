@@ -46,15 +46,10 @@ def _stale_page_guidance(counts: dict[str, int]) -> str:
         f"{total} stale ({', '.join(categories)}) — content no longer matches its "
         "current inputs or generation selection."
     )
+    detail += " `repowise update --full` refreshes them"
     if model_written:
-        detail += (
-            " `repowise generate --stale` is the cheaper refresh for model-written "
-            "pages that are still selected."
-        )
-    detail += (
-        " `repowise update --full` performs the authoritative reconciliation and "
-        "retires pages no longer selected."
-    )
+        detail += ", pricing the model-written ones before it rewrites them"
+    detail += "."
     return detail + " `--repair` only fixes store drift."
 
 
@@ -76,55 +71,69 @@ def _provider_checks(repo_path: _DoctorPath) -> list[DoctorCheck]:
                 "Providers",
                 bool(providers),
                 f"Implementations loaded: {', '.join(providers)}",
+                check_id="providers",
             )
         )
     except Exception as exc:
-        checks.append(_check("Providers", False, str(exc)))
+        checks.append(_check("Providers", False, str(exc), check_id="providers"))
 
     from repowise.cli.helpers import validate_provider_config
 
     config_warnings = validate_provider_config(repo_path=repo_path)
     config_ok = not config_warnings
     config_detail = "No misconfigured provider keys" if config_ok else "; ".join(config_warnings)
-    checks.append(_check("Provider config", config_ok, config_detail))
+    checks.append(_check("Provider config", config_ok, config_detail, check_id="provider-config"))
 
     from repowise.core.providers.llm.registry import provider_available_for_repo
 
     llm_available = provider_available_for_repo(repo_path)
-    llm_detail = (
-        "Resolves for this repository"
-        if llm_available
-        else "None configured — prose degrades to a structural wiki; set a key or pass --provider"
-    )
+    llm_detail = "Resolves for this repository" if llm_available else _no_provider_detail(repo_path)
     # Keyless operation is supported, so this is informational rather than a
     # failing health check.  The detail tells users what init will actually do.
-    checks.append(_check("LLM provider", True, llm_detail))
+    checks.append(_check("LLM provider", True, llm_detail, check_id="llm-provider"))
     return checks
+
+
+def _no_provider_detail(repo_path: _DoctorPath) -> str:
+    """The shared upgrade line, naming a signed-in agent CLI on a paid plan when there is one."""
+    from repowise.cli.ui.subscription import upgrade_route
+    from repowise.core.index_scope import load_index_scope, upgrade_line
+
+    return f"None configured: {upgrade_line(load_index_scope(repo_path), upgrade_route(repo_path))}"
 
 
 def _hosted_account_check() -> DoctorCheck:
     """Informational: signed out is not a failure."""
+    name, check_id = "Hosted account", "hosted-account"
     try:
         from repowise.cli.platform import auth, credentials
 
         creds = credentials.load()
         if creds is None:
             return _check(
-                "Hosted account",
+                name,
                 True,
                 "Not signed in (optional: repowise login). "
                 "Publish this repo free: repowise publish",
+                check_id=check_id,
             )
         if creds.get("stale"):
-            return _check("Hosted account", False, "Session expired or revoked; run repowise login")
+            return _check(
+                name,
+                True,
+                "Session expired or revoked; run repowise login",
+                check_id=check_id,
+                warn=True,
+                fix="repowise login",
+            )
         account = auth.fetch_account()
         cached = (account or creds.get("account") or {}) or {}
         who = cached.get("github_username") or cached.get("email") or "unknown"
         tier = cached.get("tier") or "free"
         suffix = "" if account else " (offline, using cached identity)"
-        return _check("Hosted account", True, f"{who} ({tier}){suffix}")
+        return _check(name, True, f"{who} ({tier}){suffix}", check_id=check_id)
     except Exception as e:
-        return _check("Hosted account", False, str(e))
+        return _check(name, False, str(e), check_id=check_id)
 
 
 async def _read_stale_counts(repo_path: _DoctorPath) -> dict[str, int]:
@@ -143,14 +152,15 @@ async def _read_stale_counts(repo_path: _DoctorPath) -> dict[str, int]:
 
 def _stale_pages_row(ctx: CheckContext) -> DoctorCheck:
     """Sets ``ctx.stale_counts`` and ``ctx.stale_count`` for ``--repair``."""
+    name, check_id = "Stale pages", "stale-pages"
     try:
         ctx.stale_counts = run_async(_read_stale_counts(ctx.repo_path))
         ctx.stale_count = sum(ctx.stale_counts.values())
         if ctx.stale_count:
-            return _check("Stale pages", False, _stale_page_guidance(ctx.stale_counts))
-        return _check("Stale pages", True, "0 stale")
+            return _check(name, False, _stale_page_guidance(ctx.stale_counts), check_id=check_id)
+        return _check(name, True, "0 stale", check_id=check_id)
     except Exception:
-        return _check("Stale pages", True, "Could not check")
+        return _check(name, True, "Could not check", check_id=check_id, warn=True)
 
 
 def provider_checks(ctx: CheckContext) -> list[DoctorCheck]:

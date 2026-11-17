@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from repowise.core.analysis.health.refactoring.recipe import _strs
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.worth import WORTH_MAGNITUDE
 
@@ -154,11 +155,48 @@ def _step_command(check: Mapping[str, Any] | None, item_command: str | None) -> 
     return commands[0] if commands and commands[0] != item_command else None
 
 
-def _helper_code(body: Mapping[str, Any]) -> dict[str, str | None]:
-    """An Extract Method plan's rendered helper header and call, when it wrote them."""
-    symbol = body.get("new_symbol") or {}
-    site = body.get("call_site") or {}
-    return {
-        "signature": symbol.get("signature_text") if isinstance(symbol, dict) else None,
-        "call": site.get("new_text") if isinstance(site, dict) else None,
-    }
+def shared_object(body: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The parameter object a staged plan's first stage takes, None when its
+    helper takes plain values only."""
+    obj = body.get("parameter_object")
+    params = body.get("params")
+    if not isinstance(obj, dict) or not isinstance(params, list):
+        return None
+    var = obj.get("var")
+    return obj if isinstance(var, str) and var in params else None
+
+
+def object_code(obj: Mapping[str, Any]) -> tuple[str, str] | None:
+    """The object's declaration and the line building it, None when the plan
+    lacks either."""
+    declaration, construct = _text(obj.get("declaration_text")), _text(obj.get("construct_text"))
+    return (declaration, construct) if declaration and construct else None
+
+
+def _helper_code(body: Mapping[str, Any]) -> dict[str, Any]:
+    """An Extract Method plan's rendered helper header and call, when it wrote
+    them, and the plan's notes on what that code cannot say (a type a guard
+    narrows, an import to repeat). A helper taking the shared parameter object
+    comes after the object's declaration, and its call after the line
+    building it: the call names that variable."""
+    symbol = body.get("new_symbol")
+    symbol = symbol if isinstance(symbol, dict) else {}
+    site = body.get("call_site")
+    signature = _text(symbol.get("signature_text"))
+    call = _text(site.get("new_text")) if isinstance(site, dict) else None
+    notes = _strs(symbol.get("notes"))
+    obj = shared_object(body)
+    code = object_code(obj) if obj is not None else None
+    if obj is not None and code is not None:
+        signature = "\n\n".join(t for t in (code[0], signature) if t)
+        call = "\n".join(t for t in (code[1], call) if t)
+        first = (
+            f"Add the {obj.get('name')} declaration above the helper, and the line building "
+            f"{obj.get('var')} just before the call, as shown."
+        )
+        notes = [first, *_strs(obj.get("notes")), *notes]
+    return {"signature": signature, "call": call, "notes": tuple(dict.fromkeys(notes))}
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None

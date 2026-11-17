@@ -11,13 +11,17 @@ extension-to-language map is built first-spec-wins, so order is significant
 from __future__ import annotations
 
 from ..spec import LanguageSpec
+from .apex import SPEC as _APEX
 from .asciidoc import SPEC as _ASCIIDOC
 from .astro import SPEC as _ASTRO
+from .aura import SPEC as _AURA
+from .bms import SPEC as _BMS
 from .c import SPEC as _C
 from .clojure import SPEC as _CLOJURE
 from .cobol import SPEC as _COBOL
 from .cpp import SPEC as _CPP
 from .crystal import SPEC as _CRYSTAL
+from .csd import SPEC as _CSD
 from .csharp import SPEC as _CSHARP
 from .dart import SPEC as _DART
 from .dlang import SPEC as _DLANG
@@ -34,6 +38,7 @@ from .haskell import SPEC as _HASKELL
 from .html import SPEC as _HTML
 from .java import SPEC as _JAVA
 from .javascript import SPEC as _JAVASCRIPT
+from .jcl import SPEC as _JCL
 from .json import SPEC as _JSON
 from .julia import SPEC as _JULIA
 from .kotlin import SPEC as _KOTLIN
@@ -54,8 +59,11 @@ from .r import SPEC as _R
 from .razor import SPEC as _RAZOR
 from .ruby import SPEC as _RUBY
 from .rust import SPEC as _RUST
+from .salesforce_flow import SPEC as _SALESFORCE_FLOW
+from .salesforce_object import SPEC as _SALESFORCE_OBJECT
 from .scala import SPEC as _SCALA
 from .shell import SPEC as _SHELL
+from .soql import SPEC as _SOQL
 from .sql import SPEC as _SQL
 from .svelte import SPEC as _SVELTE
 from .swift import SPEC as _SWIFT
@@ -64,6 +72,7 @@ from .toml import SPEC as _TOML
 from .typescript import SPEC as _TYPESCRIPT
 from .unknown import SPEC as _UNKNOWN
 from .vbnet import SPEC as _VBNET
+from .visualforce import SPEC as _VISUALFORCE
 from .vue import SPEC as _VUE
 from .xaml import SPEC as _XAML
 from .yaml import SPEC as _YAML
@@ -110,6 +119,7 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     _COBOL,
     _GDSCRIPT,
     _VBNET,
+    _APEX,
     # -----------------------------------------------------------------
     # Config / data / markup languages (passthrough — no AST)
     # -----------------------------------------------------------------
@@ -131,6 +141,8 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # root-relative asset paths. Markup, so it is never reported as dead code
     # while its edges still anchor what it references.
     _HTML,
+    # Salesforce Visualforce markup: no symbols, edges from framework_edges/visualforce.py.
+    _VISUALFORCE,
     # XAML / AXAML markup for WPF, WinUI 3, UWP, MAUI, Avalonia, Uno.
     # No AST grammar — handled by the XamlDynamicHints extractor which
     # emits ``dynamic_uses`` edges to bound C# types. Registered here so
@@ -141,6 +153,19 @@ ALL_SPECS: tuple[LanguageSpec, ...] = (
     # by another script, so these files carry nearly every inbound edge the
     # .gd graph has. See the spec's docstring.
     _GODOT_RESOURCE,
+    # Salesforce Aura markup, routed by path (aura/<bundle>/). Edges come from
+    # framework_edges/aura.py. See the spec's docstring.
+    _AURA,
+    # Salesforce flows. See the spec's docstring.
+    _SALESFORCE_FLOW,
+    # Salesforce object/field metadata and saved SOQL queries.
+    _SALESFORCE_OBJECT,
+    _SOQL,
+    # Mainframe job control, CICS screen maps and CSD definitions; edges from
+    # framework_edges/mainframe.py.
+    _JCL,
+    _BMS,
+    _CSD,
     # -----------------------------------------------------------------
     # Extra languages — git blame coverage only (passthrough + is_code)
     # These exist so git_indexer tracks their history even though

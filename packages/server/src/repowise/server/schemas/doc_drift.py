@@ -14,7 +14,6 @@ claim that the tree is clean, and only a populated store can support it.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, model_validator
@@ -25,6 +24,7 @@ from repowise.core.analysis.doc_drift.constants import (
     UNAVAILABLE_READ_FAILED,
 )
 from repowise.core.analysis.doc_drift.serialize import derive_doc_drift_id, fingerprint_of
+from repowise.server.schemas._datetime import UTCDateTime
 
 #: Why a drift answer could not be given, from the engine's own vocabulary so
 #: the literal cannot be renamed on one side alone.
@@ -63,7 +63,7 @@ class DocDriftFindingResponse(BaseModel):
     suggestion_basis: str | None = None
     #: When first found, carried across updates; ``None`` when present at the
     #: first check or when the store keeps no history (an artifact).
-    first_seen_at: datetime | None = None
+    first_seen_at: UTCDateTime | None = None
     #: First found by the latest update that stored a finding.
     is_new: bool = False
 

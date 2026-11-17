@@ -8,6 +8,7 @@ import type {
   DecisionSourceState,
 } from "@repowise-dev/types/decisions";
 import { ApiError } from "../shared/api-error";
+import { formatNumber } from "../lib/format";
 
 /**
  * What captures decisions, and whether any of it may call a model.
@@ -182,8 +183,8 @@ export function DecisionCaptureSettings({
         {/* Not a capture switch: capture proposes, this grants. Kept beside
             them because this is the page for what the layer may do alone. */}
         <Toggle
-          label="Let agents accept decisions"
-          description="Off, an agent can propose and withdraw but never grant authority. On, its acceptances are recorded as an agent's, with the session that signed."
+          label="Let agents put decisions in force"
+          description="On by default: what an agent puts in force is recorded as the agent's, with the session that signed. Off, an agent's records stay background until a person puts them in force."
           checked={settings.agent_acceptance}
           disabled={locked || busy("agent_acceptance")}
           {...(readOnlyReason ? { reason: readOnlyReason } : {})}
@@ -218,7 +219,7 @@ export function DecisionCaptureSettings({
                 className={
                   "rounded-md border px-2.5 py-1 text-xs transition-colors disabled:opacity-40 " +
                   (active
-                    ? "border-[var(--color-accent-primary)] text-[var(--color-accent-primary)]"
+                    ? "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                     : "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:border-[var(--color-border-hover)] hover:text-[var(--color-text-primary)]")
                 }
               >
@@ -306,7 +307,7 @@ function Figure({ label, value }: { label: string; value: number }) {
     <div className="space-y-0.5">
       <dt className={MICRO_LABEL}>{label}</dt>
       <dd className="font-mono text-sm tabular-nums text-[var(--color-text-primary)]">
-        {value.toLocaleString()}
+        {formatNumber(value)}
       </dd>
     </div>
   );

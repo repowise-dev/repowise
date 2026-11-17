@@ -1,0 +1,50 @@
+{#- The flow page contract. Material is built in ``page_generator/flow.py`` and
+    ``flow_material.py`` from ``flow_pages.select_flow_plans``: every step is a
+    real function with its file and line span and an excerpt of its code. -#}
+Page: a walkthrough of one operation, **{{ ctx.title }}**, from what the user does to what the operation leaves behind.
+{% if not style_states_length %}
+Length: 350 to 700 words of prose.
+{% endif %}
+## Material
+
+### Entry point
+{{ ctx.kind }} `{{ ctx.public }}`, started by `{{ ctx.steps[0].name }}` at `{{ ctx.steps[0].cite }}`.
+{% if ctx.surface %}
+Options and arguments it accepts (one line each, first sentence of the help text):
+{{ ctx.surface }}
+{% endif %}
+{% if ctx.docs %}
+### User documentation that mentions it
+{% for s in ctx.docs %}
+From `{{ s.path }}:{{ s.start }}-{{ s.end }}`:
+{{ s.text }}
+
+{% endfor %}
+{% endif %}
+### Steps of the operation
+Steps are in call order. `called by` names the step that calls it and how: always, under a condition (`conditional`), in a loop, as an early return (`early_exit`) or in an error handler (`handler`). The code shows the start of each function plus the lines where it calls the next steps (`...` marks skipped lines; numbers are file line numbers).
+{% for s in ctx.steps %}
+#### Step {{ s.step }}: `{{ s.name }}` ({{ s.cite }}){% if s.called_by %}, called by step {{ s.called_by }} ({{ s.how_called }}){% endif %}
+{% if s.module %}Module page: {{ s.module }}
+{% endif %}{% if s.doc %}Docstring: {{ s.doc }}
+{% endif %}{% if s.code %}```
+{{ s.code }}
+```
+{% endif %}{% endfor %}
+{% if ctx.skipped %}
+Also called but not shown as steps (presentation, logging or context setup): {{ ctx.skipped | join(", ") }}.
+{% endif %}
+{% if ctx.neighbours %}
+### Pages a reader can open next
+{% for p in ctx.neighbours %}- **{{ p.title }}**: {{ p.summary }}
+{% endfor %}{% endif %}
+## What to write
+
+Every item below is an instruction about the page, never text to copy into it. Start the page with the line `# {{ ctx.title }}`.
+
+1. Opening paragraph, at most 4 sentences: what the user runs or calls and what they get back; what it produces or changes; the main ways it ends early. Name `{{ ctx.steps[0].name }}` once as where the code starts. Then a short scope paragraph: what this page follows{% if ctx.neighbours %}, and for neighbouring topics "for <topic>, see **<Page title>**" with titles from the pages listed above{% endif %}.
+2. `## At a glance`: a numbered list of 4 to 6 stages in processing order, one line each (at most 20 words): what the stage does and what it hands on. Stages are phases of work, not function names.
+3. One mermaid `flowchart LR` with a bold title line above it: 5 to 8 nodes for the stages and the stores or outputs they touch; every edge labelled with the object passed or written.
+4. One `##` section per stage, in the same order, headed by what happens in plain words (no numbers), each ONE paragraph of at most 3 sentences (about 50 to 80 words) ending with one citation. Do not repeat the At a glance line: add how and why. Say which object comes in and goes out, what is written and where, and the condition that picks a branch. Name an option only if it changes which stages run; when 3 or more modes or options matter, put them in one short table in that section instead of prose.
+5. `## Other ways it ends`: a table with columns When | What happens | Where (one citation per row), at most 6 rows, for early returns, errors, interrupts and alternative modes. No prose around it.
+6. `## Where to read next`{% if ctx.neighbours %} from the pages listed above{% endif %}, at most 4 bullets, each a page title in bold and why to open it.

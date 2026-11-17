@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from repowise.server.chat_artifacts import normalize_message_artifacts
+from repowise.server.schemas._datetime import UTCDateTime
 from repowise.server.schemas.evidence import CardRef
 
 
@@ -69,8 +69,8 @@ class ConversationResponse(BaseModel):
     title: str
     message_count: int = 0
     pinned: bool = False
-    created_at: datetime
-    updated_at: datetime
+    created_at: UTCDateTime
+    updated_at: UTCDateTime
 
     @classmethod
     def from_orm(cls, obj: object, message_count: int = 0) -> ConversationResponse:
@@ -104,7 +104,7 @@ class ChatMessageResponse(BaseModel):
     conversation_id: str
     role: str
     content: dict
-    created_at: datetime
+    created_at: UTCDateTime
 
     @classmethod
     def from_orm(cls, obj: object) -> ChatMessageResponse:

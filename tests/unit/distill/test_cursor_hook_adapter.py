@@ -21,6 +21,7 @@ from repowise.cli.agent_adapters.cursor import (
     install_cursor_rewrite_hook,
     uninstall_cursor_rewrite_hook,
 )
+from repowise.cli.mcp_config import hook_direct_command
 
 
 def _payload(command: str = "pytest -x", **overrides) -> dict:
@@ -128,6 +129,12 @@ class TestMain:
         assert out["updated_input"]["command"] == "repowise distill --source hook-cursor pytest -x"
         assert out["updated_input"]["working_directory"] == str(tmp_path)
 
+    def test_passes_through_when_repowise_is_not_on_path(self, monkeypatch, tmp_path) -> None:
+        (tmp_path / ".repowise").mkdir()
+        monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+        payload = _payload(tool_input={"command": "pytest -x", "working_directory": str(tmp_path)})
+        assert _run_main(monkeypatch, payload) == ""
+
     def test_ask_passes_through(self, monkeypatch, tmp_path) -> None:
         # preToolUse does not enforce "ask", so an ask family runs unrewritten.
         (tmp_path / ".repowise").mkdir()
@@ -145,7 +152,7 @@ class TestHooksJson:
         assert doc == {
             "hooks": {
                 "preToolUse": [
-                    {"command": "repowise-rewrite --agent cursor", "matcher": "Shell", "timeout": 5}
+                    {"command": hook_direct_command("repowise-rewrite", "--agent cursor"), "matcher": "Shell", "timeout": 5}
                 ]
             },
             "version": 1,

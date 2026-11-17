@@ -148,10 +148,10 @@ class TestClassAwareTier:
         assert hits[0][2:] == (0.95, "enclosing_class")
 
     def test_recursion_does_not_reach_another_class(self, tmp_path: Path) -> None:
-        """The caller's own class's `helper` IS the caller — that is a self-call."""
+        """The caller's own class's `helper` IS the caller: a self edge, never B's."""
         parsed = _parse_all(tmp_path, {"src/A.java": ("java", JAVA_RECURSIVE)})
         edges = _edges(parsed, tmp_path)
-        assert _targets_of(edges, "::A::helper") == [], (
+        assert _targets_of(edges, "::A::helper") == ["src/A.java::A::helper"], (
             f"recursive helper() must not edge to B::helper; edges: {edges}"
         )
 

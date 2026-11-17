@@ -49,9 +49,9 @@ def head_commit_ts(repo_path: Path) -> float | None:
     the same units the gate reads it back in.
     """
     try:
-        import git
+        from repowise.core.git_repo import Repo
 
-        repo = git.Repo(repo_path, search_parent_directories=True)
+        repo = Repo(repo_path, search_parent_directories=True)
         try:
             return float(repo.head.commit.committed_date)
         finally:

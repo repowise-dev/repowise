@@ -200,6 +200,23 @@ def test_title_skips_boilerplate_and_trailers():
     assert change_title(subject, "#123 Fix foo\n", True) == "#123 Fix foo"
 
 
+def test_title_takes_an_issue_keyed_line_and_skips_real_trailers():
+    subject = "Merge pull request #6480 from a/FINERACT-2455"
+    jira = "FINERACT-2455: WC - Support discount fee by transaction external id"
+    assert change_title(subject, jira, True) == jira
+    assert change_title(subject, f"{jira}\n\nSigned-off-by: A <a@x>", True) == jira
+    assert change_title(subject, "ABC-1: Fix it", True) == "ABC-1: Fix it"
+    # A one-paragraph body is the PR title, even in ``type: subject`` form.
+    assert change_title(subject, "fix: handle null", True) == "fix: handle null"
+    assert change_title(subject, "\r\n\r\nfix: handle null\r\n", True) == "fix: handle null"
+    assert change_title(subject, "Title\n\nSee merge request g/p!1", True) == "Title"
+    # Real trailers are still skipped, in the final paragraph or by known key.
+    body = "Signed-off-by: A <a@x>\nCo-authored-by: B <b@x>"
+    assert change_title(subject, body, True) == subject
+    assert change_title(subject, f"{body}\n\nReal title", True) == "Real title"
+    assert change_title(subject, f"{body}\n\nTicket: y", True) == subject
+
+
 def test_title_drops_only_its_own_ref_suffix():
     assert without_own_ref("feat(x): add y (#3792)", "3792") == "feat(x): add y"
     assert without_own_ref("Fix the parser (!41)", "41") == "Fix the parser"
@@ -440,3 +457,29 @@ async def test_attribution_off_stores_no_provenance(tmp_path, history):
             assert (row.provenance, row.provenance_agent, row.provenance_known) == (None, None, None)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_private_user_config")
+async def test_change_window_stops_at_its_ceiling(tmp_path, history, monkeypatch):
+    # commit_limit has no upper bound; the change filters bind ids as one IN
+    # list, so the change window keeps the old 10,000 ceiling.
+    from repowise.core.changes import store
+
+    r, _ = history
+    (r.root / ".repowise").mkdir()
+    (r.root / ".repowise" / "config.yaml").write_text("commit_limit: 100000\n")
+    seen: list[int] = []
+    real = store._read_changes
+    monkeypatch.setattr(
+        store, "_read_changes", lambda path, limit, *a: (seen.append(limit), real(path, limit, *a))[1]
+    )
+    engine, factory, repo_id = await _db(tmp_path, r.root)
+    try:
+        from repowise.core.persistence.database import get_session
+
+        async with get_session(factory) as session:
+            await refresh_changes(session, repo_id, r.root, rebuild=True)
+    finally:
+        await engine.dispose()
+    assert seen == [store._CHANGE_WINDOW_CEILING]

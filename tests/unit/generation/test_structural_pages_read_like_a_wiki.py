@@ -108,7 +108,9 @@ class TestHistory:
         assert "27 commits in its history, 9 in the last 90 days." in page
         assert "Ada Lovelace" in page
         assert "62%" in page
-        assert "12 of those commits fixed a bug." in page
+        assert "12 bug-fix commits in the last 6 months." in page
+        # The fix count spans 6 months, not the 90 days the sentence before it ends on.
+        assert "of those commits" not in page
         assert "change hotspots" in page
 
     def test_a_blame_owner_is_credited_with_lines_not_commits(self, generator):
@@ -147,7 +149,15 @@ class TestHistory:
         )
 
         assert "## History" in page
-        assert "fixed a bug" not in page
+        assert "bug-fix" not in page
+
+    def test_one_fix_is_not_described_in_the_plural(self, generator):
+        page = render(
+            generator,
+            _context(git_metadata={"commit_count_total": 3, "prior_defect_count": 1}),
+        )
+
+        assert "1 bug-fix commit in the last 6 months." in page
 
     def test_one_commit_is_not_described_in_the_plural(self, generator):
         page = render(generator, _context(git_metadata={"commit_count_total": 1}))
@@ -607,23 +617,13 @@ Also defined: `log = structlog.get_logger(__name__)`.
 
 27 commits in its history, 9 in the last 90 days. The last landed on 2026-08-17. \
 **Ada Lovelace** is its primary maintainer, at 62% of commits. \
-12 of those commits fixed a bug. It is one of the repository's change hotspots.
+12 bug-fix commits in the last 6 months. It is one of the repository's change hotspots.
 
 ## Changes together with
 
 Files that change in the same commits as this one without importing it or being imported by it.
 
-- `pkg/mod/persist.py`: 28 shared commits (last together on 2026-08-29)
-
-## Questions this page answers
-
-- What does `pkg/mod/walk.py` export?
-- Where is `walk_repo` defined?
-- What imports `pkg/mod/walk.py`?
-
----
-
-*Generated from parsed code, the import graph and git history.*"""
+- `pkg/mod/persist.py`: 28 shared commits (last together on 2026-08-29)"""
 
 
 def test_a_whole_page_renders_as_expected(generator):
@@ -735,31 +735,37 @@ def _contributor_hide(source: str) -> set[str]:
     return set(re.findall(r'"([^"]+)"', body))
 
 
-def test_the_scaffolding_headings_are_the_ones_the_reader_lens_hides(generator):
-    """The template and ``reader-persona.ts`` have to agree, byte for byte.
-
-    ``## Questions this page answers`` exists for retrieval: the question
-    block is the only part of the page shaped like a question. It cannot be
-    dropped here without dropping it from the index, so the reader persona
-    hides it client-side instead — and it matches on the heading text,
-    lowercased, which is a string in another language's source file. The
-    heading comes out of a real render for that reason.
-
-    ``## In the code`` is no longer rendered at all (the file vocabulary is
-    embedded from page metadata), so the vocabulary never reaches a reader.
-    """
+def test_a_file_page_carries_no_scaffolding_headings(generator):
+    """No question block and no ``## In the code``: neither says anything the
+    page's identifiers do not, and the file vocabulary is embedded from page
+    metadata instead."""
     ctx = _context(
         dependents=["pkg/cli/main.py"],
         file_vocabulary="prune_dirs max_depth",
     )
     page = render(generator, ctx)
     rendered = {ln[3:].strip().lower() for ln in page.splitlines() if ln.startswith("## ")}
-    assert "questions this page answers" in rendered
+    assert "questions this page answers" not in rendered
     assert "in the code" not in rendered
+    assert not page.rstrip().endswith("history.*")
 
-    hidden = _contributor_hide(READER_PERSONA_TS.read_text(encoding="utf-8"))
 
-    assert "questions this page answers" in hidden
+def test_tests_among_the_importers_are_counted_not_listed(generator):
+    ctx = _context(
+        dependents=["pkg/cli/main.py", "tests/test_walk.py", "tests/unit/test_more.py"],
+    )
+    used = render(generator, ctx).split("## Used by", 1)[1].split("\n## ", 1)[0]
+    assert "`pkg/cli/main.py`" in used
+    assert "tests/test_walk.py" not in used
+    assert "Plus 2 test files." in used
+
+
+def test_the_api_list_leads_with_the_most_called_symbol(generator):
+    rare = _symbol("rare")
+    hot = _symbol("hot")
+    hot["callers"] = 9
+    api = render(generator, _context(symbols=[rare, hot])).split("## Public API", 1)[1]
+    assert api.index("hot") < api.index("rare")
 
 
 # ---------------------------------------------------------------------------
@@ -778,7 +784,6 @@ def _spotlight(**over) -> SymbolSpotlightContext:
         decorators=[],
         is_async=False,
         complexity_estimate=0,
-        callers=[],
     )
     base.update(over)
     return SymbolSpotlightContext(**base)
@@ -791,47 +796,40 @@ class TestSymbolSpotlight:
         )
 
         assert page.content.startswith("# PRUNED_DIRS\n")
-        # The file is on the line under it, which is where a reader looks.
+        # The file is named in the overview, which is where a reader looks.
         assert "`pkg/mod/walk.py`" in page.content
-        # And the dotted name stays on the page, because it is an identifier
-        # the index carries.
-        assert "pkg.mod.walk.PRUNED_DIRS" in page.content
+        # Said once: with no docstring the overview sentence names kind and
+        # file, so the field line does not repeat them.
+        assert page.content.count("pkg/mod/walk.py") == 1
 
     def test_a_resolved_call_is_reported_as_a_call(self, generator):
         page = generator._structural_symbol_spotlight(
-            _spotlight(
-                callers=["pkg/cli/main.py"],
-                call_sites=[{"caller": "walk_repo", "caller_file": "pkg/mod/walk.py"}],
-            ),
+            _spotlight(call_sites=[{"caller": "walk_repo", "caller_file": "pkg/mod/walk.py"}]),
             "pkg/mod/walk.py::PRUNED_DIRS",
             "Symbol: pkg/mod/walk.py::PRUNED_DIRS",
         )
 
         used = page.content.split("## Where it is used", 1)[1].split("\n## ", 1)[0]
-        assert "Reached by 1 resolved call." in used
+        assert "Used in 1 resolved place." in used
         assert "`walk_repo`" in used
-        assert "not confirmed call sites" not in used
-        assert "What calls `PRUNED_DIRS`?" in page.content
 
-    def test_the_importers_move_under_a_heading_the_reader_lens_hides(self, generator):
-        # They are the fifteen thousand file paths this change would otherwise
-        # take out of the index, so they stay on the page and leave the view.
+    def test_calls_from_tests_are_counted_not_listed(self, generator):
         page = generator._structural_symbol_spotlight(
             _spotlight(
-                callers=["pkg/cli/main.py"],
                 call_sites=[{"caller": "walk_repo", "caller_file": "pkg/mod/walk.py"}],
+                test_call_sites=7,
             ),
             "pkg/mod/walk.py::PRUNED_DIRS",
             "Symbol: pkg/mod/walk.py::PRUNED_DIRS",
         )
+        assert "Used in 1 resolved place. Tests add 7 more." in page.content
 
-        assert "## Files importing this module" in page.content
-        importers = page.content.split("## Files importing this module", 1)[1]
-        assert "`pkg/cli/main.py`" in importers
-
-        source = READER_PERSONA_TS.read_text(encoding="utf-8")
-        hidden = _contributor_hide(source)
-        assert "files importing this module" in hidden
+        only_tests = generator._structural_symbol_spotlight(
+            _spotlight(test_call_sites=2),
+            "pkg/mod/walk.py::PRUNED_DIRS",
+            "Symbol: pkg/mod/walk.py::PRUNED_DIRS",
+        )
+        assert "Only tests use it (2 resolved places)." in only_tests.content
 
     def test_the_count_is_the_real_total_not_the_printed_one(self, generator):
         page = generator._structural_symbol_spotlight(
@@ -844,15 +842,34 @@ class TestSymbolSpotlight:
             "Symbol: pkg/mod/walk.py::PRUNED_DIRS",
         )
 
-        assert "Reached by 30 resolved calls." in page.content
+        assert "Used in 30 resolved places." in page.content
         assert "and 5 more." in page.content
 
-    def test_an_unresolved_symbol_keeps_the_honest_import_wording(self, generator):
+    def test_an_unresolved_symbol_says_so_in_one_line(self, generator):
         page = generator._structural_symbol_spotlight(
-            _spotlight(callers=["pkg/cli/main.py"]),
+            _spotlight(),
             "pkg/mod/walk.py::PRUNED_DIRS",
             "Symbol: pkg/mod/walk.py::PRUNED_DIRS",
         )
 
-        assert "not confirmed call sites" in page.content
-        assert "`pkg/cli/main.py`" in page.content
+        used = page.content.split("## Where it is used", 1)[1].strip()
+        assert used == (
+            "No uses of it were resolved. Its file page lists the files that import its module."
+        )
+
+    def test_no_source_copy_questions_or_footer(self, generator):
+        page = generator._structural_symbol_spotlight(
+            _spotlight(), "pkg/mod/walk.py::PRUNED_DIRS", "Symbol: pkg/mod/walk.py::PRUNED_DIRS"
+        )
+        assert "## Implementation" not in page.content
+        assert "## Questions" not in page.content
+        assert "---" not in page.content
+
+
+def test_a_files_top_level_code_is_named_as_such(generator):
+    page = generator._structural_symbol_spotlight(
+        _spotlight(call_sites=[{"caller": "__module__", "caller_file": "pkg/app.py"}]),
+        "pkg/mod/walk.py::PRUNED_DIRS",
+        "Symbol: pkg/mod/walk.py::PRUNED_DIRS",
+    )
+    assert "- top-level code in `pkg/app.py`" in page.content

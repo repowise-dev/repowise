@@ -14,6 +14,7 @@ No edits to the walker. A language absent here ⇒ the perf pass is silent for i
 
 from __future__ import annotations
 
+from . import apex as _apex
 from . import cpp as _cpp
 from . import csharp as _csharp
 from . import dart as _dart
@@ -42,6 +43,7 @@ _REGISTER: tuple[tuple[str, BasePerfDialect], ...] = (
     ("javascript", _ts_js.DIALECT),
     ("jsx", _ts_js.DIALECT),
     ("java", _java.DIALECT),
+    ("apex", _apex.DIALECT),
     ("go", _go.DIALECT),
     ("csharp", _csharp.DIALECT),
     # Razor/Blazor reaches the pass as a C# buffer (its C# regions

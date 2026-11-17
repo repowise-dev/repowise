@@ -94,7 +94,8 @@ export default function OpportunityDrawer({
           <RelatedSection adapter={adapter} filePath={current.file_path} />
           <TestsSection current={current} adapter={adapter} />
           <EvidenceSection current={current} />
-          <WhyRankedSection current={current} />
+          {/* The row's place in the queue: a lookup by id has no list. */}
+          <WhyRankedSection current={current} position={opportunity.rank_position} />
           <CallerPathsSection current={current} adapter={adapter} />
           <RawObservations
             opportunityId={current.opportunity_id}
@@ -110,7 +111,6 @@ export default function OpportunityDrawer({
           <AiPromptButton
             label={AGENT_PROMPT_LABEL}
             onClick={() => onAgentPrompt(current)}
-            className="px-3.5 py-2 text-sm"
           />
         </div>
       </div>

@@ -96,6 +96,7 @@ def test_ranks_the_change_the_symptom_names(tmp_path):
     assert out.exit_code == 0, out.output
     data = json.loads(out.output)
     assert data["candidates"] == 2
+    assert data["candidates_capped"] is False
     top = data["suspects"][0]
     assert top["id"] == f"commit-{a}" and top["rank"] == 1
     assert {"text", "recency"} <= set(top["signals"])

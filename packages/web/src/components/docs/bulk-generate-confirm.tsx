@@ -1,6 +1,7 @@
 "use client";
 
 import { GenerateConfirmDialog } from "@repowise-dev/ui/wiki/regenerate-button";
+import { providerSetupHref } from "@/lib/utils/page-href";
 import { formatEstimateCost } from "@/lib/generate-format";
 import { type useBulkGenerate } from "@/lib/hooks/use-bulk-generate";
 import { useTranslations } from "next-intl";
@@ -51,7 +52,7 @@ export function BulkGenerateConfirm({
       estimateLoading={flow.estimateLoading}
       estimateError={flow.estimateError}
       noProvider={noProvider}
-      settingsHref={`/repos/${repoId}/settings#provider`}
+      settingsHref={providerSetupHref(repoId)}
       onConfirm={flow.confirm}
       launching={flow.launching}
     />

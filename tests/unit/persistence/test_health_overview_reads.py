@@ -107,7 +107,7 @@ async def test_findings_kwarg_is_actually_used_not_re_read(async_session, tmp_pa
 
     summary = await get_health_summary(async_session, repo.id, findings=findings[:1])
     assert summary["open_findings"] == 1
-    assert summary["performance_findings"] == 0
+    assert summary["maintainability_findings"] == 0
 
 
 async def test_snapshot_headline_reads_the_latest_and_counts_the_rest(

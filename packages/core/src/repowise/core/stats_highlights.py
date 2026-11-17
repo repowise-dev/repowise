@@ -23,6 +23,8 @@ from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from typing import Any
 
+from repowise.core.analysis.external_systems.links import IMPORT_TARGET_LANGUAGES
+from repowise.core.code_origin import path_origin
 from repowise.core.test_paths import is_test_related_path
 
 Row = Mapping[str, Any]
@@ -94,13 +96,9 @@ def _offset_minutes(raw: Any) -> int | None:
         return None
 
 
-def _is_external(node: Row) -> bool:
-    node_id = str(node.get("node_id") or node.get("id") or "")
-    return (
-        node.get("language") == "external"
-        or node_id.startswith("external:")
-        or node.get("external_system_id") is not None
-    )
+def _is_import_target(node: Row) -> bool:
+    """The row form of ``crud.indexed_file``, negated: not a file the index read."""
+    return node.get("language") in IMPORT_TARGET_LANGUAGES
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +123,7 @@ def file_mix(file_nodes: Iterable[Row]) -> dict[str, Any]:
     code_paths: list[str] = []
     for node in file_nodes:
         lang = node.get("language")
-        if not lang or _is_external(node):
+        if not lang or _is_import_target(node):
             continue
         spec = REGISTRY.get(lang)
         if spec is not None and spec.is_code:
@@ -147,20 +145,17 @@ def _ranked_languages(counts: Counter[str]) -> list[dict[str, Any]]:
     return [{"language": lang, "file_count": n} for lang, n in ranked]
 
 
-def build_scale(file_nodes: Iterable[Row], metrics: Iterable[Row]) -> dict[str, Any]:
+def build_scale(
+    file_nodes: Iterable[Row], metrics: Iterable[Row], symbol_count: int
+) -> dict[str, Any]:
     """Counts and NLOC, plus the :func:`file_mix` languages and module count.
 
-    ``file_nodes`` are graph file nodes; external dependency nodes are dropped
-    so the file count describes the repo.
+    ``file_nodes`` are graph file nodes; import targets are dropped so the
+    file count is ``crud.count_files``. ``symbol_count`` is
+    ``crud.count_symbols``, the figure every other surface shows.
     """
     file_nodes = list(file_nodes)
-    file_count = 0
-    symbol_count = 0
-    for node in file_nodes:
-        if _is_external(node):
-            continue
-        file_count += 1
-        symbol_count += _int(node.get("symbol_count"))
+    file_count = sum(1 for node in file_nodes if not _is_import_target(node))
 
     total_nloc = 0
     test_nloc = 0
@@ -577,10 +572,29 @@ def build_people(git_metadata: Iterable[Row], commits: Iterable[Row] = ()) -> di
 # ---------------------------------------------------------------------------
 
 
+def production_checker(metrics: Iterable[Row]) -> Callable[[str], bool]:
+    """Whether a path is production code, for the file records.
+
+    Health's stored ``code_origin`` decides for the files it scored, since it
+    read each file's head. Rows written before the column, and files health
+    did not score, fall back to :func:`path_origin`.
+    """
+    stored = {m["file_path"]: m.get("code_origin") for m in metrics}
+
+    def check(path: str) -> bool:
+        return (stored.get(path) or path_origin(path)) == "production"
+
+    return check
+
+
 def build_file_records(
     metrics: Iterable[Row], git_metadata: Iterable[Row], first_commit_at: Any
 ) -> dict[str, Any]:
     """Largest, gnarliest and most-changed file, and what survives from day one.
+
+    The three superlatives rank production code only: a test fixture, a
+    generated parser or a vendored bundle winning "Largest file" says nothing
+    about the codebase people maintain. The day-one count keeps every file.
 
     "Oldest file" is replaced by a count: every file added in the root commit
     ties for it, and naming one of a hundred ties is arbitrary. Files whose
@@ -589,10 +603,12 @@ def build_file_records(
     """
     out: dict[str, Any] = {}
     metrics = list(metrics)
-    largest = max(metrics, key=lambda m: _int(m.get("nloc")), default=None)
+    production = production_checker(metrics)
+    shipped = [m for m in metrics if production(m["file_path"])]
+    largest = max(shipped, key=lambda m: _int(m.get("nloc")), default=None)
     if largest is not None and _int(largest.get("nloc")) > 0:
         out["largest_file"] = {"path": largest["file_path"], "nloc": _int(largest["nloc"])}
-    gnarliest = max(metrics, key=lambda m: _int(m.get("max_ccn")), default=None)
+    gnarliest = max(shipped, key=lambda m: _int(m.get("max_ccn")), default=None)
     if gnarliest is not None and _int(gnarliest.get("max_ccn")) > 0:
         out["gnarliest_file"] = {
             "path": gnarliest["file_path"],
@@ -604,8 +620,9 @@ def build_file_records(
     day_one = 0
     dated = 0
     for m in git_metadata:
-        if most_changed is None or _int(m.get("commit_count_total")) > _int(
-            most_changed.get("commit_count_total")
+        if production(m["file_path"]) and (
+            most_changed is None
+            or _int(m.get("commit_count_total")) > _int(most_changed.get("commit_count_total"))
         ):
             most_changed = m
         born = parse_dt(m.get("first_commit_at"))

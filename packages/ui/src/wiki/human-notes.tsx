@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { Pencil, StickyNote, X } from "lucide-react";
 import { Button } from "../ui/button";
+import { FIELD_CLASS } from "../ui/input";
+import { cn } from "../lib/cn";
 
 /**
  * Human-curated note pinned above a page's generated content, editable in
@@ -84,7 +86,7 @@ export function HumanNotes({
             autoFocus
             aria-label="Human note"
             placeholder="Context the generated docs can't know — gotchas, history, plans…"
-            className="w-full resize-y rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-3 py-2 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)]"
+            className={cn(FIELD_CLASS, "w-full resize-y px-3 py-2 text-sm")}
           />
           <div className="flex items-center gap-2">
             <Button size="sm" onClick={() => void save()} disabled={saving}>

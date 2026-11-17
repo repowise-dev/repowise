@@ -1,5 +1,6 @@
 import { ProportionBar } from "../shared/proportion-bar";
 import { SEVERITY_LABEL, SEVERITY_SEGMENT, type Severity } from "./tokens";
+import { formatNumber } from "../lib/format";
 
 export interface SeverityBreakdown {
   critical: number;
@@ -39,7 +40,7 @@ export function SeverityDistribution({
         key: sev,
         label: SEVERITY_LABEL[sev],
         value: breakdown[sev],
-        detail: breakdown[sev].toLocaleString(),
+        detail: formatNumber(breakdown[sev]),
         color: SEVERITY_SEGMENT[sev],
       }))}
     />

@@ -286,7 +286,7 @@ export function RefactoringBoard({
               onChange={(e) =>
                 onServerStateChange({ order: e.target.value as RefactoringOrder, offset: 0 })
               }
-              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 text-sm text-[var(--color-text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent-primary)]"
+              className="h-9 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] px-2.5 text-sm text-[var(--color-text-primary)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-focus-ring)]"
             >
               {SORT_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -363,7 +363,7 @@ export function RefactoringBoard({
             </div>
           ) : (
             <h3 className="text-sm font-semibold tabular-nums text-[var(--color-text-primary)]">
-              {resultTotal.toLocaleString()} {STATUS_LABEL[serverState.status].toLowerCase()}{" "}
+              {formatNumber(resultTotal)} {STATUS_LABEL[serverState.status].toLowerCase()}{" "}
               opportunit{resultTotal === 1 ? "y" : "ies"}
               {filtersActive ? (
                 <span className="font-normal text-[var(--color-text-tertiary)]"> matching</span>

@@ -83,7 +83,7 @@ export function CoverageLede({
         }
       >
         <p>
-          Tests reach{" "}
+          Tests ran{" "}
           <strong className="font-semibold text-[var(--color-text-primary)]">
             {formatNumber(summary.covered_lines)} of {formatNumber(summary.total_lines)}{" "}
             coverable lines
@@ -91,9 +91,9 @@ export function CoverageLede({
           across {formatNumber(summary.file_count)} instrumented files
           {moduleCount > 0 ? ` in ${formatNumber(moduleCount)} directories` : ""}.
           {band ? ` We rate that ${band.label.toLowerCase()}.` : ""} These are the
-          lines your own test run executed, so every figure on this page is
-          line-level and exact. Without a report we can still name which tests
-          reach which files, but not how much of a file they run.
+          lines your own test run executed, measured rather than inferred. Without
+          a report we can still name which tests reach which files, but not how
+          much of a file they run.
         </p>
 
         <p className="mt-2.5">

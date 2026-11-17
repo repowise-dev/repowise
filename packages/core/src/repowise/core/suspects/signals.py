@@ -48,6 +48,32 @@ _EVIDENCE_STOPWORDS = frozenset(
 )
 
 
+#: Path segments that name a project's layout, not what its code does: as text
+#: they match nearly every change.
+_LAYOUT_SEGMENTS = frozenset(
+    {
+        "cmd", "core", "dist", "index", "init", "__init__", "internal", "java", "kotlin",
+        "lib", "libs", "main", "packages", "pkg", "pkgs", "py", "python", "scala",
+        "source", "sources", "src", "test", "tests",
+    }
+)
+
+
+def path_terms(target: str, quiet: frozenset[str] = frozenset()) -> str:
+    """A file or ``file::Symbol`` target as symptom text.
+
+    Directory names, file stem and symbol, without the extension, layout
+    segments or *quiet* words. A filler stem (``index.ts``) stays when nothing
+    else is left.
+    """
+    path, _, member = target.partition("::")
+    *dirs, name = path.replace("\\", "/").strip("/").split("/")
+    stem = name.rsplit(".", 1)[0] if "." in name.lstrip(".") else name
+    drop = _LAYOUT_SEGMENTS | quiet
+    words = [w for w in [*dirs, stem] if w and w.lower() not in drop] or [stem]
+    return " ".join([*words, member] if member else words)
+
+
 def path_mentions(text: str) -> list[str]:
     """Path-like tokens in free text, in order, deduped."""
     return list(dict.fromkeys(m.group(0).lstrip("/\\") for m in _PATH_TOKEN.finditer(text)))
@@ -238,4 +264,5 @@ __all__ = [
     "TextSignal",
     "TraceSignal",
     "path_mentions",
+    "path_terms",
 ]

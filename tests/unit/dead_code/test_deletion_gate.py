@@ -98,6 +98,18 @@ def test_export_only_finding_is_never_deletion_ready():
     assert _says(finding, "remove the export, not the symbol")
 
 
+@pytest.mark.parametrize(
+    "kind",
+    [DeadCodeKind.UNREACHABLE_FILE, DeadCodeKind.ZOMBIE_PACKAGE, DeadCodeKind.UNUSED_INTERNAL],
+)
+def test_review_only_kinds_are_never_deletion_ready_at_any_confidence(kind):
+    """Pinned by kind, not by today's base confidence sitting under the bar."""
+    finding = _gate(_finding(kind=kind, confidence=1.0))
+    assert not finding.safe_to_delete
+    assert _says(finding, f"A {kind} finding is a review candidate")
+    assert not effective_safe_to_delete(1.0, "lib/util.py", True, str(kind))
+
+
 def test_language_with_partial_import_support_is_never_deletion_ready():
     finding = _gate(_finding("src/Util.scala"), _graph("src/Util.scala", "scala"))
     assert not finding.safe_to_delete

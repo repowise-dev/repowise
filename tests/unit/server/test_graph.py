@@ -709,6 +709,40 @@ async def test_module_graph_aggregates_signals(client: AsyncClient, app) -> None
     assert src["primary_owner"] == "Alice"
 
 
+@pytest.mark.asyncio
+async def test_module_graph_counts_and_averages_indexed_files_only(
+    client: AsyncClient, app
+) -> None:
+    """Symbol rows and import targets are graph rows, not a module's files."""
+    repo = await create_test_repo(client)
+    await _populate_graph(app.state.session_factory, repo["id"])
+    async with get_session(app.state.session_factory) as session:
+        await crud.batch_upsert_graph_nodes(
+            session,
+            repo["id"],
+            [
+                {"node_id": "src/main.py::run", "node_type": "symbol", "language": "python"},
+                {"node_id": "src/schema.gen.ts", "node_type": "file", "language": "unknown"},
+                {"node_id": "external:requests", "node_type": "file", "language": "external"},
+            ],
+        )
+        await crud.batch_upsert_graph_edges(
+            session,
+            repo["id"],
+            [{"source_node_id": "src/main.py", "target_node_id": "external:requests"}],
+        )
+
+    resp = await client.get(f"/api/graph/{repo['id']}/modules")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [m["module_id"] for m in data["nodes"]] == ["src"]
+    src = data["nodes"][0]
+    assert src["file_count"] == 2
+    assert src["symbol_count"] == 8
+    assert src["avg_pagerank"] == pytest.approx((0.8 + 0.3) / 2)
+    assert data["edges"] == []
+
+
 # ---------------------------------------------------------------------------
 # Community detail: state, not just shape (Phase 2)
 # ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ from repowise.cli.editor_integrations.codex_config import (
     remove_agents_md_distill_section,
     uninstall_codex_rewrite_hook,
 )
+from repowise.cli.mcp_config import hook_direct_command
 from repowise.cli.rewrite_hook import decide
 
 
@@ -162,7 +163,7 @@ class TestRewriteHookInstall:
         assert len(entries) == 1
         assert entries[0]["matcher"] == "Bash|PowerShell"
         hook = entries[0]["hooks"][0]
-        assert hook["command"] == "repowise-rewrite"
+        assert hook["command"] == claude_config._rewrite_hook_command()
         assert hook["type"] == "command"
         assert claude_code_rewrite_hook_installed() is True
 
@@ -269,7 +270,7 @@ class TestCoexistenceWithAugmentHooks:
         assert migrate_claude_code_hooks() is True
         entries = _pre_hooks(settings_path)
         commands = [h["command"] for e in entries for h in e["hooks"]]
-        assert commands == ["repowise-rewrite"]
+        assert commands == [claude_config._rewrite_hook_command()]
 
     def test_rewrite_install_preserves_augment_post_hook(self, settings_path) -> None:
         install_claude_code_hooks()
@@ -549,7 +550,7 @@ class TestCodexHooksInstall:
         assert entries[0]["matcher"] == SHELL_TOOL_MATCHER
         assert "shell_command" in entries[0]["matcher"]
         hook = entries[0]["hooks"][0]
-        assert hook["command"] == "repowise-rewrite --agent codex"
+        assert hook["command"] == hook_direct_command("repowise-rewrite", "--agent codex")
         assert codex_rewrite_hook_installed() is True
 
     def test_idempotent(self, codex_hooks_path) -> None:

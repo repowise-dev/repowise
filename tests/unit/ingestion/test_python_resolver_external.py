@@ -214,6 +214,45 @@ def test_stdlib_names_inside_a_package_stay_stdlib(py_shadow_thirdparty) -> None
     assert resolve_python_import("json", "pkg/utils/pydantic.py", ctx) == "external:json"
 
 
+@pytest.mark.parametrize("module", ["signal", "signal.events"])
+def test_stdlib_import_does_not_bind_an_unrelated_package_root(module: str) -> None:
+    ctx = _layout_ctx(
+        {
+            "plugins/adapter/__init__.py",
+            "plugins/adapter/client.py",
+            "vendor/signal/__init__.py",
+            "vendor/signal/events.py",
+        }
+    )
+    importer = "plugins/adapter/client.py"
+    assert resolve_python_import(module, importer, ctx) == f"external:{module}"
+    assert resolve_python_import_all(_imp(module, ["events"]), importer, ctx) == (
+        f"external:{module}",
+    )
+    assert resolve_python_import(".client", "plugins/adapter/__init__.py", ctx) == importer
+    assert resolve_python_import("adapter.client", "vendor/signal/events.py", ctx) == importer
+
+
+@pytest.mark.parametrize("root", ["", "src/", "packages/shadow/src/", "scripts/"])
+def test_explicit_stdlib_shadow_keeps_its_own_submodules(root: str) -> None:
+    ctx = _layout_ctx(
+        {
+            f"{root}signal/__init__.py",
+            f"{root}signal/events.py",
+            "vendor/signal/__init__.py",
+            "vendor/signal/events.py",
+            "plugins/adapter/__init__.py",
+            "plugins/adapter/client.py",
+            "scripts/run.py",
+        }
+    )
+    importer = "scripts/run.py" if root == "scripts/" else "plugins/adapter/client.py"
+    assert resolve_python_import("signal", importer, ctx) == f"{root}signal/__init__.py"
+    assert resolve_python_import_all(_imp("signal", ["events"]), importer, ctx) == (
+        f"{root}signal/events.py",
+    )
+
+
 def test_a_module_never_imports_itself(py_self_stdlib) -> None:
     ctx = py_self_stdlib
     assert resolve_python_import("logging", "pkg/logging.py", ctx) == "external:logging"
@@ -398,3 +437,20 @@ def test_an_unimported_name_still_reaches_the_repo_symbol(tmp_path) -> None:
         {**_SHADOWED, "pkg/paths.py": "def mk(s):\n    return Path(s)\n"},
     )
     assert ("pkg/paths.py::mk", "pkg/types.py::Path") in edges
+
+
+def test_graph_does_not_call_a_vendored_stdlib_shadow(tmp_path) -> None:
+    edges = _call_edges(
+        tmp_path,
+        {
+            "plugins/adapter/__init__.py": "",
+            "plugins/adapter/helper.py": "def other():\n    return 1\n",
+            "plugins/adapter/client.py": (
+                "from signal import getsignal\nfrom .helper import other\n\n\n"
+                "def read():\n    other()\n    return getsignal(1)\n"
+            ),
+            "vendor/signal/__init__.py": "def getsignal(n):\n    return n\n",
+        },
+    )
+    assert ("plugins/adapter/client.py::read", "plugins/adapter/helper.py::other") in edges
+    assert ("plugins/adapter/client.py::read", "vendor/signal/__init__.py::getsignal") not in edges

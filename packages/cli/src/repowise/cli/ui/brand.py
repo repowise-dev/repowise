@@ -12,10 +12,10 @@ caller because each one had two or three near-copies before it did:
   gutter, which is the whole point: every hand-padded version of this drifted
   by a column the moment a label grew.
 
-The colour vocabulary is four names and no more. ``cyan`` used to be a de-facto
-fifth on fourteen call sites, always on a machine-produced token — a model name,
-an env var, a language code. That is what mono is for, so those sites take
-``VALUE`` and the palette stays closed.
+The colour vocabulary is the style names in :data:`THEME` and no more. Init
+markup names a style (``[warn]``, ``[ok]``), never a colour, so the palette is
+changed here and only here. A machine-produced token (a model id, an env var,
+a language code) takes ``VALUE``: the face carries that distinction, not a hue.
 """
 
 from __future__ import annotations
@@ -26,52 +26,80 @@ from rich.console import Console
 from rich.markup import escape
 from rich.rule import Rule
 from rich.table import Table
+from rich.theme import Theme
+
+from repowise.cli.ui.glyphs import ascii_only, for_terminal, glyph
 
 # ---------------------------------------------------------------------------
 # Brand / theme
 # ---------------------------------------------------------------------------
 
-BRAND = "#F59520"
-BRAND_STYLE = f"bold {BRAND}"
-DIM = "dim"
-OK = "green"
-WARN = "yellow"
-ERR = "bold red"
+BRAND_HEX = "#F59520"
+#: The logo stroke colour on dark surfaces; the owl's strokes.
+CREAM_HEX = "#FCE9DD"
+#: The design language's violet for optional model work.
+MODEL_HEX = "#A98FC4"
 
+# Style names, registered on the CLI console by :data:`THEME`. Markup uses
+# these, never a raw colour.
+BRAND = "brand"
+BRAND_STYLE = "brand.bold"
+DIM = "dim"
+OK = "ok"
+WARN = "warn"
+ERR = "err"
+INFO = "info"
+MODEL = "model"
 #: Anything a machine produced and a human might retype: a model id, an env var
-#: name, a path, an embedder. Rule 5 of the design language — the distinction
+#: name, a path, an embedder. Rule 5 of the design language: the distinction
 #: between a measured fact and written prose is carried by the face, not by
 #: spending a colour on it.
-VALUE = "bold"
+VALUE = "value"
+OWL = "owl"
+
+# ok / warn / err stay ANSI names so they follow the terminal's own palette,
+# which keeps them readable on light and dark backgrounds alike.
+THEME = Theme(
+    {
+        BRAND: BRAND_HEX,
+        BRAND_STYLE: f"bold {BRAND_HEX}",
+        DIM: "dim",
+        OK: "green",
+        WARN: "yellow",
+        ERR: "bold red",
+        INFO: "default",
+        MODEL: MODEL_HEX,
+        VALUE: "bold",
+        OWL: f"bold {CREAM_HEX}",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Banner  —  owl mascot + wordmark (art lives in ui/mascot.py)
 # ---------------------------------------------------------------------------
 
-# Breathing room required beyond the rendered banner width before we pick the
-# long tagline; below that we use the short one.
-_BANNER_WIDTH_MARGIN = 4
+# Breathing room beyond the banner's own width (53 columns) before it is drawn,
+# so it needs 60; below that the one-line header stands in.
+_BANNER_WIDTH_MARGIN = 7
 
 
-def print_banner(console: Console, repo_name: str | None = None) -> None:
-    """Print the repowise owl banner, tagline, and optional repo name."""
+def print_banner(console: Console, repo_name: str | None = None, *, workspace: bool = False) -> None:
+    """Print the owl banner, or the one-line header when the art cannot show, then the repo.
+
+    *repo_name* is a bare name; *workspace* labels it ``Workspace:`` instead of ``Repository:``.
+    """
     from repowise.cli import __version__
     from repowise.cli.ui import mascot
 
-    narrow = console.width < mascot.banner_width() + _BANNER_WIDTH_MARGIN
     console.print()
-    console.print(mascot.banner_text())
-    console.print()
-    if narrow:
-        console.print(f" [dim]codebase intelligence · v{__version__}[/dim]", highlight=False)
+    if ascii_only() or console.width < mascot.banner_width() + _BANNER_WIDTH_MARGIN:
+        console.print(mascot.header_text(__version__, console.width), highlight=False)
     else:
-        console.print(
-            f" [dim]codebase intelligence for developers and AI · v{__version__}[/dim]",
-            highlight=False,
-        )
+        console.print(mascot.banner_text(__version__), highlight=False)
     if repo_name:
         console.print()
-        console.print(f" Repository: [bold]{escape(repo_name)}[/bold]", highlight=False)
+        label = "Workspace" if workspace else "Repository"
+        console.print(f" {label}: [bold]{escape(repo_name)}[/bold]", highlight=False)
     console.print()
 
 
@@ -86,7 +114,7 @@ def print_phase_header(
     console.print()
     console.print(
         Rule(
-            f"[{BRAND}]Phase {num} of {total}[/] · [bold]{title}[/bold]",
+            f"[{BRAND}]Phase {num} of {total}[/] {glyph('sep')} [bold]{title}[/bold]",
             style=DIM,
         )
     )
@@ -135,7 +163,7 @@ def key_value_table(
     table.add_column("Label", style=label_style, min_width=label_width)
     table.add_column("Value", style=value_style)
     for label, value in rows:
-        table.add_row(label, value)
+        table.add_row(for_terminal(label), for_terminal(value))
     return table
 
 

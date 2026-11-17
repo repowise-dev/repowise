@@ -10,6 +10,7 @@ import sys
 
 import pytest
 
+from repowise.core.pipeline import parse_pool
 from repowise.core.pipeline.phases import ingestion as ing
 
 
@@ -130,7 +131,7 @@ class TestBothCallSitesAreBounded:
     def test_pool_uses_the_shared_helper(self):
         import inspect
 
-        src = inspect.getsource(ing._parse_misses)
+        src = inspect.getsource(ing.parse_guarded)
         assert "parse_pool_workers(" in src, "the parse pool must be sized via the shared helper"
         assert "os.cpu_count()" not in src, "the pool must not be sized from the host core count"
 
@@ -156,7 +157,7 @@ class TestBothCallSitesAreBounded:
             (tmp_path / f"mod_{i}.py").write_text(f"def f_{i}(x):\n    return x + {i}\n")
 
         seen: list[int | None] = []
-        real = ing.ProcessPoolExecutor
+        real = parse_pool.ProcessPoolExecutor
 
         def recording(*args, **kwargs):
             seen.append(kwargs.get("max_workers"))
@@ -166,7 +167,7 @@ class TestBothCallSitesAreBounded:
             kwargs["max_workers"] = 1
             return real(*args, **kwargs)
 
-        monkeypatch.setattr(ing, "ProcessPoolExecutor", recording)
+        monkeypatch.setattr(parse_pool, "ProcessPoolExecutor", recording)
 
         parsed, *_ = await ing._run_ingestion(
             tmp_path,

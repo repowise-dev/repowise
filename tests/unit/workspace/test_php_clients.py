@@ -20,6 +20,7 @@ from repowise.core.workspace.extractors.http.php_clients import (
     laravel_http_calls,
 )
 from repowise.core.workspace.matching import match_contracts
+from repowise.core.workspace.origins import ContractOrigin
 
 GUZZLE_REQUEST = """<?php
 
@@ -160,7 +161,7 @@ class TestPhpClientsRecognition:
     def test_verb_form_reads_the_callee_name(self):
         rows = list(guzzle_verb_calls(GUZZLE_VERBS))
         assert [r.method for r in rows] == ["GET", "DELETE"]
-        assert all(r.confidence == 0.65 for r in rows)
+        assert all(r.origin == ContractOrigin.NAME_HEURISTIC for r in rows)
 
     def test_facade_reads_the_direct_and_the_chained_call(self):
         rows = list(laravel_http_calls(LARAVEL_HTTP))

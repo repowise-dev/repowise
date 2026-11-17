@@ -38,14 +38,16 @@ def _require(language: str) -> None:
 
 
 class _FI:
-    def __init__(self, path: str, language: str) -> None:
+    def __init__(self, path: str, language: str, is_test: bool | None) -> None:
         self.path = path
         self.language = language
+        if is_test is not None:
+            self.is_test = is_test
 
 
 class _PF:
-    def __init__(self, path: str, language: str) -> None:
-        self.file_info = _FI(path, language)
+    def __init__(self, path: str, language: str, is_test: bool | None = None) -> None:
+        self.file_info = _FI(path, language, is_test)
 
 
 def _build(tmp_path: Path, files: dict[str, str]):
@@ -68,7 +70,12 @@ def _build(tmp_path: Path, files: dict[str, str]):
     for pf in parsed:
         rel = pf.file_info.path
         source = (tmp_path / rel).read_bytes()
-        walked.append((_PF(rel, pf.file_info.language), walk_file(rel, pf.file_info.language, source)))
+        walked.append(
+            (
+                _PF(rel, pf.file_info.language, pf.file_info.is_test),
+                walk_file(rel, pf.file_info.language, source),
+            )
+        )
     return walked, gb.graph()
 
 
@@ -400,6 +407,44 @@ def test_a_bare_assert_in_production_code_is_not_an_oracle(tmp_path: Path) -> No
         },
     )
     assert _flagged(walked, graph, "tests/test_service.py") == ["test_load_runs"]
+
+
+def test_an_asserting_module_pytest_does_not_collect_is_not_an_oracle(tmp_path: Path) -> None:
+    """A test-named production module is production when pytest's config says so.
+
+    ``app/test_checks.py`` sits outside ``testpaths``, so ingestion stores it as
+    production, and its ``assert`` must not suppress the test that calls it.
+    """
+    _require("python")
+    walked, graph = _build(
+        tmp_path,
+        {
+            "pyproject.toml": '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+            "app/test_checks.py": (
+                "def check(value):\n"
+                "    assert value, 'value required'\n"
+                "    return value\n"
+            ),
+            "tests/test_service.py": (
+                "from app.test_checks import check\n"
+                "\n"
+                "def test_check_runs():\n"
+                "    check('x')\n"
+            ),
+        },
+    )
+    assert _flagged(walked, graph, "tests/test_service.py") == ["test_check_runs"]
+
+
+def test_test_cases_in_a_stored_production_file_are_not_candidates(tmp_path: Path) -> None:
+    """The stored flag decides; the path rule answers only when none was stored."""
+    from repowise.core.analysis.health.asserts.oracle_reach import _candidates
+
+    _require("python")
+    source = b"def test_connection():\n    ping()\n"
+    fcx = walk_file("app/test_runner.py", "python", source)
+    assert _candidates(_PF("app/test_runner.py", "python", is_test=False), fcx) == []
+    assert _candidates(_PF("app/test_runner.py", "python"), fcx) != []
 
 
 def test_a_call_the_graph_cannot_resolve_suppresses_nothing(tmp_path: Path) -> None:

@@ -368,10 +368,23 @@
   arguments: (argument_list) @call.arguments
 ) @call.site
 
-; Method call: obj.method(args) or obj->method(args)
+; Method call: obj.method(args) or obj->method(args), and the two ``this``
+; spellings. ``this->m()`` keeps ``this`` as the receiver, which the resolver
+; answers from the caller's own class. ``this->f_->m()`` captures ``f_`` alone,
+; as java.scm does for ``this.f.m()``: the field is the caller's own, so it is
+; typed exactly as a bare ``f_->m()`` is (ceiling: a same-named parameter
+; then shadows the field, as in Java). Any other nested receiver
+; (``a->b->m()``) stays uncaptured, since ``b`` is not the caller's field.
+; One alternation, so tree-sitter runs no extra match pass per call.
 (call_expression
   function: (field_expression
-    argument: (identifier) @call.receiver
+    argument: [
+      (identifier) @call.receiver
+      (this) @call.receiver
+      (field_expression
+        argument: (this)
+        field: (field_identifier) @call.receiver)
+    ]
     field: (field_identifier) @call.target
   )
   arguments: (argument_list) @call.arguments

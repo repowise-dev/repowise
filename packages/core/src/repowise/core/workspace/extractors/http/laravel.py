@@ -19,6 +19,7 @@ from repowise.core.ingestion.framework_routes import (
 )
 
 from ..base import line_at
+from ..calls import outside_comments
 from ..langs import PHP
 from .dialect import build_provider_contract
 from .mounts import declare_mount, declared_mount
@@ -34,6 +35,7 @@ _MOUNT_KEY = "laravel-route-file:"
 class LaravelDialect:
     name = "laravel"
     extensions = PHP
+    requires = ("Route::", "withRouting")
 
     def collect_mounts(self, ctx: ScanContext) -> dict[str, str]:
         out: dict[str, str] = {}
@@ -51,7 +53,7 @@ class LaravelDialect:
         if prefix is None:
             return []  # served under a prefix this cannot read
         out: list[Contract] = []
-        for route in laravel_routes(ctx.content, prefix):
+        for route in outside_comments(ctx, laravel_routes(ctx.content, prefix)):
             # `any` names no single verb, and a computed path no one route.
             if route.verb not in HTTP_METHODS or not route.path:
                 continue

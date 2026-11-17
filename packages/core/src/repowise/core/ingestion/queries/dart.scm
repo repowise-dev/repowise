@@ -133,6 +133,95 @@
   ) @call.site
 )
 
+; Method call on a field path: a.f.m(args) / a.f1.f2.m(args) / this.f.m(args),
+; up to three fields (the resolver's chain bound). Every link before the method
+; is a plain `.name` selector, so a call, an index or a `?.` hop in the run
+; matches none of these. The parser reads the field names off the siblings
+; between the head and the method's selector.
+(_
+  [(identifier) (this)] @call.receiver
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier)
+    )
+  )
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.target
+    )
+  )
+  .
+  (selector
+    (argument_part
+      (arguments) @call.arguments
+    )
+  ) @call.site
+)
+
+(_
+  [(identifier) (this)] @call.receiver
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier)
+    )
+  )
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier)
+    )
+  )
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.target
+    )
+  )
+  .
+  (selector
+    (argument_part
+      (arguments) @call.arguments
+    )
+  ) @call.site
+)
+
+(_
+  [(identifier) (this)] @call.receiver
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier)
+    )
+  )
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier)
+    )
+  )
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier)
+    )
+  )
+  .
+  (selector
+    (unconditional_assignable_selector
+      (identifier) @call.target
+    )
+  )
+  .
+  (selector
+    (argument_part
+      (arguments) @call.arguments
+    )
+  ) @call.site
+)
+
 ; Chained on a call: a.b(args).c(args) / this.b(args).c(args) / a.b(args)?.c(args).
 ; The inner call's name is the receiver call; the parser reads its receiver
 ; and arguments off the neighbouring nodes.

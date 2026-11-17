@@ -23,6 +23,7 @@ import {
   isHistoryBiomarker,
 } from "../biomarker-glossary";
 import { BiomarkerDetails } from "../biomarker-details";
+import { FindingActions } from "../finding-actions";
 import { plainIssue } from "../plain-language";
 import { SeverityMark } from "../severity-mark";
 import { VerificationTag } from "../verification-tag";
@@ -39,6 +40,7 @@ import {
   type TopIssue,
 } from "./model";
 import { MICRO_LABEL, POOLED_FILE_KEY, QUIET_LINK, STATUS_LABEL, TRIAGE_STATUSES } from "./shared";
+import { formatNumber } from "../../lib/format";
 
 /** What every row needs from the drawer: links, triage, and its opened detail. */
 export interface RowContext {
@@ -75,6 +77,7 @@ export function FindingDetail({
           {suggestion}
         </p>
       ) : null}
+      <FindingActions details={f.details} />
     </>
   );
 }
@@ -122,7 +125,7 @@ function IssueRow({
           // Only while the body is mounted: an id that resolves to nothing is
           // a broken reference for assistive tech.
           {...(open ? { "aria-controls": bodyId } : {})}
-          className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-sm py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-sm py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           <span className="flex min-w-0 items-baseline gap-2">
             <ChevronRight
@@ -249,7 +252,7 @@ export function OtherIssues({
   ctx: RowContext;
 }) {
   if (rest.length === 0 && heldBackTotal === 0) return null;
-  const count = rest.length.toLocaleString();
+  const count = formatNumber(rest.length);
   return (
     <CollapsibleSection
       title={leading > 0 ? `Other issues (${count})` : `All issues (${count})`}
@@ -257,7 +260,7 @@ export function OtherIssues({
     >
       {heldBackTotal > 0 ? (
         <p className="text-xs text-[var(--color-text-tertiary)]">
-          <span className="tabular-nums">{heldBackTotal.toLocaleString()}</span> more{" "}
+          <span className="tabular-nums">{formatNumber(heldBackTotal)}</span> more{" "}
           {heldBackTotal === 1 ? "finding is" : "findings are"} held back:{" "}
           {Object.values(heldBack ?? {})
             .map((g) => g.reason)
@@ -427,7 +430,7 @@ function TriageMenu({
       <PopoverTrigger
         aria-label={`Triage ${label}`}
         disabled={disabled}
-        className="rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-selected)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] disabled:opacity-50"
+        className="rounded-md p-1 text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-selected)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] disabled:opacity-50"
       >
         <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
       </PopoverTrigger>
@@ -455,7 +458,7 @@ function TriageMenu({
                   onSelect(opt.value);
                 }}
                 className={cn(
-                  "block w-full rounded px-2 py-1.5 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]",
+                  "block w-full rounded px-2 py-1.5 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]",
                   current
                     ? "font-medium text-[var(--color-text-primary)]"
                     : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-selected)] hover:text-[var(--color-text-primary)]",

@@ -74,7 +74,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from tree_sitter import Node
 
@@ -236,6 +236,59 @@ class BasePerfDialect:
             has_db_import=has_db_import,
         )
 
+    def runs_once_in_loop(self, node: Node, loop_kinds: frozenset[str]) -> bool:
+        """*node*'s statement is followed in its block by one that ends the loop
+        (:meth:`_ends_loop`), so it runs at most once per loop entry and is no
+        per-iteration cost. ``False`` for a dialect with no
+        :attr:`statement_block_kinds`."""
+        if not self.statement_block_kinds:
+            return False
+        stmt = node
+        while stmt.parent is not None and stmt.parent.type not in self.statement_block_kinds:
+            if stmt.type in self.scope_kinds:  # a lambda body runs elsewhere
+                return False
+            stmt = stmt.parent
+            if stmt.type in loop_kinds:  # an inner loop repeats it
+                return False
+        if stmt.parent is None or stmt.type == "switch_label":
+            return False
+        # A ``case`` label is tested on every dispatch, not run once.
+        if stmt == stmt.parent.child_by_field_name("value"):
+            return False
+        return self._exit_follows(
+            stmt, lambda s: self._ends_loop(s, loop_kinds), self._LOOP_BACK
+        )
+
+    def _ends_loop(self, stmt: Node, loop_kinds: frozenset[str]) -> bool:
+        """*stmt* leaves every loop around it: a ``return``, a throw no ``try``
+        in its scope can catch, or an unlabeled ``break`` of the only loop (not
+        of a ``switch``). Ceiling: a labeled ``break`` never counts."""
+        if stmt.type not in self.exit_kinds or stmt.type == "continue_statement":
+            return False
+        loops, in_try, breaks_loop = self._exit_context(stmt, loop_kinds)
+        if not loops:
+            return False
+        if stmt.type == "return_statement":
+            return True
+        if stmt.type == "break_statement":
+            return loops == 1 and breaks_loop and not stmt.named_child_count
+        return not in_try
+
+    def _exit_context(self, stmt: Node, loop_kinds: frozenset[str]) -> tuple[int, bool, bool]:
+        """``(loops, in_try, breaks_loop)`` up to *stmt*'s scope: the loops around
+        it, whether a ``try`` is among its ancestors, and whether the innermost
+        statement a ``break`` leaves is a loop (not a ``switch``)."""
+        loops, in_try, breakable = 0, False, None
+        cur = stmt.parent
+        while cur is not None and cur.type not in self.scope_kinds:
+            if cur.type in loop_kinds or cur.type in self.switch_kinds:
+                breakable = breakable or cur
+                loops += cur.type in loop_kinds
+            # Every grammar the gate serves spells its try ``try_*``.
+            in_try = in_try or cur.type.startswith("try")
+            cur = cur.parent
+        return loops, in_try, breakable is not None and breakable.type in loop_kinds
+
     def defers_body(self, fn: Node) -> bool:
         """*fn*'s body runs when its result is iterated, not when it is called
         (a generator, or an iterator closure that takes a ``yield`` callback)."""
@@ -376,6 +429,11 @@ class BasePerfDialect:
     scope_kinds: frozenset[str] = frozenset()
     # Statements a ``break`` leaves without leaving the loop around them.
     switch_kinds: frozenset[str] = frozenset()
+    # Nodes whose children are statements run in order (a block, a case body):
+    # where :meth:`runs_once_in_loop` looks for a later exit. Empty = no gate.
+    statement_block_kinds: frozenset[str] = frozenset()
+    # Jumps that start the next pass before a later exit is reached.
+    _LOOP_BACK = frozenset({"continue_statement", "goto_statement"})
     # Methods that grow a sequence in call order (``append`` / ``push``).
     sequence_appends: frozenset[str] = frozenset()
 
@@ -539,6 +597,24 @@ class BasePerfDialect:
             yield cur
             if cur.type not in prune or cur == node:
                 stack.extend(cur.children)
+
+    @classmethod
+    def _exit_follows(
+        cls, stmt: Node, is_exit: Callable[[Node], bool], jumps: frozenset[str]
+    ) -> bool:
+        """A later statement in *stmt*'s block ends the loop (*is_exit*), and
+        neither *stmt* (``if call(): continue``) nor a statement before the exit
+        holds a jump (*jumps*, e.g. ``continue``) that could loop back first.
+        Then *stmt* runs at most once per loop entry."""
+        between: list[Node] = [stmt]
+        nxt = stmt.next_named_sibling
+        while nxt is not None and not is_exit(nxt):
+            between.append(nxt)
+            nxt = nxt.next_named_sibling
+        # Most blocks hold no exit, so the subtree walk only runs when one does.
+        return nxt is not None and not any(
+            n.type in jumps for s in between for n in cls._walk(s)
+        )
 
     @staticmethod
     def _grows(magnitude: LoopMagnitude | None) -> LoopMagnitude | None:

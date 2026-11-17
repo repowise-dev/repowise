@@ -122,6 +122,13 @@ def test_harvest_keeps_rationale_drops_license():
     assert harvest_file_rationale(_LICENSE_PY, "py") == []
 
 
+def test_harvest_range_spans_a_long_comment_whole():
+    body = "\n".join(f"# step {n} of the retry plan for the shared client." for n in range(16))
+    source = f"# We retry here because the shared client cannot back off per tenant.\n{body}\nX = 1\n"
+    kept = harvest_file_rationale(source, "py")
+    assert [(h.start_line, h.end_line) for h in kept] == [(1, 17)]
+
+
 def test_harvest_drops_thin_and_markerless_comments():
     src = "# hi\n# this is a plain comment with no causal marker at all here\nx = 1\n"
     assert harvest_file_rationale(src, "py") == []

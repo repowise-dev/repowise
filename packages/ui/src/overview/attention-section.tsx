@@ -2,9 +2,9 @@ import * as React from "react";
 import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import { getDefaultHref } from "../dashboard/attention-href";
 import { formatNumber } from "../lib/format";
-import { AttentionAreas } from "./attention-areas";
+import { AttentionAreas, type AttentionAreasCopy } from "./attention-areas";
 import { AttentionRows } from "./attention-rows";
-import { inventoryRows } from "./overview-model";
+import { inventoryRows, type InventoryCopy } from "./overview-model";
 import { OverviewSection } from "./section";
 
 /** Ranked rows shown when the server predates the area rollup. */
@@ -17,12 +17,39 @@ export interface AttentionSectionProps {
   /** Fold it as the inventory behind "Do next" instead of leading with it. */
   inventory?: boolean;
   LinkComponent?: React.ElementType | undefined;
+  copy?: Partial<AttentionSectionCopy> | undefined;
 }
 
+/** Headings, counts and row words. English by default. */
+export interface AttentionSectionCopy {
+  title: string;
+  description: string;
+  inventoryTitle: string;
+  inventoryDescription: string;
+  scopeAreas: (areas: number) => string;
+  scopeOpen: (open: number) => string;
+  areas?: Partial<AttentionAreasCopy> | undefined;
+  inventory?: Partial<InventoryCopy> | undefined;
+}
+
+export const ATTENTION_SECTION_COPY: AttentionSectionCopy = {
+  title: "Needs attention",
+  description: "Each area of work, led by the worst thing in it.",
+  inventoryTitle: "Everything we found",
+  inventoryDescription:
+    "Every detector's open count by area. The actions above are the part worth doing.",
+  scopeAreas: (areas) => `${formatNumber(areas)} ${areas === 1 ? "area" : "areas"}`,
+  scopeOpen: (open) => `${formatNumber(open)} open`,
+};
+
 /** Areas count different things, so the header counts areas, not their sum. */
-function scopeLabel(summary: OverviewSummaryResponse, areaCount: number): string {
-  if (areaCount > 0) return `${formatNumber(areaCount)} ${areaCount === 1 ? "area" : "areas"}`;
-  return `${formatNumber(summary.attention_summary?.total ?? summary.attention.length)} open`;
+function scopeLabel(
+  summary: OverviewSummaryResponse,
+  areaCount: number,
+  c: AttentionSectionCopy,
+): string {
+  if (areaCount > 0) return c.scopeAreas(areaCount);
+  return c.scopeOpen(summary.attention_summary?.total ?? summary.attention.length);
 }
 
 /**
@@ -35,23 +62,21 @@ export function AttentionSection({
   base,
   inventory = false,
   LinkComponent,
+  copy,
 }: AttentionSectionProps) {
+  const c = { ...ATTENTION_SECTION_COPY, ...copy };
   // Counts read from the same basis as the explore cards and the pages they
   // link to. The areas count different things (findings, files,
   // opportunities), so the header counts areas rather than summing them.
-  const areas = inventoryRows(summary);
+  const areas = inventoryRows(summary, c.inventory);
   const hasAttention = areas.length > 0 || summary.attention.length > 0;
-  const scope = scopeLabel(summary, areas.length);
+  const scope = scopeLabel(summary, areas.length, c);
 
   if (!hasAttention) return null;
   return (
     <OverviewSection
-      title={inventory ? "Everything we found" : "Needs attention"}
-      description={
-        inventory
-          ? "Every detector's open count by area. The actions above are the part worth doing."
-          : "Each area of work, led by the worst thing in it."
-      }
+      title={inventory ? c.inventoryTitle : c.title}
+      description={inventory ? c.inventoryDescription : c.description}
       collapsible={inventory}
       defaultOpen={!inventory}
       hint={inventory ? scope : undefined}
@@ -65,7 +90,7 @@ export function AttentionSection({
       }
     >
       {areas.length > 0 ? (
-        <AttentionAreas areas={areas} prefix={base} LinkComponent={LinkComponent} />
+        <AttentionAreas areas={areas} prefix={base} LinkComponent={LinkComponent} copy={c.areas} />
       ) : (
         // A server predating the area rollup still sends ranked items, and
         // rendering those is strictly better than rendering nothing.

@@ -26,6 +26,7 @@ from repowise.core.persistence.database import get_session, init_db
 from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
 from repowise.core.workspace.config import RepoEntry, WorkspaceConfig
 from repowise.server.routers import repos as repos_module
+from tests.unit.persistence.helpers import make_wiki_symbol
 from tests.unit.server.conftest import create_test_repo
 
 
@@ -406,6 +407,8 @@ async def test_stats_counts(client: AsyncClient, session) -> None:
                 symbol_count=0,
                 is_entry_point=True,
             ),
+            make_wiki_symbol(repo["id"], "a.py", "f"),
+            make_wiki_symbol(repo["id"], "a.py", "g"),
         ]
     )
     await session.commit()

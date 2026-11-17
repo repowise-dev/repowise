@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -32,7 +35,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/assertions.kt::testFewAsserts",
@@ -54,7 +58,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -62,6 +67,7 @@
       "testManyAsserts",
       "testFewAsserts"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -71,12 +77,17 @@
         "line": 4,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 93,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -86,12 +97,17 @@
         "line": 5,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 116,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -101,12 +117,17 @@
         "line": 6,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 139,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -116,12 +137,17 @@
         "line": 7,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 162,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -131,12 +157,17 @@
         "line": 8,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 185,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -146,12 +177,17 @@
         "line": 9,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 208,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -161,12 +197,17 @@
         "line": 10,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 231,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -176,12 +217,17 @@
         "line": 11,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 254,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -191,12 +237,17 @@
         "line": 12,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 277,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -206,12 +257,17 @@
         "line": 13,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 300,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -221,12 +277,17 @@
         "line": 14,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 323,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -236,12 +297,17 @@
         "line": 15,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 346,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -251,12 +317,17 @@
         "line": 16,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 369,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -266,12 +337,17 @@
         "line": 17,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 392,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -281,12 +357,17 @@
         "line": 18,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 415,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -296,12 +377,17 @@
         "line": 19,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 438,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -311,12 +397,17 @@
         "line": 23,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 487,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
+        "program_call": false,
+        "argument_types": [
+          "Int",
+          "Int"
+        ],
         "argument_names": null
       },
       {
@@ -326,13 +417,21 @@
         "line": 25,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 524,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
-        "argument_types": null,
-        "argument_names": null
+        "program_call": false,
+        "argument_types": [
+          null,
+          "Int"
+        ],
+        "argument_names": [
+          "x",
+          null
+        ]
       }
     ],
     "heritage": [],
@@ -342,7 +441,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "kotlin/classes.kt": {
     "file_info": {
@@ -354,7 +455,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -377,7 +481,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Cohesive::total",
@@ -399,7 +504,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Cohesive::count",
@@ -421,7 +527,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Cohesive::add",
@@ -443,7 +550,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Cohesive::average",
@@ -465,7 +573,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Cohesive::reset",
@@ -487,7 +596,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Cohesive::describe",
@@ -509,7 +619,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Splintered",
@@ -531,7 +642,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Splintered::a",
@@ -553,7 +665,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Splintered::b",
@@ -575,7 +688,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Splintered::setA",
@@ -597,7 +711,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Splintered::getA",
@@ -619,7 +734,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Splintered::setB",
@@ -641,7 +757,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Splintered::getB",
@@ -663,7 +780,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/classes.kt::Splintered::loner",
@@ -685,7 +803,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -693,6 +812,7 @@
       "Cohesive",
       "Splintered"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -702,7 +822,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "kotlin/nested.kt": {
     "file_info": {
@@ -714,7 +836,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -737,7 +862,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/nested.kt::shallow",
@@ -759,7 +885,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/kotlin/nested.kt::manyBranches",
@@ -781,7 +908,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -790,6 +918,7 @@
       "shallow",
       "manyBranches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -799,6 +928,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

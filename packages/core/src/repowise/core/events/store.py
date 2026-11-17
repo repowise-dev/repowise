@@ -566,6 +566,11 @@ def event_from_row(row: Any) -> EngineEvent:
     )
 
 
+#: Kinds that ask for a reader's attention whatever the component's criticality:
+#: something consumers relied on went away, or fewer people or tests now cover it.
+IMPORTANT_KINDS = frozenset({"contract_broken", "bus_factor_drop", "test_reach_drop"})
+
+
 async def list_events(
     session: Any,
     repository_id: str,
@@ -573,8 +578,17 @@ async def list_events(
     since: datetime | None = None,
     kinds: Sequence[str] = (),
     limit: int = 200,
+    commit: str | None = None,
+    important_only: bool = False,
 ) -> list[EngineEvent]:
-    """Stored events, oldest first, from *since* on."""
+    """Stored events, oldest first, from *since* on.
+
+    *commit* keeps the events detected at that commit (the run's head).
+    *important_only* keeps :data:`IMPORTANT_KINDS` and any event above
+    ``info`` severity, which is what a person reading one commit acts on.
+    """
+    from sqlalchemy import or_
+
     from repowise.core.persistence.models import EngineEventRecord
 
     query = select(EngineEventRecord).where(EngineEventRecord.repository_id == repository_id)
@@ -582,6 +596,15 @@ async def list_events(
         query = query.where(EngineEventRecord.occurred_at >= since)
     if kinds:
         query = query.where(EngineEventRecord.kind.in_(list(kinds)))
+    if commit is not None:
+        query = query.where(EngineEventRecord.commit_sha == commit)
+    if important_only:
+        query = query.where(
+            or_(
+                EngineEventRecord.kind.in_(sorted(IMPORTANT_KINDS)),
+                EngineEventRecord.severity != "info",
+            )
+        )
     query = query.order_by(EngineEventRecord.occurred_at, EngineEventRecord.id).limit(limit)
     return [event_from_row(r) for r in await session.scalars(query)]
 

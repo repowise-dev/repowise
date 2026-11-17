@@ -25,9 +25,6 @@ from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
 from repowise.core.pipeline.modes import OrchestratorMode
 from repowise.core.pipeline.progress import ProgressCallback
 
-from ._run.analysis import run_analysis_phase
-from ._run.generation import run_generation_phase, trace_execution_flows
-from ._run.index import run_index_phase
 from ._run.state import PipelineRun, attach_cost_tracker, hooked_progress, start_checkpointer
 
 # The ``_run`` stage modules call these phase functions through this module
@@ -219,7 +216,7 @@ async def run_pipeline(
     repo_path:
         Path to an already-cloned repository on disk.
     commit_depth:
-        Maximum commits to analyse per file (1-10000). Default 5000.
+        Newest commits to analyse (at least 1). Default 5000.
     follow_renames:
         Use ``git log --follow`` to track files across renames.
     skip_tests:
@@ -279,7 +276,7 @@ async def run_pipeline(
         git_tier=mode.git_tier,
         progress=progress,
         checkpointer=checkpointer,
-        commit_depth=max(1, min(commit_depth, 10000)),
+        commit_depth=max(1, commit_depth),
         follow_renames=follow_renames,
         skip_tests=skip_tests,
         skip_infra=skip_infra,
@@ -301,6 +298,12 @@ async def run_pipeline(
         coverage_report_paths=coverage_report_paths,
     )
 
+    # The stage modules import this module, so they load here, at the call:
+    # importing one of them first must not meet a half-built orchestrator.
+    from ._run.analysis import run_analysis_phase
+    from ._run.generation import run_generation_phase, trace_execution_flows
+    from ._run.index import run_index_phase
+
     await run_index_phase(run)
     await run_analysis_phase(run)
     await run_generation_phase(run)
@@ -317,7 +320,7 @@ def _build_result(run: PipelineRun) -> PipelineResult:
     file_infos = run.file_infos
     parsed_files = run.parsed_files
     languages = {fi.language for fi in file_infos if hasattr(fi, "language") and fi.language}
-    symbol_count = sum(len(pf.symbols) for pf in parsed_files)
+    symbol_count = sum(pf.symbol_count for pf in parsed_files)
     resume_controller = run.resume_controller
 
     return PipelineResult(

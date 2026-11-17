@@ -46,7 +46,8 @@ def test_lists_or_their_json_text(files, modules) -> None:
 def test_evidence_and_blockers() -> None:
     rec = {"evidence_commits": '["abc"]', "evidence_file": "AGENTS.md"}
     assert record_evidence(rec) == ["abc", "AGENTS.md"]
-    assert record_blockers({"kind": "agreement", "rationale": "r", **rec}) == []
+    agreement = {"kind": "agreement", "rationale": "r", "decision": "d", **rec}
+    assert record_blockers(agreement) == []
     # A hand-typed record is its own evidence once someone accepts it.
     assert requirement({"source": "cli"}, accepter="me").evidence == ["accepted by me"]
 
@@ -58,6 +59,7 @@ def test_orm_projection_matches_the_mapping_readers() -> None:
         kind="architectural",
         rationale="",
         context="ctx",
+        decision="d",
         source="inline_marker",
         evidence_commits_json='["abc"]',
         evidence_file=None,

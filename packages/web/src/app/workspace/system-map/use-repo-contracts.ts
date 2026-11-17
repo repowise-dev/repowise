@@ -16,8 +16,8 @@ const MAX_PAGES = 5;
 
 /**
  * Every contract and matched link for one repository, fetched only once the
- * drawer needs it (a service or relationship is selected). Keyed by repo, so
- * the node and edge drawers share one fetch.
+ * drawer needs it (a service is selected) for the service's contract list.
+ * A relationship's routes come from `useServiceLinks` instead.
  */
 export function useRepoContracts(repo: string | null) {
   const { data, isLoading } = useSWR<SystemMapRepoContracts>(

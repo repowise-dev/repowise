@@ -1,11 +1,19 @@
 import * as React from "react";
 import { healthBand } from "../health/tokens";
-import { formatScore } from "@repowise-dev/types/health";
+import {
+  bandForScore,
+  formatScore,
+  HEALTH_BAND_LABEL,
+  type HealthBand,
+} from "@repowise-dev/types/health";
 import { LedeLink, PageLede } from "../shared/page-lede";
+import { formatNumber } from "../lib/format";
 
 export interface HealthLedeCopy {
   label: string;
   unit: string;
+  /** The band word beside the figure. */
+  band: (band: HealthBand) => string;
   reportLink: string;
   /** Shown before the first health run. */
   empty: string;
@@ -20,6 +28,7 @@ export interface HealthLedeCopy {
 export const HEALTH_LEDE_COPY: HealthLedeCopy = {
   label: "Code health",
   unit: "out of 10",
+  band: (band) => HEALTH_BAND_LABEL[band],
   reportLink: "Full health report",
   empty:
     "Health scores land with the first index: complexity, duplication, coverage, churn and ownership across every file.",
@@ -79,7 +88,7 @@ export function HealthLede({
     );
   }
 
-  const band = healthBand(score);
+  const band = { ...healthBand(score), label: c.band(bandForScore(score)) };
   const hot = hotspotCount > 0 && hotspotHealth != null ? hotspotHealth : null;
 
   return (
@@ -87,7 +96,7 @@ export function HealthLede({
       label={c.label}
       labelHint={c.hint(
         hot != null && fileCount > 0
-          ? { hotspots: hotspotCount.toLocaleString(), files: fileCount.toLocaleString() }
+          ? { hotspots: formatNumber(hotspotCount), files: formatNumber(fileCount) }
           : null,
       )}
       value={formatScore(score)}

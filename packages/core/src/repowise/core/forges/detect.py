@@ -12,7 +12,7 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from .base import ForgeKind
+from .base import ForgeKind, RemoteRef
 from .registry import all_forges, forge_hosts
 from .remote import parse_remote
 
@@ -61,6 +61,16 @@ def read_remote_url(repo_root: Path | str) -> str | None:
     return None
 
 
+def read_remote_ref(
+    repo_root: Path | str, env: Mapping[str, str] | None = None
+) -> RemoteRef | None:
+    """The checkout's ``origin`` (else ``upstream``) remote, parsed; ``None`` without one."""
+    url = read_remote_url(repo_root)
+    if not url:
+        return None
+    return parse_remote(url, hosts=forge_hosts(repo_root, os.environ if env is None else env))
+
+
 def detect_forge(
     repo_root: Path | str | None = None, env: Mapping[str, str] | None = None
 ) -> ForgeKind:
@@ -72,8 +82,7 @@ def detect_forge(
     """
     env = os.environ if env is None else env
     if repo_root is not None:
-        url = read_remote_url(repo_root)
-        ref = parse_remote(url, hosts=forge_hosts(repo_root, env)) if url else None
+        ref = read_remote_ref(repo_root, env)
         if ref is not None and ref.forge is not ForgeKind.GENERIC:
             return ref.forge
     for forge in all_forges():

@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from repowise.core.ingestion.framework_routes import aspnet_groups, aspnet_routes
 
 from ..base import line_at
+from ..calls import code_matches, outside_comments
 from ..langs import CSHARP
 from .dialect import build_provider_contract, nearest_prefix
 from .mounts import compose_prefix, group_prefixes
@@ -52,6 +53,8 @@ _ASPNET_CLASS_ROUTE_RE = re.compile(
 class AspNetDialect:
     name = "aspnet"
     extensions = CSHARP
+    # `[HttpGet(...)]` and `.MapGet(...)`, read without regard to case.
+    requires = ("Http", "http", "HTTP", "MapGet", "MapPost", "MapPut", "MapDelete", "MapPatch")
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         content = ctx.content
@@ -62,7 +65,7 @@ class AspNetDialect:
         out: list[Contract] = []
 
         # Attribute routing — stitched onto the nearest class [Route(...)].
-        for m in _ASPNET_METHOD_RE.finditer(content):
+        for m in code_matches(ctx, _ASPNET_METHOD_RE):
             method = m.group(1).upper()
             path_raw = m.group(2)
             prefix = nearest_prefix(class_mappings, m.start())
@@ -81,7 +84,7 @@ class AspNetDialect:
         # Minimal API — the prefix comes from the MapGroup chain its receiver
         # is bound to, not from a class [Route(...)].
         prefixes = group_prefixes(aspnet_groups(content))
-        for route in aspnet_routes(content):
+        for route in outside_comments(ctx, aspnet_routes(content)):
             c = build_provider_contract(
                 ctx,
                 method=route.verb,
@@ -96,7 +99,7 @@ class AspNetDialect:
         # Parameterless [HttpPost] — route is whichever class [Route("...")]
         # precedes it. Without a class route there is no useful path to record.
         if class_mappings:
-            for m in _ASPNET_BARE_METHOD_RE.finditer(content):
+            for m in code_matches(ctx, _ASPNET_BARE_METHOD_RE):
                 method = m.group(1).upper()
                 prefix = nearest_prefix(class_mappings, m.start())
                 if not prefix:

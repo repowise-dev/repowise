@@ -6,6 +6,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
+from repowise.core.ingestion.call_resolver import CallResolver
 from repowise.core.ingestion.models import FileInfo
 from repowise.core.ingestion.parser import parse_file
 
@@ -82,6 +83,43 @@ class TestKotlinDataClass:
             "object S { fun work() {} }\n",
         )
         assert "INSTANCE" in names, names
+
+    def test_synthetic_signatures_declare_their_return(self, tmp_path: Path) -> None:
+        src = "data class P(val x: Int, val n: Norm?)\nenum class Color { RED }\n"
+        f = tmp_path / "P.kt"
+        f.write_text(src)
+        pf = parse_file(_fi("P.kt", f, "kotlin"), src.encode("utf-8"))
+        sigs = {s.name: s.signature for s in pf.symbols}
+        assert sigs["component2"] == "function component2() -> Norm?"
+        assert sigs["copy"] == "function copy(x: Int, n: Norm?) -> P"
+        assert sigs["equals"] == "function equals(other: Any?) -> Boolean"
+        assert sigs["valueOf"] == "function valueOf(value: String) -> Color"
+
+    def test_a_chain_through_copy_or_componentN_resolves(self, tmp_path: Path) -> None:
+        src = (
+            "package app\n\n"
+            "data class Point(val x: Int, val norm: Norm) {\n"
+            "    fun len(): Int = x\n"
+            "}\n\n"
+            "class Norm {\n"
+            "    fun size(): Int = 1\n"
+            "}\n\n"
+            "fun use(point: Point) {\n"
+            "    point.copy(x = 1, norm = Norm()).len()\n"
+            "    point.component2().size()\n"
+            "}\n"
+        )
+        f = tmp_path / "App.kt"
+        f.write_text(src)
+        parsed = {"App.kt": parse_file(_fi("App.kt", f, "kotlin"), src.encode("utf-8"))}
+        resolver = CallResolver(parsed, {"App.kt": set()}, repo_path=str(tmp_path))
+        callees = {rc.callee_id for rc in resolver.resolve_file("App.kt", parsed["App.kt"].calls)}
+        assert {
+            "App.kt::Point::copy",
+            "App.kt::Point::len",
+            "App.kt::Point::component2",
+            "App.kt::Norm::size",
+        } <= callees
 
     def test_plain_class_no_componentN(self, tmp_path: Path) -> None:
         names = _names(

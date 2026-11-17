@@ -77,3 +77,49 @@ def test_detect_workspace_non_member_indexed_repo_drops_to_single_repo(
     assert ws_root is None
     assert ws_config is None
     assert repo_alias is None
+
+
+@pytest.fixture
+def sibling_workspace(tmp_path: Path) -> Path:
+    """A workspace with no ``path: .`` member, only members under ``apps/``."""
+    (tmp_path / "apps" / "a").mkdir(parents=True)
+    (tmp_path / "apps" / "b").mkdir()
+    (tmp_path / "tools" / "c").mkdir(parents=True)
+
+    (tmp_path / ".repowise-workspace.yaml").write_text(
+        "version: 1\n"
+        "repos:\n"
+        "- path: apps/a\n"
+        "  alias: a\n"
+        "  is_primary: true\n"
+        "- path: apps/b\n"
+        "  alias: b\n",
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_detect_workspace_sibling_indexed_repo_drops_to_single_repo(
+    sibling_workspace: Path,
+) -> None:
+    """An indexed repo that no member contains must not be served the primary."""
+    sibling = sibling_workspace / "tools" / "c"
+    (sibling / ".repowise").mkdir()
+    (sibling / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    assert _detect_workspace(str(sibling)) == (None, None, None)
+
+
+def test_detect_workspace_sibling_bare_dir_uses_primary(sibling_workspace: Path) -> None:
+    _, _, repo_alias = _detect_workspace(str(sibling_workspace / "tools" / "c"))
+
+    assert repo_alias == "a"
+
+
+def test_detect_workspace_root_without_member_uses_primary(sibling_workspace: Path) -> None:
+    (sibling_workspace / ".repowise").mkdir()
+    (sibling_workspace / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+
+    _, _, repo_alias = _detect_workspace(str(sibling_workspace))
+
+    assert repo_alias == "a"

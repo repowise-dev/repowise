@@ -7,9 +7,9 @@ changing behaviour, and infers that helper's signature (IN parameters,
 OUT return). This detector turns the best such span into one structured
 ``RefactoringSuggestion`` per flagged function.
 
-``impact_delta`` is the share of the finding the extraction itself removes,
-not the whole finding: the share of what the finding measures that moves into
-the helper, applied to the finding's ``health_impact``. That is
+``impact_delta`` prices the share of the finding the extraction itself
+removes, not the whole finding: the file rescored with that share of the
+finding's deduction taken out (``health.gain``). The share is
 ``ccn_removed / ccn`` for ``complex_method`` and ``brain_method``, and the
 smaller of ``slice_nloc / nloc`` and that for ``large_method``
 (:func:`recovered_share`). Both line counts follow the walker's NLOC rule, so
@@ -81,8 +81,9 @@ Plan shape (open dict, no migration):
   carries its own. A staged split that cannot be anchored falls back to the
   function's best single span; when that cannot be either, the function is
   refused (``span_unanchored``).
-- ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int}`` -- the size and
-  complexity (code lines, decision points) the residual method sheds.
+- ``evidence`` = ``{"slice_nloc": int, "ccn_removed": int, "recovered_share":
+  float}`` -- the size and complexity (code lines, decision points) the
+  residual method sheds, and the share of the finding that removes.
 - ``plan.stages`` -- only on a staged plan (``dataflow.stages``): a function
   no single helper brings under the bar (CCN over twice a stage's cap, Python
   and TS / JS) is split into helpers called in order. Each stage carries the
@@ -104,7 +105,8 @@ Plan shape (open dict, no migration):
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import contextlib
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -117,14 +119,16 @@ from ..complexity.nloc import is_string_stmt
 from ..dataflow import Extraction, find_extractions, get_defuse_dialect
 from ..dataflow.stages import STAGE_MAX_CCN, StagePlan, find_stages
 from ..effort import effort_bucket
+from ..gain import removal_gain
+from ..models import Severity
 from ..perf.dialects import PERF_DIALECTS
 from ..scoring import severity_deduction
 from . import render
 from .anchors import Scope, anchor_plan, file_source, function_scope
 from .declarative import declarative_flat
 from .helper_naming import ScopeNames, placeholder_names
-from .models import RefactoringContext, RefactoringSuggestion
-from .narrowing import narrowed, narrowings
+from .models import RECOVERED_SHARE, RefactoringContext, RefactoringSuggestion
+from .narrowing import narrowed, narrowings, property_narrowings, span_guards
 from .registry import RefactoringDetector, register
 
 if TYPE_CHECKING:
@@ -169,6 +173,19 @@ _STAGE_MIN_CCN = 2 * STAGE_MAX_CCN + 1
 _NARROWING_LANGUAGES = frozenset({"typescript", "tsx"})
 # Keys a stage carries that the plan's own (stage 1) keys do not.
 _STAGE_ONLY_KEYS = ("ccn", "nloc", "context_params")
+
+
+def _marker_severities(findings: list[Any]) -> dict[str, Any]:
+    severities: dict[str, Any] = {}
+    for f in findings:
+        marker = getattr(f, "biomarker_type", "")
+        sev = getattr(f, "severity", None)
+        if not marker:
+            continue
+        curr = severities.get(marker)
+        if curr is None or (sev is not None and severity_deduction(sev) > severity_deduction(curr)):
+            severities[marker] = sev
+    return severities
 
 
 @register
@@ -228,16 +245,19 @@ class ExtractMethodDetector(RefactoringDetector):
     ) -> None:
         """Add *analysis*'s plan to *out*: the staged split when one is anchored,
         else the best single span; why none was offered goes on *matched*."""
-        markers = {getattr(f, "biomarker_type", "") for f in matched}
+        marker_severities = _marker_severities(matched)
         fn_node = analysis.fn_node
         receiver = dialect.receiver(fn_node, lmap) if dialect and fn_node else None
         # The slicer's per-block walk, read again by a staged plan.
         prefixes: dict[int, Any] = {}
         refused: set[str] = set()
         candidates = find_extractions(analysis, lmap, receiver, prefixes, refused)
+        candidates = _writable_spans(analysis, candidates, ctx.language, refused)
         _mark_stage_refused(matched, frozenset(refused))
-        best = _choose(analysis, candidates, markers)
-        staged = _staged(analysis, best, lmap, receiver, ctx.language, matched, prefixes)
+        best = _choose(analysis, candidates, marker_severities)
+        staged = _staged(
+            analysis, best, lmap, receiver, ctx.language, matched, prefixes, marker_severities
+        )
         scope = _scope(fn_node, files) if staged is not None or best is not None else None
         if staged is not None:
             split = self._staged_suggestion(ctx, analysis, staged, matched, names, receiver)
@@ -276,7 +296,7 @@ class ExtractMethodDetector(RefactoringDetector):
         fields: dict[str, Any],
     ) -> RefactoringSuggestion:
         """The plan lifting *best*, its rendered *fields* after the span."""
-        impact, share, source = self._impact_for(analysis, best, matched)
+        impact, share, source = self._impact_for(ctx, analysis, best, matched)
         return RefactoringSuggestion(
             refactoring_type=self.name,
             file_path=ctx.file_path,
@@ -292,8 +312,9 @@ class ExtractMethodDetector(RefactoringDetector):
             evidence={
                 "slice_nloc": best.slice_nloc,
                 "ccn_removed": best.ccn_removed,
+                RECOVERED_SHARE: round(share, 3),
             },
-            impact_delta=round(float(impact), 3),
+            impact_delta=impact,
             effort_bucket=effort_bucket(best.slice_nloc),
             blast_radius={"scope": "local"},
             confidence=self._confidence(best, share),
@@ -318,7 +339,7 @@ class ExtractMethodDetector(RefactoringDetector):
             slice_nloc=staged.slice_nloc,
             ccn_removed=staged.ccn_removed,
         )
-        impact, _share, source = self._impact_for(analysis, total, matched)
+        impact, share, source = self._impact_for(ctx, analysis, total, matched)
         return RefactoringSuggestion(
             refactoring_type=self.name,
             file_path=ctx.file_path,
@@ -326,8 +347,12 @@ class ExtractMethodDetector(RefactoringDetector):
             line_start=analysis.start_line,
             line_end=analysis.end_line,
             plan=_staged_fields(analysis, staged, ctx.language, names, receiver),
-            evidence={"slice_nloc": total.slice_nloc, "ccn_removed": total.ccn_removed},
-            impact_delta=round(float(impact), 3),
+            evidence={
+                "slice_nloc": total.slice_nloc,
+                "ccn_removed": total.ccn_removed,
+                RECOVERED_SHARE: round(share, 3),
+            },
+            impact_delta=impact,
             effort_bucket=effort_bucket(total.slice_nloc),
             blast_radius={"scope": "local"},
             # Several edits to one function: a reviewer reads the plan first.
@@ -354,18 +379,20 @@ class ExtractMethodDetector(RefactoringDetector):
 
     @staticmethod
     def _impact_for(
-        analysis: FunctionAnalysis, extraction: Extraction, findings: list[Any]
+        ctx: RefactoringContext,
+        analysis: FunctionAnalysis,
+        extraction: Extraction,
+        findings: list[Any],
     ) -> tuple[float, float, str]:
-        """Impact *extraction* recovers, its share of the finding, and the source
+        """Gain *extraction* recovers, its share of the finding, and the source
         biomarker. One finding is credited, the one recovering the most: the
         composer counts a finding once across steps."""
-        best: tuple[float, float, float, str] = (-1.0, 0.0, -1.0, "")
+        best: tuple[float, float, str] = (-1.0, 0.0, "")
         for f in findings:
             biomarker = getattr(f, "biomarker_type", "")
-            full = float(getattr(f, "health_impact", 0.0) or 0.0)
             share = recovered_share(biomarker, analysis, extraction)
-            best = max(best, (full * share, share, full, biomarker))
-        return best[0], best[1], best[3]
+            best = max(best, (removal_gain(ctx.findings, [(f, share)]), share, biomarker))
+        return best
 
     @staticmethod
     def _confidence(extraction: Extraction, share: float) -> str:
@@ -455,6 +482,7 @@ def _staged(
     language: str | None,
     findings: list[Any],
     prefixes: dict[int, Any] | None = None,
+    markers: Mapping[str, Any] | Iterable[str] | None = None,
 ) -> StagePlan | None:
     """The staged split, when the function is too complex for one helper and
     the split lifts at least twice what the best single span does (several
@@ -462,13 +490,19 @@ def _staged(
     clear the floor a single span does. Why a stage was not offered is kept
     on *findings* (:data:`STAGE_REFUSED_DETAIL`), so refusals are counted
     from the index."""
-    markers = {getattr(f, "biomarker_type", "") for f in findings}
+    if markers is None:
+        markers = _marker_severities(findings)
     # Only languages with a staged renderer, each with the outputs one call binds.
     max_returns = render.staged_outputs(language)
     if max_returns is None or analysis.ccn < _STAGE_MIN_CCN:
         return None
     plan = find_stages(analysis, lmap, receiver, max_returns=max_returns, prefixes=prefixes)
-    _mark_stage_refused(findings, plan.refused)
+    refused = set(plan.refused)
+    # One stage no helper can be written for refuses the split: the others compose with it.
+    kept = _writable_spans(analysis, plan.stages, language, refused)
+    if len(kept) < len(plan.stages):
+        plan = replace(plan, stages=())
+    _mark_stage_refused(findings, frozenset(refused))
     if not plan.stages or (best is not None and plan.ccn_removed < 2 * best.ccn_removed):
         return None
     if not all(_worth_extracting(analysis, x, markers) for x in plan.stages):
@@ -635,7 +669,9 @@ def _symbol_fields(extraction: Extraction, receiver: Receiver | None) -> dict[st
     hazard = _receiver_hazard(receiver, uses, assigns)
     kind: str | None = None
     if receiver is not None and hazard != "receiver_unbound":
-        kind = "method" if receiver.implicit or uses else "function"
+        # An implicit receiver with no name (an Apex static method) has no
+        # instance: its bare names are static fields, and its helper is static.
+        kind = "method" if receiver.names and (receiver.implicit or uses) else "function"
     name = min(receiver.names) if kind == "method" and receiver is not None else None
     fields: dict[str, Any] = {
         "new_symbol": {
@@ -700,6 +736,7 @@ def _render_fields(
             out_rebound=rebound,
             typed_host=fn_node is not None
             and fn_node.child_by_field_name("return_type") is not None,
+            throws_clause=_throws_clause(fn_node, language),
         )
     )
     rendered = {
@@ -709,8 +746,9 @@ def _render_fields(
         "signature_text": texts.signature if texts else None,
         "return_text": texts.returns if texts else None,
     }
-    if texts and texts.notes:
-        rendered["notes"] = list(texts.notes)
+    notes = [*(texts.notes if texts else ()), *_undeclared_outputs_note(analysis, extraction)]
+    if notes:
+        rendered["notes"] = notes
     span = {"start": extraction.start_line, "end": extraction.end_line}
     call = texts.call if texts else None
     return {
@@ -718,6 +756,40 @@ def _render_fields(
         "new_symbol": rendered,
         "call_site": {"replace_span": span, "new_text": call} if call else None,
     }
+
+
+def _throws_clause(fn_node: Any, language: str | None) -> str | None:
+    """A Java method's ``throws`` clause, for the helper to repeat."""
+    if language != "java" or fn_node is None:
+        return None
+    return next((c.text.decode() for c in fn_node.named_children if c.type == "throws"), None)
+
+
+def _undeclared_outputs_note(analysis: FunctionAnalysis, extraction: Extraction) -> list[str]:
+    """A note for the outputs the function declares before the span (``let
+    x: T;``) and the span only assigns: the helper needs its own declaration
+    or its first assignment names nothing."""
+    if not extraction.returns:
+        return []
+    inside = range(extraction.start_line, extraction.end_line + 1)
+    # ``declares`` also marks a declarator spanning lines, where ``declared_at`` is None.
+    declared = [
+        (d.var, d.line in inside)
+        for d in analysis.def_use.definitions
+        if d.declared_at is not None or d.declares
+    ]
+    names = [
+        r
+        for r in extraction.returns
+        if r not in extraction.params and (r, False) in declared and (r, True) not in declared
+    ]
+    if not names:
+        return []
+    what = "it" if len(names) == 1 else "them"
+    return [
+        f"Declare {', '.join(names)} at the top of the helper, as the function does: "
+        f"the lines assign {what} without declaring {what}."
+    ]
 
 
 def _declared_types(
@@ -750,6 +822,87 @@ def _declared_types(
     return found
 
 
+#: Why a span was refused: a test the span runs under narrows a value it reads
+#: in a way no helper parameter keeps (a property path, a name the function
+#: does not bind), so the lifted lines stop type-checking.
+NARROWING_LOST = "narrowing_lost"
+#: Why a span was refused: it assigns a name declared outside it that it
+#: neither takes nor returns, so the helper's assignment names nothing.
+OUTER_DECLARATION = "outer_declaration"
+
+
+def _writable_spans(
+    analysis: FunctionAnalysis,
+    spans: list[Extraction] | tuple[Extraction, ...],
+    language: str | None,
+    refused: set[str],
+) -> list[Extraction]:
+    """*spans* without those whose helper cannot be written as planned; each
+    drop adds its reason to *refused*. Without a tree no span was cut from one."""
+    if analysis.fn_node is None:
+        return list(spans)
+    def_lines = _def_lines(analysis)
+    kept = []
+    for x in spans:
+        reason = _unwritable(analysis, x, language, def_lines)
+        if reason is None:
+            kept.append(x)
+        else:
+            refused.add(reason)
+    return kept
+
+
+def _unwritable(
+    analysis: FunctionAnalysis,
+    x: Extraction,
+    language: str | None,
+    def_lines: dict[str, list[int]],
+) -> str | None:
+    """Why *x*'s helper cannot be written as planned, None when it can."""
+    if _assigns_outer_declaration(analysis, x):
+        return OUTER_DECLARATION
+    if language in _NARROWING_LANGUAGES and _loses_narrowing(analysis, x, language, def_lines):
+        return NARROWING_LOST
+    return None
+
+
+def _assigns_outer_declaration(analysis: FunctionAnalysis, x: Extraction) -> bool:
+    """Whether *x* assigns a name declared outside it that it neither takes nor
+    returns. A name the span declares itself is its own binding (a second
+    ``for (int i``)."""
+    inside = range(x.start_line, x.end_line + 1)
+    defs = analysis.def_use.definitions
+    declared = [(d.var, d.line in inside) for d in defs if d.declared_at is not None]
+    outside = {v for v, held in declared if not held} - {v for v, held in declared if held}
+    outside -= set(x.params) | set(x.returns)
+    return any(d.line in inside and d.declared_at is None and d.var in outside for d in defs)
+
+
+def _loses_narrowing(
+    analysis: FunctionAnalysis, x: Extraction, language: str, def_lines: dict[str, list[int]]
+) -> bool:
+    """Whether a TypeScript narrowing the lines rely on stays behind in the
+    function, or one the code after them relies on leaves with them
+    (``narrowing``)."""
+    inside = range(x.start_line, x.end_line + 1)
+    args = (analysis.fn_node, get_language_map(language), x.start_line, x.end_line)
+    uses = [u for bdu in analysis.def_use.blocks.values() for u in bdu.uses if not u.echo]
+    # Names the function never binds (a module's): the helper reads them unnarrowed.
+    free = {u.name for u in uses if u.line in inside} - set(def_lines)
+    if property_narrowings(*args, set(x.params) | free, def_lines):
+        return True
+    if free and narrowings(*args, free, def_lines):
+        return True
+    return bool(span_guards(*args) & {u.name for u in uses if u.line > x.end_line})
+
+
+def _def_lines(analysis: FunctionAnalysis) -> dict[str, list[int]]:
+    out: dict[str, list[int]] = {}
+    for d in analysis.def_use.definitions:
+        out.setdefault(d.var, []).append(d.line)
+    return out
+
+
 def _narrow(
     analysis: FunctionAnalysis, extraction: Extraction, language: str | None, types: dict[str, str]
 ) -> dict[str, int]:
@@ -759,9 +912,7 @@ def _narrow(
     guard's line, for the plan's note."""
     if language not in _NARROWING_LANGUAGES or not extraction.params:
         return {}
-    def_lines: dict[str, list[int]] = {}
-    for d in analysis.def_use.definitions:
-        def_lines.setdefault(d.var, []).append(d.line)
+    def_lines = _def_lines(analysis)
     found = narrowings(
         analysis.fn_node,
         get_language_map(language),
@@ -864,14 +1015,26 @@ def host_is_async(fn_node: Any, lmap: LanguageNodeMap, language: str | None) -> 
     return dialect is not None and dialect.is_async_fn(fn_node)
 
 
+def _finding_severity(raw_sev: Any) -> Severity | None:
+    if isinstance(raw_sev, str):
+        with contextlib.suppress(ValueError):
+            return Severity(raw_sev)
+    return raw_sev if isinstance(raw_sev, Severity) else None
+
+
 def _worth_extracting(
-    analysis: FunctionAnalysis, extraction: Extraction, markers: set[str]
+    analysis: FunctionAnalysis,
+    extraction: Extraction,
+    markers: Mapping[str, Any] | Iterable[str],
 ) -> bool:
     """The minimum-worth floor, applied while choosing among candidates."""
     for marker in markers:
-        rule = _SEVERITY_RULE[marker]
+        rule = _SEVERITY_RULE.get(marker)
+        if rule is None:
+            continue
         helper = rule(extraction.ccn_removed + 1, extraction.slice_nloc)
-        before = rule(analysis.ccn, analysis.nloc)
+        finding_sev = markers.get(marker) if isinstance(markers, Mapping) else None
+        before = _finding_severity(finding_sev) or rule(analysis.ccn, analysis.nloc)
         # The helper inherits the finding undiminished: the smell moved.
         if helper is not None and (
             before is None or severity_deduction(helper) >= severity_deduction(before)
@@ -881,7 +1044,9 @@ def _worth_extracting(
 
 
 def _choose(
-    analysis: FunctionAnalysis, candidates: list[Extraction], markers: set[str]
+    analysis: FunctionAnalysis,
+    candidates: list[Extraction],
+    markers: Mapping[str, Any] | Iterable[str],
 ) -> Extraction | None:
     """The strongest span worth doing and offerable, best-first.
 

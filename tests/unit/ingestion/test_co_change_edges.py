@@ -275,3 +275,21 @@ class TestLabelPersistence:
         partners = {"a.py": [{"file_path": "b.py", "frequency": 9, "structural": "unexplained"}]}
         assert empty.label_co_change_structure(partners) == 0
         assert partners["a.py"][0]["structural"] == "unexplained"
+
+
+def test_a_partner_list_keyed_by_a_non_node_adds_no_node(builder: GraphBuilder) -> None:
+    """Update feeds every tracked file's partners; a doc page must not become a node."""
+    b = builder
+    meta = {"docs/guide.rst": _meta([{"file_path": "a.py", "co_change_count": 9, "frequency": 9}])}
+    assert b.add_co_change_edges(meta) == 0
+    assert "docs/guide.rst" not in b._graph
+
+
+def test_the_edge_direction_does_not_depend_on_which_side_lists_it(
+    builder: GraphBuilder,
+) -> None:
+    b = builder
+    meta = {"b.py": _meta([{"file_path": "a.py", "co_change_count": 9, "frequency": 9}])}
+    assert b.add_co_change_edges(meta) == 1
+    assert b._graph.has_edge("a.py", "b.py")
+    assert not b._graph.has_edge("b.py", "a.py")

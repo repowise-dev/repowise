@@ -46,7 +46,8 @@ export function DocsHeader({
       <h1 className="sr-only">Documentation</h1>
 
       <nav
-        className="flex shrink-0 items-center rounded-lg bg-[var(--color-bg-elevated)] p-0.5"
+        // h-7 to match the bar's right-hand controls (Search, More).
+        className="flex h-7 shrink-0 items-center rounded-lg bg-[var(--color-bg-elevated)] p-0.5"
         aria-label="Docs views"
       >
         {tabs.map((tab) => {
@@ -58,7 +59,7 @@ export function DocsHeader({
               aria-current={tab.isActive ? "page" : undefined}
               title={tab.label}
               className={cn(
-                "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium whitespace-nowrap transition-colors sm:px-2.5",
+                "flex h-6 items-center gap-1.5 rounded-md px-2 text-xs font-medium whitespace-nowrap transition-colors sm:px-2.5",
                 tab.isActive
                   ? "bg-[var(--color-bg-surface)] text-[var(--color-text-primary)] shadow-sm"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
@@ -71,7 +72,7 @@ export function DocsHeader({
                   already marked by its filled ground. */}
               <span className="hidden sm:inline">{tab.label}</span>
               {tab.badge !== undefined && (
-                <span className="font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
+                <span className="font-mono text-[10px] font-normal tabular-nums text-[var(--color-text-tertiary)]">
                   {tab.badge}
                 </span>
               )}

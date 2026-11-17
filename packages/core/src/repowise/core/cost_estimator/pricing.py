@@ -65,6 +65,8 @@ _COST_TABLE_EXACT: dict[str, tuple[float, float]] = {
     "kimi-for-coding": (0.0006, 0.0024),  # $0.60 / $2.40 per MTok
     "kimi-k2.5": (0.0006, 0.0024),
     "kimi-k2.6": (0.00095, 0.004),  # $0.95 / $4 per MTok
+    # Mistral — https://mistral.ai/pricing
+    "mistral-large-latest": (0.0005, 0.0015),  # $0.50 / $1.50 per MTok
 }
 
 # Prefix fallbacks for unknown variants. No `gpt-5.6` catch-all: the 5.6
@@ -103,6 +105,8 @@ _COST_TABLE_PREFIX: dict[str, tuple[float, float]] = {
     "kimi-for-coding": (0.0006, 0.0024),
     "kimi": (0.0006, 0.0024),
     "moonshot": (0.0006, 0.0024),
+    # Mistral — https://mistral.ai/pricing
+    "mistral-large": (0.0005, 0.0015),  # $0.50 / $1.50 per MTok
     "llama": (0.0, 0.0),
     "mock": (0.0, 0.0),
     **dict.fromkeys(ZERO_COST_MODEL_PREFIXES, (0.0, 0.0)),
@@ -130,3 +134,30 @@ def lookup_cost(model_name: str) -> tuple[float, float] | None:
             best_prefix = prefix
             best_rates = rates
     return best_rates
+
+
+# Embedding rates, USD per 1K input tokens. Keyed by model; each embedder's
+# row is its constructor default, so an unset model prices as that default.
+_EMBED_COST_BY_MODEL: dict[str, float] = {
+    "gemini-embedding-001": 0.00015,  # $0.15 / MTok
+    "text-embedding-3-small": 0.00002,  # $0.02 / MTok
+    "text-embedding-3-large": 0.00013,  # $0.13 / MTok
+    "text-embedding-ada-002": 0.0001,  # $0.10 / MTok
+    "amazon.titan-embed-text-v2:0": 0.00002,  # $0.02 / MTok, before Eden AI's fee
+}
+_EMBED_DEFAULT_MODEL: dict[str, str] = {
+    "gemini": "gemini-embedding-001",
+    "openai": "text-embedding-3-small",
+    "openrouter": "gemini-embedding-001",
+    "edenai": "amazon.titan-embed-text-v2:0",
+}
+# Local or test vectors: free whatever the model.
+_FREE_EMBEDDERS = frozenset({"mock", "ollama"})
+
+
+def lookup_embedding_cost(embedder: str, model: str | None = None) -> float | None:
+    """USD per 1K tokens to embed with *embedder*, ``None`` when unpriced."""
+    if embedder in _FREE_EMBEDDERS:
+        return 0.0
+    name = (model or _EMBED_DEFAULT_MODEL.get(embedder, "")).lower().rsplit("/", 1)[-1]
+    return _EMBED_COST_BY_MODEL.get(name)

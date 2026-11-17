@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from rich.console import Console
 
 from repowise.cli.commands.update_cmd import reporting
+from repowise.cli.ui.brand import THEME
 
 
 class _Buffer:
@@ -23,7 +24,7 @@ class _Buffer:
 
     def __init__(self) -> None:
         self._buf = io.StringIO()
-        self._console = Console(file=self._buf, width=200, force_terminal=False)
+        self._console = Console(file=self._buf, width=200, force_terminal=False, theme=THEME)
 
     def print(self, *args, **kwargs):
         self._console.print(*args, **kwargs)
@@ -199,7 +200,7 @@ class TestCompletionPanels:
             git_files=12,
             elapsed=8.3,
         )
-        assert any("index-only update complete" in line for line in printed.lines)
+        assert any("Index updated" in line for line in printed.lines)
 
     def test_workspace_completion_renders(self, monkeypatch):
         printed = _capture(monkeypatch)

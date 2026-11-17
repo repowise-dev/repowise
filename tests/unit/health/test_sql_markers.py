@@ -6,7 +6,7 @@ Every smell test has a paired negative asserting silence.
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+from pathlib import Path
 
 from repowise.core.analysis.health.biomarkers.base import FileContext
 from repowise.core.analysis.health.biomarkers.registry import detect_all
@@ -20,15 +20,13 @@ from repowise.core.analysis.health.sql_complexity import (
     _body_ccn,
     _statement_smells,
     walk_sql_file,
+    walks_statements,
 )
-
-
-def _fi(name: str = "schema.sql") -> SimpleNamespace:
-    return SimpleNamespace(abs_path=f"/repo/{name}", path=name, language="sql")
+from repowise.core.code_origin import CODE_ORIGINS
 
 
 def _walk(sql: str):
-    return walk_sql_file(_fi(), sql.encode("utf-8"))
+    return walk_sql_file(sql.encode("utf-8"), None)
 
 
 def _smell_kinds(sql: str) -> list[str]:
@@ -149,6 +147,46 @@ class TestSelectStar:
         sql = "CREATE VIEW v AS SELECT * FROM (SELECT * FROM t) sub"
         assert _smell_kinds(sql) == ["sql_select_star"]
 
+    def test_fires_on_plain_table_in_view(self) -> None:
+        assert _smell_kinds("CREATE VIEW v AS SELECT * FROM users") == ["sql_select_star"]
+
+    def test_silent_inside_exists(self) -> None:
+        sql = (
+            "CREATE VIEW v AS SELECT id FROM users u "
+            "WHERE EXISTS (SELECT * FROM orders o WHERE o.user_id = u.id)"
+        )
+        assert _smell_kinds(sql) == []
+
+    def test_silent_inside_not_exists(self) -> None:
+        sql = (
+            "CREATE VIEW v AS SELECT id FROM users u "
+            "WHERE NOT EXISTS (SELECT * FROM orders o WHERE o.user_id = u.id)"
+        )
+        assert _smell_kinds(sql) == []
+
+    def test_silent_over_explicit_cte(self) -> None:
+        sql = "CREATE VIEW v AS WITH c AS (SELECT id, name FROM users) SELECT * FROM c"
+        assert _smell_kinds(sql) == []
+
+    def test_silent_over_explicit_subquery(self) -> None:
+        sql = "CREATE VIEW v AS SELECT * FROM (SELECT id, name FROM users) sub"
+        assert _smell_kinds(sql) == []
+
+    def test_fires_when_cte_itself_selects_star(self) -> None:
+        sql = "CREATE VIEW v AS WITH c AS (SELECT * FROM users) SELECT * FROM c"
+        assert _smell_kinds(sql) == ["sql_select_star"]
+
+    def test_fires_on_qualified_table_sharing_a_cte_name(self) -> None:
+        sql = "CREATE VIEW v AS WITH users AS (SELECT id FROM t) SELECT * FROM other.users"
+        assert _smell_kinds(sql) == ["sql_select_star"]
+
+    def test_fires_when_star_joins_base_table(self) -> None:
+        sql = (
+            "CREATE VIEW v AS WITH c AS (SELECT id FROM users) "
+            "SELECT * FROM c JOIN orders o ON o.user_id = c.id"
+        )
+        assert _smell_kinds(sql) == ["sql_select_star"]
+
 
 class TestUpdateDeleteWithoutWhere:
     def test_update_fires(self) -> None:
@@ -158,6 +196,14 @@ class TestUpdateDeleteWithoutWhere:
 
     def test_delete_fires(self) -> None:
         assert _smell_kinds("DELETE FROM sessions") == ["sql_update_delete_without_where"]
+
+    def test_silent_on_temp_table_from_same_file(self) -> None:
+        sql = "CREATE TEMP TABLE tmp (id INT); DELETE FROM tmp; UPDATE tmp SET id = 0"
+        assert _smell_kinds(sql) == []
+
+    def test_fires_on_regular_table_created_in_same_file(self) -> None:
+        sql = "CREATE TABLE logs (id INT); DELETE FROM logs"
+        assert _smell_kinds(sql) == ["sql_update_delete_without_where"]
 
     def test_silent_with_where(self) -> None:
         assert _smell_kinds("UPDATE users SET active = 0 WHERE id = 1") == []
@@ -295,3 +341,75 @@ class TestScoringDimensions:
         assert scores["defect"] == 10.0
         assert scores["maintainability"] < 10.0
         assert scores["performance"] < 10.0
+
+
+# ---------------------------------------------------------------------------
+# Statement smells by code origin
+# ---------------------------------------------------------------------------
+
+_SMELLY_SQL = (
+    "CREATE VIEW v AS SELECT * FROM t;\n"
+    "UPDATE users SET active = 0;\n"
+    "SELECT a.x FROM a, b;\n"
+    "CREATE FUNCTION f() RETURNS INT AS $$\nBEGIN\n"
+    + "".join(f"IF x = {i} THEN RETURN {i}; END IF;\n" for i in range(12))
+    + "END $$;\n"
+)
+_SMELLS = ["sql_cartesian_join", "sql_select_star", "sql_update_delete_without_where"]
+
+
+class TestStatementSmellsByOrigin:
+    def test_walk_without_statements_keeps_routines(self) -> None:
+        full = walk_sql_file(_SMELLY_SQL.encode(), None)
+        routines_only = walk_sql_file(_SMELLY_SQL.encode(), None, statements=False)
+        assert routines_only.functions == full.functions
+        assert [h.kind for h in routines_only.perf_hits] == ["sql_high_complexity"]
+
+    def test_only_test_generated_and_vendored_skip_them(self) -> None:
+        skipped = {o for o in CODE_ORIGINS if not walks_statements(o)}
+        assert skipped == {"test", "generated", "vendored"}
+
+    def test_analyzer_keeps_production_sql_findings_and_drops_test_ones(
+        self, tmp_path: Path
+    ) -> None:
+        import networkx as nx
+
+        from repowise.core.analysis.health.engine import HealthAnalyzer
+        from repowise.core.ingestion import ASTParser, FileTraverser
+
+        for rel in ("db/views.sql", "migrations/0001_init.sql", "tests/queries/q.sql"):
+            path = tmp_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_SMELLY_SQL)
+        (tmp_path / ".repowise").mkdir()
+        parser = ASTParser()
+        parsed = [
+            parser.parse_file(fi, Path(fi.abs_path).read_bytes())
+            for fi in FileTraverser(tmp_path).traverse()
+        ]
+        report = HealthAnalyzer(
+            nx.DiGraph(),
+            git_meta_map={},
+            parsed_files=parsed,
+            duplication_cache_dir=tmp_path / ".repowise",
+            repo_root=tmp_path,
+        ).analyze(None)
+
+        def sql_kinds(path: str) -> list[str]:
+            return sorted(
+                f.biomarker_type
+                for f in report.findings
+                if f.file_path == path and f.biomarker_type.startswith("sql_")
+            )
+
+        # Production and tooling SQL: every finding the full walk yields.
+        expected = sorted(
+            r.biomarker_type
+            for r in detect_all(_ctx_for(_SMELLY_SQL))
+            if r.biomarker_type.startswith("sql_")
+        )
+        assert expected == sorted([*_SMELLS, "sql_high_complexity"])
+        assert sql_kinds("db/views.sql") == expected
+        assert sql_kinds("migrations/0001_init.sql") == expected
+        # Test SQL: routine complexity only.
+        assert sql_kinds("tests/queries/q.sql") == ["sql_high_complexity"]

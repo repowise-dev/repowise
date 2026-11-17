@@ -6,6 +6,8 @@ manifest names as the start (``package.json`` ``bin``/``main``/``exports["."]``,
 ``FileInfo.is_manifest_entry``) declares or re-exports through barrels. It is
 read off the parsed imports, never guessed by a model, so a class that nothing
 in the repo imports still appears when the package's front door publishes it.
+A .NET project that ships a package (:mod:`.published_packages`) has no front
+door: every public type its C# files declare is published.
 
 Two readers share it: a wiki page's Public API section, and the per-symbol
 ``public_api`` flag the graph carries (:func:`stamp_public_api`).
@@ -420,19 +422,106 @@ def _sibling_owner(
     return None
 
 
+def _enclosing_ruby_owner(
+    sym: Any, out: Mapping[str, str], containers: Sequence[Any]
+) -> str | None:
+    """The export root of the Ruby module or class that encloses *sym* in its file.
+
+    A Ruby symbol's id names only its immediate parent, so a method of
+    ``Mygem::Client`` is ``<file>::Client::get`` while the class is
+    ``<file>::Mygem::Client``, and ``<file>::<parent>`` is not a symbol. The
+    enclosing container is found by name and extent instead: the innermost one
+    whose lines hold *sym*, which also tells two ``Client`` classes in different
+    namespaces apart.
+    """
+    parent = (sym.parent_name or "").rsplit("::", 1)[-1]
+    best = None
+    for container in containers:
+        if (
+            container.name == parent
+            and container is not sym
+            and container.start_line <= sym.start_line
+            and container.end_line >= sym.end_line
+            and (
+                best is None
+                or container.end_line - container.start_line < best.end_line - best.start_line
+            )
+        ):
+            best = container
+    return out.get(best.id) if best is not None else None
+
+
+def _local_id(sym: Any, path: str) -> str:
+    """A top-level symbol's id within its file (``Box`1`` for a generic ``Box<T>``)."""
+    return sym.id[len(path) + 2 :]
+
+
+def _publish_csharp_types(
+    parsed: Mapping[str, Any], roots: Iterable[str], out: dict[str, str]
+) -> None:
+    """Publish every public top-level type a C# file of a shipped project declares.
+
+    :func:`_declared` keys a file's symbols by name, so ``Box<T>`` and ``Box``
+    declared together would leave one of them out; C# tells them apart by
+    type-parameter count, which the symbol id carries.
+    """
+    for root in roots:
+        pf = parsed[root]
+        if pf.file_info.language != "csharp":
+            continue
+        for sym in pf.symbols:
+            if (
+                sym.parent_name is None
+                and sym.visibility == "public"
+                and sym.kind not in _UNPUBLISHED_KINDS
+            ):
+                out.setdefault(sym.id, root)
+
+
+def _publish_partial_fragments(
+    parsed: Mapping[str, Any],
+    fragments: Mapping[str, AbstractSet[str]],
+    out: dict[str, str],
+) -> None:
+    """Publish the ``partial`` fragments of a published C# type.
+
+    Every fragment of a partial type has the accessibility of the one that
+    declares it, but a fragment written without a modifier reads ``internal``,
+    so its type and members would be missed. *fragments* maps a C# file to the
+    files holding the other fragments of its partial types. A fragment is
+    published when the same type, in one of those files, already is.
+    """
+    for path, others in sorted(fragments.items()):
+        pf = parsed.get(path)
+        if pf is None or pf.file_info.is_test:
+            continue
+        for sym in pf.symbols:
+            if sym.parent_name is not None or sym.id in out or "partial" not in sym.modifiers:
+                continue
+            local = _local_id(sym, path)
+            for other in sorted(others):
+                twin = next((s for s in parsed[other].symbols if s.id == f"{other}::{local}"), None)
+                if twin is not None and "partial" in twin.modifiers and twin.id in out:
+                    out[sym.id] = path
+                    break
+
+
 def public_symbols(
     parsed: Mapping[str, Any],
     entries: AbstractSet[str] = frozenset(),
     package_files: Mapping[str, Sequence[str]] | None = None,
+    fragments: Mapping[str, AbstractSet[str]] | None = None,
 ) -> dict[str, str]:
     """``{symbol id: the file that exports it}`` for every symbol consumers can import.
 
     Exported means a barrel or a package entry publishes it (re-exports and
     ``__all__`` followed as for :func:`compute_public_api`); a public method
     of an exported class is exported with it. *entries* are the files a
-    ``package.json`` ``exports`` map names (:func:`export_roots`).
-    *package_files* maps a Go file to the files of its package, so a method
-    declared apart from its receiver type is exported with that type.
+    ``package.json`` ``exports`` map names or a shipped .NET project holds
+    (:func:`export_roots`). *package_files* maps a Go file to the files of its
+    package, so a method declared apart from its receiver type is exported
+    with that type. *fragments* are the C# files that share a ``partial``
+    type (:func:`_publish_partial_fragments`).
     """
     resolver = _Resolver(parsed)
     out: dict[str, str] = {}
@@ -441,14 +530,79 @@ def public_symbols(
         for _name, sym, declared_in in resolver.exported(root):
             if sym is not None and not parsed[declared_in].file_info.is_test:
                 out.setdefault(sym.id, root)
+
     root_set = set(roots)
+    _publish_csharp_types(parsed, roots, out)
+    if fragments:
+        _publish_partial_fragments(parsed, fragments, out)
+
     for path, pf in parsed.items():
-        for sym in pf.symbols:
-            owner = out.get(f"{path}::{sym.parent_name}") if sym.parent_name else None
+        symbols: Sequence[Any] = pf.symbols
+        containers: list[Any] = []
+        if pf.file_info.language == "ruby":
+            # Parents before their members, so a nested class is exported
+            # before the methods it holds are looked up.
+            symbols = sorted(pf.symbols, key=lambda s: (s.start_line, -s.end_line))
+            containers = [s for s in symbols if s.kind in ("class", "module")]
+        for sym in symbols:
+            owner = None
+            if containers and sym.parent_name:
+                owner = _enclosing_ruby_owner(sym, out, containers)
+            if owner is None and sym.parent_name:
+                owner = out.get(f"{path}::{sym.parent_name}")
             if owner is None and sym.parent_name and package_files:
                 owner = _sibling_owner(path, sym.parent_name, out, root_set, package_files)
             if owner is not None and sym.visibility == "public":
                 out.setdefault(sym.id, owner)
+    return out
+
+
+def _partial_fragments(graph: Any, parsed: Mapping[str, Any]) -> dict[str, set[str]]:
+    """``{C# file: the files holding other fragments of its partial types}``.
+
+    The graph links the files of one partial type with ``partial_class``
+    import edges, in both directions.
+    """
+    out: dict[str, set[str]] = {}
+    for path, pf in parsed.items():
+        if pf.file_info.language != "csharp" or path not in graph:
+            continue
+        for _u, other, data in graph.out_edges(path, data=True):
+            if data.get("hint_source") == "partial_class" and other in parsed:
+                out.setdefault(path, set()).add(other)
+    return out
+
+
+def _ruby_gem_files(graph: Any, parsed: Mapping[str, Any]) -> set[str]:
+    """The files a gem publishes: its entry and what that requires inside its own ``lib``.
+
+    The Ruby warmup stamps each gem's ``lib/<name>.rb`` with the ``lib`` root it
+    sits in (``ruby_gem_lib``). Requires are not resolved at warmup time, so the
+    closure is taken here over ``Import.resolved_file``. A file nothing in the
+    gem requires is not part of its surface, nor is a test file or anything
+    another gem's ``lib`` holds.
+    """
+    out: set[str] = set()
+    for entry in sorted(parsed):
+        lib_root = graph.nodes.get(entry, {}).get("ruby_gem_lib")
+        if not lib_root:
+            continue
+        prefix = f"{lib_root}/"
+        reached = {entry}
+        pending = [entry]
+        while pending:
+            for imp in parsed[pending.pop()].imports:
+                target = imp.resolved_file
+                if (
+                    target in reached
+                    or target not in parsed
+                    or not target.startswith(prefix)
+                    or parsed[target].file_info.is_test
+                ):
+                    continue
+                reached.add(target)
+                pending.append(target)
+        out |= reached
     return out
 
 
@@ -461,7 +615,8 @@ def stamp_public_api(
     entries = {
         path for path in parsed if graph.nodes.get(path, {}).get("package_export")
     }
-    exported = public_symbols(parsed, entries, package_files)
+    entries |= _ruby_gem_files(graph, parsed)
+    exported = public_symbols(parsed, entries, package_files, _partial_fragments(graph, parsed))
     for pf in parsed.values():
         for sym in pf.symbols:
             node = graph.nodes.get(sym.id)

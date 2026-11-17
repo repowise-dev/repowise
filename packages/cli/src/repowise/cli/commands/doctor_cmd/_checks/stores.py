@@ -11,6 +11,9 @@ from repowise.core.exclusion import build_exclude_spec, is_excluded
 
 from .._types import DoctorCheck, _check
 from .context import CheckContext, StoreDrift, open_store
+from .index_data import index_data_check
+
+_REPAIR = "repowise doctor --repair"
 
 
 async def _decision_vector_ids(session, repository_id: str) -> set[str]:
@@ -177,6 +180,13 @@ async def _fts_ids(engine) -> set[str]:
         return set()
 
 
+def _real_embedder_configured(repo_path: _DoctorPath) -> bool:
+    """True when the repo resolves to a non-mock embedder (vectors expected)."""
+    from repowise.cli.providers import resolve_embedder_for_repo
+
+    return resolve_embedder_for_repo(repo_path) != "mock"
+
+
 async def _reconcile(
     repo_path: _DoctorPath, repowise_dir: _DoctorPath
 ) -> tuple[StoreDrift, int, str | None]:
@@ -195,18 +205,25 @@ async def _reconcile(
     vs_ids, vs_error = await _vector_ids(lance_dir)
     fts_ids = await _fts_ids(engine)
     await engine.dispose()
+    vectors_expected = lance_dir.exists() or _real_embedder_configured(repo_path)
+    missing_from_vector = (
+        sql.vector_indexable_ids - vs_ids if vectors_expected else set()
+    )
     return (
         StoreDrift(
-            # An index on disk that holds none of the indexable pages is every
-            # one of them missing. Only no index at all (fast mode, nothing
+            # An index on disk that holds none of the indexable pages, or a
+            # configured embedder with its directory gone, is every one of them
+            # missing. Only no index and a mock embedder (fast mode, nothing
             # embedded yet) has nothing to compare.
-            missing_from_vector=(
-                sql.vector_indexable_ids - vs_ids if lance_dir.exists() else set()
-            ),
+            missing_from_vector=missing_from_vector,
             orphaned_vector=vs_ids - sql.vector_sql_ids,
             missing_from_fts=sql.indexable_ids - fts_ids if fts_ids else set(),
             orphaned_fts=fts_ids - sql.sql_ids if fts_ids else set(),
-            vector_store_empty=lance_dir.exists() and vs_error is None and not vs_ids,
+            vector_store_empty=(
+                (lance_dir.exists() or bool(missing_from_vector))
+                and vs_error is None
+                and not vs_ids
+            ),
         ),
         sql.stub_count,
         vs_error,
@@ -233,6 +250,7 @@ def _consistency_rows(ctx: CheckContext) -> list[DoctorCheck]:
                     False,
                     f"cannot open .repowise/lancedb ({vector_store_error}); semantic "
                     "search is off until it opens, then run `repowise reindex`",
+                    check_id="vector-store",
                 )
             )
         vec_ok, vec_detail = _drift_detail(drift.missing_from_vector, drift.orphaned_vector)
@@ -241,15 +259,39 @@ def _consistency_rows(ctx: CheckContext) -> list[DoctorCheck]:
         # Name the command: `--resume` exists only on `init`.
         if stub_count:
             vec_detail += f" · {stub_count} stub(s) awaiting `repowise init --resume`"
-        rows.append(_check("SQL ↔ Vector Store", vec_ok, vec_detail))
-        fts_ok, fts_detail = _drift_detail(drift.missing_from_fts, drift.orphaned_fts)
-        rows.append(_check("SQL ↔ FTS Index", fts_ok, fts_detail))
-    except Exception as exc:
-        # Name the failure. "Could not check" is reported as OK, so a
-        # reconciliation that raises on every run would look exactly like one
-        # that had nothing to reconcile.
+        # --repair declines to re-embed a whole empty store; reindex does that.
+        vec_fix = "repowise reindex" if drift.vector_store_empty else _REPAIR
         rows.append(
-            _check("Store consistency", True, f"Could not check: {type(exc).__name__}: {exc}")
+            _check(
+                "SQL ↔ Vector Store",
+                vec_ok,
+                vec_detail,
+                check_id="vector-store-sync",
+                fix=None if vec_ok else vec_fix,
+            )
+        )
+        fts_ok, fts_detail = _drift_detail(drift.missing_from_fts, drift.orphaned_fts)
+        rows.append(
+            _check(
+                "SQL ↔ FTS Index",
+                fts_ok,
+                fts_detail,
+                check_id="fts-index-sync",
+                fix=None if fts_ok else _REPAIR,
+            )
+        )
+    except Exception as exc:
+        # Name the failure. "Could not check" is a warn, not a fail, so without
+        # the exception a reconciliation that raises on every run would read
+        # like one that had nothing to reconcile.
+        rows.append(
+            _check(
+                "Store consistency",
+                True,
+                f"Could not check: {type(exc).__name__}: {exc}",
+                check_id="store-consistency",
+                warn=True,
+            )
         )
     return rows
 
@@ -268,7 +310,7 @@ async def _decision_aware_drift(session, repo_path: _DoctorPath, result: dict, v
     if repo is None:
         return
     dec_ids = await _decision_vector_ids(session, repo.id)
-    decision_count = len(dec_ids)
+    decision_count = len(dec_ids) if vector_store is not None else 0
     if vector_store is not None:
         with contextlib.suppress(Exception):
             store_ids = await vector_store.list_page_ids()
@@ -282,7 +324,9 @@ async def _decision_aware_drift(session, repo_path: _DoctorPath, result: dict, v
             result["drift"] = abs(adjusted_sql - vector_count) / max(adjusted_sql, 1)
 
 
-async def _coordinator_health(repo_path: _DoctorPath, repowise_dir: _DoctorPath) -> dict:
+async def _coordinator_health(
+    repo_path: _DoctorPath, repowise_dir: _DoctorPath, *, empty_vector_store: bool = False
+) -> dict:
     from repowise.core.persistence import get_session
     from repowise.core.persistence.coordinator import AtomicStorageCoordinator
     from repowise.core.persistence.vector_store import LanceDBVectorStore
@@ -298,6 +342,10 @@ async def _coordinator_health(repo_path: _DoctorPath, repowise_dir: _DoctorPath)
     async with get_session(sf) as session:
         coord = AtomicStorageCoordinator(session, graph_builder=None, vector_store=vector_store)
         result = await coord.health_check()
+        if vector_store is None and empty_vector_store:
+            # A real embedder is configured and indexable pages exist, so a
+            # missing directory holds 0 vectors rather than an unknown count.
+            result["vector_count"] = 0
         await _decision_aware_drift(session, repo_path, result, vector_store)
 
     if vector_store is not None:
@@ -320,7 +368,13 @@ def _drift_color(drift: float | None) -> str:
 def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
     """Sets ``ctx.coord_drift_color``/``pct``, which the table highlights."""
     try:
-        result = run_async(_coordinator_health(ctx.repo_path, ctx.repowise_dir))
+        result = run_async(
+            _coordinator_health(
+                ctx.repo_path,
+                ctx.repowise_dir,
+                empty_vector_store=ctx.drift.vector_store_empty,
+            )
+        )
         sql_pages = result.get("sql_pages")
         vector_count = result.get("vector_count")
         drift = result.get("drift")
@@ -331,17 +385,37 @@ def _coordinator_row(ctx: CheckContext) -> DoctorCheck:
             str(vector_count) if vector_count != -1 and vector_count is not None else "unknown"
         )
         detail = f"SQL={sql_pages}, Vector={vec_display}, Drift={drift_pct}"
-        row = _check("Coordinator drift", drift is None or drift < 0.05, detail)
+        ok = drift is None or drift < 0.05
+        row = _check(
+            "Coordinator drift",
+            ok,
+            detail,
+            check_id="coordinator-drift",
+            fix="repowise reindex" if not ok and ctx.drift.vector_store_empty else None,
+        )
         ctx.coord_drift_color = drift_color
         ctx.coord_drift_pct = drift_pct
         return row
     except Exception as exc:
-        return _check("Coordinator drift", True, f"Could not check: {exc}")
+        return _check(
+            "Coordinator drift",
+            True,
+            f"Could not check: {exc}",
+            check_id="coordinator-drift",
+            warn=True,
+        )
 
 
 def store_checks(ctx: CheckContext) -> list[DoctorCheck]:
-    """Checks 8-10, in order. Fills ``ctx.drift`` and the drift highlight."""
+    """Checks 8-10, in order. Fills ``ctx.drift`` and the drift highlight.
+
+    The index-data row runs under ``--quick`` too: stamp reads and row counts.
+    """
     checks: list[DoctorCheck] = []
+    if ctx.db_ok and ctx.state_ok:
+        checks.append(index_data_check(ctx))
+    if ctx.quick:
+        return checks
     if ctx.db_ok and ctx.page_count > 0:
         checks.extend(_consistency_rows(ctx))
     if ctx.db_ok:

@@ -93,7 +93,7 @@ function SortHeader({
       {onSortChange ? (
         <button
           type="button"
-          className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] rounded"
+          className="cursor-pointer select-none uppercase tracking-wider font-medium hover:text-[var(--color-text-secondary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] rounded"
           onClick={() =>
             onSortChange({
               key: column,
@@ -183,8 +183,8 @@ export function HotspotTable({
                 {showFixes && (
                   <SortHeader
                     column="fixes"
-                    label="Fixes"
-                    title="Bug-fix commits that touched this file in the trailing defect window. Churn counts every change; this counts only the ones that fixed something."
+                    label="Fixes 6mo"
+                    title="Bug-fix commits that touched this file in the last 6 months. Churn counts every change; this counts only the ones that fixed something."
                     sort={sort}
                     onSortChange={onSortChange}
                     className="w-24"

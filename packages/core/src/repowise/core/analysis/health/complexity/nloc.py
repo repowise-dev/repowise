@@ -192,3 +192,61 @@ class CodeLineIndex:
             count += self._is_code_row(last)
             count += self._code_rows_before(last) - self._code_rows_before(first + 1)
         return count
+
+    def code_rows_in(self, ranges: list[tuple[int, int]]) -> int:
+        """Code rows inside the inclusive, disjoint row *ranges*."""
+        return sum(
+            self._code_rows_before(last + 1) - self._code_rows_before(first)
+            for first, last in ranges
+        )
+
+    def unit_rows(self, body: Node, units: list[Node]) -> list[tuple[int, int]]:
+        """The rows of *body* that only its nested *units* cover.
+
+        *units* are the units measured on their own directly inside *body*
+        (nested inside no other unit there), in source order. Returns
+        inclusive, disjoint row ranges. A unit's rows strictly between its
+        first and last hold only its own leaves, so they are always its. Its
+        first and last row are too, unless a leaf of *body* outside every unit
+        shares them (``const f = () => {`` after other code, ``};``): such a
+        row stays with *body*. Answered from the leaf index, like
+        :meth:`count`, without walking any subtree.
+        """
+        starts = self._leaf_starts
+        body_first = bisect_left(starts, body.start_byte)
+        body_end = bisect_left(starts, body.end_byte)
+        spans: list[tuple[int, int]] = []
+        for unit in units:
+            first_leaf = bisect_left(starts, unit.start_byte)
+            end_leaf = bisect_left(starts, unit.end_byte)
+            if first_leaf < end_leaf:
+                spans.append((first_leaf, end_leaf))
+        span_firsts = [span[0] for span in spans]
+
+        def shared(row: int) -> int:
+            """1 when a leaf of the body outside every unit span touches *row*.
+
+            Leaves are disjoint and sorted, so both their start and end rows
+            are sorted, and the leaves touching *row* are one index range.
+            """
+            i = max(bisect_left(self._leaf_end_rows, row), body_first)
+            stop = min(bisect_right(self._leaf_start_rows, row), body_end)
+            while i < stop:
+                j = bisect_right(span_firsts, i) - 1
+                if j < 0 or i >= spans[j][1]:
+                    return 1
+                i = spans[j][1]
+            return 0
+
+        ranges: list[tuple[int, int]] = []
+        prev_last = -1
+        for first_leaf, end_leaf in spans:
+            top = self._leaf_start_rows[first_leaf]
+            bottom = self._leaf_end_rows[end_leaf - 1]
+            last = bottom - shared(bottom) if bottom > top else bottom
+            # Two units can meet on one row; count it once.
+            first = max(top + shared(top), prev_last + 1)
+            if first <= last:
+                ranges.append((first, last))
+                prev_last = last
+        return ranges

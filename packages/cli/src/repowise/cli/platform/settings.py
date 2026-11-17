@@ -8,7 +8,7 @@ Precedence (highest first):
 
 1. ``DO_NOT_TRACK`` — the cross-tool `console do-not-track` standard. Any
    truthy value is a hard off and also suppresses the first-run notice.
-2. ``REPOWISE_TELEMETRY_DISABLED`` — tool-specific hard off.
+2. ``REPOWISE_TELEMETRY_DISABLED`` / ``REPOWISE_OFFLINE`` — tool-specific hard off.
 3. Stored consent (``telemetry_enabled`` in ``platform.json``) when the user
    has explicitly run ``repowise telemetry disable``/``enable``.
 4. Default: enabled.
@@ -48,7 +48,7 @@ def is_enabled() -> bool:
     """Return whether telemetry may currently be sent."""
     if do_not_track():
         return False
-    if _env_truthy("REPOWISE_TELEMETRY_DISABLED"):
+    if _env_truthy("REPOWISE_TELEMETRY_DISABLED") or _env_truthy("REPOWISE_OFFLINE"):
         return False
     # Opt-out default: enabled unless the user explicitly stored a disable.
     stored = store.load().get(_ENABLED_KEY)
@@ -77,6 +77,8 @@ def disabled_reason() -> str | None:
         return "DO_NOT_TRACK is set"
     if _env_truthy("REPOWISE_TELEMETRY_DISABLED"):
         return "REPOWISE_TELEMETRY_DISABLED is set"
+    if _env_truthy("REPOWISE_OFFLINE"):
+        return "REPOWISE_OFFLINE is set"
     if store.load().get(_ENABLED_KEY) is False:
         return "disabled via 'repowise telemetry disable'"
     return None

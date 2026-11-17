@@ -25,7 +25,6 @@ import structlog
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 from repowise.core.providers.llm.base import BaseProvider, CacheHint, GeneratedResponse
 
-from ..agent_digest import rejoin_questions
 from ..context.evidence import (
     EvidenceItem,
     EvidenceSelection,
@@ -41,14 +40,15 @@ from ..models import (
     GeneratedPage,
     GenerationConfig,
     compute_page_id,
-    compute_source_hash,
 )
 from ..report import reset_house_terms
 from ..structural_labels import resolve_structural_labels, structural_page_title
 from ..styles import ONBOARDING_PAGE_TYPE, resolve_style
+from .flow import FlowPageMixin
 from .helpers import _extract_summary, _now_iso, collapse_empty_duplicate_headings
 from .pertype import PerTypeGenerationMixin
 from .prompts import CORRECTIVE_RETRY_DIRECTIVE, SUPPORTED_LANGUAGES, SYSTEM_PROMPTS
+from .reuse import reuse_prior_response
 from .structural import (
     StructuralRenderMixin,
     register_filters,
@@ -56,6 +56,7 @@ from .structural import (
 from .validation import (
     InvalidGeneratedContentError,
     InvalidMermaidError,
+    PageShapeError,
     reset_artifact_check_counts,
     validate_generated_response,
 )
@@ -64,6 +65,12 @@ if TYPE_CHECKING:
     from pathlib import Path as _Path  # noqa: F401
 
 log = structlog.get_logger(__name__)
+
+# Failures that leave a usable page when the re-ask fails too: a diagram that
+# will not render (dropped) and a page over its template's shape budget (kept).
+_KEPT_AFTER_RETRY = (InvalidMermaidError, PageShapeError)
+# An overview or onboarding prompt's size besides its source evidence.
+_SYNTHESIS_FRAME_TOKENS = 8000
 
 
 def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
@@ -119,15 +126,20 @@ def _attach_file_provenance(page: GeneratedPage, ctx: FilePageContext) -> None:
 class PriorPage:
     """Snapshot of a previously-generated page used for cross-run reuse.
 
-    Lives in :class:`PageGenerator` keyed by ``page_id``. When the freshly
-    rendered prompt produces a matching ``source_hash`` under the same
-    ``model_name``, the LLM call is skipped and ``content`` is reused.
+    Lives in :class:`PageGenerator` keyed by ``page_id``. Reuse happens when
+    the freshly rendered page still matches on the *subject* the page
+    documents — ``content_hash`` when both sides have one, else the rendered
+    prompt's ``source_hash`` under the same ``model_name`` — and the row was
+    actually written by a model (``provider_name != 'template'``).
 
     ``content_hash`` is the preferred reuse key when both sides have one: it
-    stays stable across runs even when the rendered prompt drifts (RAG context
-    is rebuilt and populated concurrently each run, so ``source_hash`` alone
-    almost never matches on a reindex). Structural pages compute theirs in
-    :meth:`StructuralRenderMixin._structural_content_hash`.
+    stays stable across runs even when the rendered prompt drifts (RAG
+    context is rebuilt and populated concurrently each run, so ``source_hash``
+    alone almost never matches on a reindex — the defect that made every full
+    run re-bill every page, issue #1089). Structural pages compute theirs in
+    :meth:`StructuralRenderMixin._structural_content_hash`; model pages
+    compute it from their subject material (see
+    :func:`.reuse.model_reuse_key`).
     """
 
     source_hash: str
@@ -140,9 +152,16 @@ class PriorPage:
     content_hash: str = ""
     #: The stored page's metadata, for facts a reused page must carry forward.
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    #: Persisted ``provider_name``. A row stamped ``template`` was never
+    #: written by a model — a keyless stub, or a stub a failed provider call
+    #: left behind — so it must never be reused as if it were prose.
+    provider_name: str = ""
+    #: Persisted ``freshness_status``. A ``tombstone`` row is kept for its
+    #: inbound links, not served as a page.
+    freshness_status: str = ""
 
 
-class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
+class PageGenerator(PerTypeGenerationMixin, FlowPageMixin, StructuralRenderMixin):
     """Generate wiki pages by rendering prompts and calling an LLM provider.
 
     Args:
@@ -166,13 +185,16 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
     ) -> None:
         self._provider = provider
         self._assembler = assembler
-        self._config = config
+        # Material budgets follow the window the model runs with; a local
+        # model's is small (see GenerationConfig.material_budget). The
+        # assembler sizes module material, so it takes the same window.
+        self._config = config.with_provider_window(provider)
+        assembler.use_context_window(self._config.context_window)
         self._vector_store = vector_store
         # Output language: explicit arg wins, else the config's, else English.
         self._language = language if language is not None else getattr(config, "language", "en")
-        # Resolve the wiki style once. "comprehensive" (default) is inert, so this
-        # is a no-op for repos that never opt in. ``repo_path`` lets a user-defined
-        # ``.repowise/styles/<name>`` style resolve (Phase 5).
+        # Resolve the wiki style once ("comprehensive" by default). ``repo_path``
+        # lets a user-defined ``.repowise/styles/<name>`` style resolve (Phase 5).
         self._style = resolve_style(getattr(config, "wiki_style", None), repo_path=repo_path)
         self._cache: dict[str, GeneratedResponse] = {}
         # Map of page_id → PriorPage from previous generation runs. When the
@@ -186,6 +208,12 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # ``generate_all``: a failed embed leaves semantic search without
         # them, which a run must not report as healthy.
         self.embed_failed_pages: int = 0
+        # The JobSystem checkpoint this run created, so a caller reads this
+        # run's failures rather than guessing from the jobs directory.
+        self.last_job_id: str | None = None
+        # This run's page selection, so a caller can report the file pages it
+        # meant to write next to the ones it wrote.
+        self.selection: Any = None
         # Per-template structural fingerprints, lazily computed; every input
         # they fold is fixed for the generator's lifetime. Keyed by template
         # name because each structural page type folds its own template source.
@@ -257,6 +285,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         timings: Any | None = None,
         on_warning: Callable[[str], None] | None = None,
         persisted_page_ids: set[str] | None = None,
+        on_embed: Callable[[int, bool], None] | None = None,
     ) -> list[GeneratedPage]:
         """Generate all wiki pages for a repository.
 
@@ -285,6 +314,9 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         ``timings`` is the run's shared ``PhaseTimings`` table. Generation
         records its per-level and checkpoint spans into it so they report
         beside the top-level phases; None disables those spans.
+
+        ``on_embed(count, finished)`` brackets each batched embed of ``count``
+        pages, so a display can show embedding as its own step.
         """
         from .orchestrate import run_generate_all
 
@@ -297,6 +329,8 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         # vocabulary as its own.
         reset_house_terms()
         self.embed_failed_pages = 0
+        self.last_job_id = None
+        self.selection = None
 
         return await run_generate_all(
             self,
@@ -323,6 +357,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             timings=timings,
             on_warning=on_warning,
             persisted_page_ids=persisted_page_ids,
+            on_embed=on_embed,
         )
 
     # ------------------------------------------------------------------
@@ -372,6 +407,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         request_id: str,
         target_path: str | None = None,
         source_salt: str = "",
+        reuse_content_hash: str = "",
     ) -> GeneratedResponse:
         """Call the provider with caching, optionally prefixing a language instruction.
 
@@ -380,33 +416,37 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         generation-version salt so a builder/template upgrade forces a one-time
         regen even when the rendered prompt is byte-identical. Empty for every
         other page type, so their reuse hashes are unchanged.
+
+        *reuse_content_hash* is the stable subject digest this page's prose is
+        keyed on (issue #1089). When the caller provides one, the persistent
+        reuse gate prefers it over ``source_hash``: the prompt drifts run to
+        run (RAG context is rebuilt concurrently), so a source-hash-only gate
+        re-billed every page on every full run, while the subject digest stays
+        put for an unchanged file/group/repo. When the prior row was never
+        actually written by a model (``provider_name == 'template'`` — a
+        keyless stub, or a stub left by a failed provider call), it is never
+        reused: copying a placeholder over a placeholder would keep the page
+        unwritten forever and hide the failure from ``repowise generate``.
         """
         # Persistent cross-run cache: if the page exists from a prior run, was
-        # produced by the same model, and the prompt's source_hash matches,
-        # reuse the stored content without an LLM call.
+        # produced by the same model, and still matches on its subject, reuse
+        # the stored content without an LLM call.
         if self._config.cache_enabled and target_path is not None:
-            page_id = compute_page_id(page_type, target_path)
-            prior = self._prior_pages.get(page_id)
-            if (
-                prior is not None
-                and prior.model_name == self._provider.model_name
-                and prior.source_hash == compute_source_hash(user_prompt + source_salt)
-            ):
+            reused = reuse_prior_response(
+                self._prior_pages.get(compute_page_id(page_type, target_path)),
+                model_name=self._provider.model_name,
+                reuse_content_hash=reuse_content_hash,
+                prompt=user_prompt + source_salt,
+            )
+            if reused is not None:
                 self._reuse_count += 1
                 log.debug(
                     "page_cache.persistent_hit",
                     page_type=page_type,
                     target_path=target_path,
+                    key="subject" if reuse_content_hash else "prompt",
                 )
-                return GeneratedResponse(
-                    # The stored body lost its questions to the digest; the
-                    # response it was split from carried them.
-                    content=rejoin_questions(prior.content, prior.digest),
-                    input_tokens=0,
-                    output_tokens=0,
-                    cached_tokens=0,
-                    usage={"reused_from_prior_run": True},
-                )
+                return reused
 
         key = self._compute_cache_key(page_type, user_prompt)
         if self._config.cache_enabled and key in self._cache:
@@ -432,7 +472,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             cache_hints=cache_hints,
         )
         try:
-            validate_generated_response(response)
+            validate_generated_response(response, page_type)
         except InvalidGeneratedContentError as first_failure:
             # One corrective re-ask. Without it a single banned phrase anywhere
             # in a finished page discards the whole thing with the tokens
@@ -460,15 +500,17 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             )
             # A second failure raises, so the caller's stub-fallback path is
             # reached exactly as it was before the retry existed. A page lost
-            # only to a diagram is kept without it: the retry when its own
-            # failure is a diagram, else the first attempt when that one was.
-            # The retry's token counts stay either way; both were billed.
+            # only to a diagram or to its shape rules is kept (without the
+            # diagram): the retry when its own failure is one of those, else
+            # the first attempt when that one was. The final check leaves the
+            # shape rules out, since they have had their retry. The retry's
+            # token counts stay either way; both were billed.
             try:
-                validate_generated_response(response)
+                validate_generated_response(response, page_type)
             except InvalidGeneratedContentError as second_failure:
-                if isinstance(second_failure, InvalidMermaidError):
+                if isinstance(second_failure, _KEPT_AFTER_RETRY):
                     salvage = response
-                elif isinstance(first_failure, InvalidMermaidError):
+                elif isinstance(first_failure, _KEPT_AFTER_RETRY):
                     salvage = discarded
                 else:
                     raise
@@ -529,7 +571,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         The style fingerprint is already embedded in ``user_prompt`` for active
         styles, but include it explicitly so the in-memory cache never collides
         across styles even if a future change moves the directive out of the prompt
-        body. Empty for the default style → key is unchanged from before.
+        body.
         """
         raw = (
             f"{self._provider.model_name}:{self._language}:"
@@ -574,8 +616,8 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             # extraction from it. Not the claim a template page makes.
             confidence=MODEL_PAGE_CONFIDENCE,
         )
-        # Record the effective style as page provenance (D10). Only for active
-        # styles, so default ("comprehensive") pages keep byte-identical metadata.
+        # Record the effective style as page provenance (D10). Every built-in
+        # style is active; only a voiceless spec leaves no record.
         if self._style.is_active:
             page.metadata["style"] = self._style.name
         # Keep the completion boundary visible after persistence. A successful
@@ -598,7 +640,14 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
             page.metadata["self_repair"] = True
         return page
 
-    def _render(self, template_name: str, *, style_prefix: bool = True, **kwargs: Any) -> str:
+    def _render(
+        self,
+        template_name: str,
+        *,
+        style_prefix: bool = True,
+        word_budget: tuple[int, int] | None = None,
+        **kwargs: Any,
+    ) -> str:
         """Render a Jinja2 template with the given kwargs.
 
         For LLM *prompts* (the default), the active wiki style's directive is
@@ -609,13 +658,25 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
         ``style_prefix=False`` is for deterministic templates whose render output is
         the page *content* itself (tier-2 file pages), not a prompt — those must not
         carry a style directive.
+
+        ``word_budget`` is the page's ``(lo, hi)`` prose range. The default style
+        states it in its prefix; the template sees ``style_states_length`` and
+        leaves its own length line out when that is true, so a page never gets
+        two ranges and the other styles keep their own density.
         """
+        is_onboarding = template_name.startswith("onboarding/")
         template = self._jinja_env.get_template(template_name)
-        body = template.render(**kwargs)
+        body = template.render(
+            style_states_length=style_prefix
+            and word_budget is not None
+            and self._style.states_length(is_onboarding=is_onboarding),
+            **kwargs,
+        )
         if not style_prefix:
             return body
-        is_onboarding = template_name.startswith("onboarding/")
-        prefix = self._style.user_prompt_prefix(is_onboarding=is_onboarding)
+        prefix = self._style.user_prompt_prefix(
+            is_onboarding=is_onboarding, word_budget=word_budget
+        )
         return prefix + body if prefix else body
 
     def _append_source_evidence(
@@ -647,10 +708,12 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
     ) -> EvidenceSelection:
         """Select bounded repository evidence and log every decision."""
         configured = self._config.source_evidence_files.get(page_key, ())
+        evidence = self._config.source_evidence_token_budget
+        token_budget = self._config.material_budget(evidence, evidence + _SYNTHESIS_FRAME_TOKENS)
         selection = select_prompt_evidence(
             source_map,
             configured,
-            token_budget=self._config.source_evidence_token_budget,
+            token_budget=token_budget,
             parsed_files=parsed_files,
             references=references,
         )
@@ -660,7 +723,7 @@ class PageGenerator(PerTypeGenerationMixin, StructuralRenderMixin):
                 page_key=page_key,
                 paths=[item.path for item in selection.included],
                 estimated_tokens=selection.estimated_tokens,
-                token_budget=self._config.source_evidence_token_budget,
+                token_budget=token_budget,
             )
         if selection.skipped:
             log.warning(

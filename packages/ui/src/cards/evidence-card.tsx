@@ -7,6 +7,7 @@ import type {
   EvidenceCardKind,
 } from "@repowise-dev/types/cards";
 import { fileEntityPath, symbolEntityPath } from "../shared/entity/routes";
+import { formatNumber } from "../lib/format";
 
 const KIND_LABEL: Record<EvidenceCardKind, string> = {
   answer: "Answer",
@@ -84,7 +85,7 @@ export function RefView({ cardRef, buildRefHref }: { cardRef: CardRef; buildRefH
     <a
       href={href}
       title={cardRef.id}
-      className={`${className} text-[var(--color-accent-primary)] rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]`}
+      className={`${className} text-[var(--color-accent-primary)] rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]`}
     >
       {label}
     </a>
@@ -142,7 +143,7 @@ export function EvidenceCardView({ card, buildRefHref }: EvidenceCardViewProps) 
               <dt className="text-[var(--color-text-secondary)]">{fact.label}</dt>
               <dd className="min-w-0 space-x-2">
                 <span className="tabular-nums">
-                  {typeof fact.value === "number" ? fact.value.toLocaleString() : fact.value}
+                  {typeof fact.value === "number" ? formatNumber(fact.value) : fact.value}
                 </span>
                 {fact.ref && <RefView cardRef={fact.ref} buildRefHref={buildRefHref} />}
                 <BasisNote basis={fact.basis} />
@@ -175,7 +176,7 @@ export function EvidenceCardView({ card, buildRefHref }: EvidenceCardViewProps) 
             return (
               <li key={i} className="text-xs">
                 {href ? (
-                  <a href={href} className="text-[var(--color-accent-primary)] rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+                  <a href={href} className="text-[var(--color-accent-primary)] rounded-sm underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
                     {link.label}
                   </a>
                 ) : (

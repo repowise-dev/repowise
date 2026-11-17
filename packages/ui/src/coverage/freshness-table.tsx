@@ -13,10 +13,10 @@ import {
 import {
   formatConfidence,
   formatDateTime,
-  formatRelativeTime,
 } from "../lib/format";
 import { getPageTypeIcon, getPageTypeLabel } from "../lib/page-types";
 import type { DocPage } from "@repowise-dev/types/docs";
+import { RelativeTime } from "../shared/relative-time";
 
 type Filter = "all" | "fresh" | "stale" | "outdated";
 
@@ -186,7 +186,7 @@ export function FreshnessTable({
                   className="px-4 py-2.5 text-xs text-[var(--color-text-tertiary)] hidden md:table-cell"
                   title={formatDateTime(page.updated_at)}
                 >
-                  {formatRelativeTime(page.updated_at)}
+                  <RelativeTime date={page.updated_at} />
                 </td>
                 <td className="px-4 py-2.5">
                   {onRegenerate && (

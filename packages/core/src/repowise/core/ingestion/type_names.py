@@ -98,12 +98,12 @@ def written_type_key(name: str, raw: str, language: str) -> str:
     """*name*, the bare type *raw* spells, as receiver lookups key it.
 
     A C# head keeps its arity (``IFoo`1``), since a same-file ``IFoo`` may be
-    another type; a Java member type keeps its outer type (``Token.Tag``),
-    which picks among same-named member types.
+    another type; a Java or Apex member type keeps its outer type
+    (``Token.Tag``), which picks among same-named member types.
     """
     if language == "csharp" and (arity := type_argument_count(raw)):
         return f"{name}`{arity}"
-    if language == "java":
+    if language in ("java", "apex"):
         return java_type_path(raw) or name
     return name
 
@@ -155,6 +155,11 @@ def type_qualifier(raw: str) -> str:
     text = strip_type_arguments(raw.strip())
     head = text[: len(text) - len(bare_type_name(text))]
     return head.rstrip("".join(_QUALIFIER_SEPARATORS))
+
+
+def dotted_type_segments(raw: str) -> list[str]:
+    """``ns.Outer.Inner<T>`` -> ``["ns", "Outer", "Inner"]``: a dotted type path, segment by segment."""
+    return [segment.strip() for segment in strip_type_arguments(raw.strip()).split(".")]
 
 
 # C++ template heads whose ``operator->`` forwards to their argument, so
@@ -230,9 +235,28 @@ def is_resolvable_type_name(name: str, language: str) -> bool:
     starters = "_$" if language in _DOLLAR_START_LANGUAGES else "_"
     if not name[0].isalpha() and name[0] not in starters:
         return False
-    if name in get_builtin_types(language):
+    if builtin_type_spelling(name, language) is not None:
         return False
     return not (len(name) == 1 and name.isupper())
+
+
+# Languages whose type names are case-insensitive, so ``string`` is ``String``.
+_CASE_INSENSITIVE_TYPE_LANGUAGES = frozenset({"pascal"})
+_FOLDED_BUILTINS: dict[str, dict[str, str]] = {}
+
+
+def builtin_type_spelling(name: str, language: str) -> str | None:
+    """The builtin type *name* spells, as the language's table writes it, or None."""
+    builtins = get_builtin_types(language)
+    if name in builtins:
+        return name
+    if language not in _CASE_INSENSITIVE_TYPE_LANGUAGES:
+        return None
+    folded = _FOLDED_BUILTINS.get(language)
+    if folded is None:
+        folded = {builtin.lower(): builtin for builtin in builtins}
+        _FOLDED_BUILTINS[language] = folded
+    return folded.get(name.lower())
 
 
 # The receiver of a C# extension method, as the parameter list spells it.

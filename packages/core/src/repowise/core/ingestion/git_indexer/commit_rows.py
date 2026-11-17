@@ -161,15 +161,25 @@ def _file_rows_for(sha: str, changes: list) -> list[dict]:
     return rows
 
 
-def build_commit_file_rows(parsed_commits: list[dict]) -> list[dict]:
+def build_commit_file_rows(parsed_commits: list[dict], path_prefix: str = "") -> list[dict]:
     """Build ``git_commit_files`` rows from the same sunk records.
 
     The per-file detail ``build_commit_rows`` aggregates away. Same input, same
     walk, so the two must always be built from one batch.
+
+    *path_prefix* keeps only files under that git-root-relative directory. The
+    commit rows keep describing the whole commit; only the per-file detail is
+    narrowed, which is what stops a bulk commit of a large repository from
+    storing a row per file for a directory that indexes a handful of them.
     """
+    prefix = f"{path_prefix}/" if path_prefix else ""
+
+    def _scoped(changes: list) -> list:
+        return [c for c in changes if (c[0] or "").startswith(prefix)] if prefix else changes
+
     return [
         row
         for c in parsed_commits
         if c.get("sha")
-        for row in _file_rows_for(c["sha"], c.get("changes") or [])
+        for row in _file_rows_for(c["sha"], _scoped(c.get("changes") or []))
     ]

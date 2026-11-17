@@ -140,3 +140,38 @@ async def test_a_governing_record_is_in_neither_new_lane(async_session):
     assert health["summary"]["active"] == 1
     assert health["retired_decisions"] == []
     assert health["unscoped_decisions"] == []
+
+
+async def test_a_deprecated_decision_counts_as_deprecated_not_dismissed(async_session):
+    """Both withdrawals share the ``dismissed`` currency; the status a
+    deprecation writes is what keeps it out of the dismissed count."""
+    from repowise.core.persistence.crud.authority import (
+        accept_decision,
+        deprecate_decision,
+        dismiss_candidate,
+    )
+
+    repo = await insert_repo(async_session)
+    retired, rejected = (
+        DecisionRecord(
+            repository_id=repo.id,
+            title=title,
+            decision=f"{title}: do it",
+            rationale="measured",
+            status="proposed",
+            source="cli",
+            affected_files_json=json.dumps(["src/app.py"]),
+            evidence_file="src/app.py",
+        )
+        for title in ("Retired", "Rejected")
+    )
+    async_session.add_all([retired, rejected])
+    await async_session.flush()
+    for rec in (retired, rejected):
+        await accept_decision(async_session, rec, accepter="tester")
+    await deprecate_decision(async_session, retired, accepter="tester")
+    await dismiss_candidate(async_session, rejected, accepter="tester")
+
+    counts = (await get_decision_health_summary(async_session, repo.id))["summary"]
+
+    assert (counts["deprecated"], counts["dismissed"]) == (1, 1)

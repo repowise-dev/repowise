@@ -125,7 +125,7 @@ export function SystemMapBlastPanel({
         <div className="p-3 text-[var(--color-text-tertiary)]">
           {result.targets.length === 0
             ? "No matching service in the graph."
-            : "Nothing downstream — no other service depends on this one."}
+            : "Nothing downstream: no other service depends on this one."}
         </div>
       )}
 

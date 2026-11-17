@@ -24,6 +24,7 @@ export * from "./history.js";
 export * from "./events.js";
 export * from "./views.js";
 export * from "./workspace.js";
+export * from "./estate.js";
 export * from "./blast-radius.js";
 export * from "./risk-semantics.js";
 export * from "./jobs.js";

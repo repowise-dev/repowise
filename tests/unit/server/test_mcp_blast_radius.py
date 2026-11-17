@@ -431,3 +431,35 @@ def test_directive_reports_what_the_provider_cap_left_out(tmp_path: Path):
     )
     assert len(directive) == 5
     assert dropped == 2
+
+
+async def test_a_target_reached_only_by_co_change_is_not_undetermined():
+    """With behavioral edges on, a co-change partner is impact the walk found."""
+    from repowise.core.workspace.system_graph import SystemEdge, SystemGraph, SystemNode
+    from repowise.server.mcp_server.tool_blast_radius import blast_radius_payload
+
+    graph = SystemGraph(
+        nodes=[SystemNode(id=n, repo=n, service_path=None, name=n) for n in ("a", "b")],
+        edges=[
+            SystemEdge(
+                id="a->b:co_change",
+                source="a",
+                target="b",
+                kind="co_change",
+                match_type="inferred",
+                confidence=1.0,
+                weight=1,
+                structural=False,
+            )
+        ],
+    )
+    payload = await blast_radius_payload(None, graph.to_dict(), ["a"])
+    assert payload["undetermined_targets"] == []
+    assert payload["total_impacted"] == 1
+    assert payload["summary"].startswith("Changing 1 service(s) impacts 1")
+
+    structural_only = await blast_radius_payload(
+        None, graph.to_dict(), ["a"], include_behavioral=False
+    )
+    assert structural_only["undetermined_targets"] == ["a"]
+    assert structural_only["summary"].startswith("Could not determine")

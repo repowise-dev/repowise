@@ -42,7 +42,7 @@ describe("OwnershipLede", () => {
     expect(screen.getByText("74%", { selector: "*:not(p)" })).toBeTruthy();
     expect(screen.getByText("Well shared")).toBeTruthy();
     expect(screen.getByText(/has two or more people who know it/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Copy prompt for your agent/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Copy prompt/ })).toBeTruthy();
   });
 
   it("reads plain when low and never names the truck-factor person", () => {

@@ -35,6 +35,10 @@ class CheckContext:
 
     repo_path: Path
     repowise_dir: Path
+    # ``doctor --quick``: skip starting the MCP server and reconciling the
+    # stores, the two checks that take seconds. The web Setup page runs this
+    # on every load and the full set in the background.
+    quick: bool = False
     db_ok: bool = False
     page_count: int = 0
     state: dict = field(default_factory=dict)
@@ -46,6 +50,10 @@ class CheckContext:
     coord_drift_pct: str = "N/A"
     registration_wedged: bool = False
     agents_need_refresh: bool = False
+    # config.yaml keys holding a value repowise ignores; ``--repair`` resets them.
+    invalid_settings: list[str] = field(default_factory=list)
+    # Retired config.yaml keys still in the file; ``--repair`` removes them.
+    retired_settings: list[str] = field(default_factory=list)
 
 
 async def open_store(repo_path: Path):

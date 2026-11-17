@@ -2,8 +2,8 @@
 
 Split out of the former monolithic ``crud.py`` and later from the single
 ``analysis.py`` module into per-entity submodules. ``crud/__init__.py``
-re-exports every public name via ``from .analysis import *``, so existing
-imports are unaffected.
+re-exports every name in ``__all__`` on first use, so existing imports are
+unaffected.
 """
 
 from __future__ import annotations
@@ -84,6 +84,7 @@ from .health import (
     get_health_snapshot_file_counts,
     get_health_snapshot_headline,
     get_health_summary,
+    get_latest_snapshot_analyzer_version,
     get_perf_coverage,
     get_scored_file_paths,
     health_finding_priorities,
@@ -112,6 +113,7 @@ from .performance import (
     performance_area_counts,
     performance_facet_counts,
     performance_file_rollups,
+    performance_headline,
 )
 from .refactoring import (
     count_refactoring_suggestions,
@@ -176,6 +178,7 @@ __all__ = [
     "get_health_snapshot_file_counts",
     "get_health_snapshot_headline",
     "get_health_summary",
+    "get_latest_snapshot_analyzer_version",
     "get_perf_coverage",
     "get_performance_opportunity",
     "get_performance_plan_rows",
@@ -205,6 +208,7 @@ __all__ = [
     "performance_area_counts",
     "performance_facet_counts",
     "performance_file_rollups",
+    "performance_headline",
     "plan_payoff",
     "prune_unscored_health_rows",
     "ranked_refactoring_suggestions",

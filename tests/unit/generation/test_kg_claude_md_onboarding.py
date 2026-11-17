@@ -97,41 +97,35 @@ class TestClaudeMdKGSection:
         tmpl = jinja_env.get_template("claude_md.j2")
         data = self._data(
             key_modules=[
-                KeyModule(name="src/api", purpose="API layer", file_count=4, owner=None),
-                KeyModule(name="src/core", purpose="", file_count=9, owner=None),
-            ]
+                KeyModule(name="src/api", purpose="API layer", owner=None),
+                KeyModule(name="src/core", purpose="", owner=None),
+            ],
+            sections=frozenset({"key_modules"}),
         )
         rendered = tmpl.render(data=data)
         assert "### Key modules" in rendered
-        assert "- `src/api` — API layer" in rendered
+        assert "- `src/api`: API layer" in rendered
         # No purpose → no dangling separator.
         assert "- `src/core`\n" in rendered
 
-    def test_workflow_protocol_leads(self, jinja_env):
+    def test_the_lean_protocol_leads_with_the_call_first_line(self, jinja_env):
+        from repowise.core.agent_steer import AGENT_STEER
+
         tmpl = jinja_env.get_template("claude_md.j2")
-        rendered = tmpl.render(data=self._data())
-        assert "### How to work in this repo" in rendered
-        # The trust rule survives as a bullet rather than its own section. The
-        # separate "### Trust protocol" heading was five bullets of protocol for
-        # a response shape the agent sees rarely, and it was cut for size; the
-        # load-bearing clause is what has to stay reachable.
-        assert "`verified: true`" in rendered
+        rendered = tmpl.render(data=self._data(entry_points=["src/main.py"]))
+        # One imperative line, then one line per moment; no reference sections.
+        assert rendered.index(AGENT_STEER) < rendered.index("- Before a rename:")
+        assert "### " not in rendered.split("\n", 1)[1]
+        assert "never re-read them" not in rendered
+        assert "Grep, Glob and Read are faster" not in rendered
+        assert "| Tool | When and why |" not in rendered
+
+    def test_the_full_protocol_is_opt_in(self, jinja_env):
+        tmpl = jinja_env.get_template("claude_md.j2")
+        rendered = tmpl.render(data=self._data(sections=frozenset({"how_to_work_full"})))
         assert "never re-read them" in rendered
-        # `confidence` rates the prose; a low grade points at the evidence the
-        # reply already named rather than at a second round-trip.
         assert "`candidate_files` the reply names" in rendered
-        # An empty call-graph list is never served without the basis beside it.
         assert "`*_basis`" in rendered
-        # Pre-edit framing: the mandatory Read of edit targets is conceded.
-        assert "raw Read of any file you will Edit" in rendered
-        # The tool table renders from the single-source module.
-        assert "| Tool | When and why |" in rendered
-        assert "`get_answer(question)`" in rendered
-        # Protocol comes before the repo-facts data blocks. Anchored on the
-        # trust rule rather than on the first heading in the file, which would
-        # be ordered correctly by construction and could not fail.
-        if "Entry points" in rendered:
-            assert rendered.index("`verified: true`") < rendered.index("Entry points")
 
 
 # ---------------------------------------------------------------------------

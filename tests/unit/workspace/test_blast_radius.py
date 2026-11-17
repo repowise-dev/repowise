@@ -325,6 +325,8 @@ def test_to_dict_shape_is_locked():
         "max_distance",
         "total_impacted",
         "unresolved_targets",
+        "undetermined_targets",
+        "evidence",
     }
     assert set(data["impacted"][0]) == {
         "id",

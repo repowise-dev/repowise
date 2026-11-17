@@ -11,12 +11,15 @@ from pathlib import Path
 from typing import Any
 
 
-def resolve_provider(repo_path: str) -> tuple[Any, str | None, str | None, str | None]:
+def resolve_provider(
+    repo_path: str, provider: str | None = None
+) -> tuple[Any, str | None, str | None, str | None]:
     """``(client, provider name, model name, error)`` for the repo's chat provider.
 
-    A provider that fails to resolve is reported through ``error`` with a
-    ``None`` client rather than raised: both callers still answer with a
-    partial payload.
+    *provider* prices another provider with the key and model resolved for
+    the repo, before it is made the repo's choice. A provider that fails to
+    resolve is reported through ``error`` with a ``None`` client rather than
+    raised: both callers still answer with a partial payload.
     """
     llm_client = None
     provider_name: str | None = None
@@ -25,7 +28,7 @@ def resolve_provider(repo_path: str) -> tuple[Any, str | None, str | None, str |
     try:
         from repowise.server.provider_config import get_chat_provider_instance
 
-        llm_client = get_chat_provider_instance(repo_path=repo_path)
+        llm_client = get_chat_provider_instance(repo_path=repo_path, provider_override=provider)
         provider_name = getattr(llm_client, "provider_name", None)
         model_name = getattr(llm_client, "model_name", None)
     except Exception as exc:

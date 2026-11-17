@@ -171,15 +171,22 @@ class RehydrateMixin:
         """Stamp the parse-only symbol attributes back onto rehydrated nodes,
         and the spawned call lines back onto their edges.
 
-        The first symbol under an id keeps its values, as in ``add_file``,
-        where the first declared overload keeps the node.
+        Several definitions can share an id (a Python name defined twice, an
+        overload set). The values come from the one whose span the node kept,
+        as ``add_file`` chose it, else from the first.
         """
         graph = self._graph  # type: ignore[attr-defined]
         for parsed in parsed_files:
+            chosen: dict[str, Any] = {}
             for sym in parsed.symbols:
                 node = graph.nodes.get(sym.id)
                 if node is None:
                     continue
+                held = chosen.get(sym.id)
+                if held is None or node.get("start_line") == sym.start_line != held.start_line:
+                    chosen[sym.id] = sym
+            for sym_id, sym in chosen.items():
+                node = graph.nodes[sym_id]
                 for key in _PARSE_ONLY_SYMBOL_ATTRS:
                     node.setdefault(key, getattr(sym, key))
             _restore_spawn_lines(graph, parsed)

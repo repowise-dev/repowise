@@ -6,11 +6,12 @@ from collections.abc import Callable
 from contextlib import nullcontext
 from typing import Any
 
-from repowise.cli.helpers import run_async
+from repowise.cli.helpers import console, run_async
+from repowise.cli.ui import make_progress
 from repowise.core.pipeline import timed
 
 from .options import DocsPass, UpdateOptions, UpdateRun
-from .reporting import make_generation_progress
+from .stale_targets import structure_ids_to_render
 
 
 def _generation_warning_handler(
@@ -110,7 +111,7 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
                 repo_name,
                 on_page_done=progress.on_page_done,
                 on_total_known=progress.on_total_known,
-                git_meta_map=run.git_meta_map,
+                git_meta_map=run.render_git_meta,
                 repo_path=repo_path,
                 on_page_ready=checkpointer.on_page_ready,
                 on_warning=_generation_warning_handler(
@@ -123,10 +124,11 @@ def generate_pages(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
         finally:
             await checkpointer.close()
 
-    with make_generation_progress() if run.emitter is None else nullcontext() as gen_progress:
+    gen_bar = make_progress(console, cost=True) if run.emitter is None else nullcontext()
+    with gen_bar as gen_progress:
         progress.bar = gen_progress
         progress.task = (
-            gen_progress.add_task("Generating pages...", total=None, cost=0.0)
+            gen_progress.add_task("Generating pages...", total=None, cost=0.0, unit="pages")
             if gen_progress is not None
             else None
         )
@@ -177,10 +179,14 @@ def _load_prior_pages(run: UpdateRun) -> dict[str, object]:
 
 
 def render_stale_structure(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) -> None:
-    """Re-render stale structural pages from the full graph (no model calls)."""
-    if not run.stale_deterministic_ids or run.config.generation_changed:
+    """Render stale and missing structure pages from the full graph (no model calls)."""
+    if run.full_generation:
         return
     from .deterministic import regenerate_deterministic_page_ids
+
+    page_ids = structure_ids_to_render(run, docs.prior_pages)
+    if not page_ids:
+        return
 
     with timed(run.timings, "render.structure"):
         docs.generated_pages.extend(
@@ -190,8 +196,8 @@ def render_stale_structure(opts: UpdateOptions, run: UpdateRun, docs: DocsPass) 
                 source_map=run.source_map,
                 graph_builder=run.graph_builder,
                 repo_structure=run.repo_structure,
-                git_meta_map=run.git_meta_map,
-                page_ids=run.stale_deterministic_ids,
+                git_meta_map=run.render_git_meta,
+                page_ids=page_ids,
                 cfg=run.cfg,
                 concurrency=opts.concurrency,
                 degraded=run.degraded,

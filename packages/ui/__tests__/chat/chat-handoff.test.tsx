@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import type { ChatContext, ChatHandoff } from "@repowise-dev/types/chat";
 import {
   AskAboutThis,
+  AskAboutThisField,
   ChatHandoffProvider,
   buildHandoffDraft,
 } from "../../src/chat/index.js";
@@ -110,5 +111,45 @@ describe("buildHandoffDraft", () => {
     });
     expect(draft).toContain("first 2000 characters");
     expect(draft.length).toBeLessThan(2300);
+  });
+});
+
+describe("AskAboutThisField", () => {
+  function renderField(onHandoff: (handoff: ChatHandoff) => void, askEnabled = true) {
+    return render(
+      <ChatHandoffProvider onHandoff={onHandoff} askEnabled={askEnabled}>
+        <AskAboutThisField
+          context={CONTEXT}
+          question="What is this for?"
+          placeholder="Ask about this page"
+        />
+      </ChatHandoffProvider>,
+    );
+  }
+
+  it("sends a typed question straight away, with the page as context", () => {
+    const onHandoff = vi.fn();
+    renderField(onHandoff);
+    const field = screen.getByRole("textbox", { name: "Ask about this page" });
+    fireEvent.change(field, { target: { value: "  Who calls parse()? " } });
+    fireEvent.submit(field);
+    expect(onHandoff).toHaveBeenCalledWith({
+      context: CONTEXT,
+      question: "Who calls parse()?",
+      autoSend: true,
+    });
+    expect((field as HTMLInputElement).value).toBe("");
+  });
+
+  it("seeds the composer with the page's question when submitted empty", () => {
+    const onHandoff = vi.fn();
+    renderField(onHandoff);
+    fireEvent.submit(screen.getByRole("textbox", { name: "Ask about this page" }));
+    expect(onHandoff).toHaveBeenCalledWith({ context: CONTEXT, question: "What is this for?" });
+  });
+
+  it("renders nothing when the reader has switched the controls off", () => {
+    renderField(vi.fn(), false);
+    expect(screen.queryByRole("textbox")).toBeNull();
   });
 });

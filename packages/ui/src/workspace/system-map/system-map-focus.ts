@@ -22,6 +22,8 @@ export interface SystemMapFocusStore {
   /** True when anything is hovered or selected. */
   focused: () => boolean;
   edgeActive: (id: string, source: string, target: string) => boolean;
+  /** True when this connector itself is hovered or selected, not merely touching a hovered card. */
+  edgeFocused: (id: string) => boolean;
 }
 
 export function createSystemMapFocusStore(): SystemMapFocusStore {
@@ -54,6 +56,7 @@ export function createSystemMapFocusStore(): SystemMapFocusStore {
       }
       return false;
     },
+    edgeFocused: (id) => id === hover.edge || id === selected.edge,
   };
 }
 
@@ -67,6 +70,16 @@ export function useEdgeActive(id: string, source: string, target: string): boole
   return useSyncExternalStore(
     store ? store.subscribe : never,
     () => (store ? store.edgeActive(id, source, target) : false),
+    () => false,
+  );
+}
+
+/** Whether this connector itself is hovered or selected (a band's kind mix shows only then). */
+export function useEdgeFocused(id: string): boolean {
+  const store = useContext(SystemMapFocusContext);
+  return useSyncExternalStore(
+    store ? store.subscribe : never,
+    () => (store ? store.edgeFocused(id) : false),
     () => false,
   );
 }

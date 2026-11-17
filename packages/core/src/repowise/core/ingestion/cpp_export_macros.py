@@ -183,9 +183,16 @@ class CppExportTypes:
         self.parents[range_node.id] = name
 
 
-def collect_cpp_export_types(matches: list[dict], src: str) -> CppExportTypes:
-    """Recover every macro-decorated type the query matched in one C++ file."""
+def collect_cpp_export_types(
+    matches: list[dict], src: str, blanked_macros: frozenset[str] = frozenset()
+) -> CppExportTypes:
+    """Recover every macro-decorated type the query matched in one C++ file.
+
+    *blanked_macros* are class-head macros the source sanitizer already
+    removed; their ``#define`` lines are suppressed like a body-form match's.
+    """
     found = CppExportTypes(namespace_ids=_misread_namespace_ids(matches))
+    found.macro_names.update(blanked_macros)
     cpp_export_matches = [
         capture_dict
         for capture_dict in matches

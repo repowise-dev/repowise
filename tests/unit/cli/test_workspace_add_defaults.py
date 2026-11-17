@@ -1,10 +1,8 @@
-"""Tests for the new ``repowise workspace add`` defaults.
+"""``repowise workspace add`` defaults.
 
-The most important behavior shift in Phase A: ``workspace add`` now runs
-index + docs by default, and surfaces an honest "no docs because ..."
-notice when generation is skipped. These tests pin the decision matrix
-in :func:`_resolve_docs_flag` so the auto-on/auto-off contract doesn't
-silently regress.
+By default an added repo gets documentation built from code: a configured
+provider or a key in the environment never makes it spend unasked. These tests
+pin the decision matrix in :func:`_resolve_docs_flag`.
 """
 
 from __future__ import annotations
@@ -48,87 +46,30 @@ def _clear_provider_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
-def test_explicit_yes_wins(ws):
-    ws_root, cfg = ws
-    docs, reason = _resolve_docs_flag(
-        run_docs=True,
-        provider_name=None,
-        ws_root=ws_root,
-        ws_config=cfg,
+def _mode(run_docs=None, provider_name=None):
+    return _resolve_docs_flag(run_docs=run_docs, provider_name=provider_name)
+
+
+def test_explicit_docs_uses_the_model():
+    assert _mode(run_docs=True) == ("llm", None)
+
+
+def test_explicit_no_docs_records_reason():
+    assert _mode(run_docs=False) == ("none", "--no-docs flag")
+
+
+def test_provider_flag_uses_the_model():
+    assert _mode(provider_name="anthropic") == ("llm", None)
+
+
+def test_default_builds_from_code_even_with_a_configured_provider(ws, monkeypatch):
+    ws_root, _cfg = ws
+    (ws_root / "backend" / ".repowise" / "config.yaml").write_text(
+        "provider: anthropic\nmodel: claude-sonnet-4-5\n", encoding="utf-8"
     )
-    assert docs is True
-    assert reason is None
-
-
-def test_explicit_no_records_reason(ws):
-    ws_root, cfg = ws
-    docs, reason = _resolve_docs_flag(
-        run_docs=False,
-        provider_name=None,
-        ws_root=ws_root,
-        ws_config=cfg,
-    )
-    assert docs is False
-    assert reason == "--no-docs flag"
-
-
-def test_provider_flag_forces_on(ws):
-    ws_root, cfg = ws
-    docs, reason = _resolve_docs_flag(
-        run_docs=None,
-        provider_name="anthropic",
-        ws_root=ws_root,
-        ws_config=cfg,
-    )
-    assert docs is True
-    assert reason is None
-
-
-def test_inherits_primary_config(ws, monkeypatch):
-    ws_root, cfg = ws
-    # Drop a provider into the primary repo's config — that should be
-    # enough to flip the default to docs-on.
-    cfg_path = ws_root / "backend" / ".repowise" / "config.yaml"
-    cfg_path.write_text(
-        "provider: anthropic\nmodel: claude-sonnet-4-5\nembedder: gemini\n",
-        encoding="utf-8",
-    )
-    docs, reason = _resolve_docs_flag(
-        run_docs=None,
-        provider_name=None,
-        ws_root=ws_root,
-        ws_config=cfg,
-    )
-    assert docs is True
-    assert reason is None
-
-
-@pytest.mark.parametrize("env_var", ["ANTHROPIC_API_KEY", "KIMI_API_KEY"])
-def test_env_provider_forces_on(ws, monkeypatch, env_var):
-    ws_root, cfg = ws
-    monkeypatch.setenv(env_var, "sk-fake")
-
-    docs, reason = _resolve_docs_flag(
-        run_docs=None,
-        provider_name=None,
-        ws_root=ws_root,
-        ws_config=cfg,
-    )
-
-    assert docs is True
-    assert reason is None
-
-
-def test_no_provider_anywhere_returns_off(ws):
-    ws_root, cfg = ws
-    docs, reason = _resolve_docs_flag(
-        run_docs=None,
-        provider_name=None,
-        ws_root=ws_root,
-        ws_config=cfg,
-    )
-    assert docs is False
-    assert reason == "no provider configured"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-fake")
+    monkeypatch.chdir(ws_root)
+    assert _mode() == ("deterministic", None)
 
 
 # ---------------------------------------------------------------------------

@@ -161,12 +161,17 @@ export function DsmMatrixView({ matrix, metrics, onSelectCell }: DsmMatrixViewPr
             showing top {n} of {total} services by connectivity
           </span>
         )}
-        {metrics && (
+        {metrics && metrics.score === null && (
+          <span title={metrics.evidence?.summary ?? "Too little evidence to score"}>
+            score <strong style={{ color: "var(--color-text-secondary)" }}>not determined</strong>
+          </span>
+        )}
+        {metrics && metrics.score !== null && (
           <span title="Deterministic 1-10 architecture score (higher = lower coupling)">
             score <strong style={{ color: "var(--color-text-secondary)" }}>{metrics.score.toFixed(1)}</strong>
           </span>
         )}
-        {metrics && (
+        {metrics && metrics.propagation_cost_pct !== null && (
           <span title="Share of other services the average service can reach transitively">
             propagation{" "}
             <strong style={{ color: "var(--color-text-secondary)" }}>
@@ -174,7 +179,7 @@ export function DsmMatrixView({ matrix, metrics, onSelectCell }: DsmMatrixViewPr
             </strong>
           </span>
         )}
-        {metrics && metrics.core_size > 0 && (
+        {metrics && (metrics.core_size ?? 0) > 0 && (
           <span style={{ color: "var(--color-warning)" }} title="Largest cyclic group of services">
             core {metrics.core_size}
           </span>

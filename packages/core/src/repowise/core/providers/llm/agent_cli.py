@@ -143,10 +143,12 @@ class AgentCliProvider(BaseProvider):
     error_tail_chars: ClassVar[int] = 2_000
 
     # A process spawn plus a full agent turn: the floor is tens of seconds, so
-    # an interactive caller must budget in minutes or it cancels every call
-    # (#1119). Stays under the exec timeout so the caller gives up first and
-    # the error names the real cause.
-    interactive_timeout_s: float = 180.0
+    # 30s cancelled every call (#1119). 50s keeps the whole get_answer call
+    # inside the 60s tool timeout common among MCP clients, so a slow turn
+    # comes back as an evidence-only answer, not the client's bare transport
+    # error. Stays under the exec timeout so the caller gives up first and the
+    # error names the real cause.
+    interactive_timeout_s: float = 50.0
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -231,12 +233,15 @@ class AgentCliProvider(BaseProvider):
                 return candidate
         return self.stdout_error(stdout) or f"{self.command_label} exited with {returncode}"
 
+    @classmethod
+    def process_limit(cls) -> int:
+        """How many CLI processes run at once, whatever ``--concurrency`` says."""
+        return resolve_concurrency(cls.concurrency_env, cls.provider_name)
+
     def _get_semaphore(self) -> asyncio.Semaphore:
         loop = asyncio.get_running_loop()
         if self._semaphore_loop is not loop:
-            self._semaphore = asyncio.Semaphore(
-                resolve_concurrency(self.concurrency_env, self.provider_name)
-            )
+            self._semaphore = asyncio.Semaphore(self.process_limit())
             self._semaphore_loop = loop
         return self._semaphore  # type: ignore[return-value]
 

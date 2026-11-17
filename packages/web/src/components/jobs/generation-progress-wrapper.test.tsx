@@ -63,7 +63,7 @@ describe("GenerationProgressWrapper", () => {
       expect.objectContaining({ description: "API key rejected by openai. Update it in Settings." }),
     );
     expect(screen.getByRole("link", { name: /Provider settings/ }).getAttribute("href")).toBe(
-      "/repos/r1/settings#provider",
+      "/repos/r1/settings/models",
     );
   });
 

@@ -61,6 +61,8 @@ class LoadContext:
     repo_path: str
     #: Rows of another dataset, from the same cache (``files`` maps paths to packages).
     rows: Callable[[str], Awaitable[list[dict[str, Any]]]]
+    #: The repository's workspace alias; ``None`` (or ``default``) outside a workspace.
+    alias: str | None = None
 
 
 @dataclass(frozen=True)
@@ -210,7 +212,8 @@ async def load_rows(name: str, repo: str | None) -> DatasetRows:
                         ds = get_dataset(dataset)
                         if ds is None:
                             raise KeyError(dataset)
-                        _store(key, await ds.load(LoadContext(session, repository, repo_path, rows)))
+                        context = LoadContext(session, repository, repo_path, rows, ctx.alias)
+                        _store(key, await ds.load(context))
             finally:
                 # A failed load leaves no lock behind, so the next call reads again.
                 _locks.pop(key, None)

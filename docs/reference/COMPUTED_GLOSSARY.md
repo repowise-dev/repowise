@@ -30,7 +30,7 @@ workspace overlays, MCP responses, and CLI output.
 | Test file flag | Whether a file looks like a test/spec/fixture file. | `FileTraverser._build_file_info()` and community/test-gap helpers | `tests/test_auth.py -> is_test=true` |
 | Config file flag | Whether a file is classified as configuration. | `FileTraverser._build_file_info()` | `pyproject.toml -> is_config=true` |
 | API contract flag | Whether a file is an API contract format. | `FileTraverser._build_file_info()` | `openapi.yaml -> is_api_contract=true` |
-| Entry point flag | Whether a file may be where execution starts: a filename, stem or `[project.scripts]` target says so, *and* the shared candidacy rule does not rule it out (a config/markup/infra language, or a re-export glue leaf below the package root). | `traverser._is_entry_point()`, `entry_candidacy.not_an_execution_start()` | `main.py`, `server.ts` yes; `Dockerfile`, `docs/index.md`, `a/b/c/index.ts` no |
+| Entry point flag | Whether a file may be where execution starts: a filename, stem or `[project.scripts]` target says so, *and* the shared candidacy rule does not rule it out (a config/markup/infra language, or a re-export glue leaf below the package root). | `traverser._is_entry_point()`, `entry_candidacy.not_an_execution_start()` | `main.py`, `server.ts` yes; `Dockerfile`, `docs/index.md`, `a/b/c/index.ts` no | <!-- repowise-drift-ignore -->
 | Traversal stats | Counts of included files and skip reasons. | `TraversalStats` in `traverser.py` | `{included: 240, skipped_binary: 3, skipped_generated: 12}` |
 | Package info | A package/workspace detected from manifests near the repo root. | `FileTraverser._detect_monorepo()` | `{name: "core", path: "packages/core", manifest_file: "pyproject.toml"}` |
 | Repo structure | High-level structure summary used by overview generation. | `FileTraverser.get_repo_structure()` | `{is_monorepo: true, total_files: 820, entry_points: ["packages/cli/src/.../main.py"]}` |
@@ -72,6 +72,8 @@ workspace overlays, MCP responses, and CLI output.
 | Symbol node | Graph node for an extracted symbol. | `GraphBuilder.add_file()` | `{node_type: "symbol", kind: "function", name: "main"}` |
 | External node | Node for third-party or unresolvable dependencies. | Import resolution paths | `external:react` |
 | Synthetic module symbol | Symbol node for top-level calls in a file. | `GraphBuilder.add_file()` | `src/app.py::__module__` |
+| File count | The "files" figure on `repowise status`, the dashboard, Stats and workspace views: one per file the index read, in any language. Import-target nodes (third-party packages, and paths an import names that traversal never parsed) are not counted. Health's "code files" is the code-language subset of these, inside the health exclude rules. | `count_files()` | `6,363 files` |
+| Symbol count | The "symbols" figure on `repowise status`, the dashboard, workspace views and `get_overview`: one per distinct symbol id in the symbol index. An overload set counts once, and the synthetic module symbol is not counted. | `count_symbols()` | `76,924 symbols` |
 | `defines` edge | File-to-symbol containment. | `GraphBuilder.add_file()` | `src/app.py -> src/app.py::main` |
 | `imports` edge | File-to-file import relationship. | `GraphBuilder.build()` | `src/app.py -> src/settings.py` |
 | `imported_names` edge payload | Names imported along an import edge. | `GraphBuilder.build()` | `["Settings", "load_config"]` |
@@ -84,8 +86,9 @@ workspace overlays, MCP responses, and CLI output.
 | `framework` edge | Synthetic edge from framework conventions. | `framework_edges.py` | `urls.py -> views.py`, `app.py -> routers/users.py` |
 | Dynamic edge | Edge inferred from runtime/dynamic patterns. | `dynamic_hints/*` and `GraphBuilder.add_dynamic_edges()` | `{edge_type: "dynamic_imports", hint_source: "django", weight: 1.0}` |
 | `co_changes` edge | File-to-file historical coupling edge. | `GraphBuilder.add_co_change_edges()` from git metadata | `src/a.py -> src/b.py` with `weight: 4.2` |
+| `documents` edge | A Markdown document links to or names a repository file. Not a dependency. | `GraphBuilder._resolve_document_edges()` via doc drift `extract()`/`resolve()` | `{edge_type: "documents", hint_source: "doc_link", confidence: 1.0}`; a backticked path is `doc_path`, `0.8` |
 | Stem map | Import-stem to candidate file path lookup used for import resolution. | `GraphBuilder._build_stem_map()` | `{"models": ["src/models.py", "tests/models.py"]}` |
-| File subgraph | File-only graph used for PageRank and betweenness. | `GraphBuilder.file_subgraph()` | All file/external nodes, excluding `co_changes` edges |
+| File subgraph | File-only graph used for PageRank and betweenness. | `GraphBuilder.file_subgraph()` | All file/external nodes, excluding self-loops, `co_changes` and `documents` edges |
 | PageRank | File centrality in the import graph. | `GraphBuilder.pagerank()` | `0.01842` |
 | Betweenness | How often a file sits on shortest paths. | `GraphBuilder.betweenness_centrality()` | `0.0067` |
 | SCC | Strongly connected component, used to detect dependency cycles. | `GraphBuilder.strongly_connected_components()` | `{"src/a.py", "src/b.py"}` |
@@ -167,7 +170,7 @@ workspace overlays, MCP responses, and CLI output.
 | Term | Definition | Computed by | Example |
 | --- | --- | --- | --- |
 | File page context | Template data for one important source file. | `ContextAssembler.assemble_file_page()` | `{file_path, symbols, imports, dependencies, pagerank_score}` |
-| Symbol spotlight context | Template data for a top public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, source body, callers |
+| Symbol spotlight context | Template data for a most-called public symbol. | `assemble_symbol_spotlight()` | `create_app` with signature, docstring, resolved callers |
 | Module page context | Aggregate context for top-level directory/module. | `assemble_module_page()` | `{module_path: "packages/core", total_symbols: 780}` |
 | SCC page context | Context for a circular dependency cycle. | `assemble_scc_page()` | `cycle_description: "Circular dependency cycle: a.py -> b.py"` |
 | Repo overview context | Whole-repo summary context. | `assemble_repo_overview()` | `language_distribution`, `top_files_by_pagerank`, `circular_dependency_count` |
@@ -389,7 +392,7 @@ workspace overlays, MCP responses, and CLI output.
 | Dead-code status | `open`, `acknowledged`, `resolved`, `false_positive` |
 | Security severity | `high`, `med`, `low` |
 | Security kind | `eval_call`, `exec_call`, `pickle_loads`, `subprocess_shell_true`, `os_system`, `hardcoded_password`, `hardcoded_secret`, `fstring_sql`, `concat_sql`, `tls_verify_false`, `weak_hash`, `security_sensitive_symbol` |
-| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `dispatches_to`, `co_changes`, `framework`, `framework_binds`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route`, `references`; all 17, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py`. `reads` is file-to-file only; its former symbol-level producer emits `framework_binds` |
+| Edge type | `imports`, `defines`, `calls`, `has_method`, `extends`, `implements`, `method_implements`, `dispatches_to`, `co_changes`, `framework`, `framework_binds`, `reads`, `type_use`, `dynamic_uses`, `dynamic_imports`, `dynamic_url_route`, `references`, `documents`; all 18, declared as `EdgeType` in `ingestion/models.py` and enforced by `tests/unit/ingestion/test_edge_type_vocabulary.py`. `reads` is file-to-file only; its former symbol-level producer emits `framework_binds` |
 | Node type | `file`, `symbol`, `external` |
 | Search type | `vector`, `fulltext` |
 | Contract type | `http`, `grpc`, `topic` |

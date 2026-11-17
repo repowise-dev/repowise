@@ -11,6 +11,7 @@ import importlib
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from ._datetime import UTCDateTime
     from .architecture import (
         ArchEdgeResponse,
         ArchitectureViewResponse,
@@ -103,6 +104,8 @@ if TYPE_CHECKING:
         DecisionLaneCountsResponse,
         DecisionLineageEntry,
         DecisionLineageResponse,
+        DecisionPinUpdate,
+        DecisionRecentInfo,
         DecisionRecordResponse,
         DecisionSettings,
         DecisionSettingsUpdate,
@@ -303,6 +306,7 @@ if TYPE_CHECKING:
         WorkspaceBreakingChange,
         WorkspaceBreakingChangesResponse,
         WorkspaceCoChangeEntry,
+        WorkspaceCoChangeEvidence,
         WorkspaceCoChangesResponse,
         WorkspaceCoChangeStructure,
         WorkspaceConformanceResponse,
@@ -314,6 +318,9 @@ if TYPE_CHECKING:
         WorkspaceContractSummary,
         WorkspaceCrossRepoSummary,
         WorkspaceDependencyCycle,
+        WorkspaceEstateCheck,
+        WorkspaceEstateResponse,
+        WorkspaceEstateSection,
         WorkspaceExtractionDiagnostics,
         WorkspaceGraphEdge,
         WorkspaceGraphNode,
@@ -328,7 +335,9 @@ if TYPE_CHECKING:
         WorkspaceSyncResponse,
         WorkspaceSyncResult,
         WorkspaceSystemEdge,
+        WorkspaceSystemGraphMapResponse,
         WorkspaceSystemGraphResponse,
+        WorkspaceSystemMapEdge,
         WorkspaceSystemNode,
         WorkspaceTestImpactFile,
         WorkspaceTestImpactResponse,
@@ -337,6 +346,8 @@ if TYPE_CHECKING:
         WorkspaceUnresolvedLink,
     )
     from .zoom import (
+        ZoomContainerResponse,
+        ZoomExternalResponse,
         ZoomMapResponse,
         ZoomMetricsResponse,
         ZoomNodeResponse,
@@ -346,6 +357,7 @@ if TYPE_CHECKING:
 # Loaded on first access (PEP 562), so importing one model does not pay for
 # every submodule, one of which pulls in the whole dead-code analyzer.
 _EXPORTS: dict[str, tuple[str, ...]] = {
+    "_datetime": ("UTCDateTime",),
     "architecture": (
         "ArchEdgeResponse",
         "ArchitectureViewResponse",
@@ -434,6 +446,8 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "DecisionLaneCountsResponse",
         "DecisionLineageEntry",
         "DecisionLineageResponse",
+        "DecisionPinUpdate",
+        "DecisionRecentInfo",
         "DecisionRecordResponse",
         "DecisionSettings",
         "DecisionSettingsUpdate",
@@ -607,6 +621,7 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "WorkspaceBreakingChange",
         "WorkspaceBreakingChangesResponse",
         "WorkspaceCoChangeEntry",
+        "WorkspaceCoChangeEvidence",
         "WorkspaceCoChangesResponse",
         "WorkspaceCoChangeStructure",
         "WorkspaceConformanceResponse",
@@ -618,6 +633,9 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "WorkspaceContractSummary",
         "WorkspaceCrossRepoSummary",
         "WorkspaceDependencyCycle",
+        "WorkspaceEstateCheck",
+        "WorkspaceEstateResponse",
+        "WorkspaceEstateSection",
         "WorkspaceExtractionDiagnostics",
         "WorkspaceGraphEdge",
         "WorkspaceGraphNode",
@@ -632,7 +650,9 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "WorkspaceSyncResponse",
         "WorkspaceSyncResult",
         "WorkspaceSystemEdge",
+        "WorkspaceSystemGraphMapResponse",
         "WorkspaceSystemGraphResponse",
+        "WorkspaceSystemMapEdge",
         "WorkspaceSystemNode",
         "WorkspaceTestImpactFile",
         "WorkspaceTestImpactResponse",
@@ -641,7 +661,14 @@ _EXPORTS: dict[str, tuple[str, ...]] = {
         "WorkspaceUnresolvedLink",
     ),
     "views": ("ChartView", "SectionView", "TableView", "ViewPartList"),
-    "zoom": ("ZoomMapResponse", "ZoomMetricsResponse", "ZoomNodeResponse", "ZoomRelationResponse"),
+    "zoom": (
+        "ZoomContainerResponse",
+        "ZoomExternalResponse",
+        "ZoomMapResponse",
+        "ZoomMetricsResponse",
+        "ZoomNodeResponse",
+        "ZoomRelationResponse",
+    ),
 }
 
 _SUBMODULE_OF = {name: module for module, names in _EXPORTS.items() for name in names}
@@ -660,7 +687,6 @@ if not TYPE_CHECKING:
 
     def __dir__() -> list[str]:
         return sorted({*globals(), *__all__})
-
 
 __all__ = [
     "ActiveProviderSelection",
@@ -751,6 +777,8 @@ __all__ = [
     "DecisionLaneCountsResponse",
     "DecisionLineageEntry",
     "DecisionLineageResponse",
+    "DecisionPinUpdate",
+    "DecisionRecentInfo",
     "DecisionRecordResponse",
     "DecisionSettings",
     "DecisionSettingsUpdate",
@@ -899,6 +927,7 @@ __all__ = [
     "SymbolResponse",
     "TableView",
     "TransitiveEntry",
+    "UTCDateTime",
     "UnclusteredFiles",
     "UpdateMcpToolsRequest",
     "VersionResponse",
@@ -909,6 +938,7 @@ __all__ = [
     "WorkspaceBreakingChange",
     "WorkspaceBreakingChangesResponse",
     "WorkspaceCoChangeEntry",
+    "WorkspaceCoChangeEvidence",
     "WorkspaceCoChangeStructure",
     "WorkspaceCoChangesResponse",
     "WorkspaceConformanceResponse",
@@ -920,6 +950,9 @@ __all__ = [
     "WorkspaceContractsResponse",
     "WorkspaceCrossRepoSummary",
     "WorkspaceDependencyCycle",
+    "WorkspaceEstateCheck",
+    "WorkspaceEstateResponse",
+    "WorkspaceEstateSection",
     "WorkspaceExtractionDiagnostics",
     "WorkspaceGraphEdge",
     "WorkspaceGraphNode",
@@ -934,13 +967,17 @@ __all__ = [
     "WorkspaceSyncResponse",
     "WorkspaceSyncResult",
     "WorkspaceSystemEdge",
+    "WorkspaceSystemGraphMapResponse",
     "WorkspaceSystemGraphResponse",
+    "WorkspaceSystemMapEdge",
     "WorkspaceSystemNode",
     "WorkspaceTestImpactFile",
     "WorkspaceTestImpactResponse",
     "WorkspaceTestRecommendation",
     "WorkspaceUnmatchedConsumer",
     "WorkspaceUnresolvedLink",
+    "ZoomContainerResponse",
+    "ZoomExternalResponse",
     "ZoomMapResponse",
     "ZoomMetricsResponse",
     "ZoomNodeResponse",

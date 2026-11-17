@@ -60,6 +60,40 @@ async def test_overview_lists_derived_components_only_when_asked(setup_mcp):
 
 
 @pytest.mark.asyncio
+async def test_component_file_counts_leave_out_import_targets(setup_mcp, session):
+    """A path an edge names but the index never parsed is not a component file."""
+    from repowise.core.persistence.models import GraphNode
+    from repowise.server.mcp_server import get_overview
+
+    session.add_all(
+        [
+            GraphNode(
+                repository_id="repo1",
+                node_id="src/auth/schema.gen.ts",
+                node_type="file",
+                language="unknown",
+            ),
+            GraphNode(
+                repository_id="repo1",
+                node_id="external:requests",
+                node_type="file",
+                language="external",
+            ),
+        ]
+    )
+    await session.commit()
+
+    block = (await get_overview(include=["components"]))["components"]
+    assert block["items"][0] == {
+        "name": "auth",
+        "source": "derived",
+        "derived_from": "module",
+        "file_count": 2,
+    }
+    assert block["unassigned_files"] == 1
+
+
+@pytest.mark.asyncio
 async def test_overview_merges_declared_components_over_derived(setup_mcp, tmp_path):
     from repowise.server.mcp_server import get_overview
 

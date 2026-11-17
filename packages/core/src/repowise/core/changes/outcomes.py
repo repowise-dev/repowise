@@ -39,7 +39,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from repowise.core.registry.plugins import SeamRegistry, load_plugins
+from repowise.core.registry.plugins import SeamRegistry
 
 #: The window :func:`file_fix_rate` counts in, unless ``changes.outcome_fix_days`` says.
 DEFAULT_FIX_DAYS = 30
@@ -403,9 +403,8 @@ def outcome_links(repo_path: Path | str, head: str, change: OutcomeTarget) -> li
     """
     out: list[OutcomeLink] = []
     seen: set[tuple[str, str]] = set()
-    load_plugins()
-    for name in change_outcome_providers.names:
-        for link in change_outcome_providers.get(name).links(Path(repo_path), head, change):
+    for _name, provider in change_outcome_providers.all():
+        for link in provider.links(Path(repo_path), head, change):
             if (link.kind, link.sha) not in seen:
                 seen.add((link.kind, link.sha))
                 out.append(link)

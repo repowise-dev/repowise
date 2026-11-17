@@ -117,9 +117,9 @@ export function ViewTabs({
               tabIndex={active ? 0 : -1}
               onClick={() => onValueChange(tab.id)}
               className={cn(
-                "inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-1 pb-2 -mb-px text-sm font-medium ring-offset-[var(--color-bg-root)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] focus-visible:ring-offset-2",
+                "inline-flex items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-1 pb-2 -mb-px text-sm font-medium ring-offset-[var(--color-bg-root)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] focus-visible:ring-offset-2",
                 active
-                  ? "border-[var(--color-accent-primary)] text-[var(--color-text-primary)]"
+                  ? "border-[var(--color-tab-active)] text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
               )}
             >

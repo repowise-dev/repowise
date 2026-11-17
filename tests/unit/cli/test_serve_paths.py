@@ -361,6 +361,15 @@ def test_local_build_ignores_skipped_dirs(tmp_path) -> None:
     assert serve_cmd._local_build_is_stale(web) is False
 
 
+@pytest.mark.parametrize("parent", ["dist", ".git"])
+def test_local_build_stale_inside_skipped_parent_dir(tmp_path, parent) -> None:
+    repo = tmp_path / parent / "repo"
+    web, _ = _make_web_tree(repo)
+    assert serve_cmd._local_build_is_stale(web) is False
+    os.utime(repo / "packages" / "web" / "src" / "page.tsx", (3_000_000, 3_000_000))
+    assert serve_cmd._local_build_is_stale(web) is True
+
+
 def _tarball(files: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
@@ -747,7 +756,9 @@ def test_serve_refresh_ui_skips_local_and_cache(serve) -> None:
 
 def test_serve_no_assets_runs_api_only(serve) -> None:
     result = _invoke()
-    assert "not available" in result.output
+    assert "Could not get the web UI" in result.output
+    assert "repowise serve --refresh-ui" in result.output
+    assert "future release" not in result.output
     names = _names(serve["events"])
     assert names[4:] == ["find_local", "cached", "download", "uvicorn"]
     assert serve["lock"]["ui_port"] is None
@@ -757,7 +768,7 @@ def test_serve_frontend_that_fails_to_start(serve) -> None:
     serve["cached"] = True
     serve["proc"] = False
     result = _invoke()
-    assert "Could not start web UI" in result.output
+    assert "Could not start the web UI" in result.output
     assert serve["lock"]["ui_port"] is None
     assert "terminate" not in _names(serve["events"])
 

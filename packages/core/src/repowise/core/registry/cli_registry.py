@@ -54,6 +54,8 @@ import importlib
 import logging
 from typing import TYPE_CHECKING, NamedTuple
 
+from .plugins import note_registration
+
 if TYPE_CHECKING:
     import click
 
@@ -93,6 +95,7 @@ class CLIRegistry:
     ) -> None:
         """Schedule *command* for attachment to *parent* (default: root)."""
         self._entries.append((parent, command))
+        note_registration("cli-command", str(command.name))
 
     def register_lazy(
         self,
@@ -108,6 +111,7 @@ class CLIRegistry:
         dispatches on before the module is ever loaded.
         """
         self._entries.append((parent, LazyCommand(name, target)))
+        note_registration("cli-command", name)
 
     def apply(self, root: click.BaseCommand, *, replace: bool = True) -> click.BaseCommand:
         """Attach every registered command. Returns *root* for chaining.

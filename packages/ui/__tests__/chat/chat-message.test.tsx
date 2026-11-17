@@ -100,7 +100,7 @@ describe("ChatMessage", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Edit and resend" }));
     const submit = screen.getByRole("button", { name: "Fork and resend" });
-    expect(submit.className).toContain("accent-fill");
+    expect(submit.className).toContain("action-primary");
     expect(submit.className).not.toContain("color-model");
   });
 

@@ -17,6 +17,7 @@ from repowise.core.persistence.crud import (
     # pytest as a test function (``test`` prefix).
     tests_covering as find_covering_tests,
 )
+from repowise.core.persistence.crud.analysis.coverage_map import cap_test_map
 from tests.unit.persistence.helpers import insert_repo
 
 
@@ -37,9 +38,10 @@ async def test_save_and_query_both_directions(async_session) -> None:
         _rec("tests/test_a.py::test_one|run", "src/bar.py", [10], "tests/test_a.py"),
         _rec("tests/test_b.py::test_two|run", "src/foo.py", [3, 4, 5], "tests/test_b.py"),
     ]
-    written = await save_test_coverage(async_session, repo.id, records, source_format="coverage.py")
+    saved = await save_test_coverage(async_session, repo.id, records, source_format="coverage.py")
     await async_session.commit()
-    assert written == 3
+    assert saved.written == 3
+    assert saved.truncated is False
 
     # Reverse: which tests cover src/foo.py at all.
     covering = await find_covering_tests(async_session, repo.id, "src/foo.py")
@@ -95,11 +97,11 @@ async def test_save_overwrites_previous_run(async_session) -> None:
     assert [c["test_id"] for c in covering] == ["new"]
 
 
-async def test_save_dedupes_repeated_pairs(async_session) -> None:
+async def test_save_merges_repeated_pairs(async_session) -> None:
     repo = await insert_repo(async_session)
-    # Same (test_id, source_file) twice - the unique key. First wins; the
-    # second is dropped rather than tripping the constraint.
-    written = await save_test_coverage(
+    # Same (test_id, source_file) twice - the unique key, as two reports of
+    # one run give it. Merged, lines unioned, rather than tripping the constraint.
+    saved = await save_test_coverage(
         async_session,
         repo.id,
         [
@@ -109,21 +111,61 @@ async def test_save_dedupes_repeated_pairs(async_session) -> None:
         source_format="coverage.py",
     )
     await async_session.commit()
-    assert written == 1
+    assert (saved.written, saved.merged) == (1, 1)
     covered = await files_covered_by(async_session, repo.id, "t")
-    assert covered[0]["covered_lines"] == [1, 2]
+    assert covered[0]["covered_lines"] == [1, 2, 3, 4]
 
 
 async def test_save_caps_rows(async_session) -> None:
     repo = await insert_repo(async_session)
     records = [_rec(f"t{i}", "src/foo.py", [i]) for i in range(10)]
-    written = await save_test_coverage(
+    saved = await save_test_coverage(
         async_session, repo.id, records, source_format="coverage.py", max_rows=4
     )
     await async_session.commit()
-    assert written == 4
+    assert saved.written == 4
+    assert saved.dropped_tests == ("t4", "t5", "t6", "t7", "t8", "t9")
     covering = await find_covering_tests(async_session, repo.id, "src/foo.py")
     assert len(covering) == 4
+
+
+def test_the_cap_applies_after_dedupe_and_cuts_whole_tests_in_a_stable_order() -> None:
+    # Duplicates do not count against the cap, and the order does not depend
+    # on the order the records arrived in.
+    records = [
+        _rec("b::t", "src/x.py", [1], "tests/test_b.py"),
+        _rec("b::t", "src/y.py", [1], "tests/test_b.py"),
+        _rec("a::t", "src/x.py", [1], "tests/test_a.py"),
+        _rec("a::t", "src/x.py", [2], "tests/test_a.py"),
+        _rec("a::t", "src/y.py", [1], "tests/test_a.py"),
+        _rec("c::t", "src/x.py", [1], "tests/test_c.py"),
+    ]
+    for ordering in (records, records[::-1]):
+        rows, merged, dropped = cap_test_map(ordering, max_rows=3)
+        # test_a (2 rows) fits; test_b reaches the cap and is kept whole; test_c is cut.
+        assert sorted((r.test_id, r.file_path) for r in rows) == [
+            ("a::t", "src/x.py"),
+            ("a::t", "src/y.py"),
+            ("b::t", "src/x.py"),
+            ("b::t", "src/y.py"),
+        ]
+        assert merged == 1
+        assert dropped == ("c::t",)
+
+
+async def test_a_truncated_map_reads_as_truncated(async_session) -> None:
+    # Whole-test truncation never stores fewer rows than the cap, so the
+    # summary's ``pair_count >= cap`` is what tells selection to run everything.
+    repo = await insert_repo(async_session)
+    records = [_rec(f"t{i}", f"src/f{j}.py", [1]) for i in range(5) for j in range(3)]
+    saved = await save_test_coverage(
+        async_session, repo.id, records, source_format="coverage.py", max_rows=7
+    )
+    await async_session.commit()
+    summary = await get_test_coverage_summary(async_session, repo.id)
+    assert saved.truncated is True
+    assert summary["pair_count"] == 9  # three whole tests, past the cap of 7
+    assert summary["test_count"] == 3
 
 
 async def test_summary_counts(async_session) -> None:

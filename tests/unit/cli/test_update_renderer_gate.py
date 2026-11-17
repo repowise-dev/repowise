@@ -17,10 +17,14 @@ from repowise.core.generation.page_generator.structural import (
     SYMBOL_SPOTLIGHT_TEMPLATE,
     structural_fingerprint,
 )
+from repowise.core.generation.styles import DEFAULT_STYLE, resolve_style
 
 
 def _fingerprint_of(template: str, source: str) -> str:
-    return structural_fingerprint(template, source=source)
+    # A repo with no config uses the default style, whose fingerprint the
+    # generator folds into every structural page's key; the gate must match it.
+    style_fp = resolve_style(DEFAULT_STYLE).fingerprint
+    return structural_fingerprint(template, source=source, style_fingerprint=style_fp)
 
 
 def test_the_gate_covers_every_template_with_no_model_path(tmp_path: Path):

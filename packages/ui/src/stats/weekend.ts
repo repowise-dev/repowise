@@ -30,7 +30,8 @@ export function weekendDaysFor(presetId: string | null | undefined): readonly nu
   return (WEEKEND_PRESETS.find((p) => p.id === presetId) ?? DEFAULT_WEEKEND_PRESET).days;
 }
 
-/** Share of commits landing on `days`, as a percentage rounded to one decimal. */
+/** Share of commits landing on `days`, as a percentage rounded to one decimal.
+ *  Thresholds read the decimal; anything shown to a reader rounds to whole. */
 export function weekendShare(matrix: number[][], days: readonly number[]): number {
   let weekend = 0;
   let total = 0;

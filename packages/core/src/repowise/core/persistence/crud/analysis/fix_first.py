@@ -60,6 +60,7 @@ from repowise.core.analysis.health.rows import detail_map
 from repowise.core.analysis.health.scoring import history_biomarkers
 from repowise.core.ingestion.git_indexer.function_blame import _MIN_COMMITS_FOR_BLAME
 
+from ...batches import chunked
 from ...models import (
     DeadCodeFinding,
     GitFunctionBlame,
@@ -84,13 +85,25 @@ from .refactoring_recommendations import repository_checkout, validation_inputs
 FINDING_FILES = 100
 
 
+async def _rows_in(
+    session: AsyncSession, items: Iterable[Any], statement: Callable[[Any], Any]
+) -> list[Any]:
+    """The rows of ``statement(piece)`` for each piece of *items*, concatenated.
+
+    For a statement whose only large bound list is the piece and whose rows no
+    two pieces share; SQLite caps the parameters of one statement.
+    """
+    rows: list[Any] = []
+    for piece in chunked(sorted(set(items))):
+        rows.extend(plain_rows(await session.execute(statement(piece))))
+    return rows
+
+
 async def _metrics(session: AsyncSession, repo_id: str, paths: set[str] | None) -> list[Any]:
     """The named files' rows; ``None`` reads every file."""
-    if paths is not None and not paths:
-        return []
-    scoped = HealthFileMetric.file_path.in_(paths) if paths is not None else true()
-    return plain_rows(
-        await session.execute(
+
+    def query(scoped: Any) -> Any:
+        return (
             select(
                 HealthFileMetric.file_path,
                 HealthFileMetric.nloc,
@@ -113,6 +126,11 @@ async def _metrics(session: AsyncSession, repo_id: str, paths: set[str] | None) 
             )
             .where(HealthFileMetric.repository_id == repo_id, scoped)
         )
+
+    if paths is None:
+        return plain_rows(await session.execute(query(true())))
+    return await _rows_in(
+        session, paths, lambda piece: query(HealthFileMetric.file_path.in_(piece))
     )
 
 
@@ -168,10 +186,14 @@ async def _function_changes(
     keys = {key for _path, key in leads if key}
     if not keys:
         return {}, set()
-    rows = await session.execute(
-        select(b.symbol_id, b.mod_count).where(b.repository_id == repo_id, b.symbol_id.in_(keys))
+    rows = await _rows_in(
+        session,
+        keys,
+        lambda piece: select(b.symbol_id, b.mod_count).where(
+            b.repository_id == repo_id, b.symbol_id.in_(piece)
+        ),
     )
-    changes = dict(rows.all())
+    changes = {r.symbol_id: r.mod_count for r in rows}
     matched = {path for path, key in leads if key in changes}
     unmatched = {path for path, key in leads if key} - matched
     return changes, await _blame_skipped(session, repo_id, unmatched)
@@ -187,24 +209,28 @@ async def _blame_skipped(session: AsyncSession, repo_id: str, paths: set[str]) -
     """
     if not paths:
         return set()
-    floor = await session.execute(
-        select(GitMetadata.file_path).where(
+    floor = await _rows_in(
+        session,
+        paths,
+        lambda piece: select(GitMetadata.file_path).where(
             GitMetadata.repository_id == repo_id,
-            GitMetadata.file_path.in_(paths),
+            GitMetadata.file_path.in_(piece),
             GitMetadata.commit_count_total >= _MIN_COMMITS_FOR_BLAME,
-        )
+        ),
     )
-    candidates = set(floor.scalars().all())
+    candidates = {r.file_path for r in floor}
     if not candidates:
         return set()
     b = GitFunctionBlame
     # Unindexed, but read only for the few files that pass the floor unmatched.
-    blamed = await session.execute(
-        select(b.file_path)
-        .where(b.repository_id == repo_id, b.file_path.in_(candidates))
-        .distinct()
+    blamed = await _rows_in(
+        session,
+        candidates,
+        lambda piece: (
+            select(b.file_path).where(b.repository_id == repo_id, b.file_path.in_(piece)).distinct()
+        ),
     )
-    return candidates - set(blamed.scalars().all())
+    return candidates - {r.file_path for r in blamed}
 
 
 async def _basis(session: AsyncSession, repo_id: str) -> dict[str, str | None]:
@@ -224,15 +250,28 @@ async def _basis(session: AsyncSession, repo_id: str) -> dict[str, str | None]:
     return {"analyzed_commit": row.analyzed_commit, "health_analyzed_at": row.updated_at.isoformat()}
 
 
-def queue_findings(repo_id: str) -> Any:
-    """Open, scoring, code-health findings a surface may show."""
+def scoring_findings(repo_id: str) -> Any:
+    """Open, scoring, code-health findings, of any type: what a file's score
+    counted, so what pricing a fix must rescore it with."""
     f = HealthFinding
     return and_(
         f.repository_id == repo_id,
         f.status == "open",
         f.health_impact > 0,
         or_(f.dimension.is_(None), f.dimension != "performance"),
-        f.biomarker_type.not_in(excluded_types()),
+    )
+
+
+def _shown(rows: list[Any]) -> list[Any]:
+    """*rows* of a type the queue may list."""
+    hidden = excluded_types()
+    return [r for r in rows if r.biomarker_type not in hidden]
+
+
+def queue_findings(repo_id: str) -> Any:
+    """Open, scoring, code-health findings a surface may show."""
+    return and_(
+        scoring_findings(repo_id), HealthFinding.biomarker_type.not_in(excluded_types())
     )
 
 
@@ -269,7 +308,9 @@ async def _finding_files(session: AsyncSession, repo_id: str) -> tuple[set[str],
 async def _findings(
     session: AsyncSession, repo_id: str, full: set[str], planned: set[str], functions: set[str]
 ) -> list[Any]:
-    """Every eligible finding in ``full``; in ``planned`` only what an item quotes.
+    """Every scoring finding in ``full``, hidden types too (a fix's gain
+    rescores the file with them; the builder keeps them off the queue); in
+    ``planned`` only what an item quotes.
 
     A file with a plan that becomes an item needs its history markers (the
     item's context) and the findings on the function the plan changes (its
@@ -279,34 +320,38 @@ async def _findings(
         return []
     f = HealthFinding
     history = history_biomarkers()
-    return plain_rows(
-        await session.execute(
-            select(
-                f.file_path,
-                f.biomarker_type,
-                f.severity,
-                f.function_name,
-                f.line_start,
-                f.line_end,
-                f.reason,
-                f.health_impact,
-                f.public_id,
-                f.dimension,
-                f.status,
-                # History numbers become plain context sentences.
-                f.details_json,
-            ).where(
-                queue_findings(repo_id),
-                or_(
-                    f.file_path.in_(full),
-                    and_(
-                        f.file_path.in_(planned - full),
-                        or_(f.biomarker_type.in_(history), f.function_name.in_(functions)),
-                    ),
-                ),
-            )
-        )
+    columns = (
+        f.file_path,
+        f.biomarker_type,
+        f.severity,
+        f.function_name,
+        f.line_start,
+        f.line_end,
+        f.reason,
+        f.health_impact,
+        f.public_id,
+        f.dimension,
+        f.status,
+        # History numbers become plain context sentences.
+        f.details_json,
     )
+    rows = await _rows_in(
+        session,
+        full,
+        lambda piece: select(*columns).where(scoring_findings(repo_id), f.file_path.in_(piece)),
+    )
+    # The function names grow with the plans, so they are matched here rather
+    # than bound beside the paths.
+    quoted = await _rows_in(
+        session,
+        planned - full,
+        lambda piece: select(*columns).where(
+            queue_findings(repo_id),
+            f.file_path.in_(piece),
+            or_(f.biomarker_type.in_(history), f.function_name.is_not(None)),
+        ),
+    )
+    return rows + [r for r in quoted if r.biomarker_type in history or r.function_name in functions]
 
 
 async def _refactoring(session: AsyncSession, repo_id: str) -> list[Any]:
@@ -434,35 +479,39 @@ async def _plans(
     ``files=None`` reads the Extract Method plans of every file."""
     ids = {s.get("plan_id") for s in steps if s.get("plan_id")}
     s = RefactoringSuggestion
-    named = s.public_id.in_(ids) if ids else None
     extract = and_(s.refactoring_type == "extract_method", s.status == "open")
-    extractions = (
-        extract if files is None else and_(extract, s.file_path.in_(files)) if files else None
-    )
     helpers = and_(s.refactoring_type == "extract_helper", s.status == "open")
-    wanted = [c for c in (named, extractions, helpers) if c is not None]
-    if not wanted:
-        return []
-    return plain_rows(
-        await session.execute(
-            select(
-                s.public_id,
-                s.refactoring_type,
-                s.file_path,
-                s.target_symbol,
-                s.status,
-                s.evidence_json,
-                s.plan_json,
-                s.rank_json,
-            ).where(
-                s.repository_id == repo_id,
-                or_(*wanted),
-                # The registry's withheld types, as on every plan list. Fix
-                # first is its own measured lens, so no language gate applies.
-                shown_plan_predicate(include_unverified=True),
-            )
+
+    def query(wanted: Any) -> Any:
+        return select(
+            s.id,
+            s.public_id,
+            s.refactoring_type,
+            s.file_path,
+            s.target_symbol,
+            s.status,
+            s.evidence_json,
+            s.plan_json,
+            s.rank_json,
+        ).where(
+            s.repository_id == repo_id,
+            wanted,
+            # The registry's withheld types, as on every plan list. Fix
+            # first is its own measured lens, so no language gate applies.
+            shown_plan_predicate(include_unverified=True),
         )
+
+    # The ids and the files go out in pieces, so a row two of these reads
+    # match is kept once, by its id.
+    rows = plain_rows(
+        await session.execute(query(or_(helpers, extract) if files is None else helpers))
     )
+    rows += await _rows_in(session, ids, lambda piece: query(s.public_id.in_(piece)))
+    if files:
+        rows += await _rows_in(
+            session, files, lambda piece: query(and_(extract, s.file_path.in_(piece)))
+        )
+    return list({row.id: row for row in rows}.values())
 
 
 async def _symbol_lines(session: AsyncSession, repo_id: str, performance: list[Any]) -> dict[str, int]:
@@ -484,12 +533,14 @@ async def _symbol_lines(session: AsyncSession, repo_id: str, performance: list[A
     if not wanted:
         return {}
     g = GraphNode
-    rows = await session.execute(
-        select(g.node_id, g.start_line).where(
-            g.repository_id == repo_id, g.node_id.in_(wanted), g.start_line.is_not(None)
-        )
+    rows = await _rows_in(
+        session,
+        wanted,
+        lambda piece: select(g.node_id, g.start_line).where(
+            g.repository_id == repo_id, g.node_id.in_(piece), g.start_line.is_not(None)
+        ),
     )
-    return {node_id: line for node_id, line in rows.all()}
+    return {r.node_id: r.start_line for r in rows}
 
 
 def _span_suggestion(path: str, function: Any, start: Any, end: Any) -> PlanSuggestion:
@@ -700,11 +751,14 @@ async def _store_judgements(
     await _write_changed(session, o, ((r, refactoring.get(r.opportunity_id)) for r in stored))
     eligible = {i for i, j in refactoring.items() if j.reason is None}
     planned = {r.file_path for r in stored if r.opportunity_id in eligible}
-    findings = await _judged_findings(session, repo_id)
+    # Hidden types are read so a lead's gain is priced with them, and are
+    # never judged: the queue never lists them.
+    scored = await _judged_findings(session, repo_id)
+    findings = _shown(scored)
     paths = {f.file_path for f in findings}
     judged = judge_findings(
         metrics=await _metrics(session, repo_id, None) if paths else [],
-        findings=findings,
+        findings=scored,
         plans=await _plans(session, repo_id, [], None) if paths else [],
         dead_code=await _dead_code(session, repo_id),
         hot_cuts=await _hot_cuts(session, repo_id),
@@ -742,6 +796,8 @@ async def _judged_findings(session: AsyncSession, repo_id: str) -> list[Any]:
                 f.id,
                 f.file_path,
                 f.biomarker_type,
+                # A lead's gain rescores its file, which reads the severity.
+                f.severity,
                 f.function_name,
                 f.line_start,
                 f.line_end,
@@ -750,7 +806,7 @@ async def _judged_findings(session: AsyncSession, repo_id: str) -> list[Any]:
                 f.status,
                 f.details_json,
                 *_queue_columns(f),
-            ).where(queue_findings(repo_id))
+            ).where(scoring_findings(repo_id))
         )
     )
 
@@ -864,7 +920,8 @@ async def _build(
     functions = {s["target_symbol"] for s in steps if s.get("target_symbol")}
     findings = await _findings(session, repository_id, full, planned, functions)
     paths = full | planned | {r.file_path for r in history_only}
-    changes, skipped = await _function_changes(session, repository_id, findings, refactoring)
+    shown = _shown(findings)
+    changes, skipped = await _function_changes(session, repository_id, shown, refactoring)
     return build_fix_first(
         metrics=await _metrics(session, repository_id, paths),
         findings=[*findings, *(r for r in history_only if r.file_path not in full | planned)],
@@ -878,7 +935,7 @@ async def _build(
         basis=await _basis(session, repository_id),
         hot_cuts=await _hot_cuts(session, repository_id),
         symbol_lines=await _symbol_lines(session, repository_id, performance),
-        validate=await _finding_validator(session, repository_id, findings) if verify else None,
+        validate=await _finding_validator(session, repository_id, shown) if verify else None,
         judged=judged,
         function_changes=changes,
         blame_skipped=skipped,

@@ -128,7 +128,7 @@ export function MapLensSwitcher({
             <button
               type="button"
               aria-haspopup="menu"
-              className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="inline-flex items-center gap-1 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
               {moreLabel}
               <ChevronDown aria-hidden className="h-3.5 w-3.5" />
@@ -145,7 +145,7 @@ export function MapLensSwitcher({
                   setOpen(false);
                   onOverlayChange(lens);
                 }}
-                className={`flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${
+                className={`flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
                   lens === overlay
                     ? "font-semibold text-[var(--color-text-primary)]"
                     : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]"

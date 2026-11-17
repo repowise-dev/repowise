@@ -21,9 +21,11 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from repowise.core.workspace.origins import ContractOrigin
+
 from ..base import line_at
 from ..calls import call_sites
-from ..dialect import build_contract
+from ..dialect import build_contract, rows_gate
 from ..http.paths import (
     extract_path_from_url,
     is_unusable_consumer_path,
@@ -75,7 +77,7 @@ class SocketCall:
     label: str
     extensions: frozenset[str]
     name: Arg
-    confidence: float = 0.8
+    origin: ContractOrigin = ContractOrigin.CLIENT_CALL
     requires: tuple[str, ...] = ()
     normalize: Callable[[str], str | None] = path_identity
 
@@ -86,7 +88,7 @@ def _socket_contract(
     contract_id: str,
     role: str,
     symbol: str,
-    confidence: float,
+    origin: ContractOrigin,
     offset: int,
     meta: dict[str, str],
 ) -> Contract:
@@ -96,7 +98,7 @@ def _socket_contract(
         contract_id=f"socket::{contract_id}",
         role=role,
         symbol_name=symbol,
-        confidence=confidence,
+        origin=origin,
         line=line_at(ctx.content, offset),
         meta=meta,
     )
@@ -110,7 +112,7 @@ def event_contract(
     role: str,
     transport: str,
     label: str,
-    confidence: float,
+    origin: ContractOrigin,
     offset: int,
 ) -> Contract:
     """One message: *event* within *scope*, emitted by a provider, received by a consumer."""
@@ -119,7 +121,7 @@ def event_contract(
         contract_id=f"{scope}#{event}",
         role=role,
         symbol=f"{label}('{event}')",
-        confidence=confidence,
+        origin=origin,
         offset=offset,
         meta={"scope": scope, "event": event, "transport": transport},
     )
@@ -142,7 +144,7 @@ def event_contracts(
             role=call.role,
             transport=call.transport,
             label=label or call.label,
-            confidence=call.confidence,
+            origin=call.origin,
             offset=offset,
         )
         for scope in scopes
@@ -157,6 +159,7 @@ class SocketDialect:
         self.name = name
         self.calls = calls
         self.extensions = frozenset().union(*(c.extensions for c in calls))
+        self.requires = rows_gate(calls)
 
     def extract(self, ctx: ScanContext) -> list[Contract]:
         out: list[Contract] = []
@@ -168,7 +171,7 @@ class SocketDialect:
                     contract_id=path,
                     role=call.role,
                     symbol=f"{call.label}('{path}')",
-                    confidence=call.confidence,
+                    origin=call.origin,
                     offset=m.start(),
                     meta={"path": path, "transport": call.transport},
                 )

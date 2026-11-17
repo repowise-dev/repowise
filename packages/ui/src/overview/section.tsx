@@ -78,7 +78,7 @@ export function OverviewSection({
         )}
       >
         <details open={defaultOpen} className="group/section flex flex-col gap-3">
-          <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+          <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-2 gap-y-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
             <span
               className="text-[var(--color-text-tertiary)] transition-transform group-open/section:rotate-90"
               aria-hidden

@@ -14,7 +14,7 @@ from __future__ import annotations
 import fnmatch
 from collections.abc import Callable, Iterator
 from collections.abc import Set as AbstractSet
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,7 @@ import structlog
 from ...code_origin import code_origin
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from ...ingestion.symbol_identity import base_symbol_id, overload_sets
+from .apex_reachability import ApexLiveness, settle_apex_findings
 from .c_name_uses import (
     DEFINITION_HEADER_LINES,
     DeclarationSites,
@@ -86,6 +87,7 @@ from .name_occurrences import (
     drop_internals_used_in_own_file,
     drop_reference_assembly_api,
 )
+from .pascal_name_uses import drop_pascal_name_uses
 from .passes.unreachable_files import UnreachableFilePass
 from .passes.unused_exports import UnusedExportPass
 from .passes.unused_internals import UnusedInternalPass
@@ -103,7 +105,11 @@ from .source_prepasses import (  # noqa: F401  (moved scans re-exported)
     _find_ts_export_aliases,
     _posix_normpath,
 )
-from .swift_reachability import build_swift_named_files
+from .swift_reachability import (
+    build_swift_named_files,
+    unindexed_finding_name,
+    unindexed_swift_tokens,
+)
 from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
     _CPP_BUILTIN_MACROS,
     _CPP_TYPE_DECLARATION_KINDS,
@@ -122,6 +128,7 @@ from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
     _nested_class_used,
     _non_importable_kinds,
 )
+from .token_cache import token_cache
 
 #: The unindexed scan below and the repo-wide absence check ask the same
 #: question of different file sets, so they share one identifier shape rather
@@ -163,13 +170,17 @@ class DeadCodeAnalyzer:
         repo_root: Path | None = None,
         unindexed_source_files: list[tuple[str, str]] | None = None,
         dotnet_index: Any | None = None,
+        as_of: datetime | None = None,
     ) -> None:
         self.graph = graph
+        # "Now" for git-age checks; resolved from the repo on first use.
+        self._as_of = as_of
         # The C# resolver's project index (``GraphBuilder.dotnet_index``):
         # scopes the C# name rescue to the projects that can see a file.
         self._dotnet_index = dotnet_index
         self._csharp_named_files: frozenset[str] | None = None
         self._swift_named_files: frozenset[str] | None = None
+        self._apex_liveness: ApexLiveness | None = None
         # C# classes a plugin host or container finds by type, built on first use.
         self._csharp_discovered: frozenset[tuple[str, str]] | None = None
         self._parsed_files = parsed_files or {}
@@ -184,6 +195,7 @@ class DeadCodeAnalyzer:
         self._repo_root = repo_root
         self._source_map = source_map
         self._unindexed_tokens: frozenset[str] | None = None
+        self._unindexed_swift_tokens: set[str] = set()
         # Kept for the absence check below, which is the one pass that needs
         # the raw text of *every* indexed file rather than of a suffix-filtered
         # subset. Empty when a caller has no source access, which is what makes
@@ -282,7 +294,20 @@ class DeadCodeAnalyzer:
             package_files=self._package_files,
             csharp_named_files=self._csharp_named_files,
             swift_named_files=self._swift_named_files,
+            apex_live_files=self._apex().live,
         )
+
+    def _apex(self) -> ApexLiveness:
+        """Apex liveness, built on first use (see :mod:`apex_reachability`)."""
+        if self._apex_liveness is None:
+            self._apex_liveness = ApexLiveness(
+                self.graph,
+                self._source_map,
+                self._parsed_files,
+                self._repo_root,
+                frozenset(t.casefold().encode() for t in self._unindexed_identifier_tokens()),
+            )
+        return self._apex_liveness
 
     def analyze(
         self,
@@ -304,7 +329,11 @@ class DeadCodeAnalyzer:
         whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
 
         findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
-        findings = self._settle(findings)
+        # The settle passes rescan every file's text; an unchanged file's
+        # tokens come from the last run's cache in the index directory.
+        cache_dir = Path(self._repo_root) / ".repowise" if self._repo_root is not None else None
+        with token_cache(cache_dir):
+            findings = self._settle(findings)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
@@ -342,9 +371,10 @@ class DeadCodeAnalyzer:
 
     def _settle(self, findings: list[DeadCodeFindingData]) -> list[DeadCodeFindingData]:
         """Drop, demote and clamp the pass findings on evidence the graph does not carry."""
-        # First: a C# type another file in its scope names is used, and a
-        # C/C++ name written outside its declaration is a use. Both settle the
-        # finding before any clamp re-scores it.
+        # First: an Apex name written in any case, a C# type another file in
+        # its scope names, and a C/C++ name written outside its declaration are
+        # uses. Each settles the finding before any clamp re-scores it.
+        findings = settle_apex_findings(findings, self._apex(), self._source_map)
         findings = self._drop_csharp_named_exports(findings)
         findings = drop_preprocessed_named_elsewhere(
             findings,
@@ -354,6 +384,8 @@ class DeadCodeAnalyzer:
         )
         # Same for Go, scoped to the package and to importers naming it.
         findings = drop_go_package_uses(findings, self._source_map, self.graph)
+        # And Pascal, scoped to the unit and the units that ``uses`` it.
+        findings = drop_pascal_name_uses(findings, self._source_map, self.graph)
         # Before the confidence filter, not after: a finding an unread importer
         # could explain must be able to fall *below* min_confidence and drop
         # out entirely, rather than being reported at a number it no longer
@@ -518,7 +550,11 @@ class DeadCodeAnalyzer:
             budget -= len(blob)
             # ``finditer`` rather than ``findall``: the latter materialises
             # every match at once, roughly 500k bytes objects for a 4 MB blob.
-            tokens.update(m.group().decode("ascii", "ignore") for m in _IDENTIFIER_RE.finditer(blob))
+            file_tokens = {m.group().decode("ascii", "ignore") for m in _IDENTIFIER_RE.finditer(blob)}
+            tokens.update(file_tokens)
+            # Swift's same-module type references can explain a whole-file
+            # finding, but generated/vendor sources cannot vouch for liveness.
+            self._unindexed_swift_tokens.update(unindexed_swift_tokens(rel_path, file_tokens))
         self._unindexed_tokens = frozenset(tokens)
         return self._unindexed_tokens
 
@@ -544,11 +580,9 @@ class DeadCodeAnalyzer:
             skipped_names += f" (+{len(self._unindexed_source_files) - 3} more)"
 
         for finding in findings:
-            # Symbol findings only. A whole-file finding would have to match on
-            # the path stem, and stems are exactly the broad words ("index",
-            # "main", "utils", "app") that ``risk_factors`` deliberately keeps
-            # out of its own token map because they cap ordinary modules. An
-            # unread importer imports symbols, so match on symbols.
+            # Match symbols, never broad path stems such as "index" or "app".
+            # Swift file findings can instead match their declared type names:
+            # files in the same module do not import one another.
             #
             # Exported symbols only, for the same reason stated the other way:
             # an importer can only reach what a file exports, so a match on an
@@ -557,7 +591,7 @@ class DeadCodeAnalyzer:
             # every unrelated private `add` in the repo would clamp with it.
             if finding.kind is DeadCodeKind.UNUSED_INTERNAL:
                 continue
-            name = finding.symbol_name
+            name = unindexed_finding_name(finding, self.graph, self._unindexed_swift_tokens)
             if not name or name not in tokens:
                 continue
             finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
@@ -637,6 +671,21 @@ class DeadCodeAnalyzer:
                 extract_guarded_jsx_renders(pred_file, src) if src else []
             )
         return self._guard_cache[pred_file]
+
+    def days_since(self, when: datetime) -> int:
+        """Whole days from *when* to the indexed commit, the anchor the git windows
+        use, so a commit's verdicts do not drift with the wall clock. Without a
+        repo root there is no commit to anchor to, and wall-clock time stands in."""
+        if self._as_of is None:
+            if self._repo_root is None:
+                self._as_of = datetime.now(UTC)
+            else:
+                from ...ingestion.git_indexer import GitIndexer
+
+                self._as_of = GitIndexer(self._repo_root, read_only=True).window_anchor()
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        return (self._as_of - when).days
 
     def _file_line_count(self, file_path: str) -> int | None:
         """Physical line count of an indexed file, or ``None`` when unread.

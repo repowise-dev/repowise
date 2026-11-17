@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ...execution_roles import hottest_role
+from ...execution_roles import ENTRY_ROLES, hottest_role
 from ..worth import dormant
 from .actionability import (
     ActionabilityState,
@@ -57,6 +57,7 @@ from .opportunity_rank import (
     change_risk,
     dominant_marker,
     exposure,
+    growth_source,
     leverage,
     loop_magnitude,
     may_lead,
@@ -175,6 +176,7 @@ class _Reading:
     role: str
     sinks: tuple[str, ...]
     magnitude: str
+    growth: str
 
 
 def _read_live(members: list[Any]) -> _Reading:
@@ -190,6 +192,7 @@ def _read_live(members: list[Any]) -> _Reading:
     marker = dominant_marker(markers)
     sites = {facts.site for facts in live}
     role = hottest_role(facts.execution_role for facts in live)
+    owners = [f for f in live if hottest_role((f.execution_role,)) == role]
     return _Reading(
         live=live,
         markers=markers,
@@ -197,12 +200,15 @@ def _read_live(members: list[Any]) -> _Reading:
         sites=sites,
         files={site[0] for site in sites},
         provenance=weakest_provenance({facts.provenance for facts in live}),
-        reachable=_reachability({facts.reliable_entry_reachability for facts in live}),
+        # A hot role is an entry reaching the group, a handler a framework
+        # registers included, which the entry-file walk does not see.
+        reachable=True
+        if role in ENTRY_ROLES
+        else _reachability({facts.reliable_entry_reachability for facts in live}),
         role=role,
         sinks=tuple(sorted({facts.terminal_sink for facts in live if facts.terminal_sink})),
-        magnitude=loop_magnitude(
-            marker, [f.details for f in live if hottest_role((f.execution_role,)) == role]
-        ),
+        magnitude=loop_magnitude(marker, [f.details for f in owners]),
+        growth=growth_source(marker, owners),
     )
 
 
@@ -214,6 +220,7 @@ def _facets(r: _Reading, confidence: str) -> dict[str, str]:
         "leverage": leverage(len(r.sites)),
         "change_risk": change_risk(len(r.files)),
         "loop_magnitude": r.magnitude,
+        "growth_source": r.growth,
         "execution_role": r.role,
     }
 

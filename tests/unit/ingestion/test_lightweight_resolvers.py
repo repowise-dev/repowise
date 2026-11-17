@@ -98,6 +98,9 @@ class TestDispatch:
             # Godot .tscn/.tres/.escn + project.godot + plugin.cfg. The only
             # member at import_support="full" -- see the package docstring.
             "godot_resource",
+            # Ansible playbook/role wiring in .yml files; byte- and shape-gated
+            # so plain YAML config is untouched (#4397).
+            "yaml",
         } == LIGHTWEIGHT_IMPORT_LANGUAGES
 
     def test_other_language_returns_empty(self) -> None:

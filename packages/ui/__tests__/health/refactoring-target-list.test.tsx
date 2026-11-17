@@ -43,21 +43,21 @@ describe("RefactoringTargetList paging", () => {
 
   it("says how many are left and reveals another page per click", () => {
     render(<RefactoringTargetList targets={targets(120)} />);
-    expect(screen.getByRole("button", { name: /Show 50 more \(70 remaining\)/ })).toBeInTheDocument();
+    expect(screen.getByText(/Show 50 more \(70 remaining\)/, { selector: "button" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Show 50 more/ }));
+    fireEvent.click(screen.getByText(/Show 50 more/, { selector: "button" }));
     expect(renderedPaths()).toHaveLength(100);
 
     // The last page is short, and the control says so rather than over-promising.
-    fireEvent.click(screen.getByRole("button", { name: /Show 20 more \(20 remaining\)/ }));
+    fireEvent.click(screen.getByText(/Show 20 more \(20 remaining\)/, { selector: "button" }));
     expect(renderedPaths()).toHaveLength(120);
-    expect(screen.queryByRole("button", { name: /Show .* more/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Show .* more/, { selector: "button" })).not.toBeInTheDocument();
   });
 
   it("shows a short list whole, with no control", () => {
     render(<RefactoringTargetList targets={targets(3)} />);
     expect(renderedPaths()).toHaveLength(3);
-    expect(screen.queryByRole("button", { name: /remaining/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/remaining/, { selector: "button" })).not.toBeInTheDocument();
   });
 
   it("opens enough pages to reach a highlighted target past the window", () => {
@@ -75,7 +75,7 @@ describe("RefactoringTargetList paging", () => {
     // Re-filtering is a new question; leaving the reader three pages deep in
     // results they have not seen is worse than the scroll they lose.
     const { rerender } = render(<RefactoringTargetList targets={targets(300)} />);
-    fireEvent.click(screen.getByRole("button", { name: /Show 50 more/ }));
+    fireEvent.click(screen.getByText(/Show 50 more/, { selector: "button" }));
     expect(renderedPaths()).toHaveLength(100);
 
     rerender(<RefactoringTargetList targets={targets(300).slice(10)} />);

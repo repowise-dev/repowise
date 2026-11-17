@@ -9,6 +9,7 @@ import type {
 } from "@repowise-dev/types/graph";
 import type { SigmaNodeAttributes, SigmaEdgeAttributes } from "./types";
 import { computeElkFilePositions } from "../elk-layout";
+import { formatNumber } from "../../lib/format";
 
 // ELK runs on the main thread (elk.bundled.js, no worker), so a large graph
 // would freeze the tab mid-layout. 500 nodes keeps the compute comfortably
@@ -25,7 +26,7 @@ export const ELK_MAX_NODES = 500;
  * you use them. Advice that cannot work is worse than no advice.
  */
 export function elkSkipReason(order: number): string {
-  return `Hierarchical layout needs ${ELK_MAX_NODES} nodes or fewer — this view has ${order.toLocaleString()}.`;
+  return `Hierarchical layout needs ${ELK_MAX_NODES} nodes or fewer — this view has ${formatNumber(order)}.`;
 }
 
 /**

@@ -129,6 +129,25 @@ async def test_a_source_that_never_ran_is_not_an_honest_zero(_patched):
     assert "git history" in not_run
     assert "No LLM provider" in not_run
 
+
+async def test_a_structural_run_says_why_instead_of_no_provider(_patched):
+    """A run that chose no model must not claim none is configured."""
+    progress = _RecordingProgress()
+
+    await _run_decision_extraction(
+        _patched,
+        llm_client=None,
+        graph_builder=SimpleNamespace(graph=lambda: None),
+        git_meta_map={},
+        parsed_files=[],
+        progress=progress,
+        no_model_reason="this run builds from code",
+    )
+
+    not_run = next(t for lvl, t in progress.messages if lvl == "info" and "Not run" in t)
+    assert "pull requests (this run builds from code)" in not_run
+    assert "No LLM provider" not in not_run
+
     nothing = [t for lvl, t in progress.messages if lvl == "info" and "Nothing found" in t]
     for line in nothing:
         assert "pull requests" not in line
@@ -279,3 +298,18 @@ async def test_the_headline_separates_kept_decisions_from_candidates(_patched, m
         "→ 5 architectural decisions kept from 16 candidates: "
         "13 from git history, 3 from comments",
     ) in progress.messages
+
+
+def test_a_fast_run_points_skipped_sources_at_update_full() -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.pipeline._run.analysis import _no_model_reason
+
+    def reason(tier: str, deterministic: bool = True) -> str | None:
+        config = SimpleNamespace(deterministic=deterministic)
+        return _no_model_reason(SimpleNamespace(generation_config=config, git_tier=tier))
+
+    # `generate` refuses a repo with no documentation, so a fast run names update --full.
+    assert reason("essential").endswith("repowise update --full adds them")
+    assert reason("full").endswith("repowise generate adds them")
+    assert reason("full", deterministic=False) is None

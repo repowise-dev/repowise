@@ -56,8 +56,13 @@ __all__ = [
 SOURCE_RANK: dict[str, int] = {
     "cli": 9,  # human-authored manual entry — most authoritative
     "session": 8,  # a user's own words in a transcript, corroborated by them
+    "agent": 8,  # proposed directly by a coding agent from its own reasoning
     "adr": 7,  # architecture decision records (structured, intentional)
     "pr": 7,  # PR / squash-merge body
+    # A reviewer's verbatim reply on a PR thread, promoted by the review bot.
+    # A person's own words, but said in review rather than while deciding, and
+    # not always by whoever decided: it ties with ``pr`` rather than ``session``.
+    "pr_review": 7,
     "commit": 6,  # individual commit message
     "git_archaeology": 6,  # alias for commit-mined decisions
     "conventions": 6,  # counted from the code itself, so it sits with commit
@@ -201,6 +206,20 @@ def normalize_text(text: str | None) -> str:
     return _WS_RE.sub(" ", text).strip().lower()
 
 
+_APOSTROPHE_RE = re.compile(r"['’]")
+_PUNCT_RE = re.compile(r"[^\w\s]")
+
+
+def _tokens(normalized: str) -> set[str]:
+    """Word tokens of *normalized* text, punctuation ignored.
+
+    Apostrophes are removed (``don't`` is ``dont``) and other punctuation
+    becomes a space, so ``rewrite.`` matches ``rewrite`` and ``src/app.py``
+    reads the same on both sides.
+    """
+    return set(_PUNCT_RE.sub(" ", _APOSTROPHE_RE.sub("", normalized)).split())
+
+
 def verify_quote(
     quote: str | None,
     source_text: str | None,
@@ -220,9 +239,9 @@ def verify_quote(
         return "unverified"
     if q in src:
         return "exact"
-    q_tokens = set(q.split())
+    q_tokens = _tokens(q)
     if not q_tokens:
         return "unverified"
-    src_tokens = set(src.split())
+    src_tokens = _tokens(src)
     overlap = len(q_tokens & src_tokens) / len(q_tokens)
     return "fuzzy" if overlap >= fuzzy_threshold else "unverified"

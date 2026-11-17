@@ -106,9 +106,14 @@ LIGHT = {
     "bg-canvas": "#F0EBE6",  # --color-bg-canvas → var(--color-bg-inset)
     "text-primary": "#241B2C",
     "text-secondary": "#5E5360",
+    "focus-ring": "#5E5360",  # --color-focus-ring → var(--color-text-secondary)
+    "field-bg": "#F5F1ED",
+    # --color-action-soft-hover (ink 11%) composited on the page and a card.
+    "action-soft-page": "#E3DEDB", "action-soft-card": "#E7E6E8",
     "text-tertiary": "#8C7F88",
     "text-inverse": "#FFFFFF",
     "text-on-accent": "#241B2C",
+    "action-primary": "#241B2C", "action-primary-hover": "#3B2F45", "text-on-action": "#FFFFFF",
     "accent-primary": "#A16215",
     "accent-fill": "#F59520",
     "accent-secondary": "#58436C",
@@ -148,7 +153,7 @@ LIGHT = {
     "heat-1": "#F6EFE8", "heat-2": "#E7D6C2", "heat-3": "#D0B08A",
     "heat-4": "#A16215", "heat-5": "#824F10",
     # Release moment ground and glow band (What's new dialog).
-    "release-ground": "#FBF6F1", "release-card": "#FFFFFF", "release-glow-1": "#F8DFC2", "release-glow-2": "#E8DEEF",
+    "release-ground": "#FBF6F1", "release-card": "#FFFFFF", "release-glow-1": "#F8DFC2", "release-glow-2": "#E8DEEF", "release-glow-3": "#DDE7F3",
 }
 
 DARK = {
@@ -159,9 +164,14 @@ DARK = {
     "bg-canvas": "#0A0A0B",  # --color-bg-canvas → var(--color-bg-inset)
     "text-primary": "#EEEAF4",
     "text-secondary": "#A79DB3",
+    "focus-ring": "#A79DB3",  # --color-focus-ring → var(--color-text-secondary)
+    "field-bg": "#101012",
+    # --color-action-soft-hover (white 12%) composited on a card and elevated.
+    "action-soft-page": "#353537", "action-soft-card": "#303032",
     "text-tertiary": "#786F84",
     "text-inverse": "#17131D",
     "text-on-accent": "#17131D",
+    "action-primary": "#F2F2F3", "action-primary-hover": "#D6D6D9", "text-on-action": "#0E0E0F",
     "accent-primary": "#F59520",
     "accent-fill": "#F59520",
     "accent-secondary": "#A98FC4",
@@ -198,7 +208,7 @@ DARK = {
     # 12/26/42/75%, then accent-primary.
     "heat-1": "#2F2317", "heat-2": "#4E3619", "heat-3": "#724A1A",
     "heat-4": "#BD751E", "heat-5": "#F59520",
-    "release-ground": "#111013", "release-card": "#1B191E", "release-glow-1": "#2B1C0E", "release-glow-2": "#1F1729",
+    "release-ground": "#111013", "release-card": "#1B191E", "release-glow-1": "#2B1C0E", "release-glow-2": "#1F1729", "release-glow-3": "#121A26",
 }
 
 # (fg, bg, floor, label)  — floor is the WCAG ratio the pair must meet.
@@ -214,6 +224,27 @@ CHECKS = [
     ("accent-secondary", "bg-surface", 4.5, "Plum link-alt on card"),
     ("text-on-accent", "accent-fill", 4.5, "Text on accent fill (CTA)"),
     ("text-inverse", "accent-primary", 4.5, "Text on accent-primary fill"),
+    ("text-on-action", "action-primary", 4.5, "Text on primary action (ink button)"),
+    ("text-on-action", "action-primary-hover", 4.5, "Text on primary action hover"),
+    # Neutral state roles: control-selected/-text alias the action pair, the tab
+    # underline is text-primary and bars are text-secondary (non-text, 3:1).
+    ("text-on-action", "action-primary", 4.5, "Text on selected segment or switch"),
+    ("action-primary", "bg-surface", 3.0, "Selected control / tab underline on card"),
+    ("action-primary", "bg-root", 3.0, "Selected control / tab underline on page"),
+    ("text-tertiary", "bg-surface", 3.0, "Selected chip border on card"),
+    ("text-tertiary", "bg-root", 3.0, "Selected chip border on page"),
+    ("text-secondary", "bg-surface", 3.0, "Progress and data bar on card"),
+    ("text-secondary", "bg-inset", 3.0, "Progress and data bar on inset track"),
+    ("text-secondary", "bg-elevated", 3.0, "Progress and data bar on elevated track"),
+    # Keyboard focus ring (non-text, 3:1) on every ground a control sits on.
+    *[("focus-ring", bg, 3.0, f"Focus ring on {bg}") for bg in ("bg-root", "bg-surface", "bg-elevated", "bg-inset")],
+    # Form fields: the value, a disabled value and the placeholder on the well.
+    ("text-primary", "field-bg", 7.0, "Field value"),
+    ("text-secondary", "field-bg", 4.5, "Disabled field value"),
+    ("text-tertiary", "field-bg", 3.0, "Field placeholder"),
+    # Soft-ink copy-prompt button: its label at the hovered (strongest) fill.
+    ("text-primary", "action-soft-page", 4.5, "Soft action label on page"),
+    ("text-primary", "action-soft-card", 4.5, "Soft action label on card"),
     ("success", "bg-surface", 4.5, "Success text on card"),
     ("warning", "bg-surface", 4.5, "Warning text on card"),
     ("warning", "bg-root", 4.5, "Warning text on page"),
@@ -251,7 +282,7 @@ CHECKS = [
     # beside the release figures.
     *[
         (fg, bg, floor, f"{fg} on {bg}")
-        for bg in ("release-ground", "release-glow-1", "release-glow-2")
+        for bg in ("release-ground", "release-glow-1", "release-glow-2", "release-glow-3")
         for fg, floor in (("text-primary", 7.0), ("text-secondary", 4.5))
     ],
     ("accent-primary", "release-ground", 4.5, "accent-primary on release-ground"),

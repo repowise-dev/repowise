@@ -21,6 +21,7 @@ data table — so every rule is unit-testable directly.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from functools import cache
 from pathlib import PurePosixPath
@@ -112,6 +113,38 @@ def not_an_execution_start(path: str, language: str) -> bool:
     them too.
     """
     return language in non_code_entry_languages() or is_glue_leaf(path)
+
+
+# Spring Boot's own start, each form naming the application class it boots:
+# ``SpringApplication.run(App.class, args)``, its builder form, and Kotlin's
+# ``runApplication<App>()``. The JVM dynamic hints read the same patterns to link
+# the call to that class. The annotation must open a line, so a Javadoc
+# ``{@link SpringBootApplication}`` does not count.
+SPRING_BOOT_RUN_RE = re.compile(r"SpringApplication\.run\s*\(\s*([A-Z]\w*)\s*\.class")
+SPRING_BOOT_BUILDER_RE = re.compile(r"new\s+SpringApplicationBuilder\s*\(\s*([A-Z]\w*)\s*\.class")
+KOTLIN_RUN_APPLICATION_RE = re.compile(r"\brunApplication\s*<\s*([A-Z]\w*)\s*>")
+_SPRING_BOOT_ANNOTATION_RE = re.compile(r"^\s*@SpringBootApplication\b", re.MULTILINE)
+_APPLICATION_MAIN_PATTERNS = (
+    SPRING_BOOT_RUN_RE,
+    SPRING_BOOT_BUILDER_RE,
+    KOTLIN_RUN_APPLICATION_RE,
+    _SPRING_BOOT_ANNOTATION_RE,
+)
+#: Languages :func:`boots_application` reads. Ceiling: Spring Boot only;
+#: Micronaut's ``Micronaut.run`` or Quarkus's ``@QuarkusMain`` would join here.
+APPLICATION_MAIN_LANGUAGES: frozenset[str] = frozenset({"java", "kotlin"})
+
+
+def boots_application(language: str, text: str) -> bool:
+    """Whether *text*, a file's source, starts a framework application.
+
+    That is where execution starts as surely as a manifest says so, whatever
+    the file is named, so the entry-point ranking puts it with the
+    manifest-declared entries.
+    """
+    return language in APPLICATION_MAIN_LANGUAGES and any(
+        p.search(text) for p in _APPLICATION_MAIN_PATTERNS
+    )
 
 
 def is_reachability_root(node_data: Mapping[str, Any]) -> bool:

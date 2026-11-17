@@ -368,6 +368,94 @@ class TestAssemblyScanDiscovery:
         )
         assert graph.in_degree("Orders/CreateOrderHandler.cs") == 0
 
+    def test_masstransit_consumer_and_definition_from_add_consumers(
+        self, tmp_path: Path
+    ) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": (
+                    "builder.Services.AddMassTransit(x =>\n"
+                    "    x.AddConsumersFromNamespaceContaining<SubmitOrderConsumer>());\n"
+                ),
+                "Consumers/FaultConsumer.cs": (
+                    "public class FaultConsumer : IConsumer<Fault<FulfillOrder>> {}\n"
+                ),
+                "Consumers/FaultConsumerDefinition.cs": (
+                    "public class FaultConsumerDefinition : ConsumerDefinition<FaultConsumer> {}\n"
+                ),
+            },
+        )
+        assert graph.has_edge("Program.cs", "Consumers/FaultConsumer.cs")
+        assert graph.has_edge("Program.cs", "Consumers/FaultConsumerDefinition.cs")
+
+    def test_masstransit_consumer_needs_a_consumer_scan(self, tmp_path: Path) -> None:
+        """``AddSagaStateMachines`` scans state machines, not consumers."""
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "services.AddMassTransit(x => x.AddSagaStateMachines(asm));\n",
+                "Consumers/OrderConsumer.cs": (
+                    "public class OrderConsumer : IConsumer<OrderSubmitted> {}\n"
+                ),
+                "Sagas/OrderStateMachine.cs": (
+                    "public class OrderStateMachine : MassTransitStateMachine<OrderState> {}\n"
+                ),
+            },
+        )
+        assert graph.in_degree("Consumers/OrderConsumer.cs") == 0
+        assert graph.has_edge("Program.cs", "Sagas/OrderStateMachine.cs")
+
+    def test_nservicebus_handler_from_the_endpoint_configuration(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": 'var cfg = new EndpointConfiguration("Sales");\n',
+                "Handlers/PaymentHandler.cs": (
+                    "public class PaymentHandler : IHandleMessages<PaymentDone> {}\n"
+                    "public class DeadSibling {}\n"
+                ),
+            },
+        )
+        edge = graph.get_edge_data("Program.cs", "Handlers/PaymentHandler.cs")
+        assert edge is not None and edge["imported_names"] == ["PaymentHandler"]
+
+    def test_nservicebus_handler_without_an_endpoint_is_not_wired(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "var cfg = CustomizeEndpointConfiguration(settings);\n",
+                "Handlers/PaymentHandler.cs": (
+                    "public class PaymentHandler : IHandleMessages<PaymentDone> {}\n"
+                ),
+            },
+        )
+        assert graph.in_degree("Handlers/PaymentHandler.cs") == 0
+
+    def test_nservicebus_saga_from_the_hosted_endpoint(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "builder.UseNServiceBus(endpointConfiguration);\n",
+                "Sagas/ShippingPolicy.cs": (
+                    "public class ShippingPolicy : Saga<ShippingPolicyData> {}\n"
+                ),
+            },
+        )
+        assert graph.has_edge("Program.cs", "Sagas/ShippingPolicy.cs")
+
+    def test_a_scan_call_in_a_comment_does_not_wire_consumers(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            {
+                "Program.cs": "// x.AddConsumers(typeof(Program).Assembly);\n",
+                "Consumers/OrderConsumer.cs": (
+                    "public class OrderConsumer : IConsumer<OrderSubmitted> {}\n"
+                ),
+            },
+        )
+        assert graph.in_degree("Consumers/OrderConsumer.cs") == 0
+
 
 class TestToolDiscoveredRoots:
     """A type a tool finds with no call in code: its file is a root, not an edge target."""

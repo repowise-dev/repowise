@@ -24,6 +24,7 @@ from dataclasses import field as dc_field
 from typing import Any
 
 from repowise.core.analysis.change_health.identity import severity_rank
+from repowise.core.analysis.dead_code.serving import is_safe
 from repowise.core.analysis.health.rows import detail_map, field
 
 #: Items kept per file per lens. The total still counts every row, so a hot
@@ -206,7 +207,7 @@ def _dead_code_item(row: Any) -> RelatedItem:
         id=str(field(row, "id")),
         kind=field(row, "kind"),
         symbol=field(row, "symbol_name"),
-        tier="safe_to_delete" if field(row, "safe_to_delete", False) else "review",
+        tier="safe_to_delete" if is_safe(row) else "review",
         line=_int(field(row, "start_line")),
         **_flags(row, {}),
     )

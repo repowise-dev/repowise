@@ -1,8 +1,10 @@
 """NATS publishers and subscribers.
 
-The receiver must carry a NATS-idiomatic name, so an RxJS or EventEmitter
-``subscribe``/``publish`` is not read as a subject. A subscription subject
-with ``*`` or ``>`` is a pattern the matcher expands.
+``client.publish`` is also MQTT, Ably and every other pub/sub SDK, so a call
+is read only in a file importing a NATS client, and its receiver must still
+carry a NATS-idiomatic name, so an RxJS or EventEmitter ``subscribe`` beside
+one is not read as a subject. A subscription subject with ``*`` or ``>`` is a
+pattern the matcher expands.
 """
 
 from __future__ import annotations
@@ -17,6 +19,12 @@ from .dialect import TopicCall, TopicDialect
 
 _RECEIVER = r"(?:nc|nats|conn|js|client)\s*\.\s*"
 _LANGUAGES = GO | JAVA | JS_TS | PYTHON
+# nats.go (`github.com/nats-io/...`), jnats (`io.nats.client`), nats.js and
+# nats.ws (`'nats'`, `@nats-io/...`, `nats.ws`, Deno `npm:nats` / `/x/nats`)
+# and nats-py (`import nats`).
+_CLIENT = (
+    "nats-io/", "io.nats.", "'nats'", '"nats"', "nats.ws", "npm:nats", "/x/nats", "import nats", "from nats"
+)
 
 NATS = TopicDialect(
     name="nats",
@@ -29,6 +37,7 @@ NATS = TopicDialect(
             name=Arg(pos=0),
             kind=TOPIC_KIND_SUBJECT,
             pattern=TOPIC_PATTERN_NATS,
+            requires=_CLIENT,
         ),
         TopicCall(
             head=re.compile(_RECEIVER + r"(?:Publish|publish)\s*\("),
@@ -37,6 +46,7 @@ NATS = TopicDialect(
             extensions=_LANGUAGES,
             name=Arg(pos=0),
             kind=TOPIC_KIND_SUBJECT,
+            requires=_CLIENT,
         ),
     ),
 )

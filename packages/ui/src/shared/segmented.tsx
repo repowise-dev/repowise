@@ -86,7 +86,7 @@ export function Segmented<T extends string>({
               onFocus={show}
               onMouseLeave={o.disabledReason ? () => setReason(null) : undefined}
               onBlur={o.disabledReason ? () => setReason(null) : undefined}
-              className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${
+              className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${
                 active
                   ? "bg-[var(--color-bg-elevated)] font-semibold text-[var(--color-text-primary)]"
                   : o.disabledReason

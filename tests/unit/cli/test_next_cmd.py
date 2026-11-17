@@ -231,7 +231,7 @@ async def _build_index(repo_path: Path) -> None:
             )  # fmt: skip
             session.add_all(
                 DeadCodeFinding(repository_id=repo.id, kind="unused_export",
-                                file_path="src/dead.py", symbol_name=f"f{i}", lines=10,
+                                file_path="src/dead.py", symbol_name=f"f{i}", lines=10, confidence=0.9,
                                 safe_to_delete=True)
                 for i in range(3)
             )  # fmt: skip

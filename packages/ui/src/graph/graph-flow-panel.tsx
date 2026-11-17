@@ -36,7 +36,7 @@ const FlowRow = memo(function FlowRow({
       onClick={() => onSelect(idx)}
       className={`w-full text-left px-2 py-1.5 rounded-md text-xs transition-colors ${
         isActive
-          ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+          ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
           : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-overlay)] hover:text-[var(--color-text-primary)]"
       }`}
     >

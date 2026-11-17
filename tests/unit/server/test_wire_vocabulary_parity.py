@@ -1,8 +1,9 @@
 """The closed vocabularies cross a language boundary, so pin both ends.
 
-``ResolutionOrigin``, ``FlowTermination``, ``UnmatchedReason`` and
-``AttentionItemType`` are declared in Python and copied into ``packages/types``
-(and ``packages/ui``) for the web surfaces. Nothing else
+``ResolutionOrigin``, ``FlowTermination``, ``UnmatchedReason``,
+``AttentionItemType`` and the workspace link vocabularies (``LinkStrategy``,
+``ContractOrigin``, edge kind, match type) are declared in Python and copied
+into ``packages/types`` (and ``packages/ui``) for the web surfaces. Nothing else
 makes the copies agree: a word added on one side renders as "unrecognised"
 forever on the other, silently, because both sides degrade rather than throw.
 
@@ -19,6 +20,8 @@ from repowise.core.analysis.attention import AREA_ORDER, ATTENTION_ITEM_TYPES
 from repowise.core.analysis.execution_flows import FLOW_TERMINATION_VALUES
 from repowise.core.ingestion.models import HERITAGE_KIND_VALUES, RESOLUTION_ORIGIN_VALUES
 from repowise.core.workspace.diagnostics import UNMATCHED_REASON_VALUES
+from repowise.core.workspace.origins import ContractOrigin, LinkStrategy
+from repowise.core.workspace.system_graph import _MATCH_TYPE_RANK, EDGE_KINDS
 
 _PACKAGES = pathlib.Path(__file__).resolve().parents[3] / "packages"
 _TYPES_SRC = _PACKAGES / "types/src"
@@ -42,6 +45,42 @@ def test_flow_termination_union_matches_python() -> None:
 
 def test_unmatched_reason_union_matches_python() -> None:
     assert _union_members("UnmatchedReason", "workspace.ts") == set(UNMATCHED_REASON_VALUES)
+
+
+def _assert_mirror(declared: set[str], owned: set[str], what: str, edit: str) -> None:
+    """Equal sets, or a message naming each stray value and the file to edit."""
+    missing, extra = sorted(owned - declared), sorted(declared - owned)
+    assert not missing, f"{what} lacks {missing}: add them to {edit}"
+    assert not extra, f"{what} has {extra}, which core no longer declares: remove them from {edit}"
+
+
+def test_workspace_link_vocabularies_match_python() -> None:
+    """Strategy, origin, edge kind and match type: core owns each closed set."""
+    pairs = (
+        ("LinkStrategy", {s.value for s in LinkStrategy}),
+        ("ContractOrigin", {o.value for o in ContractOrigin}),
+        ("SystemEdgeKind", set(EDGE_KINDS)),
+        ("SystemEdgeMatchType", set(_MATCH_TYPE_RANK)),
+    )
+    for alias, owned in pairs:
+        _assert_mirror(
+            _union_members(alias, "workspace.ts"), owned, alias, "packages/types/src/workspace.ts"
+        )
+
+
+def test_every_link_strategy_and_origin_has_a_label() -> None:
+    """An unlabelled value renders as a humanised token with "does not describe"."""
+    text = (_PACKAGES / "ui/src/workspace/link-provenance.ts").read_text(encoding="utf-8")
+    for table, enum in (("STRATEGIES", LinkStrategy), ("ORIGINS", ContractOrigin)):
+        match = re.search(rf"const {table} = \{{(.*?)\n\}} as const", text, re.DOTALL)
+        assert match, f"{table} is not declared in link-provenance.ts"
+        labelled = set(re.findall(r"^  ([a-z_]+): \{", match.group(1), re.MULTILINE))
+        _assert_mirror(
+            labelled,
+            {v.value for v in enum},
+            f"{table} labels",
+            "packages/ui/src/workspace/link-provenance.ts",
+        )
 
 
 def test_heritage_kind_differs_from_python_only_where_documented() -> None:

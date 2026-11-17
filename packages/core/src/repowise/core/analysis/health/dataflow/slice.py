@@ -75,6 +75,7 @@ from .slice_receiver import (
     FunctionFacts,
     _collect_assigned,
     _ends_in_exit,
+    _free_names,
     _free_write_lines,
     _function_kinds,
     _is_receiver,
@@ -106,6 +107,7 @@ from .slice_writes import (
     _outs_definitely_assigned,
     _stmt_assigns,
     _stmts_assign,
+    _trailing_constant_output,
     _unconditional_write,
     _writes_var,
 )
@@ -180,6 +182,8 @@ class _Scan(NamedTuple):
     exit_macros: tuple[frozenset[str], frozenset[str]]
     awaits: tuple[frozenset[str], frozenset[str]]
     lambdas: frozenset[str] = frozenset()
+    #: ``LanguageNodeMap.lambda_exit_kinds``: a jump when found in a lambda.
+    lambda_exits: frozenset[str] = frozenset()
     receiver: Receiver | None = None
     # Built from the fields above by :func:`_scan_for`; derived when absent.
     kinds: FactKinds | None = None
@@ -301,6 +305,7 @@ class _FunctionSlicer:
         self.carry_defs = _rebinding_defs_dropped(analysis, self.def_lines, lmap)
         self.scan = _scan_for(lmap, receiver, fn_node)
         self.free_writes = _free_write_lines(def_use) if receiver and receiver.implicit else []
+        self.free_names = _free_names(def_use) if receiver and receiver.implicit else frozenset()
         # Expression-oriented grammars: a block's last non-statement child is its
         # value, and a span ending on it would drop that value.
         self.tail_stmt_kinds = (
@@ -321,7 +326,7 @@ class _FunctionSlicer:
     ) -> bool:
         """Append *block*'s candidates to *out*; False once the candidate budget is spent."""
         lmap = self.lmap
-        stmts = block.named_children
+        stmts = [c for c in block.named_children if c.type not in lmap.structure_token_kinds]
         # A match/switch body holds arms, not statements; each arm's body is a block of its own.
         if any(stmt.type in lmap.case_kinds for stmt in stmts):
             return True
@@ -346,6 +351,8 @@ class _FunctionSlicer:
                 continue
             slice_nloc = pre.code[j + 1] - pre.code[i]
             if not _MIN_SLICE_NLOC <= slice_nloc < self.max_slice_nloc:
+                continue
+            if _shares_a_line(self.fn_node, stmts[i], stmts[j]):
                 continue
             found = self._extraction(blk, i, j, decisions, slice_nloc, refused)
             if found is not None:
@@ -408,6 +415,12 @@ class _FunctionSlicer:
         s, e = span.start, span.end
         if any(import_line < s <= use_line <= e for import_line, use_line in self.import_reads):
             return None
+        byref_alias_lines = self.def_lines.get("__byref_alias__")
+        if byref_alias_lines:
+            b_lo = bisect_left(byref_alias_lines, s)
+            b_hi = bisect_right(byref_alias_lines, e)
+            if b_lo < b_hi:
+                return None
         if self.reads is None:
             self.reads = _reads_observing(self.analysis, self.def_lines)
         params, returns = _infer_in_out(
@@ -418,10 +431,13 @@ class _FunctionSlicer:
             self.declared_first,
             reads=self.reads,
             valueless=self.valueless,
+            exclude=self.free_names,
         )
         if len(params) > _MAX_PARAMS or len(returns) > _MAX_RETURNS:
             return None
         if not _outs_definitely_assigned(span.nodes, returns, self.def_lines, self.lmap):
+            return None
+        if _trailing_constant_output(span.nodes, s, e, returns, self.def_lines, self.lmap):
             return None
         return params, returns
 
@@ -448,6 +464,26 @@ class _FunctionSlicer:
         return blk.loop is None or _loop_carry_free(
             span.nodes, blk.loop, s, e, self.carry_defs, self.use_lines, self.lmap
         )
+
+
+def _shares_a_line(fn_node: Node, first: Node, last: Node) -> bool:
+    """Whether the line *first* starts on holds code before it, or the line
+    *last* ends on holds code after it: a sibling (``} // done``), the header
+    or brace of a block written compactly (``if (x) { a = 1;``), any byte that
+    is not whitespace. A plan names whole lines, so lifting those lines would
+    carry code that is not in the span."""
+    rows = (fn_node.text or b"").split(b"\n")
+    top, left = fn_node.start_point
+
+    def row(at: tuple[int, int]) -> tuple[bytes, int]:
+        line = rows[at[0] - top] if 0 <= at[0] - top < len(rows) else b""
+        return line, at[1] - (left if at[0] == top else 0)
+
+    head, col = row(first.start_point)
+    if head[:col].strip():
+        return True
+    tail, col = row(last.end_point)
+    return bool(tail[col:].strip())
 
 
 def _scoped_resource_indexes(stmts: list[Node], lmap: LanguageNodeMap) -> list[int]:
@@ -492,6 +528,7 @@ def _scan_for(lmap: LanguageNodeMap, receiver: Receiver | None, fn_node: Node) -
         exit_macros=_exit_macros(lmap),
         awaits=_awaits(lmap),
         lambdas=lmap.lambda_kinds,
+        lambda_exits=lmap.lambda_exit_kinds,
         receiver=receiver,
         exits=lmap.return_kinds,
         yields=lmap.yield_kinds,
@@ -596,6 +633,7 @@ def _span_kinds(scan: _Scan) -> FactKinds:
         awaits=await_kinds,
         await_scopes=await_scope_kinds,
         lambdas=scan.lambdas,
+        lambda_exits=scan.lambda_exits,
         receiver=_receiver_kinds(scan.receiver) if scan.receiver is not None else frozenset(),
     )
 
@@ -631,8 +669,11 @@ def _push_children(
     node: Node, stack: list[tuple[Node, int]], scope: int, scan: _Scan
 ) -> None:
     """Queue *node*'s children: nested scopes are skipped, except a lambda
-    when the receiver is looked for (it shares the instance)."""
+    when the receiver is looked for (it shares the instance) or the language
+    has lambda exits (a ``return`` there leaves this function). A nested
+    function is never entered: its exits are its own."""
+    into_lambdas = scan.receiver is not None or bool(scan.lambda_exits)
     for child in node.children:
         t = child.type
-        if t not in scan.scopes or (scan.receiver is not None and t in scan.lambdas):
+        if t not in scan.scopes or (into_lambdas and t in scan.lambdas):
             stack.append((child, scope))

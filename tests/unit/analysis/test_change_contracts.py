@@ -505,3 +505,43 @@ def test_snapshot_base_is_carried_on_the_result():
     head = [_file("app/a.py", [_sym("run", path="app/a.py", sig="run(x, y)")])]
     assert _compute(base, head).base_is_snapshot is False
     assert _compute(base, head, base_is_snapshot=True).base_is_snapshot is True
+
+
+def test_apex_parameter_rename_is_compatible_not_breaking():
+    base = [
+        _file(
+            "force-app/AccountService.cls",
+            [
+                _sym(
+                    "findByName", path="force-app/AccountService.cls", sig="findByName(String name)"
+                )
+            ],
+        )
+    ]
+    head = [
+        _file(
+            "force-app/AccountService.cls",
+            [
+                _sym(
+                    "findByName",
+                    path="force-app/AccountService.cls",
+                    sig="findByName(String query)",
+                )
+            ],
+        )
+    ]
+    impact = _compute(
+        base,
+        head,
+        changed=("force-app/AccountService.cls",),
+        calls=[
+            (
+                "force-app/AccountTrigger.trigger::run",
+                "force-app/AccountService.cls::findByName",
+            )
+        ],
+    )
+    assert impact.breaking == []
+    assert len(impact.changes) == 1
+    assert impact.changes[0].is_breaking is False
+    assert impact.changes[0].signature_effect == "compatible"

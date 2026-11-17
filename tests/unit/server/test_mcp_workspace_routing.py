@@ -373,13 +373,13 @@ async def test_a_routed_batch_survives_a_repo_timing_out(routed_ws, monkeypatch)
 
     async def slow(alias):
         if alias == "frontend":
-            await asyncio.sleep(30)
+            await asyncio.Event().wait()
         return await real_get(alias)
 
-    monkeypatch.setenv("REPOWISE_WORKSPACE_REPO_TIMEOUT_S", "0.5")
+    monkeypatch.setenv("REPOWISE_WORKSPACE_REPO_TIMEOUT_S", "3")
     monkeypatch.setattr(routed_ws, "get", slow)
     result = await get_context(targets=["src/probe.py", "src/only_fe.py"])
     assert result["targets"]["src/probe.py"]["docs"]["title"] == "Backend Probe"
     assert result["targets"]["src/only_fe.py"]["repo"] == "frontend"
     assert "did not answer" in result["targets"]["src/only_fe.py"]["error"]
-    assert result["repos_failed"] == [{"repo": "frontend", "reason": "timed out after 0.5s"}]
+    assert result["repos_failed"] == [{"repo": "frontend", "reason": "timed out after 3s"}]

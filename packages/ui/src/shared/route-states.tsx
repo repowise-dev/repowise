@@ -127,7 +127,7 @@ export function RouteNotFound({
             {links.map((link, i) => (
               <li
                 key={i}
-                className="[&>a]:flex [&>a]:min-h-10 [&>a]:items-center [&>a]:gap-2 [&>a]:px-3 [&>a]:text-[var(--color-text-primary)] [&>a]:transition-colors [&>a:hover]:bg-[var(--color-bg-wash-hover)] [&>a:focus-visible]:outline-none [&>a:focus-visible]:ring-2 [&>a:focus-visible]:ring-[var(--color-accent-primary)] [&_svg]:h-4 [&_svg]:w-4 [&_svg]:text-[var(--color-text-tertiary)]"
+                className="[&>a]:flex [&>a]:min-h-10 [&>a]:items-center [&>a]:gap-2 [&>a]:px-3 [&>a]:text-[var(--color-text-primary)] [&>a]:transition-colors [&>a:hover]:bg-[var(--color-bg-wash-hover)] [&>a:focus-visible]:outline-none [&>a:focus-visible]:ring-2 [&>a:focus-visible]:ring-[var(--color-focus-ring)] [&_svg]:h-4 [&_svg]:w-4 [&_svg]:text-[var(--color-text-tertiary)]"
               >
                 {link}
               </li>

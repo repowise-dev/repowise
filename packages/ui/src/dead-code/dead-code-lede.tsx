@@ -12,7 +12,8 @@ import type { ReactNode } from "react";
 import type { DeadCodeSummary } from "@repowise-dev/types/dead-code";
 
 import { PageLede } from "../shared/page-lede";
-import { formatDateTime, formatNumber, formatRelativeTimeOrNull } from "../lib/format";
+import { RelativeTime } from "../shared/relative-time";
+import { formatNumber } from "../lib/format";
 
 /** Counts a flagged sentence quotes. */
 export interface DeadCodeFlaggedCounts {
@@ -80,14 +81,11 @@ export interface DeadCodeLedeProps {
 
 /** "Analysed 2d ago." with the exact time on hover, or nothing when unknown. */
 export function AnalysedAt({ at }: { at: string | null | undefined }) {
-  const relative = formatRelativeTimeOrNull(at, "");
-  if (!at || !relative) return null;
+  if (!at) return null;
   return (
     <>
       {" "}
-      <time dateTime={at} title={formatDateTime(at)}>
-        Analysed {relative}.
-      </time>
+      <RelativeTime date={at} template="Analysed {time}." fallback="" />
     </>
   );
 }

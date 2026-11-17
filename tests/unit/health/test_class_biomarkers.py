@@ -229,7 +229,126 @@ def test_god_class_requires_size_and_method_count():
     assert GodClassDetector().detect(_ctx([cls])) == []
 
 
+def _god(name: str, *, init: bool = False) -> ClassComplexity:
+    methods = _brainy_methods() + ([_fn("__init__")] if init else [])
+    return _cls(name, method_count=len(methods), total_nloc=320, methods=methods)
+
+
+def test_god_class_skips_stateless_python_mixin():
+    assert GodClassDetector().detect(_ctx([_god("ResolveMixin")])) == []
+
+
+@pytest.mark.parametrize(("name", "init"), [("StatefulMixin", True), ("Resolver", False)])
+def test_god_class_still_flags_stateful_mixin_and_plain_class(name: str, init: bool):
+    assert len(GodClassDetector().detect(_ctx([_god(name, init=init)]))) == 1
+
+
+def test_god_class_mixin_rule_is_python_only():
+    ctx = _ctx([_god("ResolveMixin")])
+    ctx.language = "typescript"
+    assert len(GodClassDetector().detect(ctx)) == 1
+
+
+def test_god_class_skips_partial_type_split_across_files():
+    # ``Encoder`` stands for a partial whose only other part is source
+    # generated: no co-fragment edge, so the file holds the whole class.
+    ctx = _ctx([_god("StdAdoDelegate"), _god("Encoder")])
+    ctx.split_partial_types = frozenset({"StdAdoDelegate"})
+    assert [r.function_name for r in GodClassDetector().detect(ctx)] == ["Encoder"]
+
+
+def test_split_partial_types_reads_partial_class_edges():
+    import networkx as nx
+
+    from repowise.core.analysis.health.refactoring.graph_signals import (
+        build_split_partial_types,
+    )
+
+    g = nx.DiGraph()
+    # The reverse direction already had a plain import, so the linker added one edge.
+    g.add_edge("A.Jobs.cs", "A.cs", edge_type="imports", imported_names=["X"])
+    g.add_edge("A.cs", "A.Jobs.cs", edge_type="imports", imported_names=["A"], hint_source="partial_class")
+    g.add_edge("A.cs", "B.cs", edge_type="imports", imported_names=["B"])
+    assert build_split_partial_types(g) == {
+        "A.cs": frozenset({"A"}),
+        "A.Jobs.cs": frozenset({"A"}),
+    }
+    assert build_split_partial_types(None) == {}
+
+
 def test_god_class_critical_severity():
     cls = _cls("Behemoth", method_count=26, total_nloc=450, methods=_brainy_methods())
     out = GodClassDetector().detect(_ctx([cls]))
     assert out[0].severity == "critical"  # total_nloc >= 400 AND methods >= 25
+
+
+def test_cpp_out_of_line_methods_counted_toward_class():
+    src = """
+class DBImpl {
+ public:
+  int Get(int k);
+  int Put(int k);
+  int inline_one() { return x_; }
+ private:
+  int x_;
+};
+int DBImpl::Get(int k) { return x_ + k; }
+int DBImpl::Put(int k) { x_ = k; return 0; }
+namespace ns {
+  int f();
+}
+int ns::f() { return 1; }
+"""
+    res = walk_file("db_impl.cc", "cpp", src.strip().encode())
+    assert len(res.classes) == 1
+    cl = res.classes[0]
+    assert cl.name == "DBImpl"
+    assert cl.method_count == 3
+    method_names = {m.name for m in cl.methods}
+    assert method_names == {"inline_one", "DBImpl::Get", "DBImpl::Put"}
+
+
+def test_cpp_out_of_line_methods_without_class_body_creates_synthetic_class():
+    src = """
+int DBImpl::Get(int k) { return x_ + k; }
+int DBImpl::Put(int k) { x_ = k; return 0; }
+"""
+    res = walk_file("db_impl.cc", "cpp", src.strip().encode())
+    assert len(res.classes) == 1
+    cl = res.classes[0]
+    assert cl.name == "DBImpl"
+    assert cl.method_count == 2
+    assert cl.lcom4 == 1
+
+
+def test_cpp_forward_declaration_does_not_duplicate_out_of_line_methods():
+    src = """
+class Foo;
+class Foo {
+ public:
+  int m1();
+};
+int Foo::m1() { return 1; }
+"""
+    res = walk_file("foo.cc", "cpp", src.strip().encode())
+    # Forward decl Foo and class Foo both exist as class_specifier nodes,
+    # but out-of-line Foo::m1 should attach to Foo once.
+    foo_classes = [c for c in res.classes if c.name == "Foo"]
+    total_methods = sum(c.method_count for c in foo_classes)
+    assert total_methods == 1
+
+
+def test_cpp_specialization_matches_out_of_line_methods():
+    src = """
+template <>
+class Box<int> {
+ public:
+  int get();
+};
+int Box<int>::get() { return 42; }
+"""
+    res = walk_file("box.cc", "cpp", src.strip().encode())
+    assert len(res.classes) == 1
+    cl = res.classes[0]
+    assert cl.method_count == 1
+    assert cl.methods[0].name == "Box<int>::get"

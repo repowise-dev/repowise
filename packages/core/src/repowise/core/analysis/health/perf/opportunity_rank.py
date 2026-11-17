@@ -18,11 +18,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from math import log2
-from typing import Any
+from typing import Any, Literal, get_args
 
 from ...execution_roles import COLD_ROLES
 from ..rank_common import top_factors, weakest
 from ..worth import lead_reason
+from .cold_paths import is_cold_path
 
 BOUNDARY_POINTS = {"subprocess": 5, "network": 4, "db": 4, "lock": 3, "filesystem": 2}
 """What one crossing of each boundary costs, as an order of magnitude.
@@ -195,6 +196,36 @@ def loop_magnitude(marker: str, details: list[dict[str, Any]]) -> str:
     return "bounded" if values == {"bounded"} else "unknown"
 
 
+GrowthSource = Literal["loop", "registry", "cold_path", "none", "n/a"]
+GROWTH_SOURCES: tuple[str, ...] = get_args(GrowthSource)
+
+
+def growth_source(marker: str, members: list[Any]) -> GrowthSource:
+    """Which member loop shows the group's cost grows, read off the members
+    :func:`loop_magnitude` reads.
+
+    ``loop``: a loop whose read grows, outside a registry and a cold path.
+    ``registry``: only loops over a registry or configuration table grow,
+    which a name says and nothing measures. ``cold_path``: only loops in
+    migration, startup or recovery code grow (:mod:`.cold_paths`).
+    """
+    if amplification(marker) not in {"per_iteration", "quadratic"}:
+        return "n/a"
+    found: set[str] = set()
+    for facts in members:
+        if facts.details.get("loop_magnitude") != "grows_with_data":
+            continue
+        if facts.details.get("loop_iterates") == "config_table":
+            found.add("registry")
+        elif is_cold_path(facts.file_path, facts.function_name):
+            found.add("cold_path")
+        else:
+            return "loop"
+    if "registry" in found:
+        return "registry"
+    return "cold_path" if found else "none"
+
+
 def exposure(reachable: bool | None) -> str:
     """How closely an entry point reaches this group.
 
@@ -294,6 +325,7 @@ __all__ = [
     "BOUNDARY_POINTS",
     "CONTEXT_POINTS",
     "CROSS_FUNCTION_POINTS",
+    "GROWTH_SOURCES",
     "LEADING_ORMS",
     "MAGNITUDE_POINTS",
     "MULTIPLIER_POINTS",
@@ -301,11 +333,13 @@ __all__ = [
     "PROVENANCE_POINTS",
     "ROLE_POINTS",
     "UNKNOWN_MULTIPLIER_POINTS",
+    "GrowthSource",
     "amplification",
     "band",
     "change_risk",
     "dominant_marker",
     "exposure",
+    "growth_source",
     "leverage",
     "loop_magnitude",
     "may_lead",

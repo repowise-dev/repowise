@@ -19,7 +19,7 @@ export function ContractPromptButton({
   const [open, setOpen] = useState(false);
   return (
     <>
-      <AiPromptButton onClick={() => setOpen(true)} label="AI prompt" />
+      <AiPromptButton onClick={() => setOpen(true)} />
       <AiPromptModal
         open={open}
         onOpenChange={setOpen}

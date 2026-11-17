@@ -20,7 +20,8 @@
  */
 
 import type { ReactNode } from "react";
-import { Layers, Sparkles, TrendingUp, Wand2 } from "lucide-react";
+import { Layers, TrendingUp, Wand2 } from "lucide-react";
+import { AiPromptButton } from "../health/ai-prompt-button";
 
 import { CollapsibleSection } from "../shared/collapsible-section";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
@@ -347,14 +348,7 @@ function DrawerBody({
 
       {onAiPrompt ? (
         <div className="flex items-center gap-3 border-t border-[var(--color-border-default)] bg-[var(--color-bg-elevated)] px-5 py-3.5">
-          <button
-            type="button"
-            onClick={() => onAiPrompt(plan)}
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--color-model)] px-3.5 py-2 text-sm font-semibold text-[var(--color-text-on-model)] transition-opacity hover:opacity-90"
-          >
-            <Sparkles className="h-4 w-4" />
-            Copy prompt for an agent
-          </button>
+          <AiPromptButton onClick={() => onAiPrompt(plan)} />
           <span className="hidden text-xs text-[var(--color-text-tertiary)] sm:block">
             The steps, the blast radius, and a completion contract.
           </span>

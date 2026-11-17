@@ -36,6 +36,7 @@ _TARGET_MODULES: dict[str, str] = {
     "hermes": "repowise.cli.agent_targets.targets.hermes:TARGET",
     "copilot": "repowise.cli.agent_targets.targets.copilot:TARGET",
     "kiro": "repowise.cli.agent_targets.targets.kiro:TARGET",
+    "windsurf": "repowise.cli.agent_targets.targets.windsurf:TARGET",
 }
 
 #: Resolved when :meth:`resolve_target_flag` is asked for ``auto`` and nothing
@@ -122,9 +123,23 @@ def describe_agents(repo_path: Path | None = None) -> list[dict]:
                 "present": present,
                 "method": method.id if method is not None else None,
                 "registrations": [r.as_dict() for r in registrations],
+                "config_files": _config_files(target, repo_path),
             }
         )
     return rows
+
+
+def _config_files(target: AgentTarget, repo_path: Path | None) -> dict[str, list[str]]:
+    """The files ``agents add`` writes for *target*, per scope it supports.
+
+    Not best-effort like the probes above: ``supports_scope`` already skips a
+    scope the target lacks, so an error here is a path bug and should surface.
+    """
+    return {
+        scope.value: list(target.describe_paths(scope, repo_path=repo_path))
+        for scope in (Scope.PROJECT, Scope.USER)
+        if target.supports_scope(scope)
+    }
 
 
 def default_selection(rows: list[dict]) -> set[str]:

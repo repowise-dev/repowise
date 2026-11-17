@@ -19,7 +19,7 @@ interface DeckViewProps {
 }
 
 const FOCUS =
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 // Fresh is the quiet default; only a source that needs attention is marked.
 const FRESHNESS: Record<string, { color: string; word: string }> = {

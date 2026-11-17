@@ -35,7 +35,7 @@ export function CoChangeList({ partners, previewCount = 5 }: CoChangeListProps) 
           </div>
           <div className="h-1 w-full rounded-full bg-[var(--color-bg-elevated)]">
             <div
-              className="h-1 rounded-full bg-[var(--color-accent-primary)] transition-all"
+              className="h-1 rounded-full bg-[var(--color-progress-fill)] transition-all"
               style={{
                 width: `${maxCount > 0 ? (p.co_change_count / maxCount) * 100 : 0}%`,
               }}

@@ -15,6 +15,7 @@ from repowise.core.report.model import (
     SCHEMA_VERSION,
     ReportContext,
     Section,
+    WorkspaceReportContext,
     check,
     report_sections,
 )
@@ -25,6 +26,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "ReportContext",
     "Section",
+    "WorkspaceReportContext",
     "check",
     "report_sections",
 ]

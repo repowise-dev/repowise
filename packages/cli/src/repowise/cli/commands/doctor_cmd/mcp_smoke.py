@@ -55,7 +55,10 @@ _TEARDOWN_ERRORS = (OSError, ValueError, subprocess.TimeoutExpired)
 # before the process is reaped. Polling at that instant reports "still running"
 # for a process that is already on its way out - which is the crash loop, the
 # one case this check exists to name. Wait briefly for the exit status first.
+# Only then: a server still mute at the deadline is not about to exit, so it
+# gets the short grace, enough to reap one that died right at the deadline.
 _EXIT_GRACE_S = 5.0
+_DEADLINE_EXIT_GRACE_S = 0.2
 
 # The child having exited does not mean the stderr reader has consumed the
 # pipe's last lines yet; on a busy runner the ring can still be empty when the
@@ -66,6 +69,7 @@ _EXIT_GRACE_S = 5.0
 _STDERR_DRAIN_GRACE_S = 2.0
 
 CHECK_NAME = "MCP server responds"
+CHECK_ID = "mcp-responds"
 
 
 def _read_response(stdout, request_id: int, deadline: float) -> dict | None:
@@ -181,6 +185,7 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
         child_env = {**os.environ, **{str(k): str(v) for k, v in env.items()}}
 
     started = time.monotonic()
+    deadline = started + _SMOKE_TIMEOUT_S
     try:
         proc = subprocess.Popen(
             [command, *args],
@@ -193,33 +198,39 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
             env=child_env,
         )
     except OSError as exc:
-        return _check(CHECK_NAME, False, f"could not launch {command}: {exc}")
+        return _check(CHECK_NAME, False, f"could not launch {command}: {exc}", check_id=CHECK_ID)
 
     stderr_ring, stderr_reader = _drain_stderr(proc)
     try:
-        response = _initialize(proc, started + _SMOKE_TIMEOUT_S)
+        response = _initialize(proc, deadline)
         elapsed_ms = int((time.monotonic() - started) * 1000)
 
         if response is not None and "result" in response:
             server = response["result"].get("serverInfo") or {}
             return _check(
-                CHECK_NAME, True, f"{server.get('name', 'repowise')} initialised in {elapsed_ms}ms"
+                CHECK_NAME,
+                True,
+                f"{server.get('name', 'repowise')} initialised in {elapsed_ms}ms",
+                check_id=CHECK_ID,
             )
         if response is not None:
             error = response.get("error") or {}
-            return _check(CHECK_NAME, False, f"initialize failed: {error.get('message', response)}")
+            detail = f"initialize failed: {error.get('message', response)}"
+            return _check(CHECK_NAME, False, detail, check_id=CHECK_ID)
 
         # No response. Whether the process is gone (the crash-loop case) or up
         # and mute changes the remedy, so the detail says which.
         exit_code = proc.poll()
         if exit_code is None:
+            early = time.monotonic() < deadline
             with contextlib.suppress(subprocess.TimeoutExpired):
-                exit_code = proc.wait(timeout=_EXIT_GRACE_S)
+                exit_code = proc.wait(timeout=_EXIT_GRACE_S if early else _DEADLINE_EXIT_GRACE_S)
         if exit_code is None:
             return _check(
                 CHECK_NAME,
                 False,
                 f"no initialize response within {int(_SMOKE_TIMEOUT_S)}s (still running)",
+                check_id=CHECK_ID,
             )
         detail = f"server exited with code {exit_code}"
         # The child has exited; give the reader a moment to drain the pipe's
@@ -228,6 +239,6 @@ def mcp_smoke_check(command: str, args: list[str], env: dict | None = None) -> D
         stderr = _stderr_tail(stderr_ring)
         if stderr:
             detail += f": {stderr}"
-        return _check(CHECK_NAME, False, detail)
+        return _check(CHECK_NAME, False, detail, check_id=CHECK_ID)
     finally:
         _shutdown(proc)

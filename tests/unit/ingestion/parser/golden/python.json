@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -32,7 +35,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/assertions.py::_Case",
@@ -54,7 +58,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/assertions.py::_Case::test_unittest_calls",
@@ -76,7 +81,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/assertions.py::_Case::test_few_asserts",
@@ -98,7 +104,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/assertions.py::test_split_runs",
@@ -120,7 +127,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/assertions.py::do_work",
@@ -142,7 +150,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -151,6 +160,7 @@
       "test_split_runs",
       "do_work"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -160,11 +170,13 @@
         "line": 26,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 460,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -175,11 +187,13 @@
         "line": 27,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 491,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -190,11 +204,13 @@
         "line": 28,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 522,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -205,11 +221,13 @@
         "line": 39,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 695,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -223,7 +241,9 @@
       "do_work"
     ],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/classes.py": {
     "file_info": {
@@ -235,7 +255,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -258,7 +281,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Cohesive::__init__",
@@ -280,7 +304,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Cohesive::add",
@@ -302,7 +327,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Cohesive::average",
@@ -324,7 +350,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Cohesive::reset",
@@ -346,7 +373,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Cohesive::describe",
@@ -368,7 +396,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Splintered",
@@ -390,7 +419,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Splintered::set_a",
@@ -412,7 +442,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Splintered::get_a",
@@ -434,7 +465,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Splintered::set_b",
@@ -456,7 +488,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Splintered::get_b",
@@ -478,7 +511,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/classes.py::Splintered::loner",
@@ -500,7 +534,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -508,6 +543,7 @@
       "Cohesive",
       "Splintered"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -517,11 +553,13 @@
         "line": 23,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 519,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -533,7 +571,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/complex.py": {
     "file_info": {
@@ -545,7 +585,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -568,13 +611,15 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
     "exports": [
       "many_branches"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -584,7 +629,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/conditionals.py": {
     "file_info": {
@@ -596,7 +643,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -619,7 +669,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/conditionals.py::six_ops",
@@ -641,7 +692,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/conditionals.py::two_ops",
@@ -663,7 +715,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -672,6 +725,7 @@
       "six_ops",
       "two_ops"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -681,7 +735,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/match.py": {
     "file_info": {
@@ -693,7 +749,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -716,7 +775,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/match.py::python_if_elif",
@@ -738,7 +798,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -746,6 +807,7 @@
       "python_match",
       "python_if_elif"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -755,7 +817,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/nested.py": {
     "file_info": {
@@ -767,7 +831,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -790,7 +857,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/nested.py::shallow",
@@ -812,7 +880,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
@@ -820,6 +889,7 @@
       "deeply_nested",
       "shallow"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -829,7 +899,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/perf_io_in_loop.py": {
     "file_info": {
@@ -841,7 +913,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -864,7 +939,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::subprocess_in_loop",
@@ -886,7 +962,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::http_in_loop",
@@ -908,7 +985,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::await_http_in_loop",
@@ -930,7 +1008,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::string_concat_in_loop",
@@ -952,7 +1031,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::blocking_in_async",
@@ -974,7 +1054,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::sink_in_loop_header",
@@ -996,7 +1077,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::constant_range",
@@ -1018,7 +1100,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::constant_literal",
@@ -1040,7 +1123,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::query_builder_in_loop",
@@ -1062,7 +1146,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::pure_call_in_loop",
@@ -1084,7 +1169,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::sink_outside_loop",
@@ -1106,7 +1192,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/perf_io_in_loop.py::open_in_loop",
@@ -1128,7 +1215,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [
@@ -1148,6 +1236,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1173,6 +1262,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1198,6 +1288,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1223,6 +1314,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1248,6 +1340,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1273,6 +1366,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1298,6 +1392,7 @@
       "sink_outside_loop",
       "open_in_loop"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1307,11 +1402,13 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 595,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1322,11 +1419,13 @@
         "line": 20,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 603,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1337,11 +1436,13 @@
         "line": 25,
         "argument_count": 2,
         "receiver_call": null,
+        "start_byte": 724,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1352,11 +1453,13 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 840,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1367,11 +1470,13 @@
         "line": 35,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 954,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1382,11 +1487,13 @@
         "line": 46,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1193,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1397,11 +1504,13 @@
         "line": 47,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1252,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1412,11 +1521,13 @@
         "line": 52,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1446,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1431,11 +1542,13 @@
           "receiver_name": "session",
           "argument_count": 1
         },
+        "start_byte": 1457,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1446,11 +1559,13 @@
         "line": 53,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1512,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1461,11 +1576,13 @@
         "line": 58,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1631,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1476,11 +1593,13 @@
         "line": 63,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1749,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1491,11 +1610,13 @@
         "line": 68,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1825,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1510,11 +1631,13 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 1838,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1525,11 +1648,13 @@
         "line": 74,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1976,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1540,11 +1665,13 @@
         "line": 79,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2098,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1559,11 +1686,13 @@
           "receiver_name": null,
           "argument_count": 1
         },
+        "start_byte": 2228,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -1575,7 +1704,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "python/py_overload_init.py": {
     "file_info": {
@@ -1587,7 +1718,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -1610,7 +1744,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/py_overload_init.py::Client::__init__",
@@ -1634,7 +1769,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/py_overload_init.py::Client::__init__",
@@ -1658,7 +1794,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/py_overload_init.py::Client::__init__",
@@ -1680,7 +1817,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/py_overload_init.py::Client::connect",
@@ -1702,7 +1840,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/py_overload_init.py::Client::build",
@@ -1726,7 +1865,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/py_overload_init.py::parse",
@@ -1750,7 +1890,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/py_overload_init.py::parse",
@@ -1774,7 +1915,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/python/py_overload_init.py::parse",
@@ -1796,7 +1938,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [
@@ -1816,6 +1959,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1841,6 +1985,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1866,6 +2011,7 @@
             "is_module_alias": true,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -1882,6 +2028,7 @@
       "parse",
       "parse"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -1891,11 +2038,13 @@
         "line": 17,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 378,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -1906,11 +2055,13 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 490,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -1922,6 +2073,8 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

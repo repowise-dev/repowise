@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.analysis.dead_code.serving import ServedFinding, serve_findings
 from repowise.core.attribution import attribution_enabled
-from repowise.core.ingestion.models import TEMPORAL_EDGE_TYPES
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES, NON_CODE_EDGE_TYPES
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -16,7 +17,7 @@ from repowise.core.persistence.models import (
     GraphNode,
     Repository,
 )
-from repowise.server.deps import get_db_session
+from repowise.server.deps import cross_repo_cut_inputs, get_db_session
 from repowise.server.routers.graph._common import with_repo
 from repowise.server.schemas import (
     DeadCodeGraphNodeResponse,
@@ -42,6 +43,7 @@ router = APIRouter()
 @router.get("/{repo_id}/ego", response_model=EgoGraphResponse)
 async def ego_graph(
     repo_id: str,
+    request: Request,
     node_id: str = Query(..., description="Center node ID"),
     hops: int = Query(2, ge=1, le=3),
     session: AsyncSession = Depends(get_db_session),
@@ -53,14 +55,14 @@ async def ego_graph(
     except ImportError:
         raise HTTPException(status_code=501, detail="networkx not available") from None
 
-    # Temporal edges are excluded from the traversal for the reason
+    # Temporal and documentation edges are excluded for the reason
     # `get_dependency_path` gives: a co-change edge is history, not a
     # reference, so it makes an unrelated file a 1-hop neighbour. Containment
     # stays — it is the only bridge from the file layer to the symbol layer.
     edge_result = await session.execute(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+            GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
         )
     )
     edges = edge_result.scalars().all()
@@ -119,7 +121,9 @@ async def ego_graph(
         else None
     )
 
-    signals = await collect_node_signals(session, repo_id, list(ego_node_ids))
+    signals = await collect_node_signals(
+        session, repo_id, list(ego_node_ids), **cross_repo_cut_inputs(request, repo_id)
+    )
 
     node_responses = [to_graph_node(n, signals.get(n.node_id, EMPTY_SIGNALS)) for n in node_rows]
 
@@ -136,6 +140,7 @@ async def ego_graph(
 @router.get("/{repo_id}/entry-points", response_model=GraphExportResponse)
 async def entry_points_graph(
     repo_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> GraphExportResponse:
@@ -151,7 +156,7 @@ async def entry_points_graph(
     edge_result = await session.execute(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.notin_(TEMPORAL_EDGE_TYPES),
+            GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
         )
     )
     edges = edge_result.scalars().all()
@@ -186,7 +191,9 @@ async def entry_points_graph(
     )
     nodes = node_result.scalars().all()
 
-    signals = await collect_node_signals(session, repo_id, list(reachable))
+    signals = await collect_node_signals(
+        session, repo_id, list(reachable), **cross_repo_cut_inputs(request, repo_id)
+    )
 
     node_responses = [to_graph_node(n, signals.get(n.node_id, EMPTY_SIGNALS)) for n in nodes]
 
@@ -206,6 +213,7 @@ async def entry_points_graph(
 @router.get("/{repo_id}/dead-nodes", response_model=DeadCodeGraphResponse)
 async def dead_code_graph(
     repo_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_db_session),
     _repo: object = Depends(with_repo),
 ) -> DeadCodeGraphResponse:
@@ -218,7 +226,8 @@ async def dead_code_graph(
             DeadCodeFinding.kind == "unreachable_file",
         )
     )
-    findings = finding_result.scalars().all()
+    cut = cross_repo_cut_inputs(request, repo_id)
+    findings = serve_findings(list(finding_result.scalars().all()), **cut)
 
     if not findings:
         return DeadCodeGraphResponse(nodes=[], links=[])
@@ -229,7 +238,7 @@ async def dead_code_graph(
         return DeadCodeGraphResponse(nodes=[], links=[])
 
     dead_paths = {f.file_path for f in findings}
-    finding_map: dict[str, DeadCodeFinding] = {f.file_path: f for f in findings}
+    finding_map: dict[str, ServedFinding] = {f.file_path: f for f in findings}
 
     node_result = await session.execute(
         select(GraphNode).where(
@@ -270,12 +279,14 @@ async def dead_code_graph(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.source_node_id.in_(list(dead_node_ids)),
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
     in_edge_result = await session.execute(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.target_node_id.in_(list(dead_node_ids)),
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
     all_edges = list(out_edge_result.scalars().all()) + list(in_edge_result.scalars().all())
@@ -298,7 +309,7 @@ async def dead_code_graph(
         neighbor_nodes = []
 
     all_node_ids = dead_node_ids | neighbor_ids
-    signals = await collect_node_signals(session, repo_id, list(all_node_ids))
+    signals = await collect_node_signals(session, repo_id, list(all_node_ids), **cut)
 
     def _to_dead_node(n: GraphNode, confidence_group: str) -> DeadCodeGraphNodeResponse:
         return node_to_response(
@@ -334,6 +345,7 @@ async def dead_code_graph(
 @router.get("/{repo_id}/hot-files", response_model=HotFilesGraphResponse)
 async def hot_files_graph(
     repo_id: str,
+    request: Request,
     days: int = Query(30, description="Time window in days: 7, 30, or 90"),
     limit: int = Query(25, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
@@ -372,6 +384,7 @@ async def hot_files_graph(
         select(GraphEdge).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.source_node_id.in_(list(hot_node_ids)),
+            GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
         )
     )
     out_edges = out_edge_result.scalars().all()
@@ -389,7 +402,9 @@ async def hot_files_graph(
         neighbor_nodes = []
 
     all_node_ids = hot_node_ids | neighbor_ids
-    signals = await collect_node_signals(session, repo_id, list(all_node_ids))
+    signals = await collect_node_signals(
+        session, repo_id, list(all_node_ids), **cross_repo_cut_inputs(request, repo_id)
+    )
 
     def _to_hot_node(n: GraphNode, commit_count: int) -> HotFilesNodeResponse:
         return node_to_response(

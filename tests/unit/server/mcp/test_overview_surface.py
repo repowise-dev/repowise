@@ -155,8 +155,10 @@ async def test_default_and_combined_overview_payloads_fit(setup_mcp):
 
     assert len(json.dumps(default, separators=(",", ":"), default=str)) <= 24_000
     assert len(json.dumps(combined, separators=(",", ":"), default=str)) <= 32_000
-    assert default["tool_surface"]["recipes"]
+    # The agent already holds its tool list; the guide ships on request.
+    assert "tool_surface" not in default
     assert "tool_guide" not in default
+    assert (await call(include=["tools"]))["tool_surface"]["recipes"]
 
 
 @pytest.mark.asyncio
@@ -164,7 +166,7 @@ async def test_live_registry_recipe_calls_bind_to_current_tool_signatures(setup_
     from repowise.core.registry import mcp_tool_registry
     from repowise.server.mcp_server import get_overview, tool_middleware
 
-    result = await tool_middleware(get_overview)()
+    result = await tool_middleware(get_overview)(include=["tools"])
     entries = {entry.name: entry for entry in mcp_tool_registry.entries()}
     recipe_requirements = {
         recipe.name: set(recipe.requires)

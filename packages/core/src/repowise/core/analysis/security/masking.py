@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 
 # Where each masking state can change. Every other character keeps the state,
 # so the scan jumps from one of these to the next instead of walking each one.
@@ -14,6 +15,8 @@ _STRING_STOP = {
 _NOT_NEWLINE = re.compile(r"[^\n]")
 _BLOCK_STOP = re.compile(r"/\*|\*/")
 _RAW_BACKTICK_STOP = re.compile("`")
+_INTERPOLATED_STOP = re.compile(r'[{}"\\]')
+_INTERPOLATED_VERBATIM_STOP = re.compile(r'[{}]|"')
 # Languages whose block comments nest, and Go, whose backtick string is raw: a
 # backslash there is a character, not an escape.
 _NESTED_COMMENT_SUFFIXES = (".kt", ".kts", ".scala", ".sc", ".swift", ".rs", ".dart")
@@ -74,7 +77,8 @@ def mask_comments_and_strings(
     state = "code"
     quote = ""
     triple = False
-    template_depth = 0
+    verbatim = False
+    stack: list[dict[str, Any]] = []
     while i < size:
         if state == "line_comment":
             stop = source.find("\n", i)
@@ -103,24 +107,105 @@ def mask_comments_and_strings(
             i = stop
             if match is not None and match.group() != "\\":
                 state = "code"
-                template_depth = 1 if match.group() == "${" else template_depth
+                if match.group() == "${":
+                    stack.append({"kind": "template", "depth": 1})
             continue
+
+        if state == "interpolated":
+            pattern = _INTERPOLATED_VERBATIM_STOP if verbatim else _INTERPOLATED_STOP
+            match = pattern.search(source, i)
+            if match is None:
+                if strings:
+                    blank(i, size)
+                break
+            matched = match.group()
+            pos = match.start()
+            if matched == "\\":
+                stop = min(match.end() + 1, size)
+                if strings:
+                    blank(i, stop)
+                i = stop
+                continue
+            if matched == "{":
+                if source.startswith("{{", pos):
+                    stop = pos + 2
+                    if strings:
+                        blank(i, stop)
+                    i = stop
+                    continue
+                stop = pos + 1
+                if strings:
+                    blank(i, stop)
+                i = stop
+                stack.append(
+                    {
+                        "kind": "interpolated",
+                        "depth": 1,
+                        "quote": quote,
+                        "triple": triple,
+                        "verbatim": verbatim,
+                    }
+                )
+                state = "code"
+                continue
+            if matched == "}":
+                if source.startswith("}}", pos):
+                    stop = pos + 2
+                    if strings:
+                        blank(i, stop)
+                    i = stop
+                    continue
+                stop = pos + 1
+                if strings:
+                    blank(i, stop)
+                i = stop
+                continue
+            if matched == quote:
+                if triple:
+                    if source.startswith(quote * 3, pos):
+                        stop = pos + 3
+                        if strings:
+                            blank(i, stop)
+                        i = stop
+                        state = "code"
+                        continue
+                    stop = pos + 1
+                    if strings:
+                        blank(i, stop)
+                    i = stop
+                    continue
+                if verbatim and source.startswith(quote * 2, pos):
+                    stop = pos + 2
+                    if strings:
+                        blank(i, stop)
+                    i = stop
+                    continue
+                stop = pos + 1
+                if strings:
+                    blank(i, stop)
+                i = stop
+                state = "code"
+                continue
 
         match = _CODE_STOP.search(source, i)
         if match is None:
             break
         i = match.start()
         char = source[i]
-        if template_depth and char == "{":
-            template_depth += 1
+        if stack and char == "{":
+            stack[-1]["depth"] += 1
             i += 1
-        elif template_depth and char == "}":
+        elif stack and char == "}":
             if strings:
                 blank(i, i + 1)
-            template_depth -= 1
+            stack[-1]["depth"] -= 1
             i += 1
-            if template_depth == 0:
-                state = "template"
+            if stack[-1]["depth"] == 0:
+                frame = stack.pop()
+                state = frame["kind"]
+                quote = frame.get("quote", "")
+                triple = frame.get("triple", False)
+                verbatim = frame.get("verbatim", False)
         elif (hash_comments and char == "#") or source.startswith("//", i):
             width = 1 if char == "#" else 2
             blank(i, i + width)
@@ -139,10 +224,18 @@ def mask_comments_and_strings(
             quote = char
             triple = source.startswith(quote * 3, i)
             width = 3 if triple else 1
+            is_interpolated = False
+            verbatim = False
+            if char == '"' and i > 0:
+                if source.endswith(("$@", "@$"), 0, i):
+                    is_interpolated = True
+                    verbatim = True
+                elif source.endswith("$", 0, i):
+                    is_interpolated = True
             if strings:
                 blank(i, i + width)
             i += width
-            state = "string"
+            state = "interpolated" if is_interpolated else "string"
         else:
             i += 1
     out.append(source[copied:])

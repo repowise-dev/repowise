@@ -43,6 +43,10 @@ from repowise.core.persistence.crud import (
     load_coverage_history,
 )
 from repowise.core.persistence.crud.analysis.fix_first import load_fix_first, queue_view
+from repowise.core.persistence.crud.analysis.performance import (
+    PerformanceHeadline,
+    performance_headline,
+)
 from repowise.core.persistence.crud.analysis.queue_counts import unit_counts
 from repowise.core.persistence.crud.analysis.refactoring import gated_plan_counts
 from repowise.core.persistence.models import HealthFileMetric
@@ -53,6 +57,7 @@ from repowise.server.mcp_server.tool_health.findings import (
     load_dashboard_findings,
     load_targeted_findings,
     read_accuracy_rows,
+    read_crap_rows,
     read_withheld_rows,
 )
 from repowise.server.mcp_server.tool_health.pillars import (
@@ -88,7 +93,7 @@ class HealthData:
     leads: dict[str, dict[str, Any]]
     hotspot_paths: set[str] = field(default_factory=set)
     perf_coverage: PerfCoverage | None = None
-    perf_findings_count: int = 0
+    perf_causes: PerformanceHeadline | None = None
     accuracy_rows: list[Any] = field(default_factory=list)
     #: The queue's plans, read only when ``refactoring_plans`` is named.
     refactoring_plans: RefactoringPlanPage | None = None
@@ -100,6 +105,8 @@ class HealthData:
     drift_rows: list[Any] = field(default_factory=list)
     drift_unavailable: str | None = None
     churn_points: list[dict[str, Any]] = field(default_factory=list)
+    #: ``untested_complexity`` findings ranked by CRAP, read only on that include.
+    crap_rows: list[dict[str, Any]] = field(default_factory=list)
     snapshots: list[Any] = field(default_factory=list)
     fix_first: FixFirstQueue | None = None
     #: The whole queue the page was cut from: its lead and its counts.
@@ -166,8 +173,8 @@ async def load_health_data(
         ),
     )
     data.hotspot_paths = await _read_hotspot_paths(session, repository, pop, req)
-    data.perf_coverage, data.perf_findings_count = await _read_perf_headline(
-        session, repository, pop, req, findings.lead_rows
+    data.perf_coverage, data.perf_causes = await _read_perf_headline(
+        session, repository, pop, req
     )
     data.accuracy_rows = await read_accuracy_rows(session, repository, pop, req)
     data.refactoring_plans, data.refactoring_plans_ignored = await _read_refactoring_plans(
@@ -186,6 +193,7 @@ async def load_health_data(
         session, repository, pop, req
     )
     data.churn_points = await _read_churn_points(session, repository, pop, req)
+    data.crap_rows = await read_crap_rows(session, repository, pop, req, reference_repository)
     data.snapshots = await _read_snapshots(session, repository, pop, req)
     data.withheld_rows = await read_withheld_rows(session, repository, pop, req)
     data.by_leverage, data.leads = _rank_leverage_and_leads(
@@ -273,18 +281,22 @@ async def _read_hotspot_paths(
 
 
 async def _read_perf_headline(
-    session: Any, repository: Any, pop: Population, req: HealthRequest, lead_rows: list[Any]
-) -> tuple[PerfCoverage | None, int]:
+    session: Any, repository: Any, pop: Population, req: HealthRequest
+) -> tuple[PerfCoverage | None, PerformanceHeadline | None]:
     """Dashboard perf headline: coverage (how much of the analyzed code the
-    perf pass ran on) + open performance-finding count. Both feed ``kpis``
-    alone, so a projection that drops kpis skips the language-map read."""
+    perf pass ran on) + the open causes, as every surface counts them. Both
+    feed ``kpis`` alone, so a projection that drops kpis skips both reads."""
     if pop.scoped or not req.wants("kpis"):
-        return None, 0
+        return None, None
     lang_by_path = await get_file_language_map(session, repository.id)
-    return (
-        coverage_for_metrics(pop.all_metrics, lang_by_path),
-        sum(1 for f in lead_rows if (f.dimension or "defect") == "performance"),
+    coverage = coverage_for_metrics(pop.all_metrics, lang_by_path)
+    causes = await performance_headline(
+        session,
+        repository.id,
+        covered_nloc=coverage.covered_nloc,
+        include_unverified=req.include_unverified,
     )
+    return coverage, causes
 
 
 async def _read_refactoring_plans(

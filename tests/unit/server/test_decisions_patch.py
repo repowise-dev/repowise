@@ -165,7 +165,7 @@ async def test_patch_decision_resolves_same_repo_successor_alias(
                 alias_id=retired_id,
                 repository_id=repo["id"],
                 decision_id=successor_id,
-                reason="superseded",
+                reason="rekeyed",
             )
         )
         await session.commit()
@@ -200,3 +200,84 @@ async def test_patch_decision_not_found(client: AsyncClient) -> None:
         json={"status": "deprecated"},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_reaffirm_appends_a_reaffirmed_row(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    decision_id = await _seed_decision(app.state.session_factory, repo["id"])
+
+    resp = await client.post(f"/api/repos/{repo['id']}/decisions/{decision_id}/reaffirm")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "active"
+    async with get_session(app.state.session_factory) as session:
+        latest = await crud.latest_acceptance(session, decision_id)
+    assert (latest.action, latest.accepter, latest.accepter_kind) == ("reaffirmed", "web", "person")
+
+
+@pytest.mark.asyncio
+async def test_reaffirm_refuses_a_candidate(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    async with get_session(app.state.session_factory) as session:
+        rec = await crud.upsert_decision(
+            session,
+            repository_id=repo["id"],
+            title="Never accepted",
+            status="proposed",
+            decision="Do the thing.",
+            affected_files=["src/app.py"],
+            source="cli",
+        )
+        candidate_id = rec.id
+
+    resp = await client.post(f"/api/repos/{repo['id']}/decisions/{candidate_id}/reaffirm")
+
+    assert resp.status_code == 400
+    assert "confirm" in resp.json()["detail"]
+
+
+async def _seed_reasonless_candidate(session_factory, repo_id: str) -> str:
+    async with get_session(session_factory) as session:
+        rec = await crud.upsert_decision(
+            session,
+            repository_id=repo_id,
+            title="Reply with the fix inline",
+            status="proposed",
+            decision="Reply with the fix inline.",
+            affected_files=["src/app.py"],
+            source="cli",
+        )
+        return rec.id
+
+
+@pytest.mark.asyncio
+async def test_confirm_without_a_reason_names_the_gap(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    candidate_id = await _seed_reasonless_candidate(app.state.session_factory, repo["id"])
+
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}/decisions/{candidate_id}",
+        json={"status": "active"},
+    )
+
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert detail["blockers"] == ["no rationale or explicit constraint reason"]
+    assert detail["message"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_with_a_reason_accepts_and_stores_it(client: AsyncClient, app) -> None:
+    repo = await create_test_repo(client)
+    candidate_id = await _seed_reasonless_candidate(app.state.session_factory, repo["id"])
+
+    resp = await client.patch(
+        f"/api/repos/{repo['id']}/decisions/{candidate_id}",
+        json={"status": "active", "reason": "  Reviewers read the fix in place.  "},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "active"
+    assert body["rationale"] == "Reviewers read the fix in place."

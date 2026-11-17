@@ -19,6 +19,7 @@ import {
 import { useRepo } from "@/lib/hooks/use-repo";
 import { PathFinderPanel } from "./path-finder-panel";
 import { GraphCommunityPanel } from "./graph-community-panel";
+import { useGraphMapCopy } from "./use-graph-map-copy";
 import type {
   GraphExport,
   ExecutionFlows,
@@ -109,6 +110,7 @@ export function GraphFlow({
   rail,
 }: GraphFlowProps) {
   const router = useRouter();
+  const { flow: copy } = useGraphMapCopy();
   // Constellation (Knowledge Graph) is the default scope.
   const [viewModeState, setViewModeState] = useState<ViewMode>(
     initialViewMode ?? "architecture",
@@ -161,6 +163,7 @@ export function GraphFlow({
       headerActions={headerActions}
       banner={banner}
       rail={rail}
+      copy={copy}
       fullGraph={fullGraph as GraphExport | undefined}
       isLoadingFullGraph={fullLoading}
       constellationGraph={constellationGraph as ArchitectureGraph | undefined}

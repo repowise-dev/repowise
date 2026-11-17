@@ -17,8 +17,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..perf.io_boundaries import _finish_io_names, _io_visit
+from .ast_utils import _UNIT_LAMBDA_KINDS
 from .error_handling import _eh_node_kinds, _eh_rust_attr_is_test, _eh_visit
 from .languages import LanguageNodeMap
+from .markup import ARM_KINDS, CALL_KINDS, CHAIN_MEMBER_KINDS, LITERAL_KINDS
 from .models import ErrorHandlingHit
 from .nloc import CodeLineIndex, _source_lines, is_docstring_stmt
 
@@ -44,12 +46,23 @@ class FileScan:
     class_nodes: list[Node]
     #: Every ``function_kinds`` node in the file, at any depth: the ones
     #: ``_collect_function_nodes`` returns and the ones nested below them.
+    #: Every lambda that can be a unit of its own (``arrow_function``) is
+    #: here too, in the same order, for ``_nested_function_nodes`` to sift.
     function_nodes: list[Node]
     #: 1-indexed ``(start_line, end_line)`` spans of Rust test-only code.
     rust_test_line_ranges: tuple[tuple[int, int], ...]
     #: ``perf.io_boundaries.collect_io_names`` for the file, or ``{}`` when
     #: the scan was not asked for it.
     io_names: dict[str, str]
+    #: Literals (strings, tables) spanning more than one line, outside docstrings, for
+    #: ``markup.markup_rows`` to count their continuation lines as data.
+    literals: list[Node]
+    #: Switch / when / match arms, for ``markup.markup_rows`` to count the
+    #: literal-only ones as data.
+    arms: list[Node]
+    #: Multi-line calls that end a method chain, for ``markup.markup_rows`` to
+    #: count a builder chain's continuation rows as data.
+    chains: list[Node]
 
 
 def _rust_item_is_test(node: Node) -> bool:
@@ -99,13 +112,16 @@ def scan_file(
     hits: list[ErrorHandlingHit] = []
     class_nodes: list[Node] = []
     function_nodes: list[Node] = []
+    literals: list[Node] = []
+    arms: list[Node] = []
+    chains: list[Node] = []
     rust_ranges: list[tuple[int, int]] = []
     io_bound: dict[str, str] = {}
     io_rebound: set[str] = set()
 
     eh_kinds = _eh_node_kinds(language, lmap)
     class_kinds = lmap.class_kinds
-    function_kinds = lmap.function_kinds
+    unit_kinds = lmap.function_kinds | (lmap.lambda_kinds & _UNIT_LAMBDA_KINDS)
     is_rust = language == "rust"
 
     stack: list[tuple[Node, int]] = [(root, 0)]
@@ -120,7 +136,7 @@ def scan_file(
             _eh_visit(node, language, lmap, hits)
         if class_kinds and t in class_kinds and node.is_named:
             class_nodes.append(node)
-        if t in function_kinds:
+        if t in unit_kinds:
             function_nodes.append(node)
         if (
             is_rust
@@ -139,6 +155,21 @@ def scan_file(
                 excluded.append((node.start_byte, node.end_byte))
         elif not ctx & _IN_COMMENT and "comment" in t:
             ctx |= _IN_COMMENT
+        if (
+            t in LITERAL_KINDS
+            and node.end_point[0] > node.start_point[0]
+            and not ctx & _IN_DOCSTRING
+        ):
+            literals.append(node)
+        elif t in ARM_KINDS:
+            arms.append(node)
+        elif (
+            t in CALL_KINDS
+            and node.end_point[0] > node.start_point[0]
+            and node.parent.type not in CHAIN_MEMBER_KINDS
+            and node.parent.type not in CALL_KINDS
+        ):
+            chains.append(node)
 
         children = node.children
         if children:
@@ -178,4 +209,7 @@ def scan_file(
         function_nodes=function_nodes,
         rust_test_line_ranges=tuple(rust_ranges),
         io_names=_finish_io_names(io_bound, io_rebound),
+        literals=literals,
+        arms=arms,
+        chains=chains,
     )

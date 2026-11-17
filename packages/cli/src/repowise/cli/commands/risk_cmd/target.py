@@ -143,7 +143,9 @@ def _print_global_hotspots(hotspots: list) -> None:
     table.add_column("File", style="cyan")
     table.add_column("Hotspot", justify="right")
     table.add_column("Owner")
-    table.add_column("Fixes", justify="right")
+    # The header carries the window the rows' counts share.
+    window = next((h["window"] for h in hotspots if h.get("window")), None)
+    table.add_column(f"Fixes ({window})" if window else "Fixes", justify="right")
     for h in hotspots:
         score = h.get("hotspot_score")
         fixes = h.get("fix_count")

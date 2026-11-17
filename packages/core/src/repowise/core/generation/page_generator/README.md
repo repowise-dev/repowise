@@ -49,6 +49,8 @@ from repowise.core.generation.page_generator import PageGenerator, SYSTEM_PROMPT
 - `levels.py` — pure per-level coroutine builders reading the run state.
 - `structural.py` — renderers that build a page from structure with no model
   call: the sole renderers (file pages among them) and the keyless stubs.
+- `reuse.py` — cross-run reuse of model pages: the subject reuse key and the
+  gate that decides whether a prior run's page is returned instead of a call.
 - `prompts.py`, `validation.py`, `helpers.py` — constants and pure helpers.
 
 ## Extension points

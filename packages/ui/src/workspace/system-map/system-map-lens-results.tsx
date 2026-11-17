@@ -246,8 +246,10 @@ function ConformanceResults({ conformance, graph, onSelect, onPrompt, conformanc
       ? "No dependency rules are declared, so only cycles are checked."
       : `${plural(conformance.rules_evaluated, "rule", "rules")} checked, ${plural(conformance.violation_count, "violation", "violations")}.`;
   const cycles =
-    total > conformance.cycle_count
-      ? `${conformance.cycle_count} of ${plural(total, "dependency cycle", "dependency cycles")} listed.`
+    conformance.cycles_determined === false && conformance.cycle_count === 0
+      ? `Dependency cycles not determined: ${conformance.evidence?.summary ?? "too little evidence"}.`
+      : total > conformance.cycle_count
+      ? `${conformance.cycle_count} of ${conformance.total_capped ? "at least " : ""}${plural(total, "dependency cycle", "dependency cycles")} listed.`
       : `${plural(conformance.cycle_count, "dependency cycle", "dependency cycles")}.`;
 
   return (
@@ -315,7 +317,7 @@ export function NodeLink({
     <button
       type="button"
       onClick={() => onSelect({ type: "node", id })}
-      className="cursor-pointer font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+      className="cursor-pointer font-medium text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
     >
       {label}
     </button>
@@ -359,7 +361,7 @@ export function CycleRow({
                 key={eid}
                 type="button"
                 onClick={() => onSelect({ type: "edge", id: eid })}
-                className="cursor-pointer font-mono text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="cursor-pointer font-mono text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
                 {e ? `${name(e.source)} → ${name(e.target)} ${edgeKindStyle(e.kind).label}` : eid}
               </button>
@@ -390,7 +392,9 @@ function CoreResults({ architecture, graph, selection, onSelect }: SystemMapLens
     .join(", ");
   const core = architecture.core_members.map(name);
   const description =
-    architecture.core_size === 0
+    architecture.core_size === null
+      ? `Core and roles not determined: ${architecture.evidence?.summary ?? "too little evidence"}.`
+      : architecture.core_size === 0
       ? `No services form a cycle, so there is no cyclic core. Roles: ${breakdown}.`
       : `${core.join(" and ")} form the cyclic core: ${architecture.core_size} of ${architecture.node_count} services that all reach each other through contracts or imports. Roles: ${breakdown}. Reach counts other services along structural dependencies.`;
 

@@ -136,6 +136,14 @@ def analysed_note(analysed: int, unanalysed: int) -> str | None:
     return f"analysed {analysed} of {analysed + unanalysed} code files"
 
 
+def headline_scope(analysed: int, unanalysed: int) -> str | None:
+    """``"across N of M code files"`` when a minority was analysed, else ``None``."""
+    share = analysed_share(analysed, unanalysed)
+    if share is None or share >= HEADLINE_MIN_ANALYSED_SHARE:
+        return None
+    return f"across {analysed} of {analysed + unanalysed} code files"
+
+
 def format_score(score: float) -> str:
     """A 1-10 score at one decimal, rounded down, for display beside its band.
 

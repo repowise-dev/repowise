@@ -26,7 +26,9 @@ Guarantees:
     worktrees and submodules use a ``.git`` file) are pruned by default.
     Detection is free: ``.git`` appears in ``os.walk``'s own listings.
   - Symlinks are never followed; junction/hard-link cycles are detected via
-    realpath tracking (Windows ``os.walk`` can't see them via inodes).
+    realpath tracking (Windows ``os.walk`` can't see them via inodes). Only a
+    link is resolved; a plain directory's real path is its parent's plus its
+    name, read from the listing at no extra system call.
   - A link (symlink or junction) whose target is **inside** the walk root is
     pruned, so the target's subtree is walked exactly once and under its own
     name. Recording the target as visited instead let whichever of the pair
@@ -39,6 +41,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import stat
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
@@ -128,6 +131,68 @@ def _is_within(candidate: str, root_real: str) -> bool:
     return cand == root or cand.startswith(root + os.sep)
 
 
+def _is_reparse_point(entry: os.DirEntry[str]) -> bool:
+    """True for a Windows junction or other mount point (never off Windows).
+
+    Free: on Windows ``stat(follow_symlinks=False)`` is served from the
+    listing's own attributes. A failed read answers True so ``realpath`` decides.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        attrs = entry.stat(follow_symlinks=False).st_file_attributes
+    except OSError:
+        return True
+    return bool(attrs & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _scan(top: str) -> Iterator[tuple[str, list[str], list[str], set[str]]]:
+    """``os.walk(top, followlinks=False)``, top-down, plus each listing's links.
+
+    ``os.walk`` reads every entry's link state and drops it, then ``realpath``
+    had to ask the filesystem again: two ``_getfinalpathname`` calls per
+    directory on Windows, about 2/3 of a pruned walk. Keeping the state lets
+    :func:`walk_repo` resolve only the links. Mutating the yielded dirnames
+    prunes the descent, exactly as with ``os.walk``.
+    """
+    stack = [top]
+    while stack:
+        dirpath = stack.pop()
+        dirnames: list[str] = []
+        filenames: list[str] = []
+        links: set[str] = set()
+        symlinks: set[str] = set()
+        try:
+            with os.scandir(dirpath) as it:
+                for entry in it:
+                    try:
+                        is_dir = entry.is_dir()
+                    except OSError:
+                        is_dir = False
+                    if not is_dir:
+                        filenames.append(entry.name)
+                        continue
+                    dirnames.append(entry.name)
+                    try:
+                        is_symlink = entry.is_symlink()
+                    except OSError:
+                        is_symlink = True
+                    if is_symlink:
+                        symlinks.add(entry.name)
+                        links.add(entry.name)
+                    elif _is_reparse_point(entry):
+                        links.add(entry.name)
+        except OSError:
+            continue
+        yield dirpath, dirnames, filenames, links
+        # Like ``os.walk(followlinks=False)``: a symlink is listed, never
+        # entered; a junction is entered, so walk_repo's realpath checks
+        # are what stop it.
+        stack.extend(
+            os.path.join(dirpath, d) for d in reversed(dirnames) if d not in symlinks
+        )
+
+
 def walk_repo(
     root: Path | str,
     *,
@@ -136,7 +201,7 @@ def walk_repo(
     max_depth: int = _MAX_WALK_DEPTH,
     prune: Callable[[Path], bool] | None = None,
 ) -> Iterator[tuple[Path, list[str], list[str]]]:
-    """``os.walk`` over *root* with pruning. Yields ``(dirpath, dirnames, filenames)``.
+    """Top-down walk over *root* with pruning. Yields ``(dirpath, dirnames, filenames)``.
 
     Use this (instead of :func:`iter_glob`) when one pass should collect
     several kinds of files — match against ``filenames`` yourself.
@@ -165,12 +230,16 @@ def walk_repo(
         return
     base_depth = root_real.rstrip(os.sep).count(os.sep)
     visited_real: set[str] = {root_real}
+    # Resolved path of each directory queued for descent, keyed by the path
+    # the walk yields it under, so a plain child resolves by a join.
+    top = os.fspath(root_path)
+    real_of: dict[str, str] = {top: root_real}
 
     is_root = True
-    for dirpath, dirnames, filenames in os.walk(root_path, followlinks=False):
+    for dirpath, dirnames, filenames, links in _scan(top):
         # Nested git repo? ``.git`` shows up in this dir's own listing — no
         # extra stat calls needed. The walk root itself is exempt (it IS the
-        # repo being scanned); top-down os.walk always yields it first.
+        # repo being scanned); the top-down walk always yields it first.
         if is_root:
             is_root = False
         elif prune_nested_git and (".git" in dirnames or ".git" in filenames):
@@ -196,20 +265,27 @@ def walk_repo(
         # tree. That is not exotic — macOS ``/tmp`` is a symlink to
         # ``/private/tmp``, container bind mounts and mapped drives do the same,
         # and a repo checked out under one would have indexed as empty.
-        # Resolving the parent once per directory keeps both sides of the
-        # comparison resolved to the same depth, so only a genuine reparse point
-        # differs.
-        try:
-            parent_real = os.path.realpath(dirpath)
-        except OSError:
-            parent_real = str(dirpath)
+        # Carrying each directory's resolved path down from its parent keeps
+        # both sides of the comparison resolved to the same depth, so only a
+        # genuine reparse point differs.
+        parent_real = real_of.pop(dirpath, None)
+        if parent_real is None:
+            try:
+                parent_real = os.path.realpath(dirpath)
+            except OSError:
+                parent_real = str(dirpath)
         for d in dirnames:
             child = os.path.join(dirpath, d)
-            try:
-                child_real = os.path.realpath(child)
-            except OSError:
-                cycle_pruned.append(d)
-                continue
+            # Only a link can resolve anywhere but ``parent_real/d``, so only a
+            # link pays for ``realpath``.
+            if d in links:
+                try:
+                    child_real = os.path.realpath(child)
+                except OSError:
+                    cycle_pruned.append(d)
+                    continue
+            else:
+                child_real = os.path.join(parent_real, d)
             # A reparse point — symlink, junction, bind mount — resolving
             # somewhere else. Its target is NOT territory this entry owns, and
             # recording it as visited is what let a link *delete* its target's
@@ -236,6 +312,7 @@ def walk_repo(
                 cycle_pruned.append(d)
                 continue
             visited_real.add(child_real)
+            real_of[child] = child_real
         if cycle_pruned:
             dirnames[:] = [d for d in dirnames if d not in cycle_pruned]
 

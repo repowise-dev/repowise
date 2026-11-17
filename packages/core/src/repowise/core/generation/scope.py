@@ -17,6 +17,8 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any
 
+import structlog
+
 from repowise.core.cost_estimator.types import PageTypePlan
 from repowise.core.generation.cascade import (
     CascadeMode,
@@ -32,6 +34,8 @@ from repowise.core.generation.page_selection import (
     resolve_page_selection,
 )
 from repowise.core.generation.selection import Selection, SelectionInputs, select_pages
+
+log = structlog.get_logger(__name__)
 
 # Page types that describe the whole repository (as opposed to one file/module).
 _REPO_WIDE_TYPES = frozenset({"repo_overview", "onboarding"})
@@ -88,9 +92,54 @@ def load_page_records(pages: list[Any]) -> list[PageRecord]:
                 target_path=p.target_path,
                 is_template=is_template,
                 freshness_status=getattr(p, "freshness_status", "fresh"),
+                pinned=bool(getattr(p, "pinned", False)),
             )
         )
     return records
+
+
+async def _model_page_records(session: Any, repo_id: str) -> list[PageRecord]:
+    """The stored pages of the types a model writes, as the planner reads them."""
+    from sqlalchemy import select
+
+    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+    from repowise.core.persistence.models import Page
+
+    rows = (
+        await session.execute(
+            select(Page).where(
+                Page.repository_id == repo_id,
+                Page.page_type.in_(list(MODEL_WRITTEN_PAGE_TYPES)),
+            )
+        )
+    ).scalars()
+    return load_page_records(list(rows))
+
+
+async def unwritten_model_page_count(session: Any, repo_id: str) -> int:
+    """Pages a model writes that are still on their stub: what ``generate`` writes by default.
+
+    Uses :func:`load_page_records`'s predicate, so a ``model_free`` page (written
+    by a deterministic subkind) is not counted when ``generate --unwritten``
+    would never select it.
+    """
+    return sum(1 for record in await _model_page_records(session, repo_id) if record.is_template)
+
+
+async def generate_model_calls(session: Any, repo_id: str, repo_path: Any) -> int:
+    """Model calls a default ``generate`` makes: its pages plus the pending decision lanes.
+
+    The pages are the unwritten ones and the pinned ones, which ``generate``
+    always rewrites. The count any "about N minutes" for that run is sized
+    by, so an estimate made before the run matches the one ``generate`` prints.
+    """
+    from pathlib import Path
+
+    from repowise.core.decision_lanes import planned_lane_calls
+
+    records = await _model_page_records(session, repo_id)
+    pages = sum(1 for record in records if record.is_template or record.pinned)
+    return pages + await planned_lane_calls(session, repo_id, Path(repo_path))
 
 
 def _selection_inputs(
@@ -126,6 +175,7 @@ def _selection_inputs(
         git_meta_map=None,
         config=config,
         kg_modules=kg_modules,
+        symbol_uses=graph_builder.symbol_uses(),
     )
 
 
@@ -170,7 +220,25 @@ def build_dependencies(
         module_groups=selection.module_groups,
         scc_groups=selection.scc_groups,
         repo_wide_ids=repo_wide_ids,
+        flow_pages_of=_flow_dependencies(parsed_files, graph_builder),
     )
+
+
+def _flow_dependencies(parsed_files: list[Any], graph_builder: Any) -> dict[str, tuple[str, ...]]:
+    """``file -> flow page ids`` from the same selection generation runs.
+
+    A graph that cannot be walked costs the flow pages their staleness signal,
+    not the update, and says so: a silent empty map would leave every flow page
+    looking current.
+    """
+    from repowise.core.generation.flow_pages import flow_pages_of_files, plans_for_index
+
+    try:
+        plans = plans_for_index(graph_builder, parsed_files)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        log.warning("cascade.flow_dependencies_failed", error=str(exc))
+        return {}
+    return flow_pages_of_files(plans)
 
 
 def selection_page_ids(sel: Selection, repo_name: str) -> set[str]:

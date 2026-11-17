@@ -70,6 +70,12 @@ export {
   type CommitPromptInput,
 } from "./ai-prompts/commit-prompt";
 export {
+  buildBlastRadiusPrompt,
+  type BlastPromptChange,
+  type BlastPromptInput,
+  type BuildBlastPromptOptions,
+} from "./ai-prompts/blast-radius-prompt";
+export {
   buildChangeAiPrompt,
   changePromptFixes,
   type BuildChangePromptOptions,
@@ -98,6 +104,7 @@ export {
   type AreaPromptFinding,
   type BuildAreaPromptOptions,
 } from "./ai-prompts/area-prompt";
+export { buildSetupAiPrompt, type SetupPromptRow } from "./ai-prompts/setup-prompt";
 export {
   buildPerformanceAreaPrompt,
   type BuildPerformanceAreaPromptOptions,

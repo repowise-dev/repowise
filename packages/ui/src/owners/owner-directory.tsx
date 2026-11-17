@@ -17,7 +17,7 @@ export interface OwnerDirectoryFilters {
   q: string;
   sort: OwnerSortKey;
   /** List bots and coding agents beside people. Off by default. */
-  includeAutomation: boolean;
+  includeAutomation?: boolean;
 }
 
 export interface OwnerDirectoryProps {
@@ -29,7 +29,9 @@ export interface OwnerDirectoryProps {
   filters: OwnerDirectoryFilters;
   onFiltersChange: (next: OwnerDirectoryFilters) => void;
   /** Load every remaining row; offered while `hasMore`. */
-  onShowAll: () => void;
+  onShowAll?: () => void;
+  /** @deprecated Use `onShowAll`; used only when `onShowAll` is absent. */
+  onLoadMore?: () => void;
   onSelect: (owner: OwnerListEntry) => void;
   /** Bot and agent identities in the index; the toggle shows only when there are some. */
   automationCount?: number;
@@ -39,6 +41,12 @@ export interface OwnerDirectoryProps {
   /** Rendered in place of the table when the list could not load. */
   error?: React.ReactNode;
   labels?: Partial<OwnershipLabels> | undefined;
+  /**
+   * Accepted and ignored, for callers that still pass them: the distribution
+   * bar and the section links moved to `OwnershipLede`.
+   */
+  distributionOwners?: OwnerListEntry[];
+  base?: string;
 }
 
 /**
@@ -55,6 +63,7 @@ export function OwnerDirectory({
   filters,
   onFiltersChange,
   onShowAll,
+  onLoadMore,
   onSelect,
   automationCount = 0,
   hrefFor,
@@ -63,7 +72,7 @@ export function OwnerDirectory({
   labels: overrides,
 }: OwnerDirectoryProps) {
   const labels = React.useMemo(() => ownershipLabels(overrides), [overrides]);
-  const all = filters.includeAutomation;
+  const all = filters.includeAutomation ?? false;
   return (
     <OverviewSection
       title={labels.everyone}
@@ -88,7 +97,7 @@ export function OwnerDirectory({
         {automationCount > 0 && (
           <label className="flex items-center gap-2 text-xs text-[var(--color-text-secondary)]">
             <Switch
-              checked={filters.includeAutomation}
+              checked={all}
               onCheckedChange={(includeAutomation) => onFiltersChange({ ...filters, includeAutomation })}
             />
             {labels.showAutomation(automationCount)}
@@ -133,7 +142,7 @@ export function OwnerDirectory({
       {hasMore && (
         <button
           type="button"
-          onClick={onShowAll}
+          onClick={onShowAll ?? onLoadMore}
           disabled={isValidating}
           className="self-start text-xs text-[var(--color-accent-primary)] hover:underline disabled:text-[var(--color-text-tertiary)] disabled:no-underline"
         >

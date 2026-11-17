@@ -10,11 +10,11 @@ the list, the panel and the drill-down count the same files.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.persistence import crud
-from repowise.server.deps import get_db_session
+from repowise.server.deps import cross_repo_cut_inputs, get_db_session
 from repowise.server.mcp_server._graph_utils import (
     community_cohesion,
     community_conductance,
@@ -86,6 +86,7 @@ async def architecture_graph(
 async def community_slice(
     repo_id: str,
     community_id: int,
+    request: Request,
     member_limit: int = Query(SLICE_MEMBER_CAP, ge=1, le=600),
     population: Population = Depends(population_params),
     session: AsyncSession = Depends(get_db_session),
@@ -93,7 +94,12 @@ async def community_slice(
 ) -> CommunitySliceResponse:
     """Return a single community's sub-graph for the drill-down."""
     return await build_community_slice(
-        session, repo_id, community_id, member_limit=member_limit, population=population
+        session,
+        repo_id,
+        community_id,
+        member_limit=member_limit,
+        population=population,
+        cut=cross_repo_cut_inputs(request, repo_id),
     )
 
 

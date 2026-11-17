@@ -89,18 +89,8 @@ async def docs_split(session: AsyncSession, repo_id: str) -> dict:
 
 async def stat_strip(session: AsyncSession, repo_id: str) -> dict:
     """Graph, docs, dead-export and hotspot counts, in payload order."""
-    file_count = await _count(
-        session,
-        select(func.count(GraphNode.id)).where(
-            GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
-        ),
-    )
-    symbol_count = int(
-        await session.scalar(
-            select(func.sum(GraphNode.symbol_count)).where(GraphNode.repository_id == repo_id)
-        )
-        or 0
-    )
+    file_count = await crud.count_files(session, repo_id)
+    symbol_count = await crud.count_symbols(session, repo_id)
     entry_point_count = await _count(
         session,
         select(func.count(GraphNode.id)).where(
@@ -174,7 +164,7 @@ async def language_mix(session: AsyncSession, repo_id: str) -> dict:
     that, count languages in SQL and fetch only code paths.
     """
     node_rows = await session.execute(
-        select(GraphNode.node_id, GraphNode.language, GraphNode.external_system_id).where(
+        select(GraphNode.node_id, GraphNode.language).where(
             GraphNode.repository_id == repo_id, GraphNode.node_type == "file"
         )
     )
@@ -266,7 +256,7 @@ def snapshot_history(snapshot: Any) -> list[dict]:
 
 
 async def health_block(
-    session: AsyncSession, repo_id: str, health_metrics: list[Any], snapshot: Any
+    session: AsyncSession, repo_id: str, health_metrics: list[Any], snapshot: Any, repo: Any
 ) -> dict:
     """Health KPIs, the defect-accuracy stat and the snapshot trend.
 
@@ -287,9 +277,7 @@ async def health_block(
         session, repo_id, metrics=health_metrics, findings=findings
     )
     hotspot_paths = await crud.get_hotspot_file_paths(session, repo_id)
-    last_indexed_at = (
-        snapshot.taken_at.isoformat() if snapshot.snapshot_count and snapshot.taken_at else None
-    )
+    indexed_at = crud.index_synced_at(repo)
     return {
         "average_health": summary.get("average_health"),
         # Files in a language health has no dialect for: in no figure here.
@@ -309,20 +297,22 @@ async def health_block(
         # The two co-equal pillars surfaced alongside the defect headline.
         "maintainability_average": summary.get("maintainability_average"),
         "performance_average": summary.get("performance_average"),
-        "performance_findings": summary.get("performance_findings", 0),
+        # Open causes: worth fixing now, in production code, overall.
+        "performance_causes": summary.get("performance_causes"),
         "worst_performance_path": summary.get("worst_performance_path"),
         "worst_performance_score": summary.get("worst_performance_score"),
         "severity_breakdown": health_severity_breakdown(findings),
         "defect_accuracy": defect_accuracy(health_metrics, findings),
-        "last_indexed_at": last_indexed_at,
+        "last_indexed_at": indexed_at.isoformat() if indexed_at else None,
         # The true total, not the length of the windowed read.
         "snapshot_count": snapshot.snapshot_count,
         "history": snapshot_history(snapshot),
     }
 
 
-async def attention_block(session: AsyncSession, repo_id: str) -> dict:
-    """``attention``, ``attention_summary`` and ``onboarding_targets``."""
+async def attention_block(session: AsyncSession, repo_id: str, cut: dict | None = None) -> dict:
+    """``attention``, ``attention_summary`` and ``onboarding_targets``; *cut* is
+    the dead-code cross-repo cut's inputs (``deps.cross_repo_cut_inputs``)."""
     decision_health = await crud.get_decision_health_summary(session, repo_id)
     # Silos only. The full knowledge map also computes top owners and
     # onboarding targets, and paying for those here meant loading the content
@@ -339,6 +329,7 @@ async def attention_block(session: AsyncSession, repo_id: str) -> dict:
         repo_id,
         decision_health=decision_health,
         knowledge_silos=knowledge_silos,
+        **(cut or {}),
     )
     return {
         "attention": result["items"],
@@ -403,47 +394,53 @@ async def savings_block(repo_local_path: str | None) -> dict:
     }
 
 
+def _job_mode(job: Any) -> str | None:
+    try:
+        return json.loads(job.config_json or "{}").get("mode")
+    except Exception:
+        return None
+
+
+def _scan_jobs(job_rows: list[Any]) -> tuple[Any, Any, str | None]:
+    """Newest completed sync job, newest completed full re-index, active job id."""
+    sync_job = resync_job = None
+    active_job_id: str | None = None
+    for j in job_rows:
+        if j.status in ("pending", "running") and active_job_id is None:
+            active_job_id = j.id
+        if j.status != "completed" or not j.finished_at:
+            continue
+        if _job_mode(j) == "full_resync":
+            resync_job = resync_job or j
+        else:
+            sync_job = sync_job or j
+    return sync_job, resync_job, active_job_id
+
+
 def sync_times(job_rows: list[Any], repo_updated_at: Any) -> dict:
     """Last sync, last full re-index, its model and any active job id.
 
-    ``job_rows`` are newest first.
+    ``job_rows`` are newest first. ``repo_updated_at`` is the repository's
+    sync stamp (:func:`crud.index_synced_at`), which CLI and git-hook syncs
+    move without writing a GenerationJob row; the later of it and the newest
+    completed sync job is the last sync.
     """
-    last_sync_at: str | None = None
-    last_resync_at: str | None = None
-    last_resync_dt = None
-    last_sync_model: str | None = None
-    active_job_id: str | None = None
-    for j in job_rows:
-        try:
-            mode = json.loads(j.config_json or "{}").get("mode")
-        except Exception:
-            mode = None
-        if j.status in ("pending", "running") and active_job_id is None:
-            active_job_id = j.id
-        if j.status == "completed" and j.finished_at:
-            if mode == "full_resync" and last_resync_at is None:
-                last_resync_at = j.finished_at.isoformat()
-                last_resync_dt = j.finished_at
-            elif mode != "full_resync" and last_sync_at is None:
-                last_sync_at = j.finished_at.isoformat()
-                last_sync_model = j.model_name or None
-
-    # Fall back to the repository's own ``updated_at`` when no completed
-    # server-side sync job exists. CLI / git-hook auto-syncs (``repowise
-    # update``) refresh the index and bump ``repositories.updated_at`` via
-    # ``upsert_repository``, but never create a GenerationJob row, so a
-    # job-only derivation reports "never synced" even though the index is
-    # current. Only adopt it when it is newer than the last full re-index so a
-    # re-index is not relabelled as a sync.
-    if (
-        last_sync_at is None
-        and repo_updated_at is not None
-        and (last_resync_dt is None or repo_updated_at > last_resync_dt)
-    ):
-        last_sync_at = repo_updated_at.isoformat()
+    sync_job, resync_job, active_job_id = _scan_jobs(job_rows)
+    job_times = [crud.as_utc(j.finished_at) for j in (sync_job, resync_job) if j is not None]
+    # A job stamps the row before it finishes, so the stamp wins only for a
+    # sync made outside the server, and only when newer than the last full
+    # re-index so a re-index is not relabelled as a sync. That sync's model
+    # is unknown, so the job's model is not carried over to it.
+    stamp = crud.as_utc(repo_updated_at)
+    if stamp is not None and all(stamp > t for t in job_times):
+        last_sync_at, last_sync_model = repo_updated_at.isoformat(), None
+    elif sync_job is not None:
+        last_sync_at, last_sync_model = sync_job.finished_at.isoformat(), sync_job.model_name or None
+    else:
+        last_sync_at, last_sync_model = None, None
     return {
         "last_sync_at": last_sync_at,
-        "last_resync_at": last_resync_at,
+        "last_resync_at": resync_job.finished_at.isoformat() if resync_job else None,
         "last_sync_model": last_sync_model,
         "active_job_id": active_job_id,
     }

@@ -140,6 +140,49 @@ class TestNetHTTP:
         add_framework_edges(graph, parsed, ctx, tech_stack=[])
 
 
+class TestChiFiberGorillaRoutes:
+    """The title-case and chained route shapes link their handlers too."""
+
+    def _edges(self, tmp_path: Path, imp: str, body: str) -> nx.DiGraph:
+        (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.22\n")
+        (tmp_path / "handlers.go").write_text(
+            "package main\n\nfunc listOrders() {}\nfunc payment() {}\n"
+        )
+        (tmp_path / "main.go").write_text(
+            f'package main\n\nimport "{imp}"\n\nfunc main() {{\n{body}}}\n'
+        )
+        parsed = _build_parsed(tmp_path)
+        graph = nx.DiGraph()
+        for p in parsed:
+            graph.add_node(p)
+        add_framework_edges(graph, parsed, _ctx(tmp_path, parsed), tech_stack=[])
+        return graph
+
+    def test_chi_title_case_verb(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            "github.com/go-chi/chi/v5",
+            '  r := chi.NewRouter()\n  r.Get("/orders", listOrders)\n',
+        )
+        assert graph.has_edge("main.go", "handlers.go")
+
+    def test_fiber_title_case_verb(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            "github.com/gofiber/fiber/v2",
+            '  app := fiber.New()\n  app.Get("/orders", listOrders)\n',
+        )
+        assert graph.has_edge("main.go", "handlers.go")
+
+    def test_gorilla_chain(self, tmp_path: Path) -> None:
+        graph = self._edges(
+            tmp_path,
+            "github.com/gorilla/mux",
+            '  r := mux.NewRouter()\n  r.Methods("POST").Path("/paymentAuth").HandlerFunc(payment)\n',
+        )
+        assert graph.has_edge("main.go", "handlers.go")
+
+
 class TestGoGRPC:
     def test_register_server_to_impl_file(self, tmp_path: Path) -> None:
         (tmp_path / "go.mod").write_text("module example.com/app\n\ngo 1.21\n")

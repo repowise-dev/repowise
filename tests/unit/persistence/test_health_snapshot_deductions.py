@@ -107,3 +107,20 @@ async def test_stored_depth_reaches_the_trend_reader(async_session, tmp_path) ->
     assert [p.unclamped_score for p in trend.points] == [-2.9, -0.4]
     assert trend.delta == 0.0
     assert trend.unclamped_delta == 2.5
+
+
+async def test_each_snapshot_records_the_analyzer_that_wrote_it(async_session, tmp_path) -> None:
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+    from repowise.core.persistence.crud import get_latest_snapshot_analyzer_version
+
+    repo = await upsert_repository(async_session, name="repo", local_path=str(tmp_path))
+    assert await get_latest_snapshot_analyzer_version(async_session, repo.id) is None
+    older = await _snapshot(async_session, repo.id, scores={"a.py": 5.0})
+    older.analyzer_version = None  # a row written before the column existed
+    await _snapshot(async_session, repo.id, scores={"a.py": 5.0}, day=1)
+    await async_session.flush()
+
+    assert (
+        await get_latest_snapshot_analyzer_version(async_session, repo.id)
+        == HEALTH_ANALYZER_VERSION
+    )

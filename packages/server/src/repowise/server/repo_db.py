@@ -81,8 +81,8 @@ async def ensure_repo_registration(
     *,
     local_path: str,
     name: str,
-    url: str = "",
-    default_branch: str = "main",
+    url: str | None = None,
+    default_branch: str | None = None,
     settings: dict | None = None,
     repo_id: str | None = None,
 ):
@@ -92,7 +92,8 @@ async def ensure_repo_registration(
     with ``repo_id`` when given, so the primary-DB registry row and the
     canonical row share one id — and registers the session factory plus a
     per-repo FTS instance on ``app_state``. Idempotent: an already-registered
-    repo returns its existing factory.
+    repo returns its existing factory. A ``None`` url or branch on a new row
+    is read from git (:func:`upsert_repository`).
 
     Returns ``(session_factory, repo_id)`` for the canonical row.
     """
@@ -158,8 +159,8 @@ async def _ensure_repo_row(
     *,
     name: str,
     local_path: str,
-    url: str,
-    default_branch: str,
+    url: str | None,
+    default_branch: str | None,
     settings: dict | None,
     repo_id: str | None,
 ) -> str:

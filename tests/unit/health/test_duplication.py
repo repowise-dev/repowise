@@ -176,6 +176,79 @@ def test_detect_clones_attaches_co_change_count(tmp_path: Path):
     assert report.pairs[0].co_change_count == 7
 
 
+_HANDLER = '''class _{cls}Handler:
+    """Adds the edges one framework implies."""
+
+    def detect(self, ctx: Context) -> bool:
+        return True
+
+    def add_edges(
+        self,
+        graph: Graph,
+        parsed_files: dict[str, Any],
+        ctx: Context,
+        path_set: set[str],
+    ) -> int:
+        return _add_{name}_edges(graph, parsed_files, ctx, path_set)
+
+
+HANDLERS: list[Handler] = [_{cls}Handler()]
+'''
+
+
+def _handler_pair(tmp_path: Path, path_a: str, path_b: str, extra: str = "") -> list:
+    parsed = []
+    for path, name in ((path_a, "alpha"), (path_b, "beta")):
+        src = _HANDLER.format(cls=name.title(), name=name).replace("return True", extra or "return True")
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(src)
+        parsed.append(_pf(path, str(target)))
+    return parsed
+
+
+def test_sibling_skeleton_in_one_directory_is_not_a_clone(tmp_path: Path):
+    # Two handlers of one registry share signatures and a registration line,
+    # with no branch or callback: the contract, not copied logic.
+    parsed = _handler_pair(tmp_path, "edges/alpha.py", "edges/beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs == []
+
+
+def test_the_same_skeleton_across_directories_stays_a_clone(tmp_path: Path):
+    parsed = _handler_pair(tmp_path, "one/alpha.py", "two/beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        "return bool(ctx) if ctx.ready else False",
+        "return any(map(lambda tok: tok in ctx.stack, ctx.names))",
+    ],
+)
+def test_a_sibling_clone_with_a_branch_or_lambda_stays_a_clone(tmp_path: Path, extra: str):
+    parsed = _handler_pair(tmp_path, "edges/alpha.py", "edges/beta.py", extra)
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+def test_sibling_test_files_keep_their_skeleton_clones(tmp_path: Path):
+    # Duplicated assertion blocks read test clones; they stay.
+    parsed = _handler_pair(tmp_path, "tests/test_alpha.py", "tests/test_beta.py")
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+    # Ingestion's stored flag decides where the path alone would not.
+    parsed = _handler_pair(tmp_path, "helpers/alpha.py", "helpers/beta.py")
+    parsed[0].file_info.is_test = True
+    assert detect_clones(parsed, window_tokens=20, min_lines=4).pairs
+
+
+def test_decision_lines_marks_branches_and_lambdas_only():
+    from repowise.core.analysis.health.duplication.tokenizer import decision_lines
+
+    source = b"def f(x: int) -> int:\n    y = x\n    if y:\n        g = lambda: y\n    return y\n"
+    assert decision_lines("python", source, "f.py") == {3, 4}
+    assert decision_lines("not-a-language", source) is None
+
+
 def test_detect_clones_skips_files_without_duplicates(tmp_path: Path):
     a = _write(tmp_path, "a.py", "def f():\n    return 1\n")
     b = _write(tmp_path, "b.py", "def g():\n    return 2\n")
@@ -412,6 +485,34 @@ def test_tokenize_file_drops_the_java_package_declaration():
     assert "package" not in [t.kind for t in toks]
     assert toks[0].kind == "class"
     assert toks[0].start_line == 3
+
+
+@pytest.mark.parametrize(
+    ("language", "path", "source", "first_line"),
+    [
+        # Ruby loads, but not a method that happens to be named require.
+        ("ruby", "a.rb", b"require 'json'\nrequire_relative 'a/b'\nautoload :X, 'x'\nfoo.require 'x'\n", 4),
+        ("shell", "a.sh", b"source ./lib.sh\n. ./env.sh\necho hi\n", 3),
+        ("kotlin", "A.kt", b"package a.b.c\n\nimport x.y\nfun f() = 1\n", 4),
+        ("csharp", "A.cs", b"namespace A.B;\nusing X;\nclass C {}\n", 3),
+        ("php", "a.php", b"<?php\nnamespace App\\Http;\nuse Foo\\Bar;\nclass C {}\n", 1),
+    ],
+)
+def test_tokenize_file_drops_import_like_headers(
+    language: str, path: str, source: bytes, first_line: int
+):
+    lines = {t.start_line for t in tokenize_file(language, source, path)}
+    assert min(lines) == first_line
+    if language == "php":  # the ``<?php`` tag stays; the namespace line does not
+        assert 2 not in lines and 3 not in lines
+
+
+def test_tokenize_file_keeps_a_block_namespace_body():
+    # The block form wraps the code: skipping it would drop the whole file.
+    php = tokenize_file("php", b"<?php\nnamespace B {\n  function f() { return 1; }\n}\n", "a.php")
+    assert "function" in [t.kind for t in php]
+    cs = tokenize_file("csharp", b"namespace A {\n  class C {}\n}\n", "A.cs")
+    assert "class" in [t.kind for t in cs]
 
 
 def test_tokenize_file_drops_ts_imports_and_reexports_but_keeps_local_exports():

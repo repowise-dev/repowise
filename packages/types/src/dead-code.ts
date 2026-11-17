@@ -64,6 +64,7 @@ export const DEAD_CODE_RISK_FACTOR_LABELS: Record<string, string> = {
   database: "database/schema",
   script: "script/task",
   asset: "runtime-loaded web asset",
+  aura: "Salesforce Aura bundle",
 };
 
 /** Label for one risk factor, falling back to the raw slug for an unknown tag. */

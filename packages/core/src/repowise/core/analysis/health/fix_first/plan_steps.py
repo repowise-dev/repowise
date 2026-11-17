@@ -12,7 +12,7 @@ from repowise.core.analysis.health.worth import LowPriority
 from repowise.core.ci.markdown import code as md_code
 
 from . import text
-from ._parts import _helper_code, _open
+from ._parts import _helper_code, _open, object_code, shared_object
 from .model import FixStep
 
 
@@ -134,6 +134,14 @@ def _extract_text(sym: str, body: Mapping[str, Any], start: Any, end: Any) -> st
     return line_text
 
 
+def _extract_ready(body: Mapping[str, Any]) -> bool:
+    """Whether the step can be written as it reads: a helper taking the shared
+    parameter object needs the object's declaration and the line building it,
+    or its call names a variable and a type that do not exist."""
+    obj = shared_object(body)
+    return obj is None or object_code(obj) is not None
+
+
 #: A refactoring step's sentence, by plan type, from (symbol, path, plan, plan body).
 _STEP_TEXT: dict[str, Callable[[str, str, Any, Mapping[str, Any]], str]] = {
     "extract_method": lambda sym, path, plan, body: _extract_text(sym, body, *_span(plan)),
@@ -218,7 +226,7 @@ def _concrete(step: Mapping[str, Any], plan: Any) -> bool:
     body = _plan_body(plan)
     if kind == "extract_method":
         start, end = _span(plan)
-        return bool(start and end)
+        return bool(start and end) and _extract_ready(body)
     if kind == "extract_helper":
         return any(
             isinstance(o, dict) and o.get("line_start") for o in body.get("occurrences") or ()
@@ -250,7 +258,7 @@ def _extractions(plans: Iterable[Any]) -> dict[tuple[str, str], list[Any]]:
         if field(plan, "refactoring_type") != "extract_method" or not symbol or not _open(plan):
             continue
         start, end = _span(plan)
-        if start and end:
+        if start and end and _extract_ready(_plan_body(plan)):
             out[(field(plan, "file_path"), text.short_symbol(symbol).rsplit(".", 1)[-1])].append(
                 plan
             )

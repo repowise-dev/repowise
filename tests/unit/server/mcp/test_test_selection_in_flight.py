@@ -27,7 +27,7 @@ def gated(monkeypatch):
     gate = asyncio.Event()
     runs: list = []
 
-    async def _select(_repo, _factory, change, _config, cancel):
+    async def _select(_repo, _factory, change, _config, cancel, _named=None):
         runs.append((change, cancel))
         await gate.wait()
         return {"for": change.label}, None, None
@@ -94,7 +94,9 @@ async def test_one_caller_timing_out_leaves_the_selection_to_the_other(
     tmp_path, gated, monkeypatch
 ) -> None:
     gate, runs = gated
-    monkeypatch.setattr(_test_selection, "SELECTION_TIMEOUT_SECONDS", 0.01)
+    # Above the event loop's clock resolution (about 16 ms on Windows), so the
+    # first caller cannot time out before the second one joins.
+    monkeypatch.setattr(_test_selection, "SELECTION_TIMEOUT_SECONDS", 0.2)
     first = _call(tmp_path, _change("a.py"))
     await _settle()
     monkeypatch.setattr(_test_selection, "SELECTION_TIMEOUT_SECONDS", 30.0)

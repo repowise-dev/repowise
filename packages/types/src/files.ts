@@ -15,6 +15,9 @@ export interface FileWikiPageRef {
   freshness_status: string;
   confidence: number;
   human_notes: string | null;
+  /** Hand-requested doc: regenerated on every reindex so it keeps
+      following the code (issue #812). */
+  pinned: boolean;
   updated_at: string | null;
 }
 
@@ -156,6 +159,13 @@ export interface FileDetailCoverage {
   source_format: string;
   ingested_at: string | null;
   ingested_commit_sha: string | null;
+  /**
+   * Whether `covered_lines` still lines up with the file on disk: `stale` when
+   * git shows the file changed since `ingested_commit_sha`, `unknown` when it
+   * cannot tell. Only `stale` withholds the line tint. Optional so older
+   * payloads parse.
+   */
+  freshness?: "current" | "stale" | "unknown";
 }
 
 export interface FileGraphNeighbor {

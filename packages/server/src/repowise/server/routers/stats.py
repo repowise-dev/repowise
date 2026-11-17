@@ -179,8 +179,6 @@ async def stats_highlights(
         select(
             GraphNode.node_id,
             GraphNode.language,
-            GraphNode.symbol_count,
-            GraphNode.external_system_id,
         ).where(GraphNode.repository_id == repo_id, GraphNode.node_type == "file"),
     )
     metrics = await _rows(
@@ -191,6 +189,7 @@ async def stats_highlights(
             HealthFileMetric.module,
             HealthFileMetric.max_ccn,
             HealthFileMetric.is_test,
+            HealthFileMetric.code_origin,
         ).where(HealthFileMetric.repository_id == repo_id),
     )
     all_meta = await _rows(
@@ -247,7 +246,7 @@ async def stats_highlights(
     index_size = await index_storage_bytes(repo.local_path)
     return {
         "repo": {"id": repo.id, "name": repo.name},
-        "scale": sh.build_scale(file_nodes, metrics),
+        "scale": sh.build_scale(file_nodes, metrics, await crud.count_symbols(session, repo_id)),
         "origin": activity["origin"],
         "churn": sh.build_churn(totals),
         "rhythm": rhythm,

@@ -30,6 +30,8 @@ import {
 } from "../ui/select";
 import { Sheet, SheetContent, SheetTitle } from "../ui/sheet";
 import { PackageRelationshipGraph } from "./package-relationship-graph";
+import { FIELD_CLASS } from "../ui/input";
+import { cn } from "../lib/cn";
 
 export type ExternalDependencyRole = "all" | "runtime" | "dev-only" | "mixed";
 export type ExternalDependencyUsage =
@@ -503,7 +505,7 @@ export function ExternalDependenciesTable({
               value={state.query}
               onChange={(event) => onStateChange(updateState(state, { query: event.target.value }))}
               placeholder="Search packages or versions"
-              className="h-9 w-full rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] pl-9 pr-3 text-sm text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:ring-1 focus:ring-[var(--color-accent-primary)]"
+              className={cn(FIELD_CLASS, "h-9 w-full pl-9 pr-3 text-sm")}
             />
           </label>
           <Select value={state.ecosystem} onValueChange={(ecosystem) => onStateChange(updateState(state, { ecosystem }))}>

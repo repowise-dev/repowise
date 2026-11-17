@@ -21,6 +21,7 @@ from pathlib import Path
 import structlog
 
 from repowise.core.distill import tracking
+from repowise.core.distill.config import DEFAULT_MAX_MB, DEFAULT_TTL_DAYS
 from repowise.core.distill.markers import REF_LENGTH, is_valid_ref
 from repowise.core.savings import schema as savings_schema
 from repowise.core.savings.repository import SavingsRepository
@@ -31,10 +32,6 @@ logger = structlog.get_logger(__name__)
 OMISSIONS_DIRNAME = "omissions"
 OMISSIONS_DB_FILENAME = "omissions.db"
 
-#: Rows older than this are pruned.
-DEFAULT_TTL_DAYS = 7
-#: Compressed-content size cap; oldest rows pruned first when exceeded.
-DEFAULT_MAX_MB = 50
 
 #: Retry window for a contended open, in milliseconds.
 _BUSY_TIMEOUT_MS = 5000

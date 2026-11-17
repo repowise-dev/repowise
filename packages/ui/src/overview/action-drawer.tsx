@@ -17,6 +17,7 @@ import { EFFORT_LABEL } from "../health/labels";
 import { SeverityMark } from "../health/severity-mark";
 import type { Severity } from "../health/tokens";
 import { AdaptivePanel } from "../shared/adaptive-panel";
+import { formatNumber } from "../lib/format";
 
 /** What the evidence link opens, named for the place it lands. */
 const EVIDENCE_LABEL: Record<ActionSurface, string> = {
@@ -89,7 +90,7 @@ export function ActionDrawer({
   );
   const Link = LinkComponent ?? "a";
   const linkCls =
-    "rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+    "rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
   return (
     <AdaptivePanel
@@ -141,7 +142,7 @@ export function ActionDrawer({
 
             {action.details.length > 0 ? (
               <Section
-                title={`Evidence (${action.details_total.toLocaleString()})`}
+                title={`Evidence (${formatNumber(action.details_total)})`}
               >
                 <EvidenceList
                   key={action.id}
@@ -255,7 +256,7 @@ export function ActionDrawer({
                     onAnswer(state, message);
                     onClose();
                   }}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border-default)] px-2.5 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-surface)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                 >
                   <Icon className="h-3.5 w-3.5" aria-hidden="true" />
                   {label}
@@ -303,7 +304,7 @@ function EvidenceList({
                 {href ? (
                   <Link
                     href={href}
-                    className="min-w-0 rounded font-mono text-xs text-[var(--color-accent-primary)] [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                    className="min-w-0 rounded font-mono text-xs text-[var(--color-accent-primary)] [overflow-wrap:anywhere] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
                   >
                     {where}
                   </Link>
@@ -334,13 +335,13 @@ function EvidenceList({
             <button
               type="button"
               onClick={() => setAll((a) => !a)}
-              className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+              className="rounded text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
             >
-              {all ? "Show fewer" : `Show all ${details.length.toLocaleString()}`}
+              {all ? "Show fewer" : `Show all ${formatNumber(details.length)}`}
             </button>
           ) : null}
           {total > details.length ? (
-            <span>{`${(total - details.length).toLocaleString()} more; "Look closer" below lists them.`}</span>
+            <span>{`${formatNumber(total - details.length)} more; "Look closer" below lists them.`}</span>
           ) : null}
         </p>
       ) : null}

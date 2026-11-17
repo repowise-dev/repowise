@@ -37,6 +37,7 @@ export default defineConfig({
       "@repowise-dev/types/events": path.resolve(__dirname, "../types/src/events.ts"),
       "@repowise-dev/types/views": path.resolve(__dirname, "../types/src/views.ts"),
       "@repowise-dev/types/workspace": path.resolve(__dirname, "../types/src/workspace.ts"),
+      "@repowise-dev/types/estate": path.resolve(__dirname, "../types/src/estate.ts"),
       "@repowise-dev/types/blast-radius": path.resolve(__dirname, "../types/src/blast-radius.ts"),
       "@repowise-dev/types/jobs": path.resolve(__dirname, "../types/src/jobs.ts"),
       "@repowise-dev/types/settings": path.resolve(__dirname, "../types/src/settings.ts"),

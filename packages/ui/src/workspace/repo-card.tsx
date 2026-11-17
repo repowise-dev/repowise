@@ -89,8 +89,12 @@ export function RepoCard({
           </div>
           <div className="flex items-center gap-1.5">
             <BarChart3 className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-            <span className="text-xs text-[var(--color-text-secondary)]">
-              {stats ? `${Math.round(stats.doc_coverage_pct)}% docs` : "—"}
+            {/* `doc_coverage_pct` is mean page confidence, not a share of files documented. */}
+            <span
+              className="text-xs text-[var(--color-text-secondary)]"
+              title="Average confidence of the generated doc pages"
+            >
+              {stats ? `${Math.floor(stats.doc_coverage_pct)}% doc confidence` : "—"}
             </span>
           </div>
           <div className="flex items-center gap-1.5">

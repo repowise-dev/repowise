@@ -257,14 +257,15 @@ async def test_happy_path_shapes_unchanged(workspace_mcp):  # noqa: F811
 
     overview = await get_overview(repo="all")
     assert set(overview) == {
-        "workspace", "workspace_root", "total_repos", "total_files", "total_symbols",
-        "repos", "hint", "tool_surface", "_meta",
+        "workspace", "workspace_root", "total_repos", "total_code_files", "total_symbols",
+        "repos", "hint", "_meta",
     }
+    assert "tool_surface" in await get_overview(repo="all", include=["tools"])
     assert overview["total_repos"] == 2
     assert all("stale" not in r for r in overview["repos"])
 
     dead = await get_dead_code(repo="all")
-    assert set(dead) == {"workspace", "summary", "tiers", "impact", "_meta"}
+    assert set(dead) == {"headline", "workspace", "summary", "tiers", "impact", "_meta"}
     rows = [f for t in dead["tiers"].values() for f in t["findings"]]
     assert {f["repo"] for f in rows} == {"backend", "frontend"}
     assert all("stale" not in f for f in rows)
@@ -301,3 +302,88 @@ async def test_stale_repo_is_named_and_its_rows_marked(workspace_mcp):  # noqa: 
     assert stale["live_head"] == git("rev-parse", "HEAD")[:12]
     rows = [f for t in result["tiers"].values() for f in t["findings"]]
     assert {f["repo"]: f.get("stale", False) for f in rows} == {"backend": True, "frontend": False}
+
+
+async def test_all_names_the_single_repo_includes_it_does_not_serve(workspace_mcp):  # noqa: F811
+    from repowise.server.mcp_server import get_overview
+
+    overview = await get_overview(repo="all", include=["tools", "content"])
+    assert "tool_surface" in overview
+    assert overview["ignored_arguments"] == [
+        {"argument": "include", "values": ["content"], "valid": ["tools"]}
+    ]
+
+
+def _commit_doc(ctx, rel: str, text: str) -> None:
+    path = Path(ctx.path) / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    for args in (["add", rel], ["commit", "-qm", f"add {rel}"]):
+        subprocess.run(["git", *args], cwd=ctx.path, check=True, capture_output=True)
+
+
+async def test_search_all_serves_each_repos_lines(workspace_mcp):  # noqa: F811
+    from repowise.server.mcp_server import search_codebase
+
+    _commit_doc(await workspace_mcp.get("frontend"), "docs/guide.md", "Flip the zanzibarflux switch.\n")
+    _commit_doc(await workspace_mcp.get("backend"), "NOTES.md", "zanzibarflux is the rollback switch.\n")
+
+    result = await search_codebase("zanzibarflux", repo="all")
+
+    assert [(r["repo"], r["path"], r["line"]) for r in result["lines"]] == [
+        ("backend", "NOTES.md", 1),
+        ("frontend", "docs/guide.md", 1),
+    ]
+    assert result["complete"] is True
+    assert "grep_hint" not in result
+
+
+async def test_search_all_says_a_failed_repos_lines_are_missing(workspace_mcp, monkeypatch):  # noqa: F811
+    from repowise.server.mcp_server import _line_hits, search_codebase
+
+    _commit_doc(await workspace_mcp.get("frontend"), "docs/guide.md", "Flip the zanzibarflux switch.\n")
+    real = _line_hits._repo_line_rows
+
+    async def backend_breaks(ctx, *args):
+        if ctx.alias == "backend":
+            raise OSError("disk gone")
+        return await real(ctx, *args)
+
+    monkeypatch.setattr(_line_hits, "_repo_line_rows", backend_breaks)
+
+    result = await search_codebase("zanzibarflux", repo="all")
+
+    assert [(r["repo"], r["path"]) for r in result["lines"]] == [("frontend", "docs/guide.md")]
+    assert [f["repo"] for f in result["repos_failed"]] == ["backend"]
+    assert result["complete"] is False
+    assert result["reasons"] == ["the repos in repos_failed were not read"]
+
+
+async def test_search_all_names_a_failed_repo_when_no_other_has_lines(workspace_mcp, monkeypatch):  # noqa: F811
+    from repowise.server.mcp_server import _line_hits, search_codebase
+
+    async def backend_breaks(ctx, *args):
+        if ctx.alias == "backend":
+            raise OSError("disk gone")
+        return None
+
+    monkeypatch.setattr(_line_hits, "_repo_line_rows", backend_breaks)
+
+    result = await search_codebase("zanzibarflux", repo="all")
+
+    assert [f["repo"] for f in result["repos_failed"]] == ["backend"]
+    assert "lines" not in result
+
+
+def test_a_shared_name_counts_only_its_own_repos_results_as_shown(tmp_path):
+    from repowise.server.mcp_server import _line_hits
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/util.py").write_text("def probe():\n    pass\n", encoding="utf-8")
+    node = SimpleNamespace(file_path="src/util.py", start_line=1, name="probe", qualified_name="probe", node_id="src/util.py::probe")
+    response = {"results": [{"type": "symbol", "repo": "frontend", "path": "src/util.py", "start_line": 1}]}
+
+    rows, _ = _line_hits._ambiguous_rows(tmp_path, [node], response, "backend")
+    assert [(r["path"], r["line"]) for r in rows] == [("src/util.py", 1)]
+    rows, _ = _line_hits._ambiguous_rows(tmp_path, [node], response, "frontend")
+    assert rows == []

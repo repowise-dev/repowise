@@ -94,7 +94,7 @@ async def test_configured_reasoning_reaches_synthesis(setup_mcp, monkeypatch):
 
     async def _capture_synthesis(provider, system_prompt, user_prompt, **kwargs):
         seen.update(kwargs)
-        return "The go() function drives it (pkg/alpha/one.py).", None
+        return "The go() function drives it (pkg/alpha/one.py).", None, None
 
     monkeypatch.setattr(answer_mod, "synthesize", _capture_synthesis)
 
@@ -117,7 +117,7 @@ async def test_repo_reasoning_resolution_reaches_synthesis(setup_mcp, monkeypatc
 
     async def _capture_synthesis(provider, system_prompt, user_prompt, **kwargs):
         seen.update(kwargs)
-        return "The go() function drives it (pkg/alpha/one.py).", None
+        return "The go() function drives it (pkg/alpha/one.py).", None, None
 
     monkeypatch.setattr(answer_mod, "synthesize", _capture_synthesis)
 

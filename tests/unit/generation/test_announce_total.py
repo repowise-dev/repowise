@@ -52,6 +52,8 @@ def _fake_run(*, enable_onboarding: bool, completed_ids: set[str]) -> SimpleName
         # None: the selection-derived total path (a scoped run short-circuits
         # to len(only_page_ids), tested in test_deterministic_generation).
         only_page_ids=None,
+        # No flow pages, so onboarding stays the only paid contribution.
+        _flow_page_count=lambda: 0,
         on_total_known=announced.append,
         on_subphase=lambda name, total: paid.append((name, total)),
         job_system=None,

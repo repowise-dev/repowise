@@ -14,7 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.forges import canonical_key
 from repowise.core.persistence import crud
 from repowise.core.persistence.models import Repository, WebhookEvent
-from repowise.server.auth import LOCAL_PRINCIPAL, Principal, get_authenticator, get_authorizer
+from repowise.server.auth import (
+    LOCAL_PRINCIPAL,
+    Action,
+    Principal,
+    authorize_repo,
+    get_authenticator,
+)
 from repowise.server.deps import auth_is_open, get_db_session
 from repowise.server.schemas import WebhookResponse
 
@@ -47,7 +53,7 @@ async def _unsigned_principal(request: Request) -> Principal | None:
 
 
 def _require_repo_in_scope(principal: Principal, repo: Repository) -> None:
-    if not get_authorizer().can_access_repo(principal, (repo.id, repo.name)):
+    if not authorize_repo(principal, (repo.id, repo.name), Action.WRITE):
         raise HTTPException(status_code=403, detail="Repository is outside this credential's scope")
 
 

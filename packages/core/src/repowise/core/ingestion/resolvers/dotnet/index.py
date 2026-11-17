@@ -14,10 +14,12 @@ from repowise.core.ingestion.source_text import source_text
 from .global_usings import collect_project_global_usings
 from .msbuild import (
     MSBuildProject,
+    SharedUsings,
     find_csproj_files,
     find_vbproj_files,
     parse_csproj,
     path_has_dotnet_scan_skip_dir,
+    shared_build_usings,
 )
 from .namespace_map import build_namespace_map, build_vb_namespace_map
 from .solution import find_sln_files, parse_sln
@@ -379,6 +381,7 @@ def build_index(
             continue
         texts_by_proj.setdefault(csproj, {})[f] = text
 
+    shared_usings: SharedUsings = {}
     for proj in index.projects.values():
         # Heuristic: presence of any AspNetCore PackageReference flags the
         # web SDK's expanded implicit-using set.
@@ -393,6 +396,7 @@ def build_index(
         )
         # Honour <Using Include="X"/> ItemGroup entries on top of file scans.
         globals_set.update(proj.project_usings)
+        globals_set.update(shared_build_usings(proj, repo_path, shared_usings))
         index.project_globals[proj.project_dir] = globals_set
 
     log.info(

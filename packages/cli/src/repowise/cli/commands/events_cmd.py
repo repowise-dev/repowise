@@ -15,6 +15,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli.ci import ci_notices
 from repowise.cli.helpers import console, repo_index_session, resolve_command_target, run_async
 from repowise.cli.output import emit_json, format_option
 
@@ -53,19 +54,33 @@ async def _read(root: Path, since: datetime | None, kinds: tuple[str, ...], limi
 @click.option("--since", default=None, help="Only events from then on: 7d, 12h or an ISO date.")
 @click.option("--kind", "kinds", multiple=True, help="Only this kind (repeatable).")
 @click.option("--limit", default=200, show_default=True, type=click.IntRange(1, 10000))
+@click.option("--repo", "repo_alias", default=None, help="In workspace mode, target one repo.")
+@click.option("--no-workspace", is_flag=True, default=False, help="Force single-repo mode.")
 @format_option(choices=("table", "json", "jsonl"))
 def events_command(
-    repo: str | None, since: str | None, kinds: tuple[str, ...], limit: int, fmt: str
+    repo: str | None,
+    since: str | None,
+    kinds: tuple[str, ...],
+    limit: int,
+    repo_alias: str | None,
+    no_workspace: bool,
+    fmt: str,
 ) -> None:
-    """List typed events (new hotspot, bus factor drop, ...) oldest first."""
+    """List typed events (new hotspot, bus factor drop, ...) oldest first.
+
+    Events belong to one repo: from a workspace root this reads the primary
+    repo; pass --repo <alias> for another.
+    """
     from repowise.core.events.model import KINDS, to_cloudevent
 
     unknown = [k for k in kinds if k not in KINDS]
     if unknown:
         raise click.BadParameter(f"unknown kind(s) {unknown}; known: {sorted(KINDS)}")
-    target = resolve_command_target(path=repo, no_workspace_flag=True)
-    assert target.repo_path is not None
-    read = run_async(_read(Path(target.repo_path).resolve(), _parse_since(since), kinds, limit))
+    target = resolve_command_target(
+        path=repo, no_workspace_flag=no_workspace, repo_alias=repo_alias
+    )
+    root = target.narrow(ci_notices(fmt), command="events").resolve()
+    read = run_async(_read(root, _parse_since(since), kinds, limit))
     if read is None:
         console.print("No index found. Run `repowise init` first.")
         raise SystemExit(1)

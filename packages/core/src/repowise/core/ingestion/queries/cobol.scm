@@ -32,9 +32,10 @@
 (call_statement
   x: (string) @call.target) @call.site
 
-; PERFORM paragraph/section calls are same-file procedure edges.
+; PERFORM paragraph/section calls; of ``PERFORM A THRU B`` only A, where it enters.
 (perform_statement_call_proc
   procedure: (perform_procedure
+    .
     (label
       (qualified_word
         (WORD) @call.target)))) @call.site

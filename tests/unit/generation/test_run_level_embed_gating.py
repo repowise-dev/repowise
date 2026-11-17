@@ -57,9 +57,12 @@ def _fake_run(store) -> SimpleNamespace:
         job_id=None,
         on_page_done=None,
         on_page_ready=None,
+        on_embed=None,
         vector_store=store,
         completed_page_summaries={},
         timings=None,
+        gen=SimpleNamespace(_prior_pages={}, embed_failed_pages=0),
+        _stored_vector_ids=None,
     )
 
 
@@ -95,6 +98,57 @@ def test_ephemeral_store_still_embeds_reused_pages() -> None:
     assert "reused.py" in embedded
 
 
+class _StoreHolding(_RecordingStore):
+    def __init__(self, ids: set[str], *, current_width: bool = True) -> None:
+        super().__init__(persists=True)
+        self.ids = ids
+        self.current_width = current_width
+
+    async def holds_current_vectors(self) -> bool:
+        return self.current_width
+
+    async def list_page_ids(self) -> set[str]:
+        return self.ids
+
+
+def _rerender(store, prior_content: str) -> list[str]:
+    """Re-render ``same.py`` over a stored row holding *prior_content*."""
+    from repowise.core.generation.page_generator import PriorPage
+
+    async def _go():
+        async def same():
+            return _page("same.py")
+
+        run = _fake_run(store)
+        run.gen._prior_pages = {
+            "same.py": PriorPage(source_hash="x", model_name="m", content=prior_content)
+        }
+        await _GenerationRun.run_level(run, [("p1", same())], level=2)
+        return [pid for batch in store.batches for (pid, *_rest) in batch]
+
+    return asyncio.run(_go())
+
+
+def test_byte_identical_rerender_keeps_its_stored_vector() -> None:
+    """An update re-renders unchanged neighbours; their vectors are current."""
+    assert _rerender(_StoreHolding({"same.py"}), "# same.py") == []
+
+
+def test_changed_rerender_is_embedded() -> None:
+    assert _rerender(_StoreHolding({"same.py"}), "# older body") == ["same.py"]
+
+
+def test_identical_page_is_embedded_after_an_embedder_change() -> None:
+    """Vectors of another width are dropped on the next write; none are kept."""
+    store = _StoreHolding({"same.py"}, current_width=False)
+    assert _rerender(store, "# same.py") == ["same.py"]
+
+
+def test_identical_page_missing_from_the_store_is_embedded() -> None:
+    """A rebuilt or new store has no vector to keep, so it gets one."""
+    assert _rerender(_StoreHolding(set()), "# same.py") == ["same.py"]
+
+
 class _FailingStore:
     persists_across_runs = True
 
@@ -109,7 +163,7 @@ def test_a_failed_embed_is_counted_on_the_generator() -> None:
     index that held none of the pages.
     """
     warnings: list[str] = []
-    gen = SimpleNamespace(embed_failed_pages=0)
+    gen = SimpleNamespace(_prior_pages={}, embed_failed_pages=0)
 
     async def _go():
         async def fresh():
@@ -124,3 +178,113 @@ def test_a_failed_embed_is_counted_on_the_generator() -> None:
 
     assert gen.embed_failed_pages == 1
     assert warnings and "Embedding failed for 1 page(s)" in warnings[0]
+
+
+def test_each_embed_batch_is_bracketed_for_the_display() -> None:
+    """Embedding is its own step on screen: start before the batch, done after."""
+    calls: list[tuple[int, bool]] = []
+
+    async def _go():
+        async def fresh():
+            return _page("fresh.py")
+
+        async def other():
+            return _page("other.py")
+
+        run = _fake_run(_RecordingStore(persists=False))
+        run.on_embed = lambda count, finished: calls.append((count, finished))
+        await _GenerationRun.run_level(run, [("p1", fresh()), ("p2", other())], level=2)
+
+    asyncio.run(_go())
+    assert calls == [(2, False), (2, True)]
+
+
+def test_a_failed_embed_batch_is_never_reported_finished() -> None:
+    calls: list[tuple[int, bool]] = []
+
+    async def _go():
+        async def fresh():
+            return _page("fresh.py")
+
+        run = _fake_run(_FailingStore())
+        run.gen = SimpleNamespace(_prior_pages={}, embed_failed_pages=0)
+        run.on_warning = lambda _text: None
+        run.on_embed = lambda count, finished: calls.append((count, finished))
+        await _GenerationRun.run_level(run, [("p1", fresh())], level=2)
+
+    asyncio.run(_go())
+    assert calls == [(1, False)]
+
+
+class _Phases:
+    def __init__(self) -> None:
+        self.events: list[tuple] = []
+
+    def on_phase_start(self, phase, total):
+        self.events.append(("start", phase, total))
+
+    def on_item_done(self, phase):
+        self.events.append(("item", phase))
+
+    def on_phase_done(self, phase):
+        self.events.append(("done", phase))
+
+    def on_phase_failed(self, phase):
+        self.events.append(("failed", phase))
+
+
+class _Embedder:
+    pass
+
+
+def _display(store):
+    from repowise.core.pipeline.phases.generation import _GenerationDisplay
+
+    progress = _Phases()
+    return progress, _GenerationDisplay(progress, store, None)
+
+
+def test_embedding_shows_as_its_own_step_with_a_real_embedder() -> None:
+    progress, display = _display(SimpleNamespace(_embedder=_Embedder()))
+    display.on_embed(2, False)
+    display.on_embed(2, True)
+    display.close_embedding()
+    assert progress.events == [
+        ("start", "embedding", 2),
+        ("item", "embedding"),
+        ("item", "embedding"),
+        ("done", "embedding"),
+    ]
+
+
+def test_a_failed_embed_closes_the_step_without_a_done_row() -> None:
+    progress, display = _display(SimpleNamespace(_embedder=_Embedder()))
+    display.on_embed(3, False)
+    display.close_embedding()
+    assert progress.events[-1] == ("failed", "embedding")
+
+
+def test_the_keyless_embedder_gets_no_embedding_step() -> None:
+    from repowise.core.providers.embedding import KeylessEmbedder
+
+    progress, display = _display(SimpleNamespace(_embedder=KeylessEmbedder()))
+    display.on_embed(2, False)
+    display.on_embed(2, True)
+    display.close_embedding()
+    assert progress.events == []
+
+
+def test_lancedb_store_compares_its_recorded_width(tmp_path) -> None:
+    from repowise.core.persistence.vector_store.lancedb_store import (
+        LanceDBVectorStore,
+        record_vector_dim,
+    )
+
+    embedder = SimpleNamespace(dimensions=1536)
+    store = LanceDBVectorStore(str(tmp_path), embedder)
+    (tmp_path / f"{store._table_name}.lance").mkdir()
+
+    record_vector_dim(tmp_path, store._table_name, 768)
+    assert asyncio.run(store.holds_current_vectors()) is False
+    record_vector_dim(tmp_path, store._table_name, 1536)
+    assert asyncio.run(store.holds_current_vectors()) is True

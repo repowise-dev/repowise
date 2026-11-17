@@ -192,7 +192,7 @@ class TestConsumers:
         assert submitted.meta["broker"] == "masstransit"
         assert submitted.meta["fault"] is False
         assert submitted.meta["resolution"] == "using"
-        assert submitted.confidence == 0.8
+        assert submitted.origin == "client_call"
 
     def test_fault_consumer_is_keyed_on_the_inner_message(
         self, contracts: Path, tmp_path: Path
@@ -662,7 +662,7 @@ class TestResolution:
 
         (row,) = _rows(rows, "provider")
         assert row.meta["resolution"] == "qualified"
-        assert row.confidence == 0.8
+        assert row.origin == "client_call"
 
     def test_unknown_qualified_name_does_not_fall_back_to_the_short_name(
         self, contracts: Path, tmp_path: Path

@@ -18,6 +18,7 @@ HEAVY = (
     "repowise.core.ingestion.parser",
     "repowise.core.analysis.dead_code.analyzer",
 )
+WALKER = "repowise.core.analysis.health.complexity.walker"
 
 
 @pytest.mark.parametrize(
@@ -28,6 +29,10 @@ HEAVY = (
         # The MCP server is one long-lived process whose graph tools use
         # networkx; it must still not load the parser or the dead-code pass.
         ("repowise.server.mcp_server.tool_overview.tool", HEAVY[1:]),
+        # `repowise context` and `repowise symbol`: the complexity walker loads
+        # every grammar, and neither command walks a file.
+        ("repowise.server.mcp_server.tool_context", (*HEAVY, WALKER)),
+        ("repowise.core.analysis.function_test_map", (*HEAVY, WALKER)),
     ],
 )
 def test_a_read_path_loads_no_parser_or_graph(module: str, heavy: tuple[str, ...]) -> None:
@@ -48,5 +53,10 @@ def test_lazy_names_resolve_and_are_listed() -> None:
     assert ingestion.GraphBuilder is GraphBuilder
     assert dead_code.DeadCodeAnalyzer is DeadCodeAnalyzer
     assert "DeadCodeAnalyzer" in dir(dead_code)
+    from repowise.core.analysis.health import complexity
+    from repowise.core.analysis.health.complexity.walker import walk_file
+
+    assert complexity.walk_file is walk_file
+    assert "FileComplexity" in dir(complexity)
     with pytest.raises(AttributeError):
         _ = ingestion.NoSuchName

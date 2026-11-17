@@ -328,11 +328,11 @@ function ActionButton({
       onClick={onClick}
       style={{
         padding: "5px 10px",
-        background: primary ? "var(--color-accent-muted, rgba(245,149,32,0.2))" : "transparent",
+        background: primary ? "var(--color-action-primary)" : "transparent",
         color: primary
-          ? "var(--color-accent-primary)"
+          ? "var(--color-text-on-action)"
           : "var(--color-text-secondary)",
-        border: `1px solid ${primary ? "var(--color-accent-primary)" : "var(--color-border-default)"}`,
+        border: `1px solid ${primary ? "var(--color-action-primary)" : "var(--color-border-default)"}`,
         borderRadius: 4,
         cursor: "pointer",
         fontSize: 11,

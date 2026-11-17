@@ -8,7 +8,7 @@ subprocesses, because the failure being caught is a process-level one that a
 mocked launcher would not reproduce.
 
 The autouse ``_isolated_home`` conftest fixture points ``Path.home()`` at a
-temp dir, so these tests write their own settings.json freely.
+temp dir, so these tests write their own ~/.claude.json freely.
 """
 
 from __future__ import annotations
@@ -89,6 +89,19 @@ def test_a_mute_server_fails_without_hanging_doctor(monkeypatch: pytest.MonkeyPa
     assert "still running" in check.detail
 
 
+def test_a_mute_server_is_not_given_the_exit_grace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exit grace is for a server whose stdout closed early, not one still
+    mute at the deadline: waiting on that only delays the answer."""
+    import time
+
+    monkeypatch.setattr(mcp_smoke, "_SMOKE_TIMEOUT_S", 1.0)
+    monkeypatch.setattr(mcp_smoke, "_EXIT_GRACE_S", 30.0)
+    started = time.monotonic()
+    check = mcp_smoke_check(sys.executable, ["-c", _MUTE_SERVER])
+    assert "still running" in check.detail
+    assert time.monotonic() - started < 15.0
+
+
 def test_an_error_response_fails() -> None:
     server = (
         "import sys, json;"
@@ -126,7 +139,7 @@ def test_no_registration_is_informational() -> None:
 
 
 def test_a_hand_shaped_registration_is_not_launched() -> None:
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = Path.home() / ".claude.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
         json.dumps({"mcpServers": {"repowise": {"url": "http://localhost:8000"}}}),
@@ -140,7 +153,7 @@ def test_a_hand_shaped_registration_is_not_launched() -> None:
 def test_the_registered_command_is_the_one_launched() -> None:
     """A smoke check that launched something other than the registration would
     give a clean bill of health to the broken thing."""
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = Path.home() / ".claude.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
         json.dumps(
@@ -167,7 +180,7 @@ def test_the_server_is_launched_once_per_doctor_run() -> None:
         "'result': {'serverInfo': {'name': 'repowise'}}}) + chr(10));"
         "sys.stdout.flush()"
     )
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = Path.home() / ".claude.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(
         json.dumps(
@@ -222,7 +235,7 @@ def test_a_chatty_server_that_dies_still_reports_its_last_words() -> None:
 def test_an_unparseable_settings_file_says_so() -> None:
     """A hand-broken settings.json is not the same as no registration:
     telling that user to run init sends them at the same unreadable file."""
-    settings_path = Path.home() / ".claude" / "settings.json"
+    settings_path = Path.home() / ".claude.json"
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text("{ not json", encoding="utf-8")
     check, wedged = _claude_registration_check()

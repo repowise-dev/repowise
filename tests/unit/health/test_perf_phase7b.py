@@ -372,7 +372,11 @@ def test_hot_path_sync_io_reason_claims_centrality_not_a_request_path():
     hit = PerfHit("hot_path_sync_io", 3, "f", "filesystem", callers=4)
     (finding,) = HotPathSyncIoDetector().detect(_ctx([hit]))
     assert "request" not in finding.reason
-    assert "most-called functions in this repo (4 direct callers)" in finding.reason
+    assert "most-called" not in finding.reason
+    assert (
+        "called from 4 places, at least as many callers as 80% of called functions"
+        in finding.reason
+    )
     assert finding.details == {"boundary_kind": "filesystem", "callers": 4}
 
 

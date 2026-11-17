@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from repowise.core.workspace.scanner import (
     _generate_aliases,
     _is_git_repo,
@@ -334,3 +336,64 @@ class TestHelpers:
         aliases = _generate_aliases(pairs)
         assert aliases[Path("/ws/x/api")] == "api"
         assert aliases[Path("/ws/y/api")] == "api-2"
+
+
+# ---------------------------------------------------------------------------
+# scan_for_repos — linked worktrees and duplicates
+# ---------------------------------------------------------------------------
+
+
+class TestScanWorktreesAndDuplicates:
+    def test_linked_worktree_is_not_listed(self, tmp_path: Path) -> None:
+        """A linked worktree is another checkout of a listed repo, not a repo."""
+        _make_repo(tmp_path, "app")
+        wt = tmp_path / "app-wt" / "feature"
+        wt.mkdir(parents=True)
+        (wt / ".git").write_text(f"gitdir: {(tmp_path / 'app/.git/worktrees/feature').as_posix()}")
+
+        assert [r.name for r in scan_for_repos(tmp_path).repos] == ["app"]
+
+    def test_linked_worktree_with_backslash_pointer(self, tmp_path: Path) -> None:
+        _make_repo(tmp_path, "app")
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / ".git").write_text(r"gitdir: C:\src\app\.git\worktrees\wt")
+
+        assert [r.name for r in scan_for_repos(tmp_path, include_submodules=True).repos] == [
+            "app"
+        ]
+
+    def test_worktree_contents_are_not_scanned(self, tmp_path: Path) -> None:
+        """A worktree is a repo boundary: clones inside it are not discovered."""
+        _make_repo(tmp_path, "app")
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        (wt / ".git").write_text("gitdir: /src/app/.git/worktrees/wt")
+        _make_repo(tmp_path, "wt/inner")
+
+        assert [r.name for r in scan_for_repos(tmp_path).repos] == ["app"]
+
+    def test_root_worktree_is_still_scannable(self, tmp_path: Path) -> None:
+        (tmp_path / ".git").write_text("gitdir: /src/app/.git/worktrees/wt")
+
+        assert [r.path for r in scan_for_repos(tmp_path).repos] == [tmp_path.resolve()]
+
+    def test_link_to_a_listed_repo_is_listed_once(self, tmp_path: Path) -> None:
+        _make_repo(tmp_path, "content_engine")
+        _make_repo(tmp_path, "other")
+        try:
+            (tmp_path / "content_engine_link").symlink_to(
+                tmp_path / "content_engine", target_is_directory=True
+            )
+        except OSError:
+            pytest.skip("symlinks unavailable")
+
+        names = [r.name for r in scan_for_repos(tmp_path).repos]
+        assert names == ["content_engine", "other"]
+
+    def test_nested_independent_clones_still_found(self, tmp_path: Path) -> None:
+        _make_repo(tmp_path, "app")
+        _make_repo(tmp_path, "test-repos/one")
+        _make_repo(tmp_path, "test-repos/two")
+
+        assert [r.name for r in scan_for_repos(tmp_path).repos] == ["app", "one", "two"]

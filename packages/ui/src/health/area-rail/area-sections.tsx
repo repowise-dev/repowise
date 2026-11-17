@@ -14,6 +14,7 @@ import { cn } from "../../lib/cn";
 import { biomarkerInfo } from "../biomarker-glossary";
 import { formatDelta, scoreTextColor } from "../tokens";
 import type { MapArea } from "../map/areas";
+import { formatNumber } from "../../lib/format";
 
 export function RailSection({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -25,7 +26,7 @@ export function RailSection({ title, children }: { title: string; children: Reac
 }
 
 const ROW =
-  "flex w-full min-w-0 items-baseline gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "flex w-full min-w-0 items-baseline gap-2 rounded px-1.5 py-1 text-left transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 function Score({ score }: { score: number | null }) {
   return (
@@ -93,7 +94,7 @@ export function AreaRows({
           <button type="button" onClick={() => onSelect(a.path)} className={ROW} title={a.path}>
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-[var(--color-text-primary)]">{nameOf(a.path)}</span>
             <span className="shrink-0 font-mono text-[10px] tabular-nums text-[var(--color-text-tertiary)]">
-              {a.fileCount.toLocaleString()}
+              {formatNumber(a.fileCount)}
             </span>
             {showDelta && a.delta30d != null ? (
               <span className="shrink-0 font-mono text-xs tabular-nums text-[var(--color-success)]">{formatDelta(a.delta30d)}</span>

@@ -16,7 +16,7 @@ import pytest
 from click.testing import CliRunner
 
 from repowise.cli.platform import identity, settings, store
-from repowise.cli.platform.telemetry import emitter, spool
+from repowise.cli.platform.telemetry import emitter, environment, spool
 from repowise.cli.platform.telemetry.events import CommandRunEvent
 
 
@@ -30,9 +30,16 @@ def isolated_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(store, "_path", lambda: tmp_path / "platform.json")
     monkeypatch.setattr(spool, "_path", lambda: tmp_path / spool.SPOOL_FILENAME)
     # Clear any inherited telemetry env so each test controls precedence.
-    for var in ("DO_NOT_TRACK", "REPOWISE_TELEMETRY_DISABLED", "REPOWISE_TELEMETRY_DEBUG"):
+    for var in (
+        "DO_NOT_TRACK",
+        "REPOWISE_TELEMETRY_DISABLED",
+        "REPOWISE_TELEMETRY_DEBUG",
+        "REPOWISE_OFFLINE",
+    ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(emitter, "_flush_thread", None, raising=False)
+    # These tests exercise delivery itself, so they opt back in to it.
+    monkeypatch.setenv("REPOWISE_TELEMETRY_IN_TESTS", "1")
 
 
 class TestConsentPrecedence:
@@ -48,6 +55,11 @@ class TestConsentPrecedence:
     def test_tool_specific_env_disables(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("REPOWISE_TELEMETRY_DISABLED", "true")
         assert settings.is_enabled() is False
+
+    def test_offline_env_disables(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("REPOWISE_OFFLINE", "1")
+        assert settings.is_enabled() is False
+        assert settings.disabled_reason() == "REPOWISE_OFFLINE is set"
 
     def test_stored_disable_then_enable(self):
         settings.set_enabled(False)
@@ -214,14 +226,35 @@ class TestSpooledDelivery:
         emitter._flush()
         assert spawned == [True]
 
-    def test_exit_spawns_nothing_under_pytest(self, monkeypatch: pytest.MonkeyPatch):
+    def test_nothing_is_queued_or_spawned_under_pytest(self, monkeypatch: pytest.MonkeyPatch):
         spawned: list = []
         monkeypatch.setattr(emitter, "_spawn_flusher", lambda: spawned.append(True) or True)
+        monkeypatch.delenv("REPOWISE_TELEMETRY_IN_TESTS")
 
         emitter.record(CommandRunEvent(command="health"))
         emitter._flush()
 
+        assert spool.claim() == []
         assert spawned == []
+
+    def test_debug_still_prints_under_pytest(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ):
+        monkeypatch.delenv("REPOWISE_TELEMETRY_IN_TESTS")
+        monkeypatch.setenv("REPOWISE_TELEMETRY_DEBUG", "1")
+        emitter.record(CommandRunEvent(command="health"))
+        assert "would send" in capsys.readouterr().err
+
+    def test_envelope_carries_a_client_label(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(environment, "client", lambda: "codex")
+        envelope = emitter.build_envelope(CommandRunEvent(command="health"))
+        assert envelope["properties"]["client"] == "codex"
+        assert "client" not in envelope  # a property, not a top-level field
+
+    def test_a_command_outcome_client_wins(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(environment, "client", lambda: "terminal")
+        event = CommandRunEvent(command="augment", extra={"client": "cursor"})
+        assert emitter.build_envelope(event)["properties"]["client"] == "cursor"
 
     def test_flusher_posts_and_drains(self, monkeypatch: pytest.MonkeyPatch):
         from repowise.cli.platform import client

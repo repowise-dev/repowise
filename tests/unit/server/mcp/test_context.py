@@ -133,8 +133,9 @@ async def test_get_context_single_file(setup_mcp):
     assert t["ownership"]["primary_owner"] == "Alice"
     assert t["ownership"]["owner_pct"] == 0.65
     assert t["ownership"]["contributor_count"] == 2
-    # Last change
-    assert t["last_change"]["author"] == "Alice"
+    # Last change. The fixture's authors carry no commit time, so no author is
+    # named; the primary owner is not who made the last change.
+    assert "author" not in t["last_change"]
     # Days from the file's last commit to the repository's newest one, not the
     # file's age: this row is the newest, so nothing has changed since.
     assert t["last_change"]["days_ago"] == 0
@@ -142,10 +143,8 @@ async def test_get_context_single_file(setup_mcp):
     # it, so it is a candidate — it used to be served as a governing decision.
     assert t["decisions"] == []
     assert any(d["title"] == "Use JWT for authentication" for d in t["candidates"])
-    # Freshness
-    assert t["freshness"]["confidence_score"] == 0.85
-    assert t["freshness"]["freshness_status"] == "fresh"
-    assert t["freshness"]["is_stale"] is False
+    # A current page sends no freshness block.
+    assert "freshness" not in t
 
 
 @pytest.mark.asyncio
@@ -164,8 +163,8 @@ async def test_get_context_single_module(setup_mcp):
     assert t["docs"]["title"] == "Auth Module"
     assert "authentication" in t["docs"]["content_md"].lower()
     assert len(t["docs"]["files"]) == 2  # service.py and middleware.py
-    # Freshness from module page
-    assert t["freshness"]["confidence_score"] == 0.95
+    # The module page is current, so no freshness block.
+    assert "freshness" not in t
 
 
 @pytest.mark.asyncio
@@ -185,7 +184,9 @@ async def test_get_context_single_symbol(setup_mcp):
     assert t["docs"]["kind"] == "class"
     assert t["docs"]["signature"] == "class AuthService"
     assert t["docs"]["file_path"] == "src/auth/service.py"
-    assert t["docs"]["documentation"]  # Has content from file page
+    # No spotlight and no entry on the file page: the file page is not copied in.
+    assert "documentation" not in t["docs"]
+    assert "file_summary" in t["docs"]
 
 
 @pytest.mark.asyncio
@@ -206,10 +207,10 @@ async def test_get_context_include_filter(setup_mcp):
 
     result = await get_context(["src/auth/service.py"], include=["docs"])
     t = result["targets"]["src/auth/service.py"]
-    # docs + freshness are the always-on defaults (the tool contract says
-    # "defaults are always returned"); include only ADDS blocks.
+    # docs + freshness are the always-on defaults; include only ADDS blocks.
+    # Freshness is sent only on drift, and this page is current.
     assert "docs" in t
-    assert "freshness" in t
+    assert "freshness" not in t
     assert "ownership" not in t
     assert "last_change" not in t
     assert "decisions" not in t
@@ -222,7 +223,6 @@ async def test_get_context_skeleton_keeps_default_card(setup_mcp):
 
     result = await get_context(["src/auth/service.py"], include=["skeleton"])
     t = result["targets"]["src/auth/service.py"]
-    assert "freshness" in t
     assert "docs" in t
     assert t["docs"].get("summary")
     # ...but the symbol list is suppressed: the skeleton already carries
@@ -828,8 +828,7 @@ async def test_file_target_surfaces_parent_concept_page(setup_mcp, session):
     assert t["type"] == "file"
     parent = t["parent_page"]
     assert parent["title"] == "Payments Module"
-    assert parent["target_path"] == "src/payments"
-    assert parent["section"] == "1.2"
+    assert parent == {"title": "Payments Module", "target_path": "src/payments"}
 
 
 @pytest.mark.asyncio
@@ -842,8 +841,8 @@ async def test_concept_target_returns_section_and_children(setup_mcp, session):
     result = await get_context(["src/payments"])
     t = result["targets"]["src/payments"]
     assert t["type"] == "module"
-    # Own tree position.
-    assert t["docs"]["section"] == "1.2"
+    # Own tree position: the parent page, not an outline number.
+    assert "section" not in t["docs"]
     assert t["parent_page"]["title"] == "Layer: Core"
     # Sub-concept child surfaced; the file child stays in "files", not "children".
     children = t["docs"].get("children", [])
@@ -907,6 +906,25 @@ def test_two_targets_share_the_budget_instead_of_one_being_dropped():
         assert tgt["docs"]["title"] == name
         assert tgt["docs"]["symbols"]
         assert "callers" in out["dropped_blocks"][name]
+
+
+def test_a_dropped_edit_set_keeps_its_counts_and_stops_claiming_whole():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    card = _card("a.py", symbols=2, callers=0)
+    card["references"] = {
+        "complete": True,
+        "sites_total": 900,
+        "files": {f"f{j}.py": {"call": list(range(1, 40))} for j in range(60)},
+    }
+    out = _truncate_to_budget({"targets": {"a.py": card}, "_meta": {}}, char_budget=4000)
+
+    assert "references" in out["dropped_blocks"]["a.py"]
+    assert out["targets"]["a.py"]["references"] == {
+        "sites_total": 900,
+        "complete": False,
+        "reasons": ["dropped to fit the response budget"],
+    }
 
 
 def test_a_small_target_keeps_everything_while_a_large_one_degrades():

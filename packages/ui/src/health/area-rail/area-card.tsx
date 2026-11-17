@@ -64,7 +64,7 @@ function Links({ links, labels, onNavigate }: { links: AreaLinks; labels: AreaRa
             e.preventDefault();
             onNavigate(l.href);
           }}
-          className="rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="rounded text-[var(--color-accent-primary)] underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
         >
           {l.label}
         </a>
@@ -148,7 +148,7 @@ export function AreaCard(props: AreaCardProps) {
       <Facts detail={detail} labels={labels} />
 
       <details className="group flex flex-col gap-4">
-        <summary className="flex cursor-pointer list-none items-center gap-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] [&::-webkit-details-marker]:hidden">
+        <summary className="flex cursor-pointer list-none items-center gap-1 rounded text-xs text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] [&::-webkit-details-marker]:hidden">
           <ChevronRight aria-hidden className="h-3.5 w-3.5 transition-transform group-open:rotate-90" />
           {labels.hotspots(detail.hotspots.total)} · {labels.owners} · {labels.topFindings}
         </summary>

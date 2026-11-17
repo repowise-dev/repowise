@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ....entry_candidacy import is_reachability_root
+from ..apex_reachability import is_apex_entry_member
 from ..constants import (
     _CONTAINER_USE_LANGUAGES,
     _DEAD_CODE_EXEMPT_LANGUAGES,
@@ -121,6 +122,10 @@ class UnusedExportPass:
             return None
 
         node_data = self.graph.nodes[node]
+        # A symbol is the target of a ``defines`` edge, never its source, so it
+        # has no symbols of its own to judge.
+        if node_data.get("node_type") == "symbol":
+            return None
         if node_data.get("language", "unknown") in _DEAD_CODE_EXEMPT_LANGUAGES:
             return None
         # Roots include framework-instantiated files the runtime constructs.
@@ -273,6 +278,9 @@ class UnusedExportPass:
         meta = self.ctx._framework_meta_annotations(sym.get("file_path", ""))
         if _is_framework_registered(decorators, meta):
             return True
+        # A ``global`` nested Apex class is reached by subscribers and ``Type.forName``.
+        if is_apex_entry_member(sym):
+            return True
         if _declared_deliberately_unused(decorators):
             return True
 
@@ -306,9 +314,13 @@ class UnusedExportPass:
         # ``export { local as alias }`` publishes the symbol under the
         # alias; importers carry the alias in ``imported_names``.
         export_alias = self.ctx._ts_export_aliases.get(str(node), {}).get(sym_name)
+        # A Pascal ``uses`` brings in the whole interface, so its ``*`` names
+        # no symbol: a use is a call, type or name edge, or the name written in
+        # an importer (``pascal_name_uses``).
+        wildcard_rescues = file_ctx.node_data.get("language") != "pascal"
         has_importers = any(
             sym_name in imported_names
-            or "*" in imported_names
+            or ("*" in imported_names and wildcard_rescues)
             or (export_alias is not None and export_alias in imported_names)
             for imported_names in (
                 self.graph[pred][node].get("imported_names", [])

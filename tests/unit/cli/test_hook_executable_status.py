@@ -30,6 +30,7 @@ def test_install_reports_when_permissions_cannot_be_repaired(
 ) -> None:
     repo = _git_repo(tmp_path)
     original_chmod = Path.chmod
+    monkeypatch.setattr(hooks, "_pinned_repowise", lambda: "repowise")
     monkeypatch.setattr(hooks.os, "name", "posix")
     monkeypatch.setattr(hooks, "_is_executable", lambda _path: False)
 

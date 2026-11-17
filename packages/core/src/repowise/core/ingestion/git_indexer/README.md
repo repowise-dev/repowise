@@ -75,6 +75,17 @@ builds a single repo-wide commit index once (`git_commit_index.load_commit_index
 from that dict. This caps depth at `_DEFAULT_COMMIT_LIMIT` (the newest N commits)
 to keep `init` inside its time/memory budget.
 
+**Blame reads Bloom filters.** The per-file pass still runs one `git blame`
+per code file (ownership and the per-line index need it), and on a long
+history each blame walks every commit to see whether its path changed.
+`blame_graph.BlameGraph` writes a commit-graph with changed-path Bloom filters
+into a scratch object directory (beside the commit walk, before the per-file
+pass) and the per-file workers run git with that directory as their object
+store and the repository's objects as an alternate. Git answers "did this
+commit touch the path" from the filter, so blame output is unchanged and the
+user's `.git` is never written. Skipped on shallow and partial clones and when
+`GIT_OBJECT_DIRECTORY` is already set.
+
 **Renames keep history.** Every shared walk (commit index, co-change, prior
 defects) reads git's rename rows newest first and files older commits under the
 path the file has at HEAD (`records.RenameTrail`), so churn, age, authorship,
@@ -173,12 +184,13 @@ and a per-file rollup on `git_metadata` (`agent_commit_count`,
 | Module | Contents |
 |--------|----------|
 | `tiers.py` | `GitIndexTier` enum + `includes_blame` / `includes_co_change` |
-| `_constants.py` | commit-depth defaults, decay half-lives, the bug-fix keyword classifier (`is_fix_commit`, mirrors the benchmark) + `PRIOR_DEFECT_WINDOW_DAYS`, skip heuristics |
+| `_constants.py` | commit-depth defaults, decay half-lives, the bug-fix keyword classifier (`is_fix_commit`, mirrors the benchmark) + `PRIOR_DEFECT_WINDOW_DAYS` and the `PRIOR_DEFECT_WINDOW_LABEL` every fix count prints beside it, skip heuristics |
 | `records.py` | `_CommitRec`, `GitIndexSummary` (carries `commit_rows`), the `git log` record format + rename/skip path helpers |
 | `commit_rows.py` | `build_commit_rows` — per-commit Kamei features + change-risk from the walk's sunk commits (pure, in-memory author experience) |
 | `agent_provenance.py` | `AgentProvenanceClassifier` — deterministic per-commit agent attribution (local channels, config-extensible) |
 | `file_history.py` | `index_file` — per-file parse + base metrics (blame gated by tier) |
 | `enrich.py` | blame ownership, commit significance, rename detection, percentiles |
+| `blame_graph.py` | `BlameGraph`: the scratch changed-path commit-graph the per-file blame pass reads |
 | `function_blame.py` | per-line blame index → per-function modification counts + line age (FULL tier; feeds `function_hotspot` / `code_age_volatility`) |
 | `co_change.py` | `compute_co_changes_and_entropy` — repo-wide decay-weighted pair walk + Hassan HCM |
 | `prior_defects.py` | `compute_prior_defects` — windowed bug-fix count per file (leakage-aware, benchmark-mirroring) |

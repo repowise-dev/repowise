@@ -6,3 +6,13 @@
  */
 
 @import "@repowise-dev/ui/styles.css";
+
+/* A moment is a full-screen sheet on a phone, and the chat dock (which sits
+ * above dialogs) would cover its footer buttons. The dock exposes no hook of
+ * its own, so this keys off its offset variable; give the dock a data
+ * attribute if its classes move. */
+@media (max-width: 560px) {
+  body:has([data-moment][data-state="open"]) [class*="chat-dock-bottom-offset"] {
+    display: none;
+  }
+}

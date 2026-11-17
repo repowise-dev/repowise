@@ -424,6 +424,70 @@ class TestLinkCyclesStillTerminate:
         # what moves. Four files: the three seeded plus the external one, once.
         assert files == sorted([*_EXPECTED_FILES, "vendored/pkg/ext.py"]), files[:8]
 
+    @pytest.mark.parametrize("link", [_symlink, _junction], ids=["symlink", "junction"])
+    def test_siblings_linking_to_each_other_terminate(self, tmp_path: Path, link) -> None:
+        _seed_tree(tmp_path)
+        _write(tmp_path, "other/o.py")
+        link(tmp_path / "svc" / "to_other", tmp_path / "other")
+        link(tmp_path / "other" / "to_svc", tmp_path / "svc")
+
+        dirs, files = _walked(tmp_path)
+        assert dirs == sorted([*_EXPECTED_DIRS, "other"])
+        assert files == sorted([*_EXPECTED_FILES, "other/o.py"])
+
+    def test_an_out_of_tree_sibling_loop_lists_each_file_once(self, tmp_path: Path) -> None:
+        """Two junctions into one external tree, the first at a subdirectory
+        of the second's target. A plain directory under the second resolves by
+        joining onto its parent, so it must still meet the visited set."""
+        outside = tmp_path.parent / f"{tmp_path.name}_ext_siblings"
+        _write(outside, "a/a.py")
+        _write(outside, "b/b.py")
+        _junction(outside / "a" / "to_b", outside / "b")
+        _junction(outside / "b" / "to_a", outside / "a")
+        root = tmp_path / "repo"
+        root.mkdir()
+        _seed_tree(root)
+        _junction(root / "a_first", outside / "a")
+        _junction(root / "b_all", outside)
+
+        _dirs, files = _walked(root)
+        ext = [f for f in files if f.endswith(("a.py", "b.py"))]
+        assert sorted(Path(f).name for f in ext) == ["a.py", "b.py"], ext
+
+
+class TestRealpathOnlyForLinks:
+    """``realpath`` costs two ``_getfinalpathname`` calls on Windows and was
+    paid for every directory; a plain directory resolves by a join."""
+
+    def test_an_unlinked_tree_resolves_only_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_tree(tmp_path)
+        _write(tmp_path, "deep/a/b/c/d.py")
+        calls: list[str] = []
+        real = os.path.realpath
+        monkeypatch.setattr(
+            os.path, "realpath", lambda p, *a, **k: calls.append(p) or real(p, *a, **k)
+        )
+
+        dirs, _files = _walked(tmp_path)
+        assert len(dirs) == 8
+        assert len(calls) == 1
+
+    def test_a_link_is_still_resolved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_tree(tmp_path)
+        _symlink(tmp_path / "linked", tmp_path / "svc")
+        calls: list[str] = []
+        real = os.path.realpath
+        monkeypatch.setattr(
+            os.path, "realpath", lambda p, *a, **k: calls.append(p) or real(p, *a, **k)
+        )
+
+        assert _walked(tmp_path) == (_EXPECTED_DIRS, _EXPECTED_FILES)
+        assert len(calls) == 2
+
 
 # ---------------------------------------------------------------------------
 # --include-submodules plumbing — scanners must honor prune_nested_git=False

@@ -38,6 +38,7 @@ PROBLEM: dict[str, str] = {
     "error_handling": "handles an exception in a way that can hide a failure",
     "coverage_gap": "has low measured test coverage",
     "untested_hotspot": "changes often and has low measured test coverage",
+    "untested_complexity": "is complex and little of it runs under test",
     "function_hotspot": "is complex and keeps changing",
     "split_file": "holds several loosely related parts in one file",
     "break_cycle": "sits in an import cycle",
@@ -58,6 +59,7 @@ FINDING_TITLE: dict[str, str] = {
     "error_handling": "Fix the exception handling in {where}",
     "coverage_gap": "Add tests for {where}",
     "untested_hotspot": "Add tests for {where}",
+    "untested_complexity": "Test the branches of {where}",
     "function_hotspot": "Simplify {where}, which keeps changing",
 }
 
@@ -350,7 +352,7 @@ def history_fact(marker: str, details: dict, function: str | None = None) -> str
     if marker == "code_age_volatility":
         return "old code that still changes often"
     if marker == "stale_governance":
-        return "a decision that covers it is out of date"
+        return "a decision that covers it predates changes to the files it governs"
     if marker == "contradictory_decision":
         return "decisions that cover it disagree"
     return None

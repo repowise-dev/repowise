@@ -21,6 +21,9 @@ from repowise.core.generation.selection import (
     recommended_file_page_cap,
     select_pages,
 )
+from repowise.core.generation.selection.scoring import score_file
+from repowise.core.generation.selection.selector import SPOTLIGHTS_PER_FILE, rank_symbol_candidates
+from repowise.core.ingestion.symbol_use import SymbolUse
 from repowise.core.test_paths import is_test_related_path
 
 # ---------------------------------------------------------------------------
@@ -52,11 +55,18 @@ class FakeSymbol:
     kind: str = "function"
     visibility: str = "public"
     signature: str = "()"
-    docstring: str | None = None
+    # A docstring past its first sentence, so the symbol has something to add
+    # beyond its file page even with no resolved caller.
+    docstring: str | None = "Do one thing. Then another."
     decorators: list[str] = field(default_factory=list)
     is_async: bool = False
     complexity_estimate: int = 1
     parent_name: str | None = None
+    # A symbol id, language and a non-trivial span, so spotlight floors pass.
+    id: str = ""
+    language: str = "python"
+    start_line: int = 1
+    end_line: int = 10
 
     def __post_init__(self) -> None:
         if not self.qualified_name:
@@ -141,6 +151,7 @@ def test_importance_floor_excludes_tests_and_reexports():
 
     Test files and pure ``__init__.py`` re-exports were proven to dilute
     retrieval, so they get no page even though nothing is rationed any more.
+    Test support such as ``conftest.py`` is not a test and passes (#1497).
     """
     parsed, pagerank, betweenness, community = _build_synthetic_repo(6)
     extras = (
@@ -149,7 +160,6 @@ def test_importance_floor_excludes_tests_and_reexports():
         "pkg0/__init__.py",
         "e2e-tests/cli/run.ts",
         "web/src/button.spec.ts",
-        "pkg0/conftest.py",
     )
     for extra in extras:
         # Stamped the way ingestion stamps it; symbols so the score floor passes.
@@ -167,6 +177,65 @@ def test_importance_floor_excludes_tests_and_reexports():
         if is_test_related_path(extra):
             assert extra not in spotlit
     assert len(sel.file_page_paths) == 6
+
+
+def test_test_support_files_pass_importance_floor():
+    """Test infrastructure and fixture files pass the floor to receive file pages."""
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(6)
+    extras = [
+        ("tests/conftest.py", "python"),
+        ("tests/fixtures/setup.py", "python"),
+        ("apps/console/e2e/helpers/hydration.ts", "typescript"),
+        ("apps/console/e2e/fixtures.ts", "typescript"),
+    ]
+    for path, lang in extras:
+        parsed.append(
+            FakeParsedFile(
+                file_info=FakeFileInfo(path=path, language=lang, is_test=True),
+                symbols=[FakeSymbol(name="fixture_helper")],
+            )
+        )
+        pagerank[path] = 0.1
+        betweenness[path] = 0.0
+        community[path] = 0
+
+    # Also add pure specs which must be excluded
+    test_specs = [
+        ("tests/unit/test_foo.py", "python"),
+        ("apps/console/e2e/specs/login.spec.ts", "typescript"),
+    ]
+    for path, lang in test_specs:
+        parsed.append(
+            FakeParsedFile(
+                file_info=FakeFileInfo(path=path, language=lang, is_test=True),
+                symbols=[FakeSymbol(name="test_login")],
+            )
+        )
+        pagerank[path] = 0.1
+        betweenness[path] = 0.0
+        community[path] = 0
+
+    sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
+
+    for path, _ in extras:
+        assert path in sel.file_page_paths, f"Expected {path} to receive a file_page"
+
+    for path, _ in test_specs:
+        assert path not in sel.file_page_paths, f"Expected {path} to be excluded"
+
+
+def test_test_penalty_skips_test_support():
+    """A support file scores as code; a test spec keeps the test penalty."""
+    kw = dict(pagerank=0.5, betweenness=0.0, max_pagerank=1.0, max_betweenness=0.0)
+    symbols = [FakeSymbol(name=f"s{i}") for i in range(5)]
+
+    def score(path: str, is_test: bool) -> float:
+        fi = FakeFileInfo(path=path, is_test=is_test)
+        return score_file(FakeParsedFile(file_info=fi, symbols=symbols), is_hotspot=False, **kw)
+
+    production = score("pkg/helpers.py", False)
+    assert score("tests/conftest.py", True) == production
+    assert score("tests/test_helpers.py", True) < production
 
 
 def test_selection_does_not_depend_on_having_a_key():
@@ -211,23 +280,85 @@ def test_spotlights_are_bounded_by_the_percentile():
     assert tenth.symbol_spotlights == half.symbol_spotlights[: len(tenth.symbol_spotlights)]
 
 
-def test_default_config_takes_the_top_symbol_decile():
+def test_default_config_takes_the_top_spotlight_share():
     """The stock default is the bound large repos actually get.
 
-    A 5.3k-file monorepo produced 4,996 spotlights inside a 14,027-page wiki at
-    the old 0.20. The bucket restates what each symbol's file page already says,
-    so the default keeps the strongest decile.
+    The bucket restates what each symbol's file page already says, so the
+    default keeps the most-used 12% of the eligible symbols.
     """
     parsed, pagerank, betweenness, community = _build_synthetic_repo(100)
     total_symbols = sum(len(p.symbols) for p in parsed)
 
     sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
 
-    assert len(sel.symbol_spotlights) == int(total_symbols * 0.10)
+    assert len(sel.symbol_spotlights) == int(total_symbols * 0.12)
+
+
+def _one_file(*symbols: FakeSymbol) -> list[FakeParsedFile]:
+    return [FakeParsedFile(file_info=FakeFileInfo(path="pkg/a.py"), symbols=list(symbols))]
+
+
+def _spotlights(parsed, uses=None, pct: float = 1.0) -> list[str]:
+    inputs = _inputs(parsed, {"pkg/a.py": 1.0}, {}, {}, GenerationConfig(top_symbol_percentile=pct))
+    inputs.symbol_uses = uses
+    ranked, keep = rank_symbol_candidates(inputs)
+    return [name for _, (_, name) in ranked[:keep]]
+
+
+def test_spotlights_rank_the_symbol_not_its_file():
+    """A symbol called from many files outranks one in a higher-PageRank file."""
+    hub = FakeFileInfo(path="pkg/hub.py")
+    leaf = FakeFileInfo(path="pkg/leaf.py")
+    parsed = [
+        FakeParsedFile(file_info=hub, symbols=[FakeSymbol(name="idle", id="pkg/hub.py::idle")]),
+        FakeParsedFile(file_info=leaf, symbols=[FakeSymbol(name="used", id="pkg/leaf.py::used")]),
+    ]
+    inputs = _inputs(parsed, {"pkg/hub.py": 1.0, "pkg/leaf.py": 0.01}, {}, {}, GenerationConfig())
+    inputs.symbol_uses = {"pkg/leaf.py::used": SymbolUse(12, 12)}
+    ranked, _ = rank_symbol_candidates(inputs)
+    assert [name for _, (_, name) in ranked] == ["used", "idle"]
+
+
+def test_dunders_and_module_state_never_get_a_spotlight():
+    parsed = _one_file(
+        FakeSymbol(name="__init__", kind="method", parent_name="A", id="pkg/a.py::A::__init__"),
+        FakeSymbol(name="__all__", kind="variable", id="pkg/a.py::__all__"),
+        FakeSymbol(name="log", kind="variable", id="pkg/a.py::log"),
+        FakeSymbol(name="run", id="pkg/a.py::run"),
+    )
+    uses = {f"pkg/a.py::{n}": SymbolUse(50, 50) for n in ("A::__init__", "__all__", "log")}
+    assert _spotlights(parsed, uses) == ["run"]
+
+
+def test_values_and_trivial_bodies_need_heavy_use():
+    """A constant or a three-line body is printed whole on the file page."""
+    const = FakeSymbol(name="LIMIT", kind="constant", id="pkg/a.py::LIMIT", end_line=1)
+    tiny = FakeSymbol(name="tiny", id="pkg/a.py::tiny", end_line=3)
+    assert _spotlights(_one_file(const, tiny)) == []
+    heavy = {"pkg/a.py::LIMIT": SymbolUse(5, 5), "pkg/a.py::tiny": SymbolUse(5, 1)}
+    assert sorted(_spotlights(_one_file(const, tiny), heavy)) == ["LIMIT", "tiny"]
+
+
+def test_a_symbol_must_add_something_to_its_file_page():
+    """Uncalled, with a one-sentence docstring: the file page already says it all."""
+    bare = FakeSymbol(name="bare", id="pkg/a.py::bare", docstring="Do one thing.")
+    called = FakeSymbol(name="called", id="pkg/a.py::called", docstring=None)
+    documented = FakeSymbol(name="documented", id="pkg/a.py::documented")
+    uses = {"pkg/a.py::called": SymbolUse(1, 1)}
+    assert sorted(_spotlights(_one_file(bare, called, documented), uses)) == [
+        "called",
+        "documented",
+    ]
+
+
+def test_one_file_keeps_at_most_the_per_file_cap():
+    symbols = [FakeSymbol(name=f"f{i}", id=f"pkg/a.py::f{i}") for i in range(SPOTLIGHTS_PER_FILE + 4)]
+    uses = {s.id: SymbolUse(20, 20) for s in symbols}
+    assert len(_spotlights(_one_file(*symbols), uses)) == SPOTLIGHTS_PER_FILE
 
 
 def test_small_repo_still_gets_a_spotlight_at_the_default():
-    """The floor of one keeps a tiny repo from losing the bucket entirely."""
+    """MIN_SPOTLIGHTS keeps a tiny repo from losing the bucket entirely."""
     parsed, pagerank, betweenness, community = _build_synthetic_repo(1)
     sel = select_pages(_inputs(parsed, pagerank, betweenness, community, GenerationConfig()))
     assert len(sel.symbol_spotlights) >= 1
@@ -395,3 +526,29 @@ def test_count_documentable_files_matches_the_floor():
         betweenness[extra] = 0.0
         community[extra] = 0
     assert count_documentable_files(parsed) == 20
+
+
+def test_the_keep_count_honours_zero_all_and_the_small_repo_floor():
+    from repowise.core.generation.selection.selector import MIN_SPOTLIGHTS, _spotlight_keep
+
+    assert _spotlight_keep(500, 0.0) == 0
+    assert _spotlight_keep(500, 1.0) == 500
+    assert _spotlight_keep(500, 0.12) == 60
+    assert _spotlight_keep(30, 0.12) == MIN_SPOTLIGHTS
+    assert _spotlight_keep(4, 0.12) == 4
+
+
+def test_a_name_declared_twice_in_one_file_keeps_its_best_occurrence():
+    from repowise.core.generation.selection.selector import _first_per_target
+
+    ranked = [(3.0, ("a.py", "new")), (2.0, ("a.py", "run")), (1.0, ("a.py", "new"))]
+    assert _first_per_target(ranked) == [(3.0, ("a.py", "new")), (2.0, ("a.py", "run"))]
+
+
+def test_a_symbol_with_no_recorded_span_is_trivial():
+    """No line range reads as a zero-line body, so it needs heavy use."""
+    from repowise.core.generation.selection.scoring import spotlight_eligible
+
+    unranged = FakeSymbol(name="f", id="pkg/a.py::f", start_line=0, end_line=0)
+    assert not spotlight_eligible(unranged, SymbolUse(4, 4))
+    assert spotlight_eligible(unranged, SymbolUse(5, 5))

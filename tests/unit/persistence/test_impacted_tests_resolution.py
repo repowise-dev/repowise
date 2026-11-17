@@ -245,6 +245,33 @@ async def test_graph_candidates_are_not_capped(async_session) -> None:
     assert set(_pairs(out, "src/hub.py")) == tests
 
 
+async def test_a_package_init_reaching_the_change_reaches_every_module_under_it(
+    async_session,
+) -> None:
+    """Importing ``pkg.a.leaf`` runs ``pkg/__init__.py`` and ``pkg/a/__init__.py`` first."""
+    repo = await insert_repo(async_session)
+    await _graph(
+        async_session,
+        repo.id,
+        tests={"tests/test_leaf.py", "tests/test_other.py", "tests/test_core.py"},
+        files={"pkg/__init__.py", "pkg/a/__init__.py", "pkg/a/leaf.py", "pkg/core.py", "other/x.py"},
+        imports=[
+            ("pkg/__init__.py", "pkg/core.py"),
+            ("tests/test_leaf.py", "pkg/a/leaf.py"),
+            ("tests/test_other.py", "other/x.py"),
+            ("tests/test_core.py", "pkg/core.py"),
+        ],
+    )
+
+    out = _empty_result(1)
+    await _resolve_impacted(async_session, repo.id, {"pkg/core.py": {1}}, set(), out)
+
+    assert _pairs(out, "pkg/core.py") == {
+        "tests/test_core.py": "import-graph",
+        "tests/test_leaf.py": "package-init",
+    }
+
+
 async def test_a_file_level_lookup_also_asks_the_graph(async_session) -> None:
     """Matched by file (a deleted file, a stale map), coverage alone is not enough."""
     repo = await _seed(async_session)
@@ -497,7 +524,58 @@ async def test_an_autouse_fixture_calling_a_function_reaches_only_what_the_funct
     if narrowed:
         assert picks == {"tests/test_a.py": "conftest-import-check"}
     else:
-        assert "tests/conftest.py" in picks
+        # A behavioural route keeps every test, each labelled as the conftest's broadcast.
+        assert picks == {
+            "tests/conftest.py": "import-graph",
+            **dict.fromkeys(
+                ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"], "conftest-broadcast"
+            ),
+        }
+
+
+@pytest.mark.parametrize("where", ["top", "fixture"])
+async def test_an_autouse_fixture_reading_a_re_exported_constant_runs_one_import_check(
+    async_session, where: str
+) -> None:
+    """``store`` re-exports ``NAMES`` from ``names``, which the change is not in."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+    imports, body = "from app.store import NAMES", "assert list(NAMES)"
+    if where == "fixture":
+        imports, body = "", f"{imports}\n    {body}"
+    source = f"import pytest\n{imports}\n\n\n@pytest.fixture(autouse=True)\ndef _n():\n    {body}\n"
+    files = {
+        "src/app/store.py": "from app import util\nfrom app.names import NAMES as NAMES\n",
+        "src/app/names.py": "NAMES = ('a', 'b')\n",
+    }
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/app/util.py": None},
+        set(),
+        out,
+        pytest_texts={"tests/conftest.py": source},
+        read_source=files.get,
+    )
+
+    assert _pairs(out, "src/app/util.py") == {"tests/test_a.py": "conftest-import-check"}
+
+
+async def test_a_conftest_route_that_cannot_be_judged_keeps_every_test(async_session) -> None:
+    """No text for the conftest: unknown runs more, never fewer."""
+    repo = await insert_repo(async_session)
+    await _conftest_graph(async_session, repo.id, stamped=True)
+
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session, repo.id, {"src/app/util.py": None}, set(), out, pytest_texts={}
+    )
+
+    picks = _pairs(out, "src/app/util.py")
+    assert {"tests/test_a.py", "tests/test_b.py", "tests/test_c.py"} <= set(picks)
+    assert any("tests/conftest.py could not be read" in n for n in out["conftest_notes"])
 
 
 async def _add_edge(session, repo_id, source, target, edge_type, hint=None, **flags) -> None:
@@ -782,3 +860,36 @@ async def test_an_index_that_never_judged_its_jvm_tests_asks_for_an_update(async
         f"The index has not checked 2 test file(s) for reaching code outside their imports "
         f"(e.g. {_BOOT_TEST}); run `repowise update`."
     )
+
+
+async def test_an_abandoned_selection_stops_between_graph_walks(async_session) -> None:
+    """A selection its caller gave up on stops walking, and is not filed as a graph error.
+
+    The tier walks are most of a wide change's selection. A selection past its
+    budget that kept walking held the interpreter against every block the
+    reply still waited on.
+    """
+    from repowise.core.analysis.test_collection import SelectionCancelledError
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = await insert_repo(async_session)
+    for path, is_test in (("tests/test_round_trips.py", True), ("src/bar.py", False)):
+        async_session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="tests/test_round_trips.py",
+            target_node_id="src/bar.py",
+            edge_type="imports",
+        )
+    )
+    await async_session.commit()
+
+    out = _empty_result(1)
+    with pytest.raises(SelectionCancelledError):
+        await _resolve_impacted(
+            async_session, repo.id, {"src/bar.py": {5}}, _REPO_KEYS, out, cancelled=lambda: True
+        )
+    assert out["graph_error"] is None

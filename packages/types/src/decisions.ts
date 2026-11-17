@@ -7,6 +7,8 @@
  * adapters fill defaults before passing data to components.
  */
 
+import type { DecisionRecentInfo } from "./generated/http.js";
+
 // ---------------------------------------------------------------------------
 // Shared vocabulary
 //
@@ -45,7 +47,7 @@ export type DecisionStatus = (typeof DECISION_STATUSES)[number];
 /** The word for a status. Presentation, so the fixture pins coverage only. */
 export const DECISION_STATUS_LABELS: Record<DecisionStatus, string> = {
   active: "Active",
-  proposed: "Proposed",
+  proposed: "Background",
   superseded: "Superseded",
   deprecated: "Deprecated",
   dismissed: "Dismissed",
@@ -82,6 +84,7 @@ export function decisionStatusRank(status: string): number {
  */
 export const DECISION_SOURCES = [
   "adr",
+  "agent",
   "cli",
   "comment",
   "commit",
@@ -90,6 +93,7 @@ export const DECISION_SOURCES = [
   "inline_marker",
   "llm_inferred",
   "pr",
+  "pr_review",
   "session",
 ] as const;
 
@@ -122,6 +126,7 @@ export const DECISION_SOURCE_LABELS: Record<
   string
 > = {
   adr: "ADR",
+  agent: "Agent",
   cli: "Manual",
   comment: "Comment",
   commit: "Commit",
@@ -130,6 +135,7 @@ export const DECISION_SOURCE_LABELS: Record<
   inline_marker: "Marker",
   llm_inferred: "Model",
   pr: "Pull request",
+  pr_review: "PR review",
   session: "Session",
   changelog: "Changelog",
   code_comment: "Comment",
@@ -298,10 +304,60 @@ export interface DecisionRecord {
   accepter?: string | null;
   accepter_kind?: AccepterKind | "" | null;
   accepter_session?: string | null;
+  /**
+   * True when the record was accepted without a person pressing Confirm: a
+   * trusted GitHub reply to the bot accepts it for that person, and
+   * `accepter` then reads `github:<login>`. Absent on a backend that never
+   * auto-accepts.
+   */
+  auto_accepted?: boolean | null;
+  /**
+   * Where the record was said, when that is a page: the PR review thread for a
+   * `pr_review` record. Absent on records with no such link.
+   */
+  source_url?: string | null;
+  /** Reviews that applied this decision. Absent where nothing counts them. */
+  applied_count?: number | null;
+  /** When a review last applied it (ISO-8601). */
+  last_applied_at?: string | null;
+  /** The pull request number of that review. */
+  last_applied_pr?: number | null;
+  /**
+   * Times agents were shown this record locally (session start, edit notice,
+   * get_why, commit line). Null when no hook ledger could be read, never 0.
+   */
+  delivered_count?: number | null;
+  /** When an agent was last shown it (ISO-8601). */
+  last_delivered_at?: string | null;
+  /**
+   * The code it names has changed since it was last applied, so a reader
+   * should re-check it. A hint, not a currency.
+   */
+  may_be_stale?: boolean | null;
+  /** Why a record just created stayed a candidate. Create endpoint only. */
+  blockers?: string[] | null;
+  /**
+   * In force and held by a person as law: an agent asks before replacing it.
+   * Absent on a backend that does not read pins.
+   */
+  pinned?: boolean | null;
+  /** How it came into force. Rows of the `recent` lane only. */
+  recent?: DecisionRecentInfo | null;
+  /**
+   * True when the stored decision text is blank and `decision` carries the
+   * title fallback. Acceptance reads the stored text, so this is what predicts
+   * the "no decision text" refusal. Optional for back-compat.
+   */
+  decision_text_missing?: boolean;
   /** Number of evidence rows backing the record. List endpoint only. */
   evidence_count?: number | null;
   /** Top-ranked evidence row, slimmed for list rows. List endpoint only. */
   evidence_preview?: EvidencePreview | null;
+  /**
+   * Named files that are churn hotspots, one of the signals the review order
+   * reads. List endpoint only; absent on a backend that predates it.
+   */
+  hotspot_files?: string[] | null;
 }
 
 /** The top-ranked evidence row, slimmed for decision list rows. */
@@ -336,6 +392,11 @@ export interface DecisionCreateInput {
  */
 export interface DecisionStatusUpdate {
   status?: DecisionStatus;
+  /**
+   * Why the decision holds, sent with `status: "active"` when the record has
+   * no rationale or context of its own. Stored as the rationale.
+   */
+  reason?: string;
   superseded_by?: string;
   affected_modules?: string[];
   affected_files?: string[];
@@ -433,9 +494,13 @@ export interface DecisionGraph {
  *
  * `governing` is the roll-up of `active` and `needs_review`, so it overlaps
  * the two and is meant for a caller asking "what binds", not for a tab row.
+ * `in_force` is every accepted record not retired, pinned first; `recent` is
+ * what came into force in the last week, newest first, and overlaps it.
  */
 export const DECISION_LANE_FILTERS = [
   "candidates",
+  "in_force",
+  "recent",
   "governing",
   "active",
   "needs_review",
@@ -444,6 +509,27 @@ export const DECISION_LANE_FILTERS = [
 ] as const;
 
 export type DecisionLaneFilter = (typeof DECISION_LANE_FILTERS)[number];
+
+/**
+ * Which decision prompt for the reader's agent. The first three are about the
+ * repository; the rest are about one record and need its id.
+ */
+export type DecisionAgentPromptKind =
+  | "discover"
+  | "add"
+  | "agreements"
+  | "review"
+  | "pin"
+  | "unpin"
+  | "veto"
+  | "edit";
+
+/** How a decision came into force: when, who, and the commit it landed in. */
+export type { DecisionRecentInfo } from "./generated/http.js";
+
+
+/** `GET .../decisions/agent-prompt?kind=`: the prompt served, its text and the records it names. */
+export type { DecisionAgentPromptResponse } from "./generated/http.js";
 
 /**
  * Records per review lane.
@@ -459,7 +545,23 @@ export interface DecisionLaneCounts {
   history: number;
   governing: number;
   total: number;
+  /** Accepted and not retired. Absent on a backend that predates it. */
+  in_force?: number | null;
+  /** In force and pinned. */
+  pinned?: number | null;
+  /** Put in force in the last week; overlaps `in_force`. */
+  recent?: number | null;
 }
+
+/**
+ * The decisions page's sections, in tab order: what is in force (pinned
+ * first), what came into force recently, the mined background, and history.
+ * `recent` overlaps `in_force` on purpose: it is the digest of the last week,
+ * not a partition.
+ */
+export const DECISION_SECTIONS = ["in_force", "recent", "candidates", "history"] as const;
+
+export type DecisionSection = (typeof DECISION_SECTIONS)[number];
 
 /**
  * The review lanes, in tab order. They partition a repository: every record is
@@ -493,19 +595,27 @@ export const DECISION_PRESETS = [
  * What `record_acceptance` would refuse this record for, mirrored so a review
  * surface can disable a control it knows will be refused instead of finding out
  * from the error toast. Pinned against the Python contract by the vocabulary
- * tests. The fourth check, accepter-or-artifact identity, is not here: the
+ * tests. The accepter-or-artifact identity check is not here: the
  * reviewer supplies that at the moment they act, so it is never something the
  * record is missing. `record_blockers` on the Python side asks the same way.
  *
  * `selfAuthored` is the exemption for a record somebody typed: they wrote the
  * claim rather than reviewing an inference, so the entry is its own provenance.
- * The engine grants it to `source === "cli"` when an accepter is known.
+ * The engine grants it to `source === "cli"` when an accepter is known. It
+ * covers evidence only.
  *
  * The reason reads `rationale` then `context`, never `decision`: `context` is
  * what forced the choice, `decision` is the choice itself, and letting the what
- * stand in for the why is what marked empty records acceptable.
+ * stand in for the why is what marked empty records acceptable. Every record
+ * needs its `decision`, typed or mined: one that never says what was chosen
+ * binds nobody to anything. A server response fills a blank `decision` with the
+ * title for readers, so `decision_text_missing` is what says the stored text is
+ * blank.
  */
 export function decisionAcceptanceBlockers(record: {
+  // Required so a caller cannot leave it out and have every record refused.
+  decision: string;
+  decision_text_missing?: boolean;
   rationale?: string;
   context?: string;
   affected_files?: string[];
@@ -519,6 +629,10 @@ export function decisionAcceptanceBlockers(record: {
   const nonBlank = (values: (string | null | undefined)[]) =>
     values.some((v) => (v ?? "").trim().length > 0);
 
+  const selfAuthored = record.source === "cli";
+  if (record.decision_text_missing || !nonBlank([record.decision])) {
+    blockers.push("no decision text: state what was chosen");
+  }
   if (!nonBlank([record.rationale, record.context])) {
     blockers.push("no rationale or explicit constraint reason");
   }
@@ -532,7 +646,6 @@ export function decisionAcceptanceBlockers(record: {
   ) {
     blockers.push("no scope: name the files or modules it governs");
   }
-  const selfAuthored = record.source === "cli";
   if (
     !selfAuthored &&
     !nonBlank(record.evidence_commits ?? []) &&

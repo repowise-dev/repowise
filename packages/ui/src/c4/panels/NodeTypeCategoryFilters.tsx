@@ -67,10 +67,10 @@ export function NodeTypeCategoryFilters() {
               fontWeight: 600,
               cursor: "pointer",
               border: active
-                ? "1px solid var(--color-accent-primary)"
+                ? "1px solid var(--color-selection-border)"
                 : "1px solid var(--color-border-default)",
-              color: active ? "var(--color-accent-primary)" : "var(--color-text-secondary)",
-              background: active ? "var(--color-accent-muted)" : "transparent",
+              color: active ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+              background: active ? "var(--color-selection-wash)" : "transparent",
               opacity: active ? 1 : 0.55,
               textDecoration: active ? "none" : "line-through",
               transition: "opacity 0.15s",

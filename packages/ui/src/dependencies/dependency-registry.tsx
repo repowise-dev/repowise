@@ -121,7 +121,7 @@ export function DependencyRegistry({
               className={cn(
                 "rounded px-2 py-1 text-xs font-medium transition-colors",
                 depFilter === f
-                  ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                  ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]",
               )}
               aria-pressed={depFilter === f}

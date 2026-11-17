@@ -19,6 +19,9 @@ cached lengths, so config changes apply to cached entries too.
 Best-effort by design: any load/save error degrades to a full
 re-tokenize. The cache file is rewritten with only the current file set
 each run, so deleted files age out naturally.
+
+Entries key on the tokenizing code (:data:`TOKEN_INPUTS`) by fingerprint, so a
+scoring change or an analyzer-stamp bump keeps them.
 """
 
 from __future__ import annotations
@@ -30,10 +33,36 @@ import structlog
 
 from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 
+from ..source_fingerprint import PARSE_INPUTS, grammar_choices, source_fingerprint
+
 log = structlog.get_logger(__name__)
 
+#: Bump when the payload's shape changes; tokenizer changes key on the fingerprint.
 _CACHE_VERSION = 2
 _CACHE_FILENAME = "duplication_cache.pkl"
+
+#: Every module whose code shapes an entry, relative to ``repowise/core``.
+TOKEN_INPUTS: tuple[str, ...] = (
+    "analysis/health/duplication/token_entry.py",
+    "analysis/health/duplication/tokenizer.py",
+    "analysis/health/duplication/rabin_karp.py",
+    *PARSE_INPUTS,
+)
+
+
+def tokenizer_fingerprint() -> str:
+    """The stamp cached entries must carry to be served.
+
+    The import kinds the tokenizer drops come from ingestion's language
+    configs, so their values join the code.
+    """
+    from repowise.core.ingestion.language_configs import LANGUAGE_CONFIGS
+
+    from .tokenizer import import_node_kinds
+
+    kinds = sorted((lang, sorted(import_node_kinds(lang))) for lang in LANGUAGE_CONFIGS)
+    return source_fingerprint(TOKEN_INPUTS, f"{grammar_choices()}{kinds!r}")
+
 
 # (kinds, identifier names, nloc, window tuples)
 _Entry = tuple[list[str], list[str], int, list[tuple[int, int, int, int]]]
@@ -42,13 +71,9 @@ _Entry = tuple[list[str], list[str], int, list[tuple[int, int, int, int]]]
 class DuplicationTokenCache:
     """Pickle-backed ``content_hash -> (kinds, names, nloc, windows)`` store."""
 
-    def __init__(self, cache_dir: Path, window_tokens: int, analyzer_version: int) -> None:
+    def __init__(self, cache_dir: Path, window_tokens: int) -> None:
         self._path = Path(cache_dir) / _CACHE_FILENAME
         self._window_tokens = window_tokens
-        # A tokenizer change alters these streams for the same bytes, and
-        # nothing else in the payload would notice. The walk cache next door
-        # has carried this stamp for the same reason since it existed.
-        self._analyzer_version = analyzer_version
         self._entries: dict[str, _Entry] = {}
         self._fresh: dict[str, _Entry] = {}
         self.hits = 0
@@ -62,7 +87,7 @@ class DuplicationTokenCache:
             if (
                 payload.get("version") != _CACHE_VERSION
                 or payload.get("window_tokens") != self._window_tokens
-                or payload.get("analyzer_version") != self._analyzer_version
+                or payload.get("tokenizer") != tokenizer_fingerprint()
             ):
                 return
             self._entries = payload.get("files", {})
@@ -77,7 +102,7 @@ class DuplicationTokenCache:
             payload = {
                 "version": _CACHE_VERSION,
                 "window_tokens": self._window_tokens,
-                "analyzer_version": self._analyzer_version,
+                "tokenizer": tokenizer_fingerprint(),
                 "files": self._fresh,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)

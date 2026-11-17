@@ -24,7 +24,7 @@ from repowise.core.analysis.test_reachability import (
     DEFAULT_CALL_DEPTH,
     DEFAULT_MAX_DEPTH,
     MAX_TESTS_PER_TARGET,
-    load_test_files,
+    cached_test_files,
     tests_reaching_by_tier,
 )
 from repowise.core.analysis.test_selection import expand_test_scopes, scope_kind
@@ -309,7 +309,7 @@ async def _analyze_consumer(
                 if any(
                     scope_kind(t) for hit in reached.values() for t in hit.all_tests or hit.tests
                 ):
-                    test_files = await load_test_files(session, repo_index.repo_id)
+                    test_files = await cached_test_files(session, repo_index.repo_id)
                     narrowed = await narrow_scopes(
                         session,
                         repo_index.repo_id,
@@ -497,7 +497,10 @@ async def analyze_workspace_test_impact(
     }
 
     if not kept:
-        summary["reason"] = "no_matching_links"
+        # An empty link map cannot say whether the files have consumers; only
+        # a map that links something can say these files have none.
+        linked = any(not _internal_call(link) for link in links)
+        summary["reason"] = "no_matching_links" if linked else "no_contract_links"
         return WorkspaceTestImpactResult(summary=summary)
 
     by_consumer: dict[str, list[ContractLink]] = defaultdict(list)

@@ -1,7 +1,6 @@
 "use client";
 
-import { OverviewSection } from "@repowise-dev/ui/overview";
-import { CopyLine, SettingsRow, SettingsRows } from "@repowise-dev/ui/settings";
+import { CopyLine, SettingsRow } from "@repowise-dev/ui/settings";
 import { useTranslations } from "next-intl";
 
 const MCP_CONFIG = JSON.stringify(
@@ -21,18 +20,8 @@ export function McpSection() {
   const t = useTranslations("settings");
 
   return (
-    <OverviewSection
-      title={t("mcp.title")}
-      description={t("mcp.description")}
-    >
-      <SettingsRows>
-        <SettingsRow
-          label={t("mcp.serverLabel")}
-          hint={t("mcp.serverHint")}
-        >
-          <CopyLine value={MCP_CONFIG} />
-        </SettingsRow>
-      </SettingsRows>
-    </OverviewSection>
+      <SettingsRow label={t("mcp.serverLabel")} hint={t("mcp.serverHint")}>
+        <CopyLine value={MCP_CONFIG} copyLabel={t("mcp.serverLabel")} />
+      </SettingsRow>
   );
 }

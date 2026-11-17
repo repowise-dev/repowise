@@ -32,6 +32,9 @@ _RELATION_HINTS: tuple[bytes, ...] = (
 
 # A manager or queryset class that eager-loads is found by these, even with no relation.
 _MANAGER_HINTS: tuple[bytes, ...] = (b"get_queryset",)
+# A file declaring SQLAlchemy columns is read for its tables' columns alone.
+_COLUMN_HINTS: tuple[bytes, ...] = (b"mapped_column(", b"Column(")
+_COLUMN_CALLS = frozenset({"mapped_column", "Column"})
 _EAGER_QUERYSET_CALLS = frozenset({"select_related", "prefetch_related"})
 
 _SA_LAZY_TRUE_STRINGS = frozenset({"select", "dynamic"})
@@ -62,6 +65,11 @@ class ModelIndex:
     # Models whose ``objects`` manager (or queryset) class, defined in this repo, has a
     # ``get_queryset`` that select_related / prefetch_related: the caller's chain hides it.
     custom_managers: frozenset[str] = frozenset()
+    # SQLAlchemy models by class name: their column names, ``__tablename__`` and the
+    # tables (or models) their ``ForeignKey`` columns point at, lower-cased.
+    columns: dict[str, frozenset[str]] = field(default_factory=dict)
+    table_names: dict[str, str] = field(default_factory=dict)
+    foreign_tables: dict[str, frozenset[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -70,6 +78,9 @@ class _RawClass:
     bases: list[str] = field(default_factory=list)
     manager_names: set[str] = field(default_factory=set)
     eager_queryset: bool = False
+    columns: set[str] = field(default_factory=set)
+    table: str | None = None
+    foreign_tables: set[str] = field(default_factory=set)
 
 
 # -- literal readers -----------------------------------------------------------
@@ -329,6 +340,47 @@ def _django_relation_from_assignment(
     return attr, relation, pending
 
 
+# -- SQLAlchemy columns ------------------------------------------------------------
+
+
+def _foreign_target(call: Node) -> str | None:
+    """``ForeignKey("repositories.id")`` -> ``repositories``; ``ForeignKey(Repo.id)`` -> ``repo``."""
+    positional, _ = _call_args(call)
+    arg = positional[0] if positional else None
+    text = _string_content(arg)
+    if text is None and arg is not None and arg.type == "attribute":
+        text = _node_text(arg)
+    parts = (text or "").split(".")
+    return parts[-2].lower() if len(parts) >= 2 and parts[-2] else None
+
+
+def _record_column(stmt: Node, rc: _RawClass) -> None:
+    """``__tablename__ = "t"``, ``name = Column(...)``, ``name: Mapped[str] =
+    mapped_column(...)`` or a bare ``name: Mapped[str]`` into *rc*."""
+    attr = ident(stmt.child_by_field_name("left"))
+    right = stmt.child_by_field_name("right")
+    if attr == "__tablename__":
+        rc.table = _string_content(right) or rc.table
+    elif attr is None:
+        return
+    elif right is None:
+        if _mapped_info(stmt.child_by_field_name("type"))[0]:
+            rc.columns.add(attr)
+    elif right.type == "call" and _callee_last_segment(right) in _COLUMN_CALLS:
+        positional, _ = _call_args(right)
+        rc.columns.add((_string_content(positional[0]) if positional else None) or attr)
+        rc.foreign_tables.update(_foreign_targets(right))
+
+
+def _foreign_targets(column: Node) -> set[str]:
+    return {
+        target
+        for node in walk(column)
+        if node.type == "call" and _callee_last_segment(node) == "ForeignKey"
+        if (target := _foreign_target(node))
+    }
+
+
 # -- per-file scan + cross-file merge ---------------------------------------------
 
 
@@ -366,6 +418,8 @@ def _scan_class_body(node: Node, name: str, is_django_file: bool, pending: list)
             else raw_stmt
         )
         result = None
+        if stmt.type == "assignment":
+            _record_column(stmt, rc)
         if stmt.type == "assignment" and (names := _manager_names(stmt)):
             rc.manager_names |= names
         elif stmt.type == "assignment":
@@ -409,6 +463,9 @@ def _scan_file(
             existing.bases.extend(rc.bases)
             existing.manager_names |= rc.manager_names
             existing.eager_queryset |= rc.eager_queryset
+            existing.columns |= rc.columns
+            existing.table = existing.table or rc.table
+            existing.foreign_tables |= rc.foreign_tables
     return classes
 
 
@@ -455,19 +512,31 @@ def _resolve_inherited(
 
 def build_model_index(parsed_files: Iterable[Any], read_source: SourceReader) -> ModelIndex:
     raw: dict[str, list[_RawClass]] = {}
+    schema: dict[str, list[_RawClass]] = {}
     pending: list[tuple[str, str, Relation]] = []
     for pf in parsed_files:
         info = pf.file_info
         if info.language != "python":
             continue
         source = read_source(info.abs_path)
-        if source is None or not any(h in source for h in _RELATION_HINTS + _MANAGER_HINTS):
+        if source is None:
             continue
-        classes = _scan_file(info.abs_path, info.language, source, pending)
+        # Only a file with relations or managers feeds the lazy-load index; one that
+        # only declares columns feeds the schema.
+        related = any(h in source for h in _RELATION_HINTS + _MANAGER_HINTS)
+        if not related and not any(h in source for h in _COLUMN_HINTS):
+            continue
+        try:
+            classes = _scan_file(info.abs_path, info.language, source, pending)
+        except Exception:  # one unreadable model file costs its own classes only
+            classes = None
         if classes is None:
             continue
         for name, rc in classes.items():
-            raw.setdefault(name, []).append(rc)
+            if related:
+                raw.setdefault(name, []).append(rc)
+            if rc.columns or rc.table:
+                schema.setdefault(name, []).append(rc)
     for target, attr, relation in pending:
         for rc in raw.get(target, ()):
             rc.relations.setdefault(attr, relation)
@@ -478,7 +547,37 @@ def build_model_index(parsed_files: Iterable[Any], read_source: SourceReader) ->
         relations=resolved,
         models=frozenset(merged),
         custom_managers=_with_custom_manager(raw, merged),
+        **_schema_maps(schema),
     )
+
+
+def _inherited(
+    name: str, own: dict[str, set[str]], bases: dict[str, set[str]], seen: set[str]
+) -> set[str]:
+    """What *name* and the bases it reaches declare in *own*; cycle-safe."""
+    seen.add(name)
+    found = set(own.get(name, ()))
+    for base in bases.get(name, ()):
+        if base not in seen:
+            found |= _inherited(base, own, bases, seen)
+    return found
+
+
+def _schema_maps(schema: dict[str, list[_RawClass]]) -> dict[str, Any]:
+    """The column, table-name and foreign-key maps of :class:`ModelIndex`. Two
+    classes of one name pool what they declare, and a class takes what the
+    bases (mixins) the schema holds declare: more key columns only ever make a
+    table read as larger, never smaller."""
+    bases = {n: {b for rc in rcs for b in rc.bases if b != n} for n, rcs in schema.items()}
+
+    columns = {n: {c for rc in rcs for c in rc.columns} for n, rcs in schema.items()}
+    foreign = {n: {t for rc in rcs for t in rc.foreign_tables} for n, rcs in schema.items()}
+    tables = {n: next((rc.table for rc in rcs if rc.table), None) for n, rcs in schema.items()}
+    return {
+        "columns": {n: frozenset(_inherited(n, columns, bases, set())) for n in schema},
+        "table_names": {n: t for n, t in tables.items() if t},
+        "foreign_tables": {n: frozenset(_inherited(n, foreign, bases, set())) for n in schema},
+    }
 
 
 def _with_custom_manager(raw: dict[str, list[_RawClass]], merged: _Merged) -> frozenset[str]:

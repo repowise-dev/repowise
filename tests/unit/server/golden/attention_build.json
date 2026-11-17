@@ -78,15 +78,6 @@
       "weight": 0.95
     },
     {
-      "weight": 8.0,
-      "id": "proposed-d-prop-1",
-      "type": "proposed_decision",
-      "title": "Cache the graph",
-      "description": "Auto-proposed decision awaiting review",
-      "severity": "medium",
-      "target_id": "d-prop-1"
-    },
-    {
       "id": "silo-src/core.py",
       "type": "knowledge_silo",
       "title": "src/core.py",
@@ -174,14 +165,14 @@
       "weight": 0.4
     }
   ],
-  "total": 19,
+  "total": 18,
   "by_source": {
     "health_finding": 4,
     "security_finding": 3,
     "refactoring": 2,
     "doc_drift": 2,
     "dead_code": 1,
-    "decisions": 5,
+    "decisions": 4,
     "knowledge_silo": 2
   },
   "areas": [
@@ -243,9 +234,9 @@
     },
     {
       "key": "decisions",
-      "total": 5,
+      "total": 4,
       "severity": "high",
-      "detail": "2 drifting from the code \u00b7 1 awaiting review \u00b7 2 hotspots ungoverned",
+      "detail": "2 drifting from the code \u00b7 2 hotspots ungoverned",
       "lead": {
         "title": "Use SQLite for the local store",
         "description": "Active decision drifting from the code it governs",

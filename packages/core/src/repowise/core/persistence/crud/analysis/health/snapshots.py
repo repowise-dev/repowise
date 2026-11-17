@@ -79,9 +79,12 @@ async def save_health_snapshot(
     ``structure_average`` / ``history_average`` are ``average_health``'s two
     halves in deduction points, so a later trend can name which one moved.
 
-    The stored doc drift count is read here rather than passed in, so every
-    writer records it without a new argument; write drift before calling this.
+    The stored doc drift count and the analyzer version are read here rather
+    than passed in, so every writer records them without a new argument; write
+    drift before calling this.
     """
+    from repowise.core.analysis.health.engine import HEALTH_ANALYZER_VERSION
+
     snap = HealthSnapshot(
         id=_new_uuid(),
         repository_id=repository_id,
@@ -99,6 +102,7 @@ async def save_health_snapshot(
         production_average=production_average,
         maintainability_average=maintainability_average,
         doc_drift_count=await _doc_drift_count(session, repository_id),
+        analyzer_version=HEALTH_ANALYZER_VERSION,
     )
     session.add(snap)
     await session.flush()
@@ -225,6 +229,18 @@ async def get_health_snapshot_headline(
             HealthSnapshotScalars(r_taken_at, float(r_avg), r_hotspot)
             for r_hotspot, r_taken_at, r_avg in window
         ),
+    )
+
+
+async def get_latest_snapshot_analyzer_version(
+    session: AsyncSession, repository_id: str
+) -> int | None:
+    """The analyzer version of the newest snapshot; ``None`` when unrecorded."""
+    return await session.scalar(
+        select(HealthSnapshot.analyzer_version)
+        .where(HealthSnapshot.repository_id == repository_id)
+        .order_by(HealthSnapshot.taken_at.desc(), HealthSnapshot.id.desc())
+        .limit(1)
     )
 
 

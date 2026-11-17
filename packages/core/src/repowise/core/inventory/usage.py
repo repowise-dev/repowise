@@ -103,8 +103,13 @@ def dist_key(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).casefold()
 
 
-def _same_name(ecosystem: str, a: str, b: str) -> bool:
-    return lookup_key(ecosystem, a) == lookup_key(ecosystem, b)
+def _name_keys(ecosystem: str, name: str) -> tuple[str, ...]:
+    """The spellings a declaration answers to: its own, and for a Maven
+    ``group:artifact`` its artifact alone, the name people usually ask for."""
+    key = lookup_key(ecosystem, name)
+    if ecosystem == "maven" and ":" in key:
+        return (key, key.rsplit(":", 1)[1])
+    return (key,)
 
 
 def parse_query(query: str) -> tuple[str, str | None]:
@@ -152,7 +157,8 @@ class UsageIndex:
             self.by_target.setdefault(dst, []).append((src, names))
         self._decls_by_name: dict[str, list[Declaration]] = {}
         for d in self.declarations:
-            self._decls_by_name.setdefault(lookup_key(d.ecosystem, d.name), []).append(d)
+            for key in _name_keys(d.ecosystem, d.name):
+                self._decls_by_name.setdefault(key, []).append(d)
         self._nodes_by_decl: dict[int, list[str]] = {}
         self._unlinked_by_name: dict[str, list[str]] = {}
         for node_id, decl_id in self.nodes.items():
@@ -172,7 +178,7 @@ class UsageIndex:
             for key in dict.fromkeys((name.casefold(), dist_key(name)))
             for d in self._decls_by_name.get(key, ())
             if (ecosystem is None or d.ecosystem == ecosystem)
-            and _same_name(d.ecosystem, d.name, name)
+            and lookup_key(d.ecosystem, name) in _name_keys(d.ecosystem, d.name)
         }
         mapped: dict[str, str] = {}
         for decl_id in found:

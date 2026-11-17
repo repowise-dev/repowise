@@ -112,6 +112,11 @@ def _identifiers(node: Node) -> set[str]:
             text = cur.text
             if text:
                 out.add(text.decode("utf-8", "replace"))
+        elif not cur.children and cur.type == "name":
+            text = cur.text
+            if text:
+                s = text.decode("utf-8", "replace")
+                out.add(s[1:] if s.startswith("$") else s)
         stack.extend(cur.children)
     return out
 

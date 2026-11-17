@@ -5,7 +5,7 @@ import type { OverviewSummaryResponse } from "@repowise-dev/types/overview";
 import { AttentionAreas } from "../../src/overview/attention-areas.js";
 import { HealthLede } from "../../src/overview/health-lede.js";
 import { OverviewBody } from "../../src/overview/overview-body.js";
-import { buildReads, inventoryRows } from "../../src/overview/overview-model.js";
+import { buildExplore, buildReads, inventoryRows } from "../../src/overview/overview-model.js";
 
 function summary(): OverviewSummaryResponse {
   return {
@@ -174,7 +174,7 @@ describe("OverviewBody", () => {
     expect(map).toHaveTextContent("1,059");
     expect(screen.getByRole("link", { name: /^Ownership/ })).toHaveTextContent("41sole-owned files");
     expect(screen.getByRole("link", { name: /^Decisions/ })).toHaveTextContent(
-      "12recorded, of which 7 accepted and 4 awaiting review",
+      "12recorded, of which 7 in force and 4 background",
     );
     expect(screen.getByRole("link", { name: /^Refactoring/ })).toHaveTextContent("9open opportunities");
     expect(screen.getByRole("link", { name: /^Tests/ })).toHaveTextContent("81.3%line coverage");
@@ -200,13 +200,33 @@ describe("OverviewBody", () => {
     expect(screen.getByText("repowise coverage add")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copy the command" })).toBeInTheDocument();
   });
+
+  it("takes the host's tests route and coverage command, or drops the card", () => {
+    const noReport = {
+      ...summary(),
+      explore: { decisions: null, refactoring: null, ownership: null, security: null, coverage: null },
+    } as unknown as OverviewSummaryResponse;
+    const { unmount } = render(
+      <OverviewBody
+        summary={noReport}
+        routes={{ base: "/r", tests: "/r/coverage", coverageCommand: "upload coverage.xml" }}
+      />,
+    );
+    expect(screen.getByRole("link", { name: /^Tests/ })).toHaveAttribute("href", "/r/coverage");
+    expect(screen.getByText("upload coverage.xml")).toBeInTheDocument();
+    unmount();
+    render(<OverviewBody summary={noReport} routes={{ base: "/r", tests: null }} />);
+    expect(screen.queryByRole("link", { name: /^Tests/ })).toBeNull();
+    expect(screen.queryByText("repowise coverage add")).toBeNull();
+  });
 });
 
 describe("inventoryRows", () => {
   it("counts each area on the same basis as its card and page", () => {
     const rows = inventoryRows({
       ...summary(),
-      health: { ...summary().health, finding_counts: { inventory: 321 } },
+      // The queue inventory is lower; the row prints the open_findings headline.
+      health: { ...summary().health, open_findings: 321, finding_counts: { inventory: 200 } },
       attention_summary: {
         total: 99,
         by_source: {},
@@ -230,10 +250,21 @@ describe("inventoryRows", () => {
       ["health", 321, "open findings", "server detail"],
       ["security", 1, "in shipped source", "9 more in tests and docs"],
       ["refactoring", 9, "open opportunities", "server detail"],
-      ["decisions", 5, "to review", "4 awaiting review, 1 drifting from the code"],
+      ["decisions", 1, "drifting from the code", ""],
       ["ownership", 41, "sole-owned files", "One author, no second reader"],
       ["doc_drift", 5, null, "server detail"],
     ]);
+  });
+});
+
+describe("buildExplore", () => {
+  it("names the open_findings headline on the code health door, not the queue inventory", () => {
+    const s = summary();
+    const entries = buildExplore(
+      { ...s, health: { ...s.health, open_findings: 13563, finding_counts: { inventory: 11371 } } } as unknown as OverviewSummaryResponse,
+      { base: "/r" },
+    );
+    expect(entries.find((e) => e.key === "code-health")?.description).toContain("13,563 open findings");
   });
 });
 

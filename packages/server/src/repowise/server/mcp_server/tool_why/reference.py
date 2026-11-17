@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
-from repowise.core.persistence.crud.authority import resolve_decision_id
+from repowise.core.persistence.crud.authority import (
+    AmbiguousDecisionIdError,
+    resolve_decision_id,
+    resolve_decision_id_prefix,
+)
 from repowise.core.persistence.database import get_session
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -29,7 +33,28 @@ async def _why_reference(
     ctx, repository, records, _target_git, accepted = await _load_corpus(repo, None)
     async with get_session(ctx.session_factory) as session:
         await _attach_decision_evidence(session, records)
-        reference_id = await _follow_moved_decision_id(session, reference_id, records)
+        resolved_id, candidates = await _resolve_reference_id(session, reference_id, records)
+
+    meta = _build_meta(repository=repository)
+    if candidates:
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "invalid_args",
+            {
+                "mode": "reference",
+                "reference_id": reference_id,
+                "resolved": False,
+                "ambiguous": True,
+                "candidates": candidates,
+                "error": f"Decision id prefix {reference_id!r} is ambiguous; candidates: {', '.join(candidates)}",
+                "decisions": [],
+                "evidence_refs": [],
+                "_meta": meta,
+            },
+        )
+
+    reference_id = resolved_id
 
     payload = {
         "decisions": [
@@ -58,7 +83,6 @@ async def _why_reference(
         or any(ref["id"] == reference_id for ref in row.get("evidence_refs", []))
     ]
     matching_refs = _matching_evidence_refs(matches, reference_id, reference, ctx)
-    meta = _build_meta(repository=repository)
     persistence = (payload.get("_meta") or {}).get("reference_persistence")
     if persistence is not None:
         meta["reference_persistence"] = persistence
@@ -72,18 +96,47 @@ async def _why_reference(
     }
 
 
-async def _follow_moved_decision_id(
+_MIN_PREFIX_LENGTH: Final[int] = 8
+
+
+async def _resolve_reference_id(
     session: Any, reference_id: str, records: list
-) -> str:
-    """The live id for a decision id that no longer names a live record."""
-    # A quoted id may name a decision that has since moved. A live id is left
-    # alone, so a merged candidate still answers about itself.
-    stale_decision_id = not reference_id.startswith("ev_") and not any(
-        record.id == reference_id for record in records
-    )
-    if stale_decision_id:
-        reference_id = await resolve_decision_id(session, reference_id) or reference_id
-    return reference_id
+) -> tuple[str, list[str]]:
+    """Resolve an exact or prefix decision id, following aliases or identifying ambiguous candidates."""
+    if reference_id.startswith("ev_"):
+        return reference_id, []
+
+    # 1. Exact match on live records
+    if any(record.id == reference_id for record in records):
+        return reference_id, []
+
+    # 2. Exact match on retired alias or direct ID in DB
+    direct = await resolve_decision_id(session, reference_id)
+    if direct and direct != reference_id:
+        return direct, []
+
+    # Reject reference ids shorter than 8 characters before prefix branches run
+    if len(reference_id) < _MIN_PREFIX_LENGTH:
+        return reference_id, []
+
+    # 3. Prefix match on live records
+    matching_records = sorted({r.id for r in records if r.id.startswith(reference_id)})
+    if len(matching_records) == 1:
+        return matching_records[0], []
+    if len(matching_records) > 1:
+        return reference_id, matching_records
+
+    # 4. Prefix match via shared persistence helper (handles DecisionRecord & non-superseded DecisionAlias)
+    try:
+        full_id = await resolve_decision_id_prefix(
+            session, reference_id, min_length=_MIN_PREFIX_LENGTH
+        )
+        if full_id is not None:
+            return full_id, []
+    except AmbiguousDecisionIdError as exc:
+        return reference_id, exc.candidates
+
+    return reference_id, []
 
 
 def _matching_evidence_refs(

@@ -4,7 +4,7 @@ Repowise can emit your architecture as [Structurizr](https://structurizr.com)
 DSL — the C4 model as a text file you commit, diff and render in your own
 toolchain instead of ours.
 
-It is deterministic: no LLM call, no API key, works under `init --index-only`,
+It is deterministic: no LLM call, no API key, works under `init --no-prose`,
 and nothing is added to indexing. The file is built on demand from the graph
 that is already there.
 

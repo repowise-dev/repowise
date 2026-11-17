@@ -64,7 +64,8 @@ def render_sarif(
         if res.evidence:
             properties["evidence"] = res.evidence
         for path, line, own in res.locations or [(anchor, None, None)]:
-            ident = own or f"{path}:{line or 0}"
+            # Line-free like every gate's own fingerprint, so an edit above keeps it.
+            ident = own or path
             out.append(
                 sarif.result(
                     _rule_id(res.rule.name),

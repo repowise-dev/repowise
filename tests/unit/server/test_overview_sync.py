@@ -82,6 +82,20 @@ async def test_completed_sync_job_wins_over_fallback(client: AsyncClient, app) -
 
 
 @pytest.mark.asyncio
+async def test_newer_cli_sync_wins_over_an_older_sync_job(client: AsyncClient, app) -> None:
+    """A server sync job from 2020 does not hide a later CLI sync of the row."""
+    repo = await create_test_repo(client)
+    await _complete_job(app, repo["id"], mode="sync", finished_at=datetime(2020, 1, 1))
+
+    resp = await client.get(f"/api/repos/{repo['id']}/overview-summary")
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert body["sync"]["last_sync_at"] == body["repo"]["updated_at"]
+    assert body["sync"]["last_sync_model"] is None
+
+
+@pytest.mark.asyncio
 async def test_head_commit_heals_from_state_json(client: AsyncClient, app, tmp_path) -> None:
     """overview-summary serves state.json's last_sync_commit when the DB row was
     never stamped, matching /api/repos and /health/overview. Rows that disagree

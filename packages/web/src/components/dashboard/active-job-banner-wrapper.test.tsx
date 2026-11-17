@@ -41,7 +41,7 @@ describe("ActiveJobBannerWrapper", () => {
     render(<ActiveJobBannerWrapper repoId="r1" />);
     expect(screen.getByRole("alert").textContent).toContain("Sync failed");
     expect(screen.getByRole("link", { name: /Provider settings/ }).getAttribute("href")).toBe(
-      "/repos/r1/settings#provider",
+      "/repos/r1/settings/models",
     );
   });
 

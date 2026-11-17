@@ -61,7 +61,13 @@ class ModuleAccumulator:
 def _score(acc: ModuleAccumulator) -> dict:
     file_count = len(acc.files)
     hotspot_count = sum(1 for m in acc.files if row_field(m, "is_hotspot"))
-    dead_pct = (acc.dead_code_count / file_count) if file_count else 0.0
+    # Rows include whole-file and package findings, so this is a bounded
+    # finding-density proxy rather than a one-to-one count of dead symbols.
+    dead_pct = (
+        min(max(acc.dead_code_count / acc.symbol_count, 0.0), 1.0)
+        if acc.symbol_count
+        else 0.0
+    )
     doc_pct = acc.doc_covered_symbols / acc.symbol_count if acc.symbol_count else 0.0
 
     bus_factors = [row_field(m, "bus_factor") or 0 for m in acc.files]

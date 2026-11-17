@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { ChevronRight, Search } from "lucide-react";
 import { CoverageBar } from "./coverage-bar";
+import { formatNumber } from "../lib/format";
 
 export interface ModuleCoverageRow {
   module: string;
@@ -136,7 +137,7 @@ export function ModuleCoverageList({ modules, onSelectModule }: ModuleCoverageLi
                 </span>
                 <span className="ml-auto shrink-0 text-xs text-[var(--color-text-tertiary)] tabular-nums">
                   {g.children.length} dir{g.children.length === 1 ? "" : "s"} ·{" "}
-                  {g.total > 0 ? `${g.covered.toLocaleString()}/${g.total.toLocaleString()} lines` : "no coverable lines"}
+                  {g.total > 0 ? `${formatNumber(g.covered)}/${formatNumber(g.total)} lines` : "no coverable lines"}
                 </span>
                 <div className="w-40 shrink-0">
                   <CoverageBar value={g.pct} size="sm" />

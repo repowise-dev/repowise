@@ -11,7 +11,13 @@ from typing import Any
 
 import click
 
-from repowise.cli.helpers import console, repo_index_session, resolve_command_target, run_async
+from repowise.cli.helpers import (
+    console,
+    cross_repo_cut_inputs,
+    repo_index_session,
+    resolve_command_target,
+    run_async,
+)
 from repowise.cli.output import (
     emit_json,
     format_option,
@@ -29,13 +35,15 @@ _TIER_COLOUR = {"act_now": "red", "plan": "yellow", "improve_signal": "cyan"}
 
 async def _read_view(root: Path) -> dict[str, Any] | None:
     """The actions view for *root*, or ``None`` when there is no index to read."""
+    from repowise.cli._helpers.paths import find_workspace_root
     from repowise.core.persistence.crud.analysis.actions import load_actions_view
 
     async with repo_index_session(root) as opened:
         if opened is None:
             return None
         session, repo_id = opened
-        return await load_actions_view(session, repo_id)
+        cut = cross_repo_cut_inputs(root, find_workspace_root(root))
+        return await load_actions_view(session, repo_id, **cut)
 
 
 def load_view(root: Path) -> dict[str, Any] | None:
@@ -158,8 +166,7 @@ def next_command(
     target = resolve_command_target(
         path=path, no_workspace_flag=no_workspace, repo_alias=repo_alias
     )
-    target.notice(notice_console(fmt), command="next")
-    root = target.single_repo_path().resolve()
+    root = target.narrow(notice_console(fmt), command="next").resolve()
     view = load_view(root)
 
     if fmt == "json":

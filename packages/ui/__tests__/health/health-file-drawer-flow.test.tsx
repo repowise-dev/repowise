@@ -189,7 +189,7 @@ describe("HealthFileDrawer verdict", () => {
     // Ink, not accent: the accent is the primary action's alone (focus rings aside).
     expect(plan.className).toContain("text-[var(--color-text-secondary)]");
     expect(plan.className).not.toMatch(/(^|\s)text-\[var\(--color-accent/);
-    expect(screen.getAllByRole("button", { name: /Fix with AI prompt/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Agent prompt" })).toHaveLength(1);
   });
 });
 
@@ -211,7 +211,7 @@ describe("HealthFileDrawer what's wrong", () => {
     expect(titles).toEqual([
       expect.stringContaining("Function does too much"),
       expect.stringContaining("Very long function"),
-      expect.stringContaining("Too many paths through one function"),
+      expect.stringContaining("Many paths through one function"),
     ]);
     for (const name of [/Other issues \(2\)/, /Details/, /History & ownership/, /Dependencies/, /Why this score/]) {
       expect(screen.getByRole("button", { name })).toHaveAttribute("aria-expanded", "false");
@@ -434,7 +434,7 @@ describe("HealthFileDrawer honest states", () => {
   it("keeps the prompt and makes no all-clear for a low score with nothing loaded", () => {
     render(<HealthFileDrawer open onClose={() => {}} metric={metric({ score: 3.2 })} />);
     expect(screen.queryByText(/Nothing needs fixing/)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Fix with AI prompt/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Agent prompt" })).toBeInTheDocument();
   });
 
   it("does not call the file clean after its last issue is resolved here", async () => {

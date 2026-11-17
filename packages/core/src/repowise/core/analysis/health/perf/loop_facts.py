@@ -54,6 +54,10 @@ class LoopSource:
 
     iterates: LoopIterates = "unknown"
     magnitude: LoopMagnitude = "unknown"
+    # The tables or ORM models named by the reads that make it grow: empty when
+    # a read names none, ``None`` when no read was found (:mod:`.table_scale`
+    # judges their size once every file is read).
+    tables: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +84,13 @@ class LoopFacts:
     # What the innermost loop walks, and why its calls cannot be one batch.
     iterates: LoopIterates = "unknown"
     not_batchable: NotBatchable | None = None
+    # Every growing enclosing loop grows only by reading these tables, and
+    # ``small_magnitude`` is the magnitude if none of them scales with the repo
+    # (:func:`.table_scale.settle_small_table_loops`); ``small_tables`` is set
+    # once that holds.
+    read_tables: tuple[str, ...] = ()
+    small_magnitude: LoopMagnitude = "unknown"
+    small_tables: tuple[str, ...] = ()
 
     def as_details(self) -> dict[str, Any]:
         """Finding ``details`` keys; defaults are omitted so old findings are unchanged."""
@@ -99,6 +110,8 @@ class LoopFacts:
             details["loop_iterates"] = self.iterates
         if self.not_batchable:
             details["loop_not_batchable"] = self.not_batchable
+        if self.small_tables:
+            details["loop_small_tables"] = list(self.small_tables)
         return details
 
 

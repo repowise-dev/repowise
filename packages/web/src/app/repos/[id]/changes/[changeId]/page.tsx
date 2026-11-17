@@ -160,7 +160,7 @@ export default async function ChangeDetailPage({ params }: Props) {
             <li key={sha}>
               <Link
                 href={`/repos/${id}/commits?commit=${sha}`}
-                className="rounded-sm text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+                className="rounded-sm text-[var(--color-text-secondary)] hover:text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
               >
                 {sha}
               </Link>

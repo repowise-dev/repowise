@@ -5,6 +5,7 @@ import { cn } from "../lib/cn";
 import { scoreBadgeClass } from "./tokens";
 import type { CodeHealthMapFile } from "./code-health-map";
 import { scoreText } from "./map/lens";
+import { formatNumber } from "../lib/format";
 
 /** Labelled <select> used across the Triage queue filters. */
 export function FilterSelect({
@@ -83,7 +84,7 @@ export function ViewToggle<T extends string>({
           className={cn(
             "px-3 py-1.5 font-medium transition-colors",
             value === opt.value
-              ? "bg-[var(--color-accent-primary)] text-[var(--color-text-inverse)]"
+              ? "bg-[var(--color-control-selected)] text-[var(--color-control-selected-text)]"
               : "bg-transparent text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-elevated)]",
           )}
         >
@@ -139,7 +140,7 @@ export function FileSpotlight({
         {file.file_path}
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-[var(--color-text-secondary)]">
-        <span>{file.nloc.toLocaleString()} NLOC</span>
+        <span>{formatNumber(file.nloc)} NLOC</span>
         {file.line_coverage_pct != null ? (
           <span>{Math.round(file.line_coverage_pct)}% coverage</span>
         ) : null}

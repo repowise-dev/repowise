@@ -4,7 +4,8 @@ Public API:
     extract_external_systems(repo_root, manifest_paths=None) -> list[ExternalSystemRecord]
 
 Each ecosystem-specific parser lives in its own submodule
-(:mod:`.npm`, :mod:`.pypi`, :mod:`.cargo`, :mod:`.go`, :mod:`.nuget`) and
+(:mod:`.npm`, :mod:`.pypi`, :mod:`.cargo`, :mod:`.go`, :mod:`.nuget`,
+:mod:`.maven`, :mod:`.gradle`, ...) and
 exposes ``filenames``, ``ecosystem``, and ``parse(manifest_path, repo_root)``.
 
 The extractor walks the repo (or accepts a pre-computed list of manifest
@@ -21,7 +22,7 @@ from pathlib import Path
 from types import ModuleType
 
 from ..workspace_members import first_party_package_names
-from . import bazel, cargo, cmake, go, maven, npm, nuget, pypi
+from . import bazel, cargo, cmake, go, gradle, maven, npm, nuget, pypi
 from .base import ExternalSystemRecord, ManifestParser
 
 __all__ = [
@@ -32,7 +33,7 @@ __all__ = [
     "manifest_ecosystem",
 ]
 
-_PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, cmake, bazel)
+_PARSERS: tuple[ModuleType, ...] = (npm, pypi, cargo, go, nuget, maven, gradle, cmake, bazel)
 
 # Map exact filename → parser module
 _FILENAME_PARSERS: dict[str, ModuleType] = {
@@ -40,13 +41,16 @@ _FILENAME_PARSERS: dict[str, ModuleType] = {
 }
 
 
-# Filename patterns that match by predicate (pypi requirements*.txt, nuget *.csproj)
+# Filename patterns that match by predicate (pypi requirements*.txt, nuget
+# *.csproj, Gradle scripts such as ``dependencies.gradle`` a build applies)
 def _matches_pattern(filename: str) -> ModuleType | None:
     lower = filename.lower()
     if lower.startswith("requirements") and lower.endswith(".txt"):
         return pypi
     if lower.endswith(".csproj"):
         return nuget
+    if gradle.is_script(Path(filename)):
+        return gradle
     return None
 
 
@@ -87,21 +91,24 @@ def extract_external_systems(
     candidates = list(manifest_paths) if manifest_paths is not None else _discover(repo_root)
 
     records: list[ExternalSystemRecord] = []
-    maven_paths: list[Path] = []
+    # Maven and Gradle read all their manifests in one pass: a version can be
+    # set in another file (a parent POM, a catalog, a convention script).
+    batched: dict[ModuleType, list[Path]] = {maven: [], gradle: []}
     for path in candidates:
         parser = _parser_for(path)
         if parser is None:
             continue
-        if parser is maven:
-            maven_paths.append(path)
+        if parser in batched:
+            batched[parser].append(path)
             continue
         try:
             records.extend(parser.parse(path, repo_root))
         except Exception:  # parser bugs must not break ingestion
             continue
-    if maven_paths:
-        with suppress(Exception):  # parser bugs must not break ingestion
-            records.extend(maven.parse_many(maven_paths, repo_root))
+    for parser, paths in batched.items():
+        if paths:
+            with suppress(Exception):  # parser bugs must not break ingestion
+                records.extend(parser.parse_many(paths, repo_root))
     return _deduplicate(_drop_first_party(records, repo_root))
 
 

@@ -165,7 +165,11 @@ async def test_renamed_file_is_not_missing_and_deleted_directory_is(async_sessio
 
 async def test_gone_decision_is_stale_history_never_superseded(async_session, repo_root):
     repo = await insert_repo(async_session)
-    why = {"rationale": "Chosen deliberately.", "evidence_commits_json": '["abc1234"]'}
+    why = {
+        "decision": "Keep it.",
+        "rationale": "Chosen deliberately.",
+        "evidence_commits_json": '["abc1234"]',
+    }
     gone = await _record(async_session, repo.id, "Legacy layer", ["legacy/a.py"], **why)
     live = await _record(async_session, repo.id, "Entry point", ["src/old_name.py"], **why)
     await accept(async_session, gone.id)

@@ -82,3 +82,26 @@ def test_no_events_says_whether_runs_could_be_compared(tmp_path):
     assert got.exit_code == 0, got.output
     # No snapshot is stored, so no events is not a quiet history.
     assert "No events yet: 0 component snapshot(s) stored" in got.output
+
+
+def test_a_workspace_root_reads_one_named_repo(tmp_path, monkeypatch):
+    """From a workspace root events read the primary repo, say so, and take --repo."""
+    _repo(tmp_path)
+    (tmp_path / "other" / ".git").mkdir(parents=True)
+    (tmp_path / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: repo\nrepos:\n"
+        "  - path: repo\n    alias: repo\n    is_primary: true\n"
+        "  - path: other\n    alias: other\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    runner = CliRunner()
+
+    got = runner.invoke(events_command, [])
+    assert got.exit_code == 0, got.output
+    assert "events reads one repo: repo (primary) of 2" in got.output
+    assert "dead_code_growth" in got.output and "2 event(s)" in got.output
+
+    other = runner.invoke(events_command, ["--repo", "other"])
+    assert "events reads one repo: other of 2" in other.output
+    assert other.exit_code == 1 and "No index found" in other.output

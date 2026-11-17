@@ -41,10 +41,15 @@ class HotPathSyncIoDetector:
                 continue
             phrasing = _BOUNDARY_PHRASING.get(hit.detail, "a blocking I/O call")
             details: dict[str, object] = {"boundary_kind": hit.detail}
-            callers = ""
+            # The gate is "callers >= p80 of called functions" (perf.ranking), so
+            # the text states that, not "most-called": the bar can be 2 callers.
+            where = "a widely called function"
             if hit.callers:
                 details["callers"] = hit.callers
-                callers = f" ({hit.callers} direct callers)"
+                where = (
+                    f"a function called from {hit.callers} places, at least as many "
+                    "callers as 80% of called functions in this repo"
+                )
             out.append(
                 BiomarkerResult(
                     biomarker_type=self.name,
@@ -54,8 +59,7 @@ class HotPathSyncIoDetector:
                     line_end=hit.line,
                     details=details,
                     reason=(
-                        f"{phrasing} in one of the most-called functions in "
-                        f"this repo{callers}; every call through it waits for the I/O"
+                        f"{phrasing} in {where}; every call through it waits for the I/O"
                     ),
                 )
             )

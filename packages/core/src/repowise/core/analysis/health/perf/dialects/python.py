@@ -66,15 +66,19 @@ from .python_nodes import (
     _bindings,
     _binds,
     _field_text,
+    _first_arg,
     _fixed_set,
     _in_filter,
     _literal_range,
     _module_int_constant,
+    _runs_schema_statement,
     _scalar_literal,
+    _splits_constant,
     _string_value,
     _text,
     _value_refs,
 )
+from .python_paths import PythonPathReceivers
 from .python_sources import PythonLoopSources
 
 if TYPE_CHECKING:
@@ -98,7 +102,9 @@ def _db_sink(method: str, is_attribute: bool, evidence: bool) -> str | None:
     return "db" if method in PY_DB_UNAMBIGUOUS or evidence else None
 
 
-class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
+class PythonPerfDialect(
+    PythonBatchForms, PythonLoopSources, PythonPathReceivers, IterableSources
+):
     language = "python"
     lock_acquire_functions = frozenset({"acquire", "__enter__"})
     spin_loop_header = re.compile(r"while\s+True\s*:")
@@ -152,8 +158,9 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             return _db_sink(method, is_attribute, has_db_import or root_kind == "db")
         if method == "Popen" or method in _PY_ROOTED_PROCESS_VERBS.get(root, ()):
             return "subprocess"
-        # A verb under its literal module root (bare ``open`` too), or a pathlib member call.
-        if method in _PY_ROOTED_FILE_VERBS.get(root, ()) or (is_attribute and method in PY_FS_METHODS):
+        # A verb under its literal module root (bare ``open`` too). Pathlib member
+        # calls need their receiver, so ``call_sink_kind`` decides those.
+        if method in _PY_ROOTED_FILE_VERBS.get(root, ()):
             return "filesystem"
         # An HTTP verb only as a member call on an imported client: a bare ``get(...)`` is not one.
         if method == "urlopen" or (
@@ -171,8 +178,12 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             io_names=io_names,
             has_db_import=has_db_import or self.shows_a_query(call),
         )
-        if kind == "db" and self._reads_a_registry(call, io_names):
+        if kind == "db" and (
+            self._reads_a_registry(call, io_names) or _runs_schema_statement(call, self.reaching_value)
+        ):
             return None
+        if kind is None and self.callee_method_name(call) in PY_FS_METHODS and self.on_path(call):
+            return "filesystem"
         orm_get = self._orm_get(call) if kind is None else None
         if orm_get is not None:
             # ``get`` alone is ``dict.get`` / ``requests.get``; the model-class shape
@@ -205,8 +216,7 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
 
     def _passes_a_statement(self, call: Node) -> bool:
         """The first argument is a statement builder call or a SQL string literal."""
-        args = call.child_by_field_name("arguments")
-        first = next((c for c in args.children if c.is_named), None) if args is not None else None
+        first = _first_arg(call)
         if first is None:
             return False
         if first.type == "call":
@@ -278,8 +288,9 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
         return model, positional[1]
 
     def is_constant_loop(self, node: Node) -> bool:
-        """``for _ in range(<int literals>)``, ``for x in (<literal>)`` or
-        ``for x in ALL_CAPS`` (a module constant by convention)."""
+        """``for _ in range(<int literals>)``, ``for x in (<literal>)``,
+        ``for x in ALL_CAPS`` (a module constant by convention) or a split of a
+        string the source spells out (``for stmt in SCHEMA.split(";")``)."""
         if node.type != "for_statement":
             return False
         right = node.child_by_field_name("right")
@@ -291,7 +302,7 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             name = right.text.decode("utf-8", "replace")
             if name.isupper() and len(name) > 1:
                 return True
-        return right.type == "call" and _literal_range(right)
+        return right.type == "call" and (_literal_range(right) or _splits_constant(right))
 
     # Builtins that wrap a collection without changing what is iterated, so the
     # same-collection O(n^2) shape sees through them: ``for x in enumerate(items)``
@@ -433,13 +444,7 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
             return "lock_in_loop"
         # ``lst.insert(0, x)`` shifts the whole list each pass: a literal ``0``, on a
         # list not re-created per iteration and not a ``deque`` (O(1) at the front).
-        if (
-            method == "insert"
-            and self.callee_is_attribute(node)
-            and self._first_arg_is_zero(node)
-            and not self._receiver_reset_in_loop(node, root)
-            and not self._receiver_bound_to_deque(node, root)
-        ):
+        if method == "insert" and self._front_insert_repeats(node, root):
             return "list_insert_zero_in_loop"
         # ``pd.concat([acc, chunk])`` / ``pandas.concat(...)`` in a loop copies
         # the whole frame each pass -> O(n^2); collect a list and concat once.
@@ -483,6 +488,14 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
                 continue  # imports do not nest further imports
             stack.extend(n.children)
         return False
+
+    def _front_insert_repeats(self, node: Node, root: str) -> bool:
+        if not (self.callee_is_attribute(node) and self._first_arg_is_zero(node)):
+            return False
+        return not (
+            self._receiver_reset_in_loop(node, root)
+            or self._receiver_bound_to_deque(node, root)
+        )
 
     def _receiver_reset_in_loop(self, node: Node, name: str) -> bool:
         """True if the call's receiver ``name`` is re-assigned (reset to a fresh
@@ -660,6 +673,7 @@ class PythonPerfDialect(PythonBatchForms, PythonLoopSources, IterableSources):
         {"break_statement", "continue_statement", "return_statement", "raise_statement"}
     )
     scope_kinds = _PY_SCOPES
+    statement_block_kinds = frozenset({"block"})
     sequence_appends = frozenset({"append", "extend", "insert"})
 
     # -- what a loop walks: the shared reading (perf/dialects/iterables.py) -------

@@ -227,7 +227,7 @@ export function GovernedFiles({
             className="hidden h-1 w-24 shrink-0 overflow-hidden rounded-full bg-[var(--color-bg-inset)] sm:block"
           >
             <span
-              className="block h-full rounded-full bg-[var(--color-accent-primary)]"
+              className="block h-full rounded-full bg-[var(--color-progress-fill)]"
               style={{ width: `${Math.round((f.decisionCount / max) * 100)}%` }}
             />
           </span>

@@ -79,6 +79,7 @@ function decodeSegment(segment: string): string {
 const ARCHITECTURE_VIEW_LABELS: Readonly<Record<string, string>> = {
   communities: "Map",
   files: "Files",
+  tree: "Tree",
   coupling: "Coupling",
   packages: "Third-party",
   symbols: "Symbols",

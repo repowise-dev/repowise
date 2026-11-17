@@ -88,6 +88,19 @@ def _read_yaml(path: Path) -> tuple[dict[str, Any], str | None]:
     return data, None
 
 
+def _layer_enabled(raw: Any, source: str, errors: list[str]) -> bool | None:
+    """``attribution.enabled`` as written; a value that is neither on nor off is off."""
+    if raw is None:
+        return None
+    from repowise.core.settings.model import parse_flag
+
+    try:
+        return parse_flag(raw)
+    except ValueError:
+        errors.append(f"{source}: attribution.enabled must be true or false")
+        return False
+
+
 def _parse_layer(
     config: dict[str, Any], source: str, known_agents: Iterable[str] | None
 ) -> tuple[AttributionLayer, list[str]]:
@@ -97,10 +110,7 @@ def _parse_layer(
     if not isinstance(block, dict):
         return AttributionLayer(enabled=False), [f"{source}: attribution must be a mapping"]
     errors: list[str] = []
-    enabled = block.get("enabled")
-    if enabled is not None and not isinstance(enabled, bool):
-        errors.append(f"{source}: attribution.enabled must be true or false")
-        enabled = False
+    enabled = _layer_enabled(block.get("enabled"), source, errors)
     capture = block.get("capture")
     # YAML reads a bare off/no/false as False (the documented ``capture: off``).
     if capture is False:

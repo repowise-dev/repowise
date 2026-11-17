@@ -14,25 +14,50 @@ behaviour far better than abstract adjectives.
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
+# comprehensive: the default, a guide for an engineer new to the code
+# ---------------------------------------------------------------------------
+
+COMPREHENSIVE_DIRECTIVE = (
+    "Style (comprehensive): tell the full story a new engineer needs before a "
+    "first change: what it is for, what a user runs and sees, the stages in order "
+    "with the data handed between them, what state changes, how it ends early, and "
+    "why where the code or its documentation says so. The page is a guide, not a "
+    "reference: name only the options that change which stages run, and say what a "
+    "function or type is for instead of restating its signature, parameters or "
+    "fields. Concrete names, numbers and conditions beat adjectives. Present "
+    "tense, active voice."
+)
+
+# Filled with the page's own word range when its renderer passes one (see
+# ``StyleSpec.length_note``). Only the default style states a number: the
+# other styles set their density in their own directive.
+COMPREHENSIVE_LENGTH = (
+    "Length: {lo} to {hi} words of prose (tables, lists of stages, code blocks and "
+    "diagrams not counted). Budget it per section as the page shape says; a "
+    "section that would run over drops options and edge cases first, never stages "
+    "or exits."
+)
+
+# ---------------------------------------------------------------------------
 # caveman — token-condensed, AI-first
 # ---------------------------------------------------------------------------
 
 CAVEMAN_SYSTEM_NOTE = (
-    "STYLE OVERRIDE — caveman: this page is read by an LLM agent, not a human. "
+    "STYLE OVERRIDE (caveman): this page is read by an LLM agent, not a human. "
     "Optimise for facts-per-token. Be terse and dense, never comprehensive prose. "
     "Preserve accuracy and every required section heading; cut everything else."
 )
 
 CAVEMAN_DIRECTIVE = (
-    "Write this page in CAVEMAN style — maximally token-condensed for an AI reader.\n"
+    "Write this page in CAVEMAN style: maximally token-condensed for an AI reader.\n"
     "- Keep every required `##` heading, but write the body as terse fragments, not sentences.\n"
     "- Drop articles (a/an/the), linking verbs (is/are/was), and filler words.\n"
     "- One fact per line. Prefer bullet lists and `key -> value` arrows over prose.\n"
     "- Use compact notation: `->` for flows-to/returns, `&` for and, `w/` for with.\n"
     "- No hedging, no restating the heading, no adjectives for flavour, no closing summary.\n"
-    "- Keep code identifiers, file paths, and signatures verbatim — never abbreviate those.\n"
+    "- Keep code identifiers, file paths, and signatures verbatim; never abbreviate those.\n"
     "- Aim for ~60-75% fewer tokens than normal prose while preserving every fact.\n"
-    "Example — instead of: 'This module is responsible for parsing the user's "
+    "Example: instead of: 'This module is responsible for parsing the user's "
     "configuration files and validating them against the schema.'\n"
     "Write: 'Parses user config files -> validates vs schema.'"
 )
@@ -42,13 +67,13 @@ CAVEMAN_DIRECTIVE = (
 # ---------------------------------------------------------------------------
 
 REFERENCE_SYSTEM_NOTE = (
-    "STYLE OVERRIDE — reference: write like an API reference manual. Lead with the "
+    "STYLE OVERRIDE (reference): write like an API reference manual. Lead with the "
     "contract (signatures, parameters, returns). Document the public surface "
     "exhaustively and precisely; omit motivation and tutorial narration."
 )
 
 REFERENCE_DIRECTIVE = (
-    "Write this page in REFERENCE style — an API manual, not a narrative.\n"
+    "Write this page in REFERENCE style: an API manual, not a narrative.\n"
     "- Keep every required `##` heading.\n"
     "- For each symbol: signature first, then a one-line purpose, then Parameters, "
     "Returns, and Raises as compact lists or tables.\n"
@@ -64,13 +89,13 @@ REFERENCE_DIRECTIVE = (
 # ---------------------------------------------------------------------------
 
 TUTORIAL_SYSTEM_NOTE = (
-    "STYLE OVERRIDE — tutorial: write for a developer new to this codebase. Teach, "
-    "don't merely describe — build understanding step by step while staying strictly "
+    "STYLE OVERRIDE (tutorial): write for a developer new to this codebase. Teach, "
+    "don't merely describe; build understanding step by step while staying strictly "
     "accurate to the supplied context."
 )
 
 TUTORIAL_DIRECTIVE = (
-    "Write this page in TUTORIAL style — guided and beginner-friendly.\n"
+    "Write this page in TUTORIAL style: guided and beginner-friendly.\n"
     "- Keep every required `##` heading. Within each section, build understanding "
     "step by step: what it does, why it exists, how it fits the bigger picture.\n"
     "- Use plain language and short worked examples grounded only in the supplied context.\n"

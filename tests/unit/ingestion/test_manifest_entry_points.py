@@ -320,3 +320,37 @@ def test_grafana_plugin_module_is_reachable_root(tmp_path: Path) -> None:
     assert idx.graph.nodes["plugins/test-ds/module.ts"].get("is_reachability_root")
     assert idx.graph.nodes["plugins/sandbox-panel/src/module.tsx"].get("is_reachability_root")
 
+
+def test_spring_boot_main_is_a_declared_entry(tmp_path: Path) -> None:
+    """A file that boots Spring leads the list whatever its name; a sample's
+    ``Main.java`` and a test-scoped ``@SpringBootApplication`` do not."""
+    repo = _write(
+        tmp_path,
+        {
+            "provider/src/main/java/org/acme/ServerApplication.java": (
+                "package org.acme;\n"
+                "public class ServerApplication {\n"
+                "    public static void main(String[] args) {\n"
+                "        new SpringApplicationBuilder(ServerApplication.class).run(args);\n"
+                "    }\n}\n"
+            ),
+            "generator/misc/Main.java": (
+                "package demo;\npublic class Main {\n"
+                "    public static void main(String[] args) {}\n}\n"
+            ),
+            "provider/src/test/java/org/acme/TestApp.java": (
+                "package org.acme;\n@SpringBootApplication\npublic class TestApp {}\n"
+            ),
+        },
+    )
+    main = "provider/src/main/java/org/acme/ServerApplication.java"
+    traverser = FileTraverser(repo)
+    infos = {fi.path: fi for fi in traverser.traverse()}
+    assert infos[main].is_application_main and infos[main].is_entry_point
+    assert not infos[main].is_manifest_entry  # not a public API the way a manifest's is
+    assert not infos["provider/src/test/java/org/acme/TestApp.java"].is_application_main
+    structure = traverser.get_repo_structure(list(infos.values()))
+    assert structure.application_mains == [main]
+
+    idx = _index(repo)
+    assert idx.project["entry_points"][0] == main

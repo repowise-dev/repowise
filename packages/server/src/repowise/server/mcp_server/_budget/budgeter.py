@@ -218,7 +218,8 @@ def fit_to_budget(
     *order* is the tool's cheapest-loss-first ranking of the blocks it can live
     without. ``"parent.child"`` sheds a nested block; ``"key[]"`` drops rows
     from the tail of a ranked list instead of the list itself, keeping the
-    first. Shedding stops the moment the response fits, so an under-budget
+    first; ``"key[].field"`` and ``"key[].field[]"`` do the same inside each
+    row of a list (:func:`_shed_in_rows`). Shedding stops the moment the response fits, so an under-budget
     response — the common case — is untouched.
 
     *entitled* names stems the caller asked for; their ``[]`` passes stop at
@@ -234,6 +235,9 @@ def fit_to_budget(
     for key in order:
         if not limits.exceeded(response):
             break
+        if "[]." in key:
+            _shed_in_rows(response, key, collector, limits, shed_stem(key) in requested)
+            continue
         container, _, leaf = key.rpartition(".")
         target: Any = response
         for part in container.split(".") if container else ():
@@ -250,6 +254,49 @@ def fit_to_budget(
                 _record_reduction(response, target, key, leaf, value, emitted=0)
             response["truncated"] = True
     return response
+
+
+def _shed_in_rows(
+    response: dict[str, Any],
+    key: str,
+    collector: OmissionCollector,
+    limits: _ShedLimits,
+    requested: bool,
+) -> None:
+    """Shed one field inside every row of a list, the heaviest row first.
+
+    ``"parent.rows[].field"`` drops *field* from rows; ``"parent.rows[].field[]"``
+    trims each row's *field* list from its tail instead. The rest of each row
+    stays, so a block made of rows keeps every row's headline.
+    """
+    path, _, leaf = key.partition("[].")
+    rows: Any = response
+    for part in path.split("."):
+        rows = rows.get(part) if isinstance(rows, dict) else None
+    if not isinstance(rows, list):
+        return
+    name = shed_stem(leaf)
+    heaviest = sorted(
+        (i for i, row in enumerate(rows) if isinstance(row, dict) and row.get(name)),
+        key=lambda i: len(json.dumps(rows[i][name], default=str)),
+        reverse=True,
+    )
+    for i in heaviest:
+        if not limits.exceeded(response):
+            return
+        row, label = rows[i], f"{path}[{i}].{name}"
+        if leaf.endswith("[]") or isinstance(row[name], list):
+            # Past the floor a list still goes row by row, so it loses only what the fit needs.
+            keep = _rows_to_keep(row[name], requested) if leaf.endswith("[]") else 0
+            _shed_tail(response, row, name, label, collector, limits, keep)
+            if not row[name]:
+                row.pop(name)
+            continue
+        value = row.pop(name)
+        collector.add(label, value)
+        if limits.record_counts:
+            _record_reduction(response, row, label, name, value, emitted=0)
+        response["truncated"] = True
 
 
 def _shed_tail(
@@ -464,16 +511,32 @@ def _fit_target(
     """
     docs = tgt.get("docs") if isinstance(tgt.get("docs"), dict) else None
     symbols = docs.get("symbols") if docs is not None else None
-    if isinstance(symbols, list) and symbols:
+    has_symbols = isinstance(symbols, list) and bool(symbols)
+    if has_symbols:
         query_terms = query_terms_for(name)
         ordered = sorted(symbols, key=lambda s: symbol_priority(s, query_terms), reverse=True)
         # The floor is the whole list's, so a later pass cannot erode it.
         floor = entitled_floor(max(len(ordered), int(docs.get("symbols_total") or 0)))
         _trim_symbols(result, name, tgt, ordered, share, floor, collector, record_counts)
+    _drop_blocks(result, name, tgt, docs, share, collector, record_counts)
+    if has_symbols and _compact_size(tgt) > share:
+        _trim_to_one_symbol(result, name, tgt, share, collector, record_counts)
 
-    def cost() -> int:
-        return len(json.dumps(tgt, separators=(",", ":"), default=str))
 
+def _compact_size(value: Any) -> int:
+    return len(json.dumps(value, separators=(",", ":"), default=str))
+
+
+def _drop_blocks(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    docs: dict[str, Any] | None,
+    share: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Drop *tgt*'s optional blocks, largest first, until it fits *share*."""
     # (container, key, label): the target's own blocks and those nested in docs.
     sources = ((tgt, _TARGET_IDENTITY_KEYS, ""), (docs or {}, _DOCS_IDENTITY_KEYS, "docs."))
     blocks = [
@@ -484,27 +547,55 @@ def _fit_target(
     ]
     blocks.sort(key=lambda block: len(json.dumps(block[0][block[1]], default=str)), reverse=True)
     for container, key, label in blocks:
-        if cost() <= share:
+        if _compact_size(tgt) <= share:
             return
-        value = container.pop(key)
-        if collector is not None and value:
-            collector.add(f"{name} :: {label}", value)
-        result.setdefault("dropped_blocks", {}).setdefault(name, []).append(label)
-        result["truncated"] = True
-        if record_counts and isinstance(value, list):
-            # Keeps a capped list's *_total / *_emitted beside it truthful.
-            _record_reduction(result, container, f"targets.{name}.{label}", key, value, emitted=0)
+        _drop_block(result, name, container, key, label, collector, record_counts)
 
-    if cost() > share and isinstance(symbols, list) and symbols:
-        _trim_symbols(result, name, tgt, list(docs["symbols"]), share, 1, collector, record_counts)
-        head = docs["symbols"][0]
-        docstring = head.get("docstring")
-        if cost() > share and isinstance(docstring, str) and len(docstring) > 200:
-            # One symbol alone over the share: keep it, cut its docstring.
-            if collector is not None:
-                collector.add(f"{name} :: {head.get('name')} docstring", docstring)
-            docs["symbols"][0] = {**head, "docstring": docstring[:200]}
-            result["truncated"] = True
+
+def _drop_block(
+    result: dict[str, Any],
+    name: str,
+    container: dict[str, Any],
+    key: str,
+    label: str,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Drop one block, recording it; a block with a verdict keeps a stub."""
+    value = container.pop(key)
+    if collector is not None and value:
+        collector.add(f"{name} :: {label}", value)
+    if isinstance(value, dict) and "complete" in value:
+        # A block with a completeness verdict keeps its counts, and stops claiming whole.
+        container[key] = {k: v for k, v in value.items() if type(v) is int} | {
+            "complete": False,
+            "reasons": ["dropped to fit the response budget"],
+        }
+    result.setdefault("dropped_blocks", {}).setdefault(name, []).append(label)
+    result["truncated"] = True
+    if record_counts and isinstance(value, list):
+        # Keeps a capped list's *_total / *_emitted beside it truthful.
+        _record_reduction(result, container, f"targets.{name}.{label}", key, value, emitted=0)
+
+
+def _trim_to_one_symbol(
+    result: dict[str, Any],
+    name: str,
+    tgt: dict[str, Any],
+    share: int,
+    collector: OmissionCollector | None,
+    record_counts: bool,
+) -> None:
+    """Keep one symbol; if it alone is over *share*, cut its docstring."""
+    docs = tgt["docs"]
+    _trim_symbols(result, name, tgt, list(docs["symbols"]), share, 1, collector, record_counts)
+    head = docs["symbols"][0]
+    docstring = head.get("docstring")
+    if _compact_size(tgt) > share and isinstance(docstring, str) and len(docstring) > 200:
+        if collector is not None:
+            collector.add(f"{name} :: {head.get('name')} docstring", docstring)
+        docs["symbols"][0] = {**head, "docstring": docstring[:200]}
+        result["truncated"] = True
 
 
 def _trim_symbols(

@@ -15,11 +15,13 @@ come from :mod:`repowise.core.ci`, shared with every other CI gate.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Callable, Sequence
 
 from ...ci import github
 from ...ci.markdown import ROW_LIMIT, cell, details, more_line, plural
+from ...ci.summary import FAIL, PASS, GateSummary, SummaryFinding
 from .compute import UNMEASURED, FilePatchCoverage, PatchCoverage, PathGateResult
 from .delta import IndirectCause, IndirectChange, ProjectDelta
 from .hints import RANGE_LIMIT, TestHint, first_hint, hint_phrase
@@ -622,6 +624,29 @@ def _outside_annotation(c: IndirectChange) -> str:
         line=c.newly_uncovered_ranges[0][0],
         title="Coverage lost outside the change",
     )
+
+
+def gate_summary(pc: PatchCoverage) -> GateSummary:
+    """The gate's row in the combined CI summary: one finding per file with uncovered
+    changes, an error when the gate failed and a warning otherwise.
+
+    A coverage gap is a file's, not a line's, so its fingerprint is the path's.
+    """
+    verdict = FAIL if pc.gate == "fail" else PASS
+    level = "error" if verdict == FAIL else "warning"
+    rows = tuple(
+        SummaryFinding(
+            level,
+            f.file_path,
+            None,
+            f"{plural(f.uncovered_line_count, 'changed line')} not covered: "
+            f"{format_ranges(f.uncovered_ranges, RANGE_LIMIT)}.",
+            hashlib.sha256(f"repowise.coverage.gap.v1\x1f{f.file_path}".encode()).hexdigest()[:32],
+        )
+        for f in attention_rows(pc)
+        if f.status == "measured" and f.uncovered_line_count
+    )
+    return GateSummary("coverage", verdict, headline(pc, markdown=False), rows)
 
 
 def format_ranges(ranges: Sequence[tuple[int, int]], limit: int | None = None) -> str:

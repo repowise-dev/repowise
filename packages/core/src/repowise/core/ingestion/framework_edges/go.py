@@ -2,7 +2,8 @@
 
 Covers the route/handler wiring that carries no import edge:
 
-* **Router frameworks** — Gin / Echo / Chi ``r.GET("/path", handler)``.
+* **Router frameworks** — Gin / Echo ``r.GET("/path", handler)``, chi / fiber
+  ``r.Get("/path", handler)``, gorilla/mux ``r.Path("/x").Handler(h)`` chains.
 * **stdlib ``net/http``** — ``http.HandleFunc("/path", handler)`` and
   ``mux.Handle("/path", handler)`` (same ``.HandleFunc`` / ``.Handle``
   selector shape as the router frameworks, so one regex serves both —
@@ -19,9 +20,12 @@ Go-parity work (Phase 4).
 from __future__ import annotations
 
 import re
+from itertools import chain
 from typing import TYPE_CHECKING, Any
 
 from ..framework_routes import go_routes
+from ..framework_routes_chi import title_case_routes
+from ..framework_routes_gorilla import gorilla_routes
 from ..resolvers import ResolverContext
 from .base import (
     DetectionContext,
@@ -40,6 +44,8 @@ _GO_ROUTER_PKG_PATTERNS = (
     "github.com/gin-gonic/gin",
     "github.com/labstack/echo",
     "github.com/go-chi/chi",
+    "github.com/gofiber/fiber",
+    "github.com/gorilla/mux",
 )
 # stdlib net/http is gated separately: its handler-registration calls share
 # the ``.HandleFunc`` / ``.Handle`` selector shape with the router frameworks.
@@ -92,7 +98,7 @@ def _add_go_route_edges(
         if not text:
             continue
 
-        for route in go_routes(text):
+        for route in chain(go_routes(text), title_case_routes(text), gorilla_routes(text)):
             if not route.handler:
                 continue  # an inline `func(c *gin.Context)` names nothing to link to
             targets = _resolve_go_handler(
@@ -170,7 +176,7 @@ def _resolve_go_handler(
 class _GoWebHandler:
     def detect(self, dctx: DetectionContext) -> bool:
         go_web_in_stack = any(
-            token in dctx.stack_lower for token in ("gin", "echo", "chi", "grpc")
+            token in dctx.stack_lower for token in ("gin", "echo", "chi", "fiber", "gorilla", "grpc")
         )
         return go_web_in_stack or _has_go_web_imports(dctx.parsed_files)
 

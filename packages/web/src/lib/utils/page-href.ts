@@ -13,7 +13,7 @@ const FILE_PAGE_PREFIX = filePageId("");
  */
 /** Where a repo's LLM provider and model are set up. */
 export function providerSetupHref(repoId: string): string {
-  return `/repos/${repoId}/settings#provider`;
+  return `/repos/${repoId}/settings/models`;
 }
 
 export function pageHref(repoId: string, pageId: string): string {

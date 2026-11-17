@@ -131,7 +131,7 @@ async def test_an_agent_cannot_accept_by_default(async_session):
     repo = await insert_repo(async_session)
     rec = await _seed(async_session, repo.id, "Use Redis")
 
-    with pytest.raises(AcceptanceRefusedError, match="may not record a 'accepted'"):
+    with pytest.raises(AcceptanceRefusedError, match="may not accept here"):
         await accept_decision(async_session, rec, accepter="claude_code", kind="agent")
     assert await latest_acceptance(async_session, rec.id) is None
 
@@ -142,8 +142,20 @@ async def test_an_agent_cannot_reaffirm_by_default(async_session):
     rec = await _seed(async_session, repo.id, "Use Redis")
     await accept_decision(async_session, rec, accepter="Raghav", kind="person")
 
-    with pytest.raises(AcceptanceRefusedError, match="may not record a 'reaffirmed'"):
+    with pytest.raises(AcceptanceRefusedError, match="may not reaffirm here"):
         await reaffirm_decision(async_session, rec, accepter="claude_code", kind="agent")
+
+
+@pytest.mark.parametrize(
+    ("action", "verb"),
+    [("accepted", "accept"), ("reaffirmed", "reaffirm"), ("merged", "merge")],
+)
+def test_a_grant_refusal_uses_the_action_verb(action: str, verb: str) -> None:
+    blocker = machine_grant_blocker("agent", action, granted=False)
+
+    assert blocker == (
+        f"an agent may not {verb} here: agent acceptance is off for this repository"
+    )
 
 
 async def test_an_agent_may_withdraw_authority_without_the_switch(async_session):

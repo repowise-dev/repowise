@@ -8,8 +8,8 @@ the suggestion is deterministic and matches the ``low_cohesion`` /
 ``god_class`` biomarkers exactly.
 
 The detector confirms the god-class shape with two Lanza-Marinescu signals
-carried as evidence (WMC = Σ method McCabe; method/field counts), reads the
-recovered health impact off the matching biomarker finding, and emits one
+carried as evidence (WMC = Σ method McCabe; method/field counts), prices the
+fix by rescoring the file without the matching biomarker finding, and emits one
 ``RefactoringSuggestion`` per splittable class with the concrete group
 breakdown.
 
@@ -34,10 +34,13 @@ class.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..complexity.class_analysis import cohesion_applies, holds_state
 from ..complexity.models import CohesionGroup
 from ..effort import effort_bucket
-from .models import RefactoringContext, RefactoringSuggestion
+from ..gain import removal_gain
+from .models import RECOVERED_SHARE, RefactoringContext, RefactoringSuggestion
 from .registry import RefactoringDetector, register
 
 # The cohesion biomarkers this detector answers. A class is only suggested
@@ -72,7 +75,7 @@ class ExtractClassDetector(RefactoringDetector):
         out: list[RefactoringSuggestion] = []
         if not cohesion_applies(ctx.file_path, ctx.language):
             return out
-        impact_by_class = self._impact_by_class(ctx)
+        findings_by_class = self._findings_by_class(ctx)
 
         for cls in ctx.classes:
             components = getattr(cls, "components", None) or []
@@ -90,12 +93,8 @@ class ExtractClassDetector(RefactoringDetector):
 
             wmc = sum(getattr(m, "ccn", 0) for m in getattr(cls, "methods", []))
             share = _moved_share(cls, substantive)
-            impact_delta, source = max(
-                (
-                    (impact * (share if marker == "god_class" else 1.0), marker)
-                    for impact, marker in impact_by_class.get(cls.name, ())
-                ),
-                default=(0.0, ""),
+            impact_delta, recovered, source = _best_recovery(
+                ctx.findings, findings_by_class.get(cls.name, ()), share
             )
 
             groups = [
@@ -116,8 +115,9 @@ class ExtractClassDetector(RefactoringDetector):
                         "field_count": cls.field_count,
                         "wmc": wmc,
                         "tcc": round(float(getattr(cls, "tcc", 1.0)), 3),
+                        RECOVERED_SHARE: round(recovered, 3),
                     },
-                    impact_delta=round(float(impact_delta), 3),
+                    impact_delta=impact_delta,
                     effort_bucket=effort_bucket(cls.total_nloc),
                     blast_radius={"dependents_count": ctx.dependents_count},
                     confidence=self._confidence(cls),
@@ -131,12 +131,12 @@ class ExtractClassDetector(RefactoringDetector):
         return out
 
     @staticmethod
-    def _impact_by_class(ctx: RefactoringContext) -> dict[str, list[tuple[float, str]]]:
-        """Map class name -> [(finding impact, source biomarker)] from the
-        file's cohesion findings. The biomarkers report ``function_name`` =
-        the class name.
+    def _findings_by_class(ctx: RefactoringContext) -> dict[str, list[tuple[Any, str]]]:
+        """Map class name -> [(finding, source biomarker)] from the file's
+        cohesion findings. The biomarkers report ``function_name`` = the class
+        name.
         """
-        by_class: dict[str, list[tuple[float, str]]] = {}
+        by_class: dict[str, list[tuple[Any, str]]] = {}
         for f in ctx.findings:
             if getattr(f, "biomarker_type", "") not in _SOURCE_BIOMARKERS:
                 continue
@@ -146,8 +146,7 @@ class ExtractClassDetector(RefactoringDetector):
                 name = (getattr(f, "details", {}) or {}).get("class_name")
             if not name:
                 continue
-            impact = float(getattr(f, "health_impact", 0.0) or 0.0)
-            by_class.setdefault(name, []).append((impact, getattr(f, "biomarker_type", "")))
+            by_class.setdefault(name, []).append((f, getattr(f, "biomarker_type", "")))
         return by_class
 
     @staticmethod
@@ -159,6 +158,18 @@ class ExtractClassDetector(RefactoringDetector):
         if lcom4 >= 3 or method_count >= 15:
             return "high"
         return "medium"
+
+
+def _best_recovery(
+    findings: list[Any], matched: list[tuple[Any, str]], share: float
+) -> tuple[float, float, str]:
+    """``(gain, share recovered, marker)`` for the finding the split recovers
+    most of: ``low_cohesion`` whole, ``god_class`` by the moved *share*."""
+    options = []
+    for f, marker in matched:
+        part = share if marker == "god_class" else 1.0
+        options.append((removal_gain(findings, [(f, part)]), part, marker))
+    return max(options, default=(0.0, 1.0, ""))
 
 
 def _moved_share(cls: object, groups: list) -> float:

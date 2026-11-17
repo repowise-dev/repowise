@@ -23,17 +23,30 @@ function requestHeaders(extra) {
   return headers;
 }
 var ApiClientError = class extends Error {
-  constructor(status, detail) {
+  constructor(status, detail, blockers = []) {
     super(`API error ${status}: ${detail}`);
     this.status = status;
     this.detail = detail;
+    this.blockers = blockers;
     this.name = "ApiClientError";
   }
   status;
   detail;
+  blockers;
 };
+function blockersOf(detail) {
+  const list2 = detail?.blockers;
+  return Array.isArray(list2) ? list2.filter((b) => typeof b === "string") : [];
+}
 function stringifyDetail(detail) {
   if (typeof detail === "string") return detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = detail.message;
+    const blockers = blockersOf(detail);
+    if (typeof message === "string" && message) {
+      return blockers.length ? `${message} ${blockers.join("; ")}` : message;
+    }
+  }
   if (Array.isArray(detail)) {
     const msgs = detail.map(
       (d) => d && typeof d === "object" && "msg" in d ? String(d.msg) : null
@@ -45,12 +58,14 @@ function stringifyDetail(detail) {
 async function handleResponse(res) {
   if (!res.ok) {
     let detail = res.statusText;
+    let blockers = [];
     try {
       const json = await res.json();
       detail = stringifyDetail(json.detail) ?? detail;
+      blockers = blockersOf(json.detail);
     } catch {
     }
-    throw new ApiClientError(res.status, detail);
+    throw new ApiClientError(res.status, detail, blockers);
   }
   if (res.status === 204) return void 0;
   return res.json();
@@ -373,6 +388,7 @@ async function fetchFileContext(host, path) {
 // ../ui/src/lib/format.ts
 function parseDate(date) {
   if (date instanceof Date) return date;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return new Date(date.trim());
   if (!/[zZ]|[+-]\d\d?:\d\d$/.test(date.trim())) {
     return /* @__PURE__ */ new Date(`${date.trim()}Z`);
   }
@@ -382,7 +398,7 @@ var NUMBER_FORMAT = new Intl.NumberFormat("en-US");
 function formatNumber(n) {
   return NUMBER_FORMAT.format(n);
 }
-function formatRelativeTime(date) {
+function relativeTimeParts(date) {
   const d = parseDate(date);
   const now = Date.now();
   const diff = now - d.getTime();
@@ -392,14 +408,28 @@ function formatRelativeTime(date) {
   const days = Math.floor(hours / 24);
   const weeks = Math.floor(days / 7);
   const months = Math.floor(days / 30);
-  if (seconds < 10) return "just now";
-  if (seconds < 60) return `${seconds}s ago`;
-  if (minutes < 60) return `${minutes}m ago`;
-  if (hours < 24) return `${hours}h ago`;
-  if (days < 7) return `${days}d ago`;
-  if (weeks < 5) return `${weeks}w ago`;
-  if (months < 12) return `${months}mo ago`;
-  return `${Math.floor(months / 12)}y ago`;
+  if (seconds < 10) return { unit: "now", value: 0 };
+  if (seconds < 60) return { unit: "s", value: seconds };
+  if (minutes < 60) return { unit: "m", value: minutes };
+  if (hours < 24) return { unit: "h", value: hours };
+  if (days < 7) return { unit: "d", value: days };
+  if (weeks < 5) return { unit: "w", value: weeks };
+  if (months < 12) return { unit: "mo", value: months };
+  return { unit: "y", value: Math.floor(months / 12) };
+}
+var RELATIVE_TIME_WORDS = {
+  now: "just now",
+  s: "{value}s ago",
+  m: "{value}m ago",
+  h: "{value}h ago",
+  d: "{value}d ago",
+  w: "{value}w ago",
+  mo: "{value}mo ago",
+  y: "{value}y ago"
+};
+function formatRelativeTime(date, words = RELATIVE_TIME_WORDS) {
+  const { unit, value } = relativeTimeParts(date);
+  return (words[unit] ?? RELATIVE_TIME_WORDS[unit]).replace("{value}", String(value));
 }
 function formatRelativeTimeOrNull(iso, fallback = "—") {
   if (!iso) return fallback;
@@ -1412,6 +1442,7 @@ var rec = (v) => isRec(v) ? v : {};
 var str = (v) => typeof v === "string" && v !== "" ? v : null;
 var num = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
 var bool = (v) => typeof v === "boolean" ? v : null;
+var reasons = (v) => Array.isArray(v) && v.length > 0 ? v.filter((x) => typeof x === "string").join(", ") || null : null;
 var count2 = (v) => Array.isArray(v) ? v.length : num(v);
 function fact(what, n, of = null) {
   if (n === null) return [];
@@ -1430,7 +1461,8 @@ function contextFacts(r) {
   const symbolTotal = sumOver(docs, (d) => num(rec(d["symbols_truncated"])["total"]) ?? count2(d["symbols"]));
   return [
     ...fact("targets", targets.length),
-    ...fact("docs", docs.filter((d) => str(d["title"]) !== null).length || null),
+    // A file page's generated title is not sent, so its summary marks it.
+    ...fact("docs", docs.filter((d) => (str(d["title"]) ?? str(d["summary"])) !== null).length || null),
     ...fact("symbols", symbols, symbolTotal),
     ...fact("callers", sumOver(targets, (t) => count2(t["callers"]))),
     ...fact("callees", sumOver(targets, (t) => count2(t["callees"]))),
@@ -1499,15 +1531,17 @@ function behindOf(r, meta) {
   return {
     commit: str(meta["indexed_commit"]),
     ageDays: num(meta["index_age_days"]),
-    indexBehind: bool(meta["index_behind"]),
+    // Lean replies send only `stale_warning`, and only when it matters.
+    indexBehind: bool(meta["index_behind"]) ?? (str(meta["stale_warning"]) !== null ? true : null),
     verified: bool(r["verified"]),
-    complete: bool(meta["complete"]) ?? (capped === null ? null : !capped),
+    // Lean replies drop `completeness`; `omitted` then says it was capped.
+    complete: bool(meta["complete"]) ?? (capped !== null ? !capped : isRec(meta["omitted"]) ? false : null),
     confidence: str(r["confidence"]),
     grounding: str(r["grounding"]),
     retrieval: str(r["retrieval_quality"]),
     budget: used !== null && limit !== null ? { used, limit } : null,
     omittedTokens: num(rec(meta["omitted"])["tokens"]),
-    degraded: str(r["degraded"]) ?? str(meta["degraded"]),
+    degraded: str(r["degraded"]) ?? str(meta["degraded"]) ?? reasons(meta["degraded"]),
     semantic: bool(meta["semantic_search"])
   };
 }
@@ -2060,8 +2094,8 @@ function findingLine(f) {
 function moreFindings(more) {
   return `and ${more.toLocaleString("en-US")} more (Details)`;
 }
-function partialScope(analyzed, changed, reasons) {
-  const why = Object.entries(reasons).map(([reason, n]) => `${n.toLocaleString("en-US")} ${reason.replace(/_/g, " ")}`).join(", ");
+function partialScope(analyzed, changed, reasons2) {
+  const why = Object.entries(reasons2).map(([reason, n]) => `${n.toLocaleString("en-US")} ${reason.replace(/_/g, " ")}`).join(", ");
   const skipped = changed - analyzed;
   return `Scope: compared ${analyzed.toLocaleString("en-US")} of ${countOf(changed, "changed file", "changed files")}; ${skipped.toLocaleString("en-US")} not analysed${why ? ` (${why})` : ""}, so this is not a clean bill`;
 }
@@ -3059,7 +3093,7 @@ var STANDING = /^\[repowise\] .+? is governed by a standing decision: (.+?)(?: b
 var MINED = /^\[repowise\] .+? has a decision recorded in it, mined but not reviewed: (.+?)(?: because .*)?\.$/;
 var FIXES = /^\[repowise\] .+? has been bug-fixed (\d+)x in the last 6 months, last (.+?)(?: \(bug magnet\))?(?:; mostly in (.+?))?\.$/;
 function stripConfirmed(line2) {
-  return line2.replace(/ \(confirmed across \d+ sessions\)\.$/, ".");
+  return line2.replace(/ \((?:seen in|confirmed across) \d+ sessions\)\.$/, ".");
 }
 function notesFromAugment(additionalContext) {
   if (!Array.isArray(additionalContext)) return [];

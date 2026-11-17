@@ -2,12 +2,17 @@
 
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent, RefObject } from "react";
-import { HEALTHY_MIN, NEEDS_WORK_MIN, formatScore } from "@repowise-dev/types/health";
+import {
+  HEALTH_BAND_LABEL,
+  HEALTH_BAND_MIN,
+  HEALTH_BAND_ORDER,
+  formatScore,
+} from "@repowise-dev/types/health";
 
 import { EmptyState } from "../shared/empty-state";
 import { seriesColor } from "../shared/series";
 import { formatDate } from "../lib/format";
-import { deltaColor, formatDelta } from "./tokens";
+import { deltaColor, formatDelta, healthBandColor } from "./tokens";
 
 export interface TrendSeriesPoint {
   taken_at: string | null;
@@ -61,15 +66,17 @@ const LINES: Record<LineKey, Series> = {
   },
 };
 
-/** The canonical three bands, top to bottom, as faint grounds behind the lines. */
-const BANDS = [
-  { label: "Healthy", from: 10, to: HEALTHY_MIN, fill: "var(--color-success)" },
-  { label: "Warning", from: HEALTHY_MIN, to: NEEDS_WORK_MIN, fill: "var(--color-warning)" },
-  { label: "Alert", from: NEEDS_WORK_MIN, to: 0, fill: "var(--color-error)" },
-] as const;
+/** The canonical five bands, top to bottom, as faint grounds behind the lines. */
+const BANDS = [...HEALTH_BAND_ORDER].reverse().map((band, i, top) => ({
+  label: HEALTH_BAND_LABEL[band],
+  from: i === 0 ? 10 : HEALTH_BAND_MIN[top[i - 1]!],
+  to: HEALTH_BAND_MIN[band],
+  fill: healthBandColor(band),
+}));
 
 // The right pad holds the band names, outside the lines they would collide with.
-const PAD = { l: 28, r: 56, t: 10, b: 24 };
+// Wide enough for "Needs work" at the 10px label size.
+const PAD = { l: 28, r: 64, t: 10, b: 24 };
 /** Until the container is measured (and in tests, which have no layout). */
 const FALLBACK_WIDTH = 720;
 
@@ -175,7 +182,7 @@ function geometry(history: TrendSeriesPoint[], width: number, height: number): G
 
 const MICRO = { fontSize: 10, fill: "var(--color-text-tertiary)" } as const;
 
-/** The three health bands, named in the right margin. */
+/** The five health bands, named in the right margin. */
 function Bands({ g }: { g: Geometry }) {
   return BANDS.map((b) => (
     <g key={b.label}>
@@ -493,7 +500,7 @@ function LegendButton({
       onPointerLeave={() => onEmphasis(null)}
       onFocus={emphasise}
       onBlur={() => onEmphasis(null)}
-      className={`inline-flex items-center gap-1.5 rounded px-1.5 py-1 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)] disabled:cursor-default ${
+      className={`inline-flex items-center gap-1.5 rounded px-1.5 py-1 transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)] disabled:cursor-default ${
         on ? "text-[var(--color-text-secondary)]" : "text-[var(--color-text-tertiary)] line-through"
       }`}
     >
@@ -654,7 +661,7 @@ export function TrendChart({ history, height = 220 }: TrendChartProps) {
         role="group"
         aria-label="Health KPI trend. Arrow keys step through snapshots."
         {...box}
-        className="relative rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-accent-primary)]"
+        className="relative rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-focus-ring)]"
       >
         <svg
           width={g.width}

@@ -37,23 +37,21 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def repo_terms(repo_path: Path | str) -> frozenset[str]:
+    """The repo's own name as search words: they match every change."""
+    return frozenset(meaningful_terms(Path(repo_path).resolve().name.replace("-", " ")))
+
+
 def _tracked_files(repo_path: Path) -> frozenset[str]:
     return frozenset((_git(repo_path, "ls-files") or "").splitlines())
 
 
 async def _imports(session: Any, repo_id: str) -> dict[str, set[str]]:
-    from sqlalchemy import select
+    from repowise.core.persistence.crud.graph import get_file_import_edges
 
-    from repowise.core.persistence.models import GraphEdge
-
-    rows = await session.execute(
-        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
-            GraphEdge.repository_id == repo_id, GraphEdge.edge_type == "imports"
-        )
-    )
     adj: dict[str, set[str]] = {}
-    for u, v in rows.all():
-        if "::" in u or "::" in v or u == v:
+    for u, v in await get_file_import_edges(session, repo_id):
+        if u == v:
             continue
         adj.setdefault(u, set()).add(v)
         adj.setdefault(v, set()).add(u)
@@ -91,8 +89,10 @@ async def find_suspects(
     *until* defaults to the symptom time, else now; *since* to 14 days before it.
     """
     from repowise.core.attribution import attribution_enabled
+    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
     from repowise.core.persistence.crud import get_co_change_partners, list_changes
     from repowise.core.persistence.crud.changes import ChangeFilter
+    from repowise.core.repo_config import load_repo_config
 
     repo_path = Path(repo_path)
     until = _aware(until or symptom.at or datetime.now(UTC))
@@ -104,8 +104,12 @@ async def find_suspects(
     rows = [r for r in rows if r.merged_at is not None]
     window = {"since": since.isoformat(), "until": until.isoformat()}
     if not rows:
-        return {"window": window, "candidates": 0, "suspects": [], "note": NOTE}
+        return {
+            "window": window, "candidates": 0, "candidates_capped": False,
+            "suspects": [], "note": NOTE,
+        }
 
+    commit_limit = int(load_repo_config(repo_path).get("commit_limit") or 0) or _DEFAULT_COMMIT_LIMIT
     files_of = {
         r.change_id: tuple(f["path"] for f in json.loads(r.files_json or "[]")) for r in rows
     }
@@ -124,7 +128,7 @@ async def find_suspects(
     named = prepared.files
     ctx = SuspectContext(
         repo_files=repo_files,
-        repo_terms=frozenset(meaningful_terms(repo_path.resolve().name.replace("-", " "))),
+        repo_terms=repo_terms(repo_path),
         imports=await _imports(session, repo_id) if named else {},
         co_change=await get_co_change_partners(session, repo_id, list(named)) if named else {},
     )
@@ -144,6 +148,7 @@ async def find_suspects(
     return {
         "window": window,
         "candidates": len(candidates),
+        "candidates_capped": len(rows) >= commit_limit,
         # Changes git could not read: ranked on their title and files alone.
         "texts_missing": sum(1 for r in rows if r.head_sha not in texts),
         "symptom_files": list(named),
@@ -152,4 +157,4 @@ async def find_suspects(
     }
 
 
-__all__ = ["DEFAULT_LIMIT", "DEFAULT_WINDOW_DAYS", "NOTE", "find_suspects"]
+__all__ = ["DEFAULT_LIMIT", "DEFAULT_WINDOW_DAYS", "NOTE", "find_suspects", "repo_terms"]

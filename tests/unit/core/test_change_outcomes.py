@@ -480,7 +480,9 @@ async def test_a_legacy_checklist_gains_outcomes_and_a_merge_keeps_a_newer_rebui
         async with get_session(factory) as session:
             row = await get_change(session, repo_id, "pr-7")
             got = await change_evidence(session, repo_id, root, row)
-        assert [i.kind for i in got.items] == ["health_delta", "outcomes"]
+        # Kept with no catalog digest, so its components and owners are resolved too.
+        kinds = ["components_touched", "owners", "health_delta", "outcomes"]
+        assert [i.kind for i in got.items] == kinds
         assert got.generated_at == legacy.generated_at
         async with get_session(factory) as session:
             stored = cached_evidence(await get_change(session, repo_id, "pr-7"))

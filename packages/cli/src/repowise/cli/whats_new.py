@@ -26,7 +26,11 @@ from repowise.core.upgrade.changelog import (
     entries_between,
     parse_changelog,
 )
-from repowise.core.upgrade.release import BUNDLED_CHANGELOG_PATH, load_release_stats
+from repowise.core.upgrade.release import (
+    BUNDLED_CHANGELOG_PATH,
+    is_newer_version,
+    load_release_stats,
+)
 
 from .helpers import user_global_dir
 from .update_check import windows_upgrade_caveat
@@ -90,6 +94,11 @@ def read_last_seen_version() -> str | None:
 
 
 def write_last_seen_version(version: str) -> None:
+    """Record *version* as seen; never lowers the marker, so an older install
+    cannot make the next upgrade re-show releases already read."""
+    previous = read_last_seen_version()
+    if previous and is_newer_version(previous, version):
+        return
     with contextlib.suppress(Exception):  # best-effort marker
         (user_global_dir() / _LAST_SEEN_FILENAME).write_text(version, encoding="utf-8")
 

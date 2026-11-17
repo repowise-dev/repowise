@@ -25,7 +25,7 @@ def _audit_gated(monkeypatch):
 
 def _dead(path: str) -> dict:
     return {"id": path, "kind": "unused_export", "file_path": path, "symbol_name": "old",
-            "lines": 5, "safe_to_delete": True, "status": "open"}
+            "lines": 5, "confidence": 0.9, "safe_to_delete": True, "status": "open"}
 
 
 def test_actions_never_offer_a_gated_deletion():

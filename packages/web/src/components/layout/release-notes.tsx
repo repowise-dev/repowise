@@ -9,17 +9,17 @@ import { seriesColor } from "@repowise-dev/ui/shared/series";
 import type { ChangelogEntry, ChangelogHighlight, ReleaseStats } from "@/lib/api/meta";
 import { linkPullRequests, resolveHighlightHref } from "@/lib/release-moment";
 import { NewMark } from "./new-mark";
-
-const MICRO =
-  "font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]";
-
-/** The glow band behind the version: orange into plum at low strength,
- *  fading into the dialog ground. Solid stops, checked by contrast-check.py. */
-const BAND =
-  "linear-gradient(120deg, var(--color-release-glow-1) 0%, var(--color-release-glow-2) 55%, var(--color-release-ground) 100%)";
-
-/** A gentle rise on open; the global reduced-motion rule flattens it. */
-const ENTER = "motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 duration-500";
+import {
+  MOMENT_BODY,
+  MOMENT_CAPTION,
+  MOMENT_CARD,
+  MOMENT_DISPLAY,
+  MOMENT_ENTER as ENTER,
+  MOMENT_FIGURE,
+  MOMENT_MICRO as MICRO,
+  MomentBand,
+  MomentLabel,
+} from "./moment-shell";
 
 export function releaseName(version: string, nextLabel: string): string {
   return version === "unreleased" ? nextLabel : `v${version}`;
@@ -36,26 +36,19 @@ export function ReleaseHeader({
 }) {
   const t = useTranslations("shell.whatsNewModal");
   return (
-    <header
-      className="border-b border-[var(--color-border-default)] px-6 pb-6 pt-6 sm:px-8"
-      style={{ backgroundImage: BAND }}
-    >
+    <MomentBand tone="release">
       {title}
       <h3
         id={`release-${entry.version}`}
         className={`mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 ${ENTER}`}
       >
-        <span className="font-serif text-4xl font-light tracking-tight text-[var(--color-text-primary)] sm:text-5xl">
-          {releaseName(entry.version, t("nextRelease"))}
-        </span>
+        <span className={MOMENT_DISPLAY}>{releaseName(entry.version, t("nextRelease"))}</span>
         {entry.label && (
-          <span className="font-mono text-xs text-[var(--color-text-secondary)]">{entry.label}</span>
+          <span className="font-mono text-xs tabular-nums text-[var(--color-text-secondary)]">{entry.label}</span>
         )}
       </h3>
-      {entry.version === "unreleased" && (
-        <p className="mt-2 text-xs text-[var(--color-text-secondary)]">{t("unreleasedNote")}</p>
-      )}
-    </header>
+      {entry.version === "unreleased" && <p className={`${MOMENT_CAPTION} mt-2`}>{t("unreleasedNote")}</p>}
+    </MomentBand>
   );
 }
 
@@ -79,18 +72,18 @@ export function ReleaseNotes({
   const sections = entry.sections.filter((s) => s.items.length > 0);
 
   return (
-    <article className="space-y-8" aria-labelledby={`release-${entry.version}`}>
+    <article className={`space-y-10 ${ENTER}`} aria-labelledby={`release-${entry.version}`}>
       {entry.summary && (
-        <div className="text-[var(--color-text-secondary)] [text-wrap:pretty]">
+        <div className="max-w-[68ch] text-[var(--color-text-secondary)] [text-wrap:pretty]">
           <Markdown content={linkPullRequests(entry.summary)} density="narrow" fill />
         </div>
       )}
       {entry.stats && <ReleaseNumbers stats={entry.stats} />}
       {highlights.length > 0 && (
         <Block id={`highlights-${entry.version}`} title={t("highlightsTitle")}>
-          <ul className="grid gap-2.5 sm:grid-cols-2">
+          <ul className="grid gap-3 min-[561px]:grid-cols-2 min-[561px]:[&>li:last-child:nth-child(odd)]:col-span-2">
             {highlights.map((h, i) => (
-              <li key={h.id} className={`flex ${ENTER}`}>
+              <li key={h.id} className="flex">
                 <HighlightItem
                   highlight={h}
                   href={resolveHighlightHref(h.href, repoId)}
@@ -128,8 +121,8 @@ function Block({ id, title, children }: { id: string; title: string; children: R
   );
 }
 
-/** A card only when it opens something; a highlight with no page keeps its
- *  colour as a dot and stays plain. */
+/** Every highlight is the same card, keyed by its series dot; one with a page
+ *  opens it, one without says where it lives. */
 function HighlightItem({
   highlight: h,
   href,
@@ -147,40 +140,39 @@ function HighlightItem({
   const t = useTranslations("shell.whatsNewModal");
   const body = (
     <>
-      <p className="flex items-baseline gap-2 text-[15px] font-medium text-[var(--color-text-primary)]">
-        {h.title}
+      <p className={`${MOMENT_BODY} flex items-start gap-3 font-medium text-[var(--color-text-primary)]`}>
+        <span className="flex min-w-0 items-center gap-2">
+          <span aria-hidden className="size-1.5 shrink-0 rounded-full" style={{ background: color }} />
+          {h.title}
+        </span>
         {fresh && <NewMark />}
       </p>
-      {h.blurb && (
-        <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
-          {h.blurb}
-        </p>
-      )}
+      {h.blurb && <p className={`${MOMENT_CAPTION} mt-1 pl-3.5`}>{h.blurb}</p>}
     </>
   );
+  const card = `${MOMENT_CARD} flex w-full flex-col p-4`;
   if (href) {
     return (
       <Link
         href={href}
         onClick={onNavigate}
-        className="group flex w-full flex-col rounded-lg border border-[var(--color-border-default)] border-l-[3px] bg-[var(--color-release-card)] px-4 py-3 no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
-        style={{ borderLeftColor: color }}
+        className={`${card} group no-underline transition-colors hover:border-[var(--color-border-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]`}
       >
         {body}
-        <span className="mt-auto inline-flex items-center gap-1 pt-2 text-xs text-[var(--color-accent-primary)] group-hover:underline">
+        <span className="mt-auto inline-flex items-center gap-1 pl-3.5 pt-3 text-xs font-medium text-[var(--color-text-primary)]">
           {t("open")}
-          <ArrowRight aria-hidden className="h-3 w-3" />
+          <ArrowRight
+            aria-hidden
+            className="h-3 w-3 motion-safe:transition-transform motion-safe:duration-150 group-hover:translate-x-0.5"
+          />
         </span>
       </Link>
     );
   }
   return (
-    <div className="flex w-full gap-3 px-1 py-3">
-      <span aria-hidden className="mt-1.5 h-2 w-2 shrink-0 rounded-full" style={{ background: color }} />
-      <div className="min-w-0">
-        {body}
-        {h.href && <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">{t("inEachRepo")}</p>}
-      </div>
+    <div className={card}>
+      {body}
+      {h.href && <p className="mt-auto pl-3.5 pt-3 text-xs text-[var(--color-text-tertiary)]">{t("inEachRepo")}</p>}
     </div>
   );
 }
@@ -196,12 +188,12 @@ function ChangeSection({ name, items }: { name: string; items: string[] }) {
         if (e.currentTarget.open) setOpened(true);
       }}
     >
-      <summary className="flex cursor-pointer list-none items-baseline gap-2 rounded py-2 text-sm text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
-        <span aria-hidden className="text-[var(--color-text-tertiary)] group-open/section:rotate-90 motion-safe:transition-transform">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded text-[var(--color-text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
+        <span aria-hidden className="w-3 text-[var(--color-text-tertiary)] group-open/section:rotate-90 motion-safe:transition-transform motion-safe:duration-150">
           ›
         </span>
-        <span className="font-medium">{name}</span>
-        <span className="text-xs tabular-nums text-[var(--color-text-tertiary)]">
+        <span className={`${MOMENT_BODY} font-medium`}>{name}</span>
+        <span className="ml-auto text-xs tabular-nums text-[var(--color-text-tertiary)]">
           {t("sectionCount", { count: items.length })}
         </span>
       </summary>
@@ -216,7 +208,7 @@ function SectionBody({ items }: { items: string[] }) {
     [items],
   );
   return (
-    <div className="pb-2 pl-4 text-[var(--color-text-secondary)]">
+    <div className="pb-3 pl-5 text-[var(--color-text-secondary)]">
       <Markdown content={content} density="compact" fill />
     </div>
   );
@@ -228,8 +220,8 @@ interface Figure {
   sub?: string | undefined;
 }
 
-/** "By the numbers": large figures, each over a short bar in its series
- *  colour, then the thank-you. No names: the counts carry the credit. */
+/** "By the numbers": a row of figures, each keyed by its series dot, then the
+ *  thank-you. No names: the counts carry the credit. */
 export function ReleaseNumbers({ stats }: { stats: ReleaseStats }) {
   const t = useTranslations("shell.whatsNewModal");
   const format = useFormatter();
@@ -274,27 +266,18 @@ export function ReleaseNumbers({ stats }: { stats: ReleaseStats }) {
       <p className={MICRO}>
         {t("numbersTitle")} · {t("numbersSince", { days: stats.days, since: stats.since })}
       </p>
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-5 sm:grid-cols-3 lg:grid-cols-5">
+      <dl className={`${MOMENT_CARD} grid grid-cols-2 gap-x-6 gap-y-6 p-4 min-[561px]:grid-cols-3`}>
         {figures.map((f, i) => (
-          <div key={f.label} className={`min-w-0 ${ENTER}`}>
-            <span
-              aria-hidden
-              className="mb-2.5 block h-[3px] w-8 rounded-full"
-              style={{ background: seriesColor(i) }}
-            />
-            <dt className={MICRO}>{f.label}</dt>
-            <dd className="mt-1 text-3xl font-semibold tabular-nums tracking-tight text-[var(--color-text-primary)]">
-              {f.value}
-            </dd>
-            {f.sub && (
-              <dd className="mt-1 text-xs tabular-nums leading-snug text-[var(--color-text-secondary)]">
-                {f.sub}
-              </dd>
-            )}
+          <div key={f.label} className="min-w-0">
+            <dt>
+              <MomentLabel color={seriesColor(i)}>{f.label}</MomentLabel>
+            </dt>
+            <dd className={`${MOMENT_FIGURE} mt-2`}>{f.value}</dd>
+            {f.sub && <dd className={`${MOMENT_CAPTION} mt-1 tabular-nums`}>{f.sub}</dd>}
           </div>
         ))}
       </dl>
-      <p className="text-sm leading-relaxed text-[var(--color-text-secondary)] [text-wrap:pretty]">
+      <p className={`${MOMENT_BODY} max-w-[68ch] text-[var(--color-text-secondary)] [text-wrap:pretty]`}>
         {first
           ? t("thanksFirst", { count: n(stats.contributors), first: n(first) })
           : t("thanks", { count: n(stats.contributors) })}

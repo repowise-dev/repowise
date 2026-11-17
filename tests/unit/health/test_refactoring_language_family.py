@@ -12,6 +12,7 @@ from repowise.core.analysis.health.refactoring.language_family import same_langu
     [
         ("ui/App.tsx", "ui/querier.ts"),
         ("ui/App.vue", "ui/util.js"),
+        ("src/pages/index.astro", "src/lib/util.ts"),
         ("src/net.c", "include/net.h"),
         ("src/view.mm", "src/model.cpp"),
         ("Pages/Index.razor", "Pages/Index.razor.cs"),

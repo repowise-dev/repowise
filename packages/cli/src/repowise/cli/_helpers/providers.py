@@ -54,7 +54,7 @@ def _provider_kwargs_or_error(selection: Any, repo_path: Path | None) -> dict[st
     if selection.provider_source != "autodetect" and "api_key" not in kwargs:
         # A configured provider whose key is nowhere still gets built: the
         # constructor says what it needs. Agent CLIs are checked for install.
-        for warning in _facade.validate_provider_config(selection.provider):
+        for warning in _facade.validate_provider_config(selection.provider, repo_path=repo_path):
             _facade.warn(warning)
     return kwargs
 
@@ -222,16 +222,22 @@ def validate_provider_config(
     Args:
         provider_name: The provider name to validate. If None, checks all possible providers.
         repo_path: The repo whose configured provider counts as explicitly requested.
+            Its ``.repowise/.env`` keys count too; without it only the process
+            environment is read.
 
     Returns:
         List of warning messages for missing or invalid configuration.
         Empty list means all required config is present.
     """
+    from repowise.core.providers.llm.registry import repo_env_lookup
+
     warnings = []
+    # The key init saves to .repowise/.env counts, as it does for resolution.
+    getenv = repo_env_lookup(repo_path)
 
     def _is_env_var_set(var_name: str) -> bool:
         """Check if environment variable is set and non-empty."""
-        value = os.environ.get(var_name)
+        value = getenv(var_name)
         return value is not None and value.strip() != ""
 
     def _is_env_var_exists(var_name: str) -> bool:
@@ -264,8 +270,10 @@ def validate_provider_config(
             return warnings
 
         # Validate specific provider
-        if provider_name not in provider_env_vars:
+        if provider_name not in PROVIDER_SPECS:
             warnings.append(f"Unknown provider '{provider_name}' - cannot validate configuration")
+            return warnings
+        if provider_name not in provider_env_vars:
             return warnings
 
         # Any one of a provider's env vars satisfies it (GEMINI_API_KEY or

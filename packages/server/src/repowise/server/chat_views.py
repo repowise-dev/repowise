@@ -143,8 +143,8 @@ def views_for(artifact_type: str) -> list[str]:
     """View names that accept an artifact of *artifact_type*."""
     return [
         name
-        for name in _view_names()
-        if (types := view_builders.get(name).artifact_types) is None or artifact_type in types
+        for name, builder in view_builders.all()
+        if (types := builder.artifact_types) is None or artifact_type in types
     ]
 
 

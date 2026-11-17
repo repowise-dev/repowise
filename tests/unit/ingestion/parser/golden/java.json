@@ -9,7 +9,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -32,7 +35,10 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/Conditionals.java::Conditionals::threeOps",
@@ -54,7 +60,10 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/Conditionals.java::Conditionals::sixOps",
@@ -76,7 +85,10 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/Conditionals.java::Conditionals::twoOps",
@@ -98,13 +110,17 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [
+          "public"
+        ],
+        "alias_of": null
       }
     ],
     "imports": [],
     "exports": [
       "Conditionals"
     ],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -114,7 +130,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "java/Nested.java": {
     "file_info": {
@@ -126,7 +144,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -149,7 +170,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/Nested.java::Nested::deeplyNested",
@@ -171,7 +193,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/Nested.java::Nested::shallow",
@@ -193,11 +216,13 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [],
     "heritage": [],
@@ -207,7 +232,9 @@
     "type_refs": [],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   },
   "java/PerfIoInLoop.java": {
     "file_info": {
@@ -219,7 +246,10 @@
       "is_api_contract": false,
       "is_entry_point": false,
       "is_manifest_entry": false,
-      "is_reachability_root": false
+      "is_reachability_root": false,
+      "is_application_main": false,
+      "extractor_name": null,
+      "extractor_version": null
     },
     "symbols": [
       {
@@ -242,7 +272,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::springDataN1",
@@ -264,7 +295,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::jdbcInLoop",
@@ -286,7 +318,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::filesInLoop",
@@ -308,7 +341,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::newStreamInLoop",
@@ -330,7 +364,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::regexCompileInLoop",
@@ -352,7 +387,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::stringConcatInLoop",
@@ -374,7 +410,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::pureCallInLoop",
@@ -396,7 +433,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::sinkOutsideLoop",
@@ -418,7 +456,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       },
       {
         "id": "lang_samples/java/PerfIoInLoop.java::PerfIoInLoop::regexCompileOnce",
@@ -440,7 +479,8 @@
         "type_parameter_count": null,
         "extension_receiver": null,
         "written_receiver": null,
-        "modifiers": []
+        "modifiers": [],
+        "alias_of": null
       }
     ],
     "imports": [
@@ -460,6 +500,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -485,6 +526,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -510,6 +552,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -535,6 +578,7 @@
             "is_module_alias": false,
             "is_global": false,
             "is_static_import": false,
+            "member_of": null,
             "line": null,
             "column": null
           }
@@ -546,6 +590,7 @@
       }
     ],
     "exports": [],
+    "module_name": null,
     "export_aliases": {},
     "calls": [
       {
@@ -555,11 +600,13 @@
         "line": 18,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 789,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "id"
@@ -572,11 +619,13 @@
         "line": 24,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 982,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "id"
@@ -589,11 +638,13 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1151,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -604,11 +655,13 @@
         "line": 30,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1181,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
-        "bare_name_fallback": false,
+        "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "p"
@@ -621,11 +674,13 @@
         "line": 42,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 1509,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "id"
@@ -638,11 +693,13 @@
         "line": 59,
         "argument_count": 0,
         "receiver_call": null,
+        "start_byte": 2020,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       },
@@ -653,11 +710,13 @@
         "line": 64,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2155,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "String"
         ],
@@ -670,11 +729,13 @@
         "line": 68,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2308,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": [
           "String"
         ],
@@ -687,11 +748,13 @@
         "line": 70,
         "argument_count": 1,
         "receiver_call": null,
+        "start_byte": 2409,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": true,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": [
           "id"
@@ -708,11 +771,13 @@
           "receiver_name": "p",
           "argument_count": 1
         },
+        "start_byte": 2421,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,
         "bare_name_fallback": false,
         "spawned": false,
+        "program_call": false,
         "argument_types": null,
         "argument_names": null
       }
@@ -745,6 +810,8 @@
     ],
     "local_refs": [],
     "registrars": [],
-    "references": []
+    "references": [],
+    "schema_refs": [],
+    "grammar_missing": false
   }
 }

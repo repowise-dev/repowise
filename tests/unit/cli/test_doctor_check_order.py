@@ -15,11 +15,15 @@ import json
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
-from repowise.cli.commands.doctor_cmd import _render, repo_checks
+from repowise.cli.commands.doctor_cmd import _render, doctor_command, repo_checks
 from repowise.cli.commands.doctor_cmd._checks import core, integrations, providers
 from repowise.cli.commands.doctor_cmd._types import _check
+from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 
+from ._index_rows import code_rows
 from ._real_call_guard import guard_real_calls
 
 
@@ -59,7 +63,15 @@ async def _build(
     gitpython.Repo.init(repo_path)
     rw = repo_path / ".repowise"
     rw.mkdir()
-    (rw / "state.json").write_text(json.dumps({"last_sync_commit": "abcdef0123456789"}))
+    (rw / "state.json").write_text(
+        json.dumps(
+            {
+                "last_sync_commit": "abcdef0123456789",
+                "health_analyzer_version": HEALTH_ANALYZER_VERSION,
+                "security_scanner_version": SECURITY_SCANNER_VERSION,
+            }
+        )
+    )
 
     engine = create_engine(f"sqlite+aiosqlite:///{rw / 'wiki.db'}")
     await init_db(engine)
@@ -82,6 +94,7 @@ async def _build(
                 model_name="mock",
                 provider_name="mock",
             )
+        session.add_all(code_rows(repo.id))
         await session.commit()
 
     index = FullTextSearch(engine)
@@ -101,21 +114,38 @@ async def _build(
 def env(monkeypatch) -> dict:
     """Stub machine-dependent rows and record console output in order."""
     st: dict = {"printed": [], "wedged": False, "refresh": False}
-    monkeypatch.setattr(core, "_autosync_hook_check", lambda _p: _check("<hook>", True, ""))
+    monkeypatch.setattr(
+        core, "_autosync_hook_check", lambda _p: _check("<hook>", True, "", check_id="hook")
+    )
     monkeypatch.setattr(core, "_attribution_notes_check", lambda _p: None)
-    monkeypatch.setattr(core, "_events_config_check", lambda _p: None)
-    monkeypatch.setattr(providers, "_provider_checks", lambda _p: [_check("<provider>", True, "")])
-    monkeypatch.setattr(integrations, "_distill_checks", lambda _p: [_check("<distill>", True, "")])
+    monkeypatch.setattr(
+        core, "settings_rows", lambda _ctx: [_check("<settings>", True, "", check_id="settings")]
+    )
+    monkeypatch.setattr(
+        providers,
+        "_provider_checks",
+        lambda _p: [_check("<provider>", True, "", check_id="provider")],
+    )
+    monkeypatch.setattr(
+        integrations,
+        "_distill_checks",
+        lambda _p: [_check("<distill>", True, "", check_id="distill")],
+    )
     monkeypatch.setattr(
         integrations,
         "_claude_registration_check",
-        lambda _p: (_check("<registration>", not st["wedged"], ""), st["wedged"]),
+        lambda _p: (
+            _check("<registration>", not st["wedged"], "", check_id="registration"),
+            st["wedged"],
+        ),
     )
-    monkeypatch.setattr(integrations, "_mcp_responds_check", lambda: _check("<mcp>", True, ""))
+    monkeypatch.setattr(
+        integrations, "_mcp_responds_check", lambda: _check("<mcp>", True, "", check_id="mcp")
+    )
     monkeypatch.setattr(
         integrations,
         "_agent_target_checks",
-        lambda _p: ([_check("<agent>", not st["refresh"], "")], st["refresh"]),
+        lambda _p: ([_check("<agent>", not st["refresh"], "", check_id="agent")], st["refresh"]),
     )
     monkeypatch.setattr(_render, "_advise_claude_md_stamp", lambda *_a: st["printed"].append("<stamp>"))
     monkeypatch.setattr("repowise.cli.platform.credentials.load", lambda: None)
@@ -134,12 +164,14 @@ HEALTHY_ORDER = [
     "Git repository",
     ".repowise/ directory",
     "<hook>",
+    "<settings>",
     "Database",
     "state.json",
     "Store format",
     "<provider>",
     "Hosted account",
     "Stale pages",
+    "Index data",
     "SQL ↔ Vector Store",
     "SQL ↔ FTS Index",
     "Coordinator drift",
@@ -164,6 +196,7 @@ def test_healthy_store_rows_and_order(env, tmp_path) -> None:
     assert got["Database"] == (True, "1 pages")
     assert got["state.json"] == (True, "last_sync: abcdef01")
     assert got["Stale pages"] == (True, "0 stale")
+    assert got["Index data"] == (True, "current; graph, symbol and health tables populated")
     assert got["SQL ↔ Vector Store"] == (True, "in sync")
     assert got["SQL ↔ FTS Index"] == (True, "in sync")
     assert got["Coordinator drift"] == (True, "SQL=1, Vector=1, Drift=0.0%")
@@ -172,16 +205,39 @@ def test_healthy_store_rows_and_order(env, tmp_path) -> None:
     assert env["printed"] == []
 
 
+def test_quick_skips_the_store_reconciliation_and_the_mcp_launch(
+    env, monkeypatch, tmp_path
+) -> None:
+    from repowise.cli.commands.doctor_cmd._checks import stores
+
+    def fail(*_a, **_k):
+        raise AssertionError("--quick must not open the stores")
+
+    monkeypatch.setattr(stores, "_reconcile", fail)
+    monkeypatch.setattr(stores, "_coordinator_health", fail)
+    repo = asyncio.run(_build(tmp_path))
+    _ok, checks = repo_checks._run_repo_checks(repo, repair=False, fmt="json", quick=True)
+    slow = {"SQL ↔ Vector Store", "SQL ↔ FTS Index", "Coordinator drift", "<mcp>"}
+    assert [c.name for c in checks] == [n for n in HEALTHY_ORDER if n not in slow]
+
+
+def test_quick_and_repair_is_a_usage_error(tmp_path) -> None:
+    from click.testing import CliRunner
+
+    from repowise.cli.commands.doctor_cmd import doctor_command
+
+    result = CliRunner().invoke(doctor_command, [str(tmp_path), "--quick", "--repair"])
+    assert result.exit_code == 2
+    assert "--quick" in result.output
+
+
 def test_optional_rows_slot_in_after_the_hook(env, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
-        core, "_attribution_notes_check", lambda _p: _check("<notes>", True, "")
-    )
-    monkeypatch.setattr(
-        core, "_events_config_check", lambda _p: _check("<events>", False, "")
+        core, "_attribution_notes_check", lambda _p: _check("<notes>", True, "", check_id="notes")
     )
     repo = asyncio.run(_build(tmp_path))
     names = [r[0] for r in _rows(repo)]
-    assert names[2:5] == ["<hook>", "<notes>", "<events>"]
+    assert names[2:5] == ["<hook>", "<notes>", "<settings>"]
 
 
 def test_unindexed_repo_rows(env, monkeypatch, tmp_path) -> None:
@@ -196,6 +252,7 @@ def test_unindexed_repo_rows(env, monkeypatch, tmp_path) -> None:
         "Git repository",
         ".repowise/ directory",
         "<hook>",
+        "<settings>",
         "Database",
         "state.json",
         "<provider>",
@@ -208,7 +265,7 @@ def test_unindexed_repo_rows(env, monkeypatch, tmp_path) -> None:
     got = _by_name(rows)
     assert got[".repowise/ directory"][0] is False
     assert got["Database"] == (False, "wiki.db not found")
-    assert got["state.json"] == (False, "Not found or empty")
+    assert got["state.json"] == (False, "missing")
 
 
 def test_missing_state_drops_store_format_row(env, tmp_path) -> None:
@@ -216,7 +273,40 @@ def test_missing_state_drops_store_format_row(env, tmp_path) -> None:
     (repo / ".repowise" / "state.json").unlink()
     rows = _rows(repo)
     assert "Store format" not in [r[0] for r in rows]
-    assert _by_name(rows)["state.json"] == (False, "Not found or empty")
+    assert _by_name(rows)["state.json"] == (False, "missing")
+
+
+def _state_check(repo_path: Path):
+    _ok, checks = repo_checks._run_repo_checks(repo_path, repair=False, fmt="json")
+    return next(check for check in checks if check.id == "state-json")
+
+
+def test_empty_state_is_a_failure_with_the_init_command(env, tmp_path) -> None:
+    repo = asyncio.run(_build(tmp_path))
+    (repo / ".repowise" / "state.json").write_text("{}", encoding="utf-8")
+    row = _state_check(repo)
+    assert (row.id, row.level, row.ok, row.detail, row.fix) == (
+        "state-json",
+        "fail",
+        False,
+        "Not found or empty",
+        "repowise init",
+    )
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]", "null"])
+def test_corrupt_state_is_reported_as_unreadable_with_the_init_command(
+    env, tmp_path, content
+) -> None:
+    repo = asyncio.run(_build(tmp_path))
+    state_path = repo / ".repowise" / "state.json"
+    state_path.write_text(content, encoding="utf-8")
+    row = _state_check(repo)
+    assert row.id == "state-json"
+    assert row.level == "fail"
+    assert row.ok is False
+    assert row.fix == "repowise init"
+    assert row.detail.startswith(f"unreadable: {state_path}:")
 
 
 def test_drift_rows_and_coordinator(env, tmp_path) -> None:
@@ -252,10 +342,19 @@ def test_stale_pages_row(env, monkeypatch, tmp_path) -> None:
 def test_expired_and_cached_hosted_identity(env, monkeypatch, tmp_path) -> None:
     repo = asyncio.run(_build(tmp_path))
     monkeypatch.setattr("repowise.cli.platform.credentials.load", lambda: {"stale": True})
-    assert _by_name(_rows(repo))["Hosted account"] == (
-        False,
-        "Session expired or revoked; run repowise login",
+    stale = _by_name(_rows(repo))["Hosted account"]
+    assert stale == (True, "Session expired or revoked; run repowise login")
+    assert providers._hosted_account_check().level == "warn"
+    result = CliRunner().invoke(
+        doctor_command,
+        [str(repo), "--no-workspace", "--format", "json"],
     )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    hosted = next(row for row in payload["checks"] if row["id"] == "hosted-account")
+    assert hosted["ok"] is True
+    assert hosted["level"] == "warn"
+    assert hosted["fix"] == "repowise login"
     monkeypatch.setattr(
         "repowise.cli.platform.credentials.load",
         lambda: {"account": {"email": "a@b.test", "tier": "pro"}},
@@ -296,7 +395,13 @@ def test_table_healthy_prints_table_stamp_then_pass(env, tmp_path) -> None:
     repo = asyncio.run(_build(tmp_path))
     ok, _ = repo_checks._run_repo_checks(repo, repair=False)
     assert ok is True
-    assert _texts(env) == ["<table>", "<stamp>", "[bold green]All checks passed![/bold green]"]
+    # The fixture's store predates a capability, so the store-format row warns;
+    # a warn still passes and is counted on the summary line.
+    texts = _texts(env)
+    assert texts[:2] == ["<table>", "<stamp>"]
+    assert texts[2].startswith("[bold green]All checks passed[/bold green]")
+    assert "1 warning(s)" in texts[2]
+    assert len(texts) == 3
 
 
 def test_repair_with_nothing_to_do(env, tmp_path) -> None:

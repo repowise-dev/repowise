@@ -25,6 +25,7 @@ from repowise.core.ci.markdown import (
     more_line,
     plural,
 )
+from repowise.core.ci.summary import FAIL, PASS, GateSummary, SummaryFinding
 
 from .constants import DETECTION_BASIS, HIGH_CONFIDENCE_THRESHOLD
 from .gate import GateResult
@@ -308,6 +309,29 @@ def render_sarif(
             )
         )
     return sarif.run(SARIF_TOOL_NAME, tool_version, _sarif_rules(), results)
+
+
+# ---------------------------------------------------------------------------
+# Combined CI summary
+# ---------------------------------------------------------------------------
+
+
+def gate_summary(gate: GateResult) -> GateSummary:
+    """The gate's row in the combined CI summary: its failing findings.
+
+    Findings below the threshold are left out: the check reads the whole tree,
+    so they are not this change's.
+    """
+    rows = tuple(
+        SummaryFinding(
+            "error", str(f["file_path"]), int(f["line_number"]), _message(f), fingerprint_of(f)
+        )
+        for f in _order(gate.failing)
+    )
+    if rows:
+        headline = f"{plural(len(rows), 'finding')} at confidence {gate.fail_on:.2f} or above."
+        return GateSummary("doc-drift", FAIL, headline, rows)
+    return GateSummary("doc-drift", PASS, "No finding fails the gate.")
 
 
 # ---------------------------------------------------------------------------

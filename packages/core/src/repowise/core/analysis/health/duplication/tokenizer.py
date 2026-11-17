@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 import sys
 from bisect import bisect_left
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -93,12 +94,52 @@ _LITERAL_KINDS = frozenset(
 _NOT_IMPORT_KINDS = frozenset({"call", "command", "function_call", "extends_statement"})
 
 
+# Whether one node of a header kind is an import-like header.
+HeaderTest = Callable[["Node"], bool]
+
 # Statements that are not imports to the resolvers but tokenize the same in
 # every file, so they are kept out of the hash stream here and not added to the
 # shared language config. Java: every file of a package opens with the same
 # ``package a.b;`` tokens, which anchored a clone at line 2.
 _SKIPPED_WITH_IMPORTS: dict[str, frozenset[str]] = {
     "java": frozenset({"package_declaration"}),
+    "kotlin": frozenset({"package_header"}),
+    # ``namespace A.B;`` only: the block form wraps the file's code.
+    "csharp": frozenset({"file_scoped_namespace_declaration"}),
+}
+
+
+def _named(field: str, names: frozenset[bytes], *, receiver: bool = True) -> HeaderTest:
+    """A node whose *field* child spells one of *names* (and, unless
+    *receiver*, that has no receiver: ``foo.require`` is a method call)."""
+
+    def test(node: Node) -> bool:
+        if not receiver and node.child_by_field_name("receiver") is not None:
+            return False
+        child = node.child_by_field_name(field)
+        return child is not None and child.text in names
+
+    return test
+
+
+def _bodiless(node: Node) -> bool:
+    return node.child_by_field_name("body") is None
+
+
+# Import-like headers whose node kind also covers real code, so a kind alone
+# cannot skip them: Ruby ``require 'x'`` is a ``call``, shell ``source x`` a
+# ``command``, PHP ``namespace A;`` shares its kind with the block form.
+_HEADER_NODES: dict[str, tuple[str, HeaderTest]] = {
+    "ruby": (
+        "call",
+        _named(
+            "method",
+            frozenset({b"require", b"require_relative", b"load", b"autoload"}),
+            receiver=False,
+        ),
+    ),
+    "shell": ("command", _named("name", frozenset({b"source", b"."}))),
+    "php": ("namespace_definition", _bodiless),
 }
 
 
@@ -134,7 +175,10 @@ TokenRow = tuple[str, int, int, int, int, str]
 
 
 def token_rows(
-    root: Node, source: bytes, skip_kinds: frozenset[str] = frozenset()
+    root: Node,
+    source: bytes,
+    skip_kinds: frozenset[str] = frozenset(),
+    header: tuple[str, HeaderTest] | None = None,
 ) -> list[TokenRow]:
     """Walk *root* and return one ``TokenRow`` per kept leaf, in source order.
 
@@ -145,6 +189,7 @@ def token_rows(
     tuples; ``tokenize_tree`` wraps them in ``Token`` for callers that want
     objects.
     """
+    header_kind, is_header = header or ("", None)
     out: list[TokenRow] = []
     append = out.append
     intern = sys.intern
@@ -162,6 +207,7 @@ def token_rows(
             # so a single broken file can't pollute the hash stream.
             or (child_count == 0 and node.has_error)
             or ntype in skip_kinds
+            or (ntype == header_kind and is_header(node))
             # JS/TS ``export { a } from "./b"``: an import in all but name.
             or (ntype == "export_statement" and node.child_by_field_name("source") is not None)
         ):
@@ -219,16 +265,72 @@ def tokenize_file_rows(language: str, source: bytes, path: str | None = None) ->
     (a ``.tsx`` file is tagged ``typescript`` and needs the JSX grammar) and
     gates Pascal's project-file sanitizer. Omitting it costs both.
     """
+    parsed = _parse(language, source, path)
+    if parsed is None:
+        return []
+    root, source = parsed
+    return token_rows(root, source, import_node_kinds(language), _HEADER_NODES.get(language))
+
+
+# Leaf tokens that branch, and nodes that pass code as a value. A clone with
+# none of either is declaration: signatures, tables, constructor chains.
+_DECISION_TOKENS = frozenset(
+    {
+        "if", "else", "elif", "for", "foreach", "while", "switch", "case", "select",
+        "match", "when", "try", "catch", "except", "and", "or", "&&", "||", "?", "??", "?.",
+    }
+)  # fmt: skip
+_CALLBACK_KINDS = frozenset(
+    {
+        "lambda",
+        "lambda_expression",
+        "arrow_function",
+        "func_literal",
+        "closure_expression",
+        "anonymous_function",
+        "function_expression",
+        "anonymous_function_expression",
+        "anonymous_method_expression",
+    }
+)
+
+
+def decision_lines(language: str, source: bytes, path: str | None = None) -> frozenset[int] | None:
+    """The 1-indexed lines holding a branch token or the start of a lambda.
+
+    ``None`` when the file cannot be parsed, so a caller can tell "no
+    decisions" from "not known".
+    """
+    parsed = _parse(language, source, path)
+    if parsed is None:
+        return None
+    root, _source = parsed
+    lines: set[int] = set()
+    cursor = root.walk()
+    while True:
+        node = cursor.node
+        ntype = node.type
+        if ntype in _CALLBACK_KINDS or (node.child_count == 0 and ntype in _DECISION_TOKENS):
+            lines.add(node.start_point[0] + 1)
+        if cursor.goto_first_child():
+            continue
+        while not cursor.goto_next_sibling():
+            if not cursor.goto_parent():
+                return frozenset(lines)
+
+
+def _parse(language: str, source: bytes, path: str | None) -> tuple[Node, bytes] | None:
+    """The tree root and the buffer it was parsed from, or ``None``."""
     try:
         from tree_sitter import Parser
 
         from repowise.core.ingestion.parser import _get_language, grammar_tag_for
     except Exception:
-        return []
+        return None
 
     grammar = _get_language(grammar_tag_for(language, path or ""))
     if grammar is None:
-        return []
+        return None
     try:
         from repowise.core.ingestion.sfc_source import prepare_source
 
@@ -238,5 +340,5 @@ def tokenize_file_rows(language: str, source: bytes, path: str | None = None) ->
         source = prepare_source(language, source, path=path)
         tree = parser.parse(source)
     except Exception:
-        return []
-    return token_rows(tree.root_node, source, import_node_kinds(language))
+        return None
+    return tree.root_node, source

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import Depends, HTTPException, Query, Request, Response
+from fastapi import Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,8 @@ from repowise.core.analysis.health.models import split_by_origin
 from repowise.core.analysis.health.scope import parse_scope
 from repowise.core.analysis.health.scoring import ZERO_IMPACT_DIMENSIONS
 from repowise.core.persistence import crud
-from repowise.server.deps import get_db_session, scoped_repo_id
+from repowise.core.persistence.models import HealthFinding
+from repowise.server.deps import get_db_session
 from repowise.server.schemas import (
     HealthFindingResponse,
     HealthFindingWithSymbolResponse,
@@ -149,19 +150,15 @@ async def update_finding_status(
     repo_id: str,
     finding_id: str,
     payload: FindingStatusUpdate,
-    request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict:
     if payload.status not in ALLOWED_STATUSES:
         raise HTTPException(
             status_code=400, detail=f"status must be one of {sorted(ALLOWED_STATUSES)}"
         )
-    if scoped_repo_id(request) is not None:
-        from repowise.core.persistence.models import HealthFinding
-
-        existing = await session.get(HealthFinding, finding_id)
-        if existing is None or existing.repository_id != repo_id:
-            raise HTTPException(status_code=404, detail="Finding not found")
+    existing = await session.get(HealthFinding, finding_id)
+    if existing is None or existing.repository_id != repo_id:
+        raise HTTPException(status_code=404, detail="Finding not found")
     f = await crud.update_health_finding_status(session, finding_id, payload.status)
     if f is None:
         raise HTTPException(status_code=404, detail="Finding not found")

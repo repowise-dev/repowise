@@ -100,29 +100,36 @@ def kotlin_synthetic_symbols(
                 continue
             line = node.start_point[0] + 1
 
+            # Signatures take the stored ``function name(params) -> Type``
+            # shape of a parsed Kotlin function, so a chain reads the return.
             if _is_data_class(node):
                 components = _primary_components(node, src)
                 for i, (_cname, ctype) in enumerate(components, start=1):
                     out.append(build_synthetic_symbol(
                         name=f"component{i}", kind="method",
-                        signature=f"public {ctype or 'Any'} component{i}()",
+                        signature=f"function component{i}() -> {ctype or 'Any'}",
                         start_line=line, end_line=line,
                         file_info=file_info, parent_name=class_name,
                     ))
-                # copy(...) — same params as primary ctor.
+                # copy(...): the primary ctor's params. Their implicit defaults
+                # are left out: a bare ``copy(..)`` in a receiver lambda would
+                # then reach any imported data class's copy by name.
                 copy_params = ", ".join(
                     f"{n}: {t or 'Any'}" for n, t in components
                 )
                 out.append(build_synthetic_symbol(
                     name="copy", kind="method",
-                    signature=f"public {class_name} copy({copy_params})",
+                    signature=f"function copy({copy_params}) -> {class_name}",
                     start_line=line, end_line=line,
                     file_info=file_info, parent_name=class_name,
                 ))
-                for nm in ("equals", "hashCode", "toString"):
+                for nm, sig in (
+                    ("equals", "function equals(other: Any?) -> Boolean"),
+                    ("hashCode", "function hashCode() -> Int"),
+                    ("toString", "function toString() -> String"),
+                ):
                     out.append(build_synthetic_symbol(
-                        name=nm, kind="method",
-                        signature=f"public {nm}()",
+                        name=nm, kind="method", signature=sig,
                         start_line=line, end_line=line,
                         file_info=file_info, parent_name=class_name,
                     ))
@@ -130,13 +137,13 @@ def kotlin_synthetic_symbols(
             if _is_enum_class(node):
                 out.append(build_synthetic_symbol(
                     name="values", kind="method",
-                    signature=f"public static {class_name}[] values()",
+                    signature=f"function values() -> Array<{class_name}>",
                     start_line=line, end_line=line,
                     file_info=file_info, parent_name=class_name,
                 ))
                 out.append(build_synthetic_symbol(
                     name="valueOf", kind="method",
-                    signature=f"public static {class_name} valueOf(String)",
+                    signature=f"function valueOf(value: String) -> {class_name}",
                     start_line=line, end_line=line,
                     file_info=file_info, parent_name=class_name,
                 ))

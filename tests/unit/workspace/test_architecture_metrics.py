@@ -11,6 +11,7 @@ from __future__ import annotations
 from repowise.core.workspace.architecture_metrics import (
     ARCH_CORE_PERIPHERY,
     ARCH_HIERARCHICAL,
+    ARCH_UNDETERMINED,
     ROLE_CONTROL,
     ROLE_CORE,
     ROLE_PERIPHERAL,
@@ -211,12 +212,14 @@ def test_snapshot_shape_and_score_are_locked():
         "core_ratio",
         "core_members",
         "cycle_count",
+        "cycle_count_capped",
         "conformance_violations",
         "architecture_type",
         "score",
         "role_breakdown",
         "roles",
         "generated_at",
+        "evidence",
     }
     # score = 10 - 5*(14/30) - 3*(3/6) - min(2, 0.5*1) - 0
     #       = 10 - 2.3333 - 1.5 - 0.5 = 5.6667 -> 5.7
@@ -241,31 +244,58 @@ def test_conformance_violations_lower_the_score():
 # ---------------------------------------------------------------------------
 
 
-def test_empty_workspace():
+def _assert_undetermined(m, code):
+    assert m.score is None
+    assert m.propagation_cost is None
+    assert m.propagation_cost_pct is None
+    assert m.core_size is None
+    assert m.cycle_count is None
+    assert m.architecture_type == ARCH_UNDETERMINED
+    assert m.roles == []
+    assert m.evidence.state == "insufficient"
+    assert m.evidence.reasons[0].code == code
+    assert m.to_dict()["evidence"]["determined"] is False
+
+
+def test_empty_workspace_is_not_determined():
     m = compute_architecture_metrics(SystemGraph(nodes=[], edges=[]))
     assert m.node_count == 0
-    assert m.propagation_cost == 0.0
-    assert m.core_size == 0
-    assert m.score == SCORE_MAX
-    assert m.architecture_type == ARCH_HIERARCHICAL
-    assert m.roles == []
+    _assert_undetermined(m, "too_few_services")
 
 
-def test_single_service_is_decoupled():
+def test_single_service_is_not_determined():
     m = compute_architecture_metrics(_graph(["solo"], []))
     assert m.node_count == 1
-    assert m.propagation_cost == 0.0
-    assert m.core_size == 0
-    assert m.score == SCORE_MAX
-    roles = _roles_by_id(m)
-    assert roles["solo"].role == ROLE_PERIPHERAL
+    _assert_undetermined(m, "too_few_services")
 
 
-def test_independent_services_are_fully_decoupled():
+def test_services_with_no_edges_are_not_scored_as_decoupled():
+    """Zero edges is "nothing seen", never a 10/10."""
     m = compute_architecture_metrics(_graph(["A", "B", "C"], []))
-    assert m.propagation_cost == 0.0
-    assert m.score == SCORE_MAX
-    assert all(r.role == ROLE_PERIPHERAL for r in m.roles)
+    assert m.node_count == 3
+    _assert_undetermined(m, "no_cross_service_edges")
+
+
+def test_cochange_alone_is_not_evidence_of_structure():
+    m = compute_architecture_metrics(
+        _graph(["A", "B"], [_edge("A", "B", kind="co_change", structural=False)])
+    )
+    _assert_undetermined(m, "no_cross_service_edges")
+
+
+def test_build_references_only_are_scored_as_partial():
+    m = compute_architecture_metrics(
+        _graph(["A", "B", "C"], [_edge("A", "B", kind="package"), _edge("B", "C", kind="package")])
+    )
+    assert m.score is not None
+    assert m.evidence.state == "partial"
+    assert [r.code for r in m.evidence.reasons] == ["build_edges_only"]
+
+
+def test_a_connected_graph_is_measured():
+    m = compute_architecture_metrics(_graph(["A", "B", "C"], [_edge("A", "B"), _edge("B", "C")]))
+    assert m.evidence.state == "measured"
+    assert m.evidence.reasons == []
 
 
 # ---------------------------------------------------------------------------

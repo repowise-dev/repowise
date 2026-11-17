@@ -27,6 +27,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..models import FileInfo, Import
+from .ansible import extract_ansible_imports
 from .clojure import extract_clojure_imports
 from .dart import extract_dart_imports
 from .elixir import extract_elixir_imports
@@ -55,6 +56,10 @@ _EXTRACTORS: dict[str, ExtractorFn] = {
     # dbt {{ ref() }} / {{ source() }}, the only import system .sql files
     # have; plain SQL contains neither form, so this is a no-op outside dbt.
     "sql": extract_dbt_imports,
+    # Ansible playbook/task/role wiring, the only dependency system .yml
+    # files have that we can resolve statically; byte-gated + shape-gated,
+    # so plain YAML config is untouched. See ansible.py.
+    "yaml": extract_ansible_imports,
     # <script src> / <link href>. AST-backed rather than regex — see above.
     "html": extract_html_imports,
     # [ext_resource path=...] in .tscn/.tres/.escn, plus project.godot's

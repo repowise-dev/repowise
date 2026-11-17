@@ -293,7 +293,9 @@ export interface AgentTrendBucket extends AttributionShareFields {
 /** Monthly attribution trend across the indexed commit window. `enabled` is
  * false, with every figure empty, when attribution is off for the repo. */
 export interface AgentTrend extends AttributionShareFields {
-  enabled: boolean;
+  /** Absent from a server that does not send it; a trend carrying
+   *  `agent_pct_of_covered` then reads as on. */
+  enabled?: boolean;
   coverage_floor_pct: number;
   buckets: AgentTrendBucket[];
   agent_names: { name: string; count: number }[];

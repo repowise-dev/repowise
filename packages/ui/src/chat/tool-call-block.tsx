@@ -73,7 +73,7 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
       <div className="flex min-h-8 items-center gap-2">
         <button
           type="button"
-          className="flex min-h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+          className="flex min-h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           onClick={() => !isRunning && setExpanded((e) => !e)}
           disabled={isRunning}
           aria-expanded={expanded}
@@ -106,7 +106,7 @@ export function ToolCallBlock({ toolCall, onViewArtifact }: ToolCallBlockProps) 
           <button
             type="button"
             onClick={onViewArtifact}
-            className="inline-flex min-h-8 shrink-0 items-center gap-0.5 rounded-md px-1 text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]"
+            className="inline-flex min-h-8 shrink-0 items-center gap-0.5 rounded-md px-1 text-[var(--color-accent-primary)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]"
           >
             View <ArrowUpRight aria-hidden className="h-3 w-3" />
           </button>

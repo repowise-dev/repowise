@@ -93,6 +93,11 @@ SUPERSEDED_IDS_TO_REPO_WIDE: dict[str, str] = {
     "onboarding:onboarding/guided_tour": "repo_overview",
     "onboarding:onboarding/codebase_map": "repo_overview",
     "onboarding:onboarding/development_guide": "repo_overview",
+    # Key Concepts and Glossary left the orientation set together: both were
+    # built from the repository's own defined terms, which most repositories
+    # do not write, and the overview carries the few it does define.
+    "onboarding:onboarding/key_concepts": "repo_overview",
+    "onboarding:onboarding/glossary": "repo_overview",
 }
 
 # Every retired id, whichever table names it.  The sweep and the config-key
