@@ -98,6 +98,7 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 | `properties.semantic_search` | `true` / `false` | Whether retrieval had a vector leg |
 | `properties.response_chars` | `10979` | Serialised size of the response, a count only |
 | `properties.response_tokens` | `2744` | The same size as the budget's token estimate |
+| `properties.include` | `["callers", "skeleton"]` | Which `include` blocks the call asked for, by the tool's own block names; any other value is sent as `other` |
 
 Example `command_run` payload:
 
