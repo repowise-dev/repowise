@@ -57,10 +57,6 @@ _DRIVE_RE = re.compile(r"^[A-Za-z]:/")
 # string, a separator or an arrow before the frame's column means some other
 # function could start there, so the column does not single out the symbol.
 _JS_HEAD_RE = re.compile(r"[\w$.\s=:*#\[\]\ufeff]*")
-# A line whose first character starts a function: ``function``, an IIFE's
-# ``(``, or a bare arrow. Only then can a 1:1 frame be that function and not
-# the module wrapper.
-_JS_LINE_STARTS_CALLABLE_RE = re.compile(r"\ufeff?(?:async\s+)?(?:function\b|\(|[\w$]+\s*=>)")
 
 
 @dataclass(frozen=True)
@@ -333,10 +329,10 @@ def _javascript(
 ) -> _Hit | SkipReason:
     if frame.column is None or frame.column < 1:
         return "no_second_signal"
+    if _js_module_body(frame):
+        return (None, False)
     callables = [s for s in symbols if s.kind in _CALLABLE_KINDS]
     starting = [s for s in callables if s.start_line == frame.line]
-    if _js_module_body(frame):
-        return _js_wrapper(starting, lines)
     if len(starting) > 1:
         return "ambiguous"
     text = lines()
@@ -350,18 +346,6 @@ def _javascript(
 def _js_module_body(frame: ProfileFrame) -> bool:
     """The CommonJS wrapper (and an ES module's top level) starts at 1:1, unnamed."""
     return frame.line == 1 and frame.column == 1 and not frame.function
-
-
-def _js_wrapper(
-    starting: Sequence[IndexedSymbol],
-    lines: Callable[[], list[str] | None],
-) -> _Hit:
-    """The one function starting at 1:1 when line 1 opens with it, else the file."""
-    if len(starting) == 1:
-        text = lines()
-        if text and _JS_LINE_STARTS_CALLABLE_RE.match(text[0]):
-            return (starting[0], False)
-    return (None, False)
 
 
 def _js_starting(
