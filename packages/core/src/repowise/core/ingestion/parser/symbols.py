@@ -315,6 +315,7 @@ def _extract_symbols(
 
     return symbols
 
+
 # What a top-level binding must be to own ``Foo.m = ...``: a class or function,
 # or an object held in a const (``const api = {}``; ``api::get`` is how an
 # object-literal method of it is named already).

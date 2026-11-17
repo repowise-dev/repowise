@@ -113,6 +113,8 @@ def test_a_reassigned_property_keeps_one_id(parser: ASTParser, language: str) ->
         "K.prototype.m = function () {};\n"
         "exports.e = function () {};\n"
         "function e() {}\n"
+        "x.y = function () {};\n"
+        "z.y = () => 1;\n"
     )
     rows = _rows(parser, source, language)
     assert rows == [
@@ -120,6 +122,7 @@ def test_a_reassigned_property_keeps_one_id(parser: ASTParser, language: str) ->
         ("K", "class", None, 3),
         ("K::m", "method", "K", 3),
         ("e", "function", None, 6),
+        ("y", "function", None, 7),
     ]
     ids = [s.id for s in _symbols(parser, source, language)]
     assert len(ids) == len(set(ids))

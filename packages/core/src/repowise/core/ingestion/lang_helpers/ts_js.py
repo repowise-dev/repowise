@@ -96,6 +96,7 @@ def _ts_nested_object_method_owner(
 # once per module, so it declares nothing a caller elsewhere can reach.
 _TS_FUNCTION_SCOPES = _TS_NAMED_FUNCTIONS | _TS_FUNCTION_VALUES
 
+
 def _ts_is_iife(scope: Node) -> bool:
     """*scope* is called where it is written: ``(function () {...})()``,
     ``(function () {...}).call(this)``, ``!function () {...}()``. Its body runs at
