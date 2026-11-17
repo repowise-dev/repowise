@@ -159,8 +159,8 @@ def test_unknown_language_is_unsupported() -> None:
 # -- Python ------------------------------------------------------------------
 
 
-def test_python_line_outside_every_symbol_is_no_span() -> None:
-    assert _resolve(_py(2, "<module>", path="pkg/empty.py")).skipped == {"no_span": 1}
+def test_python_named_frame_outside_every_symbol_is_no_span() -> None:
+    assert _resolve(_py(2, "helper", path="pkg/empty.py")).skipped == {"no_span": 1}
 
 
 def test_python_qualname_mismatch_is_skipped() -> None:
@@ -172,8 +172,8 @@ def test_python_bare_name_matches_the_tail_only_at_a_dot() -> None:
     assert _resolve(_py(13, "un")).skipped == {"second_signal_mismatch": 1}
 
 
-def test_python_nested_def_without_a_symbol_is_a_mismatch() -> None:
-    res = _resolve(_py(13, "App.run.<locals>.inner"))
+def test_python_nested_def_under_the_wrong_parent_is_a_mismatch() -> None:
+    res = _resolve(_py(13, "App.other.<locals>.inner"))
     assert res.skipped == {"second_signal_mismatch": 1}
 
 
@@ -198,8 +198,8 @@ def test_go_inline_mislabel_is_caught_by_the_start_line() -> None:
     assert res.skipped == {"second_signal_mismatch": 1}
 
 
-def test_go_closure_start_differs_from_its_parent() -> None:
-    res = _resolve(_go(105, 104, "cobra.(*Command).Flags.func1"))
+def test_go_closure_of_another_function_is_a_mismatch() -> None:
+    res = _resolve(_go(105, 104, "cobra.(*Command).Other.func1"))
     assert res.skipped == {"second_signal_mismatch": 1}
 
 
@@ -234,8 +234,13 @@ def test_javascript_nested_function_on_the_start_line_is_a_mismatch() -> None:
     assert _resolve(_js(5, column)).skipped == {"second_signal_mismatch": 1}
 
 
-def test_javascript_line_inside_a_symbol_but_not_its_start_is_no_span() -> None:
-    assert _resolve(_js(7, 3)).skipped == {"no_span": 1}
+def test_javascript_function_outside_every_symbol_is_no_span() -> None:
+    syms = {"lib/y.js": [_sym("lib/y.js", "y.f", 10, 12)]}
+    frame = ProfileFrame(f"{ROOT}/lib/y.js", 3, "javascript", column=5)
+    res = resolve_frames(
+        [frame], root=ROOT, symbols_by_file=syms, read_lines=lambda _p: ["x"] * 12
+    )
+    assert res.skipped == {"no_span": 1}
 
 
 def test_javascript_two_functions_starting_on_one_line_are_ambiguous() -> None:
