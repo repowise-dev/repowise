@@ -63,4 +63,24 @@ def symbols_overlapping(
     ]
 
 
-__all__ = ["Span", "symbol_at", "symbols_overlapping"]
+def innermost(spans: Iterable[S]) -> list[S]:
+    """*spans* minus any span that strictly contains another, in input order.
+
+    A range that cuts across a class and two of its methods then names the
+    methods only, so one change is not counted at every level of nesting.
+    """
+    held = list(spans)
+    return [
+        span
+        for span in held
+        if not any(
+            other is not span
+            and span.start_line <= other.start_line
+            and other.end_line <= span.end_line
+            and (other.end_line - other.start_line) < (span.end_line - span.start_line)
+            for other in held
+        )
+    ]
+
+
+__all__ = ["Span", "innermost", "symbol_at", "symbols_overlapping"]

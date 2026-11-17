@@ -113,12 +113,17 @@ def symbol_bodies(path: str, raw: bytes, symbols: Iterable[Symbol]) -> list[Symb
     starts = [row[1] for row in rows]
     out: list[SymbolBody] = []
     for symbol in symbols:
-        if not symbol.name or symbol.is_declaration or symbol.kind in _SKIPPED_KINDS:
+        if not is_body_symbol(symbol):
             continue
         span = rows_between(rows, starts, symbol.start_line, symbol.end_line)
         if span:
             out.append(_body(symbol, path, raw, span))
     return out
+
+
+def is_body_symbol(symbol: Symbol) -> bool:
+    """A named symbol with a body of its own: not a module, impl block or declaration."""
+    return bool(symbol.name) and not symbol.is_declaration and symbol.kind not in _SKIPPED_KINDS
 
 
 def bodies_for(
