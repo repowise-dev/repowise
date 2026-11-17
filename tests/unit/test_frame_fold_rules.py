@@ -171,6 +171,23 @@ def test_javascript_indexed_callable_at_one_one_beats_the_wrapper() -> None:
     assert _hit(_run(_js(1, 1), syms, lines)) == (syms[0], False)
 
 
+def test_javascript_wrapper_keeps_a_line_whose_callable_starts_later() -> None:
+    syms = [_sym("lib/app.js", "app.f", 1, 1)]
+    lines = ["const x = 1; function f() { return x; }"]
+    assert _hit(_run(_js(1, 1), syms, lines)) == (None, False)
+
+
+def test_javascript_wrapper_without_source_is_the_file() -> None:
+    syms = [_sym("lib/app.js", "app.<anonymous>", 1, 3)]
+    assert _hit(_run(_js(1, 1), syms)) == (None, False)
+
+
+def test_javascript_wrapper_with_two_callables_on_line_one_is_the_file() -> None:
+    syms = [_sym("lib/app.js", "app.a", 1, 1), _sym("lib/app.js", "app.b", 1, 1)]
+    lines = ["function a() {} function b() {}"]
+    assert _hit(_run(_js(1, 1), syms, lines)) == (None, False)
+
+
 def test_javascript_named_function_at_one_one_is_not_the_wrapper() -> None:
     assert _run(_js(1, 1, "main"), JS, JS_SOURCE).skipped == {"no_span": 1}
 
