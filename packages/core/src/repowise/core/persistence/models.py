@@ -3026,7 +3026,8 @@ class EvidenceBenchmarkResult(Base):
     """One benchmark's result in one run; a series is one key across runs.
 
     ``benchmark_key`` is the benchmark's full name as the tool reports it,
-    parameters included, so one run holds each benchmark once. Only the
+    parameters included. One run holds each benchmark once: a writer folds
+    repeated reports (``-count=N``) into one row with ``rounds``. Only the
     statistics the tool gave are set. ``allocs_per_op`` and ``bytes_per_op``
     are exact where a tool reports them; time is not.
     """
@@ -3061,7 +3062,8 @@ class EvidenceTestTiming(Base):
     """One test's duration and outcome in one run.
 
     ``test_id`` is in the ``test_coverage.test_id`` namespace
-    (``path::qualname``), so timings and the test-to-code map join.
+    (``path::qualname``), so timings and the test-to-code map join. A test
+    run more than once in one run (reruns) is folded to one row by the writer.
     """
 
     __tablename__ = "evidence_test_timings"
@@ -3075,7 +3077,8 @@ class EvidenceTestTiming(Base):
     # The test function, when it resolved to an indexed symbol.
     symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    duration_s: Mapped[float] = mapped_column(Float, nullable=False)
+    # NULL when the test reported no duration (a skip, a collection error).
+    duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     # ``passed``, ``failed``, ``skipped``, ``error``; NULL: not reported.
     outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
@@ -3086,7 +3089,8 @@ class EvidenceTestStats(Base):
     """A test's rolling duration series in one environment, across runs.
 
     Derived from ``evidence_test_timings`` as runs arrive, and kept when the
-    runs themselves are pruned. ``durations_json`` is the newest durations,
+    runs themselves are pruned. Only ``unit_test`` workloads feed it, so a
+    load test never mixes into a test's own series. ``durations_json`` is the newest durations,
     ``[[commit_sha, seconds], ...]``, oldest first.
     """
 

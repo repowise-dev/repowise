@@ -139,7 +139,7 @@ def upgrade() -> None:
         sa.Column("test_file", sa.Text, nullable=True),
         sa.Column("symbol_id", sa.Text, nullable=True),
         sa.Column("lineage_id", sa.String(16), nullable=True),
-        sa.Column("duration_s", sa.Float, nullable=False),
+        sa.Column("duration_s", sa.Float, nullable=True),
         sa.Column("outcome", sa.String(16), nullable=True),
         **_NO_ROWID,
     )

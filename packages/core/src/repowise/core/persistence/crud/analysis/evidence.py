@@ -51,20 +51,34 @@ async def save_evidence_run(
     rows: Iterable[Mapping[str, Any]],
     *,
     history_runs: int,
+    max_runs: int,
 ) -> EvidenceWrite:
-    """Store one run and its rows, then keep the newest *history_runs* of its kind.
+    """Store one run and its rows, then prune the history of its kind.
 
     *run* holds ``EvidenceRun`` columns (``kind`` and ``run_key`` required);
     *rows* hold the columns of the kind's table, without ``run_id`` and
-    ``repository_id``. A run whose ``run_key`` and commit match a stored run
-    is one measurement ingested twice: the stored run is restamped and
-    nothing else is written, like ``coverage._record_ingest``. A run with no
-    commit is always new, since it cannot be told apart from another.
+    ``repository_id``, one row per key: a writer folds repeats (reruns, a
+    benchmark reported per count) before calling, and a repeat raises before
+    anything is written. A run whose ``run_key`` and commit match a stored
+    run is one measurement ingested twice: the stored run is restamped and
+    nothing else is written, like ``coverage._record_ingest``, so ``run_key``
+    must cover everything the run row records. A run with no commit is
+    always new, since it cannot be told apart from another. Pruning keeps
+    *history_runs* per workload and *max_runs* per kind
+    (:func:`prune_evidence_runs`).
     """
     kind = run["kind"]
     table = EVIDENCE_ROW_TABLES.get(kind)
     if table is None:
         raise ValueError(f"unknown evidence kind {kind!r}")
+    if history_runs < 1 or max_runs < 1:
+        raise ValueError("history_runs and max_runs must keep at least the new run")
+    run_id = _new_uuid()
+    filled = [
+        _full_row(table, {**row, "run_id": run_id, "repository_id": repository_id})
+        for row in rows
+    ]
+    _refuse_repeated_keys(table, filled)
     at = run.get("ingested_at") or _now_utc()
     commit = run.get("commit_sha")
     if commit is not None:
@@ -85,42 +99,53 @@ async def save_evidence_run(
             await session.flush()
             return EvidenceWrite(same.id, restamped=True, rows_written=0, runs_pruned=0)
 
-    run_id = _new_uuid()
-    await session.execute(
-        insert(EvidenceRun.__table__),
-        [
-            _full_row(
-                EvidenceRun.__table__,
-                {**run, "id": run_id, "ingested_at": at, "repository_id": repository_id},
-            )
-        ],
+    # One savepoint, so a failed row batch leaves no run without its rows.
+    async with session.begin_nested():
+        await session.execute(
+            insert(EvidenceRun.__table__),
+            [
+                _full_row(
+                    EvidenceRun.__table__,
+                    {**run, "id": run_id, "ingested_at": at, "repository_id": repository_id},
+                )
+            ],
+        )
+        # On the table, not the mapper: the ORM bulk path splits a batch
+        # wherever a column flips between NULL and a value.
+        for i in range(0, len(filled), _BATCH_SIZE):
+            await session.execute(insert(table), filled[i : i + _BATCH_SIZE])
+    pruned = await prune_evidence_runs(
+        session, repository_id, kind, per_workload=history_runs, per_kind=max_runs
     )
-    filled = [
-        _full_row(table, {**row, "run_id": run_id, "repository_id": repository_id})
-        for row in rows
-    ]
-    # On the table, not the mapper: the ORM bulk path splits a batch wherever
-    # a column flips between NULL and a value.
-    for i in range(0, len(filled), _BATCH_SIZE):
-        await session.execute(insert(table), filled[i : i + _BATCH_SIZE])
-    pruned = await prune_evidence_runs(session, repository_id, kind, keep=history_runs)
     return EvidenceWrite(run_id, restamped=False, rows_written=len(filled), runs_pruned=pruned)
 
 
 async def prune_evidence_runs(
-    session: AsyncSession, repository_id: str, kind: str, *, keep: int
+    session: AsyncSession,
+    repository_id: str,
+    kind: str,
+    *,
+    per_workload: int,
+    per_kind: int,
 ) -> int:
-    """Drop the runs of *kind* past the newest *keep*, oldest first. Returns how many."""
-    stale = list(
-        (
-            await session.execute(
-                select(EvidenceRun.id)
-                .where(EvidenceRun.repository_id == repository_id, EvidenceRun.kind == kind)
-                .order_by(EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc())
-                .offset(max(keep, 0))
-            )
-        ).scalars()
-    )
+    """Drop runs of *kind* past the newest *per_workload* of their workload
+    (name and environment) or past the newest *per_kind* overall, oldest
+    first. One busy workload so cannot evict another's history, and many
+    workload names cannot grow the store without bound. Returns how many."""
+    runs = (
+        await session.execute(
+            select(EvidenceRun.id, EvidenceRun.workload_name, EvidenceRun.environment)
+            .where(EvidenceRun.repository_id == repository_id, EvidenceRun.kind == kind)
+            .order_by(EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc())
+        )
+    ).all()
+    seen: dict[tuple[str, str], int] = {}
+    stale: list[str] = []
+    for position, (run_id, workload, environment) in enumerate(runs):
+        series = (workload, environment)
+        seen[series] = seen.get(series, 0) + 1
+        if position >= per_kind or seen[series] > per_workload:
+            stale.append(run_id)
     await delete_evidence_runs(session, stale)
     return len(stale)
 
@@ -137,6 +162,16 @@ async def delete_evidence_runs(session: AsyncSession, run_ids: list[str]) -> Non
         for table in EVIDENCE_ROW_TABLES.values():
             await session.execute(delete(table).where(table.c.run_id.in_(chunk)))
         await session.execute(delete(EvidenceRun).where(EvidenceRun.id.in_(chunk)))
+
+
+def _refuse_repeated_keys(table: Table, rows: list[dict[str, Any]]) -> None:
+    key = [column.name for column in table.primary_key.columns]
+    seen: set[tuple[Any, ...]] = set()
+    for row in rows:
+        values = tuple(row[name] for name in key)
+        if values in seen:
+            raise ValueError(f"{table.name} rows repeat the key {values[1:]!r}")
+        seen.add(values)
 
 
 def _full_row(table: Table, row: Mapping[str, Any]) -> dict[str, Any]:

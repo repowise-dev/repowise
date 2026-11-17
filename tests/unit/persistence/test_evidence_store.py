@@ -68,7 +68,7 @@ async def _count(session, model) -> int:
 async def test_a_run_and_its_rows_are_written_in_bulk(async_session) -> None:
     repo = await insert_repo(async_session)
     write = await save_evidence_run(
-        async_session, repo.id, _run(), _costs(1200), history_runs=5
+        async_session, repo.id, _run(), _costs(1200), history_runs=5, max_runs=50
     )
     await async_session.commit()
 
@@ -93,10 +93,12 @@ async def test_a_run_and_its_rows_are_written_in_bulk(async_session) -> None:
 
 async def test_the_same_file_at_the_same_commit_restamps_the_run(async_session) -> None:
     repo = await insert_repo(async_session)
-    first = await save_evidence_run(async_session, repo.id, _run(), _costs(3), history_runs=5)
+    first = await save_evidence_run(
+        async_session, repo.id, _run(), _costs(3), history_runs=5, max_runs=50
+    )
     later = datetime.now(UTC) + timedelta(hours=1)
     again = await save_evidence_run(
-        async_session, repo.id, _run(ingested_at=later), _costs(3), history_runs=5
+        async_session, repo.id, _run(ingested_at=later), _costs(3), history_runs=5, max_runs=50
     )
     await async_session.commit()
 
@@ -118,10 +120,13 @@ async def test_the_same_file_at_the_same_commit_restamps_the_run(async_session) 
 )
 async def test_other_measurements_append(async_session, second, expected_runs) -> None:
     repo = await insert_repo(async_session)
-    await save_evidence_run(async_session, repo.id, _run(), _costs(2), history_runs=5)
+    await save_evidence_run(
+        async_session, repo.id, _run(), _costs(2), history_runs=5, max_runs=50
+    )
     write = await save_evidence_run(
         async_session, repo.id, _run(second["key"], commit=second["commit"]), _costs(2),
         history_runs=5,
+        max_runs=50,
     )
     await async_session.commit()
     assert write.restamped is False
@@ -140,6 +145,7 @@ async def test_pruning_drops_the_oldest_runs_of_the_kind_and_their_rows(async_se
             _run(f"p{i}", ingested_at=base + timedelta(days=i)),
             _costs(2),
             history_runs=2,
+            max_runs=50,
         )
         profile_ids.append(write.run_id)
     timing = await save_evidence_run(
@@ -148,6 +154,7 @@ async def test_pruning_drops_the_oldest_runs_of_the_kind_and_their_rows(async_se
         _run("t0", kind="test_timing", ingested_at=base - timedelta(days=10)),
         [{"test_id": "tests/test_a.py::test_one", "duration_s": 0.5}],
         history_runs=2,
+        max_runs=50,
     )
     await async_session.commit()
 
@@ -158,18 +165,76 @@ async def test_pruning_drops_the_oldest_runs_of_the_kind_and_their_rows(async_se
     assert cost_runs == {profile_ids[2], profile_ids[3]}
     assert await _count(async_session, EvidenceTestTiming) == 1
 
-    assert await prune_evidence_runs(async_session, repo.id, "profile", keep=0) == 2
-    assert await _count(async_session, EvidenceSymbolCost) == 0
+    assert (
+        await prune_evidence_runs(async_session, repo.id, "profile", per_workload=1, per_kind=1)
+        == 1
+    )
+    assert await _count(async_session, EvidenceSymbolCost) == 2
+
+
+async def test_pruning_is_per_workload_under_a_cap_per_kind(async_session) -> None:
+    repo = await insert_repo(async_session)
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    ids: dict[str, list[str]] = {"rare": [], "busy": []}
+    for i, workload in enumerate(["rare", "busy", "busy", "busy", "busy"]):
+        write = await save_evidence_run(
+            async_session,
+            repo.id,
+            _run(f"r{i}", workload_name=workload, ingested_at=base + timedelta(days=i)),
+            _costs(1),
+            history_runs=2,
+            max_runs=50,
+        )
+        ids[workload].append(write.run_id)
+    kept = set((await async_session.execute(select(EvidenceRun.id))).scalars())
+    # The busy workload keeps its newest two and leaves the rare one alone.
+    assert kept == {ids["rare"][0], *ids["busy"][-2:]}
+
+    await prune_evidence_runs(async_session, repo.id, "profile", per_workload=2, per_kind=2)
+    assert set((await async_session.execute(select(EvidenceRun.id))).scalars()) == set(
+        ids["busy"][-2:]
+    )
 
 
 async def test_writer_mistakes_raise(async_session) -> None:
     repo = await insert_repo(async_session)
     with pytest.raises(ValueError, match="unknown evidence kind"):
-        await save_evidence_run(async_session, repo.id, _run(kind="trace"), [], history_runs=1)
+        await save_evidence_run(
+            async_session, repo.id, _run(kind="trace"), [], history_runs=1, max_runs=1
+        )
     with pytest.raises(ValueError, match="not columns of evidence_symbol_costs"):
         await save_evidence_run(
-            async_session, repo.id, _run(), [{"symbol_id": "a::b", "samples": 3}], history_runs=1
+            async_session,
+            repo.id,
+            _run(),
+            [{"symbol_id": "a::b", "samples": 3}],
+            history_runs=1,
+            max_runs=1,
         )
+    with pytest.raises(ValueError, match="repeat the key"):
+        await save_evidence_run(
+            async_session,
+            repo.id,
+            _run(kind="test_timing"),
+            [{"test_id": "t::a", "duration_s": 1.0}, {"test_id": "t::a", "duration_s": 2.0}],
+            history_runs=1,
+            max_runs=1,
+        )
+    assert await _count(async_session, EvidenceRun) == 0
+
+
+async def test_a_failed_row_batch_leaves_no_run(async_session) -> None:
+    repo = await insert_repo(async_session)
+    with pytest.raises(Exception, match="NOT NULL"):
+        await save_evidence_run(
+            async_session,
+            repo.id,
+            _run(kind="query_count"),
+            [{"scope_kind": "test", "scope_id": "t::a", "site_symbol_id": "m::f"}],
+            history_runs=1,
+            max_runs=1,
+        )
+    assert await _count(async_session, EvidenceRun) == 0
 
 
 def test_every_kind_has_a_table_keyed_by_run() -> None:
