@@ -277,7 +277,7 @@ On a directory or module card: every indexed file under it (git rows and graph f
 One top-level block: `window` (`since`, `until`), `candidates` (changes merged in the last 14 days), `texts_missing` (unreadable changes, ranked on title and files), `symptom_files` (targets mapped to files at HEAD), `note`, and `suspects`.
 
 - `suspects`: at most 5 rows of `{id, ref, title, merged_at, category, head_sha, files_changed, rank, signals}`, ranked against the targets' files and path words, or the `symptom` text.
-- `signals` maps each fired signal (`text`, `graph`, `co-change`, `recency`, `trace`) to its `rank` and `evidence`.
+- `signals` maps each fired signal (`text`, `graph`, `co-change`, `recency`, `trace`) to its `rank` and `evidence`. A `trace` row reads `frame <symbol id>` when a Python frame resolved to the indexed function it ran in (its file sits under the checkout and matches the indexed commit) and the change edited that function; other frames give `frame file <path>` and `frame function <name>`.
 - A reading order, never a cause: no score or probability.
 
 ### Component targets

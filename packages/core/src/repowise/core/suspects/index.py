@@ -21,7 +21,15 @@ from typing import Any
 from repowise.core.fts_query import meaningful_terms
 
 from .git_text import _git, read_change_texts
-from .rank import Candidate, SuspectContext, Symptom, prepare, rank_suspects
+from .rank import (
+    Candidate,
+    PreparedSymptom,
+    SuspectContext,
+    Symptom,
+    prepare,
+    rank_suspects,
+    resolve_trace,
+)
 
 #: The window the measurement used (prereg/suspects.md): 14 days before the symptom.
 DEFAULT_WINDOW_DAYS = 14
@@ -56,6 +64,77 @@ async def _imports(session: Any, repo_id: str) -> dict[str, set[str]]:
         adj.setdefault(u, set()).add(v)
         adj.setdefault(v, set()).add(u)
     return adj
+
+
+async def _resolve_trace(
+    session: Any, repo_id: str, repo_path: Path, prepared: PreparedSymptom
+) -> PreparedSymptom:
+    """*prepared* with trace frames joined to the indexed symbols they ran in.
+
+    Unchanged when the index records no commit or git cannot say which trace
+    files differ from it: a frame is joined only against the code that ran.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.persistence.models import HealthFileMetric, Repository, WikiSymbol
+    from repowise.core.workspace.repo_index import IndexedSymbol
+
+    files = list(prepared.trace_files)
+    if not files:
+        return prepared
+    head = (
+        await session.execute(select(Repository.head_commit).where(Repository.id == repo_id))
+    ).scalar()
+    if not head:
+        return prepared
+    changed = await asyncio.to_thread(
+        _git, repo_path, "diff", "--name-only", "--relative", head, "--", *files
+    )
+    if changed is None:
+        return prepared
+    symbols: dict[str, list[IndexedSymbol]] = {f: [] for f in files}
+    rows = await session.execute(
+        select(
+            WikiSymbol.symbol_id, WikiSymbol.name, WikiSymbol.qualified_name, WikiSymbol.kind,
+            WikiSymbol.file_path, WikiSymbol.start_line, WikiSymbol.end_line,
+        ).where(WikiSymbol.repository_id == repo_id, WikiSymbol.file_path.in_(files))
+    )
+    for r in rows:
+        symbols[r.file_path].append(
+            IndexedSymbol(
+                symbol_id=r.symbol_id, name=r.name, qualified_name=r.qualified_name,
+                kind=r.kind, signature="", file_path=r.file_path,
+                start_line=r.start_line, end_line=r.end_line, visibility="",
+            )
+        )
+    origins = dict(
+        (
+            await session.execute(
+                select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
+                    HealthFileMetric.repository_id == repo_id,
+                    HealthFileMetric.file_path.in_(files),
+                    HealthFileMetric.code_origin.is_not(None),
+                )
+            )
+        ).all()
+    )
+
+    def read_lines(rel: str) -> list[str] | None:
+        try:
+            return (repo_path / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return None
+
+    return await asyncio.to_thread(
+        lambda: resolve_trace(
+            prepared,
+            root=str(repo_path),
+            symbols_by_file=symbols,
+            dirty_paths=set(changed.splitlines()),
+            origins=origins,
+            read_lines=read_lines,
+        )
+    )
 
 
 def _row(row: Any, attribution: bool) -> dict[str, Any]:
@@ -125,6 +204,8 @@ async def find_suspects(
     ]
     repo_files = await asyncio.to_thread(_tracked_files, repo_path)
     prepared = prepare(symptom, SuspectContext(repo_files=repo_files))
+    if prepared.frames:
+        prepared = await _resolve_trace(session, repo_id, repo_path, prepared)
     named = prepared.files
     ctx = SuspectContext(
         repo_files=repo_files,
