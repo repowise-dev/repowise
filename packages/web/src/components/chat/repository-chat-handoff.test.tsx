@@ -19,6 +19,10 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => search,
 }));
 
+vi.mock("@/lib/api/chat", () => ({
+  getChatSuggestions: vi.fn().mockResolvedValue({ suggestions: [] }),
+}));
+
 vi.mock("@/lib/hooks/use-chat", () => ({
   useChat: () => ({
     messages: [],
