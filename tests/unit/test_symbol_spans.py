@@ -76,3 +76,16 @@ def test_symbols_overlapping_skips_spans_without_lines() -> None:
 
 def test_symbols_overlapping_no_ranges_is_empty() -> None:
     assert symbols_overlapping(SPANS, []) == []
+
+
+def test_symbol_at_takes_a_generator() -> None:
+    assert symbol_at((s for s in SPANS if s is not NESTED), 8) is METHOD
+
+
+def test_symbol_at_crossing_spans_go_to_the_later_start() -> None:
+    early, late = _S("early", 1, 6), _S("late", 4, 20)
+    assert symbol_at([early, late], 5) is late
+
+
+def test_symbols_overlapping_takes_iterators() -> None:
+    assert symbols_overlapping(iter(SPANS), iter([(15, 15)])) == [CLASS, OTHER]

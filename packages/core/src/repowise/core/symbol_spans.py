@@ -29,7 +29,8 @@ def symbol_at(spans: Iterable[S], line: int) -> S | None:
 
     Innermost is the latest start; a tie goes to the shorter span, and spans
     that are identical go to the last one in *spans*. Spans parsed from one
-    tree nest, so this is also the narrowest span.
+    tree nest, so this is also the narrowest span; for spans that cross, the
+    later start wins.
     """
     best: S | None = None
     for span in spans:
