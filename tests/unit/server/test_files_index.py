@@ -77,3 +77,14 @@ async def test_percentiles_rank_against_files_only(client: AsyncClient, app) -> 
     # Two files, so the ranking is the full 0-100 span rather than 0-50.
     assert by_path["src/low.py"]["pagerank_pct"] == 0.0
     assert by_path["src/high.py"]["pagerank_pct"] == 100.0
+
+    # The file page and the Files table must agree per file (issue #5745).
+    file_low = await client.get(f"/api/repos/{repo['id']}/files/src/low.py")
+    assert file_low.status_code == 200
+    assert file_low.json()["graph"]["pagerank_percentile"] == by_path["src/low.py"]["pagerank_pct"]
+
+    file_high = await client.get(f"/api/repos/{repo['id']}/files/src/high.py")
+    assert file_high.status_code == 200
+    assert (
+        file_high.json()["graph"]["pagerank_percentile"] == by_path["src/high.py"]["pagerank_pct"]
+    )

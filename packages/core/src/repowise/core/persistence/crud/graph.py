@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
-from sqlalchemy import and_, case, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ingestion.symbol_identity import file_of_symbol
@@ -440,14 +440,10 @@ async def batch_upsert_graph_node_membership(
         gate=UpsertGate(
             key_column=GraphNodeMembership.node_id,
             columns=_MEMBERSHIP_FIELDS,
-            item_values_fn=lambda kv: {
-                k: v for k, v in kv[1].items() if k in _MEMBERSHIP_FIELDS
-            },
+            item_values_fn=lambda kv: {k: v for k, v in kv[1].items() if k in _MEMBERSHIP_FIELDS},
             # Pruned keys are excluded: their rows are gone by the time the
             # upsert runs, and a snapshot never sends a key it just pruned.
-            prefetched={
-                row[0]: row[1:] for row in existing_rows if row[0] in current
-            },
+            prefetched={row[0]: row[1:] for row in existing_rows if row[0] in current},
         ),
         insert_fn=lambda kv: {
             "id": _new_uuid(),
@@ -829,20 +825,13 @@ async def get_pagerank_percentile(
     session: AsyncSession,
     repository_id: str,
     pagerank: float,
-) -> int:
-    """Percentile rank (0-100) of *pagerank* among the repo's file nodes.
+) -> float:
+    """Percentile rank (0-100) of *pagerank* among the repo's owned file nodes.
 
-    Counted in SQL. The callers that want one file's rank used to load every
-    file node through :func:`get_all_file_metrics` and scan the list in Python,
-    which is the whole repo graph materialized as ORM objects to produce a
-    single integer.
-
-    The arithmetic deliberately matches ``mcp_server._graph_utils.percentile_rank``
-    — ``round(100 * below / n)`` over every ``node_type == "file"`` row — so
-    swapping a caller over does not move the number it prints. Note this is not
-    the same figure the Files *index* shows under ``pagerank_pct``: that one
-    drops external and framework nodes first and divides by ``n - 1``.
-    Reconciling the two is a behaviour change and not this function's job.
+    Counted in SQL over owned repository files (excluding ``external:`` and
+    ``framework:`` nodes), matching the Files table's formula:
+    ``round(100.0 * below / (n - 1), 1)`` for ``n > 1``, and ``100.0`` for
+    a single file (#5745).
     """
     row = (
         await session.execute(
@@ -852,13 +841,17 @@ async def get_pagerank_percentile(
             ).where(
                 GraphNode.repository_id == repository_id,
                 GraphNode.node_type == "file",
+                not_(GraphNode.node_id.startswith("external:")),
+                not_(GraphNode.node_id.startswith("framework:")),
             )
         )
     ).one()
     total = row.total or 0
     if not total:
-        return 0
-    return round(100.0 * (row.below or 0) / total)
+        return 0.0
+    if total == 1:
+        return 100.0
+    return round(100.0 * (row.below or 0) / (total - 1), 1)
 
 
 async def get_cross_community_edges(
@@ -965,13 +958,21 @@ async def get_node_degree_counts(
     in-degree is rendered as "Dependents (N)" above a dependents list, and
     the two disagreed by the file's own symbol count.
     """
-    in_q = select(func.count()).select_from(GraphEdge).where(
-        GraphEdge.repository_id == repository_id,
-        GraphEdge.target_node_id == node_id,
+    in_q = (
+        select(func.count())
+        .select_from(GraphEdge)
+        .where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.target_node_id == node_id,
+        )
     )
-    out_q = select(func.count()).select_from(GraphEdge).where(
-        GraphEdge.repository_id == repository_id,
-        GraphEdge.source_node_id == node_id,
+    out_q = (
+        select(func.count())
+        .select_from(GraphEdge)
+        .where(
+            GraphEdge.repository_id == repository_id,
+            GraphEdge.source_node_id == node_id,
+        )
     )
     if edge_types:
         in_q = in_q.where(GraphEdge.edge_type.in_(edge_types))
