@@ -156,6 +156,11 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             # Top-level const/let with a literal value (the .scm pattern is
             # program-anchored). Refined in the parser like Python assignments.
             "variable_declarator": "constant",
+            # ``obj.f = function () {}`` (the .scm pattern gates on a function
+            # value). A value kind here, like the declarator above, so an
+            # assignment never reads as a callable that hides the definitions
+            # nested under it; the parser sets the kind.
+            "assignment_expression": "constant",
             # Overload signatures (the .scm keeps method ones to class bodies).
             "function_signature": "function",
             "method_signature": "method",
@@ -178,6 +183,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "method_definition": "method",
             "lexical_declaration": "function",
             "variable_declarator": "constant",
+            "assignment_expression": "constant",  # see typescript
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],

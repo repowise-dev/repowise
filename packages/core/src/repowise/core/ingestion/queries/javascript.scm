@@ -46,6 +46,49 @@
   )
 ) @symbol.def
 
+; Function assigned to a property, named by the property: ``obj.a = function
+; a() {}``, ``exports.d = ...``, ``module.exports.x = ...``,
+; ``Foo.prototype.e = ...``, function or arrow. ``this.x = ...`` and the
+; whole-module ``module.exports = ...`` name no property of their own. The
+; parser keeps only the assignments that run at load and gives a
+; ``Foo.prototype.e`` / ``Foo.e`` its owner when the file declares ``Foo``.
+; Kept in step with typescript.scm.
+(assignment_expression
+  left: (member_expression
+    object: [(identifier) (member_expression)]
+    property: (property_identifier) @symbol.name) @_assigned_lhs
+  right: [
+    (function_expression parameters: (formal_parameters) @symbol.params)
+    (arrow_function parameters: (formal_parameters) @symbol.params)
+    (arrow_function parameter: (identifier) @symbol.params)
+  ]
+  (#not-eq? @_assigned_lhs "module.exports")
+) @symbol.def
+
+; Top-level ``var`` bound to a function: ``var h = function h() {}``,
+; ``var k = () => 2``. The pre-ES6 spelling of the const/let forms; a ``var``
+; holding any other value is not indexed. The declarator is @symbol.def, as in
+; the const/let bindings below, so it is classified the same way.
+(program
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @symbol.name
+      value: [(function_expression) (arrow_function)]
+    ) @symbol.def
+  )
+)
+
+(program
+  (export_statement
+    (variable_declaration
+      (variable_declarator
+        name: (identifier) @symbol.name
+        value: [(function_expression) (arrow_function)]
+      ) @symbol.def
+    )
+  )
+)
+
 ; Top-level const/let bindings — module constants and call-expression
 ; bindings. The declarator (not the lexical_declaration) is @symbol.def so
 ; the kind map can distinguish it from the arrow-function pattern above.
