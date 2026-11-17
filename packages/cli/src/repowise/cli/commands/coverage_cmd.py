@@ -41,6 +41,35 @@ def _resolve_coverage_repo(path: str | None, fmt: str = "table") -> Path:
     return target.narrow(notice_console(fmt), command="coverage", repo_option=False)
 
 
+#: How a ``coverage add`` run ended, reported as its telemetry ``outcome``. The
+#: first two stored coverage; every other one stored nothing, or (``--strict``)
+#: stored it and still failed.
+INGEST_OUTCOMES = frozenset(
+    {
+        "ingested",
+        "partial",
+        "no_report",
+        "no_index",
+        "mostly_unmapped",
+        "misaligned",
+        "unreadable",
+        "unmapped",
+        "strict_unmapped",
+    }
+)
+_STORED = frozenset({"ingested", "partial"})
+
+
+def _record_ingest_outcome(outcome: str, files_matched: int | None = None) -> None:
+    """Report how the run ended and a bucket of the report files that mapped."""
+    from repowise.cli.platform import telemetry
+
+    fields: dict[str, str] = {"outcome": outcome}
+    if files_matched is not None:
+        fields["files_matched_bucket"] = telemetry.bucket_count(files_matched)
+    telemetry.add_command_outcome(**fields)
+
+
 async def _repo_file_keys(session, repo_id: str) -> set[str]:
     """Canonical repo file keys to resolve report paths against.
 
@@ -178,13 +207,14 @@ def coverage_add(
                 "then re-run, or pass a path:\n"
                 "  [cyan]repowise coverage add path/to/report[/cyan]"
             )
+            _record_ingest_outcome("no_report")
             raise click.exceptions.Exit(1)
         console.print(
             f"Discovered {len(report_paths)} report(s): "
             + ", ".join(p.name for p in report_paths[:5])
         )
 
-    async def _do() -> bool:
+    async def _do() -> tuple[str, int | None]:
         from repowise.core.persistence import (
             create_engine,
             create_session_factory,
@@ -208,11 +238,11 @@ def coverage_add(
                     "[yellow]No index yet. Run `repowise init` once before "
                     "adding coverage.[/yellow]"
                 )
-                return False
+                return "no_index", None
             repo_keys = await _repo_file_keys(session, repo_row.id)
             if not repo_keys:
                 console.print("[yellow]No indexed files found. Run `repowise init` first.[/yellow]")
-                return False
+                return "no_index", None
 
             # Stamp the *live* HEAD, not ``repo_row.head_commit``. The stored
             # column names the last *indexed* commit; coverage describes the
@@ -310,7 +340,7 @@ def coverage_add(
                     f"nothing was stored.[/red] To fix it, {escape(hint)} and re-run, "
                     "or pass [cyan]--allow-partial[/cyan] to store the fragment."
                 )
-                return False
+                return "mostly_unmapped", resolved.matched
 
             agg_matched = 0
             # Both writes stamp the commit that was HEAD when their own reports
@@ -373,32 +403,34 @@ def coverage_add(
                 if resolved.alignment.reasons:
                     # Every mapped file was dropped as misaligned; the warning above says why.
                     console.print("[red]Nothing was stored.[/red]")
-                    return False
+                    return "misaligned", resolved.matched
                 if len(errors) == len(report_paths) and not map_readable:
                     # No report was readable as coverage; the lines above say why.
                     console.print("[red]Nothing was stored.[/red]")
-                    return False
+                    return "unreadable", resolved.matched
                 console.print(
                     "[red]No report files mapped to indexed source files.[/red] "
                     "If paths look prefixed (e.g. build/…), set "
                     "[cyan]coverage.strip_prefix[/cyan] in .repowise/config.yaml."
                 )
-                return False
+                return "unmapped", resolved.matched
             if strict and unmapped:
                 console.print(
                     f"[red]--strict: {unmapped} report file(s) did not map to the repo tree.[/red]"
                 )
-                return False
+                return "strict_unmapped", resolved.matched
             console.print(
                 "Run [cyan]repowise health --recompute[/cyan] to fold coverage into the defect "
                 "scores, or [cyan]repowise coverage status[/cyan] to review it."
             )
-            return True
+            return ("partial" if partial else "ingested"), resolved.matched
 
     # A refresh is commonly scripted as `coverage add ... || exit 1`, so a run
     # that stored nothing has to be distinguishable from a complete one by its
     # exit status alone.
-    if not run_async(_do()):
+    outcome, files_matched = run_async(_do())
+    _record_ingest_outcome(outcome, files_matched)
+    if outcome not in _STORED:
         raise click.exceptions.Exit(1)
     from repowise.cli.commands.augment_cmd.coverage_reingest import sync_repo_hook
 
