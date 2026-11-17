@@ -45,7 +45,7 @@ import { formatNumber } from "../lib/format";
 
 import { RiskCoverageScatter } from "./risk-coverage-scatter";
 import { scoreBadgeClass } from "./tokens";
-import { COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
+import { COVERAGE_ADD_COMMAND, COVERAGE_REPORT_FORMATS_LABEL } from "./coverage-formats";
 import { CiHint } from "../shared/ci-hint";
 
 /** Below this, a file no test reaches is worth leading with. */
@@ -79,12 +79,14 @@ export function InferredTestsView({
   untestedFindings,
   onOpenFile,
   unreachedTitle = UNREACHED_TITLE,
+  coverageCommand,
 }: {
   data: HealthCoverageResponse;
   untestedFindings: HealthFinding[];
   onOpenFile: (path: string) => void;
   /** Localised {@link UNREACHED_TITLE}. */
   unreachedTitle?: string | undefined;
+  coverageCommand?: string | undefined;
 }) {
   const map = data.inferred as InferredTestMap;
   const PAGE = 25;
@@ -251,7 +253,7 @@ export function InferredTestsView({
         ) : null}
       </OverviewSection>
 
-      <AddResolutionSection />
+      <AddResolutionSection coverageCommand={coverageCommand} />
     </div>
   );
 }
@@ -265,7 +267,11 @@ export function InferredTestsView({
  * than what its absence costs. The X axis spreading from two positions into a
  * continuum is the most honest one-line version of that.
  */
-function AddResolutionSection() {
+function AddResolutionSection({
+  coverageCommand = COVERAGE_ADD_COMMAND,
+}: {
+  coverageCommand?: string | undefined;
+}) {
   return (
     <OverviewSection
       title="Sharpen this with a coverage report"
@@ -279,8 +285,7 @@ function AddResolutionSection() {
           executed. Reaching becomes measuring.
         </p>
         <pre className="w-fit overflow-x-auto rounded-md bg-[var(--color-bg-inset)] px-3 py-2 font-mono text-xs text-[var(--color-text-primary)]">
-          pytest --cov --cov-report=lcov{"\n"}
-          repowise coverage add coverage.lcov
+          {coverageCommand}
         </pre>
         <p className="font-mono text-[10px] uppercase tracking-[0.12em] text-[var(--color-text-tertiary)]">
           {COVERAGE_REPORT_FORMATS_LABEL}

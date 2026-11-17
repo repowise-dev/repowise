@@ -250,6 +250,39 @@ describe("InferredTestsView", () => {
     // The old dead-end line, which stopped being true once the graph answered.
     expect(screen.queryByText(/Nothing is inferred/)).not.toBeInTheDocument();
   });
+
+  it("renders a language-neutral command without pytest for a Go repository by default", () => {
+    const files = [
+      row({ file_path: "cmd/server/main.go", reached: true, health_score: 8 }),
+      row({ file_path: "internal/store/store.go", reached: false, health_score: 5 }),
+    ];
+    render(
+      <InferredTestsView
+        data={response({ files })}
+        untestedFindings={[]}
+        onOpenFile={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("repowise coverage add")).toBeInTheDocument();
+    expect(screen.queryByText(/pytest/)).not.toBeInTheDocument();
+  });
+
+  it("renders a custom coverage command when passed", () => {
+    const cmd = "go test -coverprofile=coverage.out ./...\nrepowise coverage add coverage.out";
+    render(
+      <InferredTestsView
+        data={response()}
+        untestedFindings={[]}
+        onOpenFile={vi.fn()}
+        coverageCommand={cmd}
+      />,
+    );
+
+    expect(screen.getByText(/go test -coverprofile=coverage\.out/)).toBeInTheDocument();
+    expect(screen.getByText(/repowise coverage add coverage\.out/)).toBeInTheDocument();
+    expect(screen.queryByText(/pytest/)).not.toBeInTheDocument();
+  });
 });
 
 describe("TestsReachingList", () => {
@@ -431,5 +464,47 @@ describe("CoverageView, unavailable basis", () => {
       await screen.findByText("Couldn't work out which files tests reach"),
     ).toBeInTheDocument();
     expect(screen.queryByText(/found no\s+test files/)).not.toBeInTheDocument();
+  });
+});
+
+describe("CoverageView, empty / no coverage state", () => {
+  function emptyCoverageAdapter() {
+    return {
+      cacheKey: "empty-coverage-test",
+      getCoverage: vi.fn().mockResolvedValue(null),
+      listFindings: vi.fn().mockResolvedValue([]),
+      navigate: vi.fn(),
+      fileHref: (p: string) => `/files/${p}`,
+    } as unknown as CodeHealthAdapter;
+  }
+
+  it("renders language-neutral coverage add without pytest by default", async () => {
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <CoverageView adapter={emptyCoverageAdapter()} />
+      </SWRConfig>,
+    );
+
+    expect(
+      await screen.findByText("Nothing here can say whether your code is tested"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("repowise coverage add")).toBeInTheDocument();
+    expect(screen.queryByText(/pytest/)).not.toBeInTheDocument();
+  });
+
+  it("renders a passed coverageCommand in the empty state", async () => {
+    const cmd = "go test -coverprofile=coverage.out ./...\nrepowise coverage add coverage.out";
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <CoverageView adapter={emptyCoverageAdapter()} coverageCommand={cmd} />
+      </SWRConfig>,
+    );
+
+    expect(
+      await screen.findByText("Nothing here can say whether your code is tested"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/go test -coverprofile=coverage\.out/)).toBeInTheDocument();
+    expect(screen.getByText(/repowise coverage add coverage\.out/)).toBeInTheDocument();
+    expect(screen.queryByText(/pytest/)).not.toBeInTheDocument();
   });
 });

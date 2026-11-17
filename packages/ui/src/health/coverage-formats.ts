@@ -15,3 +15,7 @@ export const COVERAGE_REPORT_FORMATS = [
 
 /** The micro-label form shown under the empty-state commands. */
 export const COVERAGE_REPORT_FORMATS_LABEL = COVERAGE_REPORT_FORMATS.join(" · ");
+
+/** Ingests a coverage report; with no path it finds the report itself. */
+export const COVERAGE_ADD_COMMAND = "repowise coverage add";
+
