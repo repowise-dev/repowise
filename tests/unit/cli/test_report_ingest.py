@@ -104,3 +104,10 @@ def test_messages_escape_what_they_quote(printed: io.StringIO) -> None:
     text = printed.getvalue()
     assert "path_prefix: [web] and re-run" in text
     assert "(e.g. build/[gen]/a.py)" in text
+
+
+def test_messages_go_to_the_console_the_caller_names(printed: io.StringIO) -> None:
+    other = io.StringIO()
+    _report_ingest.report_unmapped(["a.py"], "entries", out=Console(file=other, width=200))
+    assert printed.getvalue() == ""
+    assert "1 entries did not map" in other.getvalue()

@@ -46,51 +46,54 @@ async def open_ingest_target(
     *,
     what: str,
     load_keys: Callable[[Any, str], Awaitable[set[str]]] = indexed_file_keys,
+    out: Any = None,
 ) -> IngestTarget | None:
     """The indexed repository at *repo_path*, or ``None`` (and why, printed).
 
     *what* names what is being added, for the message (``coverage``).
-    *load_keys* reads the indexed file keys.
+    *load_keys* reads the indexed file keys. Every helper here prints to *out*,
+    the CLI console unless given (a ``--format json`` command passes stderr's).
     """
+    out = out or console
     from repowise.core.analysis.health.coverage import live_head_commit
     from repowise.core.persistence.crud import get_repository_by_path
 
     repo_row = await get_repository_by_path(session, str(repo_path))
     if repo_row is None:
-        console.print(
+        out.print(
             f"[yellow]No index yet. Run `repowise init` once before adding {what}.[/yellow]"
         )
         return None
     file_keys = await load_keys(session, repo_row.id)
     if not file_keys:
-        console.print("[yellow]No indexed files found. Run `repowise init` first.[/yellow]")
+        out.print("[yellow]No indexed files found. Run `repowise init` first.[/yellow]")
         return None
     return IngestTarget(repo_row, file_keys, live_head_commit(repo_path, repo_row))
 
 
-def refuse_partial(part: str, hint: str) -> None:
+def refuse_partial(part: str, hint: str, out: Any = None) -> None:
     """Say that most of *part* did not map, so nothing was stored, and how to fix it."""
-    console.print(
+    (out or console).print(
         f"[red]More than half the {part} did not map to the repo tree, so "
         f"nothing was stored.[/red] To fix it, {escape(hint)} and re-run, "
         "or pass [cyan]--allow-partial[/cyan] to store the fragment."
     )
 
 
-def report_unmapped(unmapped: Sequence[str], what: str) -> None:
+def report_unmapped(unmapped: Sequence[str], what: str, out: Any = None) -> None:
     """Name how many of *what* did not map, with a few of them."""
     if not unmapped:
         return
     sample = ", ".join(unmapped[:5])
-    console.print(
+    (out or console).print(
         f"[yellow]{len(unmapped)} {what} did not map to the "
         f"repo tree[/yellow] (e.g. {escape(sample)})."
     )
 
 
-def report_stored_partial(what: str) -> None:
+def report_stored_partial(what: str, out: Any = None) -> None:
     """Say that a fragment of *what* was stored on request, flagged partial."""
-    console.print(
+    (out or console).print(
         "[yellow]Stored a fragment (--allow-partial): more than half the "
         f"report did not map to the repo tree, and the stored {what} is "
         "flagged partial.[/yellow]"
