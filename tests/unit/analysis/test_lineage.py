@@ -51,6 +51,15 @@ def test_a_file_rename_carries_every_function_in_it() -> None:
     assert _methods(plan) == {("old.py::C::f", "new.py::C::f"): ("file_rename", None)}
 
 
+def test_a_file_renamed_onto_an_existing_one_takes_no_lineage_from_it() -> None:
+    plan = pair_lineage(
+        [_old("a.py::f", "d1"), _old("b.py::f", "d2")],
+        [_new("b.py::f", "d3")],
+        renames={"a.py": "b.py"},
+    )
+    assert plan.lineage == {"b.py::f": "L-b.py::f"}
+
+
 def test_the_three_passes() -> None:
     plan = pair_lineage(
         [

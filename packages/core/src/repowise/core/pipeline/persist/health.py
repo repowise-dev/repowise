@@ -192,6 +192,8 @@ async def save_full_health_report(
                 fact_rows,
                 roles=getattr(hr, "execution_roles", None),
                 tests=getattr(hr, "function_tests", None),
+                # A full run knows no diff: lineage carries by id and by
+                # unique body; a moved and edited function starts afresh.
                 commit=analyzed_commit,
             )
         # Group the stored performance findings into the materialized causal

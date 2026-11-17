@@ -216,10 +216,15 @@ def _rest(
     )
 
 
+def sized_alike(old: SymbolBody, new: SymbolBody) -> bool:
+    """Both bodies long enough to compare and within the edited move's growth bound."""
+    small, large = sorted((old.tokens, new.tokens))
+    return small >= MIN_RENAMED_TOKENS and large <= small * _MAX_EDITED_GROWTH
+
+
 def similar_bodies(old: SymbolBody, new: SymbolBody) -> bool:
     """An edited move keeps most of its body; a same-named stranger does not."""
-    small, large = sorted((old.tokens, new.tokens))
-    if small < MIN_RENAMED_TOKENS or large > small * _MAX_EDITED_GROWTH:
+    if not sized_alike(old, new):
         return False
     shared = len(old.pairs & new.pairs)
     return shared >= _MIN_EDITED_OVERLAP * max(len(old.pairs), len(new.pairs), 1)

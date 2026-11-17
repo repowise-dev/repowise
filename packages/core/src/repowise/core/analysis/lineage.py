@@ -29,6 +29,7 @@ from .change_health.moves import (
     SymbolBody,
     build_move_map,
     similar_bodies,
+    sized_alike,
     symbol_bodies,
 )
 from .execution_graph import file_of_symbol
@@ -69,7 +70,11 @@ class LineagePlan:
 
 
 def mint_lineage(symbol_id: str, commit: str | None) -> str:
-    """A fresh lineage id for *symbol_id* first seen at *commit*."""
+    """A fresh lineage id for *symbol_id* first seen at *commit*.
+
+    Deterministic, so a row stored before lineage existed (no commit known)
+    gets the same id on every read until a write stores it.
+    """
     seed = f"{symbol_id}\0{commit or ''}".encode()
     return hashlib.blake2b(seed, digest_size=8).hexdigest()
 
@@ -96,22 +101,35 @@ def pair_lineage(
     def lineage_of(body: FunctionBody) -> str:
         return body.lineage_id or mint_lineage(body.symbol_id, None)
 
+    # A kept id first, so a file renamed onto an existing one cannot take
+    # the lineage of a function that never left.
+    for sid, body in old_by_id.items():
+        if sid in new_by_id:
+            lineage[sid] = lineage_of(body)
     removed: list[FunctionBody] = []
-    for body in old_by_id.values():
-        target = _renamed(body.symbol_id, renames)
-        if target in new_by_id and target not in lineage:
+    for sid, body in old_by_id.items():
+        if sid in lineage:
+            continue
+        target = _renamed(sid, renames)
+        if target != sid and target in new_by_id and target not in lineage:
             lineage[target] = lineage_of(body)
-            if target != body.symbol_id:
-                events.append(LineageEvent(lineage[target], body.symbol_id, target, "file_rename"))
+            events.append(LineageEvent(lineage[target], sid, target, "file_rename"))
         else:
             removed.append(body)
     added = [body for sid, body in new_by_id.items() if sid not in lineage]
 
-    base = [_as_body(b) for b in removed if b.digest is not None]
-    head = [_as_body(b) for b in added if b.digest is not None]
+    # Only ``path::name`` ids round-trip through the move passes' keys.
+    base = [_as_body(b) for b in removed if b.digest is not None and "::" in b.symbol_id]
+    head = [_as_body(b) for b in added if b.digest is not None and "::" in b.symbol_id]
 
     def kept(old_body: SymbolBody, new_body: SymbolBody) -> bool:
-        return similar is not None and similar(_id_of(old_body), _id_of(new_body))
+        # The size gate first: it needs only the stored counts, and the
+        # comparison behind *similar* reads and parses both files.
+        return (
+            similar is not None
+            and sized_alike(old_body, new_body)
+            and similar(_id_of(old_body), _id_of(new_body))
+        )
 
     moves = build_move_map(base, head, rename_map=renames, within_file=True, similar=kept)
     paired_old: set[str] = set()
@@ -151,7 +169,7 @@ def similar_by_source(repo_path: Any, base_commit: str | None) -> SimilarFn | No
     from .change_health.sources import read_blobs
 
     root = Path(repo_path)
-    detector = ChangeDetector(root)
+    detector: ChangeDetector | None = None
     parsed: dict[tuple[str | None, str], Any] = {}
 
     def body(rev: str | None, symbol_id: str) -> SymbolBody | None:
@@ -162,6 +180,8 @@ def similar_by_source(repo_path: Any, base_commit: str | None) -> SimilarFn | No
                 raw = file.read_bytes() if file.is_file() else None
             else:
                 raw = (read_blobs(str(root), [(rev, path)]) or {}).get((rev, path))
+            nonlocal detector
+            detector = detector or ChangeDetector(root)
             parsed[(rev, path)] = (raw, detector.parse_bytes(raw, path) if raw else None)
         raw, pf = parsed[(rev, path)]
         symbols = [s for s in (pf.symbols if pf else ()) if s.id == symbol_id]
