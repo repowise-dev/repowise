@@ -186,8 +186,35 @@ def test_fields_outside_the_format_are_never_read() -> None:
         ("..", (None, "outside_repo")),
         ("", (None, "no_path")),
         (".", (None, "no_path")),
+        ("src/a\x00b.py", (None, "bad_path")),
+        ("src/a\tb.py", (None, "bad_path")),
+        ("//server/share/a.py", (None, "absolute_path")),
         (None, (None, "no_path")),
     ],
 )
 def test_repo_relative_path_rules(raw, expected) -> None:
     assert repo_relative_path(raw) == expected
+
+
+def test_values_and_text_that_cannot_be_stored_are_dropped() -> None:
+    doc = parse_evidence(
+        _doc(
+            total=10**400,
+            tool={"name": "pytest --token=abc", "version": "8.4.2"},
+            skipped={"Outside Repo!": 2, "x" * 80: 3, "other": 1, "vendored": 4},
+            symbols=[
+                {"path": "a.py", "function": "f", "total": 10**400},
+                {"path": "a.py", "function": "g", "total": 1, "total_samples": 2**63},
+                {"path": "a.py", "function": "h" * 600, "total": 1},
+                {"path": "a.py", "function": "g", "line": 9, "total": 2},
+            ],
+        )
+    )
+    assert doc.total is None
+    assert (doc.tool_name, doc.tool_version) == (None, "8.4.2")
+    (entry,) = doc.entries
+    assert (entry["function"], entry["total_samples"]) == ("g", None)
+    # Free-text reasons fold into "other" and are summed, never overwritten.
+    assert doc.skipped == {
+        "other": 6, "vendored": 4, "no_value": 1, "bad_name": 1, "duplicate": 1,
+    }

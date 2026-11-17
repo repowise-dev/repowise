@@ -39,14 +39,16 @@ def posix_path(raw: Any) -> str:
 def repo_relative_path(raw: Any) -> tuple[str | None, str | None]:
     """*raw* as a repo-relative POSIX path, or ``(None, reason)`` when it is not one.
 
-    Reasons: ``no_path`` (missing or empty), ``absolute_path`` (a root or a
-    drive letter: the writer did not make it relative), ``outside_repo``
-    (it climbs out with ``..``).
+    Reasons: ``no_path`` (missing or empty), ``bad_path`` (a control
+    character), ``absolute_path`` (a root or a drive letter: the writer did
+    not make it relative), ``outside_repo`` (it climbs out with ``..``).
     """
     if not isinstance(raw, str) or not raw.strip():
         return None, "no_path"
+    if any(ord(c) < 0x20 for c in raw):
+        return None, "bad_path"
     path = posix_path(raw.strip())
-    if path.startswith("/") or (len(path) > 1 and path[1] == ":"):
+    if path.startswith("/") or (len(path) > 1 and path[0].isalpha() and path[1] == ":"):
         return None, "absolute_path"
     if path == ".." or path.startswith("../") or "/../" in path or path.endswith("/.."):
         return None, "outside_repo"

@@ -56,7 +56,13 @@ QUERY_SCOPES = frozenset({"test", "request"})
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 # A statement digest, never statement text: hex only, so SQL cannot pass.
 _DIGEST_RE = re.compile(r"^[0-9a-f]{8,32}$")
-_SHORT_TEXT = 64
+#: Longest name, id or path an entry may carry; longer ones are skipped.
+_LONG_TEXT = 512
+# A tool name, version or unit is one token, so it cannot carry a command line.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9._+/-]{1,64}$")
+_REASON_RE = re.compile(r"^[a-z0-9_]{1,40}$")
+# Integers past this are not exact as floats and overflow the store's columns.
+_MAX_INT = 2**53
 _BENCH_STATS = ("median", "mean", "min", "max", "stddev")
 
 
@@ -148,8 +154,8 @@ def parse_evidence(text: str) -> EvidenceDocument:
         kind=kind,
         commit_sha=commit,
         dirty=data["dirty"] if isinstance(data.get("dirty"), bool) else None,
-        tool_name=_short_text(tool.get("name")),
-        tool_version=_short_text(tool.get("version")),
+        tool_name=_token(tool.get("name")),
+        tool_version=_token(tool.get("version")),
         value_kind=value_kind,
         unit=unit,
         total=_amount(data.get("total")),
@@ -165,7 +171,7 @@ def _value_kind_and_unit(kind: str, data: dict[str, Any]) -> tuple[str | None, s
     if kind == "query_count":
         return None, "count"
     value_kind = data.get("value_kind")
-    unit = _short_text(data.get("unit"))
+    unit = _token(data.get("unit"))
     if kind == "profile":
         if value_kind not in VALUE_KINDS:
             raise EvidenceFormatError(
@@ -175,7 +181,7 @@ def _value_kind_and_unit(kind: str, data: dict[str, Any]) -> tuple[str | None, s
         if unit is None:
             raise EvidenceFormatError(
                 "a profile needs a unit",
-                "set \"unit\" to what the values count: samples, ns, ms or s",
+                "set \"unit\" to one word naming what the values count: samples, ns, ms or s",
             )
         return value_kind, unit
     # Benchmarks carry a unit per entry; the document's is optional.
@@ -185,18 +191,20 @@ def _value_kind_and_unit(kind: str, data: dict[str, Any]) -> tuple[str | None, s
 def _converter_skips(raw: Any) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
-    out: dict[str, int] = {}
+    out: Counter[str] = Counter()
     for reason, count in raw.items():
-        if isinstance(reason, str) and reason and _is_count(count):
-            out[reason[:_SHORT_TEXT]] = count
-    return out
+        if _is_count(count):
+            # A reason is a word, never free text; anything else is "other".
+            key = reason if isinstance(reason, str) and _REASON_RE.match(reason) else "other"
+            out[key] += count
+    return dict(out)
 
 
 # --- values -----------------------------------------------------------------
 
 
 def _is_count(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _MAX_INT
 
 
 def _count(value: Any) -> int | None:
@@ -207,14 +215,24 @@ def _amount(value: Any) -> float | None:
     """A finite, non-negative number, ``None`` otherwise (never a made-up zero)."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
+    if isinstance(value, int) and abs(value) > _MAX_INT:
+        return None
     number = float(value)
     return number if math.isfinite(number) and number >= 0 else None
 
 
-def _short_text(value: Any) -> str | None:
+def _token(value: Any) -> str | None:
+    return value if isinstance(value, str) and _TOKEN_RE.match(value) else None
+
+
+def _name(value: Any) -> tuple[str | None, str | None]:
+    """A name or id: ``(text, None)``, or ``(None, reason)`` when missing or too long."""
     if not isinstance(value, str) or not value.strip():
-        return None
-    return value.strip()[:_SHORT_TEXT]
+        return None, "no_name"
+    text = value.strip()
+    if len(text) > _LONG_TEXT or any(ord(c) < 0x20 for c in text):
+        return None, "bad_name"
+    return text, None
 
 
 def _line(value: Any) -> int | None:
@@ -228,10 +246,12 @@ def _location(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
     path, reason = repo_relative_path(raw.get("path"))
     if path is None:
         return None, reason
-    function = raw.get("function")
-    if not isinstance(function, str) or not function.strip():
-        return None, "no_function"
-    return {"path": path, "function": function.strip(), "line": _line(raw.get("line"))}, None
+    if len(path) > _LONG_TEXT:
+        return None, "bad_path"
+    function, reason = _name(raw.get("function"))
+    if function is None:
+        return None, "no_function" if reason == "no_name" else reason
+    return {"path": path, "function": function, "line": _line(raw.get("line"))}, None
 
 
 # --- entries ----------------------------------------------------------------
@@ -255,9 +275,9 @@ def _profile_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
 
 
 def _benchmark_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    name = raw.get("name")
-    if not isinstance(name, str) or not name.strip():
-        return None, "no_name"
+    name, reason = _name(raw.get("name"))
+    if name is None:
+        return None, reason
     stats = {stat: _amount(raw.get(stat)) for stat in _BENCH_STATS}
     exact = {k: _amount(raw.get(k)) for k in ("allocs_per_op", "bytes_per_op")}
     if all(v is None for v in (*stats.values(), *exact.values())):
@@ -265,9 +285,9 @@ def _benchmark_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
     # The benchmark function is optional: a result without one is a series still.
     where, _ = _location(raw)
     return {
-        "name": name.strip(),
+        "name": name,
         "location": where,
-        "unit": _short_text(raw.get("unit")),
+        "unit": _token(raw.get("unit")),
         "lower_is_better": raw["lower_is_better"]
         if isinstance(raw.get("lower_is_better"), bool)
         else None,
@@ -279,9 +299,9 @@ def _benchmark_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | 
 
 
 def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    test_id = raw.get("id")
-    if not isinstance(test_id, str) or not test_id.strip():
-        return None, "no_id"
+    test_id, reason = _name(raw.get("id"))
+    if test_id is None:
+        return None, "no_id" if reason == "no_name" else reason
     outcome = raw.get("outcome") if raw.get("outcome") in TEST_OUTCOMES else None
     duration = _amount(raw.get("duration_s"))
     if duration is None and outcome is None:
@@ -289,7 +309,7 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
     where, _ = _location(raw)
     test_file, _ = repo_relative_path(raw.get("path"))
     return {
-        "test_id": test_id.strip(),
+        "test_id": test_id,
         "test_file": test_file,
         "location": where,
         "duration_s": duration,
@@ -299,9 +319,10 @@ def _test_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]
 
 def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
     scope = raw.get("scope") if isinstance(raw.get("scope"), dict) else {}
-    scope_kind, scope_id = scope.get("kind"), scope.get("id")
-    if scope_kind not in QUERY_SCOPES or not isinstance(scope_id, str) or not scope_id.strip():
-        return None, "no_scope"
+    scope_kind = scope.get("kind")
+    scope_id, reason = _name(scope.get("id"))
+    if scope_kind not in QUERY_SCOPES or scope_id is None:
+        return None, "no_scope" if reason in (None, "no_name") else reason
     site, reason = _location(raw.get("site"))
     if site is None:
         return None, reason
@@ -313,7 +334,7 @@ def _query_entry(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None
         return None, "no_value"
     return {
         "scope_kind": scope_kind,
-        "scope_id": scope_id.strip(),
+        "scope_id": scope_id,
         **site,
         "statement_fp": fp,
         "query_count": count,
@@ -329,13 +350,15 @@ _ENTRY_READERS = {
     "query_count": _query_entry,
 }
 
-#: What makes two entries of a kind the same measurement.
+#: What makes two entries of a kind the same measurement: no finer than the
+#: store's key, so two entries never land on one stored row. The line is not
+#: part of it; one function is one symbol.
 _IDENTITY = {
-    "profile": lambda e: (e["path"], e["function"], e["line"]),
+    "profile": lambda e: (e["path"], e["function"]),
     "benchmark": lambda e: e["name"],
     "test_timing": lambda e: e["test_id"],
     "query_count": lambda e: (
-        e["scope_kind"], e["scope_id"], e["path"], e["function"], e["line"], e["statement_fp"]
+        e["scope_kind"], e["scope_id"], e["path"], e["function"], e["statement_fp"]
     ),
 }
 
