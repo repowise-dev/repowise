@@ -148,7 +148,7 @@ def evidence_add(
     from repowise.core.evidence import EvidenceFormatError, parse_evidence
     from repowise.core.repo_config import load_repo_config
 
-    caps = _caps(load_repo_config(repo_path))
+    caps = _caps(load_repo_config(repo_path), notices)
     try:
         size = file.stat().st_size
     except OSError as exc:
@@ -201,13 +201,16 @@ def evidence_add(
         raise click.exceptions.Exit(1)
 
 
-def _caps(config: Any) -> tuple[float, Any]:
+def _caps(config: Any, notices: Any) -> tuple[float, Any]:
     """``evidence.max_file_mb`` and the store caps, from *config*."""
     from repowise.core.evidence.ingest import EvidenceCaps
     from repowise.core.settings import resolve
 
     def value(key: str) -> Any:
-        return resolve(f"evidence.{key}", config).value
+        resolved = resolve(f"evidence.{key}", config)
+        if resolved.problem:
+            notices.print(f"[yellow]Ignoring {escape(resolved.problem)}.[/yellow]")
+        return resolved.value
 
     return value("max_file_mb"), EvidenceCaps(
         max_symbols_per_run=value("max_symbols_per_run"),
@@ -217,7 +220,22 @@ def _caps(config: Any) -> tuple[float, Any]:
     )
 
 
-async def _ingest(
+async def _ingest(*, repo_path: Path, **ingest: Any) -> dict[str, Any]:
+    """Open the index at *repo_path* and store the run (:func:`_store`)."""
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+
+    url = get_db_url_for_repo(repo_path)
+    await reconcile_schema_best_effort(url)
+    engine = create_engine(url)
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            return await _store(session, repo_path=repo_path, **ingest)
+    finally:
+        await engine.dispose()
+
+
+async def _store(
+    session: Any,
     *,
     repo_path: Path,
     root: Path,
@@ -247,100 +265,109 @@ async def _ingest(
         run_key,
         uncommitted_paths,
     )
-    from repowise.core.persistence import create_engine, create_session_factory, get_session
     from repowise.core.persistence.crud import save_evidence_run
 
-    url = get_db_url_for_repo(repo_path)
-    await reconcile_schema_best_effort(url)
-    engine = create_engine(url)
-    sf = create_session_factory(engine)
-    async with get_session(sf) as session:
-        target = await open_ingest_target(session, repo_path, what="evidence", out=notices)
-        if target is None:
-            return {"stored": False, "reason": "no_index"}
+    target = await open_ingest_target(session, repo_path, what="evidence", out=notices)
+    if target is None:
+        return {"stored": False, "reason": "no_index"}
+    index_commit = getattr(target.repo, "head_commit", None)
 
-        # Files that differ from the commit are skipped: their lines are not
-        # the ones measured. Known only when the commit is the checkout's HEAD.
-        checkout_head = live_head_commit(root, None)
-        at_head = checkout_head == commit
-        changed = (uncommitted_paths(root) if at_head else None) or frozenset()
-        if dirty is None and at_head:
-            dirty = bool(changed)
+    # Files that differ from the commit are skipped: their lines are not the
+    # ones measured. Known only when the commit is the checkout's HEAD and git
+    # can say; otherwise the tree's state stays unknown.
+    at_head = live_head_commit(root, None) == commit
+    changed = uncommitted_paths(root) if at_head else None
+    if dirty is None and changed is not None:
+        dirty = bool(changed)
 
-        paths = entry_paths(doc)
-        joined = join_entries(
+    paths = entry_paths(doc)
+    joined = join_entries(
+        doc,
+        await load_symbols(session, target.repo.id, paths),
+        await load_origins(session, target.repo.id, paths),
+        changed or frozenset(),
+    )
+    # A benchmark or test keeps its row without its function, so only the
+    # kinds that need the join can be mostly unmapped.
+    partial = doc.kind in ("profile", "query_count") and mostly_unmapped(
+        joined.matched, len(doc.entries)
+    )
+    provenance = RunProvenance(
+        workload_name=workload,
+        workload_class=workload_class,
+        commit_sha=commit,
+        checkout_root=str(root),
+        dirty=dirty,
+        environment=environment,
+    )
+    summary: dict[str, Any] = {
+        "kind": doc.kind,
+        "workload": workload,
+        "class": workload_class,
+        "commit_sha": commit,
+        "index_commit": index_commit,
+        "stale": target.head_sha is not None and commit != target.head_sha,
+        "dirty": dirty,
+        "entries": len(doc.entries),
+        "matched": joined.matched,
+        "skipped": dict(sorted((Counter(doc.skipped) + joined.skipped).items())),
+        "unlinked": dict(sorted(joined.unlinked.items())),
+        "mapping_partial": partial,
+        "unmatched_sample": joined.unmatched_sample,
+    }
+    if partial and not allow_partial:
+        refuse_partial(
+            "evidence file",
+            "write each entry's path relative to the repository root and its "
+            "function as the qualified name repowise indexed",
+            out=notices,
+        )
+        return {**summary, "stored": False, "reason": "mostly_unmapped"}
+    if not joined.rows:
+        notices.print("[red]No entry matched an indexed function, so nothing was stored.[/red]")
+        return {**summary, "stored": False, "reason": "nothing_matched"}
+
+    rows, truncated = cap_rows(doc.kind, joined.rows, caps)
+    write = await save_evidence_run(
+        session,
+        target.repo.id,
+        run_fields(
             doc,
-            await load_symbols(session, target.repo.id, paths),
-            await load_origins(session, target.repo.id, paths),
-            changed,
-        )
-        partial = mostly_unmapped(joined.matched, len(doc.entries))
-        provenance = RunProvenance(
-            workload_name=workload,
-            workload_class=workload_class,
-            commit_sha=commit,
-            checkout_root=str(root),
-            dirty=dirty,
-            environment=environment,
-        )
-        summary: dict[str, Any] = {
-            "kind": doc.kind,
-            "workload": workload,
-            "class": workload_class,
-            "commit_sha": commit,
-            "stale": target.head_sha is not None and commit != target.head_sha,
-            "dirty": dirty,
-            "entries": len(doc.entries),
-            "matched": joined.matched,
-            "skipped": dict(sorted((Counter(doc.skipped) + joined.skipped).items())),
-            "mapping_partial": partial,
-            "unmatched_sample": joined.unmatched_sample,
-        }
-        if partial and not allow_partial:
-            refuse_partial(
-                "evidence file",
-                "write each entry's path relative to the repository root and its "
-                "function as the qualified name repowise indexed",
-                out=notices,
-            )
-            return {**summary, "stored": False, "reason": "mostly_unmapped"}
-        if not joined.rows:
-            notices.print("[red]No entry matched an indexed function, so nothing was stored.[/red]")
-            return {**summary, "stored": False, "reason": "nothing_matched"}
-
-        rows, truncated = cap_rows(doc.kind, joined.rows, caps)
-        write = await save_evidence_run(
-            session,
-            target.repo.id,
-            run_fields(
-                doc,
-                provenance,
-                joined,
-                key=run_key(text, provenance, doc.kind),
-                truncated=truncated,
-                mapping_partial=partial,
-            ),
-            rows,
-            history_runs=caps.history_runs,
-            max_runs=caps.max_runs,
-        )
+            provenance,
+            joined,
+            key=run_key(text, provenance, doc.kind, index_commit),
+            truncated=truncated,
+            mapping_partial=partial,
+        ),
+        rows,
+        history_runs=caps.history_runs,
+        max_runs=caps.max_runs,
+    )
 
     verb = "Restamped" if write.restamped else "Stored"
     notices.print(
         f"[green]{verb} {doc.kind} evidence for {escape(workload)}[/green]: "
-        f"{len(rows)} of {len(doc.entries)} entries matched indexed code at {commit[:12]}."
+        f"{len(rows)} of {len(doc.entries)} entries stored at {commit[:12]}."
     )
-    if summary["skipped"]:
-        reasons = ", ".join(f"{reason} {count}" for reason, count in summary["skipped"].items())
-        notices.print(f"[yellow]Skipped, by reason: {escape(reasons)}.[/yellow]")
+    labels = (("Skipped", summary["skipped"]), ("Kept without a function", summary["unlinked"]))
+    for label, counts in labels:
+        if counts:
+            reasons = ", ".join(f"{reason} {count}" for reason, count in counts.items())
+            notices.print(f"[yellow]{label}, by reason: {escape(reasons)}.[/yellow]")
     if truncated:
         notices.print(f"[yellow]{truncated} entries left out at the per-run cap.[/yellow]")
     if partial:
         report_stored_partial("evidence", out=notices)
     if summary["stale"]:
         notices.print(
-            "[yellow]Measured at another commit than the index: it is kept with its own "
+            "[yellow]Measured at another commit than HEAD: it is kept with its own "
             "commit and reads as stale.[/yellow]"
+        )
+    elif index_commit and index_commit != commit:
+        notices.print(
+            "[yellow]The index is at another commit than the one measured; run "
+            "[cyan]repowise update[/cyan] and add the file again to join it to the "
+            "current code.[/yellow]"
         )
     return {
         **summary,

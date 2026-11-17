@@ -67,9 +67,11 @@ class Joined:
     """The document's entries joined to symbols, before anything is stored."""
 
     rows: list[dict[str, Any]]
-    #: Entries resolved to a symbol (or kept without one, where that is allowed).
+    #: Entries that became rows.
     matched: int
     skipped: Counter[str] = field(default_factory=Counter)
+    #: Benchmark and test rows kept without their function, by why it did not link.
+    unlinked: Counter[str] = field(default_factory=Counter)
     unmatched_sample: list[str] = field(default_factory=list)
 
 
@@ -100,9 +102,13 @@ def resolve_location(
         return None, "unknown_file"
     found = names.get(location["function"], [])
     by_qualified = [s for s in found if s.qualified_name == location["function"]]
-    found = by_qualified or found
-    if len(found) > 1 and location.get("line") is not None:
-        found = [s for s in found if s.start_line == location["line"]]
+    line = location.get("line")
+    # A bare name must also agree on the line when one is given: a method
+    # reported as ``read`` is not the module's own ``read``.
+    if (len(found) > 1 or not by_qualified) and line is not None:
+        found = [s for s in (by_qualified or found) if s.start_line == line]
+    else:
+        found = by_qualified or found
     if not found:
         return None, "unknown_symbol"
     if len({s.symbol_id for s in found}) > 1:
@@ -126,6 +132,10 @@ def join_entries(
     seen: set[Any] = set()
     for entry in doc.entries:
         row, reason, path = _join(doc.kind, entry, by_file, origins, changed)
+        if row is not None and reason is not None:
+            # Kept without its function: a benchmark or test is a series anyway.
+            joined.unlinked[reason] += 1
+            reason = None
         if row is not None:
             key = _ROW_KEY[doc.kind](row)
             if key in seen:
@@ -149,22 +159,28 @@ def _join(
     origins: Mapping[str, str],
     changed: frozenset[str],
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """(row, skip reason, path) for one entry."""
-    location = entry.get("location") if kind in ("benchmark", "test_timing") else entry
-    symbol_id: str | None = None
-    if location is not None:
-        path = location["path"]
-        origin = origins.get(path)
-        if origin in _UNMAINTAINED:
-            return None, origin, path
-        if path in changed:
-            return None, "dirty_file", path
+    """(row, reason, path) for one entry.
+
+    A profile or query entry without its function is skipped for *reason*. A
+    benchmark or test is a series of its own, so it keeps its row and
+    *reason* says why its function was not linked.
+    """
+    optional = kind in ("benchmark", "test_timing")
+    location = entry.get("location") if optional else entry
+    if location is None:
+        return _ROW_BUILDERS[kind](entry, None), None, None
+    path = location["path"]
+    origin = origins.get(path)
+    if origin in _UNMAINTAINED:
+        reason: str | None = origin
+        symbol_id = None
+    elif path in changed:
+        reason, symbol_id = "dirty_file", None
+    else:
         symbol_id, reason = resolve_location(location, by_file)
-        # A benchmark or a test is a series of its own; its function is extra.
-        if symbol_id is None and kind in ("profile", "query_count"):
-            return None, reason, path
-    path = location["path"] if location is not None else None
-    return _ROW_BUILDERS[kind](entry, symbol_id), None, path
+    if symbol_id is None and not optional:
+        return None, reason, path
+    return _ROW_BUILDERS[kind](entry, symbol_id), reason, path
 
 
 def _profile_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]:
@@ -254,11 +270,15 @@ def cap_rows(
     return rows[:limit], max(len(rows) - limit, 0)
 
 
-def run_key(text: str, provenance: RunProvenance, kind: str) -> str:
-    """One measurement's identity: its content and everything the run row records."""
+def run_key(
+    text: str, provenance: RunProvenance, kind: str, index_commit: str | None = None
+) -> str:
+    """One measurement's identity: its content, everything the run row records,
+    and the index it was joined against (a later index joins it afresh)."""
     digest = hashlib.blake2b(digest_size=16)
     for part in (
         kind,
+        str(index_commit),
         provenance.workload_name,
         provenance.workload_class,
         provenance.environment,
@@ -300,7 +320,8 @@ def run_fields(
         "dirty": provenance.dirty,
         "checkout_root": provenance.checkout_root,
         "units_total": doc.units_total,
-        "units_matched": joined.matched,
+        # Rows stored: matched + skipped + outside + truncated = total.
+        "units_matched": joined.matched - truncated,
         "units_skipped": sum(skipped.values()) - outside,
         "units_outside_repo": outside,
         "units_truncated": truncated,

@@ -1376,9 +1376,10 @@ repowise evidence add bench.json --workload "go bench" --class benchmark --forma
   overloads). Anything else is skipped and counted by reason: `unknown_file`, `unknown_symbol`,
   `ambiguous_symbol`, `generated` or `vendored` code, `dirty_file` (edited since the commit,
   checked when the commit is HEAD), `duplicate`, and the file's own reasons such as `outside_repo`.
+  A benchmark or test is kept without its function instead, counted under `unlinked`.
 - Evidence from another commit than HEAD is stored with its commit and reads as stale; it is never
-  re-mapped. The same file ingested again for the same workload at the same commit restamps the
-  stored run.
+  re-mapped. The same file added again with the same flags against the same index restamps the
+  stored run; after `repowise update` it is joined afresh.
 - Caps come from the [`evidence:` block](CONFIG.md#the-evidence-block): file size, functions per
   profile, rows per run, runs kept per workload and per kind.
 - Exits `1` when nothing was stored (no index, an invalid or oversized file, nothing matched, over

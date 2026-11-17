@@ -46,6 +46,9 @@ def test_resolution_is_exact_and_refuses_to_guess() -> None:
     assert resolve_location(_loc("src/app.py", "parse", 80), _SYMBOLS)[0] == "src/app.py::parse#2"
     assert resolve_location(_loc("src/app.py", "parse"), _SYMBOLS) == (None, "ambiguous_symbol")
     assert resolve_location(_loc("src/app.py", "gone"), _SYMBOLS) == (None, "unknown_symbol")
+    # A bare name settles on a line only when the line agrees.
+    assert resolve_location(_loc("src/app.py", "read", 50), _SYMBOLS)[0] == "src/app.py::Writer.read"
+    assert resolve_location(_loc("src/app.py", "read", 99), _SYMBOLS) == (None, "unknown_symbol")
     assert resolve_location(_loc("src/other.py", "f"), _SYMBOLS) == (None, "unknown_file")
 
 
@@ -96,12 +99,20 @@ def test_a_benchmark_without_a_resolvable_function_is_still_a_series() -> None:
             ]}
         )
     )
+    joined = join_entries(doc, _SYMBOLS, {"gen/pb.py": "generated"}, frozenset({"src/app.py"}))
+    # Edited since the commit: the series is kept, the link to the function is not.
+    assert [(r["benchmark_key"], r["symbol_id"]) for r in joined.rows] == [
+        ("BenchmarkBuild", None),
+        ("BenchmarkOther", None),
+    ]
+    assert joined.skipped == {}
+    assert joined.unlinked == {"dirty_file": 2}
     joined = join_entries(doc, _SYMBOLS, {}, frozenset())
     assert [(r["benchmark_key"], r["symbol_id"]) for r in joined.rows] == [
         ("BenchmarkBuild", "src/app.py::build"),
         ("BenchmarkOther", None),
     ]
-    assert joined.skipped == {}
+    assert (joined.skipped, joined.unlinked) == ({}, {"unknown_symbol": 1})
 
 
 def test_two_names_for_one_symbol_store_one_row() -> None:
@@ -134,6 +145,8 @@ def test_a_profile_keeps_its_costliest_symbols_under_the_cap() -> None:
 def test_the_run_key_covers_the_provenance() -> None:
     base = RunProvenance("cli build", "entry_point", "a" * 40, "/repo", False)
     key = run_key("{}", base, "profile")
+    # A later index joins the same file afresh rather than restamping it.
+    assert run_key("{}", base, "profile", "b" * 40) != key
     assert key == run_key("{}", base, "profile")
     assert len(key) == 32
     for other in (
