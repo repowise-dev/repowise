@@ -84,23 +84,28 @@ async def test_the_opt_out_silences_the_event(
 
 
 def _nav_keys(source: str, start: str, end: str) -> set[str]:
-    """``labelKey`` of every nav item (lines with an ``href``) between two markers."""
+    """``labelKey`` of every nav item (one per ``href``) between two markers."""
     section = source.split(start, 1)[1].split(end, 1)[0]
-    return {
+    keys = [
         m.group(1)
         for line in section.splitlines()
         if "href:" in line
         for m in [re.search(r'labelKey: "([^"]+)"', line)]
         if m
-    }
+    ]
+    # An item laid out over several lines would be skipped above; fail instead.
+    assert keys and len(keys) == section.count("href:"), start
+    return set(keys)
 
 
 def test_the_view_list_matches_the_web_nav() -> None:
     source = _NAV_ITEMS.read_text(encoding="utf-8")
+    g, w = "export const GLOBAL_NAV", "export const WORKSPACE_NAV"
+    r, flat = "export function repoNavGroups", "export function repoNavItems"
     nav = {
-        *(f"global.{k}" for k in _nav_keys(source, "GLOBAL_NAV", "WORKSPACE_NAV")),
-        *(f"workspace.{k}" for k in _nav_keys(source, "WORKSPACE_NAV", "repoNavGroups")),
-        *(f"repo.{k}" for k in _nav_keys(source, "function repoNavGroups", "function repoNavItems")),
+        *(f"global.{k}" for k in _nav_keys(source, g, w)),
+        *(f"workspace.{k}" for k in _nav_keys(source, w, r)),
+        *(f"repo.{k}" for k in _nav_keys(source, r, flat)),
     }
     assert nav == telemetry.VIEWS
 
@@ -110,6 +115,9 @@ def test_every_view_is_documented() -> None:
         encoding="utf-8"
     )
     row = next(line for line in doc.splitlines() if line.startswith("| `properties.view`"))
-    for view in telemetry.VIEWS:
-        scope, name = view.split(".", 1)
-        assert f"`{scope}.`" in row and f"`{name}`" in row, view
+    documented = {
+        f"{scope}.{name}"
+        for scope, names in re.findall(r"`(\w+)\.` \(([^)]*)\)", row)
+        for name in re.findall(r"`(\w+)`", names)
+    }
+    assert documented == telemetry.VIEWS
