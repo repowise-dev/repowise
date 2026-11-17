@@ -193,6 +193,24 @@ async def batch_upsert_graph_nodes(
     )
 
 
+async def delete_graph_nodes(
+    session: AsyncSession,
+    repository_id: str,
+    node_ids: Sequence[str],
+) -> None:
+    """Remove selected nodes and their memberships in the caller's transaction.
+
+    Callers own liveness and edge reconciliation. Membership has no foreign-key
+    cascade from graph nodes, so retiring a node must remove both rows together.
+    """
+    for i in range(0, len(node_ids), _BATCH_SIZE):
+        batch = node_ids[i : i + _BATCH_SIZE]
+        for model in (GraphNodeMembership, GraphNode):
+            await session.execute(
+                delete(model).where(model.repository_id == repository_id, model.node_id.in_(batch))
+            )
+
+
 async def batch_upsert_graph_edges(
     session: AsyncSession,
     repository_id: str,
