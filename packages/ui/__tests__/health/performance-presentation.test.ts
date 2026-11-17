@@ -99,6 +99,11 @@ describe("performance presentation", () => {
     expect(facetValueLabel("boundary", "none")).toBe("In-process");
   });
 
+  it("names a static cost proof by loop size, never as measured", () => {
+    expect(facetValueLabel("proof", "proven")).toBe("Loop size known");
+    expect(facetValueLabel("proof", "unproven")).toBe("Unproven: loop size unknown");
+  });
+
   it("separates a plan that exists from one that needs a refresh and from none", () => {
     expect(planPresentation(opportunity()).actionable).toBe(true);
     const refresh = planPresentation(
