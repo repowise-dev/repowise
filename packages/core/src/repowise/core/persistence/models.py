@@ -2342,6 +2342,14 @@ class FunctionFact(Base):
     nloc: Mapped[int | None] = mapped_column(Integer, nullable=True)
     params: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_nesting: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The normalized body's digest (32 hex) and token count
+    # (``analysis.symbol_body``): how a later run recognizes this body under a
+    # new name or path. NULL where the walk produced no token rows.
+    body_digest: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    body_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The function's identity across renames and moves (16 hex). NULL until
+    # an update pairs or mints it.
+    lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The nearest test functions (``analysis.function_test_map``), as
     # ``[[selector, hops], ...]``: ``[]`` when no test reaches the function,
     # NULL when no run has mapped it. Restamped every run, like the role.

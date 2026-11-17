@@ -1121,6 +1121,8 @@ class HealthAnalyzer:
                         ),
                         "early_exits": facts.early_exits if facts else None,
                         **fc.stored_metrics(),
+                        "body_digest": fc.body_digest,
+                        "body_tokens": fc.body_tokens,
                     }
                 )
         return rows

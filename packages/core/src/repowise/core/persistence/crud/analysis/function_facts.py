@@ -49,6 +49,8 @@ def _row(repository_id: str, row: Mapping[str, Any], tests: Mapping[str, str]) -
         "nloc": row.get("nloc"),
         "params": row.get("params"),
         "max_nesting": row.get("max_nesting"),
+        "body_digest": row.get("body_digest"),
+        "body_tokens": row.get("body_tokens"),
         "tests_json": tests.get(row["symbol_id"]),
     }
 

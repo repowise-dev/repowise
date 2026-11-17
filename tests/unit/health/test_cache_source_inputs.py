@@ -58,6 +58,7 @@ _WALK_EXEMPT = {
     ),
     "ingestion.extractors": "package re-export of extractors.helpers.node_text, which is hashed",
     "ingestion.special_handlers": "reads the configured SQL dialect, which keys the walk",
+    "ingestion.language_configs": "folded in by value: the import kinds the body digest drops",
     "lazy_exports": "complexity/__init__ binds the walker's names on first use; no walk logic",
     "test_paths": "class_analysis.cohesion_applies, which the scorer calls, not the walk",
 }
