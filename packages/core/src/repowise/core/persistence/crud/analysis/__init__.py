@@ -78,6 +78,7 @@ from .evidence import (
     ranked_hotness,
     replace_symbol_hotness,
     save_evidence_run,
+    unranked_reason,
 )
 from .function_facts import (
     get_function_facts,
@@ -265,6 +266,7 @@ __all__ = [
     "tests_covering",
     "tests_covering_files",
     "tests_for_functions",
+    "unranked_reason",
     "update_dead_code_status",
     "update_health_finding_status",
     "update_refactoring_opportunity_status",

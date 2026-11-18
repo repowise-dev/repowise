@@ -1009,6 +1009,7 @@ async def measured_costs(
       finding on them, at most *limit*.
     - ``measured_in_tests``: functions ranked under ``unit_test``, listed
       apart and never leading, at most *limit*.
+    - Each of the two groups carries ``total``: its rows before the *limit* cut.
     - ``on_static_findings``: ranked functions an open static finding already
       sits on, with its cause ids. They get no row of their own.
 
@@ -1029,6 +1030,7 @@ async def measured_costs(
     covered = await _static_causes_on(session, repository_id, set(ids), spans)
     lead = [r for r in ranked if r.workload_class in LEAD_CLASSES and r.symbol_id not in covered]
     tests = [r for r in ranked if r.workload_class == "unit_test" and r.symbol_id not in covered]
+    totals = {"measured": len(lead), "measured_in_tests": len(tests)}
     lead, tests = lead[:limit], tests[:limit]
     context = await _function_context(
         session, repository_id, [r.symbol_id for r in (*lead, *tests)]
@@ -1040,6 +1042,7 @@ async def measured_costs(
             view[key] = {
                 "runs": _measured_runs(rows, at),
                 "rows": [_measured_row(r, spans, context) for r in rows],
+                "total": totals[key],
             }
     # Not cut to *limit*: a ranked row is at most ``evidence.rank_top_n`` per run.
     linked = [r for r in ranked if r.symbol_id in covered]

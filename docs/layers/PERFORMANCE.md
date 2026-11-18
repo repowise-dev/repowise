@@ -177,8 +177,14 @@ MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 
 ```python
 get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_measured"])
 get_health(opportunity_id="perf...")
 ```
+
+`performance_measured` lists the functions stored runs ranked, each with its
+workload class, age, sample size, explained share and interval
+([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). With no profile
+stored it says `no_runtime_data` and names `repowise evidence setup`.
 
 ## Runtime evidence
 

@@ -257,3 +257,5 @@ async def test_limit_counts_rows_after_the_dedupe(async_session) -> None:
     )
     view = await measured_costs(async_session, repo.id, limit=1, now=NOW)
     assert [r["symbol_id"] for r in view["measured"]["rows"]] == [f"{APP}::load"]
+    # The total counts the group before the cut: ``load`` and ``helper``.
+    assert view["measured"]["total"] == 2
