@@ -17,11 +17,6 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.health.refactoring.commands import (
-    TestRuns,
-    js_root_runs,
-    runs_for_tests,
-)
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
 from repowise.core.analysis.health.refactoring.recommendations import (
     DEFAULT_TEST_LIMIT,
@@ -54,6 +49,11 @@ from repowise.core.analysis.test_reachability import (
     tests_reaching_by_tier,
 )
 from repowise.core.ingestion.package_roots import scan_package_manifests
+from repowise.core.test_runners.packages import (
+    TestRuns,
+    js_root_runs,
+    runs_for_tests,
+)
 
 from ...models import GraphMetric, GraphNode, HealthFileMetric, Repository
 from .._shared import _BATCH_SIZE

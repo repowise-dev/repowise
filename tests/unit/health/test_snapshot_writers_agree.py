@@ -21,10 +21,10 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-_ROOT = Path(__file__).resolve().parents[3] / "packages"
-# Only the shipped Python. Walking ``packages`` whole spends 25s in the UI
-# packages' ``node_modules`` to find nothing.
-_SOURCE_ROOTS = sorted(_ROOT.glob("*/src"))
+from tests.unit._source_tree import PACKAGES, sources_under
+
+# Only the shipped Python, not the UI packages' ``node_modules``.
+_SOURCE_ROOTS = sorted(PACKAGES.glob("*/src"))
 
 # The store wrapper forwards whatever it is handed; it builds no maps of its
 # own, so it is a pass-through rather than a writer with an opinion.
@@ -33,21 +33,16 @@ _FORWARDERS = {"_sql_analysis.py"}
 
 def _snapshot_calls() -> list[tuple[Path, ast.Call]]:
     out: list[tuple[Path, ast.Call]] = []
-    for root in _SOURCE_ROOTS:
-        for path in root.rglob("*.py"):
-            if path.name in _FORWARDERS:
+    for src in sources_under(*_SOURCE_ROOTS):
+        if src.path.name in _FORWARDERS or src.tree is None:
+            continue
+        for node in ast.walk(src.tree):
+            if not isinstance(node, ast.Call):
                 continue
-            try:
-                tree = ast.parse(path.read_text(encoding="utf-8"))
-            except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - not our files
-                continue
-            for node in ast.walk(tree):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-                if name == "save_health_snapshot":
-                    out.append((path, node))
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name == "save_health_snapshot":
+                out.append((src.path, node))
     return out
 
 
