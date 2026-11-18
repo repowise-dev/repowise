@@ -988,10 +988,6 @@ async def get_health_finding_by_public_id(
 
 _MEASURED_CALLERS = 3
 _MEASURED_TESTS = 3
-#: Callers read per measured function before test code is dropped from them.
-#: Ceiling: a function with more callers than this counts only the ones read;
-#: a counted query over the edge table with an origin join would lift it.
-_CALLER_SCAN = 2000
 
 
 async def measured_costs(
@@ -1052,7 +1048,7 @@ async def measured_costs(
     for key, runs in shown.items():
         if runs:
             view[key] = {
-                "runs": [_measured_run(run, rows, at) for run, rows in runs],
+                "runs": [_measured_run(run, rows, at) for run, rows in groups[key]],
                 "rows": [
                     _measured_row(r, spans, context, covered) for _, rows in runs for r in rows
                 ],
@@ -1162,28 +1158,16 @@ async def _function_context(
     from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
     from ....ingestion.symbol_identity import file_of_symbol
     from ..git import get_git_metadata_bulk
-    from ..graph import get_graph_edges_for_node, get_node_degree_counts_bulk
+    from ..graph import get_node_degree_counts_bulk
     from .function_facts import tests_for_functions
 
     if not symbol_ids:
         return _FunctionContext({}, {}, {}, {})
-    edge_types = sorted(SYMBOL_USE_EDGE_TYPES)
+    # Which functions the graph knows: an unknown one has no caller count at all.
     degrees = await get_node_degree_counts_bulk(
-        session, repository_id, symbol_ids, edge_types=edge_types
+        session, repository_id, symbol_ids, edge_types=sorted(SYMBOL_USE_EDGE_TYPES)
     )
-    sources: dict[str, list[str]] = {}
-    for symbol_id in symbol_ids:
-        if degrees.get(symbol_id, {}).get("in_degree"):
-            edges = await get_graph_edges_for_node(
-                session,
-                repository_id,
-                symbol_id,
-                direction="callers",
-                edge_types=edge_types,
-                limit=_CALLER_SCAN,
-            )
-            # One caller per function, whichever edge types link them.
-            sources[symbol_id] = list(dict.fromkeys(edge.source_node_id for edge in edges))
+    sources = await _callers_of(session, repository_id, symbol_ids)
     origins = await load_origins(
         session, repository_id, {file_of_symbol(s) for found in sources.values() for s in found}
     )
@@ -1201,8 +1185,44 @@ async def _function_context(
     )
 
 
+async def _callers_of(
+    session: AsyncSession, repository_id: str, symbol_ids: list[str]
+) -> dict[str, list[str]]:
+    """Every caller of each of *symbol_ids*, once each, most confident first.
+
+    One statement per chunk of ids for all of them, reading two columns, so
+    the cost is the callers the shown functions have, not one query each.
+    """
+    from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
+    from ...models import GraphEdge
+
+    out: dict[str, list[str]] = {}
+    for batch in chunked(sorted(symbol_ids)):
+        result = await session.execute(
+            select(GraphEdge.target_node_id, GraphEdge.source_node_id)
+            .where(
+                GraphEdge.repository_id == repository_id,
+                GraphEdge.target_node_id.in_(batch),
+                GraphEdge.edge_type.in_(sorted(SYMBOL_USE_EDGE_TYPES)),
+            )
+            .order_by(
+                GraphEdge.target_node_id,
+                GraphEdge.confidence.desc(),
+                GraphEdge.source_node_id,
+                GraphEdge.edge_type,
+            )
+        )
+        for target, source in result:
+            out.setdefault(target, []).append(source)
+    # One caller per function, whichever edge types link them.
+    return {target: list(dict.fromkeys(found)) for target, found in out.items()}
+
+
 def _measured_run(run: Any, rows: list[Any], at: datetime) -> dict[str, Any]:
-    """A run's basis: workload, commit, age, samples and where its time went."""
+    """A run's basis: workload, commit, age, samples and where its time went.
+
+    *rows* are all the run's ranked functions, not the ones a limit kept.
+    """
     from ....evidence.hotness import run_samples
     from ....evidence.status import time_split
 

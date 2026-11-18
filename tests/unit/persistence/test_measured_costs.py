@@ -267,3 +267,54 @@ async def test_limit_zero_keeps_the_runs_and_totals_with_no_rows(async_session) 
     view = await measured_costs(async_session, repo.id, limit=0, now=NOW)
     assert (view["measured"]["rows"], view["measured"]["total"]) == ([], 2)
     assert [r["run_id"] for r in view["measured"]["runs"]] == ["r1"]
+
+
+async def test_a_tracer_run_says_so_even_with_no_rows_shown(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    await replace_workload_hotness(
+        async_session, repo.id, [_hot("serve", ordering_only=True, self_share=None)]
+    )
+    view = await measured_costs(async_session, repo.id, limit=0, now=NOW)
+    assert view["measured"]["runs"][0]["ordering_only"] is True
+
+
+async def test_callers_are_read_in_one_statement_and_tests_never_count(async_session) -> None:
+    from sqlalchemy import event
+
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    load = f"{APP}::load"
+    callers = [f"src/c{i:03}.py::f" for i in range(40)] + [f"tests/test_{i}.py::t" for i in range(60)]
+    async_session.add_all(
+        [GraphNode(repository_id=repo.id, node_id=load, node_type="symbol")]
+        + [
+            GraphEdge(repository_id=repo.id, source_node_id=c, target_node_id=load,
+                      edge_type="calls", confidence=1.0 if c.startswith("src/c00") else 0.5)
+            for c in callers
+        ]
+    )
+    async_session.add(_run(repo.id, "r1"))
+    await async_session.flush()
+    await replace_workload_hotness(async_session, repo.id, [_hot("serve"), _hot("load", rank=2)])
+
+    engine = async_session.bind.sync_engine
+    edge_reads: list[str] = []
+
+    def _count(conn, cursor, statement, params, context, executemany):
+        if "FROM graph_edges" in statement and "source_node_id" in statement:
+            edge_reads.append(statement)
+
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        view = await measured_costs(async_session, repo.id, now=NOW)
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+    rows = {r["symbol_id"]: r for r in view["measured"]["rows"]}
+    assert rows[load]["callers_total"] == 40
+    # The most confident first, then by id.
+    assert rows[load]["callers"] == [f"src/c00{i}.py::f" for i in range(3)]
+    assert rows[f"{APP}::serve"]["callers_total"] == 1
+    assert len([s for s in edge_reads if "ORDER BY" in s]) == 1
