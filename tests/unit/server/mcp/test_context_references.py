@@ -1414,7 +1414,8 @@ async def test_member_call_on_a_variable_named_like_a_definition_keyword(
         "rows = Store().fetch_rows()\n"
         "for sub in subs: sub.fetch_rows()\n"
         "if fn is not None and fn.fetch_rows(): pass\n"
-        "tail = rows[::fetch_rows(2)]\n",
+        "tail = rows[::fetch_rows(2)]\n"
+        "tail = rows[n::fetch_rows(2)]\n",
         encoding="utf-8",
     )
 
@@ -1422,7 +1423,24 @@ async def test_member_call_on_a_variable_named_like_a_definition_keyword(
 
     kinds = {n: k for p, n, k in _sites(out) if p == "app/use.py"}
     # A variable named ``sub`` or ``fn`` opens no definition; a slice step is no receiver.
-    assert kinds == {3: "call", 4: "call", 5: "call", 6: "reference"}
+    assert kinds == {3: "call", 4: "call", 5: "call", 6: "reference", 7: "reference"}
+
+
+@pytest.mark.asyncio
+async def test_member_on_a_scope_operator_is_a_call_where_it_scopes(session, repo_id, tmp_path):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    (tmp_path / "app" / "use.php").write_text(
+        "<?php\n$a = Store::fetch_rows(1);\n$b = ::fetch_rows(2);\n", encoding="utf-8"
+    )
+    session.add(
+        _edge(3, repo_id, "app/use.php", "pkg/store.py", "imports", imported_names_json="[]")
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    kinds = {n: k for p, n, k in _sites(out) if p == "app/use.php"}
+    assert kinds == {2: "call", 3: "reference"}
 
 
 @pytest.mark.asyncio
