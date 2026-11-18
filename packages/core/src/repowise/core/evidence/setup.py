@@ -28,6 +28,8 @@ SETUP_COMMAND = "repowise evidence setup --format json"
 COVERAGE_STATUS_COMMAND = "repowise coverage status"
 #: Says what is wrong with an index that exists but cannot be read.
 DOCTOR_COMMAND = "repowise doctor"
+#: Brings an index written by an older repowise up to date.
+UPDATE_COMMAND = "repowise update"
 
 # A report glob ``coverage add`` expands itself, so no shell may expand it first.
 _GLOB = re.compile(r"[*?\[\]{}]")
@@ -71,10 +73,29 @@ def _found(repo_root: Path, stack: Stack, claimed: set[str]) -> list[str]:
     return out
 
 
-def _coverage_unit(stack: Stack, found: list[str]) -> dict[str, Any]:
-    """One unit's coverage plan, from :meth:`Stack.to_dict` plus what is on disk."""
+def _measures(repo_root: Path, found: list[str], head: str | None) -> bool:
+    """Whether reports *found* on disk measure *head*, by the commit ``coverage add`` would stamp.
+
+    A report written before the last commit is stamped with the commit it
+    measured, so ingesting it again never brings coverage to HEAD: the unit's
+    command has to run again instead.
+    """
+    from ..analysis.health.coverage import measurement_commit, oldest_report_time
+
+    if head is None:
+        return True
+    when = oldest_report_time(repo_root / p for p in found)
+    return measurement_commit(repo_root, when, head) == head
+
+
+def _coverage_unit(stack: Stack, found: list[str], current: bool) -> dict[str, Any]:
+    """One unit's coverage plan, from :meth:`Stack.to_dict` plus what is on disk.
+
+    *current*: the reports *found* measure HEAD. Reports from an older commit
+    are listed, and the ingest line names what the command writes instead.
+    """
     shown = stack.to_dict()
-    if found:
+    if found and (current or not shown["command"]):
         ingest: str | None = coverage_ingest_line(found)
     elif shown["command"]:
         ingest = coverage_ingest_line(_written_reports(stack))
@@ -90,6 +111,7 @@ def _coverage_unit(stack: Stack, found: list[str]) -> dict[str, Any]:
             "prerequisites": shown["prerequisites"],
             "reports": shown["reports"],
             "found": found,
+            "found_current": bool(found) and current,
             "ingest": ingest,
             "reason": shown["reason"],
             "notes": shown["notes"],
@@ -102,18 +124,17 @@ def _step(repo_root: Path, rel_dir: str, command: str) -> dict[str, str]:
 
 
 def _found_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
-    """Ingest the first coverage report already on disk."""
-    for unit in units:
-        cov = unit["coverage"]
-        if cov["found"]:
-            return {
-                "purpose": "Ingest the coverage report already on disk.",
-                "steps": [
-                    _step(repo_root, "", cov["ingest"]),
-                    _step(repo_root, "", COVERAGE_STATUS_COMMAND),
-                ],
-            }
-    return None
+    """Ingest every report on disk that measures HEAD, of every unit, in one call."""
+    current = [r for u in units if u["coverage"]["found_current"] for r in u["coverage"]["found"]]
+    if not current:
+        return None
+    return {
+        "purpose": "Ingest the coverage reports already on disk.",
+        "steps": [
+            _step(repo_root, "", coverage_ingest_line(current)),
+            _step(repo_root, "", COVERAGE_STATUS_COMMAND),
+        ],
+    }
 
 
 def _coverage_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
@@ -166,6 +187,7 @@ def evidence_setup(
     runtime: RuntimeInputs | None = None,
     coverage_only: bool = False,
     index_error: str | None = None,
+    index_fix: str = DOCTOR_COMMAND,
 ) -> dict[str, Any]:
     """The setup plan for the checkout at *repo_root*, JSON-ready.
 
@@ -181,6 +203,9 @@ def evidence_setup(
     agent that reruns setup after each step comes to an end.
     *index_error* is why an index that exists could not be read: the plan
     then sends the agent to ``repowise doctor``, never to a fresh ``init``.
+    *index_error* is why an index that exists could not be read: the plan
+    then sends the agent to *index_fix* (``repowise doctor`` unless the
+    error names another), never to a fresh ``init``.
     """
     root = Path(repo_root)
     stacks = detect_repo_stacks(root, units)
@@ -190,7 +215,7 @@ def evidence_setup(
         id(s): _found(root, s, claimed)
         for s in sorted(stacks, key=lambda s: -(s.root.count("/") + bool(s.root)))
     }
-    planned = [_coverage_unit(s, found[id(s)]) for s in stacks]
+    planned = [_coverage_unit(s, found[id(s)], _measures(root, found[id(s)], head)) for s in stacks]
     if not coverage_only:
         _add_runtime(root, stacks, planned, runtime, head)
     covered = head is not None and coverage_commit == head
@@ -204,7 +229,7 @@ def evidence_setup(
     if index_error is not None:
         next_call = {
             "purpose": "The index exists but could not be read; find out why.",
-            "steps": [_step(root, "", DOCTOR_COMMAND)],
+            "steps": [_step(root, "", index_fix)],
         }
         reason = f"The index could not be read: {index_error}"
     return {
@@ -273,6 +298,7 @@ __all__ = [
     "DOCTOR_COMMAND",
     "INIT_COMMAND",
     "SETUP_COMMAND",
+    "UPDATE_COMMAND",
     "coverage_ingest_line",
     "evidence_setup",
 ]
