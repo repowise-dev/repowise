@@ -334,3 +334,10 @@ def test_package_reference_update_and_package_version_recognized_by_runner(
     assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {
         "src/Sample/SampleTests.cs": "src/Sample/Sample.csproj"
     }
+
+
+def test_shared_package_reference_update_does_not_declare_tests(tmp_path: Path) -> None:
+    """An Update in Directory.Build.props adds no reference, so it makes no project a test project."""
+    _build_props(tmp_path, "src", '<ItemGroup><PackageReference Update="xunit.v3" /></ItemGroup>')
+    _project(tmp_path, "src/Shop/Shop.csproj")
+    assert _targets(tmp_path, ["src/Shop/Cart.cs"]) == {"src/Shop/Cart.cs": None}

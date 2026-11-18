@@ -78,6 +78,10 @@ class MSBuildProject:
     #: build file that adds test packages only ``Condition="'$(IsTestProject)'
     #: == 'true'"`` does not make every project below it a test project.
     unconditional_package_references: set[str] = field(default_factory=set)
+    #: Unconditional ``Update`` items. Kept apart from the ``Include`` set: an
+    #: ``Update`` only changes a reference that exists, so a shared build file
+    #: carrying one does not declare tests for every project below it.
+    unconditional_package_updates: set[str] = field(default_factory=set)
     #: Literal ``<PropertyGroup>`` values outside any ``Condition``, keyed
     #: lowercase as MSBuild compares them, for a shared build file's conditions.
     properties: dict[str, str] = field(default_factory=dict)
@@ -188,11 +192,16 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
         elif tag == "Compile":
             project.compile_includes.extend(_compile_items(elem.get("Include")))
         elif tag in ("PackageReference", "PackageVersion"):
-            pkg = elem.get("Include") or elem.get("Update")
-            if pkg:
+            include, update = elem.get("Include"), elem.get("Update")
+            if pkg := include or update:
                 project.package_references.add(pkg.strip())
                 if id(elem) not in conditioned:
-                    project.unconditional_package_references.add(pkg.strip())
+                    target = (
+                        project.unconditional_package_references
+                        if include
+                        else project.unconditional_package_updates
+                    )
+                    target.add(pkg.strip())
         elif tag in ("Using", "Import"):
             # <Using Include="X"/> is the C# form, <Import Include="X"/> the VB
             # one; MSBuild's own <Import Project="..."/> carries no Include.

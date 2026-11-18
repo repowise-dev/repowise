@@ -201,7 +201,10 @@ def _declared_test_project(
     shared build file on its path from the repository root."""
     if parsed.is_test_project is False:
         return False
-    if _declares_tests(parsed.is_test_project, parsed.unconditional_package_references):
+    if _declares_tests(
+        parsed.is_test_project,
+        parsed.unconditional_package_references | parsed.unconditional_package_updates,
+    ):
         return True
     parts = project.split("/")[:-1]
     return any(
