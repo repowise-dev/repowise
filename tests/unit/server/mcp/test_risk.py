@@ -804,6 +804,17 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
             language="python",
         )
     )
+    # The qualified test name belongs to this sibling, so it is no evidence
+    # for ``my_module.py``.
+    session.add(
+        GraphNode(
+            id="gn-sibling",
+            repository_id=repo_id,
+            node_id="src/my_module_strategies.py",
+            node_type="file",
+            language="python",
+        )
+    )
     await session.flush()
 
     assert not _has_paired_test_file("src/my_module.py", {"test_my_module_strategies.py"})
@@ -822,6 +833,38 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
     await session.flush()
     # The test-file set is kept per index state; a node added outside an index run is not one.
     clear_test_map_cache()
+    assert await _check_test_gap(session, repo_id, "src/my_module.py") is False
+
+
+@pytest.mark.asyncio
+async def test_test_gap_credits_a_qualified_test_name_no_sibling_claims(session, repo_id):
+    """A qualified name (``test_my_module_strategies.py``) tests ``my_module.py`` when no sibling owns it."""
+    from repowise.core.analysis.test_reachability import clear_test_map_cache
+    from repowise.core.persistence.models import GraphNode
+    from repowise.server.mcp_server.tool_risk.assessment import _check_test_gap
+
+    session.add(
+        GraphNode(
+            id="gn-qualified",
+            repository_id=repo_id,
+            node_id="tests/test_my_module_strategies.py",
+            node_type="file",
+            language="python",
+            is_test=True,
+        )
+    )
+    session.add(
+        GraphNode(
+            id="gn-source",
+            repository_id=repo_id,
+            node_id="src/my_module.py",
+            node_type="file",
+            language="python",
+        )
+    )
+    await session.flush()
+    clear_test_map_cache()
+
     assert await _check_test_gap(session, repo_id, "src/my_module.py") is False
 
 

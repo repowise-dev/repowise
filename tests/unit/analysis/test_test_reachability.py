@@ -236,7 +236,9 @@ def test_a_sibling_test_is_not_credited_to_same_named_files_elsewhere() -> None:
 
 
 def test_a_test_without_a_sibling_source_still_matches_across_directories() -> None:
-    found = name_match(["src/pkg/x.py"], {"tests/test_x.py"}, {"src/pkg/x.py", "tests/test_x.py"})
+    found = name_match(
+        ["src/pkg/x.py"], {"tests/test_x.py"}, {"src/pkg/x.py", "tests/test_x.py"}
+    )
 
     assert found["src/pkg/x.py"].tests == ["tests/test_x.py"]
 
@@ -289,18 +291,32 @@ def test_a_sibling_test_can_belong_to_multiple_sources() -> None:
         ["src/widget.ts", "src/widget.tsx", "elsewhere/widget.ts"],
         {"src/widget.test.ts"},
     )
-    expected = model.ReachedBy(["src/widget.test.ts"], "name-match", 1, ("src/widget.test.ts",))
+    expected = model.ReachedBy(
+        ["src/widget.test.ts"], "name-match", 1, ("src/widget.test.ts",)
+    )
     assert found == {"src/widget.ts": expected, "src/widget.tsx": expected}
 
 
 def test_unowned_name_matches_keep_their_rank_and_complete_list_beyond_the_cap() -> None:
-    tests = {f"tests/{i:03}/test_x.py" for i in range(MAX_TESTS_PER_TARGET)}
-    tests.add("tests/pkg/test_x.py")
-    ordered = (*sorted(tests - {"tests/pkg/test_x.py"}), "tests/pkg/test_x.py")
+    # No candidate mirrors a directory of the target, so none is dropped and
+    # all rank by path; the list stays complete past the cap.
+    tests = {f"tests/{i:03}/test_x.py" for i in range(MAX_TESTS_PER_TARGET + 1)}
+    ordered = tuple(sorted(tests))
 
     assert name_match(["src/x.py"], tests) == {
         "src/x.py": model.ReachedBy(
             list(ordered[:MAX_TESTS_PER_TARGET]), "name-match", len(tests), ordered
+        )
+    }
+
+
+def test_a_mirrored_directory_leaves_no_other_same_name_test_beyond_the_cap() -> None:
+    tests = {f"tests/{i:03}/test_x.py" for i in range(MAX_TESTS_PER_TARGET)}
+    tests.add("tests/pkg/test_x.py")
+
+    assert name_match(["src/pkg/x.py"], tests) == {
+        "src/pkg/x.py": model.ReachedBy(
+            ["tests/pkg/test_x.py"], "name-match", 1, ("tests/pkg/test_x.py",)
         )
     }
 
