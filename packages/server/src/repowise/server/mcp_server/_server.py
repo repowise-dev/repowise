@@ -274,10 +274,10 @@ def _share_lifespan(server: Any) -> None:
             error = exc
             raise
         finally:
-            # A session ends by cancelling its task group, and that cancellation
-            # lands on every await below: unshielded, the teardown was cut short
-            # and left the engine, the store and the background tasks open past
-            # the session.
+            # A session ends by cancelling its anyio task group, and that
+            # cancellation lands on every await below: unshielded, the teardown
+            # was cut short and left the engine, the store and the background
+            # tasks open past the session.
             with anyio.CancelScope(shield=True):
                 async with manager["lock"]:
                     manager["active"] -= 1
