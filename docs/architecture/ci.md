@@ -24,10 +24,12 @@ jobs run when, what each one checks, and how to reproduce a failure locally.
 
 `Python tests` is the one Python check a branch rule requires. It waits for
 every Python test job, fails when any of them failed or was cancelled, and
-passes when they all passed or the path filter skipped them. It also combines
-the shards' coverage into `coverage.xml`, which the `Repowise coverage` job
-gates on. Matrix job names change with the matrix, so require `Python tests`
-and not a shard or a version.
+passes when they all passed or the path filter skipped them. On pull requests
+and pushes it also combines the shards' coverage into `coverage.xml`, which the
+`Repowise coverage` job gates on, and a failed combine fails it. The nightly
+run skips the combine, since nothing reads that coverage. Matrix job names
+change with the matrix, so require `Python tests` and not a shard or a
+version.
 
 ## Shards
 

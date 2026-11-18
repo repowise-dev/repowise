@@ -198,8 +198,10 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # The one Python check to require. It passes when every Python test job
-  # passed or the path filter skipped them, combines the shards' coverage
-  # into coverage.xml for the coverage gate, and uploads it to Repowise.
+  # passed or the path filter skipped them, and on pull requests and pushes
+  # when the shards' coverage combined into coverage.xml for the coverage
+  # gate. A coverage step that fails fails this job. The nightly run skips
+  # the combine: nothing reads its coverage.
   # ---------------------------------------------------------------------------
   python-tests:
     name: Python tests
@@ -212,12 +214,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        if: needs.test-python.result != 'skipped'
+        if: needs.test-python.result != 'skipped' && github.event_name != 'schedule'
 
       - uses: actions/download-artifact@v4
         id: coverage-data
-        if: needs.test-python.result != 'skipped'
-        continue-on-error: true
+        if: needs.test-python.result != 'skipped' && github.event_name != 'schedule'
         with:
           pattern: coverage-data-*
           path: coverage-data
@@ -234,7 +235,6 @@ jobs:
       - name: Combine coverage
         id: combine
         if: steps.coverage-data.outcome == 'success'
-        continue-on-error: true
         run: |
           printf '[run]\nsource = packages\n' > "$RUNNER_TEMP/coveragerc"
           uvx coverage combine --rcfile="$RUNNER_TEMP/coveragerc" coverage-data/*/.coverage
@@ -248,11 +248,12 @@ jobs:
           name: coverage-xml
           path: coverage.xml
           retention-days: 1
-          if-no-files-found: ignore
+          if-no-files-found: error
           overwrite: true   # a re-run of the job uploads again
 
+      # Warn only: an outage of the Repowise service must not fail CI.
       - name: Upload coverage to Repowise
-        if: steps.combine.outcome == 'success' && github.event_name != 'schedule'
+        if: steps.combine.outcome == 'success'
         continue-on-error: true
         env:
           REPORTS: "coverage.xml"
