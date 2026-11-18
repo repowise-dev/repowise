@@ -72,6 +72,8 @@ async def attach_measured(
     symbols = {key for kind, key in wanted.values() if kind == "symbol"}
     files = {key for kind, key in wanted.values() if kind == "file"}
     try:
+        # Last read of the call on purpose: with no savepoint, a failed read
+        # here must not affect any other read.
         rows = await hotness_for_symbols(session, repository_id, symbols, files=files)
     except SQLAlchemyError:
         # A store older than the table reads as no evidence; so does a failed read.
