@@ -43,6 +43,7 @@ from ..ingestion.languages.registry import REGISTRY
 from ..ingestion.resolvers.pnpm_workspace import PNPM_WORKSPACE_FILENAME
 from ..pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
 from ..test_paths import is_test_related_path
+from .packages import quote_arg
 
 #: Where to look when the stack is unknown.
 GENERIC_REPORTS = (
@@ -707,7 +708,8 @@ def _gradle(root: set[str], files: dict[str, str]) -> Stack:
                      "small init script that ships with Repowise. Applying the `jacoco` plugin in the build "
                      "(with `xml.required = true`) does the same.")
         test, prepare = f'{gradle} test jacocoTestReport --init-script "$RUNNER_TEMP/repowise-jacoco.gradle"', _gradle_init()
-        workstation = f'{gradle} test jacocoTestReport --init-script "{JACOCO_INIT_SCRIPT}"'
+        # Forward slashes: Gradle takes them on Windows, and no shell reads them as escapes.
+        workstation = f"{gradle} test jacocoTestReport --init-script {quote_arg(JACOCO_INIT_SCRIPT.as_posix())}"
     return Stack(
         "java", "gradle", "gradle", reports, setup=(*_JAVA_SETUP, "    cache: gradle"), test=test,
         prepare=prepare, notes=tuple(notes), shell="" if jacoco else "github-actions", workstation=workstation,

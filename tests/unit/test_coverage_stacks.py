@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from repowise.core.build_units import BuildUnit, BuildUnitIndex
 from repowise.core.test_runners import stacks
+from repowise.core.test_runners.packages import quote_arg
 from repowise.core.test_runners.stacks import detect_repo_stacks, detect_stacks, files_to_read
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "coverage_stacks"
@@ -258,7 +259,8 @@ def test_to_dict_is_json_ready():
     gradle = detect_stacks(*_load("gradle_plain"))[0]
     assert gradle.shell == "github-actions" and "$RUNNER_TEMP" in gradle.test
     shown = gradle.to_dict()
-    assert shown["command"] == f'./gradlew test jacocoTestReport --init-script "{stacks.JACOCO_INIT_SCRIPT}"'
+    script = quote_arg(stacks.JACOCO_INIT_SCRIPT.as_posix())
+    assert shown["command"] == f"./gradlew test jacocoTestReport --init-script {script}"
     assert shown["shell"] is None and shown["reason"] is None
 
 
@@ -631,3 +633,18 @@ def test_a_dotnet_unit_below_the_root_reads_the_nearest_sdk_pin_above_it():
     paths = list(files)
     (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths)})
     assert "9.0.100" in stack.notes[0]
+
+
+@pytest.mark.parametrize(
+    ("installed", "argument"),
+    [
+        ("/opt/py lib/repowise/jacoco.gradle", '"/opt/py lib/repowise/jacoco.gradle"'),
+        ("C:/Users/a b/repowise/jacoco.gradle", '"C:/Users/a b/repowise/jacoco.gradle"'),
+        # The setup output's one quoting rule leaves a path holding $ or a backtick as it is.
+        ("/home/$u/jacoco.gradle", "/home/$u/jacoco.gradle"),
+    ],
+)
+def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, installed, argument):
+    monkeypatch.setattr(stacks, "JACOCO_INIT_SCRIPT", PurePosixPath(installed))
+    (stack,) = detect_stacks(*_load("gradle_plain"))
+    assert stack.to_dict()["command"] == f"./gradlew test jacocoTestReport --init-script {argument}"
