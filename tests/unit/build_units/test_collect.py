@@ -12,6 +12,7 @@ from repowise.core.build_units.adapters import cargo as cargo_adapter
 from repowise.core.build_units.adapters import dotnet as dotnet_adapter
 from repowise.core.build_units.adapters import go as go_adapter
 from repowise.core.build_units.adapters import maven as maven_adapter
+from repowise.core.build_units.adapters import php as php_adapter
 from repowise.core.build_units.adapters import python as python_adapter
 from repowise.core.build_units.collect import collect_build_units
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -186,12 +187,14 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
     monkeypatch.setattr(go_adapter, "get_or_build_go_index", boom)
     monkeypatch.setattr(python_adapter, "package_manifests", boom)
     monkeypatch.setattr(maven_adapter, "load_maven_reactor", boom)
+    monkeypatch.setattr(php_adapter, "repo_composer_manifests", boom)
     index = _collect(tmp_path, {
         "pkg/Gemfile": "",
         "pkg/m.rb": "",
         # Manifests alone do not wake an adapter: there is no source for it to own.
         "pyproject.toml": "[project]\nname = 'root'\n",
         "pom.xml": "<project><groupId>g</groupId><artifactId>a</artifactId></project>",
+        "composer.json": '{"name": "acme/test"}',
     })
     assert list(index.units) == ["manifest:.", "manifest:pkg"]
     assert _owners(index, "pkg/m.rb") == ["manifest:pkg"]
@@ -643,3 +646,182 @@ def test_maven_unparsed_or_unresolved_module_falls_back(tmp_path):
     index = collect_build_units(_ctx(tmp_path))
     assert set(index.units) == {"manifest:bad", "manifest:prop", "maven:g:a", "maven:g:root"}
     assert _owners(index, "prop/src/main/java/P.java") == ["manifest:prop"]
+
+
+def test_php_composer_path_repository_deps(tmp_path):
+    index = _collect(tmp_path, {
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/lib": "*"},
+            "repositories": [{"type": "path", "url": "../lib"}],
+        }),
+        "app/src/App.php": "<?php namespace Acme\\App; class App {}",
+        "lib/composer.json": json.dumps({"name": "acme/lib"}),
+        "lib/src/Lib.php": "<?php namespace Acme\\Lib; class Lib {}",
+    })
+    assert _deps(index) == {
+        "php:acme/app": ("php:acme/lib",),
+        "php:acme/lib": (),
+    }
+    app = index.unit("php:acme/app")
+    assert (app.root, app.manifest, app.name, app.source) == ("app", "app/composer.json", "acme/app", "composer")
+    assert _owners(index, "app/src/App.php") == ["php:acme/app"]
+    assert _owners(index, "lib/src/Lib.php") == ["php:acme/lib"]
+
+
+def test_php_path_repository_outside_repo_links_nothing(tmp_path):
+    repo = tmp_path / "repo"
+    index = _collect(repo, {
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/lib": "*"},
+            "repositories": [{"type": "path", "url": "../../elsewhere/lib"}],
+        }),
+        "app/src/App.php": "<?php namespace Acme\\App; class App {}",
+        "lib/composer.json": json.dumps({"name": "acme/lib"}),
+        "lib/src/Lib.php": "<?php namespace Acme\\Lib; class Lib {}",
+    })
+    assert _deps(index) == {
+        "php:acme/app": (),
+        "php:acme/lib": (),
+    }
+    assert set(index.units) == {"php:acme/app", "php:acme/lib"}
+
+
+def test_php_required_without_path_repo_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/lib": "*"},
+        }),
+        "app/src/App.php": "<?php namespace Acme\\App; class App {}",
+        "lib/composer.json": json.dumps({"name": "acme/lib"}),
+        "lib/src/Lib.php": "<?php namespace Acme\\Lib; class Lib {}",
+    })
+    assert _deps(index) == {
+        "php:acme/app": (),
+        "php:acme/lib": (),
+    }
+
+
+def test_php_glob_path_repository(tmp_path):
+    index = _collect(tmp_path, {
+        "composer.json": json.dumps({
+            "name": "acme/root",
+            "require": {"acme/a": "*", "acme/b": "*"},
+            "repositories": [{"type": "path", "url": "packages/*"}],
+        }),
+        "src/Root.php": "<?php namespace Acme\\Root; class Root {}",
+        "packages/a/composer.json": json.dumps({"name": "acme/a"}),
+        "packages/a/src/A.php": "<?php namespace Acme\\A; class A {}",
+        "packages/b/composer.json": json.dumps({"name": "acme/b"}),
+        "packages/b/src/B.php": "<?php namespace Acme\\B; class B {}",
+        "packages/c/composer.json": json.dumps({"name": "acme/c"}),
+        "packages/c/src/C.php": "<?php namespace Acme\\C; class C {}",
+    })
+    assert _deps(index) == {
+        "php:acme/root": ("php:acme/a", "php:acme/b"),
+        "php:acme/a": (),
+        "php:acme/b": (),
+        "php:acme/c": (),
+    }
+    assert _owners(index, "packages/a/src/A.php") == ["php:acme/a"]
+    assert _owners(index, "packages/c/src/C.php") == ["php:acme/c"]
+
+
+def test_php_glob_character_class(tmp_path):
+    index = _collect(tmp_path, {
+        "composer.json": json.dumps({
+            "name": "acme/root",
+            "require": {"acme/a": "*", "acme/b": "*", "acme/c": "*"},
+            "repositories": [{"type": "path", "url": "packages/[ab]"}],
+        }),
+        "src/Root.php": "<?php namespace Acme\\Root; class Root {}",
+        "packages/a/composer.json": json.dumps({"name": "acme/a"}),
+        "packages/a/src/A.php": "<?php namespace Acme\\A; class A {}",
+        "packages/b/composer.json": json.dumps({"name": "acme/b"}),
+        "packages/b/src/B.php": "<?php namespace Acme\\B; class B {}",
+        "packages/c/composer.json": json.dumps({"name": "acme/c"}),
+        "packages/c/src/C.php": "<?php namespace Acme\\C; class C {}",
+    })
+    assert index.unit("php:acme/root").deps == ("php:acme/a", "php:acme/b")
+
+
+def test_php_glob_star_stays_in_one_segment(tmp_path):
+    index = _collect(tmp_path, {
+        "composer.json": json.dumps({
+            "name": "acme/root",
+            "require": {"acme/nested": "*", "acme/deeper": "*"},
+            "repositories": [{"type": "path", "url": "packages/*"}],
+        }),
+        "src/Root.php": "<?php namespace Acme\\Root; class Root {}",
+        "packages/nested/composer.json": json.dumps({"name": "acme/nested"}),
+        "packages/nested/src/Nested.php": "<?php namespace Acme\\Nested; class Nested {}",
+        "packages/nested/deeper/composer.json": json.dumps({"name": "acme/deeper"}),
+        "packages/nested/deeper/src/Deep.php": "<?php namespace Acme\\Deep; class Deep {}",
+    })
+    assert index.unit("php:acme/root").deps == ("php:acme/nested",)
+    assert "php:acme/deeper" in index.units
+
+
+def test_php_unparseable_composer_falls_back(tmp_path):
+    index = _collect(tmp_path, {
+        "good/composer.json": json.dumps({"name": "acme/good"}),
+        "good/Good.php": "<?php namespace Acme\\Good; class Good {}",
+        "bad/composer.json": "{not json",
+        "bad/Bad.php": "<?php namespace Acme\\Bad; class Bad {}",
+    })
+    assert set(index.units) == {"php:acme/good", "manifest:bad"}
+    assert _owners(index, "good/Good.php") == ["php:acme/good"]
+    assert _owners(index, "bad/Bad.php") == ["manifest:bad"]
+
+
+def test_php_unnamed_composer_gets_dir_id(tmp_path):
+    index = _collect(tmp_path, {
+        "composer.json": json.dumps({"require": {}}),
+        "src/Main.php": "<?php class Main {}",
+        "packages/pkg/composer.json": json.dumps({"require": {}}),
+        "packages/pkg/Pkg.php": "<?php class Pkg {}",
+    })
+    assert set(index.units) == {"php:.", "php:packages/pkg"}
+    assert index.unit("php:.").name == "."
+    assert index.unit("php:packages/pkg").name == "pkg"
+    assert _owners(index, "src/Main.php") == ["php:."]
+    assert _owners(index, "packages/pkg/Pkg.php") == ["php:packages/pkg"]
+
+
+def test_php_unnamed_package_never_becomes_dep(tmp_path):
+    index = _collect(tmp_path, {
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"pkg": "*"},
+            "repositories": [{"type": "path", "url": "../packages/pkg"}],
+        }),
+        "app/App.php": "<?php class App {}",
+        "packages/pkg/composer.json": json.dumps({"require": {}}),
+        "packages/pkg/Pkg.php": "<?php class Pkg {}",
+    })
+    # An unnamed package has no name a require can use.
+    assert index.unit("php:acme/app").deps == ()
+    assert set(index.units) == {"php:acme/app", "php:packages/pkg"}
+
+
+def test_php_duplicate_name_keeps_the_first_root(tmp_path):
+    index = _collect(tmp_path, {
+        "a/composer.json": json.dumps({"name": "acme/dup"}),
+        "a/A.php": "<?php class A {}",
+        "b/dup/composer.json": json.dumps({"name": "acme/dup"}),
+        "b/dup/B.php": "<?php class B {}",
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/dup": "*"},
+            "repositories": [{"type": "path", "url": "../b/dup"}],
+        }),
+        "app/App.php": "<?php class App {}",
+    })
+    # The first (in sorted order by rel_dir) root "a" wins the id "php:acme/dup"
+    assert index.unit("php:acme/dup").root == "a"
+    # Sorted by root, "a" comes first; "b/dup" falls back.
+    assert "manifest:b/dup" in index.units
+    assert index.unit("php:acme/app").deps == ()
+    assert _owners(index, "b/dup/B.php") == ["manifest:b/dup"]
