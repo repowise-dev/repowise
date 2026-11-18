@@ -96,7 +96,7 @@ async def _seed_code(session, repo_id: str) -> None:
     await session.flush()
 
 
-def _finding(repo_id: str, line: int, opportunity_id: str) -> HealthFinding:
+def _finding(repo_id: str, line: int, opportunity_id: str | None) -> HealthFinding:
     return HealthFinding(
         repository_id=repo_id,
         file_path=APP,
@@ -214,6 +214,21 @@ async def test_a_class_that_may_not_lead_and_is_not_a_test_is_not_listed(async_s
     view = await measured_costs(async_session, repo.id, now=NOW)
     assert set(view) == {"measured"}
     assert [r["symbol_id"] for r in view["measured"]["rows"]] == [f"{APP}::serve"]
+
+
+async def test_a_finding_with_no_cause_id_keeps_the_function_listed(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    # No cause carries these findings, so nothing would show the measurement.
+    async_session.add_all([_finding(repo.id, 10, None), _finding(repo.id, 75, None)])
+    await async_session.flush()
+    await replace_symbol_hotness(
+        async_session, repo.id, [_hot("serve"), _hot("thin", cls="unit_test", run="r3")]
+    )
+    view = await measured_costs(async_session, repo.id, now=NOW)
+    assert set(view) == {"measured", "measured_in_tests"}
+    assert [r["symbol_id"] for r in view["measured"]["rows"]] == [f"{APP}::serve"]
+    assert [r["symbol_id"] for r in view["measured_in_tests"]["rows"]] == [f"{APP}::thin"]
 
 
 async def test_only_stale_or_unranked_rows_mean_no_view(async_session) -> None:

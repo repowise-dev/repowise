@@ -1088,7 +1088,8 @@ async def _static_causes_on(
 
     On a function means the cause's edit site is the function, or an open
     performance finding's line falls inside it and in no narrower symbol.
-    A finding with no line names no function, so it covers none.
+    A finding with no line names no function, and one with no cause id has
+    no listed cause to carry the measurement, so neither covers a function.
     """
     from ....symbol_spans import symbol_at
 
@@ -1118,10 +1119,8 @@ async def _static_causes_on(
         )
         for path, line, opportunity_id in result:
             held = symbol_at(spans[path], line) if line else None
-            if held is not None and held.symbol_id in symbol_ids:
-                causes = out.setdefault(held.symbol_id, set())
-                if opportunity_id:
-                    causes.add(opportunity_id)
+            if opportunity_id and held is not None and held.symbol_id in symbol_ids:
+                out.setdefault(held.symbol_id, set()).add(opportunity_id)
     return out
 
 
