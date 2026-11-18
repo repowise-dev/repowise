@@ -63,9 +63,11 @@ All of the following ship in `pip install repowise` today, free for internal use
   `get_symbol`, `search_codebase`, `get_risk`, `get_change_risk`, `get_why`,
   `get_dead_code`, `get_health`, plus `list_repos` for workspace routing.
   Measured at **−31.6 % of the agent's own output tokens** against a bare agent
-  on 43 questions (p < 0.0001), leaner on 37 of 44, reached in 3.8 tool calls
-  where the bare agent needed 7.2. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for
-  the sample sizes, all three agent harnesses, and the rows where we lose.
+  on 43 questions (p < 0.0001), the most of five context tools, reached in 3.8
+  tool calls where the bare agent needed 7.2. Across five models the agent
+  opens **up to 99% fewer files** and writes up to 51% less (Sonnet 4.6), every
+  model opens fewer files, and Opus 5.5 gets 48 of 48 answers right. See [docs/BENCHMARKS.md](../BENCHMARKS.md) for
+  the sample sizes and the method.
 - **Multi-repo workspace intelligence**: cross-repo co-changes, API contract
   extraction (HTTP / gRPC / topics) with provider↔consumer matching, package
   dependency mapping, federated MCP queries (`repo="all"`), workspace dashboard and

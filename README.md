@@ -19,7 +19,7 @@ You get the same answers in a dashboard: what calls this, what breaks, what to f
 
 <table align="center">
 <tr>
-<td align="center" width="260"><a href="docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop"><b>Half the tool calls</b></a><br /><sub>your agent opens 3 files where it opened 7 · <em>31.6% less output</em></sub></td>
+<td align="center" width="260"><a href="docs/BENCHMARKS.md#per-model-agent-loop"><b>Up to 99% fewer files opened</b></a><br /><sub>fewer on every model tested · <em>31.6% less output</em></sub></td>
 <td align="center" width="260"><a href="docs/BENCHMARKS.md#4-command-output-compression"><b>Up to 99% less noise</b></a><br /><sub>from test runs, installs and git output · <em>every error line kept</em></sub></td>
 <td align="center" width="260"><a href="docs/BENCHMARKS.md#1-finding-the-right-files"><b>88% of the right files</b></a><br /><sub>found in one call · <em>next best tool: 61%</em></sub></td>
 </tr>
@@ -98,6 +98,11 @@ instead of 7.2**, opened **3.0 files instead of 7.2** and wrote **31.6% less**, 
 answers just as good. That is the largest saving of the five context tools we
 tested. On a small local model the output cut reaches **47.9%**.
 [How it was measured →](docs/BENCHMARKS.md#2-what-changes-in-a-real-agent-loop)
+
+Across five models, an agent with Repowise opened **up to 99% fewer files**, wrote
+**up to 51% less** and answered **up to 47% faster** (Sonnet 4.6), and every model
+opened fewer files. The newest flagship, Opus 5.5, got all **48 of 48** answers
+right. [Per model →](docs/BENCHMARKS.md#per-model-agent-loop)
 
 - Your agent gets **ten task-shaped MCP tools**. Ask about several files at once
   and get callers, risk, tests, owners and the reasons behind the code in one answer.
@@ -392,6 +397,7 @@ advertised surface, against answer keys we did not write.
 | | Result |
 |---|---|
 | **Work saved in an agent loop** | 3.8 tool calls instead of 7.2, 3.0 files opened instead of 7.2, **31.6% less output**. The best of five context tools. *n=43, p<0.0001* |
+| **Fewer files on every model** | **Up to 99% fewer files** opened, up to 51% less output, up to 47% faster (Sonnet 4.6); 48 of 48 answers right on Opus 5.5. *Five models, 24 questions on code newer than the models* |
 | **Finding the right files** | **0.876** of the files a fix needed, against 0.610 for the next tool, on a sealed set. *n=42, p=0.00004* |
 | **Command output** | Up to **99.5%** smaller (`npm ci`), 89% for `git log`, 86% for `git diff`, no error line lost |
 | **Call graph the compiler agrees with** | **93.8% to 99.8%** precision on Go, TypeScript, Dart, C and Python, graded by each language's own toolchain. Against four other tools, none that finds as much of the graph gets more of it right, in 7 of 7 cells |
