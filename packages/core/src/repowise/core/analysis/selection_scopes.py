@@ -49,11 +49,10 @@ import pathspec
 from ..ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from ..support_paths import DOC_EXTENSIONS, TEMPLATE_EXTENSIONS
 from ..test_paths import is_test_related_path
+from ..test_runners import JS_SUFFIXES, PYTHON_SUFFIXES
 from .test_selection import (
-    JS_SUFFIXES,
     NO_TESTS_NEEDED,
     PACKAGE_INIT_REASON,
-    PYTHON_SUFFIXES,
     SHARED_TEST_DATA_REASON,
     TestSelectionConfig,
     full_run_on_spec,
