@@ -13,7 +13,7 @@ class BuildUnit:
     ``id`` is ecosystem-prefixed and stable across runs: ``dotnet:<manifest>``,
     ``cargo:<crate>``, ``npm:<package>``, ``gradle:<project path>``,
     ``go:<module path>``, ``maven:<groupId>:<artifactId>``,
-    ``python:<PEP 503 name>``, ``dart:<package name>``, ``php:<composer name>`` /
+    ``python:<PEP 503 name>``, ``ruby:<gem name>``, ``dart:<package name>``, ``php:<composer name>`` /
     ``php:<dir>`` when unnamed, ``pascal:<project name>`` (``pascal:<manifest>``
     when several projects share the name), ``elixir:<app name>``,
     ``manifest:<root>`` (``manifest:.`` at the repo root).

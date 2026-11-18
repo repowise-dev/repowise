@@ -21,6 +21,7 @@ from repowise.core.build_units.adapters import (
     pascal,
     php,
     python,
+    ruby,
     swift,
 )
 from repowise.core.build_units.model import BuildUnit, BuildUnitIndex
@@ -46,6 +47,7 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("swift", swift.units),
     ("pascal", pascal.units),
     ("elixir", elixir.units),
+    ("ruby", ruby.units),
 )
 
 
