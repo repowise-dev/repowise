@@ -105,6 +105,8 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     """
     cap = min(req.limit, _MEASURED_PAGE_CAP) if req.limit_explicit else _MEASURED_CAP
     view = await measured_costs(session, repository_id, limit=_MEASURED_PAGE_CAP)
+    # ``None`` means nothing ranked: every ranked row is in a leading class
+    # or ``unit_test``, so no ranked row is left unshown.
     if view is None:
         status = await unranked_reason(session, repository_id)
         block: dict[str, Any] = {"basis": "unknown", "status": status}

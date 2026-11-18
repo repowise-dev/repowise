@@ -165,8 +165,7 @@ async def get_health(
     """Code-health scores and findings from stored analysis.
 
     No ``targets``: a dashboard led by ``fix_first``. Never recomputes;
-    ``repowise update`` does. Every block and accepted value:
-    docs/agent/MCP_TOOLS.md.
+    ``repowise update`` does. Blocks and values: docs/agent/MCP_TOOLS.md.
 
     Args:
         targets: file paths or ``module:<name>``.
@@ -175,12 +174,13 @@ async def get_health(
             ``semantics``|``recipe``|``what_if``, or a dimension
             (``performance`` adds measured costs).
         only: keys to keep. ``biomarkers``/``accuracy``/``refactoring``
-            alias their block; dimensions do not.
-        limit: rows per ranked list (default 20, 0 for none); cursor: offset.
+            alias their block; ``performance``/``defect``/``maintainability``
+            do not.
+        limit: rows per ranked list (default 20, 0: none); cursor: offset.
         fix_id/finding_id/plan_id/opportunity_id: open one item.
         refactoring_*/performance_*: queue filters.
         scope: ``production`` drops non-production code.
-        counts: ``code_shape`` drops the git-derived half of the score.
+        counts: ``code_shape`` drops the git half of the score.
         repo: usually omitted.
     """
     started = perf_counter()
