@@ -19,8 +19,8 @@ repowise search "$ARGUMENTS"
 
 The default mode is `auto`: an identifier goes to the symbol index, prose to fused keyword and semantic search. You can specify a mode:
 
-- `--mode fulltext`: keyword search
-- `--mode semantic`: vector similarity search using embeddings. Requires an embedding provider to be configured. If this fails with an error, suggest running `/prompts:repowise-reindex` first.
+- `--mode fulltext`: fused keyword and semantic search, the same search as `--mode semantic`
+- `--mode semantic`: fused keyword and semantic search. The semantic half needs an embedding provider; without one it warns and shows full-text results. If it errors, suggest running `/prompts:repowise-reindex` first.
 - `--mode symbol`: fuzzy match on symbol names (functions, classes, variables)
 
 Other flags:

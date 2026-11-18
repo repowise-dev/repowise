@@ -70,3 +70,19 @@ def test_the_default_cli_call_is_the_default_mcp_call(
 
     assert result.exit_code == 0, result.output
     assert seen == [_bound(tool, **mcp_call)]
+
+
+def test_search_prompt_describes_fulltext_as_the_fused_search():
+    """``fulltext`` and ``semantic`` alias the same tool mode, so the agent
+    prompt must not describe ``fulltext`` as keyword-only."""
+    from pathlib import Path
+
+    from repowise.cli.commands.search_cmd import _MODE_ALIASES
+
+    assert _MODE_ALIASES["fulltext"] == _MODE_ALIASES["semantic"]
+    root = Path(__file__).resolve().parents[3]
+    lines = (root / "plugins" / "shared" / "commands" / "search.md").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    fulltext = next(line for line in lines if line.startswith("- `--mode fulltext`"))
+    assert "fused keyword and semantic" in fulltext
