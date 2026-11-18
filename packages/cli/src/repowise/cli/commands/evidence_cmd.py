@@ -379,6 +379,7 @@ async def _store(
 ) -> dict[str, Any]:
     from repowise.core.analysis.health.coverage.discovery import mostly_unmapped
     from repowise.core.evidence import parse_evidence
+    from repowise.core.evidence.hotness import refresh_symbol_hotness
     from repowise.core.evidence.ingest import (
         RunProvenance,
         cap_rows,
@@ -388,6 +389,8 @@ async def _store(
         load_symbols,
         run_fields,
         run_key,
+        stamp_bodies,
+        unlisted_count,
     )
     from repowise.core.persistence.crud import save_evidence_run
 
@@ -406,10 +409,11 @@ async def _store(
         _report_conversion(notices, read.format, conversion)
 
     paths = entry_paths(doc)
+    origins = await load_origins(session, target.repo.id, paths)
     joined = join_entries(
         doc,
         await load_symbols(session, target.repo.id, paths),
-        await load_origins(session, target.repo.id, paths),
+        origins,
         changed or frozenset(),
     )
     # A benchmark or test keeps its row without its function, so only the
@@ -434,6 +438,13 @@ async def _store(
         return refused
 
     rows, truncated = cap_rows(doc.kind, joined.rows, caps)
+    if doc.kind == "profile":
+        await stamp_bodies(
+            session,
+            target.repo.id,
+            rows,
+            index_at_measured_commit=index_commit is not None and index_commit == commit,
+        )
     write = await save_evidence_run(
         session,
         target.repo.id,
@@ -444,11 +455,18 @@ async def _store(
             key=run_key(text, provenance, doc.kind, index_commit),
             truncated=truncated,
             mapping_partial=partial,
+            unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
         ),
         rows,
         history_runs=caps.history_runs,
         max_runs=caps.max_runs,
     )
+    if doc.kind == "profile":
+        # Profiles are what the read model is built from, and the save may
+        # have pruned an older one. Best effort: the run stays stored.
+        await refresh_symbol_hotness(
+            session, target.repo.id, head_commit=index_commit, repo_path=repo_path
+        )
 
     _report_stored(notices, summary, write.restamped, len(rows), truncated, index_commit)
     return {

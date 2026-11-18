@@ -13,6 +13,7 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
       "unit": "samples",                  # profile: the unit of every value
       "total": 5300,                      # profile, optional: the whole run's value
       "explained": 580,                   # profile, optional: value with a repo frame on the stack
+      "total_samples": 5300,              # profile, optional: samples in the whole run, any unit
       "skipped": {"outside_repo": 812},   # optional: entries the converter dropped, by reason
       "symbols": [{"path": "src/app/cli.py", "function": "build", "line": 40,
                    "self": 12, "total": 410}]
@@ -91,6 +92,8 @@ class EvidenceDocument:
     unit: str | None
     total: float | None
     explained: float | None
+    #: Samples in the whole run, whatever the unit; ``None`` when not counted.
+    total_samples: int | None
     #: One dict per valid entry, in document order (see ``_ENTRY_READERS``).
     entries: tuple[dict[str, Any], ...]
     #: Entries not read, by reason: the converter's own counts plus this file's.
@@ -122,6 +125,7 @@ def parse_evidence(text: str) -> EvidenceDocument:
         unit=unit,
         total=_amount(data.get("total")),
         explained=_amount(data.get("explained")),
+        total_samples=_count(data.get("total_samples")),
         entries=tuple(entries),
         skipped=dict(skipped),
     )
