@@ -343,6 +343,7 @@ def run_fields(
         "unmatched_sample_json": json.dumps(joined.unmatched_sample),
         "total_value": doc.total,
         "explained_value": doc.explained,
+        "total_samples": doc.total_samples,
         "mapping_partial": mapping_partial,
     }
 
@@ -413,6 +414,35 @@ async def load_origins(
     return {path: stored.get(path) or path_origin(path) for path in wanted}
 
 
+async def stamp_bodies(
+    session: Any,
+    repository_id: str,
+    rows: Iterable[dict[str, Any]],
+    *,
+    index_at_measured_commit: bool,
+) -> None:
+    """Give each profile row its function's lineage and, when the index is at
+    the commit measured, its body digest (``function_facts``).
+
+    The digest is what tells a later index whether the measured body is still
+    the one indexed. Joined at another commit, the indexed body may not be the
+    one measured, so none is stored and the row reads stale once HEAD moves.
+    """
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
+    from repowise.core.persistence.crud import stored_bodies
+
+    rows = list(rows)
+    paths = {file_of_symbol(row["symbol_id"]) for row in rows}
+    bodies = {b.symbol_id: b for b in await stored_bodies(session, repository_id, paths)}
+    for row in rows:
+        body = bodies.get(row["symbol_id"])
+        if body is None:
+            continue
+        row["lineage_id"] = body.lineage_id
+        if index_at_measured_commit:
+            row["body_digest"] = body.digest
+
+
 def uncommitted_paths(checkout_root: str | Path) -> frozenset[str] | None:
     """Tracked files under *checkout_root* that differ from its HEAD, repo-relative.
 
@@ -448,6 +478,7 @@ __all__ = [
     "resolve_location",
     "run_fields",
     "run_key",
+    "stamp_bodies",
     "symbol_lookup",
     "uncommitted_paths",
 ]

@@ -197,6 +197,7 @@ async def persist_partial_health(
     and metrics across an incremental ``repowise update``.
     """
     from repowise.core.analysis.lineage import similar_by_source
+    from repowise.core.evidence.hotness import refresh_symbol_hotness
     from repowise.core.persistence.crud import (
         PayoffContext,
         finalize_performance_opportunities,
@@ -286,6 +287,11 @@ async def persist_partial_health(
                 commit=analyzed_commit,
                 similar=similar_by_source(repo_path, getattr(report, "base_commit", None)),
             )
+        # The measured functions follow the facts just written: ids, lineage
+        # and bodies. Nothing is read past one lookup without stored evidence.
+        await refresh_symbol_hotness(
+            session, repo_id, head_commit=analyzed_commit, repo_path=repo_path
+        )
         # A partial run sees a subset of the findings, so the plans and the
         # queue it would derive are a subset too. Both are rebuilt here instead,
         # from the merged stored rows, by the same writer the full path uses.

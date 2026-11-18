@@ -2,13 +2,17 @@
 
 One ingest writes one ``evidence_runs`` row and that run's rows of its kind,
 in bulk. Pruning deletes whole runs by id, one statement per table.
+
+``symbol_hotness`` is replaced whole per repository (one delete, bulk
+inserts) by ``repowise.core.evidence.hotness``; :func:`hotness_for_symbols`
+and :func:`ranked_hotness` are the readers every surface goes through.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import Table, delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,10 +23,14 @@ from ...models import (
     EvidenceRun,
     EvidenceSymbolCost,
     EvidenceTestTiming,
+    SymbolHotness,
     _new_uuid,
     _now_utc,
 )
 from .._shared import _BATCH_SIZE
+
+if TYPE_CHECKING:
+    from ....evidence.hotness import CostFacts, RunFacts
 
 #: The table that holds a run's rows, by the run's evidence kind.
 EVIDENCE_ROW_TABLES: dict[str, Table] = {
@@ -185,6 +193,135 @@ async def delete_evidence_runs(session: AsyncSession, run_ids: list[str]) -> Non
         await session.execute(delete(EvidenceRun).where(EvidenceRun.id.in_(chunk)))
 
 
+async def hotness_inputs(
+    session: AsyncSession, repository_id: str
+) -> tuple[list[RunFacts], dict[str, list[CostFacts]]] | None:
+    """The profile runs a hotness rebuild reads, and their cost rows by run id.
+
+    ``None`` when the repository stores no profile run, after one indexed
+    lookup: the caller then has nothing to rebuild. Mostly unmapped runs are
+    stored but are no basis, so they are left out. A run's age is when it
+    was measured, else when it was ingested.
+    """
+    from ....evidence.hotness import CostFacts, RunFacts
+
+    is_profile = (EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "profile")
+    if (await session.execute(select(EvidenceRun.id).where(*is_profile).limit(1))).first() is None:
+        return None
+    runs = [
+        RunFacts(
+            id=run.id,
+            workload_name=run.workload_name,
+            workload_class=run.workload_class,
+            value_kind=run.value_kind,
+            unit=run.unit,
+            commit_sha=run.commit_sha,
+            measured_at=run.measured_at or run.ingested_at,
+            total_value=run.total_value,
+            explained_value=run.explained_value,
+            total_samples=run.total_samples,
+        )
+        for run in (
+            await session.execute(
+                select(EvidenceRun).where(*is_profile, EvidenceRun.mapping_partial.is_(False))
+            )
+        ).scalars()
+    ]
+    costs: dict[str, list[CostFacts]] = {run.id: [] for run in runs}
+    cost = EvidenceSymbolCost
+    ids = list(costs)
+    for i in range(0, len(ids), _BATCH_SIZE):
+        result = await session.execute(
+            select(
+                cost.run_id,
+                cost.symbol_id,
+                cost.lineage_id,
+                cost.body_digest,
+                cost.total_value,
+                cost.self_value,
+                cost.total_samples,
+                cost.call_count,
+            ).where(cost.run_id.in_(ids[i : i + _BATCH_SIZE]))
+        )
+        for row in result:
+            costs[row.run_id].append(CostFacts(*row[1:]))
+    return runs, costs
+
+
+async def replace_symbol_hotness(
+    session: AsyncSession, repository_id: str, rows: Iterable[Mapping[str, Any]]
+) -> int:
+    """Replace the repository's ``symbol_hotness`` with *rows*: one delete, bulk inserts.
+
+    *rows* hold the table's columns without ``repository_id`` and
+    ``built_at``, one per symbol id. Returns the rows written.
+    """
+    table: Table = SymbolHotness.__table__  # type: ignore[assignment]
+    at = _now_utc()
+    filled = [
+        _full_row(table, {**row, "repository_id": repository_id, "built_at": at}) for row in rows
+    ]
+    _refuse_repeated_keys(table, filled)
+    await session.execute(delete(SymbolHotness).where(SymbolHotness.repository_id == repository_id))
+    for i in range(0, len(filled), _BATCH_SIZE):
+        await session.execute(insert(table), filled[i : i + _BATCH_SIZE])
+    return len(filled)
+
+
+async def hotness_for_symbols(
+    session: AsyncSession, repository_id: str, symbol_ids: Iterable[str]
+) -> dict[str, SymbolHotness]:
+    """The ``symbol_hotness`` row of each of *symbol_ids* that has one.
+
+    A symbol missing from the result has no runtime evidence: unknown, never cold.
+    """
+    wanted = sorted(set(symbol_ids))
+    out: dict[str, SymbolHotness] = {}
+    for i in range(0, len(wanted), _BATCH_SIZE):
+        result = await session.execute(
+            select(SymbolHotness).where(
+                SymbolHotness.repository_id == repository_id,
+                SymbolHotness.symbol_id.in_(wanted[i : i + _BATCH_SIZE]),
+            )
+        )
+        out.update({row.symbol_id: row for row in result.scalars()})
+    return out
+
+
+async def ranked_hotness(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    workload_classes: Collection[str] | None = None,
+    limit: int = 10,
+) -> list[SymbolHotness]:
+    """The repository's ranked functions, strongest first, at most *limit*.
+
+    Ranked means tier ``ranked`` or ``lead_candidate`` from evidence that is
+    not stale. *workload_classes* keeps rows whose basis run has one of those
+    classes (``{"unit_test"}`` for what was measured in tests). Each row
+    carries its run's summary: workload, commit, age, explained share, sample
+    counts and how many functions outside production code it counted.
+    """
+    query = select(SymbolHotness).where(
+        SymbolHotness.repository_id == repository_id,
+        SymbolHotness.tier.in_(("ranked", "lead_candidate")),
+        SymbolHotness.freshness != "stale",
+    )
+    if workload_classes is not None:
+        query = query.where(SymbolHotness.workload_class.in_(sorted(workload_classes)))
+    rows = list((await session.execute(query)).scalars())
+    rows.sort(
+        key=lambda r: (
+            r.tier != "lead_candidate",
+            r.rank if r.rank is not None else float("inf"),
+            -(r.total_share or 0.0),
+            r.symbol_id,
+        )
+    )
+    return rows[:limit]
+
+
 def _refuse_repeated_keys(table: Table, rows: list[dict[str, Any]]) -> None:
     key = [column.name for column in table.primary_key.columns]
     seen: set[tuple[Any, ...]] = set()
@@ -217,7 +354,11 @@ __all__ = [
     "EVIDENCE_ROW_TABLES",
     "EvidenceWrite",
     "delete_evidence_runs",
+    "hotness_for_symbols",
+    "hotness_inputs",
     "list_evidence_runs",
     "prune_evidence_runs",
+    "ranked_hotness",
+    "replace_symbol_hotness",
     "save_evidence_run",
 ]

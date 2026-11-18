@@ -18,8 +18,10 @@ from repowise.core.persistence.models import (
     EvidenceBenchmarkResult,
     EvidenceRun,
     EvidenceSymbolCost,
+    FunctionFact,
     HealthFileMetric,
     Repository,
+    SymbolHotness,
     WikiSymbol,
 )
 from tests.unit.evidence.test_profile_formats import _pprof
@@ -151,6 +153,44 @@ def test_add_stores_the_run_with_its_provenance(indexed) -> None:
     )
     assert _json(again)["restamped"] is True
     assert len(_stored(root)[0]) == 1
+
+
+def _db(root: Path, work):
+    async def run():
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                return await work(session)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run())
+
+
+def test_a_profile_stamps_lineage_and_body_and_rebuilds_hotness(indexed) -> None:
+    root, head = indexed
+
+    async def at_head(session) -> None:
+        (await session.get(Repository, "r1")).head_commit = head
+        session.add(FunctionFact(repository_id="r1", symbol_id="src/app.py::build",
+                                 body_digest="d" * 32, lineage_id="L" * 16))
+
+    _db(root, at_head)
+    result = _add(str(_write(root)), "--workload", "cli build", "--class", "entry_point",
+                  "--commit", head, "--format", "json")
+    assert result.exit_code == 0, result.output
+
+    async def read(session):
+        cost = (await session.execute(select(EvidenceSymbolCost))).scalar_one()
+        hot = (await session.execute(select(SymbolHotness))).scalar_one()
+        return cost, hot
+
+    cost, hot = _db(root, read)
+    assert (cost.lineage_id, cost.body_digest) == ("L" * 16, "d" * 32)
+    assert (hot.symbol_id, hot.freshness, hot.rank, hot.tier) == (
+        "src/app.py::build", "current", 1, "lead_candidate",
+    )
+    assert (hot.samples, hot.run_samples, hot.explained_share) == (60, 100, 0.6)
 
 
 def test_an_uppercase_commit_is_stored_lowercase(indexed) -> None:
