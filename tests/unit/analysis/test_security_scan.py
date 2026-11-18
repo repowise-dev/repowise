@@ -644,11 +644,34 @@ class TestScanFile:
             ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
             # Python source quoted inside a string, as a test fixture holds it.
             ("src = 'q = f\"SELECT * FROM t WHERE id = {uid}\"'\n", False),
+            # An earlier f-string on the same line must not swallow the SQL f-string.
+            ('q = f"{prefix}" + f"SELECT * FROM users WHERE id = {user_id}"\n', True),
+            ('q = f"{prefix}" + f"SELECT * FROM users"\n', False),
         ],
     )
     def test_fstring_sql_needs_a_value_written_into_a_query(self, source: str, expected: bool) -> None:
         findings = scan_source("db.py", source)
         assert bool([f for f in findings if f["kind"] == "fstring_sql"]) is expected
+
+    def test_match_fstring_sql_helper_branches(self) -> None:
+        from repowise.core.analysis.security.patterns import _PATTERNS
+        from repowise.core.analysis.security.scanner import _match_fstring_sql
+
+        pattern = next(p for p, k, _ in _PATTERNS if k == "fstring_sql")
+        # Case 1: Match starts in masked code (e.g. comment) -> returns None
+        line = '# f"SELECT * FROM users WHERE id = {user_id}"'
+        masked = " " * len(line)
+        assert _match_fstring_sql(pattern, line, masked, [line], 1) is None
+
+        # Case 2: No match in line -> returns None
+        line_no_match = "x = 42"
+        assert _match_fstring_sql(pattern, line_no_match, line_no_match, [line_no_match], 1) is None
+
+        # Case 3: Match valid in unmasked code -> returns Match
+        line_valid = 'q = f"{p}" + f"SELECT * FROM users WHERE id = {uid}"'
+        match = _match_fstring_sql(pattern, line_valid, line_valid, [line_valid], 1)
+        assert match is not None
+        assert "SELECT" in match.group()
 
     @pytest.mark.parametrize(
         ("line", "kind"),
