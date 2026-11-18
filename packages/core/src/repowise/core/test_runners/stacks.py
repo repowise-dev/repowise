@@ -472,26 +472,44 @@ def _node_workspace(package: dict, pnpm: bool) -> bool:
 def _test_script(scripts: dict) -> tuple[str, str | None]:
     """The script that runs the tests and its runner.
 
-    ``test`` when its runner is known; else the other ``test…`` scripts when they all
-    run one known runner (``test`` may chain a build and a linter first); else ``test``
-    with no runner, or ``""`` when the package has no test script at all.
+    ``test`` when its runner is known. Else (``test`` may chain a build, a linter and
+    other scripts first) the one ``test...`` script with a known runner that ``test``
+    names, or the plain one of a single suite's variants (``test:vitest`` beside
+    ``test:vitest:min``). Else ``test`` with no runner, or ``""`` when the package has
+    no test script at all. Scripts with no known runner (Playwright, ``tsc``) write no
+    coverage these flags could ask for, so they do not compete.
     """
     test = str(scripts.get("test") or "")
     test = "" if _NO_TESTS in test else test
     runner = _node_runner(test)
     if runner:
         return "test", runner
-    found = {
-        name: r for name, script in scripts.items()
-        if re.fullmatch(r"test[\w:-]+", name) and "watch" not in name and "--watch" not in str(script)
-        and (r := _node_runner(str(script)))
-    }
-    if len(set(found.values())) == 1:
-        # Ceiling: the shortest name stands for the plain run (``test:vitest`` over
-        # ``test:vitest:min``); reading what each script sets would be the upgrade.
-        name = min(found, key=lambda n: (len(n), n))
-        return name, found[name]
+    name = _fallback_script(test, _runner_scripts(scripts))
+    if name:
+        return name, _node_runner(str(scripts[name]))
     return ("test" if test else ""), None
+
+
+def _runner_scripts(scripts: dict) -> dict[str, str]:
+    """``test...`` scripts that run a known runner, watch modes aside: name -> runner."""
+    found = {}
+    for name, script in scripts.items():
+        if re.fullmatch(r"test[\w:-]+", name) and "watch" not in name and "--watch" not in str(script):
+            runner = _node_runner(str(script))
+            if runner:
+                found[name] = runner
+    return found
+
+
+def _fallback_script(test: str, found: dict[str, str]) -> str:
+    """The one of *found* that is the whole run, or ``""``."""
+    named = [n for n in found if re.search(rf"(?<![\w:-]){re.escape(n)}(?![\w:-])", test)]
+    if len(named) == 1:
+        return named[0]
+    plain = min(found, key=lambda n: (len(n), n), default="")
+    variants = all(n == plain or n.startswith((f"{plain}:", f"{plain}-")) for n in found)
+    # Several suites (``test:unit`` and ``test:integration``): no one script is the whole run.
+    return plain if variants and len(set(found.values())) == 1 else ""
 
 
 def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None]:
