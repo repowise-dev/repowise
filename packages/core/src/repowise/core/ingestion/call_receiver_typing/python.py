@@ -10,11 +10,16 @@ from ..models import NamedBinding, Symbol
 from ..return_types import declared_return_type
 from ._shared import _FUNCTION_KINDS, _TYPE_KINDS
 
-# A ``return`` statement opening its line, with what it returns.
-_RETURN = re.compile(r"^\s*return\b(.*)$")
+# A ``return`` statement opening its line, or following a compound statement's
+# header on it (``if flag: return x``), with what it returns.
+_RETURN = re.compile(
+    r"^\s*(?:(?:if|elif|else|for|while|with|try|except|finally|case)\b[^#\n]*?:\s*)?"
+    r"return\b(.*)$"
+)
 _YIELD = re.compile(r"\byield\b")
-# A name or dotted name, alone on the rest of the line but for a comment.
-_NAME_RETURNED = re.compile(r"\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*(?:#.*)?")
+# A name or dotted name, alone on the rest of the line but for a comment; its
+# first segment is the local name an import binds.
+_NAME_RETURNED = re.compile(r"\s*(([A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*)\s*(?:#.*)?")
 _IMPORT_LINE = re.compile(r"^\s*(?:from\s+[\w.]+\s+)?import\s")
 
 
@@ -73,7 +78,9 @@ class PythonReturnTypes:
             if ret is None:
                 continue
             name = _NAME_RETURNED.fullmatch(ret.group(1))
-            returned.add(None if name is None else self._module_named(path, body, name.group(1)))
+            returned.add(
+                None if name is None else self._module_named(path, body, *name.group(1, 2))
+            )
         found = next(iter(returned)) if len(returned) == 1 else None
         self._returned_modules[symbol.id] = found
         return found
@@ -93,8 +100,10 @@ class PythonReturnTypes:
             if not any(start <= n <= end for start, end in nested)
         ]
 
-    def _module_named(self, path: str, body: list[int], name: str) -> str | None:
+    def _module_named(self, path: str, body: list[int], name: str, head: str) -> str | None:
         """The module file an import in *path* binds *name* to, as read in *body*.
+
+        *head* is *name*'s first segment, the local name the import binds.
 
         A dotted name must be one ``import a.b`` spells whole. A plain name
         must be bound by imports only, in the body and at module scope, and
@@ -120,7 +129,7 @@ class PythonReturnTypes:
             }
         found = next(iter(files)) if len(files) == 1 else None
         # Read the bindings only for a name an import binds to a module.
-        if found is None or self._bound_outside_imports(path, body, name.split(".", 1)[0]):
+        if found is None or self._bound_outside_imports(path, body, head):
             return None
         return found
 

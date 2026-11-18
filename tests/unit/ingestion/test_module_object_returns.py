@@ -74,6 +74,10 @@ _HEAD = "from pkg import catalog\nimport pkg.catalog as aliased\nfrom pkg import
             "    return catalog\n",
             "every return the same module",
         ),
+        (
+            "def load(fresh=False):\n    if fresh: return catalog\n    return catalog\n",
+            "a return after an if header on its line",
+        ),
     ],
 )
 def test_call_on_a_returned_module_reaches_its_function(tmp_path, returner, origin):
@@ -94,6 +98,9 @@ def test_call_on_a_returned_module_reaches_its_function(tmp_path, returner, orig
     [
         # One return hands on a value, not the module.
         "def load(flag):\n    if flag:\n        return catalog\n    return None\n",
+        # A return on its if header's line hands on another value.
+        "def load(flag):\n    if flag: return object()\n    return catalog\n",
+        "def load(flag):\n    if flag:\n        return catalog\n    else: return other\n",
         # The returns name two different modules.
         "def load(flag):\n    if flag:\n        return catalog\n    return other\n",
         # The name is a parameter, not the import.
