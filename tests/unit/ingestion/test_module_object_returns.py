@@ -78,6 +78,10 @@ _HEAD = "from pkg import catalog\nimport pkg.catalog as aliased\nfrom pkg import
             "def load():\n    with open(__file__): return catalog\n",
             "the only return follows a with header on its line",
         ),
+        (
+            "def load(\n  fresh=False,\n):\n    return catalog\n",
+            "arguments indented less than the body",
+        ),
     ],
 )
 def test_call_on_a_returned_module_reaches_its_function(tmp_path, returner, origin):
@@ -101,6 +105,7 @@ def test_call_on_a_returned_module_reaches_its_function(tmp_path, returner, orig
         # The body can fall through to None.
         "def load(flag):\n    if flag:\n        return catalog\n",
         "def load(flag):\n    if flag: return catalog\n",
+        "def load(flag):\n    if flag: x = 1\n    else: return catalog\n",
         "def load(flag):\n    for _ in flag:\n        return catalog\n    print(flag)\n",
         # A return on its if header's line hands on another value.
         "def load(flag):\n    if flag: return object()\n    return catalog\n",

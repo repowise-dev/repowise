@@ -21,9 +21,9 @@ _YIELD = re.compile(r"\byield\b")
 # first segment is the local name an import binds.
 _NAME_RETURNED = re.compile(r"\s*(([A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*)\s*(?:#.*)?")
 _IMPORT_LINE = re.compile(r"^\s*(?:from\s+[\w.]+\s+)?import\s")
-# A statement no path runs past: a return or raise, alone or after ``else:``
-# or a ``with`` header on its line.
-_ENDS = re.compile(r"^\s*(?:(?:else|(?:async\s+)?with\b[^#\n]*?)\s*:\s*)?(?:return|raise)\b")
+# A statement no path runs past: a return or raise, alone or after a ``with``
+# header on its line.
+_ENDS = re.compile(r"^\s*(?:(?:async\s+)?with\b[^#\n]*?:\s*)?(?:return|raise)\b")
 
 
 def _ends_in_return(lines: list[str], body: list[int], start_line: int) -> bool:
@@ -38,10 +38,18 @@ def _ends_in_return(lines: list[str], body: list[int], start_line: int) -> bool:
         return len(text) - len(text.lstrip())
 
     head = indent(lines[start_line - 1]) if start_line <= len(lines) else 0
+    # The body opens after the line closing the ``def`` header, past any
+    # argument lines a multi-line signature holds.
+    opened = next(
+        (n for n in body if n <= len(lines) and lines[n - 1].split("#", 1)[0].rstrip().endswith(":")),
+        None,
+    )
+    if opened is None:
+        return False
     statements = [
         lines[n - 1]
         for n in body
-        if start_line < n <= len(lines)
+        if opened < n <= len(lines)
         and lines[n - 1].strip()
         and not lines[n - 1].lstrip().startswith("#")
         and indent(lines[n - 1]) > head
