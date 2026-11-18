@@ -1,0 +1,373 @@
+# Runtime Evidence
+
+Runtime evidence is what a real run of your code showed: a CPU profile, benchmark
+results, test timings or per-test query counts. `repowise evidence add` reads one
+run from a file, joins every entry to a function of the index and stores it with
+where it came from: the commit, the checkout, the workload and its class, and
+what did not map.
+
+- **What it is:** facts about this repository's own functions, from runs you or
+  your agent already make. Each stored row names one indexed function at the
+  commit that was measured.
+- **What it is not:** a profiler or a benchmark runner. Repowise never runs your
+  code to get evidence. `evidence setup` prints the commands, you or your agent
+  run them, and `evidence add` reads the file they wrote.
+- **What it never guesses:** an entry that does not join exactly is skipped and
+  counted by reason, and a value that was not measured is unknown, never zero.
+
+The static findings it sits beside are in [PERFORMANCE.md](PERFORMANCE.md).
+
+## The loop
+
+Four commands, run from the repository root. The repository must be indexed
+first (`repowise init --yes --no-prose` needs no API key); `setup` says so when
+it is not.
+
+```bash
+repowise evidence setup --format json      # 1. what to run here, per build unit
+# 2. run the steps in next_call, each in its cwd, exactly as printed
+repowise evidence add <file> --workload "<name>" --class <class> --commit <sha>   # 3. ingest
+repowise evidence status                   # 4. what is stored and how fresh it is
+```
+
+`evidence setup` runs nothing and writes nothing. For each build unit it prints
+the stack, the coverage command and its ingest line, then the runtime targets
+(entry points first, then benchmarks, then the unit-test suite), each with a
+profiler command that needs no elevated privileges, its prerequisites, where the
+profile lands (under `.repowise/`) and the exact `evidence add` line. `next_call`
+is the sequence to run next: a coverage report already on disk, then the best
+profile, then the tests with coverage. Workloads already measured at HEAD are
+not asked for again, so rerunning `setup` after each step comes to an end:
+`next_call` is `null` and `reason` says why. A target with no ingest line carries
+a `reason` instead (no commit to stamp, a recipe whose output this build does not
+read, a program with no profiler flag).
+
+`repowise coverage setup` prints the same plan with the coverage part only.
+
+### Python example
+
+On a package whose `pyproject.toml` declares a console script `app =
+"app.cli:main"` and depends on `pytest-benchmark`, `setup` lists three targets:
+`app` (`entry_point`), `pytest bench` (`benchmark`) and `python tests`
+(`unit_test`). Its `next_call` profiles the console script with pyinstrument, in
+process, and ingests the Speedscope file:
+
+```json
+"next_call": {
+  "purpose": "Profile app (entry_point), then ingest the profile.",
+  "steps": [
+    { "cwd": "/work/app", "run": "python -m pip install pyinstrument" },
+    { "cwd": "/work/app", "run": "python -c \"import sys,os,atexit;from pyinstrument import Profiler;from pyinstrument.renderers import SpeedscopeRenderer;p=Profiler();o=os.path.abspath('.repowise/app.speedscope.json');os.makedirs(os.path.dirname(o),exist_ok=True);atexit.register(lambda:(p.stop(),open(o,'w',encoding='utf-8').write(p.output(SpeedscopeRenderer(processor_options={'filter_threshold':0})))));p.start();sys.argv=['app']+sys.argv[1:];from app.cli import main;sys.exit(main())\"" },
+    { "cwd": "/work/app", "run": "repowise evidence add .repowise/app.speedscope.json --workload \"app\" --class entry_point --commit 3f9c2b7e8a41d06c5b19e2f7a0d4c8b6e1f53a92" },
+    { "cwd": "/work/app", "run": "repowise evidence status" }
+  ]
+}
+```
+
+The benchmark target is `pytest --benchmark-only
+--benchmark-json=.repowise/pytest-bench.json`, run from the repository root. A
+unit that runs under `uv` gets `uv run --with pyinstrument python -c ...` and no
+install step.
+
+### Go example
+
+On a module with a benchmark in `work/work_test.go` and a `package main` in
+`cmd/fx`, `setup` lists `go run ./cmd/fx` (`entry_point`, with the reason "go run
+takes no profiler flag; profile this program through a benchmark or test."),
+`go bench ./work` (`benchmark`) and `go test ./work` (`unit_test`). Its
+`next_call` profiles the benchmark through `go test -cpuprofile`:
+
+```json
+"next_call": {
+  "purpose": "Profile go bench ./work (benchmark), then ingest the profile.",
+  "steps": [
+    { "cwd": "/work/fx", "run": "go test '-run=^$' -bench . -benchmem -count=1 -o .repowise/go-bench-work.test -cpuprofile .repowise/go-bench-work.pprof ./work" },
+    { "cwd": "/work/fx", "run": "repowise evidence add .repowise/go-bench-work.pprof --workload \"go bench ./work\" --class benchmark --commit 3f9c2b7e8a41d06c5b19e2f7a0d4c8b6e1f53a92" },
+    { "cwd": "/work/fx", "run": "repowise evidence status" }
+  ]
+}
+```
+
+### Hand it to an agent
+
+The "Connect evidence" prompt hands an agent the loop rather than stack
+commands, so the commands always come from `setup`:
+
+```text
+Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats steps you already ran. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
+```
+
+From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
+returns the same text with the agent's role line before it.
+
+## `evidence add`
+
+```bash
+repowise evidence add .repowise/app.speedscope.json --workload "app" --class entry_point --commit $(git rev-parse HEAD)
+repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
+repowise evidence add .repowise/pytest-bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
+repowise evidence add run.json --workload "nightly tests" --class unit_test --environment ci
+```
+
+| Flag | What it does |
+|---|---|
+| `--workload` | What ran, e.g. `cli build`. Required. Runs of one workload and environment form its history. |
+| `--class` | The workload class (below). Required. |
+| `--commit` | The full 40- or 64-character SHA measured. Required for a converted file. For a v1 file it defaults to `commit_sha`, must agree with it, and is required when the file has none. |
+| `--checkout-root` | The checkout the run used. Default: the repository root. |
+| `--dirty` / `--clean` | Whether the tree had uncommitted changes. Default: the file's `dirty`, else the working tree when `--commit` is HEAD. |
+| `--environment` | Where it ran, one word of up to 32 characters (`local`, `ci`). Default `unknown`. |
+| `--input-format` | Read the file as this format instead of detecting it from the content. |
+| `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled, when its format does not say. |
+| `--allow-partial` | Store a profile or query-count run even when more than half its entries did not map (flagged partial). |
+| `--format json` | The full result as JSON. |
+
+It exits 1 when nothing was stored (`reason`: `no_index`, `mostly_unmapped`,
+`nothing_matched`) and 2 on a usage error. The text output names what was
+stored, what was skipped by reason and whether the run reads as stale. The JSON
+result carries `kind`, `workload`, `class`, `commit_sha`, `index_commit`,
+`stale`, `dirty`, `entries`, `matched`, `skipped`, `unlinked`, `mapping_partial`,
+`unmatched_sample`, `input_format`, `conversion` (for a converted profile:
+`total`, `unit`, `explained_share`, `skip_rate`, `skipped_share_by_reason`,
+`self_unattributed`, `symbols`), and once stored `run_id`, `restamped`,
+`rows_written`, `truncated` and `runs_pruned`. Every flag:
+[CLI_REFERENCE.md](../reference/CLI_REFERENCE.md#repowise-evidence).
+
+### Workload classes
+
+The class says what kind of run produced the numbers, so a reader knows how far
+they reach.
+
+| Class | The run | What its numbers stand for |
+|---|---|---|
+| `unit_test` | The test suite, profiled or timed | Where time goes while tests run; test-shaped, not production-shaped |
+| `benchmark` | A benchmark run | One series per benchmark, named by the benchmark; never the cost of the production functions it calls |
+| `entry_point` | A real command or a request replay, profiled | Where time goes on that path |
+| `load_test` | A load test, profiled | Where time goes under that load |
+| `production` | Not accepted from the CLI | Reserved for a verified source; `--class production` is refused |
+
+`setup` ranks its targets `entry_point`, then `benchmark`, then `unit_test`, so
+the first profile it asks for is the one closest to real use.
+
+## Kinds and input formats
+
+One file holds one run of one kind.
+
+| Kind | Entries | Input formats read |
+|---|---|---|
+| `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, collapsed stacks, or a v1 document |
+| `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, or a v1 document |
+| `test_timing` | Per test: duration and outcome | A v1 document |
+| `query_count` | Per test or request and call site: statements issued | A v1 document |
+
+The format is detected from the content, never the file name;
+`--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
+`pprof`, `pytest-benchmark`, `collapsed`, or one a plugin registers).
+
+### Profiles as the profiler wrote them
+
+| Format | Written by | What a frame carries |
+|---|---|---|
+| `speedscope` | `pyinstrument -r speedscope` (or through its API, as `setup` prints), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
+| `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
+| `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
+
+- **Clock.** A profile needs `cpu` or `wall`. pyinstrument output is wall clock
+  and pprof says its own sample type; for py-spy, collapsed stacks and other
+  Speedscope exporters pass `--value-kind`.
+- **TypeScript.** A profile whose frames name TypeScript files of the checkout
+  is refused: its positions are in the compiled JavaScript. Profile the compiled
+  JavaScript under its own paths.
+- **Go `-trimpath`.** A binary built with `-trimpath` names its files by import
+  path, under no checkout, so its profile is refused. Profile a build without
+  it. A build made in another directory (CI, a container) joins with that
+  directory as `--checkout-root`.
+
+### Benchmark results as the runner wrote them
+
+| Format | Written by | What a benchmark carries |
+|---|---|---|
+| `pytest-benchmark` | `pytest --benchmark-only --benchmark-json=PATH` | `fullname` (the pytest node id, parameters included) names the series; `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds`, `iterations` |
+
+- The node id without its parameters is the benchmark function's symbol id, so
+  `benchmarks/test_io.py::TestCache::test_get[small]` links to
+  `TestCache::test_get` in `benchmarks/test_io.py`, and only that exact symbol.
+  A benchmark whose function is not indexed keeps its series, counted under
+  `unlinked`. Node ids are relative to pytest's rootdir, so run pytest from the
+  repository root; from a subdirectory every benchmark is `unlinked` as
+  `unknown_file`.
+- `--commit` is required. The commit pytest-benchmark recorded is a
+  cross-check only: a file that recorded another commit is refused. Its `dirty`
+  flag is kept unless `--dirty` or `--clean` says otherwise.
+- Machine details, parameters and `extra_info` are not read.
+
+## The `repowise-evidence-v1` document
+
+Any tool can write this shape directly; converted formats become it before
+they are joined.
+
+```json
+{ "format": "repowise-evidence-v1", "kind": "profile",
+  "commit_sha": "<40 or 64 hex>", "dirty": false,
+  "tool": { "name": "pyinstrument", "version": "4.6.2" },
+  "value_kind": "wall", "unit": "samples", "total": 5300, "explained": 580,
+  "skipped": { "outside_repo": 812 },
+  "symbols": [ { "path": "src/app/cli.py", "function": "build", "line": 40,
+                 "self": 12, "total": 410 } ] }
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `format` | yes | `repowise-evidence-v1` |
+| `kind` | yes | `profile`, `benchmark`, `test_timing` or `query_count` |
+| entry list | yes | `symbols`, `benchmarks`, `tests` or `queries`, by kind |
+| `value_kind` | profile | `cpu` or `wall` |
+| `unit` | profile | One word naming what every value counts: `samples`, `ns`, `ms`, `s` |
+| `total`, `explained` | no | The whole run's value, and the part with a repo frame on the stack; their ratio is the explained share |
+| `commit_sha` | no | The full commit measured, from `git rev-parse HEAD` at measurement |
+| `dirty` | no | Uncommitted changes at measurement |
+| `tool` | no | `name` and `version`, one word each |
+| `skipped` | no | Entries the writer dropped, by reason (lowercase words; anything else counts as `other`) |
+
+| Kind | Entry fields |
+|---|---|
+| `profile` | location; `self` and `total` in `unit` (one required); `self_samples`, `total_samples`; `calls` from deterministic tracers only |
+| `benchmark` | `name` (one per run, parameters included); optional location; `unit`, `lower_is_better`, `median`, `mean`, `min`, `max`, `stddev`, `rounds`, `iterations`, `allocs_per_op`, `bytes_per_op` (one value required) |
+| `test_timing` | `id` (`path::qualname`); optional location; `duration_s` and `outcome` (`passed`, `failed`, `skipped`, `error`; one required) |
+| `query_count` | `scope` (`{"kind": "test" or "request", "id"}`); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
+
+- A **location** is `path` (repo-relative, forward slashes), `function` (the
+  qualified name, or the symbol's id after its file as a test runner names it,
+  `TestCache::test_get`) and `line` (where the function starts). `"exact": true`
+  says `function` is the symbol's own name, so a bare name never links to a
+  method that shares it.
+- **Units.** A test timing is in seconds (`wall`) and a query count in
+  statements, whatever the document says. Benchmarks carry a `unit` per entry.
+- **Values** are finite and non-negative. A missing value is unknown, never
+  zero.
+- **Refused whole:** not a JSON object, another `format`, an unknown `kind`, a
+  missing entry list, a malformed `commit_sha`, a profile with no `value_kind`
+  or `unit`. The error says what to fix.
+- **Skipped and counted:** a bad entry (an absolute path or one outside the
+  repository, no value, statement text instead of a digest, a repeat). An
+  optional location that breaks the path rules is dropped and the entry kept.
+- Fields the format does not name are never read.
+
+## How entries join to code
+
+Every entry ends as a row for exactly one indexed function, or as a count under
+a reason. Nothing is matched by path suffix.
+
+**v1 entries** name their function. The join is an exact lookup: the qualified
+name or the id after the file first, a bare name only when the file declares
+nothing else under it (never with `"exact": true`), the start line to settle
+two candidates. Skip reasons: `unknown_file`, `unknown_symbol`,
+`ambiguous_symbol`, `generated`, `vendored`, `dirty_file` (the file differs
+from the commit measured, checked when that commit is HEAD) and `duplicate`. A
+benchmark or test keeps its row without its function and is counted under
+`unlinked` instead.
+
+**Profile frames** go through one resolver:
+
+- **Checkout root required.** A frame joins only when its path sits under the
+  checkout root (`--checkout-root`, default the repository). A profile can load
+  the package from another checkout, so a path that only ends like a repo file
+  never joins.
+- **Two signals.** The line must fall in an indexed function, and a second
+  signal from the frame must agree: the qualified name for Python, the start
+  line for Go, the start line and column for JavaScript.
+- **Skip reasons, counted:** `outside_root` (stored as `outside_repo`),
+  `unsupported_language`, `bad_line`, `dirty`, `generated`, `vendored`,
+  `not_indexed`, `no_span`, `ambiguous`, `no_second_signal`, `no_source`,
+  `second_signal_mismatch`.
+- **Nested code.** Lambdas, generator expressions and nested functions with no
+  symbol of their own are charged to the enclosing function when the frame's
+  qualified name shows it.
+- **Module bodies.** Import-time code (Python `<module>`, Go package `init`)
+  resolves to its file and counts as explained. The index keeps no symbol for a
+  file's top level, so its self time is reported under `self_unattributed` as
+  `module_body`, never dropped.
+- **Inclusive and self.** Each function gets inclusive time (every stack it is
+  on, once per stack even when it recurses) and self time (stacks where it is
+  the innermost repo frame; built-ins and dependencies below it count as its
+  own). A stack whose innermost repo frame was skipped charges no self time.
+- **Explained share.** `explained` is the weight of stacks with a resolved
+  frame in production code (`code_origin`). `add` prints it beside the skip
+  rate, the share of repo frame time that did not join, broken down by reason.
+
+A profile or query-count run where more than half the entries did not map is
+refused unless `--allow-partial`; stored that way it is flagged
+`mapping_partial`.
+
+### Stale evidence
+
+Evidence keeps the commit it measured. A run from another commit than the
+checkout's HEAD is stored with its own commit and reads as `stale`; it is never
+re-mapped onto newer code. When the run measured HEAD but the index is at an
+older commit, `add` says to run `repowise update` and add the file again. The same
+file added again with the same flags against the same index restamps the stored
+run instead of adding a second one; after `repowise update` it is joined afresh.
+
+## `evidence status`
+
+```bash
+repowise evidence status
+repowise evidence status --format json
+```
+
+One line per workload (kind, name, environment), the newest run of each: its
+kind, class and environment, freshness against the indexed commit (`current`,
+`stale` or `unknown`), the commit, how many entries were stored, how much of
+the run repo code explains, and `(partial)` when flagged. The JSON form adds
+`runs_stored` per kind and, per run, the tool, value kind, unit, `ingested_at`,
+unit counts (`total`, `matched`, `skipped`, `outside_repo`, `truncated`) and
+skip reasons. An unknown value reads as unknown, never 0.
+
+## What is stored
+
+Evidence lives in the local index (`evidence_runs` and one table per kind:
+`evidence_symbol_costs`, `evidence_benchmark_results`, `evidence_test_timings`,
+`evidence_query_counts`).
+
+| Stored | Never stored |
+|---|---|
+| Per run: workload name, class, environment, tool name and version, commit, dirty flag, checkout root, entry counts by outcome, skip reasons, up to 10 repo-relative paths that did not map, total and explained value | Raw stacks or samples |
+| Per function: symbol id, start line, self and inclusive value, sample counts, call count when a tracer gave one | Frames outside the checkout, labels, environment variables, command lines |
+| Per benchmark: its name and the statistics the tool gave | Machine details, benchmark parameters, `extra_info` |
+| Per query site: scope, digest of the normalized statement, counts | Statement text |
+
+Paths are repo-relative. Retention is by kind: each workload and environment
+keeps its newest `history_runs` runs, and the kind keeps `max_runs` overall,
+oldest first, though every workload always keeps its newest run.
+
+## Settings
+
+The `evidence:` block of `.repowise/config.yaml`:
+
+| Key | Default | What it does |
+|---|---|---|
+| `max_file_mb` | `20` | Largest file read; a bigger one is refused before it is read |
+| `max_symbols_per_run` | `1500` | Most functions stored from one profile, costliest first; the rest are counted as truncated |
+| `max_rows_per_run` | `30000` | Most benchmark, test or query rows stored from one run |
+| `history_runs` | `20` | Runs kept per workload and environment, per kind |
+| `max_runs` | `50` | Runs kept per kind across all workloads |
+
+Full reference: [CONFIG.md](../reference/CONFIG.md#the-evidence-block).
+
+## Adding a format
+
+Input formats register on the `profile-format` seam. A format is a sniffer over
+the file's first bytes plus one reader: `read` returns a profile run (frames
+and weighted stacks) that the shared converter joins, or `to_v1` returns a v1
+document of another kind, such as benchmark results. A plugin registers one
+from its `register()`:
+
+```python
+from repowise.core.evidence.profile_formats import ProfileFormat, profile_formats
+
+profile_formats.register("myprof", ProfileFormat(sniff=my_sniff, read=my_read))
+```
+
+Detection takes the first format that claims the file, built-in formats first,
+and `--input-format myprof` picks it by name. Entry points, testing and
+publishing: [PLUGINS.md](../reference/PLUGINS.md#seams).
