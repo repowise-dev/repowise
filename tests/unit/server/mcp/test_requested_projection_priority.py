@@ -406,3 +406,26 @@ def test_declared_projections_name_real_shed_order_keys(tool: str) -> None:
     for token, paths in contract.requested_projections:
         for path in paths:
             assert shed_stem(path) in stems, f"{tool}: {token} -> {path}"
+
+
+def _other_content(result: dict[str, Any]) -> set[str]:
+    return {key for key, value in result.items() if key not in {"outline", "_meta"} and value}
+
+
+@pytest.mark.parametrize("sections", [400, 4000])
+def test_a_floor_that_cannot_fit_trims_the_block_instead_of_dropping_it(
+    sections: int,
+) -> None:
+    """Asking for a long outline must not serve less than not asking."""
+    asked = _enforce("get_overview", _overview_payload(sections), include=["outline"])
+    unasked = _enforce("get_overview", _overview_payload(sections))
+
+    outline = asked["outline"]
+    assert len(outline["sections"]) >= len(unasked["outline"]["sections"]) > 1
+    assert outline["sections_truncated"] is True
+    assert outline["sections_total"] == sections
+    assert outline["sections_omitted"] == sections - len(outline["sections"])
+    assert asked["_meta"]["omitted"]["refs"]
+    assert _other_content(unasked) <= _other_content(asked)
+    budget = asked["_meta"]["response_budget"]
+    assert budget["serialized_chars"] <= budget["limit_chars"]
