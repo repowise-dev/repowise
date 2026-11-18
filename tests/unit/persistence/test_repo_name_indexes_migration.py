@@ -1,4 +1,4 @@
-"""Migration 0124: index (repository_id, name) on wiki_symbols and graph_nodes.
+"""Migration 0130: index (repository_id, name) on wiki_symbols and graph_nodes.
 
 Asserts both indexes exist after Alembic upgrade and after init_db.
 """
@@ -42,23 +42,23 @@ def _table_indexes(db_path: Path, table_name: str) -> set[str]:
         conn.close()
 
 
-def test_migration_0124_upgrade_and_downgrade(tmp_path: Path) -> None:
+def test_migration_0130_upgrade_and_downgrade(tmp_path: Path) -> None:
     from alembic import command
 
     db_path = tmp_path / "wiki.db"
     config = _alembic_config(db_path)
 
-    command.upgrade(config, "0123")
+    command.upgrade(config, "0129")
     assert "ix_wiki_symbols_repo_name" not in _table_indexes(db_path, "wiki_symbols")
     assert "ix_graph_nodes_repo_name" not in _table_indexes(db_path, "graph_nodes")
 
-    command.upgrade(config, "0124")
+    command.upgrade(config, "0130")
     assert "ix_wiki_symbols_repo_name" in _table_indexes(db_path, "wiki_symbols")
     assert "ix_graph_nodes_repo_name" in _table_indexes(db_path, "graph_nodes")
     assert _index_columns(db_path, "ix_wiki_symbols_repo_name") == ["repository_id", "name"]
     assert _index_columns(db_path, "ix_graph_nodes_repo_name") == ["repository_id", "name"]
 
-    command.downgrade(config, "0123")
+    command.downgrade(config, "0129")
     assert "ix_wiki_symbols_repo_name" not in _table_indexes(db_path, "wiki_symbols")
     assert "ix_graph_nodes_repo_name" not in _table_indexes(db_path, "graph_nodes")
 

@@ -4,8 +4,8 @@ Neither table had an index that leads with ``name`` after ``repository_id``,
 so exact name lookups (e.g. in MCP resolution, call graphs, callers, pointers,
 flows) scanned every row for the target repository.
 
-Revision ID: 0124
-Revises: 0115
+Revision ID: 0130
+Revises: 0129
 Create Date: 2026-11-13
 """
 
@@ -16,8 +16,8 @@ from collections.abc import Sequence
 from alembic import op
 
 # revision identifiers
-revision: str = "0124"
-down_revision: str | None = "0123"
+revision: str = "0130"
+down_revision: str | None = "0129"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
