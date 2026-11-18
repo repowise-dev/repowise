@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.dotnet_test_projects import (
+    TEST_PACKAGES,
     is_test_project_csproj,
     read_dotnet_test_projects,
 )
@@ -96,7 +97,7 @@ from repowise.core.dotnet_test_projects import (
             "</Project>\n",
             False,
         ),
-        # Framework-only references without SDK are NOT test projects
+        # Framework-only references: xunit is now in TEST_PACKAGES so it IS a test project
         (
             '<Project Sdk="Microsoft.NET.Sdk">\n'
             "  <ItemGroup>\n"
@@ -105,7 +106,46 @@ from repowise.core.dotnet_test_projects import (
             '    <PackageReference Include="NUnit" Version="4.0.0" />\n'
             "  </ItemGroup>\n"
             "</Project>\n",
+            True,
+        ),
+        # xunit.v3 only — the repro case from issue #5872
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+            True,
+        ),
+        # xunit.v3 + explicit IsTestProject=false — false still wins
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <PropertyGroup>\n"
+            "    <IsTestProject>false</IsTestProject>\n"
+            "  </PropertyGroup>\n"
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
             False,
+        ),
+        # nunit3testadapter only
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="NUnit3TestAdapter" Version="4.6.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+            True,
+        ),
+        # tunit only
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="TUnit" Version="0.3.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+            True,
         ),
         # Classic MSBuild XML with xmlns
         (
@@ -212,3 +252,86 @@ def test_unreadable_project_yields_unknown() -> None:
     assert projects.collects("malformed/File.cs") is None
     assert projects.collects("outer/Valid.cs") is True
     assert projects.collects("outer/inner/File.cs") is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #5872 — xunit.v3-only project must be classified as a test project
+# by the traverser (collects) just as it is by the runner planner.
+# ---------------------------------------------------------------------------
+
+_XUNIT_V3_CSPROJ = (
+    '<Project Sdk="Microsoft.NET.Sdk">\n'
+    "  <PropertyGroup>\n"
+    "    <TargetFramework>net9.0</TargetFramework>\n"
+    "  </PropertyGroup>\n"
+    "  <ItemGroup>\n"
+    '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+    "  </ItemGroup>\n"
+    "</Project>\n"
+)
+
+_NAME_ONLY_CSPROJ = (
+    '<Project Sdk="Microsoft.NET.Sdk">\n'
+    "  <PropertyGroup>\n"
+    "    <TargetFramework>net9.0</TargetFramework>\n"
+    "  </PropertyGroup>\n"
+    "</Project>\n"
+)
+
+_EXPLICIT_FALSE_CSPROJ = (
+    '<Project Sdk="Microsoft.NET.Sdk">\n'
+    "  <PropertyGroup>\n"
+    "    <IsTestProject>false</IsTestProject>\n"
+    "  </PropertyGroup>\n"
+    "  <ItemGroup>\n"
+    '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+    "  </ItemGroup>\n"
+    "</Project>\n"
+)
+
+
+def test_xunit_v3_only_project_collects_as_test() -> None:
+    """A project with only xunit.v3 (no Microsoft.NET.Test.Sdk) is a test project."""
+    projects = read_dotnet_test_projects(
+        [("tests/Shop.Tests/Shop.Tests.csproj", _XUNIT_V3_CSPROJ)]
+    )
+    assert projects.collects("tests/Shop.Tests/CartTests.cs") is True
+
+
+def test_xunit_v3_only_is_test_project_csproj_agrees() -> None:
+    """is_test_project_csproj and read_dotnet_test_projects agree on xunit.v3-only."""
+    assert is_test_project_csproj(_XUNIT_V3_CSPROJ) is True
+    projects = read_dotnet_test_projects(
+        [("tests/Shop.Tests/Shop.Tests.csproj", _XUNIT_V3_CSPROJ)]
+    )
+    assert projects.collects("tests/Shop.Tests/CartTests.cs") is True
+
+
+def test_name_only_project_does_not_collect_via_csproj_alone() -> None:
+    """A project whose csproj has no test signals is not a test project by itself.
+
+    The name-based rule (``Shop.Tests``) lives in ``test_runners/packages.py``
+    and is applied by the *runner planner*, not by the traverser.  The traverser
+    relies solely on the csproj verdict.
+    """
+    assert is_test_project_csproj(_NAME_ONLY_CSPROJ) is False
+    projects = read_dotnet_test_projects(
+        [("tests/Shop.Tests/Shop.Tests.csproj", _NAME_ONLY_CSPROJ)]
+    )
+    assert projects.collects("tests/Shop.Tests/CartTests.cs") is False
+
+
+def test_explicit_is_test_project_false_wins_over_xunit_v3() -> None:
+    """IsTestProject=false wins even when xunit.v3 is referenced."""
+    assert is_test_project_csproj(_EXPLICIT_FALSE_CSPROJ) is False
+    projects = read_dotnet_test_projects(
+        [("tests/Shop.Tests/Shop.Tests.csproj", _EXPLICIT_FALSE_CSPROJ)]
+    )
+    assert projects.collects("tests/Shop.Tests/CartTests.cs") is False
+
+
+def test_test_packages_is_exported() -> None:
+    """TEST_PACKAGES is importable and contains the expected ids."""
+    assert "xunit.v3" in TEST_PACKAGES
+    assert "microsoft.net.test.sdk" in TEST_PACKAGES
+    assert "nunit3testadapter" in TEST_PACKAGES

@@ -18,6 +18,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
+from ..dotnet_test_projects import TEST_PACKAGES as _TEST_PACKAGES
 from ..ingestion.external_systems.maven_model import load_maven_reactor
 from ..ingestion.package_roots import module_for, owning_package
 from ..ingestion.resolvers.dotnet.msbuild import MSBuildProject, parse_csproj
@@ -163,22 +164,6 @@ def js_root_runs(tests: Iterable[str]) -> dict[str, list[str | None]]:
     return {path: list(npm_test_run(path, "")) for path in files}
 
 
-#: NuGet ids that make a project a test project: the test SDK and each
-#: framework's runner.
-_TEST_PACKAGES = frozenset(
-    {
-        "microsoft.net.test.sdk",
-        "mstest",
-        "mstest.testadapter",
-        "nunit3testadapter",
-        "tunit",
-        "xunit",
-        "xunit.runner.visualstudio",
-        "xunit.v3",
-        "xunit.v3.mtp-v1",
-        "xunit.v3.mtp-v2",
-    }
-)
 #: MSBuild files every project below their directory imports.
 _SHARED_BUILD_FILES = ("Directory.Build.props", "Directory.Build.targets")
 #: The .NET test project naming convention (``Shop.Tests``, ``Shop.UnitTests``,

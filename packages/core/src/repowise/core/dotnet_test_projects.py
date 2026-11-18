@@ -1,8 +1,9 @@
 """Where .NET test projects live, read from .csproj files.
 
-A C# test project sets `<IsTestProject>true</IsTestProject>` or references
-`Microsoft.NET.Test.Sdk`. Files inside such a project (step definitions, fakes,
-helpers) are test material even if their filename or directory does not say Test.
+A C# test project sets `<IsTestProject>true</IsTestProject>` or references any
+of the well-known NuGet test packages (the Test SDK, xunit.v3, NUnit adapters,
+MSTest, TUnit …). Files inside such a project (step definitions, fakes, helpers)
+are test material even if their filename or directory does not say Test.
 """
 
 from __future__ import annotations
@@ -12,7 +13,24 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
-_TEST_SDK_PACKAGE = "microsoft.net.test.sdk"
+#: NuGet ids (lower-cased) that make a .csproj a test project.  Single source
+#: of truth — ``test_runners/packages.py`` imports this instead of keeping its
+#: own copy.  Extend here when a new test framework arrives; both the traverser
+#: and the runner planner will pick up the change automatically.
+TEST_PACKAGES: frozenset[str] = frozenset(
+    {
+        "microsoft.net.test.sdk",
+        "mstest",
+        "mstest.testadapter",
+        "nunit3testadapter",
+        "tunit",
+        "xunit",
+        "xunit.runner.visualstudio",
+        "xunit.v3",
+        "xunit.v3.mtp-v1",
+        "xunit.v3.mtp-v2",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +58,11 @@ class DotnetTestProjects:
 def is_test_project_csproj(text: str) -> bool | None:
     """Whether a .csproj XML string describes a test project.
 
+    A project is a test project when ``<IsTestProject>true</IsTestProject>`` is
+    set, or when it references any package in :data:`TEST_PACKAGES`.  An
+    explicit ``<IsTestProject>false</IsTestProject>`` wins regardless of which
+    packages are present.
+
     Returns:
         True: is a test project.
         False: is not a test project.
@@ -51,7 +74,7 @@ def is_test_project_csproj(text: str) -> bool | None:
         return None
 
     explicit_is_test: bool | None = None
-    has_test_sdk = False
+    has_test_package = False
 
     for elem in root.iter():
         local_tag = elem.tag.split("}")[-1].lower()
@@ -65,15 +88,15 @@ def is_test_project_csproj(text: str) -> bool | None:
             for attr_name, attr_val in elem.attrib.items():
                 if (
                     attr_name.split("}")[-1].lower() in ("include", "update")
-                    and attr_val.strip().lower() == _TEST_SDK_PACKAGE
+                    and attr_val.strip().lower() in TEST_PACKAGES
                 ):
-                    has_test_sdk = True
+                    has_test_package = True
 
     if explicit_is_test is False:
         return False
     if explicit_is_test is True:
         return True
-    return has_test_sdk
+    return has_test_package
 
 
 def read_dotnet_test_projects(files: Iterable[tuple[str, str]]) -> DotnetTestProjects:
