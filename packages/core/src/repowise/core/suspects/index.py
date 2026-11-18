@@ -79,8 +79,8 @@ async def _resolve_trace(
     """
     from sqlalchemy import select
 
-    from repowise.core.persistence.models import HealthFileMetric, Repository, WikiSymbol
-    from repowise.core.workspace.repo_index import IndexedSymbol
+    from repowise.core.frame_resolver import checkout_reader, load_frame_symbols
+    from repowise.core.persistence.models import Repository
 
     files = list(prepared.trace_files)
     if not files:
@@ -95,38 +95,9 @@ async def _resolve_trace(
     )
     if changed is None:
         return prepared
-    symbols: dict[str, list[IndexedSymbol]] = {f: [] for f in files}
-    rows = await session.execute(
-        select(
-            WikiSymbol.symbol_id, WikiSymbol.name, WikiSymbol.qualified_name, WikiSymbol.kind,
-            WikiSymbol.file_path, WikiSymbol.start_line, WikiSymbol.end_line,
-        ).where(WikiSymbol.repository_id == repo_id, WikiSymbol.file_path.in_(files))
-    )
-    for r in rows:
-        symbols[r.file_path].append(
-            IndexedSymbol(
-                symbol_id=r.symbol_id, name=r.name, qualified_name=r.qualified_name,
-                kind=r.kind, signature="", file_path=r.file_path,
-                start_line=r.start_line, end_line=r.end_line, visibility="",
-            )
-        )
-    origins = dict(
-        (
-            await session.execute(
-                select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
-                    HealthFileMetric.repository_id == repo_id,
-                    HealthFileMetric.file_path.in_(files),
-                    HealthFileMetric.code_origin.is_not(None),
-                )
-            )
-        ).all()
-    )
-
-    def read_lines(rel: str) -> list[str] | None:
-        try:
-            return (repo_path / rel).read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            return None
+    loaded, origins = await load_frame_symbols(session, repo_id, files)
+    # Every trace file maps to the repo already, so one with no symbols is indexed.
+    symbols = {f: [] for f in files} | loaded
 
     return await asyncio.to_thread(
         lambda: resolve_trace(
@@ -135,7 +106,7 @@ async def _resolve_trace(
             symbols_by_file=symbols,
             dirty_paths=set(changed.splitlines()),
             origins=origins,
-            read_lines=read_lines,
+            read_lines=checkout_reader(repo_path),
         )
     )
 
