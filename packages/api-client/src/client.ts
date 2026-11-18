@@ -119,8 +119,13 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export function doFetch(url: string, init: RequestInit): Promise<Response> {
-  return (config.fetch ?? fetch)(url, init);
+/** Returns the configured fetch implementation, or the global fetch. */
+export function getFetch(): typeof fetch {
+  return config.fetch ?? fetch;
+}
+
+export function doFetch(url: string, init?: RequestInit): Promise<Response> {
+  return getFetch()(url, init);
 }
 
 /** Request a bare HTTP primitive accepts: plain-object headers, string body. */
