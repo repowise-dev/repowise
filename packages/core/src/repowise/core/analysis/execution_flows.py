@@ -7,15 +7,20 @@ intra-community or cross-community based on community assignments.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, get_args
 
 import networkx as nx
 import structlog
 
+from repowise.core import ids
+from repowise.core.analysis import execution_graph
 from repowise.core.analysis.execution_graph import (
     is_excluded_execution_path,
     is_walkable_execution_edge,
@@ -167,6 +172,48 @@ class ExecutionFlowReport:
     # threshold, not just the ones that produced a traced flow. Persisted so
     # the symbol-level "entry point" indicator works for all entry points.
     entry_point_scores: dict[str, float] = field(default_factory=dict)
+
+
+@functools.cache
+def _tracer_code_fingerprint() -> bytes:
+    """Hash of the tracer, edge-policy and id source, so an upgrade never reuses an old report."""
+    digest = hashlib.sha256()
+    for module_file in (__file__, execution_graph.__file__, ids.__file__):
+        digest.update(Path(module_file).read_bytes())
+    return digest.digest()
+
+
+def execution_flow_signature(graph: nx.DiGraph, community_map: dict[str, int]) -> str:
+    """Digest of everything a default-config trace reads; equal digests trace equal reports.
+
+    Each node's scoring attributes and community, and each execution edge with
+    whether it is walkable (plus the origin of one that is not, which
+    ``termination_detail`` counts). Hashed in graph order because ties in
+    scoring and successor order fall to insertion order.
+    """
+    h = hashlib.sha256(_tracer_code_fingerprint())
+    for node_id, d in graph.nodes(data=True):
+        row = (
+            node_id,
+            d.get("node_type"),
+            d.get("kind"),
+            d.get("file_path"),
+            d.get("visibility"),
+            d.get("name"),
+            bool(d.get("is_entry_point")),
+            community_map.get(node_id),
+        )
+        h.update(repr(row).encode("utf-8", "replace"))
+    h.update(b"\x01")
+    for u, v, d in graph.edges(data=True):
+        edge_type = d.get("edge_type")
+        if edge_type not in EXECUTION_EDGE_TYPES:
+            continue
+        origin = d.get("resolution_origin")
+        walkable = is_walkable_execution_edge(edge_type, origin, d.get("confidence"))
+        row = (u, v, edge_type, walkable, None if walkable else origin or "unlabelled")
+        h.update(repr(row).encode("utf-8", "replace"))
+    return h.hexdigest()
 
 
 # ---------------------------------------------------------------------------
