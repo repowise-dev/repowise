@@ -393,8 +393,9 @@ _NO_TESTS = "no test specified"
 
 _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")
 #: ``npx``, ``bunx`` and any ``<tool> exec`` (``pnpm exec``, ``nub exec --node``) run the command
-#: after their own flags. ``-p``/``--package`` names a package to install, not the command, so the
-#: match stops there and the line names no runner.
+#: after their own flags. A flag that takes a value (``--prefix pkg``) leaves the value where the
+#: runner would be, so the line names no runner. ``-p``/``--package`` stop the match outright: their
+#: value is a package name, often the runner's own, and is not the command.
 _EXEC_WRAPPER = re.compile(r"^(?:npx|bunx|[\w.-]+\s+exec)(?:\s+-(?!p\b|-package\b)\S+)*\s+")
 
 
