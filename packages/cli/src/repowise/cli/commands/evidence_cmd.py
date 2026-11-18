@@ -693,10 +693,10 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
             lines.append(f"{head}: [yellow]{escape(target['reason'])}[/yellow]")
             continue
         lines.append(f"{head}: [cyan]{escape(target['command'])}[/cyan]")
+        if target["reason"]:
+            lines.append(f"    [yellow]{escape(target['reason'])}[/yellow]")
         if target["ingest"]:
             lines.append(f"    then: [cyan]{escape(target['ingest'])}[/cyan]")
-        elif target["reason"]:
-            lines.append(f"    [yellow]{escape(target['reason'])}[/yellow]")
     return lines
 
 

@@ -9,7 +9,12 @@ import pytest
 
 from repowise.core.analysis.published_packages import BuildFacts, go_main_packages
 from repowise.core.code_origin import is_benchmark_function, is_benchmark_path
-from repowise.core.evidence.runtime_setup import RuntimeInputs, load_runtime_inputs, runtime_targets
+from repowise.core.evidence.runtime_setup import (
+    ARGS_PLACEHOLDER,
+    RuntimeInputs,
+    load_runtime_inputs,
+    runtime_targets,
+)
 from repowise.core.evidence.setup import evidence_setup
 from repowise.core.generation.flow_entries import console_scripts, python_scripts
 from repowise.core.test_runners.stacks import detect_repo_stacks
@@ -99,14 +104,30 @@ def test_a_console_script_is_profiled_in_process_before_the_test_suite(tmp_path:
     assert "from app.cli import main;sys.exit(main())" in entry["command"]
     assert "'filter_threshold':0" in entry["command"]
     assert entry["command"].startswith('python -c "') and entry["command"].count('"') == 2
-    assert entry["prerequisites"] == ["python -m pip install pyinstrument"]
+    # The unit's test install brings the project and pytest; the profiler comes on top.
+    install = ["python -m pip install -e . pytest pytest-cov", "python -m pip install pyinstrument"]
+    assert entry["prerequisites"] == install
     assert entry["ingest"] == (
         f'repowise evidence add .repowise/app.speedscope.json --workload "app" '
         f"--class entry_point --commit {SHA}"
     )
     assert tests["class"] == "unit_test"
     assert "pytest.main" in tests["command"]
-    assert tests["prerequisites"][-1] == "python -m pip install pytest"
+    assert tests["prerequisites"] == install
+
+
+def test_an_entry_point_waits_for_its_arguments(tmp_path: Path) -> None:
+    _python(tmp_path)
+
+    entry, tests = _targets(tmp_path)
+
+    # Run bare, a program measures its usage screen: the agent fills the placeholder.
+    assert entry["command"].endswith(f'" {ARGS_PLACEHOLDER}')
+    assert ARGS_PLACEHOLDER in entry["reason"] and entry["ingest"]
+    assert tests["reason"] is None and not tests["command"].endswith(ARGS_PLACEHOLDER)
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+    assert plan["next_call"]["purpose"] == "Profile python tests (unit_test), then ingest the profile."
+    assert all(ARGS_PLACEHOLDER not in s["run"] for s in plan["next_call"]["steps"])
 
 
 def test_a_python_main_module_the_index_flags_is_run_as_a_module(tmp_path: Path) -> None:
@@ -142,6 +163,31 @@ def test_pytest_benchmark_ranks_above_the_test_suite_and_runs_from_the_root(
     assert bench["command"] == "pytest --benchmark-only --benchmark-json=.repowise/pytest-bench.json"
     assert bench["cwd"] == str(tmp_path)
     assert '--class benchmark' in bench["ingest"]
+
+
+def test_pytest_benchmark_runs_in_the_units_environment(tmp_path: Path) -> None:
+    # A uv unit below the root, its test tools in a dependency group (a monorepo library).
+    unit = tmp_path / "libs" / "core"
+    unit.mkdir(parents=True)
+    _python(unit, scripts="", extra='dependencies = []\n[dependency-groups]\ntest = ["pytest", "pytest-benchmark"]\n')
+    (unit / "uv.lock").write_text("")
+    (stack,) = detect_repo_stacks(tmp_path)
+
+    bench = next(t for t in runtime_targets(stack, tmp_path, RuntimeInputs(), SHA) if t["class"] == "benchmark")
+
+    assert bench["command"] == (
+        "uv run --project libs/core --group test pytest libs/core --benchmark-only "
+        "--benchmark-json=.repowise/libs-core-pytest-bench.json"
+    )
+    assert bench["cwd"] == str(tmp_path) and bench["prerequisites"] == []
+
+
+def test_pytest_benchmark_at_the_root_installs_what_the_tests_need(tmp_path: Path) -> None:
+    _python(tmp_path, scripts="", extra='dependencies = ["pytest-benchmark"]\n')
+
+    bench = next(t for t in _targets(tmp_path) if t["class"] == "benchmark")
+
+    assert bench["prerequisites"] == ["python -m pip install -e . pytest pytest-cov"]
 
 
 def test_this_build_reads_pytest_benchmark_so_its_ingest_line_is_printed(tmp_path: Path) -> None:
@@ -212,6 +258,19 @@ def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path, registe
         "go test -count=1 -o .repowise/go-test-work.test -cpuprofile .repowise/go-test-work.pprof ./work"
     )
     assert '--workload "go bench ./work" --class benchmark' in bench["ingest"]
+
+
+def test_go_tests_profile_the_package_with_the_most_tests(tmp_path: Path, registered) -> None:
+    _go(tmp_path)
+    registered("pprof")
+    # A shallow command package with one test, and a deeper package with the suite.
+    inputs = RuntimeInputs(test_files=(
+        "cmd/fx/main_test.go", "work/engine/a_test.go", "work/engine/b_test.go",
+    ))
+
+    tests = _targets_go(tmp_path, inputs, [])[-1]
+
+    assert tests["workload"] == "go test ./work/engine"
 
 
 def test_go_profiles_wait_for_a_pprof_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -296,22 +355,22 @@ def test_an_unknown_launcher_runs_plain_python(tmp_path: Path) -> None:
     for test in ("FOO=1 pytest", "cd x && pytest", "coverage run -m pytest"):
         entry = runtime_targets(replace(stack, test=test), tmp_path, RuntimeInputs(), SHA)[0]
         assert entry["command"].startswith('python -c "')
-    poetry = runtime_targets(replace(stack, test="poetry run pytest"), tmp_path, RuntimeInputs(), SHA)[0]
+    poetry_stack = replace(stack, test="poetry run pytest", requires=())
+    poetry = runtime_targets(poetry_stack, tmp_path, RuntimeInputs(), SHA)[0]
     assert poetry["command"].startswith('poetry run python -c "')
     assert poetry["prerequisites"] == ["poetry run python -m pip install pyinstrument"]
 
 
-def test_the_python_recipe_writes_its_profile_where_the_ingest_line_reads_it(tmp_path: Path) -> None:
+def _run_recipe(root: Path, main: str) -> tuple[int, Path]:
+    """Run the console-script recipe with a stand-in profiler (no pyinstrument needed)."""
     import os
     import subprocess
     import sys
 
-    _python(tmp_path)
-    (tmp_path / "app" / "cli.py").write_text("import os\n\ndef main():\n    os.chdir('..')\n    return 0\n")
-    entry = _targets(tmp_path)[0]
-    # The recipe with a stand-in profiler, so the test needs no pyinstrument.
-    fake = tmp_path / "fake"
-    (fake / "pyinstrument" / "renderers").mkdir(parents=True)
+    (root / "app" / "cli.py").write_text(main)
+    entry = _targets(root)[0]
+    fake = root / "fake"
+    (fake / "pyinstrument" / "renderers").mkdir(parents=True, exist_ok=True)
     (fake / "pyinstrument" / "__init__.py").write_text(
         "class Profiler:\n    def start(self): pass\n    def stop(self): pass\n"
         "    def output(self, renderer): return '{}'\n"
@@ -319,12 +378,38 @@ def test_the_python_recipe_writes_its_profile_where_the_ingest_line_reads_it(tmp
     (fake / "pyinstrument" / "renderers" / "__init__.py").write_text(
         "class SpeedscopeRenderer:\n    def __init__(self, **kw): pass\n"
     )
-    code = entry["command"].split('-c "', 1)[1][:-1]
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(fake), str(tmp_path)])}
+    code = entry["command"].split('-c "', 1)[1].rsplit('"', 1)[0]
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(fake), str(root)])}
+    done = subprocess.run([sys.executable, "-c", code], cwd=entry["cwd"], env=env, capture_output=True)
+    return done.returncode, root / entry["profile"]
 
-    subprocess.run([sys.executable, "-c", code], cwd=entry["cwd"], env=env, check=True)
 
-    assert (tmp_path / entry["profile"]).read_text() == "{}"
+def test_the_python_recipe_writes_its_profile_where_the_ingest_line_reads_it(tmp_path: Path) -> None:
+    _python(tmp_path)
+
+    code, profile = _run_recipe(tmp_path, "import os\n\ndef main():\n    os.chdir('..')\n    return 0\n")
+
+    assert code == 0 and profile.read_text() == "{}"
+
+
+@pytest.mark.parametrize(
+    "main",
+    [
+        "import missing_dependency\n\ndef main():\n    return 0\n",  # crashes at import
+        "def main():\n    raise RuntimeError('boom')\n",
+        "def main():\n    return 2\n",  # a usage error's exit code
+    ],
+)
+def test_a_failed_run_leaves_no_profile_to_ingest(tmp_path: Path, main: str) -> None:
+    _python(tmp_path)
+    stale = tmp_path / ".repowise" / "app.speedscope.json"
+    stale.parent.mkdir()
+    stale.write_text("{}")
+
+    code, profile = _run_recipe(tmp_path, main)
+
+    # An older run's profile is gone too, so ``evidence add`` stores nothing.
+    assert code != 0 and profile == stale and not profile.exists()
 
 
 def _targets_go(root: Path, inputs: RuntimeInputs, mains: list[str]) -> list[dict]:
@@ -342,20 +427,21 @@ def test_node_bins_get_a_cpu_profile_and_typescript_is_refused(tmp_path: Path) -
     js, ts = _targets(tmp_path)
 
     assert js["command"] == (
-        "node --cpu-prof --cpu-prof-dir=.repowise --cpu-prof-name=node-bin-fx-js.cpuprofile bin/fx.js"
+        "node --cpu-prof --cpu-prof-dir=.repowise --cpu-prof-name=node-bin-fx-js.cpuprofile bin/fx.js "
+        + ARGS_PLACEHOLDER
     )
     assert js["ingest"] is None and "cpuprofile" in js["reason"]
     assert ts["command"] is None and "TypeScript" in ts["reason"]
 
 
-def test_next_call_profiles_an_entry_point_before_running_tests_with_coverage(tmp_path: Path) -> None:
+def test_next_call_profiles_before_running_tests_with_coverage(tmp_path: Path) -> None:
     _python(tmp_path)
 
     plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
 
     runs = [s["run"] for s in plan["next_call"]["steps"]]
-    assert "from app.cli import main" in runs[-3]
-    assert runs[-2].startswith("repowise evidence add .repowise/app.speedscope.json")
+    assert "pytest.main" in runs[-3]
+    assert runs[-2].startswith("repowise evidence add .repowise/python-tests.speedscope.json")
     assert runs[-1] == "repowise evidence status"
 
 
@@ -393,13 +479,21 @@ def test_runtime_inputs_come_from_the_store(tmp_path: Path) -> None:
                     ("app/__main__.py", True, False),
                     ("scripts/gen.py", True, False),
                     ("work/work_test.go", False, True),
+                    # A copied library's tests and benchmarks (by path alone: vendored).
+                    ("internal/thirdparty/xml/xml_test.go", False, True),
+                    ("pkg/gen_test.go", False, True),
                 ):
                     session.add(GraphNode(repository_id="r1", node_id=node, node_type="file",
                                           is_entry_point=entry, is_test=test))
                 session.add(HealthFileMetric(repository_id="r1", file_path="scripts/gen.py",
                                              code_origin="tooling"))
+                # The stored origin wins over the path.
+                session.add(HealthFileMetric(repository_id="r1", file_path="pkg/gen_test.go",
+                                             code_origin="generated"))
                 for path, name in (("work/work_test.go", "BenchmarkCrunch"),
-                                   ("work/work_test.go", "TestCrunch")):
+                                   ("work/work_test.go", "TestCrunch"),
+                                   ("internal/thirdparty/xml/xml_test.go", "BenchmarkMarshal"),
+                                   ("pkg/gen_test.go", "BenchmarkGen")):
                     session.add(WikiSymbol(repository_id="r1", file_path=path, symbol_id=f"{path}::{name}",
                                            name=name, qualified_name=name, kind="function"))
                 await session.flush()
