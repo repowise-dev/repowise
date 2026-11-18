@@ -27,6 +27,8 @@ _SBT_PROJECT_RE = re.compile(
     r'(?:project|Project)\b[^\n]*?\.in\(\s*file\(\s*"([^"]+)"\s*\)\s*\)',
     re.DOTALL,
 )
+# Match .dependsOn(...) calls, capturing the argument list inside parens.
+_DEPENDS_ON_RE = re.compile(r'\.dependsOn\s*\(([^)]*)\)', re.DOTALL)
 _MILL_OBJECT_RE = re.compile(
     r'object\s+(\w+)\s+extends\s+([\w.]+(?:\s*with\s+[\w.]+)*)',
 )
@@ -38,6 +40,7 @@ class ScalaProjectIndex:
     build_tool: str = "none"  # "sbt" | "mill" | "none"
     projects: dict[str, str] = field(default_factory=dict)  # name -> dir_posix
     package_to_files: dict[str, list[str]] = field(default_factory=dict)
+    depends_on: dict[str, tuple[str, ...]] = field(default_factory=dict)  # name -> dependency project names
 
     def lookup_class(self, fqn: str) -> list[str]:
         if "." not in fqn:
@@ -51,18 +54,45 @@ class ScalaProjectIndex:
         ]
 
 
-def _parse_build_sbt(repo_path: Path) -> dict[str, str]:
+def _parse_depends_on_args(args_text: str) -> list[str]:
+    """Parse dependsOn arguments, extracting project names by leading identifier."""
+    result: list[str] = []
+    for piece in args_text.split(","):
+        match = re.match(r"\s*(\w+)", piece)
+        if match:
+            result.append(match.group(1))
+    return result
+
+
+def _parse_build_sbt(repo_path: Path) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    """Parse build.sbt, returning (projects dict, depends_on dict).
+
+    The depends_on dict maps project names to tuples of dependency project names.
+    """
     build = repo_path / "build.sbt"
     if not build.is_file():
-        return {}
+        return {}, {}
     try:
         text = build.read_text(encoding="utf-8", errors="ignore")
     except Exception:
-        return {}
-    result: dict[str, str] = {}
-    for match in _SBT_PROJECT_RE.finditer(text):
-        result[match.group(1)] = match.group(2).strip("./")
-    return result
+        return {}, {}
+    projects: dict[str, str] = {}
+    depends_on: dict[str, list[str]] = {}
+    matches = list(_SBT_PROJECT_RE.finditer(text))
+    for i, match in enumerate(matches):
+        name = match.group(1)
+        projects[name] = match.group(2).strip("./")
+        # Get text from this project to the next one (or end of file)
+        start = match.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        project_text = text[start:end]
+        # Find all dependsOn calls in this project's text
+        deps = []
+        for dep_match in _DEPENDS_ON_RE.finditer(project_text):
+            args_text = dep_match.group(1)
+            deps.extend(_parse_depends_on_args(args_text))
+        depends_on[name] = tuple(dict.fromkeys(deps))  # dedupe, preserve order
+    return projects, depends_on
 
 
 def _parse_build_sc(repo_path: Path) -> dict[str, str]:
@@ -132,10 +162,10 @@ def build_scala_index(
 ) -> ScalaProjectIndex:
     if repo_path is None or not repo_path.is_dir():
         return ScalaProjectIndex()
-    sbt_projects = _parse_build_sbt(repo_path)
+    sbt_projects, sbt_depends_on = _parse_build_sbt(repo_path)
     mill_projects = _parse_build_sc(repo_path)
     if sbt_projects:
-        index = ScalaProjectIndex(build_tool="sbt", projects=sbt_projects)
+        index = ScalaProjectIndex(build_tool="sbt", projects=sbt_projects, depends_on=sbt_depends_on)
     elif mill_projects:
         index = ScalaProjectIndex(build_tool="mill", projects=mill_projects)
     else:
