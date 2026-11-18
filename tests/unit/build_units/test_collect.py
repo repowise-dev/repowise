@@ -984,6 +984,18 @@ def test_pascal_uses_keeps_the_clause_around_an_in_path_with_an_apostrophe(tmp_p
     assert _owners(index, "lib/Plain.pas") == ["pascal:App"]
 
 
+def test_pascal_in_path_needs_no_space_after_the_keyword(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "app/App.dpr": _program("Named in'sub\\Named.pas', Plain"),
+        "app/sub/Named.pas": _unit(),
+        "other/Named.pas": _unit(),
+        "lib/Plain.pas": _unit(),
+    })
+    assert _owners(index, "app/sub/Named.pas") == ["pascal:App"]
+    assert _owners(index, "other/Named.pas") == []
+    assert _owners(index, "lib/Plain.pas") == ["pascal:App"]
+
+
 def test_pascal_expressions_on_identifiers_named_uses_link_nothing(tmp_path):
     index = _collect_pascal(tmp_path, {
         "app/App.dpr": (

@@ -58,7 +58,7 @@ _UNIT_EXTENSIONS = (".pas", ".pp")
 
 _COMMENT_RE = re.compile(r"\{[^}]*\}|\(\*.*?\*\)|//[^\r\n]*", re.DOTALL)
 # The name is any token: in an ANSI file a non-ASCII name is undecoded bytes.
-_IN_CLAUSE_RE = re.compile(r"([^\s,;']+)\s+in\s+'((?:[^'\r\n]|'')*)'", re.IGNORECASE)
+_IN_CLAUSE_RE = re.compile(r"([^\s,;']+)\s+in\s*'((?:[^'\r\n]|'')*)'", re.IGNORECASE)
 _SEARCH_PATH_RE = re.compile(
     r"<DCC_UnitSearchPath>(.*?)</DCC_UnitSearchPath>", re.IGNORECASE | re.DOTALL
 )
@@ -77,7 +77,7 @@ _LPI_PACKAGE_RE = re.compile(r"<PackageName\s+Value=\"([^\"]*)\"", re.IGNORECASE
 _ANSI_CODE_PAGES = ("cp1251", "cp1252", "cp1250", "cp932", "cp936")
 _SOURCE_EXTENSIONS = (*_UNIT_EXTENSIONS, *PROJECT_EXTENSIONS)
 _STRING_OR_COMMENT_RE = re.compile(r"'[^'\r\n]*'|\{[^}]*\}|\(\*.*?\*\)|//[^\r\n]*", re.DOTALL)
-_IN_PATH_RE = re.compile(r"\s+in\s+(?:'')+", re.IGNORECASE)
+_IN_PATH_RE = re.compile(r"\bin\s*(?:'')+", re.IGNORECASE)
 _UNIT_CLAUSE_RE = re.compile(r"\b(?:uses|contains)\b([^;'=:()+\-*/<>\[\]@^]*);", re.IGNORECASE)
 # Words that show a ``uses``-like run is an expression on an identifier of that name.
 _EXPRESSION_WORDS = frozenset(
