@@ -524,7 +524,10 @@ def test_dotnet_without_a_pin_names_the_sdk_the_newest_framework_needs():
         "bench/App.Bench/App.Bench.csproj": "<TargetFramework>net11.0</TargetFramework>",
     }
     (stack,) = detect_stacks(["App.slnx", *files], files)
-    assert stack.notes[0] == "The projects target up to net11.0: `dotnet test` needs the .NET 11.0 SDK or later."
+    # No solution text was read, so the note names the projects it saw.
+    assert stack.notes[0] == (
+        "The projects Repowise read target up to net11.0: `dotnet test` needs the .NET 11.0 SDK or later."
+    )
 
 
 def test_a_go_module_is_judged_by_its_module_line_only_when_it_was_read():
@@ -551,3 +554,65 @@ def test_the_shipped_jacoco_init_script_is_the_one_the_workflow_writes():
     (stack,) = detect_stacks(*_load("gradle_plain"))
     assert [line[4:] for line in stack.prepare[3:-1]] == body
     assert "apply plugin: 'jacoco'" in body[2] and "xml.required = true" in body[3]
+
+
+    assert stack.notes[0].startswith("The projects Repowise read target up to net8.0:")
+
+
+@pytest.mark.parametrize(
+    ("scripts", "command"),
+    [
+        # Two suites with one runner: neither alone is the whole run.
+        ({"test": "run-s test:unit test:integration", "test:unit": "vitest run",
+          "test:integration": "vitest run -c integration.config.ts"}, ""),
+        ({"test": "npm-run-all test:*", "test:a": "jest", "test:b": "jest -c b"}, ""),
+        # The one suite test names is the run, beside others it does not name.
+        ({"test": "npm run lint && npm run test:unit", "test:unit": "vitest run",
+          "test:smoke": "vitest run -c smoke.config.ts"}, f"pnpm run test:unit {_VITEST}"),
+        # A Playwright suite writes no source coverage; the unit suite is what these flags can measure.
+        ({"test": "run-s test:unit test:e2e", "test:unit": "vitest run", "test:e2e": "playwright test"},
+         f"pnpm run test:unit {_VITEST}"),
+    ],
+)
+def test_a_fallback_script_is_picked_only_when_it_is_the_whole_run(scripts, command):
+    files = {"package.json": _package(scripts, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.test == command
+
+
+
+def test_a_shipped_test_utils_package_is_a_unit():
+    # The manifest makes test-utils/ a package root, which code_origin keeps production.
+    files = {"package.json": _package({"test": "vitest run"}),
+             "test-utils/package.json": _package({"test": "vitest run"}),
+             "x/testdata/app/package.json": _package({"test": "vitest run"})}
+    paths = [*files, "test-utils/src/index.js", "pnpm-lock.yaml"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["", "test-utils"]
+
+
+@pytest.mark.parametrize(
+    ("solution", "scope"),
+    [
+        ('<Solution><Project Path="src/App/App.csproj" /></Solution>', "in `App.slnx`"),
+        ("", "Repowise read"),  # a solution naming no project read: every project read counts
+    ],
+)
+def test_the_sdk_note_reads_the_projects_the_chosen_solution_builds(solution, scope):
+    files = {
+        "App.slnx": solution,
+        "src/App/App.csproj": "<TargetFramework>net9.0</TargetFramework>",
+        "samples/Demo/Demo.csproj": "<TargetFramework>net11.0</TargetFramework>",
+    }
+    paths = [*files, "samples/Samples.slnx"]
+    assert "App.slnx" in files_to_read(paths)
+    (stack,) = detect_stacks(paths, files)
+    newest = "9.0" if solution else "11.0"
+    assert stack.notes[0].startswith(f"The projects {scope} target up to net{newest}:")
+
+
+def test_a_dotnet_sln_names_its_projects_with_backslashes():
+    sln = 'Project("{FAE04EC0}") = "App", "src\\App\\App.csproj", "{1}"\nEndProject\n'
+    files = {"App.sln": sln, "src/App/App.csproj": "<TargetFramework>net8.0</TargetFramework>",
+             "samples/D/D.csproj": "<TargetFramework>net10.0</TargetFramework>"}
+    (stack,) = detect_stacks(list(files), files)
+    assert stack.notes[0].startswith("The projects in `App.sln` target up to net8.0:")
