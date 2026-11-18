@@ -93,7 +93,7 @@ def _local_build_is_stale(web_dir: Path) -> bool:
     build_mtime = standalone.stat().st_mtime
 
     repo_root = web_dir.parent.parent  # packages/web → repo root
-    # Build output on top of the never-source set (node_modules, .next, .turbo).
+    # The never-source set plus web build output.
     skip_dirs = PRUNED_DIRS | {"dist"}
 
     file_inputs: list[Path] = [
