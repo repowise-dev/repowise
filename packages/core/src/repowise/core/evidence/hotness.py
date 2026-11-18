@@ -254,10 +254,18 @@ def _one_per_symbol(rows: list[_Row]) -> list[_Row]:
 
 
 def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
-    """Place, tier and interval for *rows* (costliest first); stale rows take no place."""
+    """Place, tier and interval for *rows* (costliest first).
+
+    Stale rows take no place, and neither does a row that cost nothing itself
+    (a function that only calls others): it stays measured, never ranked, even
+    in a run with fewer costly functions than the top. A tracer's rows order
+    by what the tracer gave and are exempt.
+    """
     place = 0
     for row in rows:
         if row.freshness == "stale":
+            continue
+        if not row.ordering_only and not (row.cost.self_value or 0.0) > 0:
             continue
         place += 1
         row.rank = place

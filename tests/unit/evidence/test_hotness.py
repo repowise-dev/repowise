@@ -118,6 +118,14 @@ def test_a_function_that_only_calls_things_ranks_below_the_one_doing_the_work() 
     assert rows["src/m.py::main"]["total_share"] == 0.95
 
 
+def test_a_function_that_costs_nothing_itself_is_never_ranked() -> None:
+    # Fewer costly functions than the top: the pure callers still take no place.
+    costs = [_cost("leaf", 50, total=60), _cost("main", 0, total=100)]
+    rows = _derive([_run(unit="s", total=100.0)], {"r1": costs})
+    assert (rows["src/m.py::leaf"]["rank"], rows["src/m.py::leaf"]["tier"]) == (1, "ranked")
+    assert (rows["src/m.py::main"]["rank"], rows["src/m.py::main"]["tier"]) == (None, "measured")
+
+
 def test_a_stored_run_without_a_split_says_unknown() -> None:
     row = _derive([_run()], {"r1": [_cost("f", 100)]})["src/m.py::f"]
     assert row["repo_self_share"] is row["wait_share"] is row["library_share"] is None

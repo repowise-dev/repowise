@@ -27,12 +27,12 @@ The run's time is split four ways, each stack into exactly one:
   (or anywhere, with no repo frame);
 - ``libraries``: not waiting, and a dependency frame (vendored, generated, or
   outside the checkout under a vendored path such as ``site-packages``) runs
-  below its innermost repo frame;
+  below its innermost repo frame, or anywhere on a stack with no repo frame;
 - ``repo_self``: neither, and the innermost repo frame is a production
   function (``code_origin``): time in production repo code itself, built-ins
   and the standard library it called included;
-- the rest: test or tooling code, module bodies, unresolved frames, stacks
-  with no repo frame.
+- the rest: test or tooling code, module bodies, unresolved frames, and
+  stacks with no repo frame that run only the runtime and standard library.
 
 ``explained`` (weight on stacks with a production frame anywhere) is still
 written for older readers; it says nothing about cost, since a CLI's entry

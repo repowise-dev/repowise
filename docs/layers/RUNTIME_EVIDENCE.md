@@ -315,10 +315,12 @@ benchmark or test keeps its row without its function and is counted under
 - A stack whose innermost repo frame was skipped charges no function; its self
   time is reported under `self_unattributed` by that skip reason.
 - **Where the time went.** Each stack counts once: `waits` (blocked as above),
-  `libraries` (a dependency frame runs below the innermost repo frame),
+  `libraries` (a dependency frame runs below the innermost repo frame, or on a
+  stack with no repo frame),
   `repo_self` (neither, and that frame is a production function by
   `code_origin`: time in production repo code itself), or none of them (test or
-  tooling code, module bodies, unjoined frames, stacks with no repo frame).
+  tooling code, module bodies, unjoined frames, stacks with no repo frame that
+  run only the runtime and standard library).
   `add` prints the three shares beside the skip rate, the share of repo frame
   time that did not join, broken down by reason. `explained` (a production
   frame anywhere on the stack) is still written but says nothing about cost.

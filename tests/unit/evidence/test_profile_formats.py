@@ -557,7 +557,7 @@ def test_waits_charge_no_self_time_and_libraries_stay_with_their_caller() -> Non
     assert parse_evidence(json.dumps(conv.document)).waits == 6
 
 
-def test_a_repo_file_named_like_the_standard_library_is_no_wait() -> None:
+def test_a_wait_is_a_runtime_or_standard_library_frame_only() -> None:
     from repowise.core.evidence.profile_convert import is_wait_frame
 
     def frame(path: str, name: str) -> ProfileFrame:

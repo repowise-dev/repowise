@@ -3278,7 +3278,8 @@ class SymbolHotness(Base):
     # The basis run (``evidence_runs.id``) the numbers below come from.
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 1-based place among the run's production functions by self time (the
-    # cost, waits excluded); NULL when the evidence is stale.
+    # cost, waits excluded); NULL when the evidence is stale or the function
+    # cost nothing itself.
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Self samples on the function and samples in the whole run; NULL when not counted.
     samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
