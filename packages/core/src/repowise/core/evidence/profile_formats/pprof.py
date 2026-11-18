@@ -216,12 +216,31 @@ def _scalars(data: bytes, pos: int, end: int) -> Iterator[tuple[int, int]]:
             yield field, value
 
 
-def _packed(data: bytes, pos: int, end: int) -> Iterator[int]:
+def _packed(data: bytes, pos: int, end: int) -> list[int]:
+    # The hot loop of a large profile (every sample's ids and values), so the
+    # varint is decoded inline rather than through _varint.
+    out: list[int] = []
+    append = out.append
     while pos < end:
-        value, pos = _varint(data, pos)
-        if pos > end:
-            raise ValueError("a packed value runs past its field")
-        yield value
+        byte = data[pos]
+        pos += 1
+        if byte < 0x80:
+            append(byte)
+            continue
+        result, shift = byte & 0x7F, 7
+        while True:
+            byte = data[pos]
+            pos += 1
+            result |= (byte & 0x7F) << shift
+            if byte < 0x80:
+                break
+            shift += 7
+            if shift > 63:
+                raise ValueError(f"varint too long at byte {pos}")
+        append(result)
+    if pos > end:
+        raise ValueError("a packed value runs past its field")
+    return out
 
 
 def _fields(data: bytes, pos: int, end: int) -> Iterator[tuple[int, int, int, int]]:
