@@ -5,11 +5,18 @@ from __future__ import annotations
 import sys
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from functools import cache
 from pathlib import PurePath
 from typing import Literal, NamedTuple
 
 from repowise.core.analysis.execution_graph import UNRELIABLE_EXECUTION_ORIGINS
-from repowise.core.test_paths import names_test_for, paired_test_names
+from repowise.core.test_paths import (
+    SiblingNames,
+    names_test_for,
+    paired_test_names,
+    qualified_name_leads,
+    qualified_name_prefixes,
+)
 
 # How many call hops a test may take and still be said to reach a file. The walk
 # saturates here; see the Depth section of the package docstring.
@@ -183,15 +190,27 @@ def rank_reaching(
     return sorted(tests, key=key)
 
 
-_JS_TEST_SUFFIXES = frozenset({".ts", ".tsx", ".js", ".mts", ".cts"})
-_JS_SOURCE_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts"})
+@cache
+def _js_family_suffixes() -> frozenset[str]:
+    """The extensions the language registry gives JavaScript and TypeScript.
+
+    Resolved on first use: the registry lives under ``ingestion/``, which imports
+    :mod:`repowise.core.test_paths` as it loads.
+    """
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    return REGISTRY.extensions_for(("javascript", "typescript"))
 
 
 def _language_compatible(target: str, test: str) -> bool:
-    """Whether *test* uses a test tail for *target*'s own language."""
-    test_suffix = PurePath(test).suffix.lower()
-    if test_suffix in _JS_TEST_SUFFIXES:
-        return PurePath(target).suffix.lower() in _JS_SOURCE_SUFFIXES
+    """Whether *test* uses a test tail for *target*'s own language.
+
+    A JS/TS test file (``x.test.ts``) is no evidence for a ``.py`` or ``.go`` file
+    of the same stem; it counts only for a JS/TS target.
+    """
+    js_family = _js_family_suffixes()
+    if PurePath(test).suffix.lower() in js_family:
+        return PurePath(target).suffix.lower() in js_family
     return True
 
 
@@ -227,10 +246,24 @@ def tests_matching_by_name(
     and a test tail for another language (a ``.test.ts`` for a ``.py``) is not.
     """
     all_files = set(targets) | set(test_files) | set(indexed_files)
+    files_by_dir: dict[str, list[str]] = {}
+    for path in all_files:
+        files_by_dir.setdefault(path.rpartition("/")[0], []).append(path)
+    siblings_by_dir = {directory: SiblingNames(files) for directory, files in files_by_dir.items()}
+
+    test_list = list(test_files)
     tests_by_dir_and_name: dict[tuple[str, str], list[str]] = {}
-    for path in test_files:
+    # Positions in *test_list* by file name, and by each prefix of the name a
+    # qualifier could follow, so a target reads its candidates off two lookups.
+    positions_by_name: dict[str, list[int]] = {}
+    positions_by_prefix: dict[str, list[int]] = {}
+    for position, path in enumerate(test_list):
         dir_path, _, name = path.rpartition("/")
         tests_by_dir_and_name.setdefault((dir_path, name), []).append(path)
+        file_name = PurePath(path).name
+        positions_by_name.setdefault(file_name, []).append(position)
+        for prefix in qualified_name_prefixes(file_name):
+            positions_by_prefix.setdefault(prefix, []).append(position)
 
     owned_by: dict[str, set[str]] = {}
     for source in all_files:
@@ -240,18 +273,22 @@ def tests_matching_by_name(
                 if source != test:
                     owned_by.setdefault(test, set()).add(source)
 
-    test_list = list(test_files)
     out: dict[str, ReachedBy] = {}
     for target in targets:
-        target_dir, _, _ = target.rpartition("/")
         target_stem = PurePath(target).stem.lower()
         stem_without_unit_prefix = target_stem[1:] if target_stem.startswith("u") else target_stem
-        siblings = [
-            path for path in all_files if path != target and path.rpartition("/")[0] == target_dir
-        ]
+        # Same-directory files; the target itself never claims a name from itself.
+        siblings = siblings_by_dir[target.rpartition("/")[0]]
+
+        positions: set[int] = set()
+        for name in paired_test_names(target):
+            positions.update(positions_by_name.get(name, ()))
+        for lead in qualified_name_leads(target):
+            positions.update(positions_by_prefix.get(lead, ()))
 
         found: list[str] = []
-        for test in test_list:
+        for position in sorted(positions):
+            test = test_list[position]
             test_stem = PurePath(test).stem.lower()
             if target_stem not in test_stem and stem_without_unit_prefix not in test_stem:
                 continue
