@@ -108,25 +108,14 @@ async def narrow_by_health(
 ) -> crud.ChangeFilter:
     """*where* narrowed to the changes whose rollup passes *delta* and *touches_hotspot*.
 
-    Both are judged on the rollup, so the matching ids are fixed here and the
-    caller's own listing (plain or needs-attention) still orders and pages.
-    A change no commit of which was scanned passes no delta filter.
-
-    Reads every matching change's commits and files, then binds the kept ids
-    as one ``IN`` list. Bounded by the change window (at most 10,000 changes); the
-    ceiling is the driver's bind limit (32k on SQLite, 65k on PostgreSQL),
-    past which this would move into SQL over a stored per-change rollup.
+    Both are judged on the rollup, in SQL over the stored per-change commits
+    and paths, so the caller's own listing (plain or needs-attention) still
+    orders and pages. A change no commit of which was scanned passes no delta
+    filter.
     """
     if not delta and not touches_hotspot:
         return where
-    inputs = await _matching_inputs(session, repo_id, where)
-    health = await change_health(session, repo_id, inputs, stamp)
-    keep = [
-        c.change_id
-        for c in inputs
-        if _passes(health[c.change_id], delta=delta, touches_hotspot=touches_hotspot)
-    ]
-    return replace(where, change_ids=keep)
+    return replace(where, delta=delta, touches_hotspot=touches_hotspot, stamp=stamp)
 
 
 def _passes(health: ChangeHealth, *, delta: str | None, touches_hotspot: bool) -> bool:

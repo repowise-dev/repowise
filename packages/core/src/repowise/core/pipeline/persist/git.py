@@ -48,7 +48,7 @@ async def persist_git(
     await clear_attribution_if_disabled(session, repo_id)
     if summary is not None:
         with timed(timings, "persist.changes"):
-            await _rebuild_changes(session, repo_id)
+            await _rebuild_changes(session, repo_id, getattr(summary, "commit_limit", None))
 
     # Per fix-commit x file rows (with their SZZ candidates). The prune keeps a
     # re-index of an already-indexed repo from leaving behind events that have
@@ -92,7 +92,7 @@ async def persist_git(
         )
 
 
-async def _rebuild_changes(session: Any, repo_id: str) -> None:
+async def _rebuild_changes(session: Any, repo_id: str, commit_limit: int | None) -> None:
     """Change records from the same history, after the commit labels they read."""
     from repowise.core.changes.store import refresh_changes
     from repowise.core.persistence.models import Repository
@@ -103,7 +103,9 @@ async def _rebuild_changes(session: Any, repo_id: str) -> None:
         logger.debug("changes_repo_lookup_failed", repo_id=repo_id, error=str(exc))
         return
     if repo is not None and repo.local_path:
-        await refresh_changes(session, repo_id, repo.local_path, rebuild=True)
+        await refresh_changes(
+            session, repo_id, repo.local_path, rebuild=True, commit_limit=commit_limit
+        )
 
 
 async def replace_git_history(
