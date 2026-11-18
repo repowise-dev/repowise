@@ -277,11 +277,29 @@ def _extras(pyproject: dict, setup_cfg: str) -> list[str]:
     return parser.options("options.extras_require") if parser.has_section("options.extras_require") else []
 
 
+def _installable(root: set[str], paths: list[str], pyproject: dict) -> bool:
+    """Whether ``pip install -e .`` builds the unit.
+
+    pip needs ``setup.py`` or ``pyproject.toml``; a setup.cfg alone is refused.
+    A pyproject that only configures tools still builds through setuptools
+    when setup.cfg holds the metadata or a ``src/`` layout makes discovery
+    unambiguous; in a flat tree setuptools may find several top-level
+    packages and refuse, so no install is planned there.
+    """
+    if "setup.py" in root:
+        return True
+    if "pyproject.toml" not in root:
+        return False
+    return bool(pyproject.keys() & {"project", "build-system"}) or "setup.cfg" in root or any(
+        p.startswith("src/") for p in paths
+    )
+
+
 def _pip_install(root: set[str], paths: list[str], files: dict[str, str], pyproject: dict) -> str:
     """The ``pip install`` arguments a unit's tests need: the project with its test extra,
     its requirements and test requirements files, then pytest and pytest-cov."""
     parts = []
-    if "setup.py" in root or pyproject.keys() & {"project", "build-system"}:
+    if _installable(root, paths, pyproject):
         extra = _first(_extras(pyproject, files.get("setup.cfg", "")), (*_TEST_SETS, "dev"))
         parts.append(f'-e ".[{extra}]"' if extra else "-e .")
     parts += [f"-r {p}" for p in paths if _TEST_REQUIREMENTS.fullmatch(p)]

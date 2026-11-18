@@ -160,9 +160,18 @@ _PROJECT = '[project]\nname = "pkg"\nversion = "0"\n'
         ({"pyproject.toml": _PROJECT + '[project.optional-dependencies]\ndev = ["pytest"]\n'
                                        '[dependency-groups]\ntest = ["pytest"]\n'},
          '-e ".[dev]" pytest pytest-cov'),
-        # A pyproject that only configures tools is not a project pip can install.
+        # A pyproject that only configures tools, over a flat tree, is not planned as an install.
         ({"pyproject.toml": "[tool.ruff]\nline-length = 100\n", "requirements.txt": "flask\n"},
          "-r requirements.txt pytest pytest-cov"),
+        # It still builds a src layout, or setup.cfg's metadata, through setuptools.
+        ({"pyproject.toml": "[tool.ruff]\nline-length = 100\n", "src/lib/__init__.py": ""},
+         "-e . pytest pytest-cov"),
+        ({"pyproject.toml": "[tool.ruff]\n",
+          "setup.cfg": "[metadata]\nname = pkg\n[options.extras_require]\ntest =\n    pytest\n"},
+         '-e ".[test]" pytest pytest-cov'),
+        # pip refuses a setup.cfg with neither setup.py nor pyproject.toml.
+        ({"setup.cfg": "[metadata]\nname = pkg\n", "src/lib/__init__.py": "", "requirements-dev.txt": "x\n"},
+         "-r requirements-dev.txt pytest pytest-cov"),
         # Test requirements in a requirements/ directory.
         ({"setup.py": "", "requirements/test.txt": "pytest\n", "requirements/docs.txt": "sphinx\n"},
          "-e . -r requirements/test.txt pytest pytest-cov"),
