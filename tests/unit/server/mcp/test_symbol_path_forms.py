@@ -104,6 +104,20 @@ async def test_a_line_outside_every_symbol_reads_the_lines_around_it(service_fil
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("symbol_id", ["src/auth/service.py:205", "src/auth/service.py:500"])
+async def test_a_line_past_the_end_of_the_file_is_refused(service_file, symbol_id):
+    """Not the file's last lines served in its place."""
+    from repowise.server.mcp_server import get_symbol
+
+    line = symbol_id.rsplit(":", 1)[1]
+    result = await get_symbol(symbol_id)
+    assert "source" not in result
+    assert result["error"] == (
+        f"Line {line} is past the end of 'src/auth/service.py' (200 lines)."
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_path_line_id_in_a_file_the_index_lacks(setup_mcp, tmp_path):
     from repowise.server.mcp_server import get_symbol
 

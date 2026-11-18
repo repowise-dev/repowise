@@ -90,6 +90,9 @@ async def _resolve_range_read(
 
     if end < start:
         start, end = end, start
+    total_lines = len(text.splitlines())
+    if start > max(total_lines, 1):
+        return _err("not_found", f"Line {start} is past the end of {path!r} ({total_lines} lines).")
     requested_end = end
     requested_truncated = (end - start + 1) > _MAX_RANGE_LINES
     if requested_truncated:
@@ -176,6 +179,11 @@ async def _line_id_target(symbol_id: str, ctx: Any) -> str | None:
         owner = symbol_at((r for r in rows if r.start_line > 0), line)
         if owner is not None:
             return symbol_identity(owner.symbol_id)
+        text = _read_file_text(Path(str(ctx.path)), path)
+        if text is not None and line > len(text.splitlines()):
+            # Past the end: the range read refuses the line itself rather than
+            # serving the file's last lines in its place.
+            return f"{path}:{line}-{line}"
     return f"{path}:{max(1, line - _LINE_WINDOW)}-{line + _LINE_WINDOW}"
 
 

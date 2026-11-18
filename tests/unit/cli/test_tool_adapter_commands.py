@@ -714,6 +714,27 @@ def test_a_tool_error_is_rewritten_into_commands_a_cli_user_can_run(monkeypatch,
     assert "get_context" not in printed
 
 
+def test_a_bare_file_path_prints_its_symbol_names(monkeypatch, repo):
+    """Text output names the file's symbols, not just the note."""
+    payload = {
+        "symbol_id": "a.py",
+        "file": "a.py",
+        "kind": "file",
+        "symbols": ["alpha", "beta"],
+        "symbols_total": 20,
+        "note": 'A file, not a symbol. One symbol: get_symbol("a.py::<name>").',
+        "_meta": {},
+    }
+    result = _invoke(monkeypatch, symbol_command, ["a.py"], repo, payload)
+    lines = result.stdout.splitlines()
+    assert "alpha" in lines and "beta" in lines
+    assert "2 of 20 shown." in result.stdout
+
+    payload["file"] = "app/[id]/page.tsx"
+    result = _invoke(monkeypatch, symbol_command, ["app/[id]/page.tsx"], repo, payload)
+    assert "app/[id]/page.tsx" in result.stdout
+
+
 def test_the_json_error_payload_keeps_the_tools_own_vocabulary(monkeypatch, repo):
     """A json consumer is reading the tool's projection, tool names and all."""
     result = _invoke(
