@@ -7,6 +7,8 @@ that turns run times into a verdict lives in :mod:`repowise.core.perf_measure`.
 from __future__ import annotations
 
 import platform
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -133,80 +135,117 @@ def perf_measure_command(
         cannot_evaluate(fmt, "unrenderable_command", str(exc))
 
     here = Path.cwd().resolve()
-    runner = partial(_run_once, command_str, timeout)
-    notices = notice_console(fmt)
-    # As typed, for the progress line; the rendered line carries cmd.exe escapes.
-    shown = " ".join(command)
+    job = _Job(
+        command=command_str,
+        # As typed, for the progress line; the rendered line carries cmd.exe escapes.
+        shown=" ".join(command),
+        runner=partial(_run_once, command_str, timeout),
+        here=here,
+        runs=runs,
+        warmup=warmup,
+        fmt=fmt,
+    )
     try:
         if save_name is not None:
-            root = _repo_root(here)
-            baseline_path(get_repowise_dir(root), save_name)  # refuse a bad name before any run
-            repowise_dir = ensure_repowise_dir(root)
-            notices.print(_plan_line(shown, runs, warmup, sides=1))
-            samples = collect(runner, here, runs=runs, warmup=warmup, side="base")
-            baseline = Baseline(
-                name=save_name,
-                command=command_str,
-                warmup=warmup,
-                measured_at=datetime.now(UTC).isoformat(timespec="seconds"),
-                side=_side(samples, here),
-                environment=_environment(),
-            )
-            path = save_baseline(repowise_dir, baseline)
-            _emit_saved(baseline, path, fmt)
-            return
-        if against_name is not None:
-            baseline = load_baseline(get_repowise_dir(_repo_root(here)), against_name)
-            if baseline.command != command_str:
-                cannot_evaluate(
-                    fmt,
-                    "command_mismatch",
-                    f"baseline {against_name!r} timed `{baseline.command}`, not "
-                    f"`{command_str}`; compare the same command or save a new baseline",
-                )
-            if baseline.environment.get("host") not in (None, _environment()["host"]):
-                notices.print(
-                    "[yellow]Warning:[/yellow] the baseline was measured on another "
-                    "machine, so the comparison mixes in machine differences"
-                )
-            notices.print(_plan_line(shown, runs, warmup, sides=1))
-            head = _side(collect(runner, here, runs=runs, warmup=warmup), here)
-            if (
-                head.commit
-                and head.commit == baseline.side.commit
-                and not (head.dirty or baseline.side.dirty)
-            ):
-                notices.print(
-                    "[yellow]Warning:[/yellow] base and head are the same commit with "
-                    "clean trees, so this compares the code with itself"
-                )
-            result = compare(baseline.side, head, "before_after")
-            _emit_comparison(result, command_str, fmt, baseline=against_name)
-            return
-        assert base_dir is not None
-        base_root = base_dir.resolve()
-        if base_root == here:
-            cannot_evaluate(
-                fmt, "usage", "--base-dir is the current directory; name another checkout"
-            )
-        notices.print(_plan_line(shown, runs, warmup, sides=2))
-        base_samples, head_samples = collect_interleaved(
-            runner, base_root, here, runs=runs, warmup=warmup
-        )
-        result = compare(_side(base_samples, base_root), _side(head_samples, here), "interleaved")
-        _emit_comparison(result, command_str, fmt, baseline=None)
+            _save(job, save_name)
+        elif against_name is not None:
+            _against(job, against_name)
+        else:
+            assert base_dir is not None
+            _interleaved(job, base_dir.resolve())
     except CommandFailedError as exc:
-        tail = exc.run.output_tail.strip()
-        message = f"{exc}; nothing was measured. Fix the command first."
-        if tail:
-            message += f"\nLast output:\n{tail}"
-        cannot_evaluate(fmt, "command_failed", message)
+        cannot_evaluate(fmt, "command_failed", _failure_message(exc))
     except BaselineError as exc:
         cannot_evaluate(fmt, "baseline", str(exc))
     except OSError as exc:
         cannot_evaluate(fmt, "io_error", f"could not run or store the measurement: {exc}")
     except KeyboardInterrupt:
         cannot_evaluate(fmt, "interrupted", "interrupted; nothing was measured or saved")
+
+
+@dataclass(frozen=True)
+class _Job:
+    """One invocation's command and settings, shared by the three modes."""
+
+    command: str
+    shown: str
+    runner: Callable[[Path], CommandRun]
+    here: Path
+    runs: int
+    warmup: int
+    fmt: str
+
+    def announce(self, *, sides: int) -> None:
+        notice_console(self.fmt).print(_plan_line(self.shown, self.runs, self.warmup, sides=sides))
+
+    def collect(self, *, side: str = "head") -> list[float]:
+        return collect(self.runner, self.here, runs=self.runs, warmup=self.warmup, side=side)
+
+
+def _save(job: _Job, name: str) -> None:
+    root = _repo_root(job.here)
+    baseline_path(get_repowise_dir(root), name)  # refuse a bad name before any run
+    repowise_dir = ensure_repowise_dir(root)
+    job.announce(sides=1)
+    samples = job.collect(side="base")
+    baseline = Baseline(
+        name=name,
+        command=job.command,
+        warmup=job.warmup,
+        measured_at=datetime.now(UTC).isoformat(timespec="seconds"),
+        side=_side(samples, job.here),
+        environment=_environment(),
+    )
+    path = save_baseline(repowise_dir, baseline)
+    _emit_saved(baseline, path, job.fmt)
+
+
+def _against(job: _Job, name: str) -> None:
+    baseline = load_baseline(get_repowise_dir(_repo_root(job.here)), name)
+    if baseline.command != job.command:
+        cannot_evaluate(
+            job.fmt,
+            "command_mismatch",
+            f"baseline {name!r} timed `{baseline.command}`, not "
+            f"`{job.command}`; compare the same command or save a new baseline",
+        )
+    notices = notice_console(job.fmt)
+    if baseline.environment.get("host") not in (None, _environment()["host"]):
+        notices.print(
+            "[yellow]Warning:[/yellow] the baseline was measured on another "
+            "machine, so the comparison mixes in machine differences"
+        )
+    job.announce(sides=1)
+    head = _side(job.collect(), job.here)
+    if _same_code(baseline.side, head):
+        notices.print(
+            "[yellow]Warning:[/yellow] base and head are the same commit with "
+            "clean trees, so this compares the code with itself"
+        )
+    _emit_comparison(compare(baseline.side, head, "before_after"), job, baseline=name)
+
+
+def _interleaved(job: _Job, base_root: Path) -> None:
+    if base_root == job.here:
+        cannot_evaluate(
+            job.fmt, "usage", "--base-dir is the current directory; name another checkout"
+        )
+    job.announce(sides=2)
+    base_samples, head_samples = collect_interleaved(
+        job.runner, base_root, job.here, runs=job.runs, warmup=job.warmup
+    )
+    result = compare(_side(base_samples, base_root), _side(head_samples, job.here), "interleaved")
+    _emit_comparison(result, job, baseline=None)
+
+
+def _same_code(base: Side, head: Side) -> bool:
+    return bool(head.commit) and head.commit == base.commit and not (head.dirty or base.dirty)
+
+
+def _failure_message(exc: CommandFailedError) -> str:
+    message = f"{exc}; nothing was measured. Fix the command first."
+    tail = exc.run.output_tail.strip()
+    return f"{message}\nLast output:\n{tail}" if tail else message
 
 
 def _run_once(command: str, timeout: float, cwd: Path) -> CommandRun:
@@ -283,9 +322,9 @@ def _emit_saved(baseline: Baseline, path: Path, fmt: str) -> None:
     click.echo(_side_line("base", baseline.side))
 
 
-def _emit_comparison(result: Comparison, command: str, fmt: str, *, baseline: str | None) -> None:
-    if fmt == "json":
-        emit_json({**result.to_json(), "command": command, "baseline": baseline})
+def _emit_comparison(result: Comparison, job: _Job, *, baseline: str | None) -> None:
+    if job.fmt == "json":
+        emit_json({**result.to_json(), "command": job.command, "baseline": baseline})
     else:
         mode = "interleaved" if result.mode == "interleaved" else "before and after"
         iv = result.interval
