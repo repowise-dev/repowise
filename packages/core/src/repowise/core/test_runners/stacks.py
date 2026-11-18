@@ -643,13 +643,18 @@ _GRADLE = re.compile(
 )
 #: Applies JaCoCo with its XML report to every Java project; shipped in the wheel for workstations.
 JACOCO_INIT_SCRIPT = Path(__file__).parent / "_data" / "jacoco.gradle"
-_GRADLE_INIT = (
-    "- name: Enable JaCoCo XML reports",
-    "  run: |",
-    "    cat > \"$RUNNER_TEMP/repowise-jacoco.gradle\" <<'EOF'",
-    *(f"    {line}" for line in JACOCO_INIT_SCRIPT.read_text(encoding="utf-8").splitlines()),
-    "    EOF",
-)
+
+
+@cache
+def _gradle_init() -> tuple[str, ...]:
+    """The CI step writing the init script; read when a build needs it, not at import."""
+    return (
+        "- name: Enable JaCoCo XML reports",
+        "  run: |",
+        "    cat > \"$RUNNER_TEMP/repowise-jacoco.gradle\" <<'EOF'",
+        *(f"    {line}" for line in JACOCO_INIT_SCRIPT.read_text(encoding="utf-8").splitlines()),
+        "    EOF",
+    )
 
 
 def _edit_gradle(line: str, m: re.Match, *, jacoco: bool, reports: str) -> CommandEdit | None:
@@ -682,7 +687,7 @@ def _gradle(root: set[str], files: dict[str, str]) -> Stack:
         notes.append("Your build applies no JaCoCo plugin, so the command adds it for the run with a "
                      "small init script that ships with Repowise. Applying the `jacoco` plugin in the build "
                      "(with `xml.required = true`) does the same.")
-        test, prepare = f'{gradle} test jacocoTestReport --init-script "$RUNNER_TEMP/repowise-jacoco.gradle"', _GRADLE_INIT
+        test, prepare = f'{gradle} test jacocoTestReport --init-script "$RUNNER_TEMP/repowise-jacoco.gradle"', _gradle_init()
         workstation = f'{gradle} test jacocoTestReport --init-script "{JACOCO_INIT_SCRIPT}"'
     return Stack(
         "java", "gradle", "gradle", reports, setup=(*_JAVA_SETUP, "    cache: gradle"), test=test,
