@@ -33,7 +33,7 @@ def _arguments(measure: Mapping[str, Any]) -> str:
     return " Add the arguments that reach the changed code after the command, the same both times."
 
 
-def verdict_rule(measure: Mapping[str, Any]) -> str:
+def _verdict_rule(measure: Mapping[str, Any]) -> str:
     """How to report the timing: the verdict with its interval, never "faster" on inconclusive."""
     return (
         "Report the verdict `perf measure` prints (improved, regressed or inconclusive) with "
@@ -59,7 +59,7 @@ def measure_lines(measure: Mapping[str, Any]) -> list[str]:
         measure["after"],
         "```",
         "",
-        verdict_rule(measure),
+        _verdict_rule(measure),
     ]
 
 
@@ -87,9 +87,9 @@ def render_fix_and_verify(check: Mapping[str, Any], flavor: str = "generic") -> 
             tests,
             f"4. Measure again against the baseline, from the same directory:\n\n"
             f"{_fence([measure['after']])}",
-            f"5. {verdict_rule(measure)} If it regressed, say so and stop.",
+            f"5. {_verdict_rule(measure)} If it regressed, say so and stop.",
         ]
     )
 
 
-__all__ = ["measure_lines", "render_fix_and_verify", "verdict_rule"]
+__all__ = ["measure_lines", "render_fix_and_verify"]

@@ -315,7 +315,8 @@ class ValidationPlan:
     # so a later read builds the same commands without a checkout.
     test_runs: dict[str, list[str | None]] = field(default_factory=dict)
     # A performance plan's ``perf measure`` lines (``perf_measure.verify_measure``),
-    # when its unit has an entry point or benchmark to time; absent otherwise.
+    # when its unit has an entry point or benchmark to time. Kept out of
+    # :meth:`as_dict` like ``step_verify``; :meth:`detail_dict` carries it.
     measure: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -332,8 +333,11 @@ class ValidationPlan:
             "reasons": self.reasons,
             "prerequisite": self.prerequisite,
             **({"test_runs": self.test_runs} if keeps_runs(self.tests, self.test_runs) else {}),
-            **({"measure": self.measure} if self.measure else {}),
         }
+
+    def detail_dict(self) -> dict[str, Any]:
+        """:meth:`as_dict` for one plan read alone (and for what is stored), with ``measure``."""
+        return {**self.as_dict(), **({"measure": self.measure} if self.measure else {})}
 
 
 SymbolSpan = tuple[str, int, int]
@@ -929,7 +933,11 @@ def build_validation_plan(
             shown, total=aggregate_total, runs=facts.test_runs
         )
     files = affected_files(suggestion)
-    timed = facts.timed.get(suggestion.file_path) if suggestion.refactoring_type == "performance_fix" else None
+    timed = (
+        facts.timed.get(suggestion.file_path)
+        if suggestion.refactoring_type == "performance_fix"
+        else None
+    )
     return ValidationPlan(
         basis=aggregate_basis,
         via=aggregate_via,
@@ -949,10 +957,15 @@ def build_validation_plan(
             # Summed per file, a test reaching two files counts twice: no count then.
             aggregate_total if identities_complete or len(target_rows) == 1 else 0,
         ),
-        measure=verify_measure(timed, (suggestion.target_symbol or "").rsplit("::", 1)[-1])
-        if timed
-        else None,
+        measure=verify_measure(timed, _baseline_label(suggestion)) if timed else None,
     )
+
+
+def _baseline_label(suggestion: RefactoringSuggestion) -> str:
+    """``<file stem>.<function>``, so two plans on same-named functions keep apart baselines."""
+    stem = suggestion.file_path.rsplit("/", 1)[-1].split(".", 1)[0]
+    symbol = (suggestion.target_symbol or "").rsplit("::", 1)[-1]
+    return f"{stem}.{symbol}" if symbol else stem
 
 
 def with_step_verify(
@@ -1129,6 +1142,7 @@ class Recommendation:
         carrying its ``verify``, and the plan's ``governed_by``, ``risks`` and
         co-change partners."""
         payload = self.as_dict()
+        payload["validation"] = self.validation.detail_dict()
         payload["plan"] = self.suggestion.plan or {}
         steps = payload["plan"].get("steps")
         if isinstance(steps, list) and self.validation.step_verify:
@@ -1162,7 +1176,7 @@ class Recommendation:
             "file_weighted_deficit": self.file_weighted_deficit,
             # Enriched with the caller rollup, which the stored column lacks.
             "blast_radius": self.suggestion.blast_radius or {},
-            "validation": self.validation.as_dict(),
+            "validation": self.validation.detail_dict(),
             **({"step_verify": self.validation.step_verify} if self.validation.step_verify else {}),
             **(
                 {"annotations": self.annotations.as_dict()}

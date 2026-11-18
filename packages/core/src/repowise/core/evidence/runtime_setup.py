@@ -310,8 +310,16 @@ def _python_targets(
         # Node ids are relative to pytest's rootdir, so this one runs from the repository root.
         name, profile = _named(root, "pytest bench", ".json")
         target = [root] if root else []
-        timed = " ".join([*_env_prefix(stack), "pytest", *target, "--benchmark-only"])
-        command = f"{timed} --benchmark-json={profile}"
+        # Rounds fill a fixed time (``--benchmark-max-time``) whatever one call
+        # costs; with none, each benchmark runs its minimum rounds, so wall time
+        # follows the change. (``--benchmark-disable`` is refused with ``--benchmark-only``.)
+        timed = " ".join(
+            [*_env_prefix(stack), "pytest", *target, "--benchmark-only",
+             "--benchmark-max-time=0", "--benchmark-min-rounds=10"]
+        )
+        command = " ".join(
+            [*_env_prefix(stack), "pytest", *target, "--benchmark-only", f"--benchmark-json={profile}"]
+        )
         out.append(_target("benchmark", name, cwd=str(repo_root), command=command,
                            profile=profile, commit=commit, input_format="pytest-benchmark",
                            timed=timed))
@@ -356,7 +364,11 @@ def _go_profiled(root: str, rel_dir: str, flags: str, name: str) -> tuple[str, s
     binary = profile.removesuffix(".pprof") + ".test"
     parts = ["go test", flags, "-count=1", f"-o {_from(root, binary)}",
              f"-cpuprofile {_from(root, profile)}", _go_package_arg(rel_dir)]
-    timed = ["go test", flags, "-count=1", _go_package_arg(rel_dir)]
+    # ``-bench`` runs each benchmark for about a second whatever one call costs, so
+    # wall time is timed over a fixed iteration count instead. Ceiling: one count
+    # for every benchmark; a per-benchmark count needs its measured cost.
+    timed = ["go test", flags.replace("-bench .", "-bench . -benchtime=10x"), "-count=1",
+             _go_package_arg(rel_dir)]
     return workload, " ".join(p for p in parts if p), profile, " ".join(p for p in timed if p)
 
 

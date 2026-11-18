@@ -461,7 +461,7 @@ def test_a_go_benchmark_is_timed_without_its_profile_flags(tmp_path: Path) -> No
     # ``go run`` has no command, so the benchmark is what is timed.
     assert timed == {"work/work.go": {
         "workload": "go bench ./work", "class": "benchmark",
-        "command": "go test '-run=^$' -bench . -benchmem -count=1 ./work", "cwd": "",
+        "command": "go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./work", "cwd": "",
     }}
 
 
@@ -489,3 +489,15 @@ def test_a_nested_unit_is_timed_from_its_own_directory(tmp_path: Path) -> None:
     timed = timed_targets(tmp_path, ["b/app/cli.py"], units=None, runtime=RuntimeInputs())
 
     assert (timed["b/app/cli.py"]["workload"], timed["b/app/cli.py"]["cwd"]) == ("b: app", "b")
+
+
+def test_a_pytest_benchmark_is_timed_over_fixed_rounds(tmp_path: Path) -> None:
+    from repowise.core.evidence.setup import timed_targets
+
+    _python(tmp_path, scripts="", extra='dependencies = ["pytest-benchmark"]\n')
+
+    timed = timed_targets(tmp_path, ["app/cli.py"], units=None, runtime=RuntimeInputs())
+
+    assert timed["app/cli.py"]["command"] == (
+        "pytest --benchmark-only --benchmark-max-time=0 --benchmark-min-rounds=10"
+    )

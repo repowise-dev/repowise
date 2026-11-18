@@ -46,16 +46,17 @@ def _plan(rtype: str, file_path: str = "app/rows.py") -> RefactoringSuggestion:
 
 def _validated(rtype: str) -> dict:
     facts = ValidationEvidence(timed={"app/rows.py": _TARGET})
-    return build_validation_plan(_plan(rtype), {}, {}, evidence=facts).as_dict()
+    return build_validation_plan(_plan(rtype), {}, {}, evidence=facts).detail_dict()
 
 
 def test_a_performance_plan_carries_the_measure_lines() -> None:
     measure = _validated("performance_fix")["measure"]
 
-    assert measure == verify_measure(_TARGET, "load_rows")
-    assert measure["before"] == f"repowise perf measure --save before-load_rows -- {_TARGET['command']}"
-    assert measure["after"] == f"repowise perf measure --against before-load_rows -- {_TARGET['command']}"
-    assert (measure["metric"], measure["baseline"]) == ("median wall time", "before-load_rows")
+    assert measure == verify_measure(_TARGET, "rows.load_rows")
+    name = "before-rows.load_rows"
+    assert measure["before"] == f"repowise perf measure --save {name} -- {_TARGET['command']}"
+    assert measure["after"] == f"repowise perf measure --against {name} -- {_TARGET['command']}"
+    assert (measure["metric"], measure["baseline"]) == ("median wall time", name)
     assert measure["tolerance"] == BEFORE_AFTER_FLOOR
     assert "cwd" not in measure
 
@@ -66,7 +67,15 @@ def test_other_plans_and_unmatched_files_carry_no_measure_key() -> None:
         _plan("performance_fix", "lib/other.py"), {}, {},
         evidence=ValidationEvidence(timed={"app/rows.py": _TARGET}),
     )
-    assert "measure" not in other.as_dict()
+    assert "measure" not in other.detail_dict()
+
+
+def test_lists_never_carry_the_measure_only_detail_does() -> None:
+    plan = build_validation_plan(
+        _plan("performance_fix"), {}, {}, evidence=ValidationEvidence(timed={"app/rows.py": _TARGET})
+    )
+    assert "measure" not in plan.as_dict()
+    assert plan.detail_dict() == {**plan.as_dict(), "measure": plan.measure}
 
 
 def test_verify_check_passes_measure_beside_commands_and_leaves_others_unchanged() -> None:
@@ -85,7 +94,7 @@ def test_verify_check_passes_measure_beside_commands_and_leaves_others_unchanged
 def test_a_stored_profile_keeps_its_measure() -> None:
     profile = _validated("performance_fix")
 
-    assert validation_from_profile(profile).as_dict()["measure"] == profile["measure"]
+    assert validation_from_profile(profile).detail_dict()["measure"] == profile["measure"]
     assert _verify(profile).measure == profile["measure"]
     assert _verify({k: v for k, v in profile.items() if k != "measure"}).measure is None
 
@@ -94,7 +103,7 @@ def test_the_recipe_of_a_performance_plan_names_the_measure() -> None:
     detail = {"refactoring_type": "performance_fix", "file_path": "app/rows.py",
               "validation": _validated("performance_fix")}
     verify = build_recipe(detail)["postconditions"][0]
-    assert verify["measure"]["baseline"] == "before-load_rows"
+    assert verify["measure"]["baseline"] == "before-rows.load_rows"
 
 
 async def test_hydration_with_a_checkout_times_the_units_entry_point(tmp_path: Path) -> None:
@@ -122,10 +131,13 @@ async def test_hydration_with_a_checkout_times_the_units_entry_point(tmp_path: P
         (live,) = await hydrate_recommendations(session, repo.id, rows[:1])
     await engine.dispose()
 
-    measure = perf.validation.as_dict()["measure"]
+    measure = perf.validation.detail_dict()["measure"]
+    assert perf.rank_facts()["validation"]["measure"] == measure
+    assert perf.detail_dict()["validation"]["measure"] == measure
+    assert "measure" not in perf.as_dict()["validation"]
     assert (measure["workload"], measure["workload_class"]) == ("app", "entry_point")
     assert "pyinstrument" not in measure["command"]
     assert "from app.cli import main" in measure["command"]
-    assert "measure" not in other.validation.as_dict()
+    assert "measure" not in other.validation.detail_dict()
     # Without a checkout there is nothing to read the unit from.
-    assert "measure" not in live.validation.as_dict()
+    assert "measure" not in live.validation.detail_dict()
