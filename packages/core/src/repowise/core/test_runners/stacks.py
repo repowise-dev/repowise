@@ -559,7 +559,10 @@ def _edit_go(line: str, m: re.Match) -> CommandEdit:
     return CommandEdit(_insert(line, (m.end(), " -coverprofile=coverage.out")), "coverage.out")
 
 
-def _go() -> Stack:
+def _go(paths: list[str], files: dict[str, str]) -> Stack | None:
+    """None for a ``go.mod`` with no ``module`` line or no Go file below it (a build helper, not a module)."""
+    if not re.search(r"^\s*module\s+\S", files.get("go.mod", ""), re.M) or not any(p.endswith(".go") for p in paths):
+        return None
     return Stack(
         "go", "go test", "go", "coverage.out",
         setup=("- uses: actions/setup-go@v5", "  with:", "    go-version-file: go.mod"),
@@ -707,8 +710,26 @@ def _dotnet_setup(root: set[str], projects: str) -> tuple[str, ...]:
     return ("- uses: actions/setup-dotnet@v4", "  with:", "    dotnet-version: |", *(f"      {v}" for v in versions))
 
 
-def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, found: bool) -> list[str]:
-    notes = []
+def _dotnet_sdk(files: dict[str, str], projects: str) -> str | None:
+    """Which SDK ``dotnet test`` needs: the ``global.json`` pin, else the newest target framework's."""
+    try:
+        pinned = json.loads(files.get(_DOTNET_SDK_PIN) or "{}").get("sdk", {}).get("version")
+    except (ValueError, AttributeError):
+        pinned = None
+    if isinstance(pinned, str) and pinned:
+        return (f"`{_DOTNET_SDK_PIN}` pins the .NET SDK to {pinned}: `dotnet --list-sdks` must list it, or a "
+                "later one its `rollForward` allows, before `dotnet test` runs.")
+    versions = sorted({tuple(map(int, v.split("."))) for v in re.findall(r"net(\d+\.\d+)", projects)})
+    if versions:
+        newest = ".".join(map(str, versions[-1]))
+        return f"The projects target up to net{newest}: `dotnet test` needs the .NET {newest} SDK or later."
+    return None
+
+
+def _dotnet_notes(
+    tests: list[str], files: dict[str, str], projects: str, target: str | None, found: bool
+) -> list[str]:
+    notes = [sdk] if (sdk := _dotnet_sdk(files, projects)) else []
     if tests and not any("coverlet.collector" in t for p, t in files.items() if p in tests):
         notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
                      "test project (`dotnet add package coverlet.collector`).")
@@ -721,11 +742,15 @@ def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, f
 
 
 def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
-    solutions = [p for p in paths if p.endswith((".sln", ".slnx"))]
+    # A samples or fixture solution is not the one that runs the tests; the unit's own comes first.
+    solutions = [p for p in paths if p.endswith(_SOLUTIONS) and _kept(p)]
+    own = [p for p in solutions if "/" not in p]
+    solutions = own if len(own) == 1 else solutions
     tests = [p for p in paths if p.endswith(".csproj") and "test" in p.lower() and p.count("/") <= 3]
     target = solutions[0] if len(solutions) == 1 else tests[0] if len(tests) == 1 and not solutions else None
-    setup = _dotnet_setup(root, "\n".join(t for p, t in files.items() if p.endswith(".csproj")))
-    notes = _dotnet_notes(tests, files, target, bool(solutions or tests))
+    projects = "\n".join(t for p, t in files.items() if p.endswith(".csproj"))
+    setup = _dotnet_setup(root, projects)
+    notes = _dotnet_notes(tests, files, projects, target, bool(solutions or tests))
     test = f"dotnet test {target} {_DOTNET_FLAGS}" if target else ""
     return Stack(
         "dotnet", "dotnet test", "dotnet", "coverage/*/coverage.cobertura.xml", setup=tuple(setup),
@@ -820,7 +845,7 @@ _ORDER = ("python", "go", "rust", "jvm", "dotnet", "ruby", "php", "node")
 #: A builder returns None for a unit with nothing to test (a package with no test script).
 _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | None]] = {
     "python": _python,
-    "go": lambda names, paths, files: _go(),
+    "go": lambda names, paths, files: _go(paths, files),
     "rust": lambda names, paths, files: _rust(names, files),
     "jvm": lambda names, paths, files: (
         _maven(names, files) if "pom.xml" in names else _gradle(names, files)
@@ -836,6 +861,8 @@ _SOLUTIONS = (".sln", ".slnx")
 _DOTNET_PROJECTS = 20
 #: Gradle's settings files: runner config read on top of the registry's manifests.
 _GRADLE_SETTINGS = ("settings.gradle", "settings.gradle.kts")
+#: The .NET SDK's pin file: runner config read on top of the registry's manifests.
+_DOTNET_SDK_PIN = "global.json"
 #: A manifest of this origin is a fixture, sample or copy, not a unit to cover.
 _SKIP_ORIGINS = frozenset({"test", "generated", "vendored", "docs_example"})
 
@@ -857,7 +884,7 @@ def _manifest_stacks(name: str) -> frozenset[str]:
 @cache
 def _read_names() -> frozenset[str]:
     """Every manifest and runner config detection reads at a unit root."""
-    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME}
+    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME, _DOTNET_SDK_PIN}
     for tag in _LANGUAGE_STACKS:
         spec = REGISTRY.get(tag)
         if spec is not None:
@@ -887,10 +914,19 @@ def _under(root: str, path: str) -> str | None:
     return path[len(root) + 1 :] if path.startswith(root + "/") else None
 
 
+#: A file name no origin rule reads, so its origin is its directory's (``testdata/`` is test).
+_PLAIN_NAME = "_"
+
+
 def _kept(path: str) -> bool:
-    """Whether a manifest at *path* can declare a unit: not pruned, not a fixture or sample."""
+    """Whether a manifest at *path* can declare a unit: not pruned, not a fixture or sample.
+
+    The directory is judged too: a manifest's own origin is ``build``, which hides a
+    ``testdata/`` or ``fixtures/`` directory around it.
+    """
     blocked = any(part in INDEX_BLOCKED_DIRS for part in path.split("/")[:-1])
-    return not blocked and path_origin(path) not in _SKIP_ORIGINS
+    plain = _join(_dir(path), _PLAIN_NAME)
+    return not blocked and path_origin(path) not in _SKIP_ORIGINS and path_origin(plain) not in _SKIP_ORIGINS
 
 
 def _stacks_of(name: str) -> set[str]:

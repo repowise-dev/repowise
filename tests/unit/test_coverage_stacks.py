@@ -469,3 +469,56 @@ def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
     (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
                              {**files, "pnpm-workspace.yaml": "packages: []\n"})
     assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
+
+
+# ---------------------------------------------------------------------------
+# Fixtures, stubs and samples are not units
+# ---------------------------------------------------------------------------
+
+
+def test_a_manifest_in_a_testdata_directory_is_no_unit():
+    files = {
+        "go.mod": "module example.com/scanner\n",
+        "cmd/scanner/update/testdata/pom.xml": "<project/>",
+        "cmd/scanner/scan/image/testdata/java-fixture/app/pom.xml": "<project/>",
+        "internal/analysis/testdata/rust/rust-project/Cargo.toml": '[package]\nname = "p"\n',
+    }
+    paths = [*files, "main.go", "main_test.go"]
+    assert [(s.root, s.language) for s in detect_stacks(paths, files)] == [("", "go")]
+
+
+def test_a_go_mod_with_no_module_line_or_no_go_files_is_no_unit():
+    files = {
+        "go.mod": "module example.com/site\n",
+        "internal/warpc/genavif/go.mod": "module example.com/site/internal/warpc/genavif\n\ngo 1.21\n",
+        "internal/warpc/genwebp/go.mod": "",
+        "internal/warpc/gen/go.mod": "module example.com/site/internal/warpc/gen\n",
+    }
+    paths = [*files, "main.go", "internal/warpc/genavif/avif.c", "internal/warpc/genwebp/webp.c",
+             "internal/warpc/gen/gen.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["", "internal/warpc/gen"]
+
+
+def test_dotnet_runs_the_root_solution_not_a_samples_one_and_names_the_sdk_pin():
+    files = {"global.json": json.dumps({"sdk": {"version": "11.0.100"}})}
+    paths = ["Polly.slnx", "samples/Samples.slnx", "global.json", "src/Polly/Polly.csproj",
+             "test/Polly.Specs/Polly.Specs.csproj"]
+    (stack,) = detect_stacks(paths, files)
+    assert stack.test.startswith("dotnet test Polly.slnx ")
+    assert "11.0.100" in stack.notes[0]
+
+
+def test_dotnet_prefers_the_solution_at_its_root_over_nested_ones():
+    paths = ["Clean.Architecture.slnx", "MinimalClean/MinimalClean.Architecture.slnx",
+             "sample/NimblePros.SampleToDo.slnx", "src/Web/Web.csproj"]
+    (stack,) = detect_stacks(paths, {})
+    assert stack.test.startswith("dotnet test Clean.Architecture.slnx ")
+
+
+def test_dotnet_without_a_pin_names_the_sdk_the_newest_framework_needs():
+    files = {
+        "src/App/App.csproj": "<TargetFrameworks>net10.0;net9.0</TargetFrameworks>",
+        "bench/App.Bench/App.Bench.csproj": "<TargetFramework>net11.0</TargetFramework>",
+    }
+    (stack,) = detect_stacks(["App.slnx", *files], files)
+    assert stack.notes[0] == "The projects target up to net11.0: `dotnet test` needs the .NET 11.0 SDK or later."
