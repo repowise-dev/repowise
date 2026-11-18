@@ -2,26 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import Any
 
 from sqlalchemy import select
 
 from repowise.core.analysis.communities import has_community
 from repowise.core.co_change import parse_partners
-from repowise.core.ingestion.models import NON_CODE_EDGE_TYPES
 from repowise.core.persistence.database import get_session
-from repowise.core.persistence.models import (
-    GitMetadata,
-    GraphEdge,
-    GraphNode,
-)
+from repowise.core.persistence.models import GitMetadata
 from repowise.core.registry import mcp_tool_registry as mcp
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
     _get_repo,
     _resolve_repo_context,
     _unsupported_repo_all,
-    filter_graph_nodes,
     is_excluded,
 )
 
@@ -56,34 +51,6 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
 
             return error_reply("not_found", {"error": f"'{_p}' is excluded by exclude_patterns."})
 
-    async with get_session(ctx.session_factory) as session:
-        repository = await _get_repo(session)
-
-        # Drop the non-code relations only (history, prose). A ``co_changes`` edge records that
-        # two files move together in history, so leaving it in makes it a free
-        # hop and the tool reports a "dependency path" no code creates.
-        #
-        # Containment stays, unlike in the consumers that answer "what depends
-        # on this file". ``defines`` is the only bridge from the file layer to
-        # the symbol layer, and no edge points back the other way, so excluding
-        # it cannot suppress a false file-to-file path — there is none to
-        # suppress — while it does delete the real ones: a --defines--> a::foo
-        # --calls--> b::bar is how a caller asks which file reaches a function.
-        edge_result = await session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == repository.id,
-                GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
-            )
-        )
-        edges = edge_result.scalars().all()
-
-        node_result = await session.execute(
-            select(GraphNode).where(
-                GraphNode.repository_id == repository.id,
-            )
-        )
-        nodes = filter_graph_nodes(list(node_result.scalars().all()), exclude_spec)
-
     try:
         import networkx as nx
     except ImportError:
@@ -93,26 +60,14 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
             "explanation": "networkx not available for path queries",
         }
 
-    # Build the graph only from surviving nodes/edges so shortest paths, common
-    # ancestors, shared neighbors, and bridges never route through excluded files.
-    allowed = {n.node_id for n in nodes} if exclude_spec else None
-    graph = nx.DiGraph()
-    # Seed every surviving node, not just the endpoints of surviving edges. A
-    # file whose only edges were temporal is still indexed, and the "no direct
-    # path" branch below has a co-change fallback written precisely for it —
-    # unreachable if the node never entered the graph, which also made the
-    # "not found in graph" message untrue.
-    graph.add_nodes_from(n.node_id for n in nodes)
-    for e in edges:
-        if allowed is not None and (
-            e.source_node_id not in allowed or e.target_node_id not in allowed
-        ):
-            continue
-        graph.add_edge(
-            e.source_node_id,
-            e.target_node_id,
-            edge_type=e.edge_type,
-        )
+    from repowise.server.services.graph_views import load_code_graph
+
+    async with get_session(ctx.session_factory) as session:
+        repository = await _get_repo(session)
+        # Excluded files are not in the graph, so shortest paths, common
+        # ancestors, shared neighbours and bridges never route through them.
+        code_graph = await load_code_graph(session, repository.id, exclude_spec)
+    graph = code_graph.graph
 
     if source not in graph:
         return {
@@ -134,7 +89,9 @@ async def get_dependency_path(source: str, target: str, repo: str | None = None)
             "path": [],
             "distance": -1,
             "explanation": "No direct dependency path found",
-            "visual_context": _build_visual_context(graph, source, target, nodes, nx),
+            "visual_context": _build_visual_context(
+                graph, source, target, code_graph.nodes.values(), nx
+            ),
         }
         # Phase 4: check co-change coupling even without import dependency
         async with get_session(ctx.session_factory) as session:
@@ -179,7 +136,7 @@ def _build_visual_context(
     graph: Any,
     source: str,
     target: str,
-    nodes: list,
+    nodes: Collection[Any],
     nx: Any,
 ) -> dict:
     """Build diagnostic context when no directed path exists."""
