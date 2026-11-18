@@ -269,10 +269,11 @@ Bazel files C and C++ declare (`CMakeLists.txt`, `BUILD`, `BUILD.bazel`,
 Bazel package carries one, so their presence says nothing about where a unit
 starts.
 
-`manifest_files` holds exact filenames only, so a language whose package file is
-a *pattern* cannot be expressed. .NET is the live example: `*.csproj` is the real
-package declaration, everything C# declares is build configuration, and a .NET
-monorepo therefore still falls back to the top-level directory.
+`manifest_files` holds exact filenames only. A package file whose name varies
+per package goes in `manifest_globs`, matched case-insensitively by the
+package-root scan and by `is_package_manifest`; exact-name readers of
+`manifest_files` never see it. .NET is the live example: `*.csproj` is the real
+package declaration, and everything else C# declares is build configuration.
 
 One caveat worth knowing: package roots are read from a **directory scan**, not
 from the indexed file list, because the traverser only emits files whose language
@@ -362,6 +363,20 @@ silence, never to a wrong answer.
 | 6 | `extractors/bindings/mylang.py` | `extract_import_bindings()` | Imports still resolve, but named-binding-level call resolution does not |
 | 7 | `extractors/heritage/mylang.py` | `HERITAGE_EXTRACTORS` | Inheritance chains never appear in the graph |
 | 8 | `resolvers/mylang.py` | `_RESOLVERS` in `resolvers/__init__.py` | Imports fall back to the generic stem-map (filename matching) |
+
+### Manifests and build units
+
+If the language has a package or build file, two more steps make monorepos in
+it first-class:
+
+| Step | What | Where | Without it |
+|---|---|---|---|
+| 8a | Declare manifests by role on the spec: package manifests in `manifest_files` (or `manifest_globs` for a pattern like `*.csproj`), files that only configure a build in `build_config_manifests`, lockfiles in `lock_files` | `languages/specs/mylang.py` | No package roots, so no per-package health, monorepo bucketing or build units for the language |
+| 8b | A build-unit adapter, when the ecosystem declares dependencies between in-repo packages (path dependencies, workspace members, project references) | `core/build_units/adapters/<ecosystem>.py`, registered in `_ADAPTERS` in `core/build_units/collect.py` | Each package root still becomes a `manifest:` unit with correct file ownership, but no dependency edges between units |
+
+The adapter recipe is in [build-units.md](build-units.md#adding-an-adapter).
+The registry is the only place that knows manifest names; see
+[single-sources.md](single-sources.md) for the other shared owners.
 
 ### Opting into call resolution
 

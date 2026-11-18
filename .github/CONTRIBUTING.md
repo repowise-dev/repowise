@@ -244,6 +244,9 @@ repowise/
   install can pick up a newer ruff whose formatter rewrites hundreds of files. That diff
   buries the change you actually made.
 - **TypeScript**: Linted with ESLint (`npm run lint`) and type-checked (`npm run type-check`)
+- Before writing a helper, check [single-sources.md](../docs/architecture/single-sources.md):
+  if a module already owns the concept (file origin, test paths, manifest names, build
+  units, skip directories, commit ids, symbol ids), call or extend it instead of copying it
 - Keep functions small and focused
 - Write docstrings for public APIs
 

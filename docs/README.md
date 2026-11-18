@@ -137,6 +137,7 @@ For a map of every layer and how they feed each other, read
 |-----|----------------|
 | [../.github/CONTRIBUTING.md](../.github/CONTRIBUTING.md) | How to set up, test and submit a change |
 | [architecture/README.md](architecture/README.md) | How repowise is built: pipelines, graph algorithms, health internals |
+| [architecture/single-sources.md](architecture/single-sources.md) | Which module owns each shared concept; check it before writing a helper |
 
 ---
 
