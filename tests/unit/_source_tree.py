@@ -5,7 +5,7 @@ helper, every writer passes the same arguments, no vocabulary nothing emits)
 each walked ``packages/`` and parsed all of it, about 2,600 files, once per
 test. This holds one parse per process; under xdist each worker builds it the
 first time one of its tests asks. Each caller still picks its own files from
-the full list, so a guard sees exactly the files it saw before.
+the full list (installed ``node_modules`` aside, which no guard means to police).
 
 The trees are shared between tests: read them, never mutate them. Holding them
 costs about 0.9 GB per process; reading files on demand per test is the
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,8 +36,16 @@ class SourceFile:
 
 @functools.cache
 def python_sources() -> tuple[SourceFile, ...]:
-    """Every ``*.py`` under ``packages/``, sorted by path."""
-    return tuple(_load(path) for path in sorted(PACKAGES.rglob("*.py")))
+    """Every ``*.py`` under ``packages/`` outside ``node_modules``, sorted by path.
+
+    ``node_modules`` is pruned, not filtered: the UI packages' installed
+    dependencies cost about 25 s to walk and hold no Python of ours.
+    """
+    paths = []
+    for top, dirs, files in os.walk(PACKAGES):
+        dirs[:] = [d for d in dirs if d != "node_modules"]
+        paths += [Path(top, name) for name in files if name.endswith(".py")]
+    return tuple(_load(path) for path in sorted(paths))
 
 
 def _load(path: Path) -> SourceFile:

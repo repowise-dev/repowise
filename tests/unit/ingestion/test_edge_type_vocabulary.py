@@ -87,12 +87,8 @@ _OTHER_GRAPHS: frozenset[str] = frozenset(
 
 
 def _parsed() -> list[SourceFile]:
-    """The parseable package sources outside ``node_modules``."""
-    return [
-        src
-        for src in python_sources()
-        if src.tree is not None and "node_modules" not in src.path.parts
-    ]
+    """The package sources that parse (``node_modules`` is never walked)."""
+    return [src for src in python_sources() if src.tree is not None]
 
 
 def _edge_type_literals() -> dict[str, set[str]]:
