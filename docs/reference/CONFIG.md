@@ -924,7 +924,8 @@ agent_provenance:
 Caps on the runtime evidence `repowise evidence add` stores (profiles,
 benchmark results, test timings, query counts). A capped run keeps its
 costliest entries and counts the rest, so a reader shows them as unknown,
-never as zero.
+never as zero. How evidence is collected and joined:
+[RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md).
 
 <!-- BEGIN GENERATED settings:evidence (python scripts/gen_config_docs.py) -->
 | Key | Default | Values | What it does |

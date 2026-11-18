@@ -49,6 +49,19 @@ def is_legacy_conftest_hint(edge_type: str | None, hint_source: str | None) -> b
     return edge_type == "dynamic_uses" and hint_source == LEGACY_CONFTEST_HINT
 
 
+#: Sources whose ``type_only`` imports never run: a Python import under
+#: ``if TYPE_CHECKING:``, or any import in a stub. A TypeScript ``import type``
+#: stays, since a type-checking runner (ts-jest) compiles it with the test.
+NEVER_RUN_SUFFIXES = (".py", ".pyi")
+
+
+def never_runs(source: str, type_only: Any) -> bool:
+    """Whether the dependency edge from *source* is never executed, so no test reaches
+    through it. On a package ``__init__.py`` such an edge would otherwise reach every
+    module under the package (:meth:`ImportGraph.with_package_inits`)."""
+    return bool(type_only) and source.endswith(NEVER_RUN_SUFFIXES)
+
+
 @dataclass(frozen=True)
 class ImportGraph:
     """Every file-dependency edge, reversed (``{file: files depending on it}``), read once.
@@ -189,8 +202,10 @@ def build_walk_maps(graph: Any) -> WalkMaps:
                 and attrs.get("resolution_origin") not in UNRELIABLE_CALL_ORIGINS
             ):
                 callers.setdefault(target, set()).add(source)
-            if edge_type in FILE_DEPENDENCY_EDGE_TYPES and not is_legacy_conftest_hint(
-                edge_type, attrs.get("hint_source")
+            if (
+                edge_type in FILE_DEPENDENCY_EDGE_TYPES
+                and not is_legacy_conftest_hint(edge_type, attrs.get("hint_source"))
+                and not never_runs(source, attrs.get("type_only"))
             ):
                 importers.setdefault(target, set()).add(source)
     # Sorted, so a bounded walk does not depend on the order edges were added in.
