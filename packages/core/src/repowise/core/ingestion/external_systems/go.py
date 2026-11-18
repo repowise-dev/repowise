@@ -23,15 +23,15 @@ _REQ_LINE = re.compile(r"^\s*([^\s]+)\s+([^\s]+)(?:\s*//\s*(indirect))?\s*$")
 _REPLACE_LINE = re.compile(r"^\s*([^\s]+)(?:\s+[^\s]+)?\s*=>\s*(\S+)")
 
 
-def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
-    try:
-        text = manifest_path.read_text(encoding="utf-8")
-    except OSError:
-        return []
+def scan_go_mod(text: str) -> tuple[list[tuple[str, str, bool]], set[str]]:
+    """``(requires, replaced_by_local)`` of a ``go.mod`` text.
 
-    declared_in = manifest_path.relative_to(repo_root).as_posix()
+    *requires* is ``(module, version, is_indirect)`` per ``require`` entry in
+    file order; *replaced_by_local* names the modules a ``replace`` points at a
+    local directory.
+    """
     replaced_by_local: set[str] = set()
-    requires: list[tuple[str, str, bool]] = []  # (name, version, is_indirect)
+    requires: list[tuple[str, str, bool]] = []
 
     in_require = False
     in_replace = False
@@ -66,6 +66,17 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
                 requires.append((m.group(1), m.group(2), bool(m.group(3))))
         elif in_replace:
             _handle_replace(line, replaced_by_local)
+    return requires, replaced_by_local
+
+
+def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+
+    declared_in = manifest_path.relative_to(repo_root).as_posix()
+    requires, replaced_by_local = scan_go_mod(text)
 
     records: list[ExternalSystemRecord] = []
     seen: set[str] = set()
