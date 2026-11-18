@@ -75,8 +75,8 @@ _HEAD = "from pkg import catalog\nimport pkg.catalog as aliased\nfrom pkg import
             "every return the same module",
         ),
         (
-            "def load(fresh=False):\n    if fresh: return catalog\n    return catalog\n",
-            "a return after an if header on its line",
+            "def load():\n    with open(__file__): return catalog\n",
+            "the only return follows a with header on its line",
         ),
     ],
 )
@@ -166,3 +166,14 @@ def test_an_awaited_coroutine_or_a_method_returning_the_module_types_its_call(tm
 
     assert callees["held"] == {(_CATALOG, "receiver_typed_import")}
     assert (_CATALOG, "return_type_import") in callees["chained"]
+
+
+def test_a_return_after_an_async_header_on_its_line_is_read(tmp_path):
+    use = _HEAD + (
+        "async def load(lock):\n    async with lock: return other\n    return catalog\n\n\n"
+        "async def held(lock):\n    m = await load(lock)\n    return m.backend_of(2)\n"
+    )
+
+    callees = _callees(tmp_path, use)
+
+    assert (_CATALOG, "receiver_typed_import") not in callees.get("held", set())

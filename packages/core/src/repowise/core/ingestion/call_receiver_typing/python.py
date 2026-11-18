@@ -13,7 +13,7 @@ from ._shared import _FUNCTION_KINDS, _TYPE_KINDS
 # A ``return`` statement opening its line, or following a compound statement's
 # header on it (``if flag: return x``), with what it returns.
 _RETURN = re.compile(
-    r"^\s*(?:(?:if|elif|else|for|while|with|try|except|finally|case)\b[^#\n]*?:\s*)?"
+    r"^\s*(?:(?:async\s+)?(?:if|elif|else|for|while|with|try|except|finally|case)\b[^#\n]*?:\s*)?"
     r"return\b(.*)$"
 )
 _YIELD = re.compile(r"\byield\b")
