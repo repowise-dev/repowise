@@ -302,8 +302,11 @@ class _Tally:
                 self._inclusive_n[sid] += samples
         if in_production:
             self.explained += weight
+        self._charge(stack.frames, weight, samples)
+
+    def _charge(self, frames: tuple[int, ...], weight: float, samples: int) -> None:
+        """Self time to the innermost maintained repo frame, and the stack's bucket."""
         # The innermost frame somebody here maintains, and what runs below it.
-        frames = stack.frames
         at = next(
             (k for k in range(len(frames) - 1, -1, -1) if not self._unmaintained[frames[k]]), None
         )

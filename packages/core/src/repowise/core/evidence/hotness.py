@@ -263,9 +263,7 @@ def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
     """
     place = 0
     for row in rows:
-        if row.freshness == "stale":
-            continue
-        if not row.ordering_only and not (row.cost.self_value or 0.0) > 0:
+        if not _takes_place(row):
             continue
         place += 1
         row.rank = place
@@ -276,6 +274,13 @@ def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
             row.share = wilson_interval(row.samples, n)
         if row.tier == "ranked" and _may_lead(row) and _clears_share_rule(row, rules):
             row.tier = "lead_candidate"
+
+
+def _takes_place(row: _Row) -> bool:
+    """Fresh, and a cost of its own (a tracer's rows order by what it gave)."""
+    if row.freshness == "stale":
+        return False
+    return row.ordering_only or (row.cost.self_value or 0.0) > 0
 
 
 def _freshness(at_head: bool, measured_digest: str | None, current_digest: str | None) -> str:
