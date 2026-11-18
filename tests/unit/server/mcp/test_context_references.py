@@ -776,14 +776,17 @@ async def test_forward_reference_annotations_stay_references(session, repo_id, t
             'T = TypeVar("T", bound="backend_of")\n'
             'v = cast("backend_of", w)\n'
             'getattr(catalog, "backend_of")\n'
+            'z = {"target": "pkg.catalog.backend_of"}\n'
+            'w = lambda: "backend_of"\n'
         )
 
     out = await edit_set_block(session, repo_id, tmp_path, node)
 
-    # A type written as a string uses it in code; a getattr name does not.
+    # A type written as a string uses it in code; a getattr name, a dict value
+    # or a lambda body does not.
     files = out["files"][_USER]
     assert files["reference"] == [11, 12, 13, 14]
-    assert files["string"] == [10, 15]
+    assert files["string"] == [10, 15, 16, 17]
 
 
 @pytest.mark.asyncio

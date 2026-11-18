@@ -446,11 +446,17 @@ class _ProseLines:
         named: set[tuple[int, int, int]] = set()
         # The two tokens before the current one, past line continuations and comments.
         before: tuple[str, str] = ("", "")
+        # Open brackets, innermost last: a ``:`` in ``{}`` or ``[]`` is no annotation.
+        opened: list[str] = []
         try:
             for t in tokenize.generate_tokens(io.StringIO(text).readline):
                 if t.type in (tokenize.NL, tokenize.COMMENT):
                     continue
                 prev, before = before, (before[1], t.string)
+                if t.type == tokenize.OP and t.string in "([{":
+                    opened.append(t.string)
+                elif t.type == tokenize.OP and t.string in ")]}" and opened:
+                    opened.pop()
                 if t.type == tokenize.NAME and t.string == self._name:
                     code.add(t.start[0])
                     at.add(t.start)
@@ -467,7 +473,7 @@ class _ProseLines:
                         not fstring
                         and _NAMED_BODY.fullmatch(m.group(3))
                         and t.start[0] == t.end[0]
-                        and not _annotation_slot(prev)
+                        and not _annotation_slot(prev, opened[-1] if opened else "")
                     ):
                         named.add((t.start[0], t.start[1], t.end[1]))
         except (tokenize.TokenError, SyntaxError):
@@ -546,11 +552,16 @@ class _ProseLines:
         return all(_masked_string_hit(text, full, comments, m) for m in hits)
 
 
-def _annotation_slot(prev: tuple[str, str]) -> bool:
-    """Whether a string after tokens *prev* is a type written as a string, a
-    forward reference (``u: "User"``, ``-> "User"``, ``bound="User"``,
-    ``cast("User", x)``), which uses the type in code."""
-    return prev[1] in (":", "->") or prev in (("bound", "="), ("cast", "("))
+def _annotation_slot(prev: tuple[str, str], bracket: str) -> bool:
+    """Whether a string after tokens *prev*, inside open *bracket*, is a type
+    written as a string, a forward reference (``u: "User"``, ``-> "User"``,
+    ``bound="User"``, ``cast("User", x)``), which uses the type in code.
+
+    A dict value (``{"k": "User"}``), a slice or a ``lambda:`` body is no annotation.
+    """
+    if prev[1] == ":":
+        return bracket in ("", "(") and prev[0] != "lambda"
+    return prev[1] == "->" or prev in (("bound", "="), ("cast", "("))
 
 
 def _masked_string_hit(text: str, full: str, comments: str, m: re.Match[str]) -> bool:
