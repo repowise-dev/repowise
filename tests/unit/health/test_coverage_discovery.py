@@ -553,8 +553,8 @@ def test_expand_report_patterns_never_walks_dependency_trees(tmp_path: Path) -> 
 def test_a_pruned_name_spelled_after_double_star_is_an_opt_in(tmp_path: Path) -> None:
     # A multi-module Gradle build writes one JaCoCo report per module, at any depth.
     report = "build/reports/jacoco/test/jacocoTestReport.xml"
-    modules = ("moshi", "moshi-adapters", "moshi/records-tests", "moshi-kotlin-tests/codegen-only")
-    for rel in (*(f"{m}/{report}" for m in modules), "x/node_modules/y/" + report, "x/dist/" + report):
+    modules = ("", "moshi", "moshi-adapters", "moshi/records-tests", "moshi-kotlin-tests/codegen-only")
+    for rel in (*(f"{m}/{report}".lstrip("/") for m in modules), "x/node_modules/y/" + report, "x/dist/" + report):
         (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
         (tmp_path / rel).write_text("<report/>")
 
