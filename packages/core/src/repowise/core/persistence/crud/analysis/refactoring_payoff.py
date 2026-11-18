@@ -16,7 +16,8 @@ from typing import Any
 from sqlalchemy import delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....analysis.execution_graph import file_of_symbol
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ...models import RefactoringPayoff, RefactoringSuggestion, _now_utc
 from .._shared import _BATCH_SIZE
 from .function_facts import get_file_facts

@@ -18,8 +18,9 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
-from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
+from repowise.core.analysis.execution_graph import ExecutionGraphIndex
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
 from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
 from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key

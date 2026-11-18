@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
+
 from .change_health.moves import (
     MIN_RENAMED_TOKENS,
     SymbolBody,
@@ -32,7 +34,6 @@ from .change_health.moves import (
     sized_alike,
     symbol_bodies,
 )
-from .execution_graph import file_of_symbol
 
 #: ``(old symbol id, new symbol id) -> True`` when the new body kept most of the old one.
 SimilarFn = Callable[[str, str], bool]
@@ -174,7 +175,7 @@ def _carry_moves(
     moves = build_move_map(base, head, rename_map=renames, within_file=True, similar=kept)
     paired_old: set[str] = set()
     for (new_path, new_name), (old_path, old_name) in moves.by_new.items():
-        old_id, new_id = f"{old_path}::{old_name}", f"{new_path}::{new_name}"
+        old_id, new_id = make_symbol_id(old_path, old_name), make_symbol_id(new_path, new_name)
         if (new_path, new_name) in moves.edited:
             method = "edited_move"
         elif new_name == old_name:
@@ -284,7 +285,7 @@ def _as_body(body: FunctionBody) -> SymbolBody:
 
 
 def _id_of(body: SymbolBody) -> str:
-    return f"{body.path}::{body.name}"
+    return make_symbol_id(body.path, body.name)
 
 
 __all__ = [

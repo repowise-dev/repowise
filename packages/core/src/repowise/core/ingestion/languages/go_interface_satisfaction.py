@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from ..heritage_resolver import heritage_ancestors
+from ..symbol_identity import make_symbol_id
 from ..type_names import bare_type_name, type_qualifier
 
 if TYPE_CHECKING:
@@ -325,7 +326,7 @@ def resolve_go_interface_satisfaction(
         iface_file = type_def_file.get(ikey)
         if iface_file is None:
             continue
-        iface_id = f"{iface_file}::{ikey[1]}"
+        iface_id = make_symbol_id(iface_file, ikey[1])
         if not graph.has_node(iface_id):
             continue
         # Candidate concrete types = those declaring the interface's rarest
@@ -340,7 +341,7 @@ def resolve_go_interface_satisfaction(
             concrete_file = type_def_file.get(ckey)
             if concrete_file is None:
                 continue
-            concrete_id = f"{concrete_file}::{ckey[1]}"
+            concrete_id = make_symbol_id(concrete_file, ckey[1])
             if concrete_id == iface_id or not graph.has_node(concrete_id):
                 continue
             if graph.has_edge(concrete_id, iface_id):

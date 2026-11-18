@@ -24,8 +24,9 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.execution_graph import file_of_symbol, is_reliable_execution_edge
+from repowise.core.analysis.execution_graph import is_reliable_execution_edge
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.models import GraphEdge
 
 

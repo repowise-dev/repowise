@@ -16,6 +16,8 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 _log = logging.getLogger("repowise.mcp.answer.pointers")
 
 #: A fenced code block, fences on their own lines; group 1 is its body (None when empty).
@@ -158,7 +160,7 @@ def _answer_files(payload: dict[str, Any]) -> list[str]:
     """The files the answer cites, then the files on its flow path."""
     files = [c for c in payload.get("citations") or [] if isinstance(c, str) and "." in c]
     for hop_chain in payload.get("flow_path") or []:
-        files += [hop.split("::", 1)[0] for hop in str(hop_chain).split(" -> ") if "::" in hop]
+        files += [file_of_symbol(hop) for hop in str(hop_chain).split(" -> ") if "::" in hop]
     return list(dict.fromkeys(files))
 
 

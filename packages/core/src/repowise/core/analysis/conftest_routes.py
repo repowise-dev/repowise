@@ -77,6 +77,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.pyparse import parse_python, symtable_python
 
 from ..ingestion.framework_edges.pytest_edges import (
@@ -1173,7 +1174,7 @@ async def _load_scope(
     judged = [(conf, r) for by_conf in routes.values() for conf, r in by_conf.items()]
     narrowable = {conf for conf, r in judged if r.use is not None and r.reason is None}
     declared = {
-        f"{conf}::{name}"
+        make_symbol_id(conf, name)
         for conf, r in judged
         if conf in narrowable and r.use is not None
         for name in r.use.declared
@@ -1183,7 +1184,7 @@ async def _load_scope(
     unstamped = any(
         r.use is not None
         and r.use.fixtures
-        and not any(f"{conf}::{n}" in stamped for n in r.use.declared)
+        and not any(make_symbol_id(conf, n) in stamped for n in r.use.declared)
         for conf, r in judged
         if conf in narrowable
     )
@@ -1353,12 +1354,12 @@ def _fixture_users(conf: str, use: ConftestUse, scope: _Scope) -> set[str] | str
             f"{hidden} asks for fixtures in a way the index cannot record, and "
             f"{', '.join(sorted(use.fixtures))} reach the change"
         )
-    wanted = {f"{conf}::{n}" for n in use.fixtures}
+    wanted = {make_symbol_id(conf, n) for n in use.fixtures}
     users: set[str] = set()
     for edge in scope.edges:
         if edge.target not in wanted or edge.edge_type == "framework":
             continue
-        source_file = edge.source.split("::", 1)[0]
+        source_file = file_of_symbol(edge.source)
         if source_file == conf:
             continue
         if is_runnable_test(source_file) or scope_kind(source_file) == "conftest":

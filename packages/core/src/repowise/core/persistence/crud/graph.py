@@ -12,6 +12,8 @@ from collections.abc import Sequence
 from sqlalchemy import and_, case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ..models import (
     GraphEdge,
     GraphMetric,
@@ -315,7 +317,7 @@ async def reconcile_edges_for_files(
         ends = [e.get("source_node_id")]
         if e.get("hint_source") in TARGET_OWNED_HINTS:
             ends.append(e.get("target_node_id"))
-        source_ids.update(n for n in ends if n and n.split("::", 1)[0] in scope)
+        source_ids.update(n for n in ends if n and file_of_symbol(n) in scope)
     source_ids.discard("")
     if not source_ids:
         return 0

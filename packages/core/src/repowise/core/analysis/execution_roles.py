@@ -25,9 +25,10 @@ from typing import Any, Literal, get_args
 from repowise.core.code_origin import path_origin
 from repowise.core.ingestion.framework_routes import flask_routes, next_app_router_file
 from repowise.core.ingestion.models import REGISTRATION_HINT
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import is_test_path
 
-from .execution_graph import ExecutionGraphIndex, file_of_symbol
+from .execution_graph import ExecutionGraphIndex
 
 ExecutionRole = Literal[
     "request",

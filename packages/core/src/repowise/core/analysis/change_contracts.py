@@ -45,6 +45,8 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ..ingestion.models import EXTENSION_TO_LANGUAGE
 from ..test_paths import is_unambiguous_test_path
 from .signature_effect import (
@@ -150,15 +152,6 @@ class ContractImpact:
 
     def is_empty(self) -> bool:
         return not self.changes
-
-
-def _containing_file(symbol_id: str) -> str:
-    """The file a symbol node belongs to.
-
-    Ids are ``<path>::<name>`` (and ``<path>::<class>::<method>`` for methods),
-    so the first segment wins.
-    """
-    return symbol_id.split("::", 1)[0]
 
 
 def symbol_index(
@@ -371,7 +364,7 @@ def _with_callers(
     tests: list[str] = []
     production: list[str] = []
     for caller in callers.get(facts.symbol_id, ()):
-        caller_file = _containing_file(caller)
+        caller_file = file_of_symbol(caller)
         if caller_file in changed_set:
             inside += 1
         elif is_unambiguous_test_path(caller_file):

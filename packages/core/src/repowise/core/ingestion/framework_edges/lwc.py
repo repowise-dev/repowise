@@ -22,6 +22,7 @@ from ..resolvers.lwc import (
     lwc_tag_index,
     nearest,
 )
+from ..symbol_identity import module_symbol_id
 from .base import (
     DetectionContext,
     FrameworkHandler,
@@ -115,7 +116,7 @@ def _binding_edges(graph: nx.DiGraph, template: str, text: str, main: Any) -> in
         if m.group(1) in members
         and not any(s <= m.start() < e and m.group(1) in local for s, e, local in scopes)
     }
-    module_sym = f"{template}::__module__"
+    module_sym = module_symbol_id(template)
     return sum(add_symbol_edge(graph, module_sym, members[n]) for n in names)
 
 

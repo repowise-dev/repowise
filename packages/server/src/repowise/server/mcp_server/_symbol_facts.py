@@ -27,17 +27,14 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from repowise.core.analysis.execution_graph import (
-    file_of_symbol,
-    is_reliable_execution_edge,
-    module_node_id,
-)
+from repowise.core.analysis.execution_graph import is_reliable_execution_edge
 from repowise.core.code_origin import path_origin
 from repowise.core.ingestion.models import (
     EXECUTION_EDGE_TYPES,
     EXTENSION_TO_LANGUAGE,
     TS_JS_LANGUAGES,
 )
+from repowise.core.ingestion.symbol_identity import file_of_symbol, module_symbol_id
 from repowise.core.persistence.models import FunctionFact, GraphEdge, GraphNode, HealthFileMetric
 from repowise.server.mcp_server._references import symbol_identity
 
@@ -152,7 +149,7 @@ async def _caller_fact(session: AsyncSession, repo_id: str, symbol_id: str) -> s
 
 def _test_node(selector: str) -> str:
     """The graph node a selector's walk starts from: the test, or a JS/TS test file's module."""
-    return selector if "::" in selector else module_node_id(selector)
+    return selector if "::" in selector else module_symbol_id(selector)
 
 
 async def _via_symbols(

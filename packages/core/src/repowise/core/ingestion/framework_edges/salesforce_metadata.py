@@ -30,6 +30,7 @@ from ..framework_facts import SALESFORCE
 from ..languages.apex_namespace import apex_namespaces
 from ..resolvers.lwc import lwc_bundles, nearest
 from ..salesforce_flow import FlowRefs, read_flow
+from ..symbol_identity import module_symbol_id
 from ..type_names import bare_type_name, type_qualifier
 from .base import (
     DetectionContext,
@@ -284,7 +285,7 @@ def _one_flow_edges(graph: nx.DiGraph, idx: _Index, path: str, flow_sym: str, re
 def _enclosing(parsed: Any, line: int, path: str) -> str:
     """The innermost method (else class) declared around *line*, else the module."""
     sym = symbol_at((s for s in parsed.symbols if s.kind in ("method", "class")), line)
-    return sym.id if sym is not None else f"{path}::__module__"
+    return sym.id if sym is not None else module_symbol_id(path)
 
 
 def _apex_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int:
@@ -340,7 +341,7 @@ def _lwc_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int:
         for m in _LIGHTNING_FLOW_RE.finditer(text):
             target = idx.flow(m.group(1), path)
             if target is not None:
-                count += _link(graph, path, target, [], f"{path}::__module__", idx.symbol_of(target))
+                count += _link(graph, path, target, [], module_symbol_id(path), idx.symbol_of(target))
     return count
 
 
@@ -375,7 +376,7 @@ def _aura_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext) -> int
             target = idx.flow(m.group(2), controller)
             if target is not None:
                 count += _link(
-                    graph, controller, target, [], f"{controller}::__module__", idx.symbol_of(target)
+                    graph, controller, target, [], module_symbol_id(controller), idx.symbol_of(target)
                 )
     return count
 
@@ -391,7 +392,7 @@ def _visualforce_flow_refs(graph: nx.DiGraph, idx: _Index, ctx: ResolverContext)
         for m in _VISUALFORCE_FLOW_RE.finditer(text):
             target = idx.flow(m.group(1), path)
             if target is not None:
-                count += _link(graph, path, target, [], f"{path}::__module__", idx.symbol_of(target))
+                count += _link(graph, path, target, [], module_symbol_id(path), idx.symbol_of(target))
     return count
 
 

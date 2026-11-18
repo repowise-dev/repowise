@@ -28,9 +28,9 @@ from repowise.core.analysis.execution_graph import (
     is_walkable_execution_edge,
 )
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.mcp_server._answer_pipeline import is_subsystem_query
-from repowise.server.mcp_server._graph_files import node_to_file
 from repowise.server.mcp_server._helpers import is_excluded
 from repowise.server.mcp_server._page_paths import FILE_ROW_TYPES
 from repowise.server.mcp_server._query_terms import content_terms
@@ -167,7 +167,7 @@ async def _calls(
     for src, tgt, etype, origin, conf, lines_json in res.all():
         if upstream:
             src, tgt = tgt, src
-        if not tgt or tgt == src or is_excluded_execution_path(node_to_file(tgt)):
+        if not tgt or tgt == src or is_excluded_execution_path(file_of_symbol(tgt)):
             continue
         if not is_walkable_execution_edge(etype, origin, conf):
             continue
@@ -236,7 +236,7 @@ async def _choose_entry(
 
 
 def _label(node_id: str) -> str:
-    return f"{_leaf(node_id)} ({node_to_file(node_id)})"
+    return f"{_leaf(node_id)} ({file_of_symbol(node_id)})"
 
 
 async def expand_via_entry_trace(
@@ -253,7 +253,7 @@ async def expand_via_entry_trace(
     words = _question_words(question)
     seed_files: list[str] = []
     for h in hits[:_SEED_HITS]:
-        path = node_to_file(h.get("target_path") or "")
+        path = file_of_symbol(h.get("target_path") or "")
         if path and path not in seed_files:
             seed_files.append(path)
     if not words or not seed_files:
@@ -286,10 +286,10 @@ async def expand_via_entry_trace(
         "that does not always run): " + " -> ".join(parts)
     )
 
-    entry_file = node_to_file(entry)
+    entry_file = file_of_symbol(entry)
     inject = []
     for step in heavy:
-        path = node_to_file(step)
+        path = file_of_symbol(step)
         if path != entry_file and path not in inject and not is_excluded(path, exclude_spec):
             inject.append(path)
     inject = inject[:_MAX_INJECT]
@@ -399,7 +399,7 @@ async def symbol_at(session: Any, repo_id: str, path: str, line: int) -> str | N
 
 def _hop_row(caller: str, call_line: int, callee: str, start: int) -> str:
     at = f":{call_line}" if call_line < _NO_LINE else ""
-    return f"{_leaf(caller)} {node_to_file(caller)}{at} -> {_leaf(callee)} {node_to_file(callee)}:{start}"
+    return f"{_leaf(caller)} {file_of_symbol(caller)}{at} -> {_leaf(callee)} {file_of_symbol(callee)}:{start}"
 
 
 def _mention(question: str, name: str) -> re.Match | None:
@@ -447,8 +447,8 @@ def _shipped_steps(
         (line, t)
         for line, t in calls
         if t in starts and t not in seen
-        and path_origin(node_to_file(t)) == "production"
-        and not is_excluded(node_to_file(t), exclude_spec)
+        and path_origin(file_of_symbol(t)) == "production"
+        and not is_excluded(file_of_symbol(t), exclude_spec)
     ]
 
 
@@ -553,7 +553,7 @@ async def symbols_named(session: Any, repo_id: str, name: str) -> list[str]:
     if "." in name:
         owned = [n for n in found if n.endswith("::" + name.replace(".", "::"))]
         found = owned or found
-    shipped = [n for n in found if path_origin(node_to_file(n)) == "production"]
+    shipped = [n for n in found if path_origin(file_of_symbol(n)) == "production"]
     return shipped or found
 
 

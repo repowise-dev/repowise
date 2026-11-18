@@ -21,6 +21,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from ..models import FileInfo, ParsedFile, Symbol
+from ..symbol_identity import make_symbol_id
 
 # A line opening with a bare word starts a command; ``DELETE(YES)`` is an attribute.
 _COMMAND = re.compile(r"^\s*([A-Z]+)(?=\s|$)", re.IGNORECASE)
@@ -105,7 +106,7 @@ def parse_csd_file(file_info: FileInfo, source: bytes) -> ParsedFile:
     definitions = [d for d in read_csd(enumerate(lines, 1)) if d.command == "DEFINE"]
     symbols = [
         Symbol(
-            id=f"{file_info.path}::{d.resource}:{d.name}",
+            id=make_symbol_id(file_info.path, f"{d.resource}:{d.name}"),
             name=d.name,
             qualified_name=f"{d.resource}:{d.name}",
             kind="variable",

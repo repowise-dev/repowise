@@ -51,7 +51,7 @@ import structlog
 
 from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
 from .models import CONTAINMENT_EDGE_TYPES, TS_JS_LANGUAGES, ParsedFile
-from .symbol_identity import symbol_id_path
+from .symbol_identity import file_of_symbol
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -958,7 +958,7 @@ def _resolve_apex_type_refs(
             continue
         skip.add(name.lower())
         type_id = index.top_level_type(from_path, name)
-        target = symbol_id_path(type_id) if type_id else from_path
+        target = file_of_symbol(type_id) if type_id else from_path
         if target == from_path or not graph.has_node(target):
             continue
         _add_or_merge_type_use_edge(

@@ -16,6 +16,7 @@ from typing import Any, NamedTuple
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import get_graph_nodes_by_ids
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.test_paths import is_test_path
@@ -302,7 +303,7 @@ async def _direct_edges(
         e
         for e in res.scalars().all()
         if e.source_node_id != target.node_id
-        and not (cross_file and e.source_node_id.split("::")[0] == target.file_path)
+        and not (cross_file and file_of_symbol(e.source_node_id) == target.file_path)
     ]
 
 
@@ -356,7 +357,7 @@ async def caller_evidence(
             rows.append(
                 caller_row(
                     e.source_node_id,
-                    src.file_path if src else e.source_node_id.split("::")[0],
+                    src.file_path if src else file_of_symbol(e.source_node_id),
                     src.start_line if src else None,
                     target.node_id,
                     "calls",
@@ -420,7 +421,7 @@ async def _registering_files(
             GraphEdge.confidence >= MIN_CALL_CONFIDENCE,
         )
     )
-    called = {dst for src, dst in res.all() if not is_test_path(src.split("::")[0])}
+    called = {dst for src, dst in res.all() if not is_test_path(file_of_symbol(src))}
     unreached = [c for c in callers if c.node_id not in called]
     if not unreached:
         return []

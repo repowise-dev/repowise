@@ -34,12 +34,13 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import PurePosixPath
 
-from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
+from repowise.core.analysis.execution_graph import ExecutionGraphIndex
 from repowise.core.analysis.health.complexity.test_case import (
     runs_module_callbacks,
     test_case_by_name,
 )
 from repowise.core.ingestion.models import EXTENSION_TO_LANGUAGE
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import paired_test_names
 
 # How many tests each function keeps. Measured on this repository and hermes:

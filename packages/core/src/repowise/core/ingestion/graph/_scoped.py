@@ -13,6 +13,7 @@ from collections.abc import Collection
 from typing import Any, Protocol
 
 from ..models import CONTAINMENT_EDGE_TYPES, REGISTRATION_HINT, is_dynamic_edge
+from ..symbol_identity import module_symbol_id
 
 # Stamped on nodes by passes every build runs over every file (warmups,
 # always-run detection, C/C++ declaration pairing), so a seeded value could
@@ -148,7 +149,7 @@ class ScopedBuildMixin:
             if parsed is None:
                 continue
             owned.add(path)
-            owned.add(f"{path}::__module__")
+            owned.add(module_symbol_id(path))
             owned.update(sym.id for sym in parsed.symbols)
         return owned
 

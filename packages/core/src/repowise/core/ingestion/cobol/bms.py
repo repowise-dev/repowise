@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from ..models import FileInfo, ParsedFile, Symbol
+from ..symbol_identity import make_symbol_id
 
 # A labelled macro in column 1: ``COSGN00 DFHMSD TYPE=&&SYSPARM,...``.
 _MACRO = re.compile(r"^(?P<label>[A-Z0-9#@$]{1,8})\s+(?P<macro>DFHMSD|DFHMDI)\b", re.I)
@@ -29,7 +30,7 @@ def parse_bms_file(file_info: FileInfo, source: bytes) -> ParsedFile:
             symbols[-1].end_line = number - 1
         symbols.append(
             Symbol(
-                id=f"{file_info.path}::{name}",
+                id=make_symbol_id(file_info.path, name),
                 name=name,
                 qualified_name=name,
                 kind=kind,

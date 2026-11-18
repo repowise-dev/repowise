@@ -32,7 +32,12 @@ from ..resolvers.cpp_workspace import _INDEX_KEY as CPP_INDEX_KEY
 from ..resolvers.go import read_go_module_path, read_go_modules
 from ..resolvers.go_workspace import cached_go_index, go_package_files
 from ..resolvers.typescript import detect_platform_files
-from ..symbol_identity import has_overload_identity
+from ..symbol_identity import (
+    MODULE_SYMBOL_NAME,
+    has_overload_identity,
+    make_symbol_id,
+    module_symbol_id,
+)
 from ..type_ref_resolution import resolve_type_refs
 from ._edges import EdgesMixin
 from ._import_targets import resolve_import_targets
@@ -407,7 +412,7 @@ class GraphBuilder(
 
             # HAS_METHOD edge: class/struct → method
             if sym.parent_name and sym.kind == "method":
-                parent_id = f"{path}::{sym.parent_name}"
+                parent_id = make_symbol_id(path, sym.parent_name)
                 if parent_id in self._graph:
                     self._graph.add_edge(
                         parent_id,
@@ -416,12 +421,12 @@ class GraphBuilder(
                     )
 
         # --- Synthetic module-level symbol for top-level calls ---
-        module_sym_id = f"{path}::__module__"
+        module_sym_id = module_symbol_id(path)
         self._graph.add_node(
             module_sym_id,
             node_type="symbol",
             kind="module",
-            name="__module__",
+            name=MODULE_SYMBOL_NAME,
             file_path=path,
             start_line=0,
             end_line=0,

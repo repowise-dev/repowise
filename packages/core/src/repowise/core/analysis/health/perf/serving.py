@@ -32,6 +32,7 @@ from repowise.core.analysis.health.queue.eligibility import (
 from repowise.core.analysis.health.queue_rules import NULL_VALUE, Facet, FilterRule, SortKeys
 from repowise.core.analysis.health.rows import detail_map, field, json_field
 from repowise.core.analysis.health.worth import LOW_PRIORITY_LABEL
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from .opportunities import PERFORMANCE_MODEL_VERSION
 from .opportunity_rank import NON_LEADING_MARKERS
@@ -563,7 +564,7 @@ def intervention_file(opportunity: PerformanceOpportunity) -> str:
     """The file a reader would open first: the intervention, else the evidence."""
     symbol = opportunity.intervention_symbol
     if symbol:
-        return symbol.split("::", 1)[0]
+        return file_of_symbol(symbol)
     return opportunity.evidence[0]["file_path"] if opportunity.evidence else ""
 
 

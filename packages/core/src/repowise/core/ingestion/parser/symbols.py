@@ -62,6 +62,7 @@ from ..parser_helpers import (
 )
 from ..symbol_identity import (
     disambiguate_colliding_ids,
+    make_symbol_id,
     split_python_property_mutators,
     symbol_discriminator,
 )
@@ -358,7 +359,7 @@ def _settle_assigned_functions(
         symbol = symbols[index]
         symbols[index] = replace(
             symbol,
-            id=f"{path}::{owner}::{symbol.name}",
+            id=make_symbol_id(path, owner, symbol.name),
             qualified_name=_build_qualified_name(path, owner, symbol.name),
             kind="method",
             parent_name=owner,
@@ -455,7 +456,9 @@ def _symbol_from_match(capture_dict: dict, file: _SymbolPass) -> tuple[Symbol, N
     params_nodes = capture_dict.get("symbol.params", [])
     params_text = _node_text(params_nodes[0], src) if params_nodes else ""
     scope = _id_scope(def_node, parent_name, config, language, src)
-    sym_id = f"{file_info.path}::{scope}::{name}" if scope else f"{file_info.path}::{name}"
+    sym_id = (
+        make_symbol_id(file_info.path, scope, name) if scope else make_symbol_id(file_info.path, name)
+    )
     symbol = Symbol(
         id=sym_id,
         name=name,
@@ -788,7 +791,7 @@ def _python_assignment_alias_symbols(
         extra.append(
             replace(
                 symbol,
-                id=f"{file_path}::{target}::alias@{def_node.start_byte}",
+                id=make_symbol_id(file_path, target, f"alias@{def_node.start_byte}"),
                 name=target,
                 qualified_name=_build_qualified_name(file_path, None, target),
                 alias_of=terminal if target != terminal else None,

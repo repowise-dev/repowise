@@ -27,6 +27,7 @@ from repowise.core.ingestion.languages.python_modules import (
     dotted_module_for,
 )
 from repowise.core.ingestion.package_roots import module_for, package_roots_from_paths
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 from repowise.core.pyparse import parse_python
 from repowise.core.workspace.code_api import dunder_all
 
@@ -426,7 +427,7 @@ def _sibling_owner(
     for sibling in package_files.get(path, ()):
         if sibling == path:
             continue
-        owner = out.get(f"{sibling}::{parent_name}")
+        owner = out.get(make_symbol_id(sibling, parent_name))
         if owner is not None:
             return path if path in roots else owner
     return None
@@ -510,7 +511,7 @@ def _publish_partial_fragments(
                 continue
             local = _local_id(sym, path)
             for other in sorted(others):
-                twin = next((s for s in parsed[other].symbols if s.id == f"{other}::{local}"), None)
+                twin = next((s for s in parsed[other].symbols if s.id == make_symbol_id(other, local)), None)
                 if twin is not None and "partial" in twin.modifiers and twin.id in out:
                     out[sym.id] = path
                     break
@@ -559,7 +560,7 @@ def public_symbols(
             if containers and sym.parent_name:
                 owner = _enclosing_ruby_owner(sym, out, containers)
             if owner is None and sym.parent_name:
-                owner = out.get(f"{path}::{sym.parent_name}")
+                owner = out.get(make_symbol_id(path, sym.parent_name))
             if owner is None and sym.parent_name and package_files:
                 owner = _sibling_owner(path, sym.parent_name, out, root_set, package_files)
             if owner is not None and sym.visibility == "public":

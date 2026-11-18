@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
 from .models import FileInfo, ParsedFile, SchemaReference, Symbol
+from .symbol_identity import make_symbol_id
 
 # A legacy metadata API flow carries its version number: ``Foo-3.flow``.
 _LEGACY_VERSION_RE = re.compile(r"-\d+$")
@@ -152,7 +153,7 @@ def parse_flow_file(file_info: FileInfo, source: bytes) -> ParsedFile:
     name = flow_api_name(file_info.path)
     line_count = source.count(b"\n") + 1
     symbol = Symbol(
-        id=f"{file_info.path}::{name}",
+        id=make_symbol_id(file_info.path, name),
         name=name,
         qualified_name=name,
         kind="function",

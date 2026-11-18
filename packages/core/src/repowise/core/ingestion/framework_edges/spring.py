@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any
 from ...symbol_spans import symbol_at
 from ..framework_routes import spring_routes
 from ..resolvers import ResolverContext
+from ..symbol_identity import module_symbol_id
 from ..type_names import strip_type_arguments
 from .base import (
     DetectionContext,
@@ -224,7 +225,7 @@ def _add_route_handler_edges(
             # method holding the annotation's line is the one it sits on.
             handler = symbol_at(methods, line)
             if handler is not None:
-                count += add_symbol_edge(graph, f"{path}::__module__", handler.id)
+                count += add_symbol_edge(graph, module_symbol_id(path), handler.id)
     return count
 
 

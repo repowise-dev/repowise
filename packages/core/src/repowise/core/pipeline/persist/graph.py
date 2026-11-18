@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 
 from repowise.core.entry_candidacy import is_reachability_root
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 
 from .prune import _PRUNE_CHUNK
 
@@ -307,7 +308,7 @@ def apply_stored_complexity(
         if pf.file_info.path in skip_paths:
             continue
         for sym in pf.symbols:
-            sid = getattr(sym, "id", None) or f"{pf.file_info.path}::{sym.name}"
+            sid = getattr(sym, "id", None) or make_symbol_id(pf.file_info.path, sym.name)
             if value := stored.get(sid):
                 sym.complexity_estimate = value
 
@@ -701,8 +702,8 @@ async def _drifted_files(
     changed file. The store is read only for the changed files and the
     rest is a dictionary diff, so no step reads the whole edge table.
     """
-    from repowise.core.analysis.execution_graph import file_of_symbol
     from repowise.core.ingestion.models import TARGET_OWNED_HINTS
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
 
     graph = graph_builder.graph()
     owner = _edge_owners(graph.nodes(data=True))

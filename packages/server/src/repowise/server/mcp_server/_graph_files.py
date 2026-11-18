@@ -46,11 +46,6 @@ def is_symbol_node(node_id: str) -> bool:
     return "::" in node_id
 
 
-def node_to_file(node_id: str) -> str:
-    """``a/b.py::Klass.meth`` -> ``a/b.py``. A file node id is returned unchanged."""
-    return node_id.split("::", 1)[0]
-
-
 def file_ext(path: str) -> str:
     """Lower-case file extension (``retrieval.py`` -> ``py``), ``""`` if none."""
     base = os.path.basename(path)

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ...models import FileInfo, Symbol
+from ...symbol_identity import make_symbol_id
 from ..helpers import node_text
 
 if TYPE_CHECKING:
@@ -40,9 +41,9 @@ def build_synthetic_symbol(
     treat them identically.
     """
     sym_id = (
-        f"{file_info.path}::{parent_name}::{name}"
+        make_symbol_id(file_info.path, parent_name, name)
         if parent_name
-        else f"{file_info.path}::{name}"
+        else make_symbol_id(file_info.path, name)
     )
     qualified = (
         f"{file_info.path}.{parent_name}.{name}"
