@@ -82,6 +82,7 @@ from ..test_paths import (
     is_test_related_path,
     is_test_support_module,
     is_test_support_path,
+    nodeid_without_phase,
     paired_test_names,
 )
 from ..test_runners import PYTHON_SUFFIXES, TEST_CODE_SUFFIXES, is_code_file
@@ -218,11 +219,6 @@ _ROOT_META = (
 # A root file only reads as project meta with no extension or a prose one:
 # ``history.json`` or ``changes.yaml`` is data a test may load.
 _DOC_SUFFIXES = DOC_EXTENSIONS | {"", ".markdown"}
-
-# Extensions a test runner collects tests from; anything else in a test tree
-# (data, snapshots, golden files) is read by tests, not run.
-# coverage.py names each phase of a test as its own context.
-_PHASES = ("|run", "|setup", "|teardown")
 
 
 @dataclass(frozen=True)
@@ -1465,10 +1461,7 @@ def _runnable(selected: list[_TestRef]) -> tuple[tuple[str, ...], tuple[str, ...
 
 def _node_id(test_id: str, test_file: str) -> str:
     """A runnable id: ``file::name`` rebased on the resolved file, else the file."""
-    for phase in _PHASES:
-        if test_id.endswith(phase):
-            test_id = test_id[: -len(phase)]
-            break
+    test_id = nodeid_without_phase(test_id)
     if "::" not in test_id:
         return test_file
     return f"{test_file}::{test_id.split('::', 1)[1]}"
