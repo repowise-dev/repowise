@@ -85,7 +85,7 @@ def read(data: bytes) -> ProfileRun:
         )
     return ProfileRun(
         frames=tuple(frames),
-        stacks=tally.stacks(counted=True),
+        stacks=tally.stacks(),
         unit="samples",
         skipped={"malformed_line": malformed} if malformed else {},
     )
