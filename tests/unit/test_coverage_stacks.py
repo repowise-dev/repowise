@@ -127,7 +127,7 @@ def test_tools_that_need_an_install_say_so():
 @pytest.mark.parametrize(
     ("case", "install"),
     [
-        ("python_pip", "python -m pip install pytest pytest-cov"),
+        ("python_pip", "python -m pip install -r requirements-dev.txt -r requirements.txt pytest pytest-cov"),
         ("python_hatch", "hatch run python -m pip install pytest pytest-cov"),
     ],
 )
@@ -136,6 +136,73 @@ def test_a_workstation_installs_what_the_ci_setup_installs(case, install):
     python = detect_stacks(*_load(case))[0]
     assert python.requires[-1] == install
     assert python.to_dict()["prerequisites"][-1] == install
+
+
+_PROJECT = '[project]\nname = "pkg"\nversion = "0"\n'
+
+
+@pytest.mark.parametrize(
+    ("files", "install"),
+    [
+        # A flat package with a dev requirements file: the project and the file, not the docs one.
+        ({"pyproject.toml": _PROJECT, "requirements-dev.txt": "pytest-httpbin\n", "requirements-docs.txt": "sphinx\n"},
+         "-e . -r requirements-dev.txt pytest pytest-cov"),
+        ({"setup.py": "", "requirements-py3-dev.txt": "x\n", "requirements-unit-tests.txt": "y\n"},
+         "-e . -r requirements-py3-dev.txt -r requirements-unit-tests.txt pytest pytest-cov"),
+        # "requirements" after the dev or test word; a docs file stays out either way.
+        ({"setup.py": "", "dev-requirements.txt": "x\n", "test-requirements.txt": "y\n", "docs-requirements.txt": "z\n"},
+         "-e . -r dev-requirements.txt -r test-requirements.txt pytest pytest-cov"),
+        # setup.cfg extras: the test extra over dev.
+        ({"setup.py": "from setuptools import setup\nsetup()\n",
+          "setup.cfg": "[metadata]\nname = pkg\n\n[options.extras_require]\ndev =\n    flake8\ntest =\n    pytest\n"},
+         '-e ".[test]" pytest pytest-cov'),
+        # pyproject extras; a dependency group is not an extra pip can name.
+        ({"pyproject.toml": _PROJECT + '[project.optional-dependencies]\ndev = ["pytest"]\n'
+                                       '[dependency-groups]\ntest = ["pytest"]\n'},
+         '-e ".[dev]" pytest pytest-cov'),
+        # A pyproject that only configures tools, over a flat tree, is not planned as an install.
+        ({"pyproject.toml": "[tool.ruff]\nline-length = 100\n", "requirements.txt": "flask\n"},
+         "-r requirements.txt pytest pytest-cov"),
+        # It still builds a src layout, or setup.cfg's metadata, through setuptools.
+        ({"pyproject.toml": "[tool.ruff]\nline-length = 100\n", "src/lib/__init__.py": ""},
+         "-e . pytest pytest-cov"),
+        ({"pyproject.toml": "[tool.ruff]\n",
+          "setup.cfg": "[metadata]\nname = pkg\n[options.extras_require]\ntest =\n    pytest\n"},
+         '-e ".[test]" pytest pytest-cov'),
+        # pip refuses a setup.cfg with neither setup.py nor pyproject.toml.
+        ({"setup.cfg": "[metadata]\nname = pkg\n", "src/lib/__init__.py": "", "requirements-dev.txt": "x\n"},
+         "-r requirements-dev.txt pytest pytest-cov"),
+        # Test requirements in a requirements/ directory.
+        ({"setup.py": "", "requirements/test.txt": "pytest\n", "requirements/docs.txt": "sphinx\n"},
+         "-e . -r requirements/test.txt pytest pytest-cov"),
+    ],
+)
+def test_a_pip_unit_installs_the_project_and_its_test_dependencies(files, install):
+    paths = sorted([*files, "pkg/__init__.py", "tests/test_pkg.py"])
+    (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths) if p in files})
+    assert stack.to_dict()["prerequisites"] == [f"python -m pip install {install}"]
+    assert f"- run: pip install {install}   # adjust to your install" in stack.setup
+
+
+def test_a_uv_test_group_is_synced_and_integration_tests_are_left_out():
+    paths = sorted([
+        "pyproject.toml", "uv.lock", "langchain_core/__init__.py",
+        "tests/unit_tests/test_a.py", "tests/integration_tests/test_b.py",
+    ])
+    pyproject = _PROJECT + '[dependency-groups]\nlint = ["ruff"]\ntest = ["pytest"]\n'
+    (stack,) = detect_stacks(paths, {"pyproject.toml": pyproject})
+    assert stack.test == (
+        "uv run --with pytest-cov --group test pytest tests/unit_tests "
+        "--cov=langchain_core --cov-report=xml --cov-context=test"
+    )
+    assert stack.to_dict()["prerequisites"] == []
+
+
+def test_a_uv_dev_group_needs_no_flag():
+    # ``uv run`` syncs the dev group by default.
+    paths = ["pyproject.toml", "uv.lock", "pkg/__init__.py", "tests/test_a.py"]
+    (stack,) = detect_stacks(paths, {"pyproject.toml": _PROJECT + '[dependency-groups]\ndev = ["pytest-cov"]\n'})
+    assert stack.test == "uv run pytest --cov=pkg --cov-report=xml --cov-context=test"
 
 
 def test_python_records_test_contexts_and_sends_the_coverage_db_on_pushes():

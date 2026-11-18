@@ -242,6 +242,12 @@ def _read_evidence(
     data = file.read_bytes()
     name = _input_format(input_format, data)
     try:
+        if not data.strip():
+            # Every reader would name a format the file lacks; the run that writes it never finished.
+            raise EvidenceFormatError(
+                f"{file} is empty: the profiled run probably crashed or stopped before writing it",
+                "run the command again, check its output for a crash, then ingest the file it writes",
+            )
         if name == EVIDENCE_FORMAT:
             text = data.decode("utf-8", errors="replace")
             return _Input(name, text=text, doc=parse_evidence(text))
