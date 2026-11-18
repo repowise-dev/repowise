@@ -561,7 +561,9 @@ def _edit_go(line: str, m: re.Match) -> CommandEdit:
 
 def _go(paths: list[str], files: dict[str, str]) -> Stack | None:
     """None for a ``go.mod`` with no ``module`` line or no Go file below it (a build helper, not a module)."""
-    if not re.search(r"^\s*module\s+\S", files.get("go.mod", ""), re.M) or not any(p.endswith(".go") for p in paths):
+    gomod = files.get("go.mod")  # None when the caller read no manifests: nothing to judge by
+    unnamed = gomod is not None and not re.search(r"^\s*module\s+\S", gomod, re.M)
+    if unnamed or not any(p.endswith(".go") for p in paths):
         return None
     return Stack(
         "go", "go test", "go", "coverage.out",
@@ -719,7 +721,7 @@ def _dotnet_sdk(files: dict[str, str], projects: str) -> str | None:
     if isinstance(pinned, str) and pinned:
         return (f"`{_DOTNET_SDK_PIN}` pins the .NET SDK to {pinned}: `dotnet --list-sdks` must list it, or a "
                 "later one its `rollForward` allows, before `dotnet test` runs.")
-    versions = sorted({tuple(map(int, v.split("."))) for v in re.findall(r"net(\d+\.\d+)", projects)})
+    versions = sorted({tuple(map(int, v.split("."))) for v in re.findall(r"(?<![\w.])net(\d+\.\d+)", projects)})
     if versions:
         newest = ".".join(map(str, versions[-1]))
         return f"The projects target up to net{newest}: `dotnet test` needs the .NET {newest} SDK or later."

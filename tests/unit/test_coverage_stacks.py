@@ -522,3 +522,21 @@ def test_dotnet_without_a_pin_names_the_sdk_the_newest_framework_needs():
     }
     (stack,) = detect_stacks(["App.slnx", *files], files)
     assert stack.notes[0] == "The projects target up to net11.0: `dotnet test` needs the .NET 11.0 SDK or later."
+
+
+def test_a_go_module_is_judged_by_its_module_line_only_when_it_was_read():
+    assert [s.language for s in detect_stacks(["go.mod", "main.go"], {})] == ["go"]
+
+
+def test_a_module_in_a_test_directory_is_no_unit():
+    # Its tests cover test code; the production units run their own.
+    files = {"go.mod": "module example.com/app\n", "integration-tests/go.mod": "module example.com/it\n"}
+    paths = [*files, "main.go", "integration-tests/it_test.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == [""]
+
+
+@pytest.mark.parametrize("pin", ['{"sdk": "11.0.100"}', "[1]", "// comment\n{}", '{"sdk": {"version": 11}}'])
+def test_an_odd_global_json_falls_back_to_the_target_frameworks(pin):
+    files = {"global.json": pin, "App/App.csproj": "<TargetFramework>net8.0-windows</TargetFramework>"}
+    (stack,) = detect_stacks(["App.sln", *files], files)
+    assert stack.notes[0].startswith("The projects target up to net8.0:")
