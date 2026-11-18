@@ -498,6 +498,7 @@ __all__ = [
     "UNRELIABLE_EXECUTION_ORIGINS",
     "ExecutionGraphIndex",
     "ReachInfo",
+    "file_of_symbol",  # re-exported for code outside this package
     "is_excluded_execution_path",
     "is_reliable_call_edge",
     "is_reliable_execution_edge",

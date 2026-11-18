@@ -308,7 +308,7 @@ def _neighbor_entry(
         "kind": other_node.kind if other_node else None,
         "file": other_node.file_path
         if other_node
-        else (file_of_symbol(other_id)),
+        else file_of_symbol(other_id),
         # Definition line of the other symbol.
         "line": other_node.start_line if other_node else None,
         "confidence": edge.confidence,
