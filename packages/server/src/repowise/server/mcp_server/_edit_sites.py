@@ -890,7 +890,11 @@ def _file_sites(
             continue
         is_def = not def_seen and def_start <= n <= def_end
         def_seen = def_seen or is_def
-        kind = _line_kind(is_def, n in imports, _calls_here(text, hits, n, graph_calls, live))
+        calls = _calls_here(text, hits, n, graph_calls, live) or (
+            # Where the file's own class defines that member, a call may be either.
+            judge.member and not judge.own and not is_def and _member_call(text, hits, n, prose)
+        )
+        kind = _line_kind(is_def, n in imports, calls)
         if kind == "import" and prose(n, hits):
             kind = "reference"  # ``import`` opening a docstring sentence
         elif kind == "reference" and prose.in_string(n, hits):
@@ -909,6 +913,30 @@ def _calls_here(
     if live:
         return any(_CALL_AFTER.match(text, m.end()) for m in hits)
     return n in graph_calls
+
+
+# A member named on a receiver: ``obj.name``, ``obj?.name``, ``ptr->name``, ``Type::name``.
+_RECEIVER_BEFORE = re.compile(r"(?:\?\.|\.|->|::)\s*$")
+
+
+def _member_call(text: str, hits: list[re.Match[str]], n: int, prose: _ProseLines) -> bool:
+    """Whether line *n* calls the member on a receiver, in code.
+
+    The graph binds a method call only when it can type the receiver, so a
+    call on a parameter, fixture or attribute of unknown type has no call
+    line; the line is in the set already, and the text shows the call.
+    """
+    return any(
+        _RECEIVER_BEFORE.search(text, 0, m.start())
+        and _CALL_AFTER.match(text, m.end())
+        and not _DEFINED_BEFORE.search(text, 0, m.start())
+        and prose.is_code(n, m)
+        for m in hits
+    )
+
+
+# A definition written on a receiver: ``def self.name(``, ``fun String.name(``.
+_DEFINED_BEFORE = re.compile(r"\b(?:def|fun|func|function|fn|sub)\s[^=(]*$")
 
 
 def _line_kind(is_def: bool, is_import: bool, in_graph: bool) -> str:

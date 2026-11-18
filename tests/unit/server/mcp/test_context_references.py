@@ -1382,6 +1382,29 @@ async def test_member_with_no_untyped_access_elsewhere_is_complete(session, repo
 
 
 @pytest.mark.asyncio
+async def test_member_called_on_a_receiver_the_graph_did_not_type_is_a_call(
+    session, repo_id, tmp_path
+):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    (tmp_path / "app" / "use.py").write_text(
+        "from pkg.store import Store\n\n"
+        "rows = Store().fetch_rows()\n"
+        "def load(db: Store):\n"
+        "    return db.fetch_rows(\n        limit=1)\n"
+        "    # db.fetch_rows() in a comment\n"
+        "    spy = mock.MagicMock(wraps=db.fetch_rows)\n"
+        "    log('db.fetch_rows() failed', db)\n",
+        encoding="utf-8",
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    kinds = {n: k for p, n, k in _sites(out) if p == "app/use.py"}
+    # The comment, the value use and the sentence in a string stay references.
+    assert kinds == {3: "call", 5: "call", 7: "reference", 8: "reference", 9: "reference"}
+
+
+@pytest.mark.asyncio
 async def test_member_accessed_on_an_untyped_receiver_names_the_file(session, repo_id, tmp_path):
     node = await _seed_method(
         session, repo_id, tmp_path, "def load(store):\n    return store.fetch_rows()\n"
