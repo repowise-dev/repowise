@@ -46,13 +46,13 @@ from pathlib import PurePosixPath
 
 import pathspec
 
+from ..ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from ..support_paths import DOC_EXTENSIONS, TEMPLATE_EXTENSIONS
 from ..test_paths import is_test_related_path
+from ..test_runners import JS_SUFFIXES, PYTHON_SUFFIXES
 from .test_selection import (
-    JS_SUFFIXES,
     NO_TESTS_NEEDED,
     PACKAGE_INIT_REASON,
-    PYTHON_SUFFIXES,
     SHARED_TEST_DATA_REASON,
     TestSelectionConfig,
     full_run_on_spec,
@@ -73,16 +73,21 @@ MAX_NAMERS = 200
 FIXTURE_READERS = "fixture-readers"
 
 _JVM = (".java", ".kt", ".kts", ".scala", ".groovy")
+
+
+def _declared(tag: str) -> tuple[str, ...]:
+    """The manifests and lockfiles the language registry declares for *tag*."""
+    spec = _LANG_REGISTRY.get(tag)
+    return (*spec.manifest_files, *spec.lock_files) if spec else ()
+
+
 # (ecosystem, test suffixes, scoped to the file's directory, gitwildmatch
-# patterns). Each pattern is also a full-run trigger (``_FULL_RUN_GROUPS``),
-# so a file no scope covers still runs everything; a test pins the two lists.
+# patterns). Manifest and lockfile names come from the language registry; the
+# rest are runner, workspace and toolchain configs no spec declares. Each
+# pattern is also a full-run trigger (``_FULL_RUN_GROUPS``), so a file no scope
+# covers still runs everything; a test pins the two lists.
 ECOSYSTEMS: tuple[tuple[str, tuple[str, ...], bool, tuple[str, ...]], ...] = (
-    (
-        "JavaScript",
-        JS_SUFFIXES,
-        True,
-        ("package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
-    ),
+    ("JavaScript", JS_SUFFIXES, True, _declared("javascript")),
     (
         "JavaScript",
         JS_SUFFIXES,
@@ -98,17 +103,17 @@ ECOSYSTEMS: tuple[tuple[str, tuple[str, ...], bool, tuple[str, ...]], ...] = (
         PYTHON_SUFFIXES,
         False,
         (
-            *("pyproject.toml", "setup.py", "setup.cfg", "poetry.lock", "uv.lock", "Pipfile"),
-            *("Pipfile.lock", "requirements*.txt", "constraints*.txt", "requirements*.in"),
-            *("constraints*.in", "**/requirements/**", "pytest.ini", "tox.ini", "noxfile.py"),
-            ".python-version",
+            *_declared("python"),
+            *("Pipfile", "Pipfile.lock", "requirements*.txt", "constraints*.txt"),
+            *("requirements*.in", "constraints*.in", "**/requirements/**", "pytest.ini"),
+            *("tox.ini", "noxfile.py", ".python-version"),
         ),
     ),
-    ("Go", (".go",), True, ("go.mod", "go.sum")),
+    ("Go", (".go",), True, _declared("go")),
     ("Go", (".go",), False, ("go.work", "go.work.sum")),
-    ("Ruby", (".rb",), False, ("Gemfile", "Gemfile.lock")),
-    ("PHP", (".php",), False, ("composer.json", "composer.lock")),
-    ("JVM", _JVM, False, ("build.gradle*", "settings.gradle*", "pom.xml")),
+    ("Ruby", (".rb",), False, _declared("ruby")),
+    ("PHP", (".php",), False, _declared("php")),
+    ("JVM", _JVM, False, (*_declared("java"), "settings.gradle*")),
 )
 _ECOSYSTEM_SPECS = tuple(
     (lang, suffixes, scoped, pathspec.PathSpec.from_lines("gitwildmatch", globs))

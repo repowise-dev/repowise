@@ -33,6 +33,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from repowise.core.fs_walk import walk_repo
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.support_paths import DOC_EXTENSIONS, is_support_path
 from repowise.core.test_paths import is_test_path
 
@@ -126,7 +127,7 @@ def entry_cite(graph: Any, entry: Entry) -> str:
     """``path:line`` where *entry* is declared: its symbol's first line, or its own node."""
     attrs = graph.nodes.get(entry.node, {}) if entry.node in graph else {}
     path, line = attrs.get("file_path"), attrs.get("start_line")
-    return f"{path}:{line}" if path and line else entry.node.split("::", 1)[0]
+    return f"{path}:{line}" if path and line else file_of_symbol(entry.node)
 
 
 def _cli_public(program: str, command: str) -> str:
@@ -170,7 +171,7 @@ def _go_named_command(path: str, lines: list[str], i: int, graph: Any, program: 
     """simplecobra: ``func (c *x) Name() string { return "lit" }`` on a type with ``Run``."""
     m = _GO_NAME.match(lines[i])
     lit = _GO_RETURN.match(lines[i + 1]) if m and i + 1 < len(lines) else None
-    node = f"{path}::{m.group(1)}::Run" if m else ""
+    node = make_symbol_id(path, m.group(1), "Run") if m else ""
     return Entry(node, CLI, _cli_public(program, lit.group(1))) if lit and node in graph else None
 
 
@@ -229,7 +230,7 @@ def _reexported(src: str, names: str, symbols: list[tuple[str, str]]) -> Iterabl
         name, alias = bits[0], bits[-1]
         prefix = f"{src}::{name}::"
         for method, node in symbols:
-            if node == f"{src}::{name}":
+            if node == make_symbol_id(src, name):
                 yield Entry(node, API, alias)
             elif node.startswith(prefix) and not method.startswith("_"):
                 yield Entry(node, API, f"{alias}.{method}")
@@ -308,15 +309,36 @@ def _pyproject(root: Path) -> dict[str, Any]:
         return {}
 
 
+# ``module.path:function`` as ``[project.scripts]`` spells a target. The text
+# reaches printed commands, so anything else is dropped.
+_SCRIPT_TARGET = re.compile(r"[A-Za-z_][\w.]*(?::[A-Za-z_][\w.]*)?")
+
+
+def console_scripts(project_dir: Path | str) -> dict[str, tuple[str, str | None]]:
+    """``console script -> (module, function)`` from *project_dir*'s ``pyproject.toml``.
+
+    ``function`` is ``None`` for a bare module target. Entries whose name or
+    target is not a plain identifier path are left out.
+    """
+    scripts = _pyproject(Path(project_dir)).get("scripts") or {}
+    out: dict[str, tuple[str, str | None]] = {}
+    for name, target in scripts.items():
+        target = str(target).strip()
+        if not (_PROGRAM.fullmatch(str(name)) and _SCRIPT_TARGET.fullmatch(target)):
+            continue
+        module, _, function = target.partition(":")
+        out[str(name)] = (module, function or None)
+    return out
+
+
 def python_scripts(repo_root: Path | str | None) -> dict[str, str]:
     """``console script -> package path`` of its entry module (``a.cli.main:run`` -> ``a/cli``)."""
     if not repo_root:
         return {}
-    scripts = _pyproject(Path(repo_root)).get("scripts") or {}
     out = {}
-    for name, target in scripts.items():
-        module = str(target).split(":", 1)[0].strip().split(".")
-        out[name] = "/".join(module[:-1] or module)
+    for name, (module, _) in console_scripts(repo_root).items():
+        parts = module.split(".")
+        out[name] = "/".join(parts[:-1] or parts)
     return out
 
 

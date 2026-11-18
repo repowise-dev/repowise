@@ -1260,6 +1260,85 @@ class TestTypeScriptRefusals:
         assert "service" not in types
         assert types["realService"] == "RealService"
 
+    @pytest.mark.parametrize(
+        "prefix", ["", "service: UserService,\n    ", "other: { value: Other },\n    "]
+    )
+    @pytest.mark.parametrize("closing", ["})", "}\n)"])
+    def test_multiline_inline_object_parameter_properties_are_not_declarations(
+        self, prefix: str, closing: str
+    ) -> None:
+        source = (
+            f"function run(\n    {prefix}options: {{\n"
+            "        client: HttpClient;\n"
+            "        nested: { handler: EventHandler };\n"
+            f"    {closing} {{\n"
+            "    const realService: RealService = make();\n"
+            "}\n"
+        )
+        expected = {"realService": "RealService"}
+        if prefix.startswith("service:"):
+            expected["service"] = "UserService"
+        assert {d.name: d.type_name for d in scan_declarations(source, "typescript")} == expected
+        assert declared_types(source, "typescript") == expected
+
+    def test_label_after_automatic_semicolon_insertion_keeps_runtime_declarations(self) -> None:
+        source = (
+            "function run() {\n"
+            "    const setup = make()\n"
+            "    outer: {\n"
+            "        const inner: Item = getItem();\n"
+            "    }\n"
+            "}\n"
+        )
+        assert declared_types(source, "typescript") == {"inner": "Item"}
+
+    @pytest.mark.parametrize("pattern", ["/'/g", "/['\"]/g"])
+    def test_quotes_in_regex_do_not_hide_type_bodies(self, pattern: str) -> None:
+        source = (
+            f"const apostrophe = {pattern};\n"
+            "interface Options {\n    client: HttpClient;\n}\n"
+            "const real: RealService = make();"
+        )
+        assert declared_types(source, "typescript") == {"real": "RealService"}
+
+    def test_parenthesis_in_string_does_not_turn_label_into_type(self) -> None:
+        source = (
+            'function run() {\n    const marker = "("\n'
+            "    outer: {\n        const inner: Item = getItem();\n    }\n}"
+        )
+        assert declared_types(source, "typescript") == {"inner": "Item"}
+
+    @pytest.mark.parametrize(
+        "prefix, suffix, expected",
+        [
+            (
+                "function run() {\n    const options = (enabled ?\n    fallback : {\n",
+                "    });\n}",
+                {"client": "HttpClient", "service": "UserService"},
+            ),
+            (
+                "switch (value) { case (enabled ? fallback : {\n",
+                "}): { const real: RealService = make(); } }",
+                {"client": "HttpClient", "service": "UserService"},
+            ),
+        ],
+    )
+    def test_parenthesized_conditional_object_is_not_a_type(
+        self, prefix: str, suffix: str, expected: dict[str, str]
+    ) -> None:
+        source = prefix + "        client: HttpClient,\n        service: UserService\n" + suffix
+        assert declared_types(source, "typescript") == expected
+
+    def test_runtime_object_literal_properties_are_still_scanned(self) -> None:
+        source = (
+            "const options = {\n    first: make(),\n"
+            "    nested: {\n        client: HttpClient,\n        service: UserService\n    }\n};"
+        )
+        assert declared_types(source, "typescript") == {
+            "client": "HttpClient",
+            "service": "UserService",
+        }
+
     def test_inline_object_type_in_variable_is_not_declaration(self) -> None:
         source = (
             "function run() {\n"

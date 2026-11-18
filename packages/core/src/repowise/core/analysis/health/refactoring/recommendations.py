@@ -38,6 +38,7 @@ from repowise.core.analysis.test_reachability import (
     rank_reaching,
 )
 from repowise.core.code_origin import ship_rank
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 from repowise.core.test_paths import is_test_support_path, names_test_for, paired_test_names
 
 from .annotations import PlanAnnotations, partner_rows
@@ -397,7 +398,7 @@ def target_symbol_ids(
         candidates = (
             (name,)
             if "::" in name
-            else (f"{file_path}::{name}", f"{file_path}::{name.replace('.', '::')}")
+            else (make_symbol_id(file_path, name), make_symbol_id(file_path, *name.split(".")))
         )
         found.update(candidate for candidate in candidates if candidate in ids)
     if found or not lines:

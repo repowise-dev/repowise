@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from repowise.core.analysis.decisions.reverts import (
+    _BODY_RE,
     _resolve,
     apply_revert_supersession,
     find_revert_links,
@@ -322,6 +323,13 @@ def test_an_abbreviated_sha_resolves_only_when_unique():
     assert _resolve("abc1234", shas) is None
     assert _resolve("abc1234f", shas) == shas[1]
     assert _resolve("not-a-sha", shas) is None
+
+
+def test_a_sha256_revert_body_cites_the_whole_id():
+    sha256 = "0123456789abcdef" * 4
+    assert _BODY_RE.findall(f"This reverts commit {sha256}.") == [sha256]
+    assert _BODY_RE.findall(f"This reverts commit {sha256[:50]}.") == []
+    assert _resolve(sha256[:9], [sha256]) == sha256
 
 
 @pytest.mark.parametrize(

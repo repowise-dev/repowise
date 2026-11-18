@@ -196,6 +196,7 @@ async def persist_partial_health(
     the partial report — so unchanged files keep their existing findings
     and metrics across an incremental ``repowise update``.
     """
+    from repowise.core.analysis.lineage import similar_by_source
     from repowise.core.persistence.crud import (
         PayoffContext,
         finalize_performance_opportunities,
@@ -271,6 +272,7 @@ async def persist_partial_health(
         # each plan's nearest tests off these rows.
         fact_rows = getattr(report, "function_facts", None)
         if fact_rows is not None:
+            renames = getattr(report, "renamed_paths", None) or {}
             await write_function_facts(
                 session,
                 repo_id,
@@ -278,6 +280,11 @@ async def persist_partial_health(
                 file_paths={*changed_paths, *performance_paths},
                 roles=getattr(report, "execution_roles", None),
                 tests=getattr(report, "function_tests", None),
+                # Where a moved function came from: its file was deleted or renamed away.
+                departed={*renames, *(getattr(report, "deleted_paths", None) or ())},
+                renames=renames,
+                commit=analyzed_commit,
+                similar=similar_by_source(repo_path, getattr(report, "base_commit", None)),
             )
         # A partial run sees a subset of the findings, so the plans and the
         # queue it would derive are a subset too. Both are rebuilt here instead,

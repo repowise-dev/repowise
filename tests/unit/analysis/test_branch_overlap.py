@@ -468,3 +468,17 @@ async def test_the_wire_shape_names_every_field(tmp_path, repo):
         {"file": "hub.py", "basis": "same file"},
         {"file": "partner.py", "partner": "shared.py", "basis": "co-change pair, 6 of 9 commits"},
     ]
+
+
+def test_every_registry_package_manifest_and_pip_requirements_are_noise():
+    from repowise.core.analysis.branch_overlap import _signal
+
+    paths = [
+        "ios/Package.swift",
+        "app/pubspec.yaml",
+        "src/Shop/Shop.csproj",
+        "requirements.txt",
+        "native/CMakeLists.txt",
+        "src/app.py",
+    ]
+    assert _signal(paths) == {"native/CMakeLists.txt", "src/app.py"}

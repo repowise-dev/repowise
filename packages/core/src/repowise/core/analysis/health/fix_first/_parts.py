@@ -11,6 +11,7 @@ from typing import Any
 from repowise.core.analysis.health.refactoring.recipe import _strs
 from repowise.core.analysis.health.rows import field
 from repowise.core.analysis.health.worth import WORTH_MAGNITUDE
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 
 from . import text
 from .model import FixItem, FixRisk, FixTest, FixVerify
@@ -78,7 +79,7 @@ def _about(function: str | None, symbol: str | None) -> bool:
 def symbol_key(path: str, symbol: str | None) -> str | None:
     """A function's ``git_function_blame`` key, ``path::name``; ``None`` for no symbol."""
     name = text.short_symbol(symbol)
-    return f"{path}::{name}" if name else None
+    return make_symbol_id(path, name) if name else None
 
 
 def _open(row: Any) -> bool:

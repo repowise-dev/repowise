@@ -51,6 +51,7 @@ async def graph_repo(factory) -> str:
                 updated_at=_NOW,
             )
         )
+        await s.flush()  # the store enforces foreign keys; the repository row goes first
         node_ids = sorted({n for edge in _EDGES for n in edge[:2]})
         for i, node_id in enumerate(node_ids):
             s.add(

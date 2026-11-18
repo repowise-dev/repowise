@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import re
 from collections.abc import Callable, Collection
 from typing import Any
 
@@ -13,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from repowise.core.analysis.decision_semantic_match import DECISION_VECTOR_PREFIX
 from repowise.core.analysis.next_call import render_call
+from repowise.core.git_sha import is_full_sha
 from repowise.core.providers.embedding import store_has_semantic_vectors
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._code_rationale import mine_rationale as _mine_rationale
@@ -255,12 +255,9 @@ def _full_sha(row: dict) -> str | None:
     candidates = [row.get("commit"), row.get("sha")]
     candidates += [r.get("commit") for r in refs if isinstance(r, dict) and r.get("kind") == "commit"]
     for c in candidates:
-        if isinstance(c, str) and _FULL_SHA_RE.fullmatch(c):
+        if isinstance(c, str) and is_full_sha(c.lower()):
             return c.lower()
     return None
-
-
-_FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 
 
 def _commit_keys(arch: dict[str, Any]) -> dict[int, str]:

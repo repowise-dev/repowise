@@ -28,6 +28,7 @@ from sqlalchemy import select
 
 from repowise.core.code_origin import ship_rank
 from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode
 from repowise.core.repo_config import load_repo_config
@@ -640,7 +641,7 @@ async def _exact_symbols(session, repo_id: str, query: str, candidates: list[str
     plain = {c for c in candidates if "." not in c}
     dotted = {_qual_norm(c) for c in candidates if "." in c}
     if canonical := _canonical_symbol_query(query):
-        clause = GraphNode.node_id.in_(symbol_id_variants(f"{canonical[0]}::{canonical[1]}"))
+        clause = GraphNode.node_id.in_(symbol_id_variants(make_symbol_id(canonical[0], canonical[1])))
     else:
         clause = GraphNode.name.in_(plain | {d.rsplit(".", 1)[-1] for d in dotted})
     stmt = select(GraphNode).where(

@@ -4841,6 +4841,11 @@ export interface VersionResponse {
   latest_highlights?: string[];
 }
 
+export interface ViewOpenedRequest {
+  /** A view id, e.g. repo.codeHealth */
+  view: string;
+}
+
 export interface WebhookResponse {
   event_id: string;
   status?: string;

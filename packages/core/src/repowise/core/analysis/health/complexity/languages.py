@@ -1422,6 +1422,48 @@ def _pascal_not_bitwise(node: Node) -> bool:
     return not any(_pascal_integer(outer.child_by_field_name(side)) for side in ("lhs", "rhs"))
 
 
+_PERL = LanguageNodeMap(
+    function_kinds=frozenset({"subroutine_declaration_statement", "method_declaration_statement"}),
+    lambda_kinds=frozenset({"anonymous_subroutine_expression", "anonymous_method_expression"}),
+    # ``conditional_statement`` is ``if`` and ``unless``; ``elsif`` is its own
+    # node (a chain continuation); ``conditional_expression`` is the ternary.
+    # The statement modifiers (``return if $x``) are flat decision points.
+    branch_kinds=frozenset(
+        {
+            "conditional_statement",
+            "elsif",
+            "conditional_expression",
+            "postfix_conditional_expression",
+        }
+    ),
+    flat_ternary_kinds=frozenset({"conditional_expression"}),
+    # ``loop_statement`` is ``while`` and ``until``; ``for_statement`` is the
+    # list form of ``for`` / ``foreach``.
+    loop_kinds=frozenset(
+        {
+            "for_statement",
+            "cstyle_for_statement",
+            "loop_statement",
+            "postfix_for_expression",
+            "postfix_loop_expression",
+        }
+    ),
+    foreach_kinds=frozenset({"for_statement", "postfix_for_expression"}),
+    # The grammar has no catch node (the catch block sits inline in
+    # ``try_statement``), so no catch is counted rather than one guessed.
+    # ``eval { } or do { }`` is counted through its ``or``.
+    try_kinds=frozenset({"try_statement"}),
+    catch_kinds=frozenset(),
+    switch_kinds=frozenset(),
+    case_kinds=frozenset(),
+    boolean_operator_kinds=frozenset(),
+    # ``&&`` / ``||`` sit in ``binary_expression``; ``and`` / ``or`` in
+    # ``lowprec_logical_expression``. Both carry the operator as a token.
+    boolean_operator_text_kinds=frozenset({"binary_expression", "lowprec_logical_expression"}),
+    block_kinds=frozenset({"block"}),
+)
+
+
 _PASCAL = LanguageNodeMap(
     # ``defProc`` pairs a signature (``header: declProc``) with a ``body``
     # block field -- the interface-only ``declProc`` forward/interface
@@ -1730,6 +1772,7 @@ LANGUAGE_MAPS: dict[str, LanguageNodeMap] = {
     "scala": _SCALA,
     "ruby": _RUBY,
     "shell": _SHELL,
+    "perl": _PERL,
     "pascal": _PASCAL,
     # No "elixir" entry on purpose. See the note above ``_FSHARP``.
     "fsharp": _FSHARP,

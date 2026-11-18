@@ -66,14 +66,6 @@ class OpenRouterEmbedder:
             raise ValueError(
                 "OpenRouter API key required. Pass api_key= or set OPENROUTER_API_KEY env var."
             )
-        if model not in self._DIMS:
-            known = ", ".join(sorted(self._DIMS))
-            raise ValueError(
-                f"Unknown embedding model {model!r}. Stored vectors would be mis-sized "
-                f"against the model's real output, silently corrupting the vector store. "
-                f"Add {model!r} to OpenRouterEmbedder._DIMS with its correct dimension count, "
-                f"or pick a known model: {known}."
-            )
         self._model = model
         self._timeout = resolve_embedding_timeout(
             timeout, self._DEFAULT_TIMEOUT, provider_env="OPENROUTER_EMBEDDING_TIMEOUT"
@@ -114,6 +106,17 @@ class OpenRouterEmbedder:
         if declared_dimensions is not None:
             return _validate_dimensions(declared_dimensions), None
 
+        # Only reached with no width configured: a model outside the table then
+        # has no known width, and guessing one would mis-size the stored vectors.
+        if model not in cls._DIMS:
+            known = ", ".join(sorted(cls._DIMS))
+            raise ValueError(
+                f"Unknown embedding model {model!r} and no width configured. Stored vectors"
+                f" would be mis-sized against the model's real output, silently corrupting"
+                f" the vector store. Set REPOWISE_EMBEDDING_DIMS to the width to request"
+                f" (or REPOWISE_EMBEDDING_DECLARED_DIMS if the model's width is fixed), or"
+                f" pick a known model: {known}."
+            )
         width = cls._DIMS[model]
         return width, width
 

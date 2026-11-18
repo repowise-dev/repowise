@@ -919,6 +919,23 @@ agent_provenance:
 - `repowise doctor` names values that fell back to defaults. Read events with
   `repowise events` or `GET /api/repos/{id}/events`.
 
+## The `evidence:` block
+
+Caps on the runtime evidence `repowise evidence add` stores (profiles,
+benchmark results, test timings, query counts). A capped run keeps its
+costliest entries and counts the rest, so a reader shows them as unknown,
+never as zero.
+
+<!-- BEGIN GENERATED settings:evidence (python scripts/gen_config_docs.py) -->
+| Key | Default | Values | What it does |
+|-----|---------|--------|--------------|
+| `max_file_mb` | `20` | > 0 | Largest evidence file read, in MB; a bigger one is refused before it is read. |
+| `max_symbols_per_run` | `1500` | >= 1 | Most functions stored from one profile, costliest first; the rest are counted. |
+| `max_rows_per_run` | `30000` | >= 1 | Most benchmark, test or query rows stored from one run; the rest are counted. |
+| `history_runs` | `20` | >= 1 | Runs kept per workload and environment for each evidence kind; oldest go first. |
+| `max_runs` | `50` | >= 1 | Runs kept per evidence kind across all workloads; oldest go first, but each workload and environment always keeps its newest run, so the kind can exceed this by up to the number of workloads. |
+<!-- END GENERATED settings:evidence -->
+
 ## The `refactoring:` block
 
 Tunes the Extract Class / Extract Method / Extract Helper / Move Method / Break

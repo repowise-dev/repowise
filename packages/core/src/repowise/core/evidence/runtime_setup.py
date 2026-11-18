@@ -1,0 +1,479 @@
+"""Runtime targets for ``evidence setup``: what to profile in each unit, and how.
+
+A target is a real entry point, a benchmark or the unit-test suite, in that
+order: a claim may not exceed its workload class, and only the first two may
+lead. Entry points come from their owners: console scripts from the unit's
+``pyproject.toml`` (:func:`~repowise.core.generation.flow_entries.console_scripts`),
+the stored entry-point flag ranked by
+:func:`~repowise.core.generation.entry_points.rank_entry_point_paths`, Go
+``package main`` packages (:func:`~repowise.core.analysis.published_packages.go_main_packages`)
+and ``package.json`` ``bin`` files (:func:`~repowise.core.ingestion.always_run.own_code`).
+Benchmarks are the stored functions :func:`~repowise.core.code_origin.is_benchmark_function`
+accepts.
+
+Every recipe needs no elevated privileges: pyinstrument in process for
+Python, ``go test -cpuprofile`` for Go, ``node --cpu-prof`` for JavaScript.
+Profiles land in ``.repowise/``. TypeScript is refused: its positions are in
+the compiled JavaScript.
+"""
+
+from __future__ import annotations
+
+import posixpath
+import re
+from collections.abc import Collection, Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from ..code_origin import is_benchmark_function
+from ..test_runners.stacks import Stack
+
+#: Where recipes write profiles, repo-relative; the index lives here too.
+PROFILE_DIR = ".repowise"
+EVIDENCE_STATUS_COMMAND = "repowise evidence status"
+#: Targets of one class shown per unit; the default answer stays small.
+PER_CLASS = 3
+CLASS_ORDER = ("entry_point", "benchmark", "unit_test")
+
+_TS = (".ts", ".tsx", ".mts", ".cts")
+_JS = (".js", ".mjs", ".cjs")
+_PYTEST_BENCHMARK = re.compile(r"pytest[-_]benchmark")
+# Paths and module names reach printed commands; anything a shell could read
+# as more than a path (``$``, quotes, ``;``, ``,`` in PowerShell) is left out.
+_SAFE_PATH = re.compile(r"(?!-)[\w.+=/-]*")
+_MODULE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+# The launchers a Python unit's test command may start with; anything else
+# (an env assignment, ``cd x &&``, ``coverage run``) runs plain ``python``.
+_COMMAND_WORDS = frozenset({"pytest", "python", "py.test"})
+_LAUNCHERS = (("uv", "run"), ("poetry", "run"), ("pdm", "run"), ("hatch", "run"), ("pipenv", "run"))
+
+# pyinstrument through its API: the ``pyinstrument -r speedscope`` command
+# wrote only import frames on Windows, and its renderer drops most frames
+# unless the filter threshold is 0. The profile is written at exit, so a
+# program that calls ``sys.exit`` is still profiled; the path is fixed before
+# the program runs, so a ``chdir`` does not move it. Double quotes outside,
+# single inside: one spelling for sh and PowerShell.
+_PYINSTRUMENT = (
+    "import sys,os,atexit;from pyinstrument import Profiler;"
+    "from pyinstrument.renderers import SpeedscopeRenderer;p=Profiler();"
+    "o=os.path.abspath('{out}');os.makedirs(os.path.dirname(o),exist_ok=True);"
+    "atexit.register(lambda:(p.stop(),open(o,'w',encoding='utf-8').write("
+    "p.output(SpeedscopeRenderer(processor_options={{'filter_threshold':0}})))));"
+    "p.start();{run}"
+)
+
+
+@dataclass(frozen=True)
+class RuntimeInputs:
+    """What the index knows that runtime targets need."""
+
+    #: Production files the index flags as entry points, best first.
+    entry_files: tuple[str, ...] = ()
+    #: ``(path, function)`` of every stored benchmark function.
+    benchmarks: tuple[tuple[str, str], ...] = ()
+    #: Stored test files, for the unit-test suite's package.
+    test_files: tuple[str, ...] = ()
+    #: ``(workload, commit)`` of every stored run, so a workload measured at
+    #: HEAD is not asked for again.
+    measured: frozenset[tuple[str, str]] = frozenset()
+
+
+async def load_runtime_inputs(session: Any, repository_id: str) -> RuntimeInputs:
+    """The stored entry points, benchmark functions and test files of a repository."""
+    from sqlalchemy import and_, or_, select
+
+    from ..generation.entry_points import rank_entry_point_paths
+    from ..persistence.crud import list_evidence_runs
+    from ..persistence.models import GraphNode, WikiSymbol
+    from .ingest import load_origins
+
+    files = await session.execute(
+        select(GraphNode.node_id, GraphNode.is_entry_point, GraphNode.is_test).where(
+            GraphNode.repository_id == repository_id,
+            GraphNode.node_type == "file",
+            or_(GraphNode.is_entry_point.is_(True), GraphNode.is_test.is_(True)),
+        )
+    )
+    rows = list(files)
+    entries = [r.node_id for r in rows if r.is_entry_point]
+    origins = await load_origins(session, repository_id, entries)
+    symbols = await session.execute(
+        select(WikiSymbol.file_path, WikiSymbol.name).where(
+            WikiSymbol.repository_id == repository_id,
+            or_(
+                and_(WikiSymbol.file_path.like("%_test.go"), WikiSymbol.name.like("Benchmark%")),
+                and_(
+                    WikiSymbol.file_path.like("%.py"),
+                    # Every benchmark path rule has "bench" in it.
+                    WikiSymbol.file_path.ilike("%bench%"),
+                    or_(WikiSymbol.name.like("bench%"), WikiSymbol.name.like("test%")),
+                ),
+            ),
+        )
+    )
+    return RuntimeInputs(
+        entry_files=tuple(
+            rank_entry_point_paths(p for p in entries if origins.get(p) == "production")
+        ),
+        benchmarks=tuple(
+            sorted({(r.file_path, r.name) for r in symbols if is_benchmark_function(r.file_path, r.name)})
+        ),
+        test_files=tuple(sorted(r.node_id for r in rows if r.is_test)),
+        measured=frozenset(
+            (run.workload_name, run.commit_sha)
+            for run in await list_evidence_runs(session, repository_id)
+        ),
+    )
+
+
+def _within(root: str, path: str) -> bool:
+    return not root or path == root or path.startswith(root + "/")
+
+
+def _owned(root: str, roots: Collection[str], path: str) -> str | None:
+    """*path* relative to the unit *root*; None outside it, in a deeper unit, or unsafe to print."""
+    if not _within(root, path) or any(
+        r != root and _within(root, r) and _within(r, path) for r in roots
+    ):
+        return None
+    if not _SAFE_PATH.fullmatch(path) or ".." in path.split("/"):
+        return None
+    return path[len(root) + 1 :] if root else path
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^\w-]+", "-", name).strip("-") or "run"
+
+
+def _profile_path(name: str, suffix: str) -> str:
+    return f"{PROFILE_DIR}/{_slug(name)}{suffix}"
+
+
+def _named(root: str, name: str, suffix: str) -> tuple[str, str]:
+    """A target's workload name and profile path, both carrying the unit *root*.
+
+    Every target is named here, so two units never share a workload (one's
+    run at HEAD would hide the other's) or a profile file.
+    """
+    workload = f"{root}: {name}" if root else name
+    return workload, _profile_path(workload, suffix)
+
+
+def _readable(input_format: str) -> bool:
+    """Whether this build's ``evidence add`` reads *input_format* (the profile-format registry)."""
+    from .profile_formats import profile_formats
+
+    try:
+        profile_formats.get(input_format)
+    except (KeyError, LookupError):
+        return False
+    return True
+
+
+def _from(root: str, path: str) -> str:
+    """Repo-relative *path* as a command run in the unit *root* names it."""
+    return posixpath.relpath(path, root) if root else path
+
+
+def evidence_ingest_line(profile: str, workload: str, workload_class: str, commit: str) -> str:
+    """The ``evidence add`` line for a profile, run from the repository root."""
+    return (
+        f'repowise evidence add {profile} --workload "{workload}" '
+        f"--class {workload_class} --commit {commit}"
+    )
+
+
+def _target(
+    workload_class: str,
+    name: str,
+    *,
+    cwd: str,
+    command: str | None,
+    profile: str | None,
+    commit: str | None,
+    input_format: str | None = None,
+    prerequisites: Sequence[str] = (),
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """One runtime target, JSON-ready.
+
+    ``ingest`` is None when the run cannot be read yet: no commit, or
+    *input_format* (what the recipe writes) is not a registered profile
+    format in this build. ``next_call`` only takes targets with an ingest
+    line, so a recipe whose output would be refused never leads the loop.
+    """
+    ingest = None
+    if command and profile and reason is None:
+        if input_format is not None and not _readable(input_format):
+            reason = f"This build of repowise does not read {input_format} files yet."
+        elif commit:
+            ingest = evidence_ingest_line(profile, name, workload_class, commit)
+        else:
+            reason = "Not a git checkout: evidence needs the commit it measured."
+    return {
+        "class": workload_class,
+        "workload": name,
+        "cwd": cwd,
+        "prerequisites": list(prerequisites) if command else [],
+        "command": command,
+        "profile": profile,
+        "ingest": ingest,
+        "reason": reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+
+
+def _env_prefix(stack: Stack) -> list[str]:
+    """The launcher the unit's tests run under (``uv run``, ``poetry run``), or none.
+
+    Read off its coverage command, so a profile runs in the environment its
+    tests run in.
+    """
+    words = stack.test.split()
+    if tuple(words[:2]) not in _LAUNCHERS:
+        return []
+    out, rest = words[:2], words[2:]
+    while rest and rest[0].startswith("-"):
+        option, rest = rest[0], rest[1:]
+        # An option's value is the next word, unless that word starts the command.
+        value = [] if "=" in option or not rest or rest[0].startswith("-") or rest[0] in _COMMAND_WORDS else [rest.pop(0)]
+        # ``--with pytest-cov`` adds the coverage plugin, which a profile does not need.
+        if [option, *value] != ["--with", "pytest-cov"]:
+            out += [option, *value]
+    return out
+
+
+def _python_launcher(stack: Stack, repo_root: Path) -> tuple[str, list[str]]:
+    """The ``python`` that runs with pyinstrument in the unit's environment, and its install steps."""
+    prefix = _env_prefix(stack)
+    if prefix[:2] == ["uv", "run"]:
+        return " ".join([*prefix, "--with", "pyinstrument", "python"]), []
+    python = " ".join([*prefix, "python"])
+    steps = []
+    if not prefix and (repo_root / stack.root / "src").is_dir():
+        # A src layout imports only once installed.
+        steps.append("python -m pip install -e .")
+    return python, [*steps, f"{python} -m pip install pyinstrument"]
+
+
+def _pyinstrument(launcher: str, out: str, run: str) -> str:
+    return f'{launcher} -c "{_PYINSTRUMENT.format(out=out, run=run)}"'
+
+
+def _python_targets(
+    stack: Stack, repo_root: Path, inputs: RuntimeInputs, commit: str | None, roots: Collection[str]
+) -> list[dict[str, Any]]:
+    from ..generation.flow_entries import console_scripts
+
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    launcher, needs = _python_launcher(stack, repo_root)
+    out: list[dict[str, Any]] = []
+
+    def profiled(cls: str, name: str, run: str, extra: Sequence[str] = ()) -> dict[str, Any]:
+        workload, profile = _named(root, name, ".speedscope.json")
+        command = _pyinstrument(launcher, _from(root, profile), run)
+        return _target(cls, workload, cwd=cwd, command=command, profile=profile, commit=commit,
+                       input_format="speedscope", prerequisites=[*needs, *extra])
+
+    for name, (module, function) in sorted(console_scripts(repo_root / root).items()):
+        argv = f"sys.argv=['{name}']+sys.argv[1:];"
+        if function:
+            run = f"{argv}from {module} import {function.split('.')[0]};sys.exit({function}())"
+        else:
+            run = f"{argv}import runpy;runpy.run_module('{module}',run_name='__main__',alter_sys=True)"
+        out.append(profiled("entry_point", name, run))
+    for path in inputs.entry_files:
+        rel = _owned(root, roots, path)
+        if rel is None or not rel.endswith("/__main__.py"):
+            continue
+        module = rel.removeprefix("src/").removesuffix("/__main__.py").replace("/", ".")
+        if not _MODULE.fullmatch(module):
+            continue
+        run = f"sys.argv=['{module}']+sys.argv[1:];import runpy;runpy.run_module('{module}',run_name='__main__',alter_sys=True)"
+        out.append(profiled("entry_point", f"python -m {module}", run))
+    out = out[:PER_CLASS]
+
+    if _declares_pytest_benchmark(repo_root, root):
+        # Node ids are relative to pytest's rootdir, so this one runs from the repository root.
+        name, profile = _named(root, "pytest bench", ".json")
+        target = [root] if root else []
+        command = " ".join(
+            [*_env_prefix(stack), "pytest", *target, "--benchmark-only", f"--benchmark-json={profile}"]
+        )
+        out.append(_target("benchmark", name, cwd=str(repo_root), command=command,
+                           profile=profile, commit=commit, input_format="pytest-benchmark"))
+    if stack.test:
+        run = "import pytest;sys.exit(pytest.main(sys.argv[1:]))"
+        # The coverage command's own install brings pytest only in CI, so install it here too.
+        extra = [f"{launcher} -m pip install pytest"] if needs else []
+        out.append(profiled("unit_test", "python tests", run, extra))
+    return out
+
+
+def _declares_pytest_benchmark(repo_root: Path, root: str) -> bool:
+    """Whether the unit's ``pyproject.toml`` or requirements name pytest-benchmark.
+
+    Ceiling: a benchmark file alone is not enough, since asv and plain scripts
+    use the same names and ``--benchmark-only`` needs the plugin.
+    """
+    base = repo_root / root
+    names = ["pyproject.toml", *(p.name for p in base.glob("requirements*.txt"))]
+    for name in names:
+        try:
+            if _PYTEST_BENCHMARK.search((base / name).read_text(encoding="utf-8", errors="ignore")):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Go
+# ---------------------------------------------------------------------------
+
+
+def _go_package_arg(rel_dir: str) -> str:
+    return f"./{rel_dir}" if rel_dir else "."
+
+
+def _go_profiled(root: str, rel_dir: str, flags: str, name: str) -> tuple[str, str, str]:
+    """The workload, the ``go test`` line profiling one package, and its profile path."""
+    workload, profile = _named(root, name, ".pprof")
+    binary = profile.removesuffix(".pprof") + ".test"
+    parts = ["go test", flags, "-count=1", f"-o {_from(root, binary)}",
+             f"-cpuprofile {_from(root, profile)}", _go_package_arg(rel_dir)]
+    return workload, " ".join(p for p in parts if p), profile
+
+
+def _go_targets(
+    stack: Stack,
+    repo_root: Path,
+    inputs: RuntimeInputs,
+    commit: str | None,
+    mains: Iterable[str],
+    roots: Collection[str],
+) -> list[dict[str, Any]]:
+    # Ceiling: ``go test -o`` and ``-cpuprofile`` need ``.repowise/`` to exist,
+    # which it does once the repository is indexed with a local store.
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    out: list[dict[str, Any]] = []
+    for main in mains:
+        rel = "" if main == root else _owned(root, roots, main)
+        if rel is None:
+            continue
+        workload, _ = _named(root, f"go run {_go_package_arg(rel)}", "")
+        out.append(_target(
+            "entry_point", workload, cwd=cwd, command=None, profile=None,
+            commit=commit,
+            reason="go run takes no profiler flag; profile this program through a benchmark or test.",
+        ))
+    out = out[:PER_CLASS]
+    bench_dirs = sorted({
+        posixpath.dirname(rel) for p, _ in inputs.benchmarks
+        if p.endswith("_test.go") and (rel := _owned(root, roots, p)) is not None
+    })
+    for rel_dir in bench_dirs[:PER_CLASS]:
+        # Benchmarks only: no unit test runs inside the profile.
+        name, command, profile = _go_profiled(
+            root, rel_dir, "'-run=^$' -bench . -benchmem", f"go bench {_go_package_arg(rel_dir)}"
+        )
+        out.append(_target("benchmark", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                           input_format="pprof"))
+    test_dirs = sorted(
+        {posixpath.dirname(rel) for p in inputs.test_files
+         if p.endswith("_test.go") and (rel := _owned(root, roots, p)) is not None},
+        key=lambda d: (d.count("/") + bool(d), d),
+    )
+    if test_dirs:
+        name, command, profile = _go_profiled(
+            root, test_dirs[0], "", f"go test {_go_package_arg(test_dirs[0])}"
+        )
+        out.append(_target("unit_test", name, cwd=cwd, command=command,
+                           profile=profile, commit=commit, input_format="pprof"))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# JavaScript
+# ---------------------------------------------------------------------------
+
+
+def _node_targets(
+    stack: Stack, repo_root: Path, commit: str | None, roots: Collection[str]
+) -> list[dict[str, Any]]:
+    from ..ingestion.always_run import own_code
+
+    root = stack.root
+    cwd = str(repo_root / root) if root else str(repo_root)
+    manifest = posixpath.join(root, "package.json") if root else "package.json"
+
+    def read(path: str) -> str | None:
+        try:
+            return (repo_root / path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return None
+
+    out: list[dict[str, Any]] = []
+    for path in sorted(own_code([manifest], read).bin_files)[:PER_CLASS]:
+        rel = _owned(root, roots, path)
+        if rel is None:
+            continue
+        name, profile = _named(root, f"node {rel}", ".cpuprofile")
+        if path.endswith(_TS):
+            out.append(_target("entry_point", name, cwd=cwd, command=None, profile=None, commit=commit,
+                               reason="A TypeScript profile's positions are in the compiled JavaScript; "
+                                      "repowise does not map them back yet."))
+            continue
+        if not path.endswith(_JS):
+            continue
+        command = (
+            f"node --cpu-prof --cpu-prof-dir={posixpath.dirname(_from(root, profile))} "
+            f"--cpu-prof-name={posixpath.basename(profile)} {rel}"
+        )
+        out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                           input_format="cpuprofile"))
+    return out
+
+
+def runtime_targets(
+    stack: Stack,
+    repo_root: Path,
+    inputs: RuntimeInputs,
+    commit: str | None,
+    go_mains: Sequence[str] = (),
+    unit_roots: Collection[str] = (),
+) -> list[dict[str, Any]]:
+    """One unit's runtime targets: entry points, then benchmarks, then the unit-test suite.
+
+    *unit_roots* are every unit's root: a file under a deeper unit is that
+    unit's. A unit whose root a shell could misread gets none.
+    """
+    if not _SAFE_PATH.fullmatch(stack.root):
+        return []
+    if stack.language == "python":
+        found = _python_targets(stack, repo_root, inputs, commit, unit_roots)
+    elif stack.language == "go":
+        found = _go_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
+    elif stack.language == "node":
+        found = _node_targets(stack, repo_root, commit, unit_roots)
+    else:
+        found = []
+    return sorted(found, key=lambda t: CLASS_ORDER.index(t["class"]))
+
+
+__all__ = [
+    "CLASS_ORDER",
+    "EVIDENCE_STATUS_COMMAND",
+    "PROFILE_DIR",
+    "RuntimeInputs",
+    "evidence_ingest_line",
+    "load_runtime_inputs",
+    "runtime_targets",
+]

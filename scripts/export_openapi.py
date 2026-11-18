@@ -74,6 +74,7 @@ INTERNAL_TAGS = frozenset(
         "providers",
         "setup",
         "stats",
+        "telemetry",
     }
 )
 
