@@ -560,3 +560,83 @@ def test_a_workload_measured_at_head_is_not_asked_for_again(tmp_path: Path) -> N
     last = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=done, coverage_commit=SHA)
     assert last["next_call"] is None
     assert last["reason"].startswith("Evidence at this commit is ingested")
+
+
+# ---------------------------------------------------------------------------
+# What ``perf measure`` times for a change
+# ---------------------------------------------------------------------------
+
+
+def test_the_timed_workload_is_the_benchmark_without_its_report(tmp_path: Path) -> None:
+    from repowise.core.evidence.runtime_setup import timed_target
+
+    _python(tmp_path, extra='dependencies = ["pytest-benchmark"]\n')
+    stacks = detect_repo_stacks(tmp_path)
+
+    timed = timed_target(stacks, tmp_path, RuntimeInputs(), "app/cli.py")
+
+    # The entry point waits for its arguments, so it is never timed.
+    assert timed == {
+        "workload": "pytest bench",
+        "class": "benchmark",
+        "command": "pytest --benchmark-only --benchmark-max-time=0 --benchmark-min-rounds=10",
+        "cwd": "",
+    }
+    # Setup's own output stays as it was.
+    assert all("timed" not in t for t in _targets(tmp_path))
+
+
+def test_a_go_benchmark_is_timed_without_its_profile_flags(tmp_path: Path) -> None:
+    from repowise.core.evidence.setup import timed_targets
+
+    _go(tmp_path)
+    inputs = RuntimeInputs(benchmarks=(("work/work_test.go", "BenchmarkCrunch"),))
+
+    timed = timed_targets(tmp_path, ["work/work.go", "README.md"], units=None, runtime=inputs)
+
+    # ``go run`` has no command, so the benchmark is what is timed.
+    assert timed == {"work/work.go": {
+        "workload": "go bench ./work", "class": "benchmark",
+        "command": "go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./work", "cwd": "",
+    }}
+
+
+def test_only_a_benchmark_of_the_files_language_is_timed(tmp_path: Path) -> None:
+    from repowise.core.evidence.setup import timed_targets
+
+    _python(tmp_path)
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_cli.py").write_text("def test_x():\n    pass\n")
+
+    # An entry point waits for its arguments and the test suite runs far more
+    # than the change: nothing is timed.
+    assert timed_targets(tmp_path, ["app/cli.py"], units=None, runtime=RuntimeInputs()) == {}
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "app"\ndependencies = ["pytest-benchmark"]\n')
+    assert timed_targets(tmp_path, ["app/cli.py"], units=None, runtime=RuntimeInputs())
+    assert timed_targets(tmp_path, ["web/app.js"], units=None, runtime=RuntimeInputs()) == {}
+
+
+def test_a_nested_unit_times_its_own_benchmark(tmp_path: Path) -> None:
+    from repowise.core.evidence.setup import timed_targets
+
+    for root in ("a", "b"):
+        (tmp_path / root).mkdir()
+        _python(tmp_path / root, extra='dependencies = ["pytest-benchmark"]\n')
+
+    timed = timed_targets(tmp_path, ["b/app/cli.py"], units=None, runtime=RuntimeInputs())["b/app/cli.py"]
+
+    # pytest-benchmark runs from the repository root, over the unit's directory.
+    assert (timed["workload"], timed["cwd"]) == ("b: pytest bench", "")
+    assert " b --benchmark-only" in timed["command"]
+
+
+def test_a_pytest_benchmark_is_timed_over_fixed_rounds(tmp_path: Path) -> None:
+    from repowise.core.evidence.setup import timed_targets
+
+    _python(tmp_path, scripts="", extra='dependencies = ["pytest-benchmark"]\n')
+
+    timed = timed_targets(tmp_path, ["app/cli.py"], units=None, runtime=RuntimeInputs())
+
+    assert timed["app/cli.py"]["command"] == (
+        "pytest --benchmark-only --benchmark-max-time=0 --benchmark-min-rounds=10"
+    )

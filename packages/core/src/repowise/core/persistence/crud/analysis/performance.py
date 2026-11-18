@@ -416,7 +416,7 @@ async def _plan_facts(
             "benefit": recommendation.benefit,
             "cost": recommendation.cost,
             "risk": recommendation.risk,
-            "validation": recommendation.validation.as_dict(),
+            "validation": recommendation.validation.detail_dict(),
         }
     return facts
 

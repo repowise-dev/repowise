@@ -43,6 +43,107 @@
       }
     },
     {
+      "name": "perf_fix_measured_benchmark",
+      "repo_name": "acme/api",
+      "item": {
+        "id": "fix1_00000000000000000001",
+        "rank": 0,
+        "tier": "now",
+        "kind": "perf_fix",
+        "improves": "performance",
+        "title": "Batch the queries in load_rows",
+        "target": {
+          "file_path": "src/rows.py",
+          "symbol": null,
+          "line_start": null,
+          "line_end": null
+        },
+        "why": "load_rows runs one query per row — 3 call sites reach it.",
+        "facts": [],
+        "action": {
+          "summary": "Batch it.",
+          "steps": [],
+          "steps_total": 0,
+          "mechanical": false
+        },
+        "gain": {
+          "kind": "performance",
+          "value": null,
+          "text": "fewer round trips"
+        },
+        "effort": {
+          "bucket": "M",
+          "basis": "one function"
+        },
+        "risk": {
+          "level": "medium",
+          "dependents": null,
+          "files_touched": 1,
+          "text": "Touches 1 file."
+        },
+        "confidence": {
+          "level": "medium",
+          "reason": "the loop is static"
+        },
+        "verify": {
+          "tests": [
+            {
+              "path": "tests/test_report.py",
+              "reason": "reaches the changed code through the call-graph"
+            }
+          ],
+          "tests_total": 1,
+          "command": "pytest tests/test_report.py",
+          "basis": "inferred",
+          "prerequisite": null,
+          "measure": {
+            "command": "go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./report",
+            "before": "repowise perf measure --save before-report.Render -- go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./report",
+            "after": "repowise perf measure --against before-report.Render -- go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./report",
+            "metric": "median wall time",
+            "baseline": "before-report.Render",
+            "tolerance": 0.05,
+            "workload": "api: go bench ./report",
+            "workload_class": "benchmark",
+            "cwd": "api"
+          }
+        },
+        "context": [],
+        "source": {
+          "opportunity_id": "perfop_1",
+          "plan_ids": [],
+          "finding_ids": []
+        },
+        "next_call": {
+          "purpose": "Every argument shape a call can carry",
+          "mcp": "get_health(query=\"say \\\"hi\\\" \\\\path\\nnext\\ttab … ünï \\u0001\", limit=5, ratio=2.5, whole=3.0, flag=True, off=False, none=None, targets=[\"a.py\", \"b \\\"c\\\".py\"], nested={\"k\": [1, 2.0, \"x\"]})",
+          "cli": null,
+          "tool": "get_health",
+          "arguments": {
+            "query": "say \"hi\" \\path\nnext\ttab … ünï \u0001",
+            "limit": 5,
+            "ratio": 2.5,
+            "whole": 3.0,
+            "flag": true,
+            "off": false,
+            "none": null,
+            "targets": [
+              "a.py",
+              "b \"c\".py"
+            ],
+            "nested": {
+              "k": [
+                1,
+                2.0,
+                "x"
+              ]
+            }
+          }
+        },
+        "why_ranked": []
+      }
+    },
+    {
       "name": "tests_and_steps_over_cap",
       "item": {
         "id": "fix1_00000000000000000002",
