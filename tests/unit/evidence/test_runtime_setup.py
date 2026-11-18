@@ -24,7 +24,7 @@ def registered(monkeypatch: pytest.MonkeyPatch):
 
     def register(*names: str) -> None:
         for name in names:
-            monkeypatch.setitem(profile_formats._impls, name, ProfileFormat(lambda _b: False, None))
+            monkeypatch.setitem(profile_formats._impls, name, ProfileFormat(lambda _b: False, read=lambda _b: None))
 
     return register
 
@@ -144,15 +144,27 @@ def test_pytest_benchmark_ranks_above_the_test_suite_and_runs_from_the_root(
     assert '--class benchmark' in bench["ingest"]
 
 
-def test_a_recipe_whose_output_this_build_cannot_read_prints_no_ingest_line(tmp_path: Path) -> None:
+def test_this_build_reads_pytest_benchmark_so_its_ingest_line_is_printed(tmp_path: Path) -> None:
     _python(tmp_path, scripts="", extra='dependencies = ["pytest-benchmark"]\n')
-    (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "app"\ndependencies = ["pytest-benchmark"]\n'
+
+    bench = next(t for t in _targets(tmp_path) if t["class"] == "benchmark")
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+
+    assert bench["ingest"] == (
+        'repowise evidence add .repowise/pytest-bench.json --workload "pytest bench" '
+        f"--class benchmark --commit {SHA}"
     )
+    assert bench["reason"] is None
+    assert plan["next_call"]["purpose"] == "Profile pytest bench (benchmark), then ingest the profile."
+
+
+def test_a_recipe_whose_output_this_build_cannot_read_prints_no_ingest_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from repowise.core.evidence.profile_formats import profile_formats
 
-    if "pytest-benchmark" in profile_formats.names:
-        pytest.skip("this build reads pytest-benchmark files")
+    monkeypatch.delitem(profile_formats._impls, "pytest-benchmark", raising=False)
+    _python(tmp_path, scripts="", extra='dependencies = ["pytest-benchmark"]\n')
 
     bench = next(t for t in _targets(tmp_path) if t["class"] == "benchmark")
     plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())

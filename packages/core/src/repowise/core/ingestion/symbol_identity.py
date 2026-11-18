@@ -118,6 +118,11 @@ def file_of_symbol(symbol_id: str) -> str:
     return symbol_id.partition(SYMBOL_SEP)[0]
 
 
+def local_symbol_id(symbol_id: str) -> str:
+    """The id after its file: ``m.py::C::m`` -> ``C::m``; a file id gives ``""``."""
+    return symbol_id.partition(SYMBOL_SEP)[2]
+
+
 def outer_scope(scope: str) -> str:
     """One id segment up: ``A::m::Runnable`` -> ``A::m``, and ``A`` -> ``""``."""
     return scope.rpartition("::")[0]
@@ -536,6 +541,7 @@ __all__ = [
     "has_overload_identity",
     "id_segment_name",
     "kotlin_erased_type",
+    "local_symbol_id",
     "make_symbol_id",
     "module_symbol_id",
     "outer_scope",

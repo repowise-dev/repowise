@@ -20,8 +20,11 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
 
 The entry list is named by the kind: ``symbols`` (profile), ``benchmarks``,
 ``tests`` (test_timing) or ``queries`` (query_count). A code location is
-``path`` (repo-relative POSIX), ``function`` (the qualified name) and
-``line`` (where the function starts). Paths are repo-relative, and the
+``path`` (repo-relative POSIX), ``function`` (the qualified name, or the
+symbol's id after its file as a test runner names it: ``TestCache::test_get``)
+and ``line`` (where the function starts). ``"exact": true`` says ``function``
+is the symbol's own name, so it never falls back to a bare-name match (a
+benchmark named by its node id). Paths are repo-relative, and the
 document carries no labels, environment variables or command lines: only
 the fields named here are read, and nothing else is ever stored.
 
@@ -279,7 +282,10 @@ def _location(raw: Any) -> tuple[dict[str, Any] | None, str | None]:
     function, reason = _name(raw.get("function"))
     if function is None:
         return None, "no_function" if reason == "no_name" else reason
-    return {"path": path, "function": function, "line": _line(raw.get("line"))}, None
+    where = {"path": path, "function": function, "line": _line(raw.get("line"))}
+    if raw.get("exact") is True:
+        where["exact"] = True
+    return where, None
 
 
 # --- entries ----------------------------------------------------------------
