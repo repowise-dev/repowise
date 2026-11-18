@@ -10,7 +10,6 @@ from __future__ import annotations
 import ast
 import re
 from fnmatch import fnmatchcase
-from functools import cache
 from pathlib import Path
 
 from repowise.core.ingestion.git_commit_index import _DEEP_CACHE_GLOB, _deep_cache_name
@@ -20,8 +19,9 @@ from repowise.core.pipeline.incremental.carried_files import (
     CARRIED_GLOBS,
     SEALED_FILES,
 )
+from tests.unit._source_tree import PACKAGES as _PACKAGES
+from tests.unit._source_tree import sources_under
 
-_PACKAGES = Path(__file__).resolve().parents[3] / "packages"
 _SOURCE_ROOTS = [_PACKAGES / name / "src" / "repowise" for name in ("core", "cli", "server")]
 
 # Any pickle, or a data file named like a cache or a scan record.
@@ -42,11 +42,12 @@ def _literal(node: ast.AST) -> str | None:
     return None
 
 
-@cache
-def _modules() -> tuple[tuple[Path, ast.Module], ...]:
-    files = sorted(p for root in _SOURCE_ROOTS for p in root.rglob("*.py"))
+def _modules() -> list[tuple[Path, ast.Module]]:
+    files = sources_under(*_SOURCE_ROOTS)
     assert files, f"no sources under {_SOURCE_ROOTS}"
-    return tuple((p, ast.parse(p.read_text(encoding="utf-8"))) for p in files)
+    unparsed = [src.rel for src in files if src.tree is None]
+    assert not unparsed, f"sources that do not parse: {unparsed}"
+    return [(src.path, src.tree) for src in files]
 
 
 def _cache_names(tree: ast.Module) -> set[str]:

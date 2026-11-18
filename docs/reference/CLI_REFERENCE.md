@@ -1355,10 +1355,14 @@ repowise coverage suggest-gates --format json
 ### `repowise evidence`
 
 Ingest runtime evidence: a profile, benchmark results, test timings or query counts, as one
-[`repowise-evidence-v1`](../layers/PERFORMANCE.md#runtime-evidence-format) file per run.
+[`repowise-evidence-v1`](../layers/PERFORMANCE.md#runtime-evidence-format) file per run, or a
+profile in the profiler's own format ([Speedscope JSON or collapsed
+stacks](../layers/PERFORMANCE.md#profiles-as-the-profiler-wrote-them)), converted first.
 
 ```bash
 repowise evidence add prof.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
+repowise evidence add prof.speedscope.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
+repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
 repowise evidence add bench.json --workload "go bench" --class benchmark --format json
 repowise evidence status --format json   # newest run of each workload
 repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
@@ -1372,6 +1376,8 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 | `--checkout-root` | The checkout the run used. | the repository root |
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes when measured. | the file's `dirty`, else the working tree when the commit is HEAD |
 | `--environment` | Where it ran, one word (`local`, `ci`). | `unknown` |
+| `--input-format` | Read FILE as `repowise-evidence-v1`, `speedscope`, `collapsed` or a format a plugin registers. | detected from the content |
+| `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled. Required when the profiler's output does not say (collapsed stacks, py-spy). | the profile's own, pyinstrument `wall` |
 | `--allow-partial` | Store the run even when over half its entries do not map; flagged partial. | off |
 | `--format` | `table` or `json`. | `table` |
 
@@ -1380,6 +1386,9 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   `ambiguous_symbol`, `generated` or `vendored` code, `dirty_file` (edited since the commit,
   checked when the commit is HEAD), `duplicate`, and the file's own reasons such as `outside_repo`.
   A benchmark or test is kept without its function instead, counted under `unlinked`.
+- A converted profile joins frames only under `--checkout-root`, each checked by a second signal,
+  and prints how much of the run repo code explains and the share of repo frame time skipped, by
+  reason. The JSON payload carries the same under `conversion`.
 - Evidence from another commit than HEAD is stored with its commit and reads as stale; it is never
   re-mapped. The same file added again with the same flags against the same index restamps the
   stored run; after `repowise update` it is joined afresh.

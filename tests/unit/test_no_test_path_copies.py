@@ -21,11 +21,11 @@ catches a second implementation of the question.
 from __future__ import annotations
 
 import ast
-import pathlib
 
 import pytest
 
 import repowise.core.test_paths as test_paths
+from tests.unit._source_tree import python_sources
 
 # Function-name shapes that answer this question. Matched on the definition, so
 # a helper named for something else that happens to take a path is unaffected.
@@ -93,7 +93,6 @@ _KNOWN: frozenset[str] = frozenset(
     }
 )
 
-_PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 
 # The one place these are allowed to be defined.
 _HOME = "packages/core/src/repowise/core/test_paths.py"
@@ -122,13 +121,9 @@ def _delegates(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 def _offenders() -> dict[str, list[str]]:
     """Map of repo-relative path -> the predicate names/constants it defines."""
     found: dict[str, list[str]] = {}
-    for path in _PACKAGES.rglob("*.py"):
-        rel = path.relative_to(_PACKAGES.parents[0]).as_posix()
-        if rel == _HOME:
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):  # not ours to police
+    for src in python_sources():
+        rel, tree = src.rel, src.tree
+        if rel == _HOME or tree is None:  # unparseable: not ours to police
             continue
         hits: list[str] = []
         # Whole tree, not just module level: a copy tucked inside a class body or
