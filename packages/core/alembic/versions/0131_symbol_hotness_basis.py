@@ -6,8 +6,8 @@ each ``symbol_hotness`` row (run, rank, samples, share interval, explained
 share, unlisted count, clock, ordering-only flag, freshness). Local SQLite stores get them
 from the models through the reconciler.
 
-Revision ID: 0130
-Revises: 0129
+Revision ID: 0131
+Revises: 0130
 Create Date: 2026-11-18
 """
 
@@ -18,8 +18,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0130"
-down_revision: str | None = "0129"
+revision: str = "0131"
+down_revision: str | None = "0130"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
