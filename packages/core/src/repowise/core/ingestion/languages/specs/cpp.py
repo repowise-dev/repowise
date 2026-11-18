@@ -1,8 +1,8 @@
 """LanguageSpec for cpp (extracted from the registry data table)."""
 
 from ..spec import LanguageSpec
+from .c import BUILD_CONFIG_MANIFESTS, TEST_SUPPORT_STEM_SUFFIXES
 from .c import BUILTIN_TYPES as _C_BUILTIN_TYPES
-from .c import TEST_SUPPORT_STEM_SUFFIXES
 
 #: Include fragments: C++ source that is ``#include``d into a translation unit
 #: rather than compiled as one of its own. The convention carries inline and
@@ -42,6 +42,8 @@ SPEC = LanguageSpec(
     scm_file="cpp.scm",
     heritage_node_types=frozenset({"class_specifier", "struct_specifier"}),
     entry_point_patterns=("main.cpp", "main.cc"),
+    manifest_files=BUILD_CONFIG_MANIFESTS,
+    build_config_manifests=BUILD_CONFIG_MANIFESTS,
     builtin_calls=frozenset(
         {
             "printf",

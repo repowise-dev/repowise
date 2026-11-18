@@ -470,3 +470,13 @@ def test_detects_makefile_targets(tmp_path):
     assert "build" in cmds
     assert cmds["build"] == "make build"
     assert "test" in cmds
+
+
+def test_the_memo_key_stats_every_registry_manifest():
+    """The key reads manifest names from the language registry, so a manifest
+    a spec declares can never be missing from it."""
+    from repowise.core.generation.editor_files.tech_stack import _MANIFEST_FILES
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    assert REGISTRY.manifest_filenames() <= set(_MANIFEST_FILES)
+    assert {"tsconfig.json", "Dockerfile"} <= set(_MANIFEST_FILES)

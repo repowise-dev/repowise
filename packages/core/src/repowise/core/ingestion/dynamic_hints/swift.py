@@ -7,7 +7,8 @@ from pathlib import Path
 
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {".build", "Pods", "DerivedData", ".git", "node_modules"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {".build", "Pods", "DerivedData"}
 
 _NSCLASS_FROM_STRING_RE = re.compile(r"NSClassFromString\s*\(\s*[\"']([A-Z]\w*)[\"']")
 _NSSTRING_FROM_CLASS_RE = re.compile(r"NSStringFromClass\s*\(\s*([A-Z]\w*)")

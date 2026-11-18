@@ -578,7 +578,9 @@ async def _pre_synthesis_reply(
     )
     if union_payload is not None:
         return await neighbors(attach_graph_callers(union_payload, graph_callers))
-    if not hits:
+    # Another workspace repo's documents can answer what this repo's code does
+    # not (a ticket asked about by its key): synthesis reads their lines.
+    if not hits and not retrieved.other_repo_lines:
         return _no_answer_payload(
             "No wiki hits for this question. Rephrase around the code "
             "concept. " + _NO_HITS_RECOVERY_HINT,

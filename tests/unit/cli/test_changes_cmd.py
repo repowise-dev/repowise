@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -262,3 +264,34 @@ def test_csv_cells_that_open_as_formulas_are_quoted():
     (row,) = csv.reader(io.StringIO(_csv_rows(record)))
     assert row[2] == "'=HYPERLINK(\"http://x\")" and row[4] == "'@label"
     assert row[7] == "'-1" and row[8] == "'+git" and row[0] == "pr-1"
+
+
+def test_init_commit_limit_above_the_config_gives_matching_commit_and_change_counts(
+    tmp_path, monkeypatch
+):
+    from repowise.cli.commands.init_cmd import init_command
+
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    root = tmp_path / "repo"
+    root.mkdir()
+    env = ["-c", "user.name=T", "-c", "user.email=t@example.com"]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True)
+    for i in range(30):
+        (root / f"f{i % 5}.py").write_text(f"x = {i}\n")
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(root), *env, "commit", "-qm", f"c{i}"], check=True)
+    (root / ".repowise").mkdir()
+    (root / ".repowise" / "config.yaml").write_text("commit_limit: 10\n")
+
+    result = CliRunner().invoke(
+        init_command,
+        [str(root), "--commit-limit", "30", "--no-editor-setup", "--no-prose", "-y"],
+    )
+    assert result.exit_code == 0, result.output
+
+    with sqlite3.connect(root / ".repowise" / "wiki.db") as db:
+        counts = [
+            db.execute(f"select count(*) from {table}").fetchone()[0]
+            for table in ("git_commits", "changes", "change_commits")
+        ]
+    assert counts == [30, 30, 30]

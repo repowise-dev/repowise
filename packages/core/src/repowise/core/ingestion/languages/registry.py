@@ -16,6 +16,7 @@ the TypeScript file from this registry.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from collections.abc import Iterable
 
@@ -44,6 +45,10 @@ _GENERIC_ENTRY_FLAG_STEMS: frozenset[str] = frozenset(
     {"main", "index", "app", "run", "server", "start", "entry"}
 )
 
+def _basename(path: str) -> str:
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
 # =========================================================================
 # LanguageRegistry
 # =========================================================================
@@ -56,7 +61,14 @@ class LanguageRegistry:
     immutable after construction — all data comes from ``_SPECS``.
     """
 
-    __slots__ = ("_ext_map", "_filename_map", "_specs")
+    __slots__ = (
+        "_ext_map",
+        "_filename_map",
+        "_manifest_glob",
+        "_manifest_names",
+        "_package_manifest_names",
+        "_specs",
+    )
 
     def __init__(self, specs: tuple[LanguageSpec, ...] = _SPECS) -> None:
         self._specs: dict[str, LanguageSpec] = {s.tag: s for s in specs}
@@ -74,6 +86,17 @@ class LanguageRegistry:
             for fn in spec.special_filenames:
                 if fn not in self._filename_map:
                     self._filename_map[fn] = spec.tag
+
+        self._manifest_names: frozenset[str] = frozenset(
+            f for s in specs for f in s.manifest_files
+        )
+        self._package_manifest_names: frozenset[str] = frozenset(
+            f for s in specs for f in s.manifest_files if f not in s.build_config_manifests
+        )
+        globs = sorted({g for s in specs for g in s.manifest_globs})
+        self._manifest_glob: re.Pattern[str] | None = (
+            re.compile("|".join(map(fnmatch.translate, globs)), re.IGNORECASE) if globs else None
+        )
 
     # -- Single-spec lookups ---------------------------------------------
 
@@ -188,9 +211,20 @@ class LanguageRegistry:
         """Return the union of all entry-point filename patterns."""
         return frozenset(p for s in self._specs.values() for p in s.entry_point_patterns)
 
+    # -- Manifest names, by role -------------------------------------------
+    #
+    # The only place that knows manifest file names. A *package manifest*
+    # marks its directory as the root of a distributable unit; *build config*
+    # configures a build without marking one; a *lockfile* pins resolved
+    # versions. Callers that need extra non-manifest names (Dockerfile, runner
+    # configs) compose them onto these sets rather than restating the names.
+    #
+    # Matching rules: exact names compare as the tool spells them (``Gemfile``,
+    # ``Cargo.toml``); globs (``*.csproj``) ignore case, as MSBuild does.
+
     def manifest_filenames(self) -> frozenset[str]:
-        """Return the union of all manifest filenames."""
-        return frozenset(f for s in self._specs.values() for f in s.manifest_files)
+        """Every exact manifest name: package manifests and build config."""
+        return self._manifest_names
 
     def package_manifest_filenames(self) -> frozenset[str]:
         """Filenames that mark their directory as the root of a package.
@@ -203,19 +237,29 @@ class LanguageRegistry:
         This is :meth:`manifest_filenames` minus each spec's
         ``build_config_manifests`` — the whole union is not usable directly
         because it also carries build configuration (``vite.config.js``, the
-        .NET ``Directory.Build.*`` family) that appears in directories which
-        are not packages, and a false root fragments the module rollup.
+        .NET ``Directory.Build.*`` family, ``CMakeLists.txt``) that appears in
+        directories which are not packages, and a false root fragments the
+        module rollup.
         """
-        return frozenset(
-            f
-            for s in self._specs.values()
-            for f in s.manifest_files
-            if f not in s.build_config_manifests
-        )
+        return self._package_manifest_names
 
     def package_manifest_globs(self) -> frozenset[str]:
         """Glob patterns that mark their directory as a package root (``*.csproj``)."""
         return frozenset(g for s in self._specs.values() for g in s.manifest_globs)
+
+    def matches_package_manifest_glob(self, name: str) -> bool:
+        """Whether file *name* matches a package-manifest glob, ignoring case."""
+        return self._manifest_glob is not None and self._manifest_glob.match(name) is not None
+
+    def is_package_manifest(self, path: str) -> bool:
+        """Whether *path*'s file name marks its directory as a package root."""
+        name = _basename(path)
+        return name in self._package_manifest_names or self.matches_package_manifest_glob(name)
+
+    def is_manifest(self, path: str) -> bool:
+        """Whether *path*'s file name is any manifest: a package manifest or build config."""
+        name = _basename(path)
+        return name in self._manifest_names or self.matches_package_manifest_glob(name)
 
     def blocked_dirs(self) -> frozenset[str]:
         """Return the union of all per-language blocked directories."""
