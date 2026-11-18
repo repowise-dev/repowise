@@ -6,6 +6,8 @@ import json
 import posixpath
 import re
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
+from configparser import ConfigParser
+from configparser import Error as ConfigError
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -134,6 +136,46 @@ def _js_run(repo: _Checkout, test: str) -> Run | None:
         path, "package.json", lambda d: repo.memo(_declares_test, repo.root / d / "package.json")
     )
     return None if owner is None else (_npm(owner), _arg(_relative(path, owner)))
+
+
+def _declares_pytest(folder: Path) -> bool:
+    """Whether *folder* configures pytest rather than merely packaging Python."""
+    data = read_toml(folder / "pyproject.toml")
+    tool = data.get("tool", {}) if isinstance(data, Mapping) else {}
+    pytest = tool.get("pytest", {}) if isinstance(tool, Mapping) else {}
+    if isinstance(pytest, Mapping) and isinstance(pytest.get("ini_options"), Mapping):
+        return True
+    for filename, section in (
+        ("setup.cfg", "tool:pytest"),
+        ("pytest.ini", "pytest"),
+        ("tox.ini", "pytest"),
+    ):
+        parser = ConfigParser(interpolation=None)
+        try:
+            parser.read(folder / filename, encoding="utf-8")
+        except (OSError, UnicodeError, ConfigError):
+            continue
+        if parser.has_section(section):
+            return True
+    return False
+
+
+def _python_run(repo: _Checkout, test: str) -> Run | None:
+    """Run a Python test from its nearest pytest-configured package."""
+    path = _file(test)
+    def configured(directory: str) -> bool:
+        return repo.memo(_declares_pytest, repo.root / directory)
+
+    owners = [
+        repo.owner(path, manifest, configured)
+        for manifest in ("pyproject.toml", "setup.cfg", "pytest.ini", "tox.ini")
+    ]
+    # A root command remains the safe fallback for repositories without a
+    # package-local pytest configuration.
+    owner = max((candidate for candidate in owners if candidate is not None), key=len, default=None)
+    if owner is None:
+        return None
+    return (f"cd {_arg(owner)} && pytest" if owner else "pytest", _arg(_relative(test, owner)))
 
 
 def js_root_runs(tests: Iterable[str]) -> dict[str, list[str | None]]:
@@ -469,6 +511,7 @@ def _dotnet_run(repo: _Checkout, test: str) -> Run | None:
 #: runner works per package. A runner gets the whole test id, ``::`` name
 #: included, so one that can select a single test can narrow to it.
 _RUNNERS: tuple[tuple[tuple[str, ...], Callable[[_Checkout, str], Run | None]], ...] = (
+    (PYTHON_SUFFIXES, _python_run),
     ((".go",), _go_run),
     ((".rs",), _rust_run),
     ((".java", ".kt"), _jvm_run),
@@ -565,8 +608,11 @@ def commands_for_tests(
     """
     if total is not None and total > len(tests):
         tests = sorted({_file(test) for test in tests})
-    python_tests = sorted(test for test in tests if _file(test).endswith(PYTHON_SUFFIXES))
     commands: list[str] = []
+    python_tests = sorted(
+        test for test in tests
+        if _file(test).endswith(PYTHON_SUFFIXES) and (not runs or _run_key(runs, test) is None)
+    )
     if python_tests:
         commands.append("pytest " + " ".join(map(_arg, python_tests)))
     if runs:
