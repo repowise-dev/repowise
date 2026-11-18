@@ -444,6 +444,95 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
         )
 
 
+@evidence_group.command("setup")
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@format_option()
+def evidence_setup_command(repo: str | None, fmt: str) -> None:
+    """Print how to collect evidence here; run nothing, write nothing.
+
+    For each build unit: the stack, the command that writes a coverage report
+    repowise reads (run from the unit's root), what it needs first, where the
+    report lands, and the exact ingest line (run from the repository root). A
+    report already on disk is ingested first. ``next_call`` lists the steps to
+    run next, each with its directory. ``stack: unknown`` when repowise is not
+    sure how a unit runs. Works before the repository is indexed.
+
+    Examples:
+
+        repowise evidence setup
+        repowise evidence setup --format json
+    """
+    _print_setup(repo, fmt)
+
+
+def _print_setup(repo: str | None, fmt: str) -> None:
+    """Shared by ``evidence setup`` and ``coverage setup``."""
+    from repowise.core.evidence.setup import evidence_setup
+    from repowise.core.workspace.update.state import get_head_commit
+
+    notices = notice_console(fmt)
+    repo_path = _resolve_repo(repo, notices)
+    indexed, units, coverage_commit = run_async(_stored_units(repo_path))
+    plan = evidence_setup(
+        repo_path,
+        indexed=indexed,
+        units=units,
+        head=get_head_commit(repo_path),
+        coverage_commit=coverage_commit,
+    )
+    if fmt == "json":
+        emit_json(plan)
+        return
+    for unit in plan["units"]:
+        for line in _setup_lines(unit):
+            notices.print(line)
+    call = plan["next_call"]
+    if call is None:
+        notices.print(f"[yellow]{escape(plan['reason'])}[/yellow]")
+        return
+    notices.print(f"[bold]Next[/bold]: {escape(call['purpose'])}")
+    for step in call["steps"]:
+        notices.print(f"  [dim]in {escape(step['cwd'])}[/dim]\n    [cyan]{escape(step['run'])}[/cyan]")
+
+
+def _setup_lines(unit: dict[str, Any]) -> list[str]:
+    """One unit's coverage plan, in words."""
+    cov = unit["coverage"]
+    tools = ", ".join(t for t in (unit["runner"], unit["package_manager"]) if t)
+    head = f"[bold]{unit['stack']}[/bold]" + (f" ({escape(tools)})" if tools else "")
+    lines = [f"{head} at {escape(unit['root'] or 'the repository root')}"]
+    if cov["command"]:
+        lines += [f"  needs: [cyan]{escape(p)}[/cyan]" for p in cov["prerequisites"]]
+        lines.append(f"  coverage: [cyan]{escape(cov['command'])}[/cyan]")
+    elif cov["reason"]:
+        lines.append(f"  [yellow]{escape(cov['reason'])}[/yellow]")
+    if cov["found"]:
+        lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
+    if cov["ingest"]:
+        lines.append(f"  ingest (from the repository root): [cyan]{escape(cov['ingest'])}[/cyan]")
+    return lines
+
+
+async def _stored_units(repo_path: Path) -> tuple[bool, Any, str | None]:
+    """Whether *repo_path* has an index, its stored build units (None without),
+    and the commit its newest coverage measured.
+
+    Opens the store only when one exists, so a repository never indexed gets
+    its plan and no empty store is left behind.
+    """
+    from repowise.cli.helpers import repo_index_session
+    from repowise.core.persistence.crud.analysis.coverage import load_newest_ingest
+    from repowise.core.persistence.crud.build_units import load_build_units
+
+    async with repo_index_session(repo_path) as opened:
+        if opened is None:
+            return False, None, None
+        session, repo_id = opened
+        ingest = await load_newest_ingest(session, repo_id)
+        commit = ingest.ingested_commit_sha if ingest is not None else None
+        return True, await load_build_units(session, repo_id), commit
+
+
 @evidence_group.command("status")
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
 @format_option()
