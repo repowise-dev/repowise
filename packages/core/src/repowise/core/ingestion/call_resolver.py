@@ -354,7 +354,11 @@ class CallResolver(
         partial_fragments: dict[tuple[str, str], tuple[str, ...]] | None = None,
         csharp_project_usings: dict[str, frozenset[str]] | None = None,
         cpp_index: Any | None = None,
+        source_map: dict[str, bytes] | None = None,
     ) -> None:
+        # {repo path: bytes} of the revision under analysis, when it is not the
+        # working tree; a file it lacks is read from disk.
+        self._source_map = source_map
         # {type symbol id: parent type symbol ids}, from the caller's already
         # resolved heritage. Absent when the resolver is built standalone, in
         # which case the inherited tier simply never fires.
@@ -1113,6 +1117,9 @@ class CallResolver(
             return self._with_props(self._global_unique_call(file_path, call, caller_id), call)
 
         # --- Free function call: function() ---
+        if strategies.free_exclusive:
+            hit = self._first_strategy_hit(strategies.free, file_path, call, caller_id)
+            return self._with_props(hit, call)
         return self._with_props(self._resolve_bare_call(file_path, call, caller_id), call)
 
     def _through_kotlin_alias(
@@ -2168,6 +2175,10 @@ class CallResolver(
             file_path, method_name
         ):
             return False, None
+
+        strategies = self._strategies_for(file_path)
+        if strategies.member_exclusive:
+            return True, self._first_strategy_hit(strategies.member, file_path, call, caller_id)
 
         # A Go local, parameter or ``var`` the body declares is read through its
         # declared type, never as a type name: ``reader.Peek()`` on a

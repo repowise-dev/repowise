@@ -23,6 +23,7 @@ from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY
 from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
 from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
 from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key
+from repowise.core.test_paths import is_test_support_module
 
 from .forward import CallGraphView, files_reached_by_tests
 from .hubs import call_hub_files
@@ -119,14 +120,14 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
 
 
 async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
-    """Paths of every file node ingestion classified as a test."""
+    """Paths of every file node ingestion classified as a test, test-tree support modules aside."""
     res = await session.execute(
         select(GraphNode.node_id).where(
             GraphNode.repository_id == repo_id,
             GraphNode.is_test == True,  # noqa: E712
         )
     )
-    return {row[0] for row in res.all()}
+    return {row[0] for row in res.all() if not is_test_support_module(row[0])}
 
 
 # Answers kept in process per (database, repository, index stamp), so one

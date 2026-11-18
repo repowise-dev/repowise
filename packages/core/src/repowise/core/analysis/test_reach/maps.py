@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 from typing import Any, Literal, NamedTuple, TypeVar
 
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
-from repowise.core.test_paths import is_test_related_path
+from repowise.core.test_paths import is_test_related_path, is_test_support_module
 
 from .hubs import call_hub_files
 from .model import UNRELIABLE_CALL_ORIGINS
@@ -178,7 +178,7 @@ def build_walk_maps(graph: Any) -> WalkMaps:
         for node, attrs in graph.nodes(data=True):
             if attrs.get("node_type") == "file":
                 files.add(node)
-                if attrs.get("is_test"):
+                if attrs.get("is_test") and not is_test_support_module(node):
                     tests.add(node)
         for source, target, attrs in graph.edges(data=True):
             edge_type = attrs.get("edge_type")

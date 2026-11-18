@@ -81,6 +81,7 @@ from ..support_paths import DOC_EXTENSIONS
 from ..test_paths import (
     is_test_path,
     is_test_related_path,
+    is_test_support_module,
     is_test_support_path,
     paired_test_names,
 )
@@ -220,6 +221,7 @@ _TEST_CODE_SUFFIXES = frozenset(
     {".py", ".go", ".java", ".kt", ".kts", ".scala", ".groovy", ".rb", ".cs", ".fs"}
     | {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"}
     | {".rs", ".php", ".swift", ".ex", ".exs", ".dart", ".c", ".cc", ".cpp", ".cls"}
+    | {".t", ".pl", ".pm"}
 )
 
 PYTHON_SUFFIXES = (".py",)
@@ -526,7 +528,11 @@ def is_runnable_test(
 @functools.lru_cache(maxsize=_PATH_MEMO)
 def _runnable_name(path: str) -> bool:
     p = PurePosixPath(path)
-    return p.suffix.lower() in _TEST_CODE_SUFFIXES and is_test_path(p.name)
+    return (
+        p.suffix.lower() in _TEST_CODE_SUFFIXES
+        and not is_test_support_module(path)
+        and is_test_path(p.name)
+    )
 
 
 @functools.lru_cache(maxsize=8)
