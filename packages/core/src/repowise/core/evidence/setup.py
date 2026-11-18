@@ -236,17 +236,13 @@ def evidence_setup(
     covered = head is not None and coverage_commit == head
     done = _measured_at(runtime, head)
     next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=done)
-    optional = _optional_entry_points(planned, done)
     if next_call is not None:
         reason = None
-        if optional:
-            next_call["optional"] = optional
     elif indexed and covered:
         reason = "Evidence at this commit is ingested; nothing left to run."
     else:
         reason = "No unit has a command repowise is sure of; see each unit's reason."
-    if next_call is None and optional:
-        reason += f" Optional: {', '.join(optional['workloads'])}. {optional['purpose']}"
+    reason = _with_optional(next_call, reason, _optional_entry_points(planned, done))
     if index_error is not None:
         next_call = {
             "purpose": "The index exists but could not be read; find out why.",
@@ -261,6 +257,18 @@ def evidence_setup(
         "next_call": next_call,
         "reason": reason,
     }
+
+
+def _with_optional(
+    next_call: dict[str, Any] | None, reason: str | None, optional: dict[str, Any] | None
+) -> str | None:
+    """Put *optional* under ``next_call``, or name it in the *reason* when there is no call; the reason."""
+    if optional is None:
+        return reason
+    if next_call is not None:
+        next_call["optional"] = optional
+        return reason
+    return f"{reason} Optional: {', '.join(optional['workloads'])}. {optional['purpose']}"
 
 
 def _optional_entry_points(
