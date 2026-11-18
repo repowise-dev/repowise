@@ -49,16 +49,20 @@ class StackTally:
     def __init__(self) -> None:
         self._weights: dict[tuple[int, ...], float] = {}
         self._samples: Counter[tuple[int, ...]] = Counter()
+        #: Stacks some weight reached without a sample count (an evented profile).
+        self._uncounted: set[tuple[int, ...]] = set()
 
     def add(self, frames: tuple[int, ...], weight: float, samples: int | None = 1) -> None:
         self._weights[frames] = self._weights.get(frames, 0.0) + weight
-        if samples is not None:
+        if samples is None:
+            self._uncounted.add(frames)
+        else:
             self._samples[frames] += samples
 
-    def stacks(self, *, counted: bool) -> tuple[Stack, ...]:
-        """The merged stacks; *counted* says whether sample counts were recorded."""
+    def stacks(self) -> tuple[Stack, ...]:
+        """The merged stacks; a stack's sample count is None once any of its weight had none."""
         return tuple(
-            Stack(frames, weight, self._samples[frames] if counted else None)
+            Stack(frames, weight, None if frames in self._uncounted else self._samples[frames])
             for frames, weight in self._weights.items()
         )
 

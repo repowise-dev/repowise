@@ -54,6 +54,8 @@ class ProfileConversion:
     explained: float
     #: Frame-occurrence weight by outcome: ``resolved`` or the skip reason.
     frame_time: dict[str, float] = field(default_factory=dict)
+    #: Self weight charged to no symbol: ``module_body`` or the innermost repo frame's skip reason.
+    self_unattributed: dict[str, float] = field(default_factory=dict)
 
     @property
     def explained_share(self) -> float | None:
@@ -84,6 +86,11 @@ class ProfileConversion:
             "explained_share": None if share is None else round(share, 4),
             "skip_rate": None if rate is None else round(rate, 4),
             "skipped_share_by_reason": skipped,
+            "self_unattributed": {
+                k: round(v / self.total, 4) for k, v in sorted(self.self_unattributed.items())
+            }
+            if self.total > 0
+            else {},
             "symbols": len(self.document["symbols"]),
         }
 
@@ -139,7 +146,12 @@ def convert_profile(
     if run.tool_name:
         document["tool"] = {"name": run.tool_name, "version": run.tool_version}
     return ProfileConversion(
-        document, run.unit, tally.total, tally.explained, dict(tally.frame_time)
+        document,
+        run.unit,
+        tally.total,
+        tally.explained,
+        dict(tally.frame_time),
+        dict(tally.self_unattributed),
     )
 
 
@@ -156,6 +168,8 @@ class _Tally:
         self._inclusive_n: Counter[str] = Counter()
         self._own_n: Counter[str] = Counter()
         self.frame_time: Counter[str] = Counter()
+        #: Self weight whose innermost repo frame has no symbol row, by why.
+        self.self_unattributed: Counter[str] = Counter()
         self.total = 0.0
         self.explained = 0.0
 
@@ -184,10 +198,17 @@ class _Tally:
         innermost = next(
             (i for i in reversed(stack.frames) if self._reasons[i] != "outside_root"), None
         )
-        hit = self._resolved.get(innermost) if innermost is not None else None
+        if innermost is None:
+            return
+        hit = self._resolved.get(innermost)
         if hit is not None and hit.symbol is not None:
             self._own[hit.symbol.symbol_id] += weight
             self._own_n[hit.symbol.symbol_id] += samples
+        else:
+            # The index keeps no symbol for a file's top level, so a module
+            # body's own time has no row; it is counted here, never dropped.
+            why = "module_body" if hit is not None else str(self._reasons[innermost])
+            self.self_unattributed[why] += weight
 
     def entries(self, *, counted: bool) -> list[dict[str, Any]]:
         """One v1 entry per symbol, costliest inclusive first."""
