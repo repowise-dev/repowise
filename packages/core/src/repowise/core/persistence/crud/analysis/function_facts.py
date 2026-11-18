@@ -135,7 +135,7 @@ async def write_function_facts(
     from ....analysis.lineage import FunctionBody, pair_lineage
 
     paths = None if file_paths is None else [*file_paths, *departed]
-    old = await _stored_bodies(session, repository_id, paths)
+    old = await stored_bodies(session, repository_id, paths)
     if file_paths is None:
         await session.execute(delete(FunctionFact).where(FunctionFact.repository_id == repository_id))
     else:
@@ -164,7 +164,7 @@ async def write_function_facts(
     return len(fresh)
 
 
-async def _stored_bodies(
+async def stored_bodies(
     session: AsyncSession, repository_id: str, paths: Iterable[str] | None
 ) -> list[FunctionBody]:
     """The stored body and lineage of each function in *paths* (every one when ``None``)."""
@@ -356,6 +356,7 @@ __all__ = [
     "get_file_facts",
     "get_function_facts",
     "key_range",
+    "stored_bodies",
     "tests_for_functions",
     "tests_in_files",
     "write_function_facts",

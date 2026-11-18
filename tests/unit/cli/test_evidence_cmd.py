@@ -18,8 +18,10 @@ from repowise.core.persistence.models import (
     EvidenceBenchmarkResult,
     EvidenceRun,
     EvidenceSymbolCost,
+    FunctionFact,
     HealthFileMetric,
     Repository,
+    SymbolHotness,
     WikiSymbol,
 )
 from tests.unit.evidence.test_profile_formats import _pprof
@@ -153,6 +155,78 @@ def test_add_stores_the_run_with_its_provenance(indexed) -> None:
     assert len(_stored(root)[0]) == 1
 
 
+def _db(root: Path, work):
+    async def run():
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                return await work(session)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run())
+
+
+def test_a_profile_stamps_lineage_and_body_and_rebuilds_hotness(indexed) -> None:
+    root, head = indexed
+
+    async def at_head(session) -> None:
+        (await session.get(Repository, "r1")).head_commit = head
+        session.add(FunctionFact(repository_id="r1", symbol_id="src/app.py::build",
+                                 body_digest="d" * 32, lineage_id="L" * 16))
+
+    _db(root, at_head)
+    result = _add(str(_write(root)), "--workload", "cli build", "--class", "entry_point",
+                  "--commit", head, "--format", "json")
+    assert result.exit_code == 0, result.output
+
+    async def read(session):
+        cost = (await session.execute(select(EvidenceSymbolCost))).scalar_one()
+        hot = (await session.execute(select(SymbolHotness))).scalar_one()
+        return cost, hot
+
+    cost, hot = _db(root, read)
+    assert (cost.lineage_id, cost.body_digest) == ("L" * 16, "d" * 32)
+    assert (hot.symbol_id, hot.freshness, hot.rank, hot.tier) == (
+        "src/app.py::build", "current", 1, "lead_candidate",
+    )
+    assert (hot.samples, hot.run_samples, hot.explained_share) == (60, 100, 0.6)
+
+
+def test_code_outside_production_is_counted_before_the_cap(indexed) -> None:
+    root, head = indexed
+    (root / ".repowise" / "config.yaml").write_text("evidence:\n  max_symbols_per_run: 1\n")
+
+    async def a_test(session) -> None:
+        (await session.get(Repository, "r1")).head_commit = head
+        session.add(WikiSymbol(
+            repository_id="r1", file_path="tests/test_app.py",
+            symbol_id="tests/test_app.py::test_build", name="test_build",
+            qualified_name="test_build", kind="function", start_line=1, end_line=2,
+        ))
+
+    _db(root, a_test)
+    path = _write(root, symbols=[
+        {"path": "src/app.py", "function": "build", "line": 1, "self": 10, "total": 60},
+        {"path": "tests/test_app.py", "function": "test_build", "line": 1, "self": 1,
+         "total": 20},
+    ])
+    result = _add(str(path), "--workload", "w", "--class", "unit_test", "--commit", head,
+                  "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert _json(result)["truncated"] == 1
+
+    async def read(session):
+        run = (await session.execute(select(EvidenceRun))).scalar_one()
+        hot = (await session.execute(select(SymbolHotness))).scalar_one()
+        return run, hot
+
+    run, hot = _db(root, read)
+    # The test function was cut by the cap and is still counted.
+    assert run.unlisted_symbols == 1
+    assert (hot.symbol_id, hot.run_unlisted) == ("src/app.py::build", 1)
+
+
 def test_an_uppercase_commit_is_stored_lowercase(indexed) -> None:
     root, head = indexed
     result = _add(str(_write(root)), "--workload", "w", "--class", "entry_point",
@@ -205,6 +279,20 @@ def test_invalid_files_are_refused_as_json(indexed) -> None:
                   "--format", "json")
     assert result.exit_code == 1
     assert _json(result)["error"] == "invalid_evidence"
+
+
+@pytest.mark.parametrize("given", [(), ("--input-format", "pprof")])
+def test_an_empty_profile_is_named_as_such(indexed, given) -> None:
+    # A test binary that panicked leaves a zero-byte profile behind.
+    root, head = indexed
+    empty = root / "cpu.pprof"
+    empty.write_bytes(b"")
+    result = _add(str(empty), "--workload", "w", "--class", "entry_point", "--commit", head,
+                  *given, "--format", "json")
+    assert result.exit_code == 1
+    out = _json(result)
+    assert out["error"] == "invalid_evidence" and "is empty" in out["message"]
+    assert "crash" in out["remedy"] and "JSON object" not in out["message"]
 
 
 def test_entries_in_files_edited_since_the_commit_are_skipped(indexed) -> None:
