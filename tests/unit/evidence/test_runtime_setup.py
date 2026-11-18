@@ -17,6 +17,18 @@ from repowise.core.test_runners.stacks import detect_repo_stacks
 SHA = "a" * 40
 
 
+@pytest.fixture
+def registered(monkeypatch: pytest.MonkeyPatch):
+    """Register stand-in profile formats for one test; the registry is restored after."""
+    from repowise.core.evidence.profile_formats import ProfileFormat, profile_formats
+
+    def register(*names: str) -> None:
+        for name in names:
+            monkeypatch.setitem(profile_formats._impls, name, ProfileFormat(lambda _b: False, None))
+
+    return register
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
@@ -117,16 +129,37 @@ def test_uv_runs_pyinstrument_without_an_install_step(tmp_path: Path) -> None:
     assert entry["prerequisites"] == []
 
 
-def test_pytest_benchmark_ranks_above_the_test_suite_and_runs_from_the_root(tmp_path: Path) -> None:
+def test_pytest_benchmark_ranks_above_the_test_suite_and_runs_from_the_root(
+    tmp_path: Path, registered
+) -> None:
     _python(tmp_path, extra='dependencies = ["pytest-benchmark"]\n')
+    registered("pytest-benchmark")
 
     classes = [t["class"] for t in _targets(tmp_path)]
     bench = _targets(tmp_path)[1]
 
     assert classes == ["entry_point", "benchmark", "unit_test"]
-    assert bench["command"] == "pytest --benchmark-only --benchmark-json=.repowise/bench.json"
+    assert bench["command"] == "pytest --benchmark-only --benchmark-json=.repowise/pytest-bench.json"
     assert bench["cwd"] == str(tmp_path)
     assert '--class benchmark' in bench["ingest"]
+
+
+def test_a_recipe_whose_output_this_build_cannot_read_prints_no_ingest_line(tmp_path: Path) -> None:
+    _python(tmp_path, scripts="", extra='dependencies = ["pytest-benchmark"]\n')
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "app"\ndependencies = ["pytest-benchmark"]\n'
+    )
+    from repowise.core.evidence.profile_formats import profile_formats
+
+    if "pytest-benchmark" in profile_formats.names:
+        pytest.skip("this build reads pytest-benchmark files")
+
+    bench = next(t for t in _targets(tmp_path) if t["class"] == "benchmark")
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+
+    assert bench["command"] and bench["ingest"] is None
+    assert bench["reason"] == "This build of repowise does not read pytest-benchmark files yet."
+    assert "bench" not in plan["next_call"]["purpose"]
 
 
 def test_without_a_commit_nothing_can_be_ingested(tmp_path: Path) -> None:
@@ -147,8 +180,9 @@ def _go(root: Path) -> None:
     (root / "cmd" / "fx" / "main.go").write_text("package main\n\nfunc main() {}\n")
 
 
-def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path) -> None:
+def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path, registered) -> None:
     _go(tmp_path)
+    registered("pprof")
     inputs = RuntimeInputs(
         benchmarks=(("work/work_test.go", "BenchmarkCrunch"),), test_files=("work/work_test.go",)
     )
@@ -168,6 +202,24 @@ def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path) -> None
     assert '--workload "go bench ./work" --class benchmark' in bench["ingest"]
 
 
+def test_go_profiles_wait_for_a_pprof_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from repowise.core.evidence.profile_formats import profile_formats
+
+    monkeypatch.delitem(profile_formats._impls, "pprof", raising=False)
+    _go(tmp_path)
+    inputs = RuntimeInputs(
+        benchmarks=(("work/work_test.go", "BenchmarkCrunch"),), test_files=("work/work_test.go",)
+    )
+
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=inputs)
+
+    profiled = [t for t in plan["units"][0]["runtime"] if t["command"]]
+    assert profiled and all(t["ingest"] is None for t in profiled)
+    assert all(t["reason"] == "This build of repowise does not read pprof files yet." for t in profiled)
+    # Nothing it could read leads the loop: the coverage run does.
+    assert plan["next_call"]["purpose"].startswith("Run the go tests")
+
+
 def test_a_nested_unit_keeps_its_own_targets(tmp_path: Path) -> None:
     _go(tmp_path)
     (tmp_path / "go.work").write_text("go 1.22\nuse .\nuse ./tools\n")
@@ -182,7 +234,21 @@ def test_a_nested_unit_keeps_its_own_targets(tmp_path: Path) -> None:
 
     by_root = {u["root"]: [t["workload"] for t in u["runtime"]] for u in plan["units"]}
     assert by_root[""] == ["go run ./cmd/fx"]
-    assert by_root["tools"] == ["go bench .", "go test ."]
+    assert by_root["tools"] == ["tools: go bench .", "tools: go test ."]
+
+
+def test_units_never_share_a_workload_or_a_profile(tmp_path: Path) -> None:
+    for root in ("a", "b"):
+        (tmp_path / root).mkdir()
+        _python(tmp_path / root)
+    stacks = detect_repo_stacks(tmp_path)
+    assert [s.root for s in stacks] == ["a", "b"]
+    targets = [t for s in stacks for t in runtime_targets(s, tmp_path, RuntimeInputs(), SHA, (), {"", "a", "b"})]
+
+    workloads = [t["workload"] for t in targets]
+    profiles = [t["profile"] for t in targets]
+    assert len(set(workloads)) == len(workloads) == len(set(profiles))
+    assert "a: app" in workloads and "b: app" in workloads
 
 
 def test_paths_a_shell_would_misread_never_reach_a_command(tmp_path: Path) -> None:
@@ -206,6 +272,15 @@ def test_an_unknown_launcher_runs_plain_python(tmp_path: Path) -> None:
     _python(tmp_path)
     (stack,) = detect_repo_stacks(tmp_path)
 
+    launchers = {
+        "uv run --extra dev pytest": "uv run --extra dev --with pyinstrument python -c",
+        "uv run --with pytest-cov --group test -p 3.12 pytest": "uv run --group test -p 3.12 --with pyinstrument python -c",
+        "uv run --frozen pytest": "uv run --frozen --with pyinstrument python -c",
+        "poetry run --no-ansi python -m pytest": "poetry run --no-ansi python -c",
+    }
+    for test, launcher in launchers.items():
+        entry = runtime_targets(replace(stack, test=test), tmp_path, RuntimeInputs(), SHA)[0]
+        assert entry["command"].startswith(launcher), test
     for test in ("FOO=1 pytest", "cd x && pytest", "coverage run -m pytest"):
         entry = runtime_targets(replace(stack, test=test), tmp_path, RuntimeInputs(), SHA)[0]
         assert entry["command"].startswith('python -c "')
