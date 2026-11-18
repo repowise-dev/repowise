@@ -7,21 +7,24 @@ where it came from: the commit, the checkout, the workload and its class, and
 what did not map.
 
 - **What it is:** facts about this repository's own functions, from runs you or
-  your agent already make. Each stored row names one indexed function at the
-  commit that was measured.
+  your agent already make. Each profile or query-count row names one indexed
+  function at the commit that was measured; a benchmark or test row names its
+  function when it links and is kept as a series when it does not.
 - **What it is not:** a profiler or a benchmark runner. Repowise never runs your
   code to get evidence. `evidence setup` prints the commands, you or your agent
   run them, and `evidence add` reads the file they wrote.
 - **What it never guesses:** an entry that does not join exactly is skipped and
   counted by reason, and a value that was not measured is unknown, never zero.
 
-The static findings it sits beside are in [PERFORMANCE.md](PERFORMANCE.md).
+Stored evidence is read by `repowise evidence status` and `repowise evidence
+setup`. The static findings it sits beside are in
+[PERFORMANCE.md](PERFORMANCE.md).
 
 ## The loop
 
-Four commands, run from the repository root. The repository must be indexed
-first (`repowise init --yes --no-prose` needs no API key); `setup` says so when
-it is not.
+Four commands, run from the repository root. `add` needs an index. On a
+repository with none, `setup` prints the coverage plan and a `next_call` of
+`repowise init --yes --no-prose` (no API key) followed by `setup` again.
 
 ```bash
 repowise evidence setup --format json      # 1. what to run here, per build unit
@@ -42,7 +45,13 @@ not asked for again, so rerunning `setup` after each step comes to an end:
 a `reason` instead (no commit to stamp, a recipe whose output this build does not
 read, a program with no profiler flag).
 
-`repowise coverage setup` prints the same plan with the coverage part only.
+- Each unit lists up to three targets per class. A unit below the repository
+  root prefixes its workload names with its root (`tools: go bench .`), so two
+  units never share a workload.
+- A JavaScript `bin` target prints a `node --cpu-prof` command and a reason in
+  place of its ingest line, since its `.cpuprofile` output is not among the
+  formats this build reads; a TypeScript `bin` gets a reason only.
+- `repowise coverage setup` prints the same plan with the coverage part only.
 
 ### Python example
 
@@ -106,7 +115,7 @@ returns the same text with the agent's role line before it.
 repowise evidence add .repowise/app.speedscope.json --workload "app" --class entry_point --commit $(git rev-parse HEAD)
 repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
 repowise evidence add .repowise/pytest-bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
-repowise evidence add run.json --workload "nightly tests" --class unit_test --environment ci
+repowise evidence add run.json --workload "nightly tests" --class unit_test --environment ci   # a v1 file with commit_sha
 ```
 
 | Flag | What it does |
@@ -118,14 +127,17 @@ repowise evidence add run.json --workload "nightly tests" --class unit_test --en
 | `--dirty` / `--clean` | Whether the tree had uncommitted changes. Default: the file's `dirty`, else the working tree when `--commit` is HEAD. |
 | `--environment` | Where it ran, one word of up to 32 characters (`local`, `ci`). Default `unknown`. |
 | `--input-format` | Read the file as this format instead of detecting it from the content. |
-| `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled, when its format does not say. |
+| `--value-kind` | `cpu` or `wall`: the clock a converted profile sampled, when its format does not say. For a v1 file, leave it out or pass the file's own `value_kind`. |
 | `--allow-partial` | Store a profile or query-count run even when more than half its entries did not map (flagged partial). |
 | `--format json` | The full result as JSON. |
 
-It exits 1 when nothing was stored (`reason`: `no_index`, `mostly_unmapped`,
-`nothing_matched`) and 2 on a usage error. The text output names what was
+It exits 1 when nothing was stored and 2 on a usage error. A run that reads
+but does not store has `stored: false` and a `reason` (`no_index`,
+`mostly_unmapped`, `nothing_matched`); a file refused before it is read
+(`file_too_large`, `invalid_evidence`) prints an `error`, `message` and
+`remedy` instead. The text output names what was
 stored, what was skipped by reason and whether the run reads as stale. The JSON
-result carries `kind`, `workload`, `class`, `commit_sha`, `index_commit`,
+result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `index_commit`,
 `stale`, `dirty`, `entries`, `matched`, `skipped`, `unlinked`, `mapping_partial`,
 `unmatched_sample`, `input_format`, `conversion` (for a converted profile:
 `total`, `unit`, `explained_share`, `skip_rate`, `skipped_share_by_reason`,
@@ -255,8 +267,8 @@ they are joined.
 
 ## How entries join to code
 
-Every entry ends as a row for exactly one indexed function, or as a count under
-a reason. Nothing is matched by path suffix.
+A profile or query-count entry ends as a row for exactly one indexed function,
+or as a count under a reason. Nothing is matched by path suffix.
 
 **v1 entries** name their function. The join is an exact lookup: the qualified
 name or the id after the file first, a bare name only when the file declares
@@ -290,7 +302,8 @@ benchmark or test keeps its row without its function and is counted under
 - **Inclusive and self.** Each function gets inclusive time (every stack it is
   on, once per stack even when it recurses) and self time (stacks where it is
   the innermost repo frame; built-ins and dependencies below it count as its
-  own). A stack whose innermost repo frame was skipped charges no self time.
+  own). A stack whose innermost repo frame was skipped charges no function;
+  its self time is reported under `self_unattributed` by that skip reason.
 - **Explained share.** `explained` is the weight of stacks with a resolved
   frame in production code (`code_origin`). `add` prints it beside the skip
   rate, the share of repo frame time that did not join, broken down by reason.
@@ -333,10 +346,11 @@ Evidence lives in the local index (`evidence_runs` and one table per kind:
 |---|---|
 | Per run: workload name, class, environment, tool name and version, commit, dirty flag, checkout root, entry counts by outcome, skip reasons, up to 10 repo-relative paths that did not map, total and explained value | Raw stacks or samples |
 | Per function: symbol id, start line, self and inclusive value, sample counts, call count when a tracer gave one | Frames outside the checkout, labels, environment variables, command lines |
-| Per benchmark: its name and the statistics the tool gave | Machine details, benchmark parameters, `extra_info` |
+| Per benchmark: its name, unit, `lower_is_better` and the statistics the tool gave | Machine details, benchmark parameters, `extra_info` |
+| Per test: test id, test file, duration, outcome | |
 | Per query site: scope, digest of the normalized statement, counts | Statement text |
 
-Paths are repo-relative. Retention is by kind: each workload and environment
+Entry paths are repo-relative; the checkout root is stored as given. Retention is by kind: each workload and environment
 keeps its newest `history_runs` runs, and the kind keeps `max_runs` overall,
 oldest first, though every workload always keeps its newest run.
 
