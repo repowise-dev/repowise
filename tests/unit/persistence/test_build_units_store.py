@@ -12,7 +12,7 @@ import pytest
 from alembic import command
 from sqlalchemy import func, select
 
-from repowise.core.build_units import BuildUnit, BuildUnitIndex
+from repowise.core.build_units import BuildUnit, BuildUnitIndex, collect
 from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.models import FileInfo, ParsedFile
 from repowise.core.persistence.crud import load_build_units, replace_build_units
@@ -33,16 +33,18 @@ _REPO = {
     "Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n',
     "crates/c/Cargo.toml": '[package]\nname = "c"\n',
     "crates/c/src/lib.rs": "pub fn c() {}\n",
+    "crates/d/Cargo.toml": '[package]\nname = "d"\n[dependencies]\nc = { path = "../c" }\n',
+    "crates/d/src/lib.rs": "pub fn d() {}\n",
 }
 
 
-def _builder(root: Path) -> GraphBuilder:
-    """A graph built over *root*'s files, which collects their build units."""
-    for rel, text in _REPO.items():
+def _builder(root: Path, files: dict[str, str] = _REPO) -> GraphBuilder:
+    """A graph built over *files* written to *root*, which collects their build units."""
+    for rel, text in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
         (root / rel).write_text(text, encoding="utf-8")
     builder = GraphBuilder(repo_path=root)
-    for rel in _REPO:
+    for rel in files:
         if rel.endswith((".js", ".rs")):
             language = "javascript" if rel.endswith(".js") else "rust"
             info = FileInfo(
@@ -86,6 +88,81 @@ async def test_read_back_equals_the_collected_index(tmp_path: Path, async_sessio
 
     rehydrated = GraphBuilder.from_persisted([], [], build_units=stored)
     assert rehydrated.build_units == builder.build_units
+
+
+def _failing(monkeypatch, ecosystem: str) -> None:
+    """Make *ecosystem*'s reader raise on the next collection."""
+    def broken(ctx):
+        raise RuntimeError("unreadable manifest")
+
+    adapters = tuple(
+        (name, broken if name == ecosystem else adapter) for name, adapter in collect._ADAPTERS
+    )
+    monkeypatch.setattr(collect, "_ADAPTERS", adapters)
+
+
+async def test_a_failed_reader_keeps_its_stored_rows_while_the_others_update(
+    tmp_path: Path, async_session, monkeypatch
+) -> None:
+    repo = await insert_repo(async_session)
+    first = _builder(tmp_path)
+    await persist_build_units(async_session, repo.id, first)
+    stored_cargo = {
+        uid: unit for uid, unit in first.build_units.units.items() if unit.ecosystem == "cargo"
+    }
+    assert stored_cargo["cargo:d"].deps == ("cargo:c",)
+
+    # The update adds an npm member while the Cargo reader fails.
+    grown = {
+        **_REPO,
+        "packages/e/package.json": json.dumps({"name": "@x/e", "dependencies": {"@x/b": "*"}}),
+        "packages/e/index.js": "export const e = 1;\n",
+    }
+    with monkeypatch.context() as patch:
+        _failing(patch, "cargo")
+        partial = _builder(tmp_path, grown)
+    assert partial.build_units.failed_ecosystems == {"cargo"}
+    # The fallback stands in at the crate roots.
+    assert {"manifest:crates/c", "manifest:crates/d"} <= set(partial.build_units.units)
+    await persist_build_units(async_session, repo.id, partial)
+    await async_session.commit()
+
+    stored = await load_build_units(async_session, repo.id)
+    assert {uid: u for uid, u in stored.units.items() if u.ecosystem == "cargo"} == stored_cargo
+    assert not [uid for uid in stored.units if uid.startswith("manifest:crates/")]
+    assert stored.file_owners["crates/d/src/lib.rs"] == ("cargo:d",)
+    assert stored.unit("npm:@x/e").deps == ("npm:@x/b",)
+    assert stored.file_owners["packages/e/index.js"] == ("npm:@x/e",)
+
+    # A clean run replaces the kept rows: crate d is gone.
+    clean = {k: v for k, v in grown.items() if not k.startswith("crates/d/")}
+    for rel in ("crates/d/Cargo.toml", "crates/d/src/lib.rs"):
+        (tmp_path / rel).unlink()
+    healed = _builder(tmp_path, clean)
+    assert healed.build_units.failed_ecosystems == frozenset()
+    await persist_build_units(async_session, repo.id, healed)
+    await async_session.commit()
+    assert await load_build_units(async_session, repo.id) == healed.build_units
+    assert "cargo:d" not in healed.build_units.units
+
+
+async def test_a_kept_file_row_goes_when_its_file_is_deleted(async_session) -> None:
+    repo = await insert_repo(async_session)
+    crate = BuildUnit("cargo:c", "cargo", "c", "c", "c/Cargo.toml", "cargo")
+    await replace_build_units(
+        async_session, repo.id, _index(crate, _A, owners={"c/x.rs": ("cargo:c",), "c/y.rs": ("cargo:c",)})
+    )
+    fallback = BuildUnit("manifest:c", "manifest", "c", "c", "c/Cargo.toml", "manifest-root")
+    partial = BuildUnitIndex(
+        units={u.id: u for u in (_A, fallback)},
+        file_owners={"c/x.rs": ("manifest:c",), "a/z.js": ("npm:a",)},
+        failed_ecosystems=frozenset({"cargo"}),
+    )
+    assert await replace_build_units(async_session, repo.id, partial) == 2
+    await async_session.commit()
+    assert await load_build_units(async_session, repo.id) == _index(
+        crate, _A, owners={"c/x.rs": ("cargo:c",), "a/z.js": ("npm:a",)}
+    )
 
 
 def _index(*units: BuildUnit, owners: dict[str, tuple[str, ...]]) -> BuildUnitIndex:

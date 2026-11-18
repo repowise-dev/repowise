@@ -2,12 +2,14 @@
 
 A repository's units are written whole by every run that collected them and
 read back into the same :class:`BuildUnitIndex`, so no reader re-reads a
-manifest.
+manifest. An ecosystem whose reader failed keeps the rows it already had.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import delete, insert, select
+from collections.abc import Collection
+
+from sqlalchemy import Select, and_, delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...build_units import BuildUnit, BuildUnitIndex
@@ -24,7 +26,13 @@ async def replace_build_units(
 
     One delete per table, then bulk inserts, so a file or unit the index no
     longer has (a deleted file, a removed workspace member) leaves no row.
+    The stored rows of each of ``index.failed_ecosystems`` are kept instead
+    (:func:`_keep_failed`), so one broken reader never empties its ecosystem.
     """
+    if index.failed_ecosystems:
+        index = _keep_failed(
+            index, await _read(session, repository_id, index.failed_ecosystems)
+        )
     units = [
         {
             "repository_id": repository_id,
@@ -60,14 +68,52 @@ async def replace_build_units(
     return len(units)
 
 
+def _keep_failed(fresh: BuildUnitIndex, kept: BuildUnitIndex) -> BuildUnitIndex:
+    """*fresh* with the stored units of its failed ecosystems, *kept*, put back.
+
+    A failed reader left its manifests undecided, so the manifest fallback may
+    have given their roots ``manifest:`` units: one at the root of a kept unit
+    stands in for it and is dropped, with the fresh units of a failed
+    ecosystem (a reader that failed produced none). A kept unit keeps its
+    stored deps. A kept file row stays only while *fresh* still owns the path,
+    so a deleted file leaves no row; a path *fresh* gave only to a dropped
+    unit goes back to its kept owners.
+    """
+    kept_roots = {unit.root for unit in kept.units.values()}
+    dropped = {
+        uid
+        for uid, unit in fresh.units.items()
+        if unit.ecosystem in fresh.failed_ecosystems
+        or uid in kept.units
+        or (unit.ecosystem == "manifest" and unit.root in kept_roots)
+    }
+    units = {uid: unit for uid, unit in fresh.units.items() if uid not in dropped}
+    units.update(kept.units)
+    owners: dict[str, tuple[str, ...]] = {}
+    for path, ids in fresh.file_owners.items():
+        merged = tuple(uid for uid in ids if uid not in dropped) + kept.file_owners.get(path, ())
+        if merged:
+            owners[path] = merged
+    return BuildUnitIndex(units=units, file_owners=owners)
+
+
 async def load_build_units(session: AsyncSession, repository_id: str) -> BuildUnitIndex:
     """The repository's stored units as a :class:`BuildUnitIndex`; empty when none are stored."""
+    return await _read(session, repository_id)
+
+
+async def _read(
+    session: AsyncSession, repository_id: str, ecosystems: Collection[str] | None = None
+) -> BuildUnitIndex:
+    """The stored units of *repository_id*, only those of *ecosystems* when given."""
+    unit_filter = BuildUnitRow.repository_id == repository_id
+    if ecosystems is not None:
+        unit_filter = and_(unit_filter, BuildUnitRow.ecosystem.in_(sorted(ecosystems)))
     deps: dict[str, list[str]] = {}
-    for unit_id, dep in await session.execute(
-        select(BuildUnitDep.unit_id, BuildUnitDep.dep_unit_id).where(
-            BuildUnitDep.repository_id == repository_id
-        )
-    ):
+    dep_rows = select(BuildUnitDep.unit_id, BuildUnitDep.dep_unit_id).where(
+        BuildUnitDep.repository_id == repository_id
+    )
+    for unit_id, dep in await session.execute(_kept(dep_rows, BuildUnitDep, ecosystems)):
         deps.setdefault(unit_id, []).append(dep)
     units = {
         row.unit_id: BuildUnit(
@@ -87,17 +133,29 @@ async def load_build_units(session: AsyncSession, repository_id: str) -> BuildUn
                 BuildUnitRow.root,
                 BuildUnitRow.manifest,
                 BuildUnitRow.source,
-            ).where(BuildUnitRow.repository_id == repository_id)
+            ).where(unit_filter)
         )
     }
     owners: dict[str, list[str]] = {}
-    for path, unit_id in await session.execute(
-        select(BuildUnitFile.path, BuildUnitFile.unit_id).where(
-            BuildUnitFile.repository_id == repository_id
-        )
-    ):
+    file_rows = select(BuildUnitFile.path, BuildUnitFile.unit_id).where(
+        BuildUnitFile.repository_id == repository_id
+    )
+    for path, unit_id in await session.execute(_kept(file_rows, BuildUnitFile, ecosystems)):
         owners.setdefault(path, []).append(unit_id)
     return BuildUnitIndex(units=units, file_owners={p: tuple(ids) for p, ids in owners.items()})
+
+
+def _kept(stmt: Select, model: type, ecosystems: Collection[str] | None) -> Select:
+    """*stmt* over *model*'s rows, limited to units of *ecosystems* when given."""
+    if ecosystems is None:
+        return stmt
+    return stmt.join(
+        BuildUnitRow,
+        and_(
+            BuildUnitRow.repository_id == model.repository_id,
+            BuildUnitRow.unit_id == model.unit_id,
+        ),
+    ).where(BuildUnitRow.ecosystem.in_(sorted(ecosystems)))
 
 
 __all__ = ["load_build_units", "replace_build_units"]
