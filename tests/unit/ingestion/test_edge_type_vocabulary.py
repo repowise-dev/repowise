@@ -43,8 +43,8 @@ import re
 import pytest
 
 from repowise.core.ingestion.models import EDGE_TYPE_VALUES
-
-_PACKAGES = pathlib.Path(__file__).resolve().parents[3] / "packages"
+from tests.unit._source_tree import PACKAGES as _PACKAGES
+from tests.unit._source_tree import SourceFile, python_sources
 
 # Call sites that build the edge type instead of naming it. Each needs the
 # reason it cannot be a literal, because "it's computed" is also what a call
@@ -86,24 +86,21 @@ _OTHER_GRAPHS: frozenset[str] = frozenset(
 )
 
 
-def _python_files() -> list[pathlib.Path]:
-    return [p for p in _PACKAGES.rglob("*.py") if "node_modules" not in p.parts]
-
-
-def _rel(path: pathlib.Path) -> str:
-    return path.relative_to(_PACKAGES.parents[0]).as_posix()
+def _parsed() -> list[SourceFile]:
+    """The parseable package sources outside ``node_modules``."""
+    return [
+        src
+        for src in python_sources()
+        if src.tree is not None and "node_modules" not in src.path.parts
+    ]
 
 
 def _edge_type_literals() -> dict[str, set[str]]:
     """Map of repo-relative path -> literal `edge_type=` values it passes to add_edge."""
     found: dict[str, set[str]] = {}
-    for path in _python_files():
-        rel = _rel(path)
+    for src in _parsed():
+        rel, tree = src.rel, src.tree
         if rel in _OTHER_GRAPHS or rel in _COMPUTED:
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
             continue
         for node in ast.walk(tree):
             # `graph.add_edge(u, v, edge_type="imports")`
@@ -136,12 +133,8 @@ def _is_str_constant(node: ast.expr) -> bool:
 def _edge_type_set_members() -> dict[str, set[str]]:
     """Map of `path::CONSTANT_NAME` -> string members of every *_EDGE_TYPES collection."""
     found: dict[str, set[str]] = {}
-    for path in _python_files():
-        rel = _rel(path)
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
-            continue
+    for src in _parsed():
+        rel, tree = src.rel, src.tree
         for node in ast.walk(tree):
             targets: list[ast.expr] = []
             if isinstance(node, ast.Assign):
@@ -292,12 +285,8 @@ def _alias_targets() -> dict[str, tuple[str, set[str]]]:
     directions of the check.
     """
     found: dict[str, tuple[str, set[str]]] = {}
-    for path in _python_files():
-        rel = _rel(path)
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
-            continue
+    for src in _parsed():
+        rel, tree = src.rel, src.tree
         from_models = {
             alias.asname or alias.name
             for node in ast.walk(tree)
@@ -352,11 +341,8 @@ def _resolved_call_origins() -> dict[str, set[float]]:
     passes a variable and the literal only ever exists at the resolver.
     """
     found: dict[str, set[float]] = {}
-    for path in _python_files():
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):
-            continue
+    for src in _parsed():
+        tree = src.tree
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
