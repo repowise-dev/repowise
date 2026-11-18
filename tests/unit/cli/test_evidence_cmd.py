@@ -281,6 +281,20 @@ def test_invalid_files_are_refused_as_json(indexed) -> None:
     assert _json(result)["error"] == "invalid_evidence"
 
 
+@pytest.mark.parametrize("given", [(), ("--input-format", "pprof")])
+def test_an_empty_profile_is_named_as_such(indexed, given) -> None:
+    # A test binary that panicked leaves a zero-byte profile behind.
+    root, head = indexed
+    empty = root / "cpu.pprof"
+    empty.write_bytes(b"")
+    result = _add(str(empty), "--workload", "w", "--class", "entry_point", "--commit", head,
+                  *given, "--format", "json")
+    assert result.exit_code == 1
+    out = _json(result)
+    assert out["error"] == "invalid_evidence" and "is empty" in out["message"]
+    assert "crash" in out["remedy"] and "JSON object" not in out["message"]
+
+
 def test_entries_in_files_edited_since_the_commit_are_skipped(indexed) -> None:
     root, head = indexed
     (root / "src" / "edited.py").write_text("def f():\n    return 1\n")
