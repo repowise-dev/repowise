@@ -214,9 +214,10 @@ async def _incremental_repo_update(
         file_diffs, working_tree_paths = await asyncio.to_thread(
             _changed_file_diffs, repo_path, state, base_ref, include_working_tree, merged_excludes
         )
-    if not file_diffs and not force_full_git:
+    if not file_diffs and not force_full_git and not rescore_health:
         # Nothing the index cares about changed: report success so the caller
-        # bumps ``last_sync_commit`` instead of re-diffing forever.
+        # bumps ``last_sync_commit`` instead of re-diffing forever. A re-score
+        # still runs: it is owed for every file, changed or not.
         return RepoUpdateResult(alias=alias, updated=True, working_tree_paths=working_tree_paths)
 
     # A moved or copied checkout's store still names the old path; adopt its

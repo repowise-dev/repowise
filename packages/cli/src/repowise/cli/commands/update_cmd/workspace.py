@@ -269,8 +269,11 @@ def _repo_staleness(
         status = "[yellow]config changed[/yellow]"
     elif dirty:
         status = "[yellow]uncommitted changes[/yellow]"
-    elif is_stale:
+    elif behind:
         status = f"[yellow]{behind} new commit(s)[/yellow]"
+    elif is_stale:
+        # HEAD unmoved: a moved version stamp or a stale page owes the work.
+        status = "[yellow]stale[/yellow]"
     else:
         status = "[green]up to date[/green]"
     return _RepoStaleness(indexed, is_stale, head, status, repo_state)
