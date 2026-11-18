@@ -148,7 +148,7 @@ class _Profile:
         _refuse_trimmed_paths(frames)
         return ProfileRun(
             frames=tuple(frames),
-            stacks=tally.stacks(counted=count_at is not None),
+            stacks=tally.stacks(),
             unit=_UNITS[unit],
             value_kind=kind,
         )
