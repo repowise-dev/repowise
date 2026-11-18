@@ -73,16 +73,18 @@ def is_test_project_csproj(text: str) -> bool | None:
     except (ET.ParseError, ValueError):
         return None
 
-    explicit_is_test: bool | None = None
+    explicit_is_test: bool | None = (
+        True if "mstest.sdk" in (root.get("Sdk") or "").lower() else None
+    )
     has_test_package = False
 
     for elem in root.iter():
         local_tag = elem.tag.split("}")[-1].lower()
         if local_tag == "istestproject":
             val = (elem.text or "").strip().lower()
-            if val == "true":
+            if val in ("true", "enable", "1"):
                 explicit_is_test = True
-            elif val == "false":
+            elif val in ("false", "disable", "0"):
                 explicit_is_test = False
         elif local_tag in ("packagereference", "packageversion"):
             for attr_name, attr_val in elem.attrib.items():

@@ -69,9 +69,11 @@ class MSBuildProject:
     #: same as an explicit <IsPackable>false</IsPackable>.
     is_packable: bool | None = None
     generate_package_on_build: bool = False
-    #: A literal ``<IsTestProject>true</IsTestProject>`` outside any
-    #: ``Condition``, or the MSTest SDK, which sets it.
-    is_test_project: bool = False
+    #: Tri-state: True = explicitly set or MSTest SDK; False = explicitly set
+    #: false; None = not set by the project (the default).  Using None as the
+    #: default lets callers distinguish "explicitly opted out" from "silent",
+    #: so a referenced test package can be overridden by IsTestProject=false.
+    is_test_project: bool | None = None
     #: The ``package_references`` declared outside any ``Condition``: a shared
     #: build file that adds test packages only ``Condition="'$(IsTestProject)'
     #: == 'true'"`` does not make every project below it a test project.
@@ -150,7 +152,7 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
 
     project = MSBuildProject(path=csproj_path.resolve(), project_dir=csproj_path.parent.resolve())
     root = tree.getroot()
-    project.is_test_project = "mstest.sdk" in (root.get("Sdk") or "").lower()
+    project.is_test_project = True if "mstest.sdk" in (root.get("Sdk") or "").lower() else None
     conditioned = _conditioned(root)
 
     for elem in root.iter():
@@ -172,7 +174,9 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
         elif tag == "GeneratePackageOnBuild" and elem.text:
             project.generate_package_on_build = _bool(elem.text)
         elif tag == "IsTestProject" and elem.text and id(elem) not in conditioned:
-            project.is_test_project = _bool(elem.text)
+            test_proj = _tristate(elem.text)
+            if test_proj is not None:
+                project.is_test_project = test_proj
         elif tag == "ProjectReference":
             include = elem.get("Include")
             if include:

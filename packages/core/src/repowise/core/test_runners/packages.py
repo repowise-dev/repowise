@@ -171,8 +171,10 @@ _SHARED_BUILD_FILES = ("Directory.Build.props", "Directory.Build.targets")
 _TEST_PROJECT_NAME = re.compile(r"(Tests|\.Test|\.Specs)$", re.IGNORECASE)
 
 
-def _declares_tests(is_test_project: bool, packages: Iterable[str]) -> bool:
-    return is_test_project or not _TEST_PACKAGES.isdisjoint(p.lower() for p in packages)
+def _declares_tests(is_test_project: bool | None, packages: Iterable[str]) -> bool:
+    if is_test_project is False:
+        return False
+    return bool(is_test_project) or not _TEST_PACKAGES.isdisjoint(p.lower() for p in packages)
 
 
 def _shared_declares_tests(root: Path, directory: str, seen: dict[str, bool]) -> bool:
@@ -197,6 +199,8 @@ def _declared_test_project(
 ) -> bool:
     """Whether *project* (*parsed*) says it runs tests, itself or through a
     shared build file on its path from the repository root."""
+    if parsed.is_test_project is False:
+        return False
     if _declares_tests(parsed.is_test_project, parsed.package_references):
         return True
     parts = project.split("/")[:-1]

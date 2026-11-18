@@ -260,3 +260,21 @@ def test_a_project_named_for_tests_runs_its_own_files_only(tmp_path: Path) -> No
         # The name vouches only for the project's own files, not a library it uses.
         "tests/Helpers/FakeClock.cs": None,
     }
+
+
+def test_explicit_is_test_project_false_wins_over_test_package_for_runner(tmp_path: Path) -> None:
+    """An explicit IsTestProject=false prevents the runner from treating it as a test project."""
+    project = tmp_path / "src/Sample/Sample.csproj"
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        "  <PropertyGroup>\n"
+        "    <IsTestProject>false</IsTestProject>\n"
+        "  </PropertyGroup>\n"
+        "  <ItemGroup>\n"
+        '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {"src/Sample/SampleTests.cs": None}

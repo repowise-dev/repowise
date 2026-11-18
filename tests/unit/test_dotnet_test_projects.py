@@ -9,6 +9,7 @@ from repowise.core.dotnet_test_projects import (
     is_test_project_csproj,
     read_dotnet_test_projects,
 )
+from repowise.core.test_runners.packages import _declares_tests
 
 
 @pytest.mark.parametrize(
@@ -299,8 +300,9 @@ def test_xunit_v3_only_project_collects_as_test() -> None:
 
 
 def test_xunit_v3_only_is_test_project_csproj_agrees() -> None:
-    """is_test_project_csproj and read_dotnet_test_projects agree on xunit.v3-only."""
+    """is_test_project_csproj and runner _declares_tests agree on xunit.v3-only."""
     assert is_test_project_csproj(_XUNIT_V3_CSPROJ) is True
+    assert _declares_tests(None, ["xunit.v3"]) is True
     projects = read_dotnet_test_projects(
         [("tests/Shop.Tests/Shop.Tests.csproj", _XUNIT_V3_CSPROJ)]
     )
@@ -315,6 +317,7 @@ def test_name_only_project_does_not_collect_via_csproj_alone() -> None:
     relies solely on the csproj verdict.
     """
     assert is_test_project_csproj(_NAME_ONLY_CSPROJ) is False
+    assert _declares_tests(None, []) is False
     projects = read_dotnet_test_projects(
         [("tests/Shop.Tests/Shop.Tests.csproj", _NAME_ONLY_CSPROJ)]
     )
@@ -322,8 +325,10 @@ def test_name_only_project_does_not_collect_via_csproj_alone() -> None:
 
 
 def test_explicit_is_test_project_false_wins_over_xunit_v3() -> None:
-    """IsTestProject=false wins even when xunit.v3 is referenced."""
+    """IsTestProject=false wins even when xunit.v3 is referenced, for both traverser and runner."""
     assert is_test_project_csproj(_EXPLICIT_FALSE_CSPROJ) is False
+    assert _declares_tests(False, ["xunit.v3"]) is False
+    assert _declares_tests(False, ["microsoft.net.test.sdk"]) is False
     projects = read_dotnet_test_projects(
         [("tests/Shop.Tests/Shop.Tests.csproj", _EXPLICIT_FALSE_CSPROJ)]
     )
