@@ -255,8 +255,8 @@ def _refusal(status: int, body: dict[str, Any], repo: str) -> dict[str, Any]:
     if code == "bot_config_locked":
         return _error(
             "locked",
-            f"{detail} An admin of the organization changes it at "
-            "https://repowise.dev/settings/bot",
+            (detail or "Locked by the organization's bot policy.")
+            + " An admin of the organization changes it at https://repowise.dev/settings/bot",
         )
     if status == 402:
         return _error(

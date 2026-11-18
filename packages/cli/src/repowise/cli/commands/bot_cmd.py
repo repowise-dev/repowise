@@ -81,10 +81,11 @@ def bot_status(repo_slug: str | None, fmt: str) -> None:
                 status, tier, reason, check_url}, coverage_received
       plan, effective_tier, coverage
       steps     the bot and coverage setup steps
-      next      {code, who, action, url}, or null when nothing is left
+      next      {code, who, action, url, optional}, or null when nothing
+                is left
       complete  true once PR reviews are on
     """
-    repo = _require_repo(repo_slug)
+    repo = _require_repo(repo_slug, fmt)
     payload, error = bot_state(repo)
     if fmt == "json":
         emit_json(payload)
@@ -116,10 +117,31 @@ def bot_ai(state: str, depth: str | None, repo_slug: str | None, fmt: str) -> No
     """
     if depth and state == "off":
         raise click.UsageError("--depth goes with 'repowise bot ai on'.")
-    repo = _require_repo(repo_slug)
+    repo = _require_repo(repo_slug, fmt)
     config = {"review_mode": "ai" if state == "on" else "signals"}
     if depth:
         config["review_depth"] = depth
+    result, status = _set_review_mode(repo, config)
+    if result.get("ok"):
+        result["message"] = f"AI review is {state} for {repo}."
+    if fmt == "json":
+        emit_json(result)
+    else:
+        console.print(escape(result["message"]))
+        if status:
+            render_status(status)
+    code = exit_code(status, None) if result.get("ok") and status else 0
+    if not result.get("ok"):
+        code = exit_code(result, result.get("error"))
+    if code:
+        raise SystemExit(code)
+
+
+def _set_review_mode(
+    repo: str, config: dict[str, str]
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Patch the repo's review mode; the outcome, with the state read after it
+    as ``status`` (None when the state cannot be read)."""
     result = run_bot_action(
         repo,
         method="PATCH",
@@ -130,29 +152,20 @@ def bot_ai(state: str, depth: str | None, repo_slug: str | None, fmt: str) -> No
     if result.get("error") not in ("signed_out", "offline", "unsupported"):
         read, read_error = bot_state(repo)
         status = None if read_error else read
-    if result.get("ok"):
-        result["message"] = f"AI review is {state} for {repo}."
-        code = exit_code(status, None) if status else 0
-    else:
-        code = exit_code(result, result.get("error"))
     result["status"] = status
-    if fmt == "json":
-        emit_json(result)
-    else:
-        console.print(escape(result["message"]))
-        if status:
-            render_status(status)
-    if code:
-        raise SystemExit(code)
+    return result, status
 
 
-def _require_repo(repo_slug: str | None) -> str:
+def _require_repo(repo_slug: str | None, fmt: str) -> str:
+    """The repo to act on; with none, a usage error (one JSON object under json)."""
     repo = _repo_param(repo_slug)
-    if repo is None:
-        raise click.UsageError(
-            "This checkout has no GitHub 'origin' remote. Pass --repo owner/name."
-        )
-    return repo
+    if repo is not None:
+        return repo
+    message = "This checkout has no GitHub 'origin' remote. Pass --repo owner/name."
+    if fmt == "json":
+        emit_json({"repo": None, "error": "no_repo", "message": message})
+        raise SystemExit(1)
+    raise click.UsageError(message)
 
 
 def bot_state(repo: str) -> tuple[dict[str, Any], str | None]:
@@ -167,7 +180,7 @@ def bot_state(repo: str) -> tuple[dict[str, Any], str | None]:
         for step in payload.get("steps") or []
         if isinstance(step, dict) and step.get("id") in _BOT_STEPS
     ]
-    bot = payload.get("bot") if isinstance(payload.get("bot"), dict) else {}
+    bot = _dict(payload.get("bot"))
     state: dict[str, Any] = {
         "repo": repo,
         "account": payload.get("account"),
@@ -179,9 +192,13 @@ def bot_state(repo: str) -> tuple[dict[str, Any], str | None]:
         "next": _next(steps),
         "complete": bool(steps) and all(s.get("done") for s in steps if not s.get("optional")),
     }
-    if "code" not in bot:
+    if steps and "code" not in bot:
         state["note"] = _OLDER_SERVER
     return state, None
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _open(step: dict[str, Any]) -> bool:
@@ -189,52 +206,67 @@ def _open(step: dict[str, Any]) -> bool:
 
 
 def _next(steps: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The first open bot step, required before optional, as ``{code, who, action, url}``."""
+    """The first open bot step, required before optional, as
+    ``{code, who, action, url, optional}``."""
     open_steps = sorted((s for s in steps if _open(s)), key=lambda s: bool(s.get("optional")))
     if not open_steps:
         return None
     step = open_steps[0]
-    return {key: step.get(key) for key in ("code", "who", "action", "url")}
+    return {key: step.get(key) for key in ("code", "who", "action", "url")} | {
+        "optional": bool(step.get("optional"))
+    }
 
 
 def exit_code(payload: dict[str, Any], error: str | None) -> int:
-    """3 when a person acts next, 1 on any other error, else 0."""
+    """3 when a person has to act before the bot works as asked, 1 on any other
+    error, else 0. An optional person's step (merging the coverage PR) is named
+    in ``next`` but does not hold an agent up."""
     if error is not None:
         return EXIT_NEEDS_HUMAN if error in _HUMAN_CODES else 1
-    step = payload.get("next")
-    return EXIT_NEEDS_HUMAN if isinstance(step, dict) and step.get("who") == "human" else 0
+    step = _dict(payload.get("next"))
+    return EXIT_NEEDS_HUMAN if step.get("who") == "human" and not step.get("optional") else 0
 
 
 def _dollars(cents: Any) -> str:
     return f"${cents / 100:.2f}" if isinstance(cents, int | float) else "?"
 
 
-def _rows(state: dict[str, Any]) -> list[tuple[str, str]]:
-    """The state as label and value pairs; what the server left out is skipped."""
-    bot = state.get("bot") or {}
-    install = "not installed"
-    if bot.get("installed"):
-        install = "installed, not claimed" if bot.get("unclaimed") else "installed, claimed"
-    rows = [("Install", install)]
-    if bot.get("installed"):
-        rows.append(("Reviews", "on" if bot.get("enabled") else "off"))
-    ai = bot.get("ai") if isinstance(bot.get("ai"), dict) else None
-    if ai:
-        value = f"{'on' if ai.get('on') else 'off'} ({ai.get('code')})"
-        if ai.get("depth"):
-            value += f", depth {ai['depth']}"
-        rows.append(("AI review", value))
-    rows.append(("Plan", str(state.get("effective_tier") or "unknown")))
-    credit = bot.get("credit") if isinstance(bot.get("credit"), dict) else None
-    if credit:
-        value = f"{_dollars(credit.get('balance_cents'))} left"
-        if credit.get("cap_cents") is not None:
-            value += (
-                f", {_dollars(credit.get('spent_this_month_cents'))} of "
-                f"{_dollars(credit['cap_cents'])} monthly limit spent"
-            )
-        rows.append(("Credit", value))
-    last = bot.get("last_review") if isinstance(bot.get("last_review"), dict) else None
+def _install_rows(bot: dict[str, Any]) -> list[tuple[str, str]]:
+    if not bot.get("installed"):
+        return [("Install", "not installed")]
+    claim = "not claimed" if bot.get("unclaimed") else "claimed"
+    return [
+        ("Install", f"installed, {claim}"),
+        ("Reviews", "on" if bot.get("enabled") else "off"),
+    ]
+
+
+def _ai_rows(bot: dict[str, Any]) -> list[tuple[str, str]]:
+    ai = _dict(bot.get("ai"))
+    if not ai:
+        return []
+    value = f"{'on' if ai.get('on') else 'off'} ({ai.get('code')})"
+    if ai.get("depth"):
+        value += f", depth {ai['depth']}"
+    return [("AI review", value)]
+
+
+def _credit_rows(bot: dict[str, Any]) -> list[tuple[str, str]]:
+    credit = _dict(bot.get("credit"))
+    if not credit:
+        return []
+    value = f"{_dollars(credit.get('balance_cents'))} left"
+    if credit.get("cap_cents") is not None:
+        value += (
+            f", {_dollars(credit.get('spent_this_month_cents'))} of "
+            f"{_dollars(credit['cap_cents'])} monthly limit spent"
+        )
+    return [("Credit", value)]
+
+
+def _review_rows(bot: dict[str, Any]) -> list[tuple[str, str]]:
+    rows = []
+    last = _dict(bot.get("last_review"))
     if last:
         value = f"PR #{last.get('pr_number')}: {last.get('status')} ({last.get('tier')})"
         if last.get("check_url"):
@@ -242,6 +274,19 @@ def _rows(state: dict[str, Any]) -> list[tuple[str, str]]:
         rows.append(("Last review", value))
     if "coverage_received" in bot:
         rows.append(("Coverage", "received" if bot["coverage_received"] else "not received"))
+    return rows
+
+
+def _rows(state: dict[str, Any]) -> list[tuple[str, str]]:
+    """The state as label and value pairs; what the server left out is skipped."""
+    bot = _dict(state.get("bot"))
+    rows = [
+        *_install_rows(bot),
+        *_ai_rows(bot),
+        ("Plan", str(state.get("effective_tier") or "unknown")),
+        *_credit_rows(bot),
+        *_review_rows(bot),
+    ]
     return [(label, escape(value)) for label, value in rows]
 
 

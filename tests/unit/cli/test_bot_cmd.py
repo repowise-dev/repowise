@@ -170,6 +170,7 @@ def test_status_exits_3_with_the_claim_link_when_a_person_acts_next(server) -> N
         "who": "human",
         "action": "Open this link and confirm the Repowise PR bot install.",
         "url": CLAIM_URL,
+        "optional": False,
     }
     assert payload["complete"] is False
 
@@ -196,6 +197,21 @@ def test_a_required_step_comes_before_an_optional_one(server) -> None:
     server["answer"] = (200, _setup(None, coverage, enable))
     code, payload = _json("status", "--repo", "acme/api")
     assert payload["next"]["code"] == "ready_to_enable" and code == 0
+
+
+def test_an_optional_person_step_is_named_but_does_not_hold_an_agent(server) -> None:
+    merge = {**COVERAGE_STEP, "code": "setup_pr_open", "done": False, "who": "human"}
+    server["answer"] = (200, _setup(None, BOT_STEP, merge))
+    code, payload = _json("status", "--repo", "acme/api")
+    assert code == 0 and payload["complete"] is True
+    assert payload["next"]["code"] == "setup_pr_open" and payload["next"]["optional"] is True
+
+
+def test_no_bot_step_reported_carries_no_older_server_note(server) -> None:
+    server["answer"] = (200, _setup({}, {"id": "index", "done": True}))
+    code, payload = _json("status", "--repo", "acme/api")
+    assert code == 0 and payload["next"] is None and payload["complete"] is False
+    assert "note" not in payload
 
 
 def test_status_table_shows_the_state_and_the_next_step(server) -> None:
@@ -253,6 +269,8 @@ def test_status_needs_a_repo(server, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(publish, "read_remote", lambda _path: None)
     result = _bot("status")
     assert result.exit_code == 2 and "--repo" in result.output
+    code, payload = _json("status")
+    assert code == 1 and payload["error"] == "no_repo"
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +347,12 @@ def test_ai_on_locked_names_the_admin_and_the_keys(server) -> None:
     )
     message = _json("ai", "on", "--repo", "acme/api")[1]["message"]
     assert "Locked: review_mode" in message and "admin of the organization" in message
+
+
+def test_ai_on_locked_without_a_message_still_reads(server) -> None:
+    server["action"] = (422, {"detail": {"code": "bot_config_locked"}})
+    message = _json("ai", "on", "--repo", "acme/api")[1]["message"]
+    assert "None" not in message and "bot policy" in message
 
 
 def test_ai_on_offline_exits_1_without_reading_the_state_again(server) -> None:

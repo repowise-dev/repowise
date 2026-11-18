@@ -2361,7 +2361,7 @@ repowise bot ai off
 
 | Command | What it does |
 |---------|--------------|
-| `status` | The bot's part of the repo's setup status (the same read as `hosted status`): `bot` (install and claim, reviews, `ai` on or off with a `code` saying why, `credit`, `last_review` with its `check_url`, `coverage_received`), `plan`, `effective_tier`, `coverage`, the bot's `steps`, and `next`: the one next step as `{code, who, action, url}`, or null. `complete` is true once PR reviews are on. Reads only. |
+| `status` | The bot's part of the repo's setup status (the same read as `hosted status`): `bot` (install and claim, reviews, `ai` on or off with a `code` saying why, `credit`, `last_review` with its `check_url`, `coverage_received`), `plan`, `effective_tier`, `coverage`, the bot's `steps`, and `next`: the one next step as `{code, who, action, url, optional}`, or null. `complete` is true once PR reviews are on. Reads only. |
 | `ai on\|off` | Sets the repo's review mode: AI review, or the free signal checks only. Then reports the new state (`status` in the JSON, the same object as `bot status`) and anything still in the way. |
 
 | Flag | What it does | Default |
@@ -2371,8 +2371,9 @@ repowise bot ai off
 | `--format` | `table` or `json`. Every outcome, error or not, is one JSON object. | `table` |
 
 Exit codes: `0` nothing waits on a person; `3` a person's step is next (`signed_out`, `not_installed`, `needs_plan`,
-`forbidden`, `permission_needed`, `locked` by the organization's bot policy, or `next.who` is `human`); `1` any other
-error (`offline`, `unsupported`, `http_<status>`).
+`forbidden`, `permission_needed`, `locked` by the organization's bot policy, or a required `next` step whose `who` is
+`human`); `1` any other error (`offline`, `unsupported`, `http_<status>`, `no_repo`). An optional person's step, such as
+merging the coverage setup PR, is named in `next` but exits 0.
 
 ### `repowise publish [PATH]`
 
