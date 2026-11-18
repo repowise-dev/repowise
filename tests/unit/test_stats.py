@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 import time
+from typing import Any
 
 import pytest
 
@@ -86,8 +87,9 @@ def test_percentile_edges() -> None:
     assert percentile([4, 1, 9], 0.0, method="nearest_rank") == 1
     with pytest.raises(ValueError):
         percentile([1], 1.5)
+    unknown: Any = "linear"
     with pytest.raises(ValueError):
-        percentile([1], 0.5, method="linear")  # type: ignore[arg-type]
+        percentile([1], 0.5, method=unknown)
 
 
 # -- Wilson ----------------------------------------------------------------------
@@ -178,7 +180,13 @@ def test_bootstrap_rejects_bad_input() -> None:
     with pytest.raises(ValueError):
         bootstrap_median_ratio([1.0], [0.0])
     with pytest.raises(ValueError):
+        bootstrap_median_ratio([1.0], [math.nan])
+    with pytest.raises(ValueError):
+        bootstrap_median_ratio([math.inf], [1.0])
+    with pytest.raises(ValueError):
         bootstrap_median_ratio([1.0], [1.0], resamples=0)
+    with pytest.raises(ValueError):
+        bootstrap_median_ratio([1.0], [1.0], confidence=0.0)
 
 
 def test_bootstrap_is_fast_at_fifty_per_side() -> None:

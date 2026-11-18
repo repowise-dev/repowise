@@ -132,25 +132,24 @@ def bootstrap_median_ratio(
     """
     if not head or not base:
         raise ValueError("both sample sets need at least one value")
-    if min(head) <= 0 or min(base) <= 0:
-        raise ValueError("run times must be positive")
+    if not all(math.isfinite(v) and v > 0 for v in (*head, *base)):
+        raise ValueError("run times must be positive and finite")
     if resamples < 1:
         raise ValueError(f"resamples must be at least 1, got {resamples}")
     _two_sided_z(confidence)  # validates the range
     rng = random.Random(seed)
     median = statistics.median
-    ratios = [
+    ratios = sorted(
         median(rng.choices(head, k=len(head))) / median(rng.choices(base, k=len(base)))
         for _ in range(resamples)
-    ]
-    tail = (1.0 - confidence) / 2
-    low = percentile(ratios, tail)
-    high = percentile(ratios, 1.0 - tail)
-    assert low is not None and high is not None  # ratios is never empty
+    )
+    # The same number of resampled ratios is cut from each tail, so the
+    # interval is symmetric in rank.
+    cut = int((1.0 - confidence) / 2 * resamples)
     return RatioInterval(
         estimate=median(head) / median(base),
-        low=low,
-        high=high,
+        low=ratios[cut],
+        high=ratios[resamples - 1 - cut],
         n_head=len(head),
         n_base=len(base),
         method=f"bootstrap_median_ratio ({resamples} resamples)",
