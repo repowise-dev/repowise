@@ -71,6 +71,25 @@ def fresh_test_map_cache():
     clear_code_graph_cache()
 
 
+@pytest.fixture
+def isolated_run_mcp(monkeypatch):
+    """For a test that calls ``run_mcp`` with ``mcp.run`` faked.
+
+    The stdio path starts the parent watchdog, a daemon thread that outlives
+    the test and exits the worker process if an ancestor dies, so it is
+    replaced with a no-op. ``run_mcp`` also records the repo path and the
+    single-repo flag in ``_state``; both are put back at teardown. A test that
+    counts watchdog starts patches it again after this fixture.
+    """
+    from repowise.server.mcp_server import _state
+
+    monkeypatch.setattr(
+        "repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None
+    )
+    monkeypatch.setattr(_state, "_repo_path", _state._repo_path)
+    monkeypatch.setattr(_state, "_force_single_repo", _state._force_single_repo)
+
+
 @pytest.fixture(scope="session")
 def cobol_grammar():
     """Skip at run time when the COBOL grammar cannot load (first use may download it).
