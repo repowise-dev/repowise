@@ -51,11 +51,43 @@ async def test_a_path_line_id_matches_the_plain_symbol_read(service_file):
 
 
 @pytest.mark.asyncio
-async def test_a_windows_path_line_id_resolves_like_its_posix_form(service_file):
+@pytest.mark.parametrize(
+    "symbol_id",
+    ["src\\auth\\service.py:25", "./src/auth/service.py:25", "src/auth/service.py:25:9"],
+    ids=["windows", "dot-prefix", "with-column"],
+)
+async def test_other_spellings_of_a_location_resolve_alike(service_file, symbol_id):
     from repowise.server.mcp_server import get_symbol
 
-    result = await get_symbol("src\\auth\\service.py:25")
+    result = await get_symbol(symbol_id)
     assert result["symbol_id"] == "src/auth/service.py::login"
+
+
+@pytest.mark.asyncio
+async def test_line_zero_is_never_owned_by_a_symbol_without_a_position(
+    service_file, session, setup_mcp
+):
+    from repowise.server.mcp_server import get_symbol
+
+    session.add(
+        WikiSymbol(
+            id="nopos",
+            repository_id=setup_mcp,
+            file_path="src/auth/service.py",
+            symbol_id="src/auth/service.py::unplaced",
+            name="unplaced",
+            qualified_name="auth.service.unplaced",
+            kind="function",
+            signature="def unplaced()",
+            start_line=0,
+            end_line=0,
+            language="python",
+        )
+    )
+    await session.flush()
+    result = await get_symbol("src/auth/service.py:0")
+    assert result["kind"] == "range"
+    assert result["start_line"] == 1
 
 
 @pytest.mark.asyncio

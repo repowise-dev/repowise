@@ -35,6 +35,9 @@ _KEPT = (
     "resolution",
     "suggestions",
     "fallback_lines",
+    # A bare file path: its top-level symbol names.
+    "symbols",
+    "symbols_total",
     "note",
     # Omission-ref reads ("repowise#<hex>") return a different shape entirely:
     # ``content`` is the banked text and ``source`` is the *command* it came

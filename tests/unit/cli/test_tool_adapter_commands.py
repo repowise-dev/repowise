@@ -473,6 +473,22 @@ def test_symbol_projection_keeps_the_did_you_mean_list():
     assert out["suggestions"] == ["a/b.py::login", "c/d.py::login"]
 
 
+def test_symbol_projection_keeps_a_files_symbol_names():
+    """A bare file path answers with names to pass back; dropping them leaves only the note."""
+    payload = {
+        "symbol_id": "a.py",
+        "file": "a.py",
+        "kind": "file",
+        "symbols": ["f", "g"],
+        "symbols_total": 20,
+        "note": 'A file, not a symbol. One symbol: get_symbol("a.py::<name>").',
+        "_meta": {},
+    }
+    out = project_symbol(payload)
+    assert out["symbols"] == ["f", "g"]
+    assert out["symbols_total"] == 20
+
+
 def test_why_path_projection_caps_lists_and_says_what_it_capped():
     out = project_why(WHY_PATH_PAYLOAD)
     assert len(out["decisions"]) == 5

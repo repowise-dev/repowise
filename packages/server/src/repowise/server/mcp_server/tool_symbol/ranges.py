@@ -36,10 +36,10 @@ from .text import _number_lines, _read_file_text, _slice_text
 # back to a whole-file Read.
 _RANGE_ID_RE = re.compile(r"^(?P<path>.+?):(?P<start>\d+)-(?P<end>\d+)$")
 
-# "path/to/file.py:120", the line a stack trace or editor names. It stands
-# for the innermost indexed symbol holding that line; a line outside every
-# symbol reads the lines around it.
-_LINE_ID_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+)$")
+# "path/to/file.py:120" (or "path:120:5" with a column), the line a stack
+# trace or editor names. It stands for the innermost indexed symbol holding
+# that line; a line outside every symbol reads the lines around it.
+_LINE_ID_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+)(?::\d+)?$")
 _LINE_WINDOW = 10
 
 # Range reads are bounded tighter than symbol reads: the caller names exact
@@ -166,7 +166,8 @@ async def _line_id_target(symbol_id: str, ctx: Any) -> str | None:
                     WikiSymbol.repository_id == repository.id, WikiSymbol.file_path == path
                 )
             )
-            owner = symbol_at(res.scalars().all(), line)
+            # A row with no recorded position never owns a line.
+            owner = symbol_at((r for r in res.scalars().all() if r.start_line > 0), line)
         if owner is not None:
             return symbol_identity(owner.symbol_id)
     return f"{path}:{max(1, line - _LINE_WINDOW)}-{line + _LINE_WINDOW}"

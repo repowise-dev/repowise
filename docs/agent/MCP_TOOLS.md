@@ -210,7 +210,7 @@ Verified, line-numbered source for one symbol, a live line range, or an omission
 
 | Parameter | Type | Default | Meaning |
 |-----------|------|---------|---------|
-| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max), `"path/file.py:140"` (the innermost symbol holding line 140, else lines 130 to 150) or `"repowise#<ref>"`. A bare file path returns the file's top-level symbol names (15 max) to pass back as `"path/file.py::<name>"` |
+| `symbol_id` | string | none | `"path/file.py::Name"`, `"path/file.py:140-180"` (live range, 200 lines max), `"path/file.py:140"` (the innermost symbol holding line 140, else lines 130 to 150; a trailing `:column` is ignored) or `"repowise#<ref>"`. A bare file path returns the file's top-level symbol names (15 max) to pass back as `"path/file.py::<name>"` |
 | `id` | string | none | Alias for `symbol_id` |
 | `reference` | object | none | A `continuation_reference` or `fetch_reference` this tool emitted, unchanged |
 | `context_lines` | int | `0` | Extra lines before and after, 0 to 50 |
