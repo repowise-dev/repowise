@@ -3,14 +3,15 @@
 One ingest writes one ``evidence_runs`` row and that run's rows of its kind,
 in bulk. Pruning deletes whole runs by id, one statement per table.
 
-``symbol_hotness`` is replaced whole per repository (one delete, bulk
-inserts) by ``repowise.core.evidence.hotness``; :func:`hotness_for_symbols`
-and :func:`ranked_hotness` are the readers every surface goes through.
+``symbol_hotness`` and ``workload_hotness`` are replaced whole per
+repository (one delete, bulk inserts) by ``repowise.core.evidence.hotness``;
+:func:`hotness_for_symbols` (per function) and :func:`ranked_by_workload`
+(per workload) are the readers every surface goes through.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
@@ -25,6 +26,7 @@ from ...models import (
     EvidenceSymbolCost,
     EvidenceTestTiming,
     SymbolHotness,
+    WorkloadHotness,
     _new_uuid,
     _now_utc,
 )
@@ -225,6 +227,7 @@ async def hotness_inputs(
             repo_self_value=run.repo_self_value,
             wait_value=run.wait_value,
             library_value=run.library_value,
+            environment=run.environment,
         )
         for run in (
             await session.execute(
@@ -262,13 +265,28 @@ async def replace_symbol_hotness(
     *rows* hold the table's columns without ``repository_id`` and
     ``built_at``, one per symbol id. Returns the rows written.
     """
-    table = cast(Table, SymbolHotness.__table__)
     at = _now_utc()
-    filled = [
-        _full_row(table, {**row, "repository_id": repository_id, "built_at": at}) for row in rows
-    ]
+    return await _replace(session, SymbolHotness, repository_id, [{**r, "built_at": at} for r in rows])
+
+
+async def replace_workload_hotness(
+    session: AsyncSession, repository_id: str, rows: Iterable[Mapping[str, Any]]
+) -> int:
+    """Replace the repository's ``workload_hotness`` with *rows*: one delete, bulk inserts.
+
+    *rows* hold the table's columns without ``repository_id``, one per (run,
+    symbol). Returns the rows written.
+    """
+    return await _replace(session, WorkloadHotness, repository_id, rows)
+
+
+async def _replace(
+    session: AsyncSession, model: Any, repository_id: str, rows: Iterable[Mapping[str, Any]]
+) -> int:
+    table = cast(Table, model.__table__)
+    filled = [_full_row(table, {**row, "repository_id": repository_id}) for row in rows]
     _refuse_repeated_keys(table, filled)
-    await session.execute(delete(SymbolHotness).where(SymbolHotness.repository_id == repository_id))
+    await session.execute(delete(model).where(model.repository_id == repository_id))
     for i in range(0, len(filled), _BATCH_SIZE):
         await session.execute(insert(table), filled[i : i + _BATCH_SIZE])
     return len(filled)
@@ -307,48 +325,45 @@ async def hotness_for_symbols(
     return out
 
 
-async def ranked_hotness(
-    session: AsyncSession,
-    repository_id: str,
-    *,
-    workload_classes: Collection[str] | None = None,
-    limit: int | None = 10,
-) -> list[SymbolHotness]:
-    """The repository's ranked functions, strongest first, at most *limit* (``None``: all).
+async def ranked_by_workload(
+    session: AsyncSession, repository_id: str
+) -> list[tuple[EvidenceRun, list[WorkloadHotness]]]:
+    """Each workload's newest run with its ranked functions, best rank first.
 
-    Ranked means tier ``ranked`` or ``lead_candidate`` from evidence that is
-    not stale. *workload_classes* keeps rows whose basis run has one of those
-    classes (``{"unit_test"}`` for what was measured in tests). Each row
-    carries its run's summary: workload, commit, age, time split, sample
-    counts and how many functions outside production code it counted.
+    Runs come newest first. Two statements: the ranked rows, then their runs.
+    Empty when nothing is ranked.
     """
-    query = select(SymbolHotness).where(
-        SymbolHotness.repository_id == repository_id,
-        SymbolHotness.tier.in_(("ranked", "lead_candidate")),
-        SymbolHotness.freshness != "stale",
+    rows = list(
+        (
+            await session.execute(
+                select(WorkloadHotness)
+                .where(WorkloadHotness.repository_id == repository_id)
+                .order_by(WorkloadHotness.run_id, WorkloadHotness.rank, WorkloadHotness.symbol_id)
+            )
+        ).scalars()
     )
-    if workload_classes is not None:
-        query = query.where(SymbolHotness.workload_class.in_(sorted(workload_classes)))
-    rows = list((await session.execute(query)).scalars())
-    rows.sort(
-        key=lambda r: (
-            r.tier != "lead_candidate",
-            r.rank if r.rank is not None else float("inf"),
-            -(r.self_share or 0.0),
-            r.symbol_id,
-        )
-    )
-    return rows[:limit]
+    if not rows:
+        return []
+    by_run: dict[str, list[WorkloadHotness]] = {}
+    for row in rows:
+        by_run.setdefault(row.run_id, []).append(row)
+    runs = (
+        await session.execute(select(EvidenceRun).where(EvidenceRun.id.in_(sorted(by_run))))
+    ).scalars()
+    found = sorted(runs, key=lambda r: (r.measured_at or r.ingested_at, r.id), reverse=True)
+    return [(run, by_run[run.id]) for run in found]
 
 
 async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
-    """Why :func:`ranked_hotness` has no row, as one token.
+    """Why :func:`ranked_by_workload` has no row, as one token.
 
     ``no_runtime_data``: no profile run is stored. ``stale``: every function
     the stored runs mapped is stale (measured at another commit, body changed
-    since). ``not_ranked``: current evidence that ranks nothing (too few
-    samples in production code, or no production frame). At most three
-    indexed lookups.
+    since). ``needs_update``: the per-function view ranks functions but the
+    per-workload one was never built (a store from before it existed, until
+    the next update or ingest rebuilds both). ``not_ranked``: current evidence
+    that ranks nothing (too few samples in production code, or no production
+    frame). At most four indexed lookups.
     """
     has_profile = select(EvidenceRun.id).where(
         EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "profile"
@@ -358,6 +373,14 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     mapped = select(SymbolHotness.symbol_id).where(SymbolHotness.repository_id == repository_id)
     fresh = mapped.where(SymbolHotness.freshness != "stale")
     if (await session.execute(fresh.limit(1))).first() is not None:
+        ranked = fresh.where(SymbolHotness.tier.in_(("ranked", "lead_candidate")))
+        built = select(WorkloadHotness.run_id).where(
+            WorkloadHotness.repository_id == repository_id
+        )
+        if (await session.execute(ranked.limit(1))).first() is not None and (
+            await session.execute(built.limit(1))
+        ).first() is None:
+            return "needs_update"
         return "not_ranked"
     if (await session.execute(mapped.limit(1))).first() is not None:
         return "stale"
@@ -400,8 +423,9 @@ __all__ = [
     "hotness_inputs",
     "list_evidence_runs",
     "prune_evidence_runs",
-    "ranked_hotness",
+    "ranked_by_workload",
     "replace_symbol_hotness",
+    "replace_workload_hotness",
     "save_evidence_run",
     "unranked_reason",
 ]

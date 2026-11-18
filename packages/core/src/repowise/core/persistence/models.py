@@ -3306,6 +3306,40 @@ class SymbolHotness(Base):
     __table_args__ = ({"sqlite_with_rowid": False},)
 
 
+class WorkloadHotness(Base):
+    """The read model per workload: the ranked functions of each workload's newest run.
+
+    One row per (run, function), so a function two workloads both rank is
+    listed under each. Derived with ``symbol_hotness`` by
+    ``evidence.hotness`` and rebuilt whole; the run's own facts (workload,
+    commit, age, time split) are read from ``evidence_runs``.
+    """
+
+    __tablename__ = "workload_hotness"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    # ``evidence_runs.id``: the workload's newest run.
+    run_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    symbol_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # 1-based place among the run's production functions by self time.
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)
+    # ``ranked`` or ``lead_candidate``.
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    total_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    self_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The interval of the self share; NULL without sample counts.
+    share_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    share_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Self samples on the function; NULL when not counted.
+    samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # ``current`` or ``body_unchanged``: a stale row is never ranked.
+    freshness: Mapped[str] = mapped_column(String(16), nullable=False)
+    # A deterministic tracer ran: the rank orders, and no share is given.
+    ordering_only: Mapped[bool] = mapped_column(Boolean, nullable=False)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
 class BuildUnitRow(Base):
     """One build unit of a repository (``repowise.core.build_units.BuildUnit``).
 

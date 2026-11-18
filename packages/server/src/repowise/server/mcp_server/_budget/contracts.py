@@ -326,7 +326,6 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "churn_complexity[]",
             "untested_complexity[]",
             "doc_drift.findings[]",
-            "performance_measured.on_static_findings[]",
             "performance_measured.in_tests[]",
             "test_findings[]",
             "top_findings[]",

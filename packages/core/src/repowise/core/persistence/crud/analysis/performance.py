@@ -988,6 +988,10 @@ async def get_health_finding_by_public_id(
 
 _MEASURED_CALLERS = 3
 _MEASURED_TESTS = 3
+#: Callers read per measured function before test code is dropped from them.
+#: Ceiling: a function with more callers than this counts only the ones read;
+#: a counted query over the edge table with an origin join would lift it.
+_CALLER_SCAN = 2000
 
 
 async def measured_costs(
@@ -997,66 +1001,63 @@ async def measured_costs(
     limit: int = 10,
     now: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """The functions stored runs measured and ranked, beside the static causes.
+    """What each workload's newest stored run measured, ranked by what it costs.
 
-    Read at request time from ``symbol_hotness``, which every ingest and
+    Read at request time from ``workload_hotness``, which every ingest and
     update rebuilds, so nothing new is stored and an index without evidence
     pays one indexed lookup. ``None`` when no function is ranked: callers add
     nothing then, and every output stays as it was.
 
-    - ``measured``: functions ranked in a workload class that may lead
-      (``evidence.hotness.LEAD_CLASSES``) with no open static performance
-      finding on them, at most *limit*.
-    - ``measured_in_tests``: functions ranked under ``unit_test``, listed
-      apart and never leading, at most *limit*.
-    - Each of the two groups carries ``total``: its rows before the *limit* cut.
-    - ``on_static_findings``: ranked functions an open static finding already
-      sits on, with its cause ids. They get no row of their own.
+    - ``measured``: one block per run in a workload class that may lead
+      (``evidence.hotness.LEAD_CLASSES``), newest run first, each with at most
+      *limit* of its ranked functions, best rank first. A function two
+      workloads rank is listed under each.
+    - ``measured_in_tests``: the same for ``unit_test`` runs, listed apart and
+      never leading.
+    - Each group carries ``total``: its ranked rows before the *limit* cut.
 
-    Each group names its runs (workload class and name, commit, age, samples,
-    how much of the run production code explains). Each row carries the
-    function's lines, callers, owner and nearest tests. Stale evidence and
-    code outside production are never rows (``symbol_hotness`` holds neither).
+    Each run names its basis (workload class and name, commit, age, samples)
+    and where its time went (``repo_self_share``, ``wait_share``,
+    ``library_share``). Each row's ``share`` is the function's self time (its
+    cost: built-ins and libraries it called included, waits excluded) with its
+    interval; ``inclusive`` is context. A row carries the function's
+    lines, callers outside test code, owner, nearest tests and, when an open
+    static performance cause sits on it and that cause's evidence runs in
+    production code, ``on_static_findings`` with the cause ids. Stale evidence
+    and code outside production are never rows.
     """
     from ....evidence.hotness import LEAD_CLASSES
     from ....ingestion.symbol_identity import file_of_symbol
-    from .evidence import ranked_hotness
+    from .evidence import ranked_by_workload
 
-    ranked = await ranked_hotness(session, repository_id, limit=None)
+    ranked = await ranked_by_workload(session, repository_id)
     if not ranked:
         return None
-    ids = [row.symbol_id for row in ranked]
+    groups: dict[str, list[tuple[Any, list[Any]]]] = {"measured": [], "measured_in_tests": []}
+    for run, rows in ranked:
+        if run.workload_class in LEAD_CLASSES:
+            groups["measured"].append((run, rows))
+        elif run.workload_class == "unit_test":
+            groups["measured_in_tests"].append((run, rows))
+    if not any(groups.values()):
+        return None
+    # ``limit=0`` keeps each group's runs and total with no rows.
+    shown = {key: [(run, rows[: max(limit, 0)]) for run, rows in runs] for key, runs in groups.items()}
+    ids = sorted({r.symbol_id for runs in shown.values() for _, rows in runs for r in rows})
     spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
     covered = await _static_causes_on(session, repository_id, set(ids), spans)
-    lead = [r for r in ranked if r.workload_class in LEAD_CLASSES and r.symbol_id not in covered]
-    tests = [r for r in ranked if r.workload_class == "unit_test" and r.symbol_id not in covered]
-    totals = {"measured": len(lead), "measured_in_tests": len(tests)}
-    lead, tests = lead[:limit], tests[:limit]
-    context = await _function_context(
-        session, repository_id, [r.symbol_id for r in (*lead, *tests)]
-    )
+    context = await _function_context(session, repository_id, ids)
     at = now or _now_utc()
     view: dict[str, Any] = {}
-    for key, rows in (("measured", lead), ("measured_in_tests", tests)):
-        if rows:
+    for key, runs in shown.items():
+        if runs:
             view[key] = {
-                "runs": _measured_runs(rows, at),
-                "rows": [_measured_row(r, spans, context) for r in rows],
-                "total": totals[key],
+                "runs": [_measured_run(run, rows, at) for run, rows in runs],
+                "rows": [
+                    _measured_row(r, spans, context, covered) for _, rows in runs for r in rows
+                ],
+                "total": sum(len(rows) for _, rows in groups[key]),
             }
-    # Not cut to *limit*: a ranked row is at most ``evidence.rank_top_n`` per run.
-    linked = [r for r in ranked if r.symbol_id in covered]
-    if linked:
-        view["on_static_findings"] = [
-            {
-                "symbol_id": r.symbol_id,
-                "opportunity_ids": sorted(covered[r.symbol_id]),
-                "rank": r.rank,
-                "workload_class": r.workload_class,
-                "workload_name": r.workload_name,
-            }
-            for r in linked
-        ]
     return view or None
 
 
@@ -1093,6 +1094,8 @@ async def _static_causes_on(
     performance finding's line falls inside it and in no narrower symbol.
     A finding with no line names no function, and one with no cause id has
     no listed cause to carry the measurement, so neither covers a function.
+    Only a cause whose evidence runs in production code links: a cause seen
+    only from tests says nothing about a production measurement.
     """
     from ....symbol_spans import symbol_at
 
@@ -1124,7 +1127,19 @@ async def _static_causes_on(
             held = symbol_at(spans[path], line) if line else None
             if opportunity_id and held is not None and held.symbol_id in symbol_ids:
                 out.setdefault(held.symbol_id, set()).add(opportunity_id)
-    return out
+    production: set[str] = set()
+    for batch in chunked(sorted({i for ids in out.values() for i in ids})):
+        result = await session.execute(
+            select(PerformanceOpportunity.opportunity_id).where(
+                PerformanceOpportunity.repository_id == repository_id,
+                PerformanceOpportunity.status == "open",
+                PerformanceOpportunity.execution_context == "production",
+                PerformanceOpportunity.opportunity_id.in_(batch),
+            )
+        )
+        production.update(result.scalars())
+    linked = {sid: ids & production for sid, ids in out.items()}
+    return {sid: ids for sid, ids in linked.items() if ids}
 
 
 class _FunctionContext(NamedTuple):
@@ -1138,7 +1153,12 @@ async def _function_context(
     session: AsyncSession, repository_id: str, symbol_ids: list[str]
 ) -> _FunctionContext:
     """Callers, file owner and nearest tests of *symbol_ids*, from the stores
-    ``get_context`` reads: graph edges, git metadata and the function test map."""
+    ``get_context`` reads: graph edges, git metadata and the function test map.
+
+    Callers in test code (``code_origin``) are neither listed nor counted: a
+    measured production function's callers say who pays for it in production.
+    """
+    from ....evidence.ingest import load_origins
     from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
     from ....ingestion.symbol_identity import file_of_symbol
     from ..git import get_git_metadata_bulk
@@ -1151,7 +1171,7 @@ async def _function_context(
     degrees = await get_node_degree_counts_bulk(
         session, repository_id, symbol_ids, edge_types=edge_types
     )
-    callers: dict[str, list[str]] = {}
+    sources: dict[str, list[str]] = {}
     for symbol_id in symbol_ids:
         if degrees.get(symbol_id, {}).get("in_degree"):
             edges = await get_graph_edges_for_node(
@@ -1160,12 +1180,20 @@ async def _function_context(
                 symbol_id,
                 direction="callers",
                 edge_types=edge_types,
-                limit=_MEASURED_CALLERS,
+                limit=_CALLER_SCAN,
             )
-            callers[symbol_id] = [edge.source_node_id for edge in edges]
+            # One caller per function, whichever edge types link them.
+            sources[symbol_id] = list(dict.fromkeys(edge.source_node_id for edge in edges))
+    origins = await load_origins(
+        session, repository_id, {file_of_symbol(s) for found in sources.values() for s in found}
+    )
+    outside_tests = {
+        sid: [s for s in found if origins.get(file_of_symbol(s)) != "test"]
+        for sid, found in sources.items()
+    }
     return _FunctionContext(
-        callers_total={i: degrees[i]["in_degree"] for i in symbol_ids if i in degrees},
-        callers=callers,
+        callers_total={i: len(outside_tests.get(i, ())) for i in symbol_ids if i in degrees},
+        callers={sid: found[:_MEASURED_CALLERS] for sid, found in outside_tests.items() if found},
         owners=await get_git_metadata_bulk(
             session, repository_id, sorted({file_of_symbol(i) for i in symbol_ids})
         ),
@@ -1173,32 +1201,35 @@ async def _function_context(
     )
 
 
-def _measured_runs(rows: list[Any], at: datetime) -> list[dict[str, Any]]:
-    """The basis of *rows*, one entry per run, in row order."""
-    runs: dict[Any, dict[str, Any]] = {}
-    for row in rows:
-        if row.run_id in runs:
-            continue
-        measured_at = row.measured_at
-        if measured_at is not None and measured_at.tzinfo is None:
-            measured_at = measured_at.replace(tzinfo=UTC)
-        runs[row.run_id] = {
-            "run_id": row.run_id,
-            "workload_class": row.workload_class,
-            "workload_name": row.workload_name,
-            "commit": row.evidence_commit_sha,
-            "measured_at": measured_at.isoformat() if measured_at else None,
-            "age_days": max((at - measured_at).days, 0) if measured_at else None,
-            "samples": row.run_samples,
-            "explained_share": row.explained_share,
-            "outside_production": row.run_unlisted,
-            "value_kind": row.value_kind,
-            "ordering_only": bool(row.ordering_only),
-        }
-    return list(runs.values())
+def _measured_run(run: Any, rows: list[Any], at: datetime) -> dict[str, Any]:
+    """A run's basis: workload, commit, age, samples and where its time went."""
+    from ....evidence.hotness import run_samples
+    from ....evidence.status import time_split
+
+    measured_at = run.measured_at or run.ingested_at
+    if measured_at is not None and measured_at.tzinfo is None:
+        measured_at = measured_at.replace(tzinfo=UTC)
+    return {
+        "run_id": run.id,
+        "workload_class": run.workload_class,
+        "workload_name": run.workload_name,
+        "commit": run.commit_sha,
+        "measured_at": measured_at.isoformat() if measured_at else None,
+        "age_days": max((at - measured_at).days, 0) if measured_at else None,
+        "samples": run_samples(run),
+        **time_split(run),
+        "outside_production": run.unlisted_symbols,
+        "value_kind": run.value_kind,
+        "ordering_only": any(r.ordering_only for r in rows),
+    }
 
 
-def _measured_row(row: Any, spans: dict[str, list[Any]], context: _FunctionContext) -> dict[str, Any]:
+def _measured_row(
+    row: Any,
+    spans: dict[str, list[Any]],
+    context: _FunctionContext,
+    covered: dict[str, set[str]],
+) -> dict[str, Any]:
     from ....ingestion.symbol_identity import file_of_symbol
 
     symbol_id = row.symbol_id
@@ -1206,16 +1237,17 @@ def _measured_row(row: Any, spans: dict[str, list[Any]], context: _FunctionConte
     span = next((s for s in spans.get(path, ()) if s.symbol_id == symbol_id), None)
     owner = context.owners.get(path)
     tests = context.tests.get(symbol_id)
-    return {
+    out = {
         "symbol_id": symbol_id,
         "file_path": path,
         "lines": [span.start_line, span.end_line] if span is not None else None,
         "run_id": row.run_id,
         "rank": row.rank,
-        "share": row.total_share,
+        # The cost the rank is by: self time, waits excluded.
+        "share": row.self_share,
         "share_low": row.share_low,
         "share_high": row.share_high,
-        "self_share": row.self_share,
+        "inclusive": row.total_share,
         "samples": row.samples,
         "freshness": row.freshness,
         "callers_total": context.callers_total.get(symbol_id),
@@ -1228,6 +1260,9 @@ def _measured_row(row: Any, spans: dict[str, list[Any]], context: _FunctionConte
         # ``None``: the function was never mapped to tests; ``[]``: no test reaches it.
         "tests": [t.selector for t in tests] if tests is not None else None,
     }
+    if symbol_id in covered:
+        out["on_static_findings"] = sorted(covered[symbol_id])
+    return out
 
 
 __all__ = [

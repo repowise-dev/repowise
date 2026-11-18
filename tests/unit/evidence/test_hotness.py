@@ -60,7 +60,7 @@ def _derive(runs, costs, current=None, origins=None, head=HEAD, rules=RULES):
     ids = {c.symbol_id for rows in costs.values() for c in rows}
     current = current if current is not None else _current(*ids)
     origins = origins if origins is not None else _origins(*{i.split("::")[0] for i in ids})
-    rows = derive_hotness(runs, costs, current, origins, head_commit=head, rules=rules)
+    rows = derive_hotness(runs, costs, current, origins, head_commit=head, rules=rules).symbols
     return {r["symbol_id"]: r for r in rows}
 
 
@@ -218,7 +218,7 @@ def test_only_production_code_is_listed_and_the_rest_is_counted() -> None:
 
 
 def test_no_runs_no_rows() -> None:
-    assert derive_hotness([], {}, _current(), {}, head_commit=HEAD, rules=RULES) == []
+    assert derive_hotness([], {}, _current(), {}, head_commit=HEAD, rules=RULES).symbols == []
 
 
 def test_an_unknown_indexed_commit_lets_only_the_stored_body_decide() -> None:
@@ -232,3 +232,47 @@ def test_the_unlisted_count_from_ingest_wins_over_the_rows_kept() -> None:
     run = RunFacts(**{**_run().__dict__, "unlisted_symbols": 7})
     row = _derive([run], {"r1": [_cost("f", 300)]})["src/m.py::f"]
     assert row["run_unlisted"] == 7
+
+
+def _workloads(runs, costs):
+    ids = {c.symbol_id for rows in costs.values() for c in rows}
+    hotness = derive_hotness(runs, costs, _current(*ids), _origins("src/m.py"), head_commit=HEAD,
+                             rules=RULES)
+    return hotness.workloads
+
+
+def test_each_workload_lists_its_own_ranked_functions_from_its_newest_run() -> None:
+    # Two workloads rank the same function; one workload has a superseded run.
+    runs = [_run("init"), _run("update-old", day=1), _run("update", day=2)]
+    runs = [RunFacts(**{**r.__dict__, "workload_name": "update"}) if r.id.startswith("update")
+            else r for r in runs]
+    costs = {
+        "init": [_cost("parse", 200), _cost("walk", 100)],
+        "update-old": [_cost("parse", 300)],
+        "update": [_cost("parse", 50), _cost("scan", 400)],
+    }
+    got = [(w["run_id"], w["rank"], w["symbol_id"].split("::")[1]) for w in _workloads(runs, costs)]
+    assert got == [
+        ("init", 1, "parse"), ("init", 2, "walk"), ("update", 1, "scan"), ("update", 2, "parse"),
+    ]
+    # The symbol view still keeps one basis row per function.
+    hotness = derive_hotness(runs, costs, _current(*{c.symbol_id for r in costs.values() for c in r}),
+                             _origins("src/m.py"), head_commit=HEAD, rules=RULES)
+    assert sorted(r["symbol_id"] for r in hotness.symbols) == [
+        "src/m.py::parse", "src/m.py::scan", "src/m.py::walk",
+    ]
+
+
+def test_a_workload_row_carries_its_cost_and_never_a_measured_row() -> None:
+    costs = {"r1": [_cost("f", 100, samples=100), _cost("thin", 5, samples=5),
+                    _cost("edited", 300, digest="old")]}
+    (row,) = _workloads([_run(commit=OLD)], {"r1": [costs["r1"][0]]})
+    assert row["freshness"] == "body_unchanged"
+    rows = {w["symbol_id"]: w for w in _workloads([_run()], costs)}
+    # Under the sample floor: measured, not listed.
+    assert "src/m.py::thin" not in rows
+    f = rows["src/m.py::f"]
+    assert (f["self_share"], f["total_share"], f["samples"], f["ordering_only"]) == (
+        0.1, 0.2, 100, False,
+    )
+    assert f["share_low"] < 0.1 < f["share_high"]
