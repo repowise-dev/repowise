@@ -197,11 +197,9 @@ def _run_rows(
     ordering_only = any(c.call_count is not None for c in costs)
     at_head = coverage_freshness(run.commit_sha, head_commit) == "current"
     rows: list[_Row] = []
-    unlisted = 0
     for cost in costs:
         symbol_id = current.current_id(cost)
         if origins.get(file_of_symbol(symbol_id)) != "production":
-            unlisted += 1
             continue
         rows.append(
             _Row(
@@ -212,21 +210,32 @@ def _run_rows(
                 ordering_only=ordering_only,
                 samples=_samples(run, cost),
                 lineage_id=cost.lineage_id,
+                unlisted=len(costs),
             )
         )
     for row in rows:
-        row.unlisted = unlisted
-    n = _run_samples(run)
-    # A symbol reached twice (two old ids, one lineage) keeps its costlier row.
-    rows.sort(key=lambda r: (-(r.cost.total_value or 0.0), r.cost.symbol_id))
+        row.unlisted -= len(rows)
+    kept = _one_per_symbol(rows)
+    _rank(kept, _run_samples(run), rules)
+    return kept
+
+
+def _one_per_symbol(rows: list[_Row]) -> list[_Row]:
+    """Costliest first; a symbol reached twice (two old ids, one lineage) keeps its costlier row."""
+    rows = sorted(rows, key=lambda r: (-(r.cost.total_value or 0.0), r.cost.symbol_id))
     seen: set[str] = set()
     kept: list[_Row] = []
     for row in rows:
         if row.symbol_id not in seen:
             seen.add(row.symbol_id)
             kept.append(row)
+    return kept
+
+
+def _rank(rows: list[_Row], n: int | None, rules: HotnessRules) -> None:
+    """Place, tier and interval for *rows* (costliest first); stale rows take no place."""
     place = 0
-    for row in kept:
+    for row in rows:
         if row.freshness == "stale":
             continue
         place += 1
@@ -234,14 +243,14 @@ def _run_rows(
         counted = row.samples is not None
         if place <= rules.top_n and (not counted or row.samples >= rules.min_samples):
             row.tier = "ranked"
-        if not ordering_only and n is not None and counted and row.samples <= n:
+        if not row.ordering_only and n is not None and counted and row.samples <= n:
             row.share = wilson_interval(row.samples, n)
         if row.tier == "ranked" and _may_lead(row) and _clears_share_rule(row, rules):
             row.tier = "lead_candidate"
-    return kept
 
 
 def _freshness(at_head: bool, measured_digest: str | None, current_digest: str | None) -> str:
+    """Not at the indexed commit (or either commit unknown): the stored body decides."""
     if at_head:
         return "current"
     if measured_digest and measured_digest == current_digest:
@@ -337,8 +346,9 @@ async def rebuild_symbol_hotness(
     """Rebuild the repository's ``symbol_hotness`` from its stored profile runs.
 
     Returns the rows written, or ``None`` when no profile run is stored: then
-    nothing is read past one indexed lookup and nothing is written, so an
-    index without evidence pays nothing. Partial runs are not a basis.
+    nothing is read past one indexed lookup and one delete on the key prefix
+    clears any rows left, so an index without evidence pays next to nothing.
+    Partial runs are not a basis.
     """
     from repowise.core.persistence.crud import (
         hotness_inputs,
@@ -350,6 +360,8 @@ async def rebuild_symbol_hotness(
 
     inputs = await hotness_inputs(session, repository_id)
     if inputs is None:
+        # One delete on the key prefix: rows left from runs no longer stored go.
+        await replace_symbol_hotness(session, repository_id, [])
         return None
     runs, costs = inputs
     current = CurrentFunctions.from_bodies(await stored_bodies(session, repository_id, None))

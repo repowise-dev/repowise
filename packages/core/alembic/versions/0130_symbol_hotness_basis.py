@@ -23,23 +23,26 @@ down_revision: str | None = "0129"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_COLUMNS: dict[str, tuple[sa.Column, ...]] = {
-    "evidence_runs": (sa.Column("total_samples", sa.Integer, nullable=True),),
-    "evidence_symbol_costs": (sa.Column("body_digest", sa.String(32), nullable=True),),
-    "symbol_hotness": (
-        sa.Column("run_id", sa.String(32), nullable=True),
-        sa.Column("rank", sa.Integer, nullable=True),
-        sa.Column("samples", sa.Integer, nullable=True),
-        sa.Column("run_samples", sa.Integer, nullable=True),
-        sa.Column("share_low", sa.Float, nullable=True),
-        sa.Column("share_high", sa.Float, nullable=True),
-        sa.Column("explained_share", sa.Float, nullable=True),
-        sa.Column("run_unlisted", sa.Integer, nullable=True),
-        sa.Column("value_kind", sa.String(16), nullable=True),
-        sa.Column("ordering_only", sa.Boolean, nullable=True),
-        sa.Column("freshness", sa.String(16), nullable=True),
-    ),
-}
+
+def _columns() -> dict[str, tuple[sa.Column, ...]]:
+    """Fresh column objects per call: one is bound to its table when added."""
+    return {
+        "evidence_runs": (sa.Column("total_samples", sa.Integer, nullable=True),),
+        "evidence_symbol_costs": (sa.Column("body_digest", sa.String(32), nullable=True),),
+        "symbol_hotness": (
+            sa.Column("run_id", sa.String(32), nullable=True),
+            sa.Column("rank", sa.Integer, nullable=True),
+            sa.Column("samples", sa.Integer, nullable=True),
+            sa.Column("run_samples", sa.Integer, nullable=True),
+            sa.Column("share_low", sa.Float, nullable=True),
+            sa.Column("share_high", sa.Float, nullable=True),
+            sa.Column("explained_share", sa.Float, nullable=True),
+            sa.Column("run_unlisted", sa.Integer, nullable=True),
+            sa.Column("value_kind", sa.String(16), nullable=True),
+            sa.Column("ordering_only", sa.Boolean, nullable=True),
+            sa.Column("freshness", sa.String(16), nullable=True),
+        ),
+    }
 
 
 def _existing(table: str) -> set[str]:
@@ -47,7 +50,7 @@ def _existing(table: str) -> set[str]:
 
 
 def upgrade() -> None:
-    for table, columns in _COLUMNS.items():
+    for table, columns in _columns().items():
         have = _existing(table)
         for column in columns:
             if column.name not in have:
@@ -55,7 +58,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    for table, columns in _COLUMNS.items():
+    for table, columns in _columns().items():
         have = _existing(table)
         with op.batch_alter_table(table) as batch:
             for column in reversed(columns):

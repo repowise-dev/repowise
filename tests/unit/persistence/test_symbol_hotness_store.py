@@ -109,3 +109,47 @@ async def test_rebuild_reads_the_profile_runs_and_the_readers_serve_them(async_s
     in_tests = await ranked_hotness(async_session, repo.id, workload_classes={"unit_test"})
     assert [r.symbol_id for r in in_tests] == ["src/t.py::thin"]
     assert len(await ranked_hotness(async_session, repo.id, limit=1)) == 1
+
+
+async def test_rows_left_without_a_profile_run_are_cleared(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await replace_symbol_hotness(async_session, repo.id, [{"symbol_id": "src/m.py::f"}])
+    assert await rebuild_symbol_hotness(
+        async_session, repo.id, head_commit=HEAD, rules=RULES
+    ) is None
+    assert await _count(async_session) == 0
+
+
+async def test_a_failed_refresh_keeps_the_stored_rows(async_session, monkeypatch) -> None:
+    from repowise.core.evidence import hotness
+
+    repo = await insert_repo(async_session)
+    await replace_symbol_hotness(async_session, repo.id, [{"symbol_id": "src/m.py::f"}])
+
+    async def broken(*_a, **_k):
+        await replace_symbol_hotness(async_session, repo.id, [])
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(hotness, "rebuild_symbol_hotness", broken)
+    await hotness.refresh_symbol_hotness(async_session, repo.id, head_commit=HEAD, repo_path=None)
+    assert await _count(async_session) == 1
+
+
+async def test_an_update_that_analyses_no_file_still_refreshes_hotness(
+    async_session, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    from repowise.core.evidence import hotness
+    from repowise.core.pipeline.incremental.health import persist_partial_health
+
+    repo = await insert_repo(async_session)
+    calls: list[str] = []
+
+    async def record(_session, repo_id, **_k):
+        calls.append(repo_id)
+
+    monkeypatch.setattr(hotness, "refresh_symbol_hotness", record)
+    report = SimpleNamespace(authoritative_paths=(), metrics=[], performance_authoritative_paths=())
+    await persist_partial_health(async_session, repo.id, report)
+    assert calls == [repo.id]

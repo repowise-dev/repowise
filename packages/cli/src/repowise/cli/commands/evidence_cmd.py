@@ -166,11 +166,9 @@ def evidence_add(
     if not root.is_dir():
         raise click.BadParameter(f"{root} is not a directory.", param_hint="--checkout-root")
 
-    from repowise.core.evidence.hotness import hotness_rules
     from repowise.core.repo_config import load_repo_config
 
-    config = load_repo_config(repo_path)
-    caps = _caps(config, notices)
+    caps = _caps(load_repo_config(repo_path), notices)
     read = _read_evidence(file, caps[0], fmt, input_format, root)
     _check_value_kind(read, value_kind)
     payload = run_async(
@@ -186,7 +184,6 @@ def evidence_add(
             environment=environment,
             allow_partial=allow_partial,
             caps=caps[1],
-            rules=hotness_rules(config),
             notices=notices,
         )
     )
@@ -378,12 +375,11 @@ async def _store(
     environment: str,
     allow_partial: bool,
     caps: Any,
-    rules: Any,
     notices: Any,
 ) -> dict[str, Any]:
     from repowise.core.analysis.health.coverage.discovery import mostly_unmapped
     from repowise.core.evidence import parse_evidence
-    from repowise.core.evidence.hotness import rebuild_symbol_hotness
+    from repowise.core.evidence.hotness import refresh_symbol_hotness
     from repowise.core.evidence.ingest import (
         RunProvenance,
         cap_rows,
@@ -442,7 +438,10 @@ async def _store(
     rows, truncated = cap_rows(doc.kind, joined.rows, caps)
     if doc.kind == "profile":
         await stamp_bodies(
-            session, target.repo.id, rows, index_at_measured_commit=index_commit == commit
+            session,
+            target.repo.id,
+            rows,
+            index_at_measured_commit=index_commit is not None and index_commit == commit,
         )
     write = await save_evidence_run(
         session,
@@ -461,9 +460,9 @@ async def _store(
     )
     if doc.kind == "profile":
         # Profiles are what the read model is built from, and the save may
-        # have pruned an older one.
-        await rebuild_symbol_hotness(
-            session, target.repo.id, head_commit=index_commit, rules=rules
+        # have pruned an older one. Best effort: the run stays stored.
+        await refresh_symbol_hotness(
+            session, target.repo.id, head_commit=index_commit, repo_path=repo_path
         )
 
     _report_stored(notices, summary, write.restamped, len(rows), truncated, index_commit)

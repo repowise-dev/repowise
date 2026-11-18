@@ -191,3 +191,10 @@ def test_only_production_code_is_listed_and_the_rest_is_counted() -> None:
 
 def test_no_runs_no_rows() -> None:
     assert derive_hotness([], {}, _current(), {}, head_commit=HEAD, rules=RULES) == []
+
+
+def test_an_unknown_indexed_commit_lets_only_the_stored_body_decide() -> None:
+    costs = {"r1": [_cost("same", 300, digest="d"), _cost("unknown", 200, digest=None)]}
+    rows = _derive([_run()], costs, head=None)
+    assert rows["src/m.py::same"]["freshness"] == "body_unchanged"
+    assert rows["src/m.py::unknown"]["freshness"] == "stale"

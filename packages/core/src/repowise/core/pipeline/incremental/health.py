@@ -220,6 +220,13 @@ async def persist_partial_health(
     # has no role map to restamp stored roles with. Roles, like performance
     # findings, refresh on the next run that analyses any file.
     if not changed_paths and not performance_paths:
+        # Measured functions still follow the new commit and any deleted ones.
+        await refresh_symbol_hotness(
+            session,
+            repo_id,
+            head_commit=await _analyzed_commit(session, repo_id),
+            repo_path=repo_path,
+        )
         return
     analyzed_commit = await _analyzed_commit(session, repo_id)
     # One savepoint over the findings and everything derived from them. This

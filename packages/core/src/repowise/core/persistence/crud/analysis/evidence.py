@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import Table, delete, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -256,7 +256,7 @@ async def replace_symbol_hotness(
     *rows* hold the table's columns without ``repository_id`` and
     ``built_at``, one per symbol id. Returns the rows written.
     """
-    table: Table = SymbolHotness.__table__  # type: ignore[assignment]
+    table = cast(Table, SymbolHotness.__table__)
     at = _now_utc()
     filled = [
         _full_row(table, {**row, "repository_id": repository_id, "built_at": at}) for row in rows
