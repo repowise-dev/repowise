@@ -64,9 +64,9 @@ def test_the_default_cli_call_is_the_default_mcp_call(
     monkeypatch.setattr(importlib.import_module(module), name, _record)
     monkeypatch.setattr(_ta, "run", _run)
     target = ["--path", str(tmp_path)] if command is symbol_command else [str(tmp_path)]
-    result = CliRunner(mix_stderr=False).invoke(
+    result = CliRunner().invoke(
         command, [*args, *target, "--no-workspace", "--full"]
     )
 
-    assert result.exit_code == 0, result.output + (result.stderr or "")
+    assert result.exit_code == 0, result.output
     assert seen == [_bound(tool, **mcp_call)]
