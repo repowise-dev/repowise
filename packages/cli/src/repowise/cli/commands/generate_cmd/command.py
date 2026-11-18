@@ -41,6 +41,7 @@ from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
 from repowise.core.decision_lanes import set_pending_decision_lanes
 from repowise.core.docs_mode import docs_mode_state_fields, resolve_docs_mode
 from repowise.core.generation.page_selection import PageSelectionIntent
+from repowise.core.pipeline.incremental.prune import PRUNE_HOLD_MESSAGE, PRUNE_REFUSED_AT
 from repowise.core.settings.model import flag
 
 from ..decision_lanes import print_lane_estimate
@@ -264,6 +265,8 @@ def generate_command(
     state = load_state(repo_path)
     if not state:
         raise click.ClickException(f"No index found at {repo_path}. Run `repowise init` first.")
+    if not dry_run and PRUNE_REFUSED_AT in state:
+        raise click.ClickException(PRUNE_HOLD_MESSAGE)
 
     cfg = load_config(repo_path)
 

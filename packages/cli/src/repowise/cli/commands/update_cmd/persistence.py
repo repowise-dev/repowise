@@ -29,6 +29,12 @@ from repowise.cli.helpers import (
 )
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
+from repowise.core.pipeline.incremental.prune import (
+    PRUNE_REFUSED_AT,
+    PruneHoldError,
+    clear_prune_refusal,
+    record_prune_refusal,
+)
 from repowise.core.pipeline.incremental.rescore import (  # noqa: F401 (re-export)
     RescoreCoverage,
     rescore_health_from_store,
@@ -350,41 +356,11 @@ def heal_commit_offsets(repo_path: Any) -> None:
 _REPAIR_MAX_COMMITS = 500
 
 
-def _prune_refusal_outcome(new_state: dict, state: dict, prune_refusals: list[str]) -> bool:
-    """Apply a deleted-file prune refusal to *new_state*; True when it held.
-
-    The prune judges liveness, not the commit range, so a genuine bulk deletion
-    refuses identically on every run. Holding the pointer forever would be worse
-    than the stale paths the hold exists to fix: nothing would ever advance and
-    only a full reindex would break the deadlock. So the hold lasts one run —
-    the first refusal re-covers the range, and a second one at the same
-    unchanged pointer means the deletion is real rather than a broken run.
-    """
-    if not prune_refusals:
-        return False
-    refused_before = state.get("prune_refused_at")
-    if refused_before is not None and refused_before == state.get("last_sync_commit"):
-        console.print(
-            "[yellow]The deleted-file prune refused this change again, at the same "
-            "commit as last time; treating it as a real mass deletion and letting "
-            "it through.[/yellow]"
-        )
-        new_state.pop("prune_refused_at", None)
-        return False
-    record_repair_marker(new_state, state, ["Deleted-file prune (refused)"])
-    new_state["last_sync_commit"] = state.get("last_sync_commit")
-    new_state["last_docs_commit"] = state.get("last_docs_commit")
-    new_state["prune_refused_at"] = state.get("last_sync_commit")
-    console.print(
-        "[yellow]The deleted-file prune refused part of this change and left those "
-        "rows in place; the sync pointer has not advanced, so the next update "
-        "re-covers this range, and a second refusal at the same commit will let it "
-        "through. To clear it now: [cyan]repowise init[/cyan], which re-indexes "
-        "from scratch.[/yellow]"
-    )
-    for refusal in prune_refusals:
-        console.print(f"[yellow]{refusal}[/yellow]")
-    return True
+def save_prune_hold(repo_path: Path, state: dict, exc: PruneHoldError) -> None:
+    """Record the repair after SQL rollback, without changing either pointer."""
+    record_prune_refusal(state, exc.failed_steps)
+    save_state(repo_path, state)
+    console.print(f"[yellow]{exc}[/yellow]")
 
 
 def record_repair_marker(new_state: dict, prior_state: dict, failed_steps: list[str]) -> None:
@@ -783,12 +759,6 @@ def _persist_index_only_update(
     # (which also collects repo-wide and non-DB failures) because only these
     # strand data the advancing sync pointer would otherwise skip forever.
     failed_steps: list[str] = []
-    # The deleted-file prune can stop without failing: it refuses a change that
-    # looks like a broken run rather than a commit and leaves the rows alone.
-    # That is not an error and no step was skipped, so it does not belong in
-    # ``degraded`` — but it does stop the sync pointer below, because the index
-    # no longer agrees with the commit about to be recorded (#5410).
-    prune_refusals: list[str] = []
     degraded_before_persist = len(degraded)
     run_async(
         persist_incremental_index(
@@ -814,7 +784,7 @@ def _persist_index_only_update(
             log=console.print,
             degraded=degraded,
             failed_steps=failed_steps,
-            prune_refusals=prune_refusals,
+            retry_prune=PRUNE_REFUSED_AT in state,
             timings=timings,
         )
     )
@@ -869,18 +839,18 @@ def _persist_index_only_update(
         ),
     }
     _stamp_git_history(new_state, full_git_summary, failed_steps)
-    # Before save_state, and reading ``state`` (the pre-update dict) for the old
-    # pointer: this is what keeps a degraded run recoverable now that the
-    # pointer below advances to head regardless.
-    record_repair_marker(new_state, state, failed_steps)
-    if prune_refusals:
-        _prune_refusal_outcome(new_state, state, prune_refusals)
+    clear_prune_refusal(new_state)
+    if failed_steps or PRUNE_REFUSED_AT not in state:
+        prior = {**new_state, "last_sync_commit": state.get("last_sync_commit")}
+        record_repair_marker(new_state, prior, failed_steps)
     if failed_steps:
         console.print(
             "[yellow]Some data for this commit range was not persisted; "
             "the next update will re-cover it.[/yellow]"
         )
     backfill_docs_pointer(new_state, state)
+    if template_wiki and pages_rendered and head:
+        new_state["last_docs_commit"] = head
     if knowledge_graph_result is not None:
         try:
             from repowise.cli.state_persistence import build_kg_state, save_knowledge_graph_json
@@ -1025,7 +995,7 @@ def _persist_full_update(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
-    prune_refusals: list[str] | None = None,
+    retry_prune: bool = False,
     timings: PhaseTimings | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
@@ -1073,7 +1043,7 @@ def _persist_full_update(
             require_decision_persist_success=require_decision_persist_success,
             history_window_changed=history_window_changed,
             failed_steps=failed_steps,
-            prune_refusals=prune_refusals if prune_refusals is not None else [],
+            retry_prune=retry_prune,
             timings=timings,
         )
     )
@@ -1106,7 +1076,7 @@ async def _persist_full_update_async(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
-    prune_refusals: list[str] | None = None,
+    retry_prune: bool = False,
     timings: PhaseTimings | None = None,
 ) -> int:
     from .full_persist import FullUpdatePersist, write_full_update
@@ -1147,23 +1117,10 @@ async def _persist_full_update_async(
         log=console.print,
         degraded=degraded,
         failed_steps=failed_steps,
-        prune_refusals=prune_refusals if prune_refusals is not None else [],
+        retry_prune=retry_prune,
         timings=timings,
     )
-    result = await write_full_update(ctx)
-    if ctx.prune_refusals:
-        # The full path re-reads and rewrites the whole index, so a refusal here
-        # is not a stall: it re-covers everything the refusal was protecting.
-        # Said out loud so "the full update advanced past a refusal" reads as a
-        # decision on the record rather than an oversight (#5410 review).
-        console.print(
-            "[yellow]The deleted-file prune refused part of this change; the full "
-            "update re-covers the whole index, so the sync pointer advances "
-            "anyway.[/yellow]"
-        )
-        for refusal in ctx.prune_refusals:
-            console.print(f"[yellow]{refusal}[/yellow]")
-    return result
+    return await write_full_update(ctx)
 
 
 async def _rescore_health_from_db(

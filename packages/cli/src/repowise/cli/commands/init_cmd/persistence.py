@@ -37,6 +37,7 @@ from repowise.core.index_scope import (
     stamp_index_scope,
 )
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
+from repowise.core.pipeline.incremental.prune import PRUNE_REFUSED_AT, clear_prune_refusal
 from repowise.core.pipeline.index_persistence import (
     IndexWrite,
     apply_index_persistence,
@@ -150,7 +151,6 @@ async def persist_result(
     *timings* splits that span into its SQL and full-text halves, which the
     single ``persist`` number cannot distinguish.
     """
-    from datetime import UTC, datetime
 
     from repowise.core.persistence import (
         FullTextSearch,
@@ -158,7 +158,6 @@ async def persist_result(
         refresh_planner_stats,
         upsert_repository,
     )
-    from repowise.core.persistence.crud import upsert_generation_job
     from repowise.core.pipeline import (
         persist_analysis,
         persist_generation,
@@ -169,13 +168,18 @@ async def persist_result(
     )
     from repowise.core.pipeline.persist import persist_symbol_analysis, sweep_store_hygiene
 
-    engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
+    repair_prune = PRUNE_REFUSED_AT in load_state(repo_path)
+    if repair_prune and getattr(result, "git_summary", None) is None:
+        raise RuntimeError("Cannot reconcile the refused prune without a successful Git index")
 
     # When a ResumeController persisted the INDEX phase incrementally during
     # the run, the graph + git + symbols are already on disk — write only the
     # analysis + generation outputs here (avoids re-persisting a rehydrated
     # graph and a redundant full index write).
     index_done = bool(getattr(result, "index_persisted_incrementally", False))
+    if repair_prune and index_done:
+        raise RuntimeError("A refused prune needs a fresh full traversal, not a checkpoint")
+    engine, sf, _repo_id = await open_repo_db(repo_path, repo_name=result.repo_name)
 
     fts = None
     if result.generated_pages:
@@ -194,8 +198,9 @@ async def persist_result(
             session,
             name=result.repo_name,
             local_path=str(repo_path),
-            stamp_head=True,
+            stamp_head=not repair_prune,
         )
+        prior_synced_at = repo.updated_at if repair_prune else None
         # Persist the detected tech stack into the repository's settings
         # blob. Merge into any pre-existing settings so we don't clobber
         # unrelated state (workspace flags, etc.). Done here rather than
@@ -275,6 +280,9 @@ async def persist_result(
         # Commit boundary 3 of 5: generation and its structural sweep (or the
         # pipeline result), together with the vector deletions that retire them.
         with timed(timings, "persist.commit.generation"):
+            if prior_synced_at is not None:
+                # Git totals write a sync timestamp. Keep the old one until recovery finishes.
+                repo.updated_at = prior_synced_at
             await session.commit()
         persisted_repo_id = repo.id
 
@@ -299,30 +307,10 @@ async def persist_result(
         with timed(timings, "persist.commit.prune"):
             await session.commit()
 
-        # Record a completed GenerationJob so the web UI can show
-        # "last synced" / "last re-indexed" timestamps.
-        now = datetime.now(UTC)
-        _pages = result.generated_pages or []
-        page_count = len(_pages)
-        # A page that fell back to its stub has a row, so it counts towards the
-        # total, but the model never wrote it. Counting it as completed is what
-        # would let a run that lost half its pages report a clean sweep to the
-        # web UI, which reads this row rather than the job checkpoint.
-        stub_fallbacks = count_stub_fallbacks(_pages)
-        job = await upsert_generation_job(
-            session,
-            repository_id=repo.id,
-            status="completed",
-            total_pages=page_count,
-            config={"mode": "full_resync", "source": "cli_init"},
-        )
-        job.completed_pages = page_count - stub_fallbacks
-        job.failed_pages = stub_fallbacks
-        job.started_at = now
-        job.finished_at = now
-        # Commit boundary 5 of 5: the generation job record.
-        with timed(timings, "persist.commit.job"):
-            await session.commit()
+        if not repair_prune:
+            with timed(timings, "persist.commit.job"):
+                await _record_completed_init_job(session, repo.id, result.generated_pages)
+                await session.commit()
 
         # Nothing is deleted from the vector store here: each batch of retired
         # pages was deleted immediately before the commit that made its SQL side
@@ -373,6 +361,41 @@ async def persist_result(
     if progress is not None:
         progress.on_phase_done("persist")
     await publish_index_persistence(persisted_repo_id, repo_path)
+    if repair_prune:
+        # Unlike an ordinary init, don't advertise a successful resync until
+        # the authoritative rewrite and its fallible publication have finished.
+        engine, sf, _ = await open_repo_db(repo_path, repo_name=result.repo_name, init=False)
+        try:
+            with timed(timings, "persist.commit.job"):
+                async with get_session(sf) as session:
+                    await _record_completed_init_job(session, persisted_repo_id, result.generated_pages)
+        finally:
+            await engine.dispose()
+
+
+
+
+async def _record_completed_init_job(session: Any, repo_id: str, pages: list | None) -> None:
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.crud import upsert_generation_job
+
+    now = datetime.now(UTC)
+    pages = pages or []
+    page_count = len(pages)
+    stub_fallbacks = count_stub_fallbacks(pages)
+    job = await upsert_generation_job(
+        session,
+        repository_id=repo_id,
+        status="completed",
+        total_pages=page_count,
+        config={"mode": "full_resync", "source": "cli_init"},
+    )
+    # A persisted fallback stub is not a completed page.
+    job.completed_pages = page_count - stub_fallbacks
+    job.failed_pages = stub_fallbacks
+    job.started_at = now
+    job.finished_at = now
 
 
 # ---------------------------------------------------------------------------
@@ -573,6 +596,7 @@ def save_full_state_and_config(
 
     head = get_head_commit(repo_path)
     state = load_state(repo_path)
+    clear_prune_refusal(state)
     state["last_sync_commit"] = head
     state["total_pages"] = run_async(_count_db_pages())
     state["provider"] = provider.provider_name

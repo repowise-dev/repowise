@@ -26,7 +26,7 @@ from ._common import LogFn, _noop_log
 from .commits import persist_incremental_commits
 from .external_systems import refresh_external_systems
 from .health import persist_partial_health
-from .prune import prune_deleted_files
+from .prune import REQUIRED_PRUNE_RETRY_STEPS, PruneHoldError, prune_deleted_files
 
 
 @dataclass(kw_only=True)
@@ -71,6 +71,15 @@ class IncrementalPersist(PersistRun):
     # Refusals from the deleted-file prune: the prune ran and stopped rather
     # than failing. The caller uses them to hold the sync pointer (#5410).
     prune_refusals: list[str] = field(default_factory=list)
+    retry_prune: bool = False
+
+    def skip(self, step: str, exc: Exception, *, range_scoped: bool = False) -> None:
+        super().skip(step, exc, range_scoped=range_scoped)
+        self.check_prune_retry_step(step, exc)
+
+    def check_prune_retry_step(self, step: str, exc: Exception) -> None:
+        if self.retry_prune and step in REQUIRED_PRUNE_RETRY_STEPS:
+            raise PruneHoldError([*(self.failed_steps or ()), step]) from exc
 
 
 # --- Steps inside the session -------------------------------------------------
@@ -422,6 +431,8 @@ async def prune_deleted(ctx: IncrementalPersist) -> None:
         prune_refusals=ctx.prune_refusals,
         timings=ctx.timings,
     )
+    if ctx.prune_refusals:
+        raise PruneHoldError(ctx.failed_steps or ())
 
 
 async def refresh_git_rollups(ctx: IncrementalPersist) -> None:
@@ -625,6 +636,7 @@ CLEANUP_STEPS: tuple[Step, ...] = (
         when=lambda ctx: bool(ctx.fts_cleanup_ids),
         range_scoped=True,
         on_error=_record_debt("fts"),
+        reraise=lambda ctx: ctx.retry_prune,
     ),
     Step(
         "Tombstone vector-store open",
@@ -632,6 +644,7 @@ CLEANUP_STEPS: tuple[Step, ...] = (
         when=lambda ctx: _needs_vector_store(ctx) and _lance_dir(ctx).exists(),
         range_scoped=True,
         on_error=_record_debt("vectors"),
+        reraise=lambda ctx: ctx.retry_prune,
     ),
     Step(
         "Tombstone vector debt clear",
@@ -644,6 +657,7 @@ CLEANUP_STEPS: tuple[Step, ...] = (
         delete_vector_rows,
         when=lambda ctx: bool(ctx.vector_cleanup_ids) and ctx.vector_store is not None,
         on_error=_record_debt("vectors"),
+        reraise=lambda ctx: ctx.retry_prune,
     ),
 )
 
@@ -673,7 +687,7 @@ async def persist_incremental_index(
     log: LogFn | None = None,
     degraded: list[str] | None = None,
     failed_steps: list[str] | None = None,
-    prune_refusals: list[str] | None = None,
+    retry_prune: bool = False,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist an incremental index refresh (graph + symbols + git + dead-code + health).
@@ -730,7 +744,7 @@ async def persist_incremental_index(
         deferred_page_paths=deferred_page_paths,
         log=log or _noop_log,
         degraded=[] if degraded is None else degraded,
-        prune_refusals=[] if prune_refusals is None else prune_refusals,
+        retry_prune=retry_prune,
         failed_steps=failed_steps,
         timings=timings,
     )
@@ -759,6 +773,45 @@ async def save_graph_snapshot(ctx: IncrementalPersist) -> None:
         await save_seed_edge_cache(ctx.repo_path, ctx.graph_builder)
 
 
+def retry_update_head(ctx: IncrementalPersist) -> str | None:
+    """Capture the held retry's target before publication can take time."""
+    if not ctx.retry_prune:
+        return None
+    from repowise.core.workspace.update.state import get_head_commit
+
+    head = get_head_commit(Path(ctx.repo_path))
+    if not head:
+        raise PruneHoldError(["Resolve retry HEAD"])
+    return head
+
+
+async def open_update_repository(ctx: IncrementalPersist, session: Any, name: str) -> Any:
+    from repowise.core.persistence import upsert_repository
+    from repowise.core.persistence.crud import adopt_moved_repository
+
+    path = str(ctx.repo_path)
+    if not ctx.retry_prune:
+        return await upsert_repository(session, name=name, local_path=path, stamp_head=True)
+    # Upsert would stamp live HEAD if it had to create a missing row. A held
+    # retry has to continue using the existing repository, not create a new one.
+    repo = await adopt_moved_repository(session, path)
+    if repo is None:
+        raise PruneHoldError(["Repository row missing"])
+    return repo
+
+
+async def stamp_retried_update(session: Any, repo_id: str, head: str) -> None:
+    from datetime import UTC, datetime
+
+    from repowise.core.persistence.models import Repository
+
+    repo = await session.get(Repository, repo_id)
+    if repo is None:
+        raise PruneHoldError(["Repository row missing"])
+    repo.head_commit = head
+    repo.updated_at = datetime.now(UTC)
+
+
 async def _write(ctx: IncrementalPersist) -> None:
     """Open the store, run every step in one transaction, then the cleanup tail."""
     from repowise.core.persistence import (
@@ -767,9 +820,10 @@ async def _write(ctx: IncrementalPersist) -> None:
         get_session,
         init_db,
         refresh_planner_stats,
-        upsert_repository,
     )
     from repowise.core.persistence.database import resolve_db_url
+
+    retry_head = retry_update_head(ctx)
 
     timings = ctx.timings
     ctx.engine = create_engine(resolve_db_url(ctx.repo_path))
@@ -783,14 +837,12 @@ async def _write(ctx: IncrementalPersist) -> None:
 
         async with get_session(sf) as session:
             with timed(timings, "persist.open"):
-                repo = await upsert_repository(
-                    session,
-                    name=ctx.repo_path.name,
-                    local_path=str(ctx.repo_path),
-                    stamp_head=True,
-                )
+                repo = await open_update_repository(ctx, session, ctx.repo_path.name)
+            prior_synced_at = repo.updated_at if ctx.retry_prune else None
             ctx.session, ctx.repo_id = session, repo.id
             await run_steps(ctx, INCREMENTAL_STEPS)
+            if prior_synced_at is not None:
+                repo.updated_at = prior_synced_at  # Git totals write their own timestamp.
             # The transaction commits as the block exits.
             if timings is not None:
                 timings.start("persist.commit")
@@ -837,3 +889,10 @@ async def _write(ctx: IncrementalPersist) -> None:
         await save_graph_snapshot(ctx)
 
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))
+    if retry_head is not None:
+        # Reuse the session factory after disposal; no connection is held across publication.
+        try:
+            async with get_session(sf) as session:
+                await stamp_retried_update(session, ctx.repo_id, retry_head)
+        finally:
+            await ctx.engine.dispose()

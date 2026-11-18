@@ -8,6 +8,7 @@ from typing import Any
 from repowise.cli.helpers import console, load_state, run_async
 from repowise.cli.providers import flush_cost_tracker, run_cost_tracker
 from repowise.cli.ui import progress_steps
+from repowise.core.pipeline.incremental.prune import PRUNE_RECOVERY, PRUNE_REFUSED_AT
 
 from ._options import InitRun
 from .persistence import build_resume_controller
@@ -94,7 +95,14 @@ async def _index_with_resume(
     opts = run.opts
     controller = None
     engine = None
-    if not opts.dry_run:
+    repair_prune = PRUNE_REFUSED_AT in load_state(run.repo_path)
+    if repair_prune and opts.resume:
+        from click import ClickException
+
+        raise ClickException(PRUNE_RECOVERY)
+    # The checkpoint only upserts GitMetadata; final full persistence has the
+    # authoritative traversal and Git paths needed to reconcile a held prune.
+    if not opts.dry_run and not repair_prune:
         controller, engine = await build_resume_controller(run.repo_path, resume=opts.resume)
     try:
         return await run_pipeline(
@@ -158,7 +166,7 @@ def index_repository(run: InitRun) -> None:
     with progress_steps(
         console,
         cost=llm_client is not None,
-        resume_command=RESUME_COMMAND,
+        resume_command=None if PRUNE_REFUSED_AT in load_state(run.repo_path) else RESUME_COMMAND,
         total_phases=run.total_phases,
     ) as steps:
         callback = _StopAtStepStart(PhaseTimingRecorder(steps))

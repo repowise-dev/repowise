@@ -42,6 +42,7 @@ from repowise.core.generation.styles import (
     list_styles,
     resolve_style,
 )
+from repowise.core.pipeline.incremental.prune import PRUNE_HOLD_MESSAGE, PRUNE_REFUSED_AT
 from repowise.core.settings.model import flag
 
 
@@ -191,6 +192,8 @@ def restyle_command(
         _print_styles(current=current, repo_path=repo_path)
         console.print("\nRun [bold]repowise restyle <style>[/bold] to switch and regenerate.")
         return
+    if PRUNE_REFUSED_AT in state:
+        raise click.ClickException(PRUNE_HOLD_MESSAGE)
 
     # Refused before any page is rewritten: the new style is saved at the end,
     # and a config that does not parse cannot take it.

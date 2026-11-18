@@ -263,6 +263,9 @@ def _base_state(run: InitRun) -> dict[str, Any]:
     head = get_head_commit(repo_path)
     prior_state = load_state(repo_path)
     base_state = load_state(repo_path)
+    from repowise.core.pipeline.incremental.prune import clear_prune_refusal
+
+    clear_prune_refusal(base_state)
     base_state["last_sync_commit"] = head
     docs_mode = _docs_mode(run)
     base_state.update(docs_mode_state_fields(docs_mode))

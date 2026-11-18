@@ -378,7 +378,7 @@ async def prune_deleted_file_rows(
             refusals.append(
                 f"Deleted-file prune refused for {label}: {len(dead)} of "
                 f"{len(persisted)} paths looked deleted, which reads as a broken "
-                "run rather than a commit. Run a full reindex to clear them."
+                "run rather than a commit."
             )
             return []
         deleted.update(dead)

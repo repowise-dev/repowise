@@ -20,6 +20,7 @@ from repowise.core.pipeline.incremental.persist_index import (
     IncrementalPersist,
     capture_commits,
     mark_tombstones,
+    open_update_repository,
     persist_doc_drift,
     persist_edges,
     persist_git,
@@ -33,7 +34,9 @@ from repowise.core.pipeline.incremental.persist_index import (
     reconcile_generation_scope,
     reconcile_scope,
     refresh_git_rollups,
+    retry_update_head,
     save_graph_snapshot,
+    stamp_retried_update,
     sweep_retired,
 )
 from repowise.core.pipeline.index_persistence import publish_index_persistence
@@ -66,6 +69,7 @@ class FullUpdatePersist(IncrementalPersist):
         self.degraded.append(f"{step}: {exc}")
         if range_scoped and self.failed_steps is not None:
             self.failed_steps.append(step)
+        self.check_prune_retry_step(step, exc)
 
 
 def _requires_rebuild(ctx: FullUpdatePersist) -> bool:
@@ -382,7 +386,7 @@ FULL_UPDATE_STEPS: tuple[Step, ...] = (
     # too. Reports its own failures, one sub-step at a time.
     Step("Deleted-file prune", prune_deleted, guarded=False),
     Step("Git rollups", refresh_git_rollups, when=_has_git_input),
-    Step("Generation job record", record_generation_job),
+    Step("Generation job record", record_generation_job, when=lambda ctx: not ctx.retry_prune),
     Step("Page count", count_pages),
     Step("Config rebuild check", check_config_rebuild, guarded=False),
     Step("Plugin records", persist_plugin_records, guarded=False),
@@ -432,14 +436,14 @@ FULL_UPDATE_CLEANUP: tuple[Step, ...] = (
         index_full_text,
         range_scoped=True,
         on_error=_record_fts_debt,
-        reraise=_requires_rebuild,
+        reraise=lambda ctx: ctx.retry_prune or _requires_rebuild(ctx),
     ),
     Step(
         "Deferred vector cleanup",
         delete_vectors,
         when=lambda ctx: bool(ctx.vector_cleanup_ids) and ctx.decision_vector_store is not None,
         on_error=_record_vector_debt,
-        reraise=_requires_rebuild,
+        reraise=lambda ctx: ctx.retry_prune or _requires_rebuild(ctx),
     ),
 )
 
@@ -453,9 +457,10 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
         get_session,
         init_db,
         refresh_planner_stats,
-        upsert_repository,
     )
     from repowise.core.pipeline.cleanup_debt import load_cleanup_debt
+
+    retry_head = retry_update_head(ctx)
 
     timings = ctx.timings
     ctx.engine = create_engine(get_db_url_for_repo(ctx.repo_path))
@@ -468,11 +473,12 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
 
         async with get_session(sf) as session:
             with timed(timings, "persist.open"):
-                repo = await upsert_repository(
-                    session, name=ctx.repo_name, local_path=str(ctx.repo_path), stamp_head=True
-                )
+                repo = await open_update_repository(ctx, session, ctx.repo_name)
+            prior_synced_at = repo.updated_at if ctx.retry_prune else None
             ctx.session, ctx.repo_id = session, repo.id
             await run_steps(ctx, FULL_UPDATE_STEPS)
+            if prior_synced_at is not None:
+                repo.updated_at = prior_synced_at  # Git totals write their own timestamp.
             # The transaction commits as the block exits.
             if timings is not None:
                 timings.start("persist.commit")
@@ -500,6 +506,14 @@ async def write_full_update(ctx: FullUpdatePersist) -> int:
         await ctx.engine.dispose()
     await save_graph_snapshot(ctx)
     await publish_index_persistence(ctx.repo_id, Path(ctx.repo_path))
+    if retry_head is not None:
+        try:
+            async with get_session(sf) as session:
+                ctx.session = session
+                await record_generation_job(ctx)
+                await stamp_retried_update(session, ctx.repo_id, retry_head)
+        finally:
+            await ctx.engine.dispose()
     return ctx.total_pages
 
 

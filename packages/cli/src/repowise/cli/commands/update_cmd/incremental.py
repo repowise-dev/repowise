@@ -97,6 +97,7 @@ def _rebuild_graph_and_git(
     include_nested_repos: bool = False,
     idle_decay_sink: dict[str, dict] | None = None,
     force_full_git: bool = False,
+    retry_prune: bool = False,
     git_summary_sink: list[Any] | None = None,
     timings: PhaseTimings | None = None,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
@@ -137,6 +138,7 @@ def _rebuild_graph_and_git(
             include_nested_repos=include_nested_repos,
             idle_decay_sink=idle_decay_sink,
             force_full_git=force_full_git,
+            retry_prune=retry_prune,
             git_summary_sink=git_summary_sink,
             log=console.print,
             timings=timings,
