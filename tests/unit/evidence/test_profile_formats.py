@@ -252,3 +252,15 @@ def test_a_plugin_format_is_one_registry_entry(monkeypatch: pytest.MonkeyPatch) 
     assert detect_profile_format(b"TOY") == "toy"
     conv = _convert(profile_formats.get("toy").read(b"TOY"))
     assert _entries(conv)["pkg.app.App.run"]["total"] == 7
+
+
+def test_a_timed_sampled_profile_needs_a_weight_per_sample() -> None:
+    profile = {**PYSPY["profiles"][0], "weights": [0.4]}
+    with pytest.raises(EvidenceFormatError, match="weight"):
+        profile_formats.get("speedscope").read(_bytes({**PYSPY, "profiles": [profile]}))
+
+
+def test_one_stack_longer_than_the_sniff_window_is_still_collapsed() -> None:
+    deep = ";".join(f"f{i} (/r/a.py:{i + 1})" for i in range(400)) + " 3\n"
+    assert len(deep) > 4096
+    assert detect_profile_format(deep.encode()) == "collapsed"

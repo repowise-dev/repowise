@@ -233,7 +233,7 @@ it to this shape first. The format is detected from the content;
 | Format | Written by | What a frame carries |
 |---|---|---|
 | `speedscope` | `pyinstrument -r speedscope`, `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
-| `collapsed` | `py-spy record --format raw --full-filenames`, folded `perf script` output | one `frame;frame;frame count` line per stack; file and line only where the frame text holds them (`name (path:line)`, `py::name:path`) |
+| `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
 
 - A frame joins to a function only when its path sits under the checkout root
   (`--checkout-root`, default the repository), the line falls in an indexed

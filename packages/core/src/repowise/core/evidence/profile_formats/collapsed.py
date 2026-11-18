@@ -21,7 +21,7 @@ import re
 from repowise.core.frame_resolver import ProfileFrame
 
 from ..format_v1 import EvidenceFormatError
-from .model import ProfileRun, StackTally, frame_language
+from .model import SNIFF_BYTES, ProfileRun, StackTally, frame_language
 
 # ``stack count``: the count is the last field, so frame text may hold spaces.
 _LINE_RE = re.compile(r"(?P<stack>\S.*?)\s+(?P<count>\d+)\s*")
@@ -35,6 +35,9 @@ _SNIFF_LINES = 5
 
 def sniff(head: bytes) -> bool:
     text = head.decode("utf-8-sig", errors="replace")
+    if "\n" not in text.rstrip() and len(head) >= SNIFF_BYTES:
+        # One stack longer than the sample: its count lies past the cut.
+        return not text.lstrip().startswith(("{", "[")) and ";" in text
     lines = [ln for ln in text.splitlines()[:-1] or text.splitlines() if ln.strip()]
     stacks = [ln.strip() for ln in lines if not ln.strip().isdigit()][:_SNIFF_LINES]
     return bool(stacks) and all(
@@ -78,7 +81,7 @@ def read(data: bytes) -> ProfileRun:
     if not frames:
         raise EvidenceFormatError(
             "no 'frame;frame;frame count' line in the file",
-            "pass the folded output itself (py-spy --format raw, or perf script folded)",
+            "pass the folded output itself, e.g. py-spy record --format raw --full-filenames",
         )
     return ProfileRun(
         frames=tuple(frames),
@@ -98,7 +101,7 @@ def _frame(text: str) -> ProfileFrame:
     return ProfileFrame(
         path=path,
         line=line,
-        language=frame_language(path),  # type: ignore[arg-type]
+        language=frame_language(path),
         function=name,
     )
 

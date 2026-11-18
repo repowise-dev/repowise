@@ -27,10 +27,7 @@ from dataclasses import dataclass
 from repowise.core.registry.plugins import SeamRegistry
 
 from . import collapsed, speedscope
-from .model import ProfileRun, Stack, StackTally, frame_language
-
-#: How much of the file a sniffer sees.
-SNIFF_BYTES = 4096
+from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
 @dataclass(frozen=True)

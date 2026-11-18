@@ -184,23 +184,44 @@ def checkout_reader(root: str | Path) -> Callable[[str], list[str] | None]:
 
 
 async def load_frame_symbols(
-    session: Any, repository_id: str, paths: Collection[str]
+    session: Any, repository_id: str, paths: Collection[str], *, fold_case: bool = False
 ) -> tuple[dict[str, list[IndexedSymbol]], dict[str, str]]:
     """``symbols_by_file`` and ``origins`` for :func:`resolve_frames`, from the store.
 
     A path is indexed when it has a symbol or a stored health row, so a file
-    indexed with no symbols still maps (to an empty list). Paths match without
-    case, so a Windows profile spelled in another case still finds its file;
-    :func:`resolve_frames` then takes the index's spelling.
+    indexed with no symbols still maps (to an empty list). Paths match
+    exactly; with *fold_case* (a Windows checkout) a path no exact match found
+    is looked up again without case, and :func:`resolve_frames` then takes the
+    index's spelling.
     """
+    symbols: dict[str, list[IndexedSymbol]] = {}
+    origins: dict[str, str] = {}
+    await _load_spans(session, repository_id, sorted(set(paths)), symbols, origins, fold=False)
+    if fold_case:
+        found = {p.casefold() for p in symbols}
+        missed = sorted({p.lower() for p in paths if p.casefold() not in found})
+        # A lower() lookup cannot use the path index, so only the misses take it.
+        await _load_spans(session, repository_id, missed, symbols, origins, fold=True)
+    return symbols, origins
+
+
+async def _load_spans(
+    session: Any,
+    repository_id: str,
+    wanted: list[str],
+    symbols: dict[str, list[IndexedSymbol]],
+    origins: dict[str, str],
+    *,
+    fold: bool,
+) -> None:
     from sqlalchemy import func, select
 
     from repowise.core.persistence.models import HealthFileMetric, WikiSymbol
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-    wanted = sorted({p.lower() for p in paths})
-    symbols: dict[str, list[IndexedSymbol]] = {}
-    origins: dict[str, str] = {}
+    def match(column: Any, chunk: list[str]) -> Any:
+        return (func.lower(column) if fold else column).in_(chunk)
+
     for i in range(0, len(wanted), 400):
         chunk = wanted[i : i + 400]
         rows = await session.execute(
@@ -208,10 +229,7 @@ async def load_frame_symbols(
                 WikiSymbol.symbol_id, WikiSymbol.name, WikiSymbol.qualified_name,
                 WikiSymbol.kind, WikiSymbol.file_path, WikiSymbol.start_line,
                 WikiSymbol.end_line,
-            ).where(
-                WikiSymbol.repository_id == repository_id,
-                func.lower(WikiSymbol.file_path).in_(chunk),
-            )
+            ).where(WikiSymbol.repository_id == repository_id, match(WikiSymbol.file_path, chunk))
         )
         for r in rows:
             symbols.setdefault(r.file_path, []).append(
@@ -224,14 +242,13 @@ async def load_frame_symbols(
         metrics = await session.execute(
             select(HealthFileMetric.file_path, HealthFileMetric.code_origin).where(
                 HealthFileMetric.repository_id == repository_id,
-                func.lower(HealthFileMetric.file_path).in_(chunk),
+                match(HealthFileMetric.file_path, chunk),
             )
         )
         for path, origin in metrics:
             symbols.setdefault(path, [])
             if origin:
                 origins[path] = origin
-    return symbols, origins
 
 
 def _resolve(

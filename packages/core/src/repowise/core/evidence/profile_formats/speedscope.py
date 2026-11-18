@@ -46,12 +46,13 @@ def read(data: bytes) -> ProfileRun:
             f"profiles measure {sorted(map(str, units))}, not one time or sample unit",
             "export a CPU or wall-clock profile; memory profiles (bytes) are not read",
         )
+    unit = next(iter(units))
     tally = StackTally()
     skipped: dict[str, int] = {}
     counted = True
     for profile in profiles:
         if profile.get("type") == "sampled":
-            _sampled(profile, len(frames), tally, skipped)
+            _sampled(profile, len(frames), tally, skipped, timed=unit != "none")
         elif profile.get("type") == "evented":
             counted = False
             _evented(profile, len(frames), tally, skipped)
@@ -61,7 +62,7 @@ def read(data: bytes) -> ProfileRun:
     return ProfileRun(
         frames=frames,
         stacks=tally.stacks(counted=counted),
-        unit=_UNITS[next(iter(units))],
+        unit=_UNITS[unit],
         value_kind="wall" if tool in _WALL_CLOCK_TOOLS else None,
         tool_name=tool,
         tool_version=version,
@@ -94,7 +95,7 @@ def _frame(raw: Any) -> ProfileFrame:
     return ProfileFrame(
         path=path,
         line=line if _whole(line) else 0,
-        language=frame_language(path),  # type: ignore[arg-type]
+        language=frame_language(path),
         function=raw.get("name") if isinstance(raw.get("name"), str) else "",
         column=col if _whole(col) else None,
     )
@@ -117,11 +118,22 @@ def _stack(raw: Any, n_frames: int) -> tuple[int, ...] | None:
 
 
 def _sampled(
-    profile: dict[str, Any], n_frames: int, tally: StackTally, skipped: dict[str, int]
+    profile: dict[str, Any],
+    n_frames: int,
+    tally: StackTally,
+    skipped: dict[str, int],
+    *,
+    timed: bool,
 ) -> None:
     samples = profile.get("samples") if isinstance(profile.get("samples"), list) else []
     weights = profile.get("weights")
     if not isinstance(weights, list) or len(weights) != len(samples):
+        if timed:
+            # Without a weight per sample a time unit says nothing about any sample.
+            raise EvidenceFormatError(
+                "a sampled profile in a time unit has no weight for every sample",
+                "write the profile with the tool's speedscope output, unedited",
+            )
         weights = [1] * len(samples)
     for raw, raw_weight in zip(samples, weights, strict=True):
         stack, weight = _stack(raw, n_frames), _weight(raw_weight)
@@ -139,22 +151,39 @@ def _evented(
     events = profile.get("events") if isinstance(profile.get("events"), list) else []
     open_frames: list[int] = []
     last: float | None = None
-    for event in events:
-        at = _weight(event.get("at")) if isinstance(event, dict) else None
-        frame = event.get("frame") if isinstance(event, dict) else None
-        if at is None or not (_whole(frame) and 0 <= frame < n_frames):
+    for raw in events:
+        event = _event(raw, n_frames)
+        if event is None:
             skipped["bad_event"] = skipped.get("bad_event", 0) + 1
             continue
+        kind, at, frame = event
         if last is not None and at > last and open_frames:
             tally.add(tuple(open_frames), at - last, samples=None)
         last = at if last is None else max(last, at)
-        if event.get("type") == "O":
-            open_frames.append(frame)
-        elif event.get("type") == "C" and frame in open_frames:
-            # Close the frame and anything left open above it.
-            del open_frames[len(open_frames) - 1 - open_frames[::-1].index(frame) :]
-        else:
+        if not _apply(open_frames, kind, frame):
             skipped["bad_event"] = skipped.get("bad_event", 0) + 1
+
+
+def _event(raw: Any, n_frames: int) -> tuple[str, float, int] | None:
+    """``(type, at, frame)`` of a well-formed event, else None."""
+    if not isinstance(raw, dict):
+        return None
+    at, frame = _weight(raw.get("at")), raw.get("frame")
+    if at is None or not (_whole(frame) and 0 <= frame < n_frames):
+        return None
+    return str(raw.get("type")), at, frame
+
+
+def _apply(open_frames: list[int], kind: str, frame: int) -> bool:
+    """Open or close *frame*; False when the event is neither a valid open nor close."""
+    if kind == "O":
+        open_frames.append(frame)
+        return True
+    if kind == "C" and frame in open_frames:
+        # Close the frame and anything left open above it.
+        del open_frames[len(open_frames) - 1 - open_frames[::-1].index(frame) :]
+        return True
+    return False
 
 
 def _exporter(raw: Any) -> tuple[str | None, str | None]:

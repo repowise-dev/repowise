@@ -33,9 +33,10 @@ from repowise.core.frame_resolver import frame_paths, resolve_frames
 from .format_v1 import EVIDENCE_FORMAT, EvidenceFormatError
 
 if TYPE_CHECKING:
+    from repowise.core.frame_resolver import FrameResolution
     from repowise.core.workspace.repo_index import IndexedSymbol
 
-    from .profile_formats import ProfileRun
+    from .profile_formats import ProfileRun, Stack
 
 #: The v1 reason for a frame outside the checkout, which the store counts apart.
 _OUTSIDE = "outside_repo"
@@ -117,59 +118,11 @@ def convert_profile(
         origins=origins,
         read_lines=read_lines,
     )
-    resolved = {r.index: r for r in resolution.resolved}
-    origin_of = (origins or {}).get
-
-    def production(path: str) -> bool:
-        return (origin_of(path) or path_origin(path)) == "production"
-
-    symbols: dict[str, tuple[str, IndexedSymbol]] = {}
-    inclusive: Counter[str] = Counter()
-    own: Counter[str] = Counter()
-    inclusive_n: Counter[str] = Counter()
-    own_n: Counter[str] = Counter()
-    frame_time: Counter[str] = Counter()
-    total = explained = 0.0
+    tally = _Tally(resolution, origins or {})
     for stack in run.stacks:
-        weight, samples = stack.weight, stack.samples or 0
-        total += weight
-        on_stack: set[str] = set()
-        in_production = False
-        for i in stack.frames:
-            hit = resolved.get(i)
-            frame_time["resolved" if hit is not None else str(resolution.reasons[i])] += weight
-            if hit is None:
-                continue
-            in_production = in_production or production(hit.path)
-            if hit.symbol is not None and hit.symbol.symbol_id not in on_stack:
-                on_stack.add(hit.symbol.symbol_id)
-                symbols[hit.symbol.symbol_id] = (hit.path, hit.symbol)
-                inclusive[hit.symbol.symbol_id] += weight
-                inclusive_n[hit.symbol.symbol_id] += samples
-        if in_production:
-            explained += weight
-        innermost = next(
-            (i for i in reversed(stack.frames) if resolution.reasons[i] != "outside_root"), None
-        )
-        hit = resolved.get(innermost) if innermost is not None else None
-        if hit is not None and hit.symbol is not None:
-            own[hit.symbol.symbol_id] += weight
-            own_n[hit.symbol.symbol_id] += samples
-
+        tally.add(stack)
     counted = any(s.samples is not None for s in run.stacks)
-    entries = [
-        {
-            "path": path,
-            "function": symbol.qualified_name,
-            "line": symbol.start_line,
-            "self": own[sid],
-            "total": inclusive[sid],
-            **({"self_samples": own_n[sid], "total_samples": inclusive_n[sid]} if counted else {}),
-        }
-        for sid, (path, symbol) in sorted(
-            symbols.items(), key=lambda kv: (-inclusive[kv[0]], kv[0])
-        )
-    ]
+    entries = tally.entries(counted=counted)
     skipped = Counter(run.skipped)
     for reason, count in resolution.skipped.items():
         skipped[_OUTSIDE if reason == "outside_root" else reason] += count
@@ -178,14 +131,82 @@ def convert_profile(
         "kind": "profile",
         "value_kind": kind,
         "unit": run.unit,
-        "total": total,
-        "explained": explained,
+        "total": tally.total,
+        "explained": tally.explained,
         "skipped": dict(sorted(skipped.items())),
         "symbols": entries,
     }
     if run.tool_name:
         document["tool"] = {"name": run.tool_name, "version": run.tool_version}
-    return ProfileConversion(document, run.unit, total, explained, dict(frame_time))
+    return ProfileConversion(
+        document, run.unit, tally.total, tally.explained, dict(tally.frame_time)
+    )
+
+
+class _Tally:
+    """Per-symbol inclusive and self weight, explained weight and frame time over the stacks."""
+
+    def __init__(self, resolution: FrameResolution, origins: Mapping[str, str]) -> None:
+        self._reasons = resolution.reasons
+        self._resolved = {r.index: r for r in resolution.resolved}
+        self._origins = origins
+        self._symbols: dict[str, tuple[str, IndexedSymbol]] = {}
+        self._inclusive: Counter[str] = Counter()
+        self._own: Counter[str] = Counter()
+        self._inclusive_n: Counter[str] = Counter()
+        self._own_n: Counter[str] = Counter()
+        self.frame_time: Counter[str] = Counter()
+        self.total = 0.0
+        self.explained = 0.0
+
+    def _production(self, path: str) -> bool:
+        return (self._origins.get(path) or path_origin(path)) == "production"
+
+    def add(self, stack: Stack) -> None:
+        weight, samples = stack.weight, stack.samples or 0
+        self.total += weight
+        on_stack: set[str] = set()
+        in_production = False
+        for i in stack.frames:
+            hit = self._resolved.get(i)
+            self.frame_time["resolved" if hit is not None else str(self._reasons[i])] += weight
+            if hit is None:
+                continue
+            in_production = in_production or self._production(hit.path)
+            if hit.symbol is not None and hit.symbol.symbol_id not in on_stack:
+                sid = hit.symbol.symbol_id
+                on_stack.add(sid)
+                self._symbols[sid] = (hit.path, hit.symbol)
+                self._inclusive[sid] += weight
+                self._inclusive_n[sid] += samples
+        if in_production:
+            self.explained += weight
+        innermost = next(
+            (i for i in reversed(stack.frames) if self._reasons[i] != "outside_root"), None
+        )
+        hit = self._resolved.get(innermost) if innermost is not None else None
+        if hit is not None and hit.symbol is not None:
+            self._own[hit.symbol.symbol_id] += weight
+            self._own_n[hit.symbol.symbol_id] += samples
+
+    def entries(self, *, counted: bool) -> list[dict[str, Any]]:
+        """One v1 entry per symbol, costliest inclusive first."""
+        order = sorted(self._symbols, key=lambda sid: (-self._inclusive[sid], sid))
+        return [
+            {
+                "path": self._symbols[sid][0],
+                "function": self._symbols[sid][1].qualified_name,
+                "line": self._symbols[sid][1].start_line,
+                "self": self._own[sid],
+                "total": self._inclusive[sid],
+                **(
+                    {"self_samples": self._own_n[sid], "total_samples": self._inclusive_n[sid]}
+                    if counted
+                    else {}
+                ),
+            }
+            for sid in order
+        ]
 
 
 def refuse_typescript(run: ProfileRun, root: str) -> None:

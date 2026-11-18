@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from repowise.core.ingestion.languages.registry import REGISTRY
 
 if TYPE_CHECKING:
-    from repowise.core.frame_resolver import ProfileFrame
+    from repowise.core.frame_resolver import FrameLanguage, ProfileFrame
+
+#: How much of the file a sniffer sees.
+SNIFF_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -60,15 +63,18 @@ class StackTally:
         )
 
 
-def frame_language(path: str) -> str:
+def frame_language(path: str) -> FrameLanguage:
     """The language a frame's file is written in, from its extension.
 
     Answered by the language registry; ``unknown`` for a file with no
-    extension (a runtime frame such as ``<built-in>``).
+    extension (a runtime frame such as ``<built-in>``). Any language but the
+    three :func:`~repowise.core.frame_resolver.resolve_frames` checks is
+    skipped there as ``unsupported_language``.
     """
     name = path.replace("\\", "/").rsplit("/", 1)[-1]
     dot = name.rfind(".")
-    return REGISTRY.from_extension(name[dot:].lower()) if dot > 0 else "unknown"
+    tag = REGISTRY.from_extension(name[dot:].lower()) if dot > 0 else "unknown"
+    return cast("FrameLanguage", tag)
 
 
-__all__ = ["ProfileRun", "Stack", "StackTally", "frame_language"]
+__all__ = ["SNIFF_BYTES", "ProfileRun", "Stack", "StackTally", "frame_language"]

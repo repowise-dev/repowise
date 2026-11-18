@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -272,9 +273,10 @@ def _input_format(given: str | None, data: bytes) -> str:
 def _check_value_kind(read: _Input, value_kind: str | None) -> None:
     """A converted profile needs its clock; a v1 file's own must not be contradicted."""
     if read.doc is not None:
-        if value_kind is not None and read.doc.value_kind not in (None, value_kind):
+        if value_kind is not None and read.doc.value_kind != value_kind:
             raise click.BadParameter(
-                f"the file says it measured {read.doc.value_kind}; pass the same or none.",
+                f"the file's value_kind is {read.doc.value_kind}; --value-kind only names "
+                "the clock of a converted profile, so pass the same or none.",
                 param_hint="--value-kind",
             )
         return
@@ -451,7 +453,10 @@ async def _convert(
     from repowise.core.frame_resolver import checkout_reader, frame_paths, load_frame_symbols
 
     symbols, origins = await load_frame_symbols(
-        session, repo_id, frame_paths(run.frames, root=str(root))
+        session,
+        repo_id,
+        frame_paths(run.frames, root=str(root)),
+        fold_case=sys.platform == "win32",
     )
     return convert_profile(
         run,
