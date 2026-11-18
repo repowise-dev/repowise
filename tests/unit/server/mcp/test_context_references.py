@@ -1425,6 +1425,23 @@ async def test_member_call_on_a_variable_named_like_a_definition_keyword(
 
 
 @pytest.mark.asyncio
+async def test_member_named_after_a_spread_is_no_receiver_call(session, repo_id, tmp_path):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    (tmp_path / "app" / "spread.ts").write_text(
+        "const all = [...fetch_rows(id)]\nconst one = store.fetch_rows()\n", encoding="utf-8"
+    )
+    session.add(
+        _edge(3, repo_id, "app/spread.ts", "pkg/store.py", "imports", imported_names_json="[]")
+    )
+    await session.flush()
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    kinds = {n: k for p, n, k in _sites(out) if p == "app/spread.ts"}
+    assert kinds == {1: "reference", 2: "call"}
+
+
+@pytest.mark.asyncio
 async def test_member_accessed_on_an_untyped_receiver_names_the_file(session, repo_id, tmp_path):
     node = await _seed_method(
         session, repo_id, tmp_path, "def load(store):\n    return store.fetch_rows()\n"

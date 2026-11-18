@@ -915,8 +915,9 @@ def _calls_here(
     return n in graph_calls
 
 
-# A member named on a receiver: ``obj.name``, ``obj?.name``, ``ptr->name``, ``Type::name``.
-_RECEIVER_BEFORE = re.compile(r"(?:\?\.|\.|->|::)\s*$")
+# A member named on a receiver: ``obj.name``, ``obj?.name``, ``ptr->name``, ``Type::name``;
+# not the last dot of a spread (``...name``) or a range (``..name``).
+_RECEIVER_BEFORE = re.compile(r"(?:\?\.|(?<!\.)\.|->|::)\s*$")
 
 
 def _member_call(text: str, hits: list[re.Match[str]], n: int, prose: _ProseLines) -> bool:
