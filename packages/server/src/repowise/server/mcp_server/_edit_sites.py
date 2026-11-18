@@ -935,8 +935,11 @@ def _member_call(text: str, hits: list[re.Match[str]], n: int, prose: _ProseLine
     )
 
 
-# A definition written on a receiver: ``def self.name(``, ``fun String.name(``.
-_DEFINED_BEFORE = re.compile(r"\b(?:def|fun|func|function|fn|sub)\s[^=(]*$")
+# A definition written on a receiver: ``def self.name(``, ``fun <T> List<T>.name(``,
+# where only a type follows the keyword, so ``for sub in subs: sub.name(`` is a call.
+_DEFINED_BEFORE = re.compile(
+    r"\b(?:def|fun|func|function|fn|sub)\s+(?:<[^>]*>\s*)?(?:<[^>]*>|[\w$.?*&\[\]:>])*$"
+)
 
 
 def _line_kind(is_def: bool, is_import: bool, in_graph: bool) -> str:

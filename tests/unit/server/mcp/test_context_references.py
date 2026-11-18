@@ -1405,6 +1405,26 @@ async def test_member_called_on_a_receiver_the_graph_did_not_type_is_a_call(
 
 
 @pytest.mark.asyncio
+async def test_member_call_on_a_variable_named_like_a_definition_keyword(
+    session, repo_id, tmp_path
+):
+    node = await _seed_method(session, repo_id, tmp_path, "fetch_rows_total = 0\n")
+    (tmp_path / "app" / "use.py").write_text(
+        "from pkg.store import Store\n\n"
+        "rows = Store().fetch_rows()\n"
+        "for sub in subs: sub.fetch_rows()\n"
+        "if fn is not None and fn.fetch_rows(): pass\n",
+        encoding="utf-8",
+    )
+
+    out = await reference_edit_set(session, repo_id, tmp_path, node)
+
+    kinds = {n: k for p, n, k in _sites(out) if p == "app/use.py"}
+    # A variable named ``sub`` or ``fn`` opens no definition.
+    assert kinds == {3: "call", 4: "call", 5: "call"}
+
+
+@pytest.mark.asyncio
 async def test_member_accessed_on_an_untyped_receiver_names_the_file(session, repo_id, tmp_path):
     node = await _seed_method(
         session, repo_id, tmp_path, "def load(store):\n    return store.fetch_rows()\n"
