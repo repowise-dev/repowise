@@ -71,12 +71,12 @@ def test_malformed_ranges_cost_only_themselves() -> None:
     from repowise.core.persistence.crud.analysis.coverage_map import (
         _decode_lines,
         _decode_tests,
-        _in_ranges,
+        _lines_in_spans,
     )
 
     assert _decode_lines("1-3,x,7,") == [1, 2, 3, 7]
-    assert _in_ranges(7, "1-3,x,7")
-    assert not _in_ranges(5, "1-3,x,7")
+    assert _lines_in_spans([2, 5, 7, 9], "1-3,x,7") == [2, 7]
+    assert _lines_in_spans([5], "1-3,x,7") == []
     assert _decode_tests("not json") == []
 
 

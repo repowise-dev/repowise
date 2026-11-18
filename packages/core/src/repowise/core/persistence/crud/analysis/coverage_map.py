@@ -13,6 +13,7 @@ point-in-time (overwritten per ingest run), mirroring ``coverage_files``.
 from __future__ import annotations
 
 import json
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -133,16 +134,25 @@ def _decode_lines(text: str) -> list[int]:
     return out
 
 
-def _in_ranges(line: int, text: str) -> bool:
-    """Whether :func:`_encode_lines` output *text* contains *line*."""
+def _spans(text: str) -> list[tuple[int, int]]:
+    """The inclusive ``(lo, hi)`` spans of :func:`_encode_lines` output *text*."""
+    out: list[tuple[int, int]] = []
     for part in text.split(","):
         lo, _, hi = part.partition("-")
         try:
-            if int(lo) <= line <= int(hi or lo):
-                return True
+            out.append((int(lo), int(hi or lo)))
         except ValueError:
             continue
-    return False
+    return out
+
+
+def _lines_in_spans(sorted_lines: list[int], text: str) -> list[int]:
+    """The lines of *sorted_lines* inside *text*'s spans, each span parsed once."""
+    hit: set[int] = set()
+    for lo, hi in _spans(text):
+        start = bisect_left(sorted_lines, lo)
+        hit.update(sorted_lines[start : bisect_right(sorted_lines, hi)])
+    return sorted(hit)
 
 
 def _decode_tests(tests_json: str) -> list[tuple[int, str]]:
@@ -268,12 +278,13 @@ async def _covering(
         return {}
     decoded: list[tuple[TestCoverageSource, list[tuple[int, list[int]]]]] = []
     numbers: set[int] = set()
+    wanted = sorted(lines) if lines is not None else []
     for row in await _source_rows(session, repository_id, source_files):
         hits: list[tuple[int, list[int]]] = []
         for no, ranges in _decode_tests(row.tests_json):
             if lines is not None:
                 # Ranges are checked as spans, never expanded to every line.
-                covered = sorted(n for n in lines if _in_ranges(n, ranges))
+                covered = _lines_in_spans(wanted, ranges)
                 if not covered:
                     continue
             else:
