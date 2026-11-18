@@ -3,15 +3,16 @@
 A build unit is one thing a build tool declares: a .NET project, a Cargo
 crate, an npm workspace package, a Gradle project, a Go module, a Maven
 module, a Python distribution. `repowise.core.build_units` reads them once,
-from the resolver indexes the graph build already holds, and gives every
-consumer the same answer to three questions:
+from the resolver indexes the graph build already holds, and stores one
+answer to three questions:
 
 - What units does this repo build?
 - Which units own this file?
 - Which in-repo units does a unit depend on, and which depend on it?
 
-There is one model, and it is stored, so a consumer reads units (live from the
-graph build, or from the store) and never reads a manifest to answer these. See
+There is one model, available live on `GraphBuilder.build_units` during a
+build and from the store afterwards. Code that needs any of these answers reads
+units instead of reading a manifest. See
 [single-sources.md](single-sources.md) for the principle.
 
 | File | Role |
@@ -81,8 +82,9 @@ Which units exist is decided per manifest:
   an owner.
 - **A failed reader costs only its ecosystem.** An adapter that raises is
   logged once, named in `failed_ecosystems`, and its roots are left to the
-  fallback. An ecosystem the repo does not use costs one cheap check (no
-  `.cs` files means no .NET index is built).
+  fallback. An ecosystem the repo does not use costs one cheap check: each
+  adapter first looks for its source files (no `.cs` or `.vb` file means no
+  .NET index is built).
 - A unit id produced twice keeps the first by root, and `deps` naming a unit
   the collection did not produce are dropped.
 
@@ -92,7 +94,7 @@ Which units exist is decided per manifest:
 |---|---|---|---|
 | .NET | `DotNetProjectIndex` (`ingestion/resolvers/dotnet`) | One unit per project, with its compiled files listed | `<ProjectReference>` |
 | Cargo | `CargoWorkspaceIndex` (`ingestion/resolvers/rust_workspace.py`), plus the package-root scan for crates outside the workspace | One unit per crate, in or out of the root workspace | `path` dependencies, `{ workspace = true }` resolved through the root's `[workspace.dependencies]` |
-| Gradle | `JvmGradleIndex` (`ingestion/resolvers/jvm_gradle.py`) | One unit per project, the root project included whenever it has a build script; files listed from source sets | `project(":x")` arguments of configuration calls in the build script, string-named configurations included |
+| Gradle | `JvmGradleIndex` (`ingestion/resolvers/jvm_gradle.py`) | One unit per project, the root project included when it has a build script, also in a multi-project build; files listed from source sets | `project(":x")` arguments of configuration calls in the build script, string-named configurations included |
 | npm, yarn, pnpm | The TypeScript resolver's workspace reader (`ingestion/resolvers/ts_workspace`) | One unit per workspace member; non-member `package.json` files are ruled out | Member names in `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies` |
 | Go | `GoPackageIndex` (`ingestion/resolvers/go_workspace.py`) and `scan_go_mod` | One unit per module (`go.mod`), not per package | `require` entries naming another module of the repo |
 | Maven | `load_maven_reactor` (`ingestion/external_systems/maven_model.py`) | One unit per module of the root `pom.xml` reactor, followed recursively, with coordinates inherited from local parents | `<dependencies>` naming another module's `groupId:artifactId`, inherited and at every scope |
@@ -134,7 +136,7 @@ local stores:
 
 - **When they are written.** `GraphBuilder.build()` calls
   `collect_build_units` right after the resolver warmups and keeps the result
-  on `GraphBuilder.build_units`. `pipeline/persist.persist_build_units` then
+  on `GraphBuilder.build_units`. `persist_build_units` (`pipeline/persist/ingestion.py`) then
   writes it on `init`, and the incremental `Build units persist` step writes
   it on `update`. A builder that collected nothing (a rehydrated graph, a
   collection that raised) writes nothing, so the stored units stay those of
@@ -147,10 +149,12 @@ local stores:
   merged in place of whatever the fallback produced at their roots. Kept file
   rows survive only for paths the fresh index still owns.
 - **Reading back.** `load_build_units(session, repo_id)` returns the same
-  `BuildUnitIndex` the build collected. `pipeline/upgrade.py` passes it to
+  `BuildUnitIndex` the build collected, or an empty index when no rows are
+  stored. `pipeline/upgrade.py` passes it to
   `GraphBuilder.from_persisted(..., build_units=...)`, so a graph rehydrated
-  from SQL carries its units without re-reading a manifest. A store with no
-  rows reads as "unknown" (`None`), not as "no units".
+  from SQL carries its units without re-reading a manifest. It passes `None`
+  for an empty index, so a store with no rows reads as "unknown", not as "no
+  units".
 
 ## How precision is measured
 
