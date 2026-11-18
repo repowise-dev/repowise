@@ -538,6 +538,87 @@ def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
     assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
 
 
+# ---------------------------------------------------------------------------
+# Fixtures, stubs and samples are not units
+# ---------------------------------------------------------------------------
+
+
+def test_a_manifest_in_a_testdata_directory_is_no_unit():
+    files = {
+        "go.mod": "module example.com/scanner\n",
+        "cmd/scanner/update/testdata/pom.xml": "<project/>",
+        "cmd/scanner/scan/image/testdata/java-fixture/app/pom.xml": "<project/>",
+        "internal/analysis/testdata/rust/rust-project/Cargo.toml": '[package]\nname = "p"\n',
+    }
+    paths = [*files, "main.go", "main_test.go"]
+    assert [(s.root, s.language) for s in detect_stacks(paths, files)] == [("", "go")]
+
+
+def test_a_go_mod_with_no_module_line_or_no_go_files_is_no_unit():
+    files = {
+        "go.mod": "module example.com/site\n",
+        "internal/warpc/genavif/go.mod": "module example.com/site/internal/warpc/genavif\n\ngo 1.21\n",
+        "internal/warpc/genwebp/go.mod": "",
+        "internal/warpc/gen/go.mod": "module example.com/site/internal/warpc/gen\n",
+    }
+    paths = [*files, "main.go", "internal/warpc/genavif/avif.c", "internal/warpc/genwebp/webp.c",
+             "internal/warpc/gen/gen.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["", "internal/warpc/gen"]
+
+
+def test_dotnet_runs_the_root_solution_not_a_samples_one_and_names_the_sdk_pin():
+    files = {"global.json": json.dumps({"sdk": {"version": "11.0.100"}})}
+    paths = ["Polly.slnx", "samples/Samples.slnx", "global.json", "src/Polly/Polly.csproj",
+             "test/Polly.Specs/Polly.Specs.csproj"]
+    (stack,) = detect_stacks(paths, files)
+    assert stack.test.startswith("dotnet test Polly.slnx ")
+    assert "11.0.100" in stack.notes[0]
+
+
+def test_dotnet_prefers_the_solution_at_its_root_over_nested_ones():
+    paths = ["Clean.Architecture.slnx", "MinimalClean/MinimalClean.Architecture.slnx",
+             "sample/NimblePros.SampleToDo.slnx", "src/Web/Web.csproj"]
+    (stack,) = detect_stacks(paths, {})
+    assert stack.test.startswith("dotnet test Clean.Architecture.slnx ")
+
+
+def test_dotnet_without_a_pin_names_no_sdk():
+    # Target frameworks of the projects read are only a lower bound, so no SDK is named from them.
+    files = {"src/App/App.csproj": "<TargetFramework>net11.0</TargetFramework>"}
+    (stack,) = detect_stacks(["App.slnx", *files], files)
+    assert not any("SDK" in note for note in stack.notes)
+
+
+def test_a_go_module_is_judged_by_its_module_line_only_when_it_was_read():
+    assert [s.language for s in detect_stacks(["go.mod", "main.go"], {})] == ["go"]
+
+
+def test_a_module_in_a_test_directory_is_no_unit():
+    # Its tests cover test code; the production units run their own.
+    files = {"go.mod": "module example.com/app\n", "integration-tests/go.mod": "module example.com/it\n"}
+    paths = [*files, "main.go", "integration-tests/it_test.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == [""]
+
+
+@pytest.mark.parametrize("pin", ['{"sdk": "11.0.100"}', "[1]", "// comment\n{}", '{"sdk": {"version": 11}}'])
+def test_an_odd_global_json_names_no_sdk(pin):
+    files = {"global.json": pin, "App/App.csproj": "<TargetFramework>net8.0</TargetFramework>"}
+    (stack,) = detect_stacks(["App.sln", *files], files)
+    assert not any("SDK" in note for note in stack.notes)
+
+
+def test_a_global_json_saved_with_a_bom_still_names_its_pin():
+    files = {"global.json": "\ufeff" + json.dumps({"sdk": {"version": "10.0.100"}})}
+    (stack,) = detect_stacks(["App.sln", "global.json"], files)
+    assert "10.0.100" in stack.notes[0]
+
+
+def test_a_go_module_whose_go_code_is_all_in_nested_modules_is_no_unit():
+    files = {"go.mod": "module example.com/tools\n", "a/go.mod": "module example.com/a\n"}
+    paths = [*files, "a/a.go", "a/a_test.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["a"]
+
+
 @pytest.mark.parametrize(
     ("scripts", "command"),
     [
@@ -557,3 +638,31 @@ def test_a_fallback_script_is_picked_only_when_it_is_the_whole_run(scripts, comm
     files = {"package.json": _package(scripts, devDependencies={"@vitest/coverage-v8": "1"})}
     (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
     assert stack.test == command
+
+
+
+def test_a_shipped_test_utils_package_is_a_unit():
+    # The manifest makes test-utils/ a package root, which code_origin keeps production.
+    files = {"package.json": _package({"test": "vitest run"}),
+             "test-utils/package.json": _package({"test": "vitest run"}),
+             "x/testdata/app/package.json": _package({"test": "vitest run"})}
+    paths = [*files, "test-utils/src/index.js", "pnpm-lock.yaml"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["", "test-utils"]
+
+
+def test_a_dotnet_unit_below_the_root_reads_the_nearest_sdk_pin_above_it():
+    # dotnet walks up from the working directory to the first global.json.
+    files = {
+        "global.json": json.dumps({"sdk": {"version": "10.0.100"}}),
+        "src/Svc/Svc.sln": "",
+        "src/Svc/App/App.csproj": "<TargetFramework>net8.0</TargetFramework>",
+    }
+    paths = list(files)
+    assert "global.json" in files_to_read(paths)
+    (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths)})
+    assert stack.root == "src/Svc" and "10.0.100" in stack.notes[0]
+    # A nearer pin wins.
+    files["src/Svc/global.json"] = json.dumps({"sdk": {"version": "9.0.100"}})
+    paths = list(files)
+    (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths)})
+    assert "9.0.100" in stack.notes[0]

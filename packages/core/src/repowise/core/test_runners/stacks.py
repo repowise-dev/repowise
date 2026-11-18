@@ -38,12 +38,13 @@ from pathlib import Path
 from typing import Any
 
 from ..build_units.model import BuildUnitIndex
-from ..code_origin import path_origin
+from ..code_origin import code_origin, path_origin
 from ..fs_walk import INDEX_BLOCKED_DIRS, walk_repo
 from ..ingestion.languages.registry import REGISTRY
 from ..ingestion.resolvers.pnpm_workspace import PNPM_WORKSPACE_FILENAME
 from ..ingestion.workspace_members import parse_toml_or_none
 from ..pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
+from ..test_paths import is_test_related_path
 
 #: Where to look when the stack is unknown.
 GENERIC_REPORTS = (
@@ -643,7 +644,14 @@ def _edit_go(line: str, m: re.Match) -> CommandEdit:
     return CommandEdit(_insert(line, (m.end(), " -coverprofile=coverage.out")), "coverage.out")
 
 
-def _go() -> Stack:
+def _go(paths: list[str], files: dict[str, str]) -> Stack | None:
+    """None for a ``go.mod`` with no ``module`` line or no Go file below it (a build helper, not a module)."""
+    gomod = files.get("go.mod")  # None when the caller read no manifests: nothing to judge by
+    unnamed = gomod is not None and not re.search(r"^\s*module\s+\S", gomod, re.M)
+    # ``./...`` stops at a nested module, so its Go files are not this module's.
+    nested = [_dir(p) + "/" for p in paths if posixpath.basename(p) == "go.mod" and "/" in p]
+    if unnamed or not any(p.endswith(".go") and not p.startswith(tuple(nested)) for p in paths):
+        return None
     return Stack(
         "go", "go test", "go", "coverage.out",
         setup=("- uses: actions/setup-go@v5", "  with:", "    go-version-file: go.mod"),
@@ -791,8 +799,26 @@ def _dotnet_setup(root: set[str], projects: str) -> tuple[str, ...]:
     return ("- uses: actions/setup-dotnet@v4", "  with:", "    dotnet-version: |", *(f"      {v}" for v in versions))
 
 
+def _dotnet_sdk(files: dict[str, str]) -> str | None:
+    """The SDK ``dotnet test`` needs, when ``global.json`` pins one.
+
+    Ceiling: without a pin the note says nothing; the target frameworks of the
+    projects read are a lower bound only, so they are not named. Reading every
+    project the chosen solution builds would be the upgrade.
+    """
+    try:
+        # A file saved with a BOM is still the pin the SDK reads.
+        pinned = json.loads((files.get(_DOTNET_SDK_PIN) or "{}").lstrip("\ufeff")).get("sdk", {}).get("version")
+    except (ValueError, AttributeError):
+        pinned = None
+    if isinstance(pinned, str) and pinned:
+        return (f"`{_DOTNET_SDK_PIN}` pins the .NET SDK to {pinned}: `dotnet --list-sdks` must list it, or a "
+                "later one its `rollForward` allows, before `dotnet test` runs.")
+    return None
+
+
 def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, found: bool) -> list[str]:
-    notes = []
+    notes = [sdk] if (sdk := _dotnet_sdk(files)) else []
     if tests and not any("coverlet.collector" in t for p, t in files.items() if p in tests):
         notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
                      "test project (`dotnet add package coverlet.collector`).")
@@ -805,7 +831,10 @@ def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, f
 
 
 def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
-    solutions = [p for p in paths if p.endswith((".sln", ".slnx"))]
+    # A samples or fixture solution is not the one that runs the tests; the unit's own comes first.
+    solutions = [p for p in paths if p.endswith(_SOLUTIONS) and _kept(p)]
+    own = [p for p in solutions if "/" not in p]
+    solutions = own if len(own) == 1 else solutions
     tests = [p for p in paths if p.endswith(".csproj") and "test" in p.lower() and p.count("/") <= 3]
     target = solutions[0] if len(solutions) == 1 else tests[0] if len(tests) == 1 and not solutions else None
     setup = _dotnet_setup(root, "\n".join(t for p, t in files.items() if p.endswith(".csproj")))
@@ -904,7 +933,7 @@ _ORDER = ("python", "go", "rust", "jvm", "dotnet", "ruby", "php", "node")
 #: A builder returns None for a unit with nothing to test (a package with no test script).
 _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | None]] = {
     "python": _python,
-    "go": lambda names, paths, files: _go(),
+    "go": lambda names, paths, files: _go(paths, files),
     "rust": lambda names, paths, files: _rust(names, files),
     "jvm": lambda names, paths, files: (
         _maven(names, files) if "pom.xml" in names else _gradle(names, files)
@@ -920,6 +949,8 @@ _SOLUTIONS = (".sln", ".slnx")
 _DOTNET_PROJECTS = 20
 #: Gradle's settings files: runner config read on top of the registry's manifests.
 _GRADLE_SETTINGS = ("settings.gradle", "settings.gradle.kts")
+#: The .NET SDK's pin file: runner config read on top of the registry's manifests.
+_DOTNET_SDK_PIN = "global.json"
 #: A manifest of this origin is a fixture, sample or copy, not a unit to cover.
 _SKIP_ORIGINS = frozenset({"test", "generated", "vendored", "docs_example"})
 
@@ -941,7 +972,7 @@ def _manifest_stacks(name: str) -> frozenset[str]:
 @cache
 def _read_names() -> frozenset[str]:
     """Every manifest and runner config detection reads at a unit root."""
-    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME}
+    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME, _DOTNET_SDK_PIN}
     for tag in _LANGUAGE_STACKS:
         spec = REGISTRY.get(tag)
         if spec is not None:
@@ -971,10 +1002,24 @@ def _under(root: str, path: str) -> str | None:
     return path[len(root) + 1 :] if path.startswith(root + "/") else None
 
 
+#: A file name no origin rule reads, so its origin is its directory's (``testdata/`` is test).
+_PLAIN_NAME = "_"
+
+
 def _kept(path: str) -> bool:
-    """Whether a manifest at *path* can declare a unit: not pruned, not a fixture or sample."""
-    blocked = any(part in INDEX_BLOCKED_DIRS for part in path.split("/")[:-1])
-    return not blocked and path_origin(path) not in _SKIP_ORIGINS
+    """Whether a manifest at *path* can declare a unit: not pruned, not a fixture or sample.
+
+    The directory is judged too: a manifest's own origin is ``build``, which hides a
+    ``testdata/`` or ``fixtures/`` directory around it. The manifest makes its directory
+    a package root, which keeps a shipped ``test-utils/`` package production, as it
+    does for every file below one.
+    """
+    if any(part in INDEX_BLOCKED_DIRS for part in path.split("/")[:-1]) or path_origin(path) in _SKIP_ORIGINS:
+        return False
+    directory = _dir(path)
+    plain = _join(directory, _PLAIN_NAME)
+    is_test = is_test_related_path(plain, package_root=lambda d: d == directory)
+    return code_origin(plain, is_test=is_test) not in _SKIP_ORIGINS
 
 
 def _stacks_of(name: str) -> set[str]:
@@ -1085,6 +1130,13 @@ def _governing_lock(root: str, present: set[str]) -> set[str]:
     return set()
 
 
+def _sdk_pin(root: str, present: set[str]) -> str | None:
+    """The ``global.json`` the .NET SDK uses at *root*: the nearest one at or above it, as dotnet walks up."""
+    return next(
+        (p for d in (root, *reversed(_ancestors(root))) if (p := _join(d, _DOTNET_SDK_PIN)) in present), None
+    )
+
+
 def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set[str]]) -> list[str]:
     """*paths* below *root*, rebased; a .NET root leaves out nested .NET roots' files."""
     rel = [r for p in paths if (r := _under(root, p)) is not None]
@@ -1117,6 +1169,8 @@ def detect_stacks(
                 names = {p for p in rel if "/" not in p}
                 if stack == "node":
                     names |= _governing_lock(root, present)
+                if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
+                    texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
                 built = _BUILDERS[stack](names, rel, texts)
                 if built is not None:
                     here.append(replace(built, root=root))
@@ -1142,6 +1196,8 @@ def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> 
             # Ceiling: _DOTNET_PROJECTS projects; a larger solution may need its SDK named in global.json.
             others = [r for r in projects if r not in tests]
             wanted += [_join(root, r) for r in (tests + others)[:_DOTNET_PROJECTS]]
+            if (pin := _sdk_pin(root, present)) is not None:
+                wanted.append(pin)
     return list(dict.fromkeys(wanted))
 
 
