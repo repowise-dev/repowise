@@ -40,6 +40,7 @@ from ..build_units.model import BuildUnitIndex
 from ..code_origin import path_origin
 from ..fs_walk import INDEX_BLOCKED_DIRS, walk_repo
 from ..ingestion.languages.registry import REGISTRY
+from ..ingestion.resolvers.pnpm_workspace import PNPM_WORKSPACE_FILENAME
 from ..pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
 
 #: Where to look when the stack is unknown.
@@ -308,9 +309,12 @@ _DELEGATES = re.compile(
 )
 _C8 = "npx --yes c8 --reporter=lcov "
 _JEST_FLAGS = "--coverage --coverageReporters=lcov"
-_VITEST_FLAGS = "--coverage.enabled --coverage.reporter=lcov"
+# reportOnFailure: Vitest skips the report when one test fails, losing the whole run's coverage.
+_VITEST_FLAGS = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure"
 _BUN_FLAGS = "--coverage --coverage-reporter=lcov"
 _COVERED_REPORTS = "coverage/lcov.info coverage/clover.xml"
+#: The test script ``npm init`` writes, which runs nothing.
+_NO_TESTS = "no test specified"
 
 
 _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")
@@ -318,14 +322,25 @@ _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])"
 
 def _node_runner(script: str) -> str | None:
     """What a test script runs: jest | vitest | bun | c8 (wrap it) | covered (already measures)
-    | report:c8 or report:nyc (measures, but writes no lcov) | None."""
-    if not script or re.search(r"&&|\|\||;", script) or _DELEGATES.search(script):
+    | report:c8 or report:nyc (measures, but writes no lcov) | None.
+
+    In ``a && b`` the runner must be the last command: npm, pnpm, yarn and bun add a
+    script's extra arguments at its end, so the coverage flags reach only that command.
+    """
+    if not script or re.search(r"\|\||;", script) or _DELEGATES.search(script):
         return None
-    words = re.sub(r"^(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", script).split()
+    *before, last = script.split("&&")
+    runner = _command_runner(last)
+    return None if runner is None or any(_command_runner(cmd) for cmd in before) else runner
+
+
+def _command_runner(command: str) -> str | None:
+    """:func:`_node_runner` for one simple command."""
+    words = re.sub(r"^\s*(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", command).split()
     head = words[0] if words else ""
     if head in ("c8", "nyc"):
         # Both default to text and html reports; without lcov, their report step writes it.
-        return "covered" if _LCOV_REPORTER.search(script) else f"report:{head}"
+        return "covered" if _LCOV_REPORTER.search(command) else f"report:{head}"
     return "covered" if "--coverage" in words else _runner_of(head, words)
 
 
@@ -333,7 +348,8 @@ def _runner_of(head: str, words: list[str]) -> str | None:
     """The runner a script's first word names: jest | vitest | bun | c8 (wrap it) | None."""
     if head == "jest" or (head in ("react-scripts", "craco") and words[1:2] == ["test"]):
         return "jest"
-    if head == "vitest":
+    # ``vp test`` is Vite+'s front end for Vitest; it passes Vitest's flags through.
+    if head == "vitest" or (head == "vp" and words[1:2] == ["test"]):
         return "vitest"
     if head == "bun" and words[1:2] == ["test"]:
         return "bun"
@@ -342,25 +358,29 @@ def _runner_of(head: str, words: list[str]) -> str | None:
     return None
 
 
-def _vitest_provider(pm: str, deps: dict) -> tuple[str, ...]:
+def _vitest_provider(pm: str, deps: dict, workspace: bool = False) -> tuple[str, ...]:
     if "@vitest/coverage-v8" in deps or "@vitest/coverage-istanbul" in deps:
         return ()
     spec = str(deps.get("vitest") or "")
     pkg = f'"@vitest/coverage-v8@{spec}"' if re.fullmatch(r"[\^~]?\d[\w.-]*", spec) else "@vitest/coverage-v8"
-    cmd = {"npm": f"npm install --no-save {pkg}", "bun": f"bun add -d {pkg}"}.get(pm, f"{pm} add -D {pkg}")
+    # pnpm refuses to add to a workspace root without -w.
+    add = "add -D -w" if pm == "pnpm" and workspace else "add -D"
+    cmd = {"npm": f"npm install --no-save {pkg}", "bun": f"bun add -d {pkg}"}.get(pm, f"{pm} {add} {pkg}")
     return (f"- run: {cmd}",)
 
 
 _NODE_FLAGS = {"jest": _JEST_FLAGS, "vitest": _VITEST_FLAGS, "bun": _BUN_FLAGS}
 
 
-def _edit_direct_runner(line: str, m: re.Match, runner: str, pm: str, deps: dict) -> CommandEdit:
+def _edit_direct_runner(line: str, m: re.Match, runner: str, pm: str, deps: dict, workspace: bool) -> CommandEdit:
     """Coverage flags right after a runner called directly (``npx jest``, ``bun test``)."""
-    prepare = _vitest_provider(pm, deps) if runner == "vitest" else ()
+    prepare = _vitest_provider(pm, deps, workspace) if runner == "vitest" else ()
     return CommandEdit(_insert(line, (m.end(), " " + _NODE_FLAGS[runner])), "coverage/lcov.info", prepare)
 
 
-def _edit_script(line: str, m: re.Match, runner: str, *, tool: str, end: int, after: str, pm: str, deps: dict) -> CommandEdit:
+def _edit_script(
+    line: str, m: re.Match, runner: str, *, end: int, after: str, pm: str, deps: dict, workspace: bool
+) -> CommandEdit:
     """Coverage for a package script whose *runner* is known."""
     if runner == "covered":
         return CommandEdit(line, _COVERED_REPORTS)
@@ -370,24 +390,32 @@ def _edit_script(line: str, m: re.Match, runner: str, *, tool: str, end: int, af
         # The tool keeps its raw data after the run, so its report command writes lcov from it.
         report = f" && npx --yes {runner[len('report:'):]} report --reporter=lcov"
         return CommandEdit(_insert(line, (end, report)), "coverage/lcov.info")
-    # npm and pnpm hand arguments to the script only after ``--``; yarn and bun pass them as they are.
-    sep = " --" if tool in ("npm", "pnpm") and not re.search(r"(?<!\S)--(?!\S)", after) else ""
-    prepare = _vitest_provider(pm, deps) if runner == "vitest" else ()
-    return CommandEdit(_insert(line, (end, f"{sep} {_NODE_FLAGS[runner]}")), "coverage/lcov.info", prepare)
+    # npm hands arguments to the script only after ``--``, which it drops. pnpm passes a ``--`` on
+    # (Vitest and Jest stop reading options there) and reads ``pnpm test --flag`` as its own
+    # option, so it gets ``pnpm run <script> <flags>``. yarn and bun pass arguments as they are.
+    tool, run = m.group(1), m.group(2)
+    sep = " --" if tool == "npm" and not re.search(r"(?<!\S)--(?!\S)", after) else ""
+    edits = [(end, f"{sep} {_NODE_FLAGS[runner]}")]
+    if tool == "pnpm" and not run:
+        edits.append((m.start(3), "run "))
+    prepare = _vitest_provider(pm, deps, workspace) if runner == "vitest" else ()
+    return CommandEdit(_insert(line, *edits), "coverage/lcov.info", prepare)
 
 
-def _edit_node(line: str, m: re.Match, *, pm: str, scripts: dict, deps: dict) -> CommandEdit | None:
+def _edit_node(
+    line: str, m: re.Match, *, pm: str, scripts: dict, deps: dict, workspace: bool = False
+) -> CommandEdit | None:
     _, end, continued = _segment(line, m)
     after = line[m.end():end]
     tool, run, script, direct = m.groups()
     if "--coverage" in after:
         return CommandEdit(line, _COVERED_REPORTS)
     if direct or (tool == "bun" and not run):  # the runner itself, or bun's own runner
-        return _edit_direct_runner(line, m, direct or "bun", pm, deps)
+        return _edit_direct_runner(line, m, direct or "bun", pm, deps, workspace)
     runner = _node_runner(str(scripts.get(script) or ""))
     if continued or _MONOREPO_ARGS.search(after.split(" -- ")[0]) or runner is None:
         return None
-    return _edit_script(line, m, runner, tool=tool, end=end, after=after, pm=pm, deps=deps)
+    return _edit_script(line, m, runner, end=end, after=after, pm=pm, deps=deps, workspace=workspace)
 
 
 def _node_package(files: dict[str, str]) -> tuple[dict, dict, dict]:
@@ -433,22 +461,58 @@ def _node_setup(root: set[str], package: dict, pm: str, install: str) -> tuple[s
     return tuple(setup)
 
 
-def _node_base(pm: str, script: str, deps: dict) -> tuple[str, str | None]:
-    """The plain test command and its runner: the test script, else the runner the package depends on."""
-    if script:
-        return f"{pm} {'run test' if pm == 'bun' else 'test'}", _node_runner(script)
+def _node_workspace(package: dict, pnpm: bool) -> bool:
+    """Whether a package is a workspace root: npm/yarn ``workspaces``, or a pnpm workspace file beside it."""
+    return bool(package.get("workspaces")) or pnpm
+
+
+def _test_script(scripts: dict) -> tuple[str, str | None]:
+    """The script that runs the tests and its runner.
+
+    ``test`` when its runner is known; else the other ``test…`` scripts when they all
+    run one known runner (``test`` may chain a build and a linter first); else ``test``
+    with no runner, or ``""`` when the package has no test script at all.
+    """
+    test = str(scripts.get("test") or "")
+    test = "" if _NO_TESTS in test else test
+    runner = _node_runner(test)
+    if runner:
+        return "test", runner
+    found = {
+        name: r for name, script in scripts.items()
+        if re.fullmatch(r"test[\w:-]+", name) and "watch" not in name and "--watch" not in str(script)
+        and (r := _node_runner(str(script)))
+    }
+    if len(set(found.values())) == 1:
+        # Ceiling: the shortest name stands for the plain run (``test:vitest`` over
+        # ``test:vitest:min``); reading what each script sets would be the upgrade.
+        name = min(found, key=lambda n: (len(n), n))
+        return name, found[name]
+    return ("test" if test else ""), None
+
+
+def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None]:
+    """The plain test command and its runner: a test script, else the runner the package
+    depends on; ``""`` when the package has neither, so it has no tests to cover."""
+    name, runner = _test_script(scripts)
+    if name == "test":
+        return f"{pm} {'run test' if pm == 'bun' else 'test'}", runner
+    if name:
+        return f"{pm} run {name}", runner
     runner = "vitest" if "vitest" in deps else "jest" if "jest" in deps else None
-    base = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}[pm] + f" {runner or 'jest'}"
+    if runner is None:
+        return "", None
+    base = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}[pm] + f" {runner}"
     return base + (" run" if runner == "vitest" else ""), runner
 
 
-def _node_notes(test: CommandEdit | None, root: set[str], package: dict, script: str, base: str) -> tuple[str, ...]:
+def _node_notes(test: CommandEdit | None, workspace: bool, script: str, base: str) -> tuple[str, ...]:
     if test is not None:
         if test.prepare:
             return ("Vitest needs a coverage provider, so the workflow installs `@vitest/coverage-v8` for "
                     "the run. Add it to `devDependencies` to drop that install.",)
         return ()
-    if (package.get("workspaces") or "pnpm-workspace.yaml" in root) and (not script or _DELEGATES.search(script)):
+    if workspace and (not script or _DELEGATES.search(script)):
         return ("This is a monorepo whose packages run their own tests, so Repowise could not add "
                 "one coverage flag for all of them. Run each package's tests with an lcov reporter "
                 "and list the reports in `REPORTS` (for example `packages/*/coverage/lcov.info`).",)
@@ -457,19 +521,23 @@ def _node_notes(test: CommandEdit | None, root: set[str], package: dict, script:
             "other runner on Node: prefix it with `npx c8 --reporter=lcov`).",)
 
 
-def _node(root: set[str], files: dict[str, str]) -> Stack:
+def _node(root: set[str], files: dict[str, str]) -> Stack | None:
+    """The package's stack; None when it has no test script and no test runner to run."""
     package, scripts, deps = _node_package(files)
     pm, install = _node_manager(root)
-    script = str(scripts.get("test") or "")
-    base, runner = _node_base(pm, script, deps)
-    editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps)
+    base, runner = _node_base(pm, scripts, deps)
+    workspace = _node_workspace(package, PNPM_WORKSPACE_FILENAME in root)
+    if not base and not workspace:
+        return None
+    editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps, workspace=workspace)
     test = editor(base, _NODE.search(base)) if runner else None
     return Stack(
         "node", runner, pm, test.reports if test else "coverage/lcov.info",
         setup=_node_setup(root, package, pm, install),
         test=test.text if test else "", prepare=test.prepare if test else (),
-        notes=_node_notes(test, root, package, script, base),
-        requires=_run_lines(test.prepare) if test else (), pattern=_NODE, editor=editor,
+        notes=_node_notes(test, workspace, str(scripts.get("test") or ""), base),
+        # The install comes first: the runner and the coverage provider live in node_modules.
+        requires=(install, *_run_lines(test.prepare)) if test else (), pattern=_NODE, editor=editor,
     )
 
 
@@ -746,7 +814,8 @@ _LANGUAGE_STACKS = {
 }
 #: Most specific first; node last, as a root ``package.json`` is often tooling.
 _ORDER = ("python", "go", "rust", "jvm", "dotnet", "ruby", "php", "node")
-_BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack]] = {
+#: A builder returns None for a unit with nothing to test (a package with no test script).
+_BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack | None]] = {
     "python": _python,
     "go": lambda names, paths, files: _go(),
     "rust": lambda names, paths, files: _rust(names, files),
@@ -785,7 +854,7 @@ def _manifest_stacks(name: str) -> frozenset[str]:
 @cache
 def _read_names() -> frozenset[str]:
     """Every manifest and runner config detection reads at a unit root."""
-    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS)
+    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS) | {PNPM_WORKSPACE_FILENAME}
     for tag in _LANGUAGE_STACKS:
         spec = REGISTRY.get(tag)
         if spec is not None:
@@ -889,6 +958,12 @@ def _aggregates(stack: str, root: str, files: Mapping[str, str]) -> bool:
         settings = "".join(files.get(_join(root, name), "") for name in _GRADLE_SETTINGS)
         pom = files.get(_join(root, "pom.xml"), "")
         return "<modules>" in pom or bool(re.search(r"^\s*include\b", settings, re.M))
+    if stack == "node":
+        # A workspace root whose tests run from the root (not through turbo, nx or ``-r``) runs its packages'.
+        package, scripts, _ = _node_package({"package.json": files.get(_join(root, "package.json"), "")})
+        script = str(scripts.get(_test_script(scripts)[0]) or "")
+        workspace = _node_workspace(package, _join(root, PNPM_WORKSPACE_FILENAME) in files)
+        return workspace and bool(script) and not _DELEGATES.search(script)
     return stack == "dotnet"
 
 
@@ -901,6 +976,25 @@ def _runs_at(stack: str, root: str, found: _Units, files: Mapping[str, str]) -> 
     if root in found.workspaces and not _aggregates(stack, root, files):
         return False
     return not _covered(stack, root, found.roots, files)
+
+
+@cache
+def _js_lock_names() -> frozenset[str]:
+    """The registry's JavaScript lockfiles, and Yarn's config, which picks its install flag."""
+    spec = REGISTRY.get("javascript")
+    return frozenset((*(spec.lock_files if spec else ()), ".yarnrc.yml"))
+
+
+def _governing_lock(root: str, present: set[str]) -> set[str]:
+    """The lockfile names of the nearest directory at or above *root* holding a JavaScript lockfile.
+
+    A workspace member has none of its own: its root's lockfile picks the package manager.
+    """
+    for directory in (root, *reversed(_ancestors(root))):
+        found = {n for n in _js_lock_names() if _join(directory, n) in present}
+        if found - {".yarnrc.yml"}:
+            return found
+    return set()
 
 
 def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set[str]]) -> list[str]:
@@ -923,6 +1017,7 @@ def detect_stacks(
     whose runner is unclear beside another stack is tooling and starts none.
     """
     paths = sorted(set(paths))
+    present = set(paths)
     found = _units(paths, units)
     stacks: list[Stack] = []
     for root in sorted(found.roots, key=lambda r: (r.count("/") + bool(r), r)):
@@ -932,7 +1027,11 @@ def detect_stacks(
             if stack in found.roots[root] and _runs_at(stack, root, found, files):
                 rel = _listing_at(root, stack, paths, found.roots)
                 names = {p for p in rel if "/" not in p}
-                here.append(replace(_BUILDERS[stack](names, rel, texts), root=root))
+                if stack == "node":
+                    names |= _governing_lock(root, present)
+                built = _BUILDERS[stack](names, rel, texts)
+                if built is not None:
+                    here.append(replace(built, root=root))
         tooling = len(here) > 1 and here[-1].language == "node" and not here[-1].test
         stacks += here[:-1] if tooling else here
     return stacks or [UNKNOWN]
