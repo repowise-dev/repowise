@@ -1600,6 +1600,15 @@ async def test_another_class_member_of_the_same_name_is_not_listed(session, repo
         ("web/user.service.ts", "import * as s from './user.service'\nconst m = s\n", True),
         ("web/lib/index.ts", "import * as s from './lib/index'\nconst m = s\n", True),
         ("web/lib/index.ts", "import * as s from './lib'\nconst m = s\n", True),
+        # A directory specifier names the directory's index.
+        ("web/index.ts", "import * as s from '.'\nconst m = s\n", True),
+        ("web/index.ts", "const s = require('..')\nconst m = s\n", True),
+        # A member of the required module is not the module.
+        ("web/m.ts", "const s = require('./m').helper\nconst m = s\n", False),
+        # A comparison reads the namespace, it does not hand it on.
+        ("web/a.ts", "import * as s from './a'\nconst ok = s !== undefined\n", False),
+        ("web/a.ts", "import * as s from './a'\nfunction f() { return s != null }\n", False),
+        ("web/a.ts", "import * as s from './a'\nconst m = s!\n", True),
         # A Python module named index is imported by that name.
         ("pkg/index.py", "from pkg import index\nm = index\n", True),
         # A keyword argument passes the module to a call, as a positional one does.

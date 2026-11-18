@@ -1330,10 +1330,12 @@ def _module_names(path: str) -> set[str]:
 
 
 # ``import * as ns from "./m"``, ``const ns = require("./m")`` and TypeScript's
-# ``import ns = require("./m")``: a whole module bound.
+# ``import ns = require("./m")``: a whole module bound. A ``require`` must end
+# the value: ``require("./m").helper`` binds a member, not the module.
 _JS_NAMESPACE = re.compile(
     r"\*\s*as\s+([A-Za-z_$][\w$]*)"
-    r"|(?:const|let|var|import)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\("
+    r"|(?:const|let|var|import)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*"
+    r"""["'`][^"'`\n]+["'`]\s*\)\s*(?:[;,]|//|$)"""
 )
 
 
@@ -1342,6 +1344,9 @@ def _js_namespaces(text: str, stems: set[str]) -> set[str]:
     source = _IMPORT_SOURCE.search(text)
     spec = (source.group(1) or source.group(2)) if source is not None else None
     base = PurePosixPath(spec).name if spec else ""
+    if spec and base in ("", ".."):
+        # ``"."`` and ``".."`` name a directory, which resolves to its index.
+        base = "index"
     # ``./user.service`` and ``./a.js`` both name their module file.
     if not base or not {base, PurePosixPath(base).stem} & stems:
         return set()
@@ -1388,7 +1393,8 @@ def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     alt = "|".join(re.escape(a) for a in sorted(local))
     # A Python keyword argument (``patch.object(target=mod, ...)``) stays
     # out, as ``f(mod)`` does; JavaScript ends the value at more tokens.
-    end = r"\s*(?:#|;|$)" if python else r"(?:\s*(?:[;}),!]|//|$)|\s+(?:as|satisfies)\b)"
+    # A JavaScript ``!`` ends it as a non-null assertion, not as ``!=``.
+    end = r"\s*(?:#|;|$)" if python else r"(?:\s*(?:[;}),]|!(?!=)|//|$)|\s+(?:as|satisfies)\b)"
     handed = re.compile(
         rf"(?:\b(?:return|yield|export\s+default)\s+|(?<![=!<>])=>?\s*)(?:{alt}){end}"
     )
