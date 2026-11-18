@@ -108,7 +108,14 @@ def test_file_line_names_only_the_lead_run():
     rows = [_row(f"{FILE}::a", rank=1), _row(f"{FILE}::b", rank=2, run_id="r2")]
     line = file_line(rows, NOW)
     assert "a rank 1" in line and "b rank" not in line
-    assert line.endswith("; 1 more measured")
+    # Another run's function is never counted under the lead run's basis.
+    assert line.endswith("; 1 in other runs")
+    assert "more measured" not in line
+    rows += [_row(f"{FILE}::c{i}", rank=3 + i) for i in range(3)]
+    rows.append(_row(f"{FILE}::old", freshness="stale", rank=None))
+    assert file_line(rows, NOW).endswith("; 1 more measured; 1 in other runs; 1 stale")
+    # One run, within the cap: no counts at all.
+    assert file_line(rows[:1], NOW).endswith("a rank 1 (12% of samples, 10-14%)")
 
 
 def test_file_line_all_stale():

@@ -112,16 +112,21 @@ def file_line(rows: list[Any], now: datetime) -> str | None:
             return "stale: 1 function measured before its body changed"
         return f"stale: {len(rows)} functions measured before their bodies changed"
     lead = fresh[0]
-    named = [r for r in fresh if r.run_id == lead.run_id][:MAX_NAMED_IN_FILE]
+    in_lead = [r for r in fresh if r.run_id == lead.run_id]
+    named = in_lead[:MAX_NAMED_IN_FILE]
     items = "; ".join(_file_item(r) for r in named)
     explained = _explained(lead)
     paren = f" ({explained})" if explained else ""
     line = f"{_basis(lead)}{paren}, {_age(lead, now)}{_earlier(lead)}: {items}"
-    more = len(fresh) - len(named)
-    stale = len(rows) - len(fresh)
-    if more:
-        line += f"; {more} more measured"
-    return f"{line}; {stale} stale" if stale else line
+    # Counted apart, so nothing from another run reads as measured in this one.
+    for count, label in (
+        (len(in_lead) - len(named), "more measured"),
+        (len(fresh) - len(in_lead), "in other runs"),
+        (len(rows) - len(fresh), "stale"),
+    ):
+        if count:
+            line += f"; {count} {label}"
+    return line
 
 
 def _strongest(row: Any) -> tuple[Any, ...]:
