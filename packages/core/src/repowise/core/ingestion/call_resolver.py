@@ -2304,6 +2304,14 @@ class CallResolver(
         """
         if not receiver_name or self._language_of(file_path) != "python":
             return None
+        # Typing the body resolves every call it assigns, so ask only where
+        # the receiver is one of those names.
+        span = self._spans_for(file_path).get(caller_id)
+        if span is None or not any(
+            a.name == receiver_name and span[0] <= a.line <= span[1]
+            for a in self._call_assignments_for(file_path, "python")
+        ):
+            return None
         held = self._declared_types_in(file_path, caller_id, "python").get(receiver_name)
         return held if held in self._parsed_files else None
 

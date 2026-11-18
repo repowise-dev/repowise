@@ -50,12 +50,14 @@ class PythonReturnTypes:
 
         ``def load(): import mod; return mod`` returns the module object, so
         ``load().f()`` and ``m = load(); m.f()`` call ``mod.f``. Every return
-        in the body, nested defs aside, must name the same module through an
-        import (``mod``, an ``as`` alias, or a dotted ``pkg.mod`` that
-        ``import pkg.mod`` binds), and the body must not yield.
+        in the body, the defs and classes the parser lists inside it aside,
+        must name the same module through an import (``mod``, an ``as``
+        alias, or a dotted ``pkg.mod`` that ``import pkg.mod`` binds), and the
+        body must not yield.
 
         Ceiling: a return on the ``def`` line, or spread over several lines,
-        is not read, and the function types nothing.
+        is not read, and the function types nothing. A decorator that
+        replaces the function is not read either.
         """
         if symbol.id in self._returned_modules:
             return self._returned_modules[symbol.id]
@@ -134,15 +136,21 @@ class PythonReturnTypes:
         return None if self._published(source, exported, top_level=True) else source
 
     def _bound_outside_imports(self, path: str, body: list[int], name: str) -> bool:
-        """Whether *name* is bound, in *body* or at module scope, other than by an import."""
+        """Whether *name* is bound, in *body* or at module scope, other than by an import.
+
+        A def or class of that name anywhere in the file counts.
+        """
         lines = self._lines_of(path)
         own = set(body)
         parsed = self._parsed_files.get(path)
-        scoped = [
-            (s.start_line, s.end_line)
+        defined = [
+            s
             for s in (parsed.symbols if parsed is not None else ())
             if s.kind in _FUNCTION_KINDS or s.kind in _TYPE_KINDS
         ]
+        if any(s.name == name for s in defined):
+            return True
+        scoped = [(s.start_line, s.end_line) for s in defined]
         for line, _, bound in self._binding_positions_for(path, "python"):
             if bound != name or line > len(lines) or _IMPORT_LINE.match(lines[line - 1]):
                 continue
