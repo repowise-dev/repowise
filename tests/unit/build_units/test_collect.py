@@ -172,6 +172,22 @@ def test_go_modules_replace_alias_dependency(tmp_path):
     assert _deps(index) == {"go:example.com/a": ("go:example.com/b",), "go:example.com/b": ()}
 
 
+def test_go_modules_replace_does_not_leak_across_modules(tmp_path):
+    index = _collect(tmp_path, {
+        "a/go.mod": "module example.com/a\n\ngo 1.22\n\nrequire example.com/x v1.0.0\n",
+        "a/main.go": "package main\nfunc main() {}\n",
+        "b/go.mod": "module example.com/b\n\ngo 1.22\n",
+        "b/b.go": "package b\n",
+        "c/go.mod": "module example.com/c\n\ngo 1.22\n\nreplace example.com/x => ../b\n",
+        "c/c.go": "package c\n",
+    })
+    assert _deps(index) == {
+        "go:example.com/a": (),
+        "go:example.com/b": (),
+        "go:example.com/c": ("go:example.com/b",),
+    }
+
+
 def test_two_units_at_one_root_both_own_unlisted_files(tmp_path):
     index = _collect(tmp_path, {
         "package.json": json.dumps({"name": "root", "workspaces": ["web"]}),
