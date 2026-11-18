@@ -348,6 +348,38 @@ def test_fit_to_budget_trims_a_ranked_tail_but_never_empties_it(repo_root: Path,
     assert '"row": 5' in stored
 
 
+@pytest.mark.parametrize("shape", ["list", "dict", "aliased"])
+def test_fit_to_budget_tail_stops_at_the_first_row_that_fits(repo_root: Path, shape: str):
+    """The tail sheds exactly to the fit line: one row fewer would still be over.
+
+    ``aliased`` serialises the same list twice, so each dropped row frees
+    twice its own size; the shed must still stop at the first fit.
+    """
+    rows = [{"row": i, "body": "r" * (i % 7 * 40)} for i in range(400)]
+    every = list(rows)  # the shed pops ``rows`` itself
+    response: dict = {"results": {f"k{i}": row for i, row in enumerate(rows)}}
+    if shape != "dict":
+        response = {"results": rows}
+    if shape == "aliased":
+        response["mirror"] = rows
+    budget, headroom = 9000, 100
+    collector = OmissionCollector("search_codebase", repo_root=repo_root)
+
+    fit_to_budget(response, ("results[]",), collector, char_budget=budget, headroom=headroom)
+
+    # The flag lands after the last fit check, so it is not part of the fit.
+    assert response.pop("truncated") is True
+    kept = response["results"]
+    assert 1 < len(kept) < 400
+    assert not over_budget(response, headroom=headroom, char_budget=budget)
+    nxt = len(kept)
+    if isinstance(kept, dict):
+        kept[f"k{nxt}"] = every[nxt]
+    else:
+        kept.append(every[nxt])
+    assert over_budget(response, headroom=headroom, char_budget=budget)
+
+
 def test_fit_to_budget_reports_total_emitted_and_reason(repo_root: Path):
     response = {"results": [{"row": i, "body": "r" * 1000} for i in range(6)]}
     collector = OmissionCollector("get_answer", repo_root=repo_root)
