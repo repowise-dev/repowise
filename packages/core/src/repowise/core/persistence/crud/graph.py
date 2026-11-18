@@ -11,7 +11,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, case, delete, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ids import is_external
@@ -882,9 +882,37 @@ async def get_pagerank_percentile(
     repository_id: str,
     pagerank: float,
 ) -> float:
-    """Percentile rank (0-100) of *pagerank* among the repo's owned file nodes (#5745)."""
-    all_nodes = await get_all_file_metrics(session, repository_id)
-    return percentile_rank(pagerank, all_nodes, attr="pagerank")
+    """Percentile rank (0-100) of *pagerank* among the repo's owned file nodes.
+
+    Counted in SQL. The callers that want one file's rank used to load every
+    file node through :func:`get_all_file_metrics` and scan the list in Python,
+    which is the whole repo graph materialized as ORM objects to produce a
+    single number.
+
+    Counted in SQL over owned repository files (excluding ``external:`` and
+    ``framework:`` nodes), matching the Files table's formula:
+    ``round(100.0 * below / (n - 1), 1)`` for ``n > 1``, and ``100.0`` for
+    a single file (#5745).
+    """
+    row = (
+        await session.execute(
+            select(
+                func.count().label("total"),
+                func.sum(case((GraphNode.pagerank < pagerank, 1), else_=0)).label("below"),
+            ).where(
+                GraphNode.repository_id == repository_id,
+                GraphNode.node_type == "file",
+                not_(GraphNode.node_id.startswith("external:")),
+                not_(GraphNode.node_id.startswith("framework:")),
+            )
+        )
+    ).one()
+    total = row.total or 0
+    if not total:
+        return 0.0
+    if total == 1:
+        return 100.0
+    return round(100.0 * (row.below or 0) / (total - 1), 1)
 
 
 async def get_cross_community_edges(

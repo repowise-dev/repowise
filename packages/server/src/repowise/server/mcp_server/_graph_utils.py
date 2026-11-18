@@ -21,11 +21,17 @@ from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_nodes_by_ids,
-)
-from repowise.core.persistence.crud import (
-    percentile_rank as percentile_rank,
+    percentile_rank,
 )
 from repowise.core.persistence.models import GraphNode
+
+__all__ = [
+    "bfs_trace",
+    "entry_point_score",
+    "parse_community_meta",
+    "percentile_rank",
+    "resolve_trace_communities",
+]
 
 # Callee rows per hop; a stop behind this cut is an unknown, not a leaf.
 _CALLEE_FETCH_LIMIT = 20
