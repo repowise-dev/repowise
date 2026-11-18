@@ -239,14 +239,28 @@ class TraceSignal:
         if not symptom.frames:
             return {}
         trace_files = set(symptom.trace_files)
-        functions = {f.function.rsplit(".", 1)[-1] for f in symptom.frames if f.function}
+        # A frame resolved to its symbol is matched in its own file only; the
+        # rest match on the bare function name, as git's hunk headers give it.
+        functions = {
+            f.function.rsplit(".", 1)[-1]
+            for i, f in enumerate(symptom.frames)
+            if f.function and i not in symptom.resolved_frames
+        }
         out: dict[str, Hit] = {}
         for c in candidates:
+            touched = set(c.files)
+            named = [s for s in symptom.frame_symbols if s.path in touched and s.name in c.symbols]
+            named_files = {s.path for s in named}
             files = [f for f in c.files if f in trace_files]
             symbols = sorted(functions.intersection(c.symbols))
-            if files or symbols:
-                evidence = [f"frame file {f}" for f in files] + [f"frame function {s}" for s in symbols]
-                out[c.change_id] = Hit(len(files) + len(symbols), tuple(evidence[:_MAX_EVIDENCE]))
+            if files or named or symbols:
+                evidence = (
+                    [f"frame {s.symbol_id}" for s in named]
+                    + [f"frame file {f}" for f in files if f not in named_files]
+                    + [f"frame function {s}" for s in symbols]
+                )
+                score = len(set(files) | named_files) + len(named) + len(symbols)
+                out[c.change_id] = Hit(score, tuple(evidence[:_MAX_EVIDENCE]))
         return out
 
 
