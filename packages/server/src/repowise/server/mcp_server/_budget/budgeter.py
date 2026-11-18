@@ -273,6 +273,12 @@ def _shed_in_rows(
     ``"parent.rows[].field"`` drops *field* from rows; ``"parent.rows[].field[]"``
     trims each row's *field* list from its tail instead. The rest of each row
     stays, so a block made of rows keeps every row's headline.
+
+    The response is measured once. Each row's change is then the row's own
+    size before and after, plus what changed outside it (``truncated`` and,
+    for a dropped mapping, ``_meta``). That holds while every row and field
+    list is reached once in the response; when one is reached twice, each row
+    measures the whole response instead. Either way the same rows shed.
     """
     path, _, leaf = key.partition("[].")
     rows: Any = response
@@ -286,22 +292,85 @@ def _shed_in_rows(
         key=lambda i: len(json.dumps(rows[i][name], default=str)),
         reverse=True,
     )
+    touched = [rows[i] for i in heaviest] + [rows[i][name] for i in heaviest]
+    aliased = not _reached_once(response, touched)
+    excess = limits.excess(response)
     for i in heaviest:
-        if not limits.exceeded(response):
+        if excess <= 0:
             return
         row, label = rows[i], f"{path}[{i}].{name}"
+        scoped = limits if aliased else _RowLimits(
+            limits.headroom,
+            limits.char_budget,
+            limits.record_counts,
+            row=row,
+            offset=excess - response_chars(row),
+        )
+        outside = _member_chars(response, "truncated")
         if leaf.endswith("[]") or isinstance(row[name], list):
             # Past the floor a list still goes row by row, so it loses only what the fit needs.
             keep = _rows_to_keep(row[name], requested) if leaf.endswith("[]") else 0
-            _shed_tail(response, row, name, label, collector, limits, keep)
+            _shed_tail(response, row, name, label, collector, scoped, keep)
             if not row[name]:
                 row.pop(name)
+        else:
+            value = row.pop(name)
+            collector.add(label, value)
+            if limits.record_counts:
+                # Only a mapping's reduction lands outside the row, in ``_meta``.
+                meta = _member_chars(response, "_meta") if isinstance(value, dict) else 0
+                _record_reduction(response, row, label, name, value, emitted=0)
+                if isinstance(value, dict):
+                    outside += meta - _member_chars(response, "_meta")
+            response["truncated"] = True
+        if aliased:
+            excess = limits.excess(response)
+        else:
+            excess = scoped.excess(response) + _member_chars(response, "truncated") - outside
+
+
+@dataclass(frozen=True)
+class _RowLimits(_ShedLimits):
+    """:class:`_ShedLimits` that sizes the response from one row.
+
+    *offset* is the response's excess less the row's size, fixed while only
+    the row changes, so a check costs the row and not the whole response.
+    """
+
+    row: dict[str, Any]
+    offset: int
+
+    def exceeded(self, response: dict[str, Any]) -> bool:
+        return self.excess(response) > 0
+
+    def excess(self, response: dict[str, Any]) -> int:
+        return response_chars(self.row) + self.offset
+
+
+def _member_chars(container: dict[str, Any], key: str) -> int:
+    """What ``"key":value`` and its comma add to *container*'s compact JSON."""
+    return response_chars({key: container[key]}) - 1 if key in container else 0
+
+
+def _reached_once(response: Any, nodes: list[Any]) -> bool:
+    """False when any of *nodes* is reachable twice from *response*."""
+    wanted = {id(node) for node in nodes}
+    seen: set[int] = set()
+    stack = [response]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            children: Any = node.values()
+        elif isinstance(node, (list, tuple)):
+            children = node
+        else:
             continue
-        value = row.pop(name)
-        collector.add(label, value)
-        if limits.record_counts:
-            _record_reduction(response, row, label, name, value, emitted=0)
-        response["truncated"] = True
+        if id(node) in wanted:
+            if id(node) in seen:
+                return False
+            seen.add(id(node))
+        stack.extend(children)
+    return True
 
 
 def _shed_tail(
