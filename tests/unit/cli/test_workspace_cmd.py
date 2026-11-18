@@ -380,6 +380,76 @@ class TestWorkspaceScan:
         aliases = [r["alias"] for r in cfg.get("repos", [])]
         assert "new-svc" not in aliases
 
+    def test_scan_exclude_uses_gitignore_semantics(self, runner, tmp_path):
+        # The same glob engine as every other user-written pattern (#5779):
+        # a lone ``*`` stops at one directory, ``**/`` also matches at the root.
+        _write_workspace_config(tmp_path, repos=[], default_repo=None)
+        for rel in ("svc/a/x-old", "legacy", "test-repos/one", "keep-svc"):
+            _make_git_repo(tmp_path / rel)
+
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "scan",
+                str(tmp_path),
+                "--yes",
+                "--exclude",
+                "svc/*-old",
+                "--exclude",
+                "**/legacy",
+                "--exclude",
+                "test-repos/*",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        cfg = _read_workspace_config(tmp_path)
+        paths = sorted(r["path"] for r in cfg.get("repos", []))
+        assert paths == ["keep-svc", "svc/a/x-old"]
+
+    def test_scan_exclude_directory_patterns_match_repos(self, runner, tmp_path):
+        # A repo is a directory, so a gitignore directory pattern (trailing
+        # ``/``) matches it.
+        _write_workspace_config(tmp_path, repos=[], default_repo=None)
+        for rel in ("legacy", "test-repos/one", "keep-svc"):
+            _make_git_repo(tmp_path / rel)
+
+        result = runner.invoke(
+            cli,
+            [
+                "workspace",
+                "scan",
+                str(tmp_path),
+                "--yes",
+                "--exclude",
+                "legacy/",
+                "--exclude",
+                "test-repos/*/",
+            ],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        cfg = _read_workspace_config(tmp_path)
+        assert sorted(r["path"] for r in cfg.get("repos", [])) == ["keep-svc"]
+
+    def test_scan_exclude_accepts_backslash_separators(self, runner, tmp_path):
+        _write_workspace_config(tmp_path, repos=[], default_repo=None)
+        for rel in ("group/one", "keep-svc"):
+            _make_git_repo(tmp_path / rel)
+
+        result = runner.invoke(
+            cli,
+            ["workspace", "scan", str(tmp_path), "--yes", "--exclude", "group\\*"],
+            catch_exceptions=False,
+        )
+
+        assert result.exit_code == 0, result.output
+        cfg = _read_workspace_config(tmp_path)
+        assert sorted(r["path"] for r in cfg.get("repos", [])) == ["keep-svc"]
+
     def test_scan_no_workspace_errors(self, runner, tmp_path):
         result = runner.invoke(cli, ["workspace", "scan", str(tmp_path)])
         assert result.exit_code != 0
