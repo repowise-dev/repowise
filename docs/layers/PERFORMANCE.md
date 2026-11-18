@@ -184,7 +184,9 @@ get_health(opportunity_id="perf...")
 
 Evidence from a real run (a profile, benchmark results, test timings, query
 counts) normalizes to one JSON shape, `repowise-evidence-v1`, before it is
-joined to the code. One file holds one run of one kind:
+joined to the code by
+[`repowise evidence add`](../reference/CLI_REFERENCE.md#repowise-evidence). One
+file holds one run of one kind:
 
 ```json
 { "format": "repowise-evidence-v1", "kind": "profile",
