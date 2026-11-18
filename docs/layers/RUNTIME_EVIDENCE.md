@@ -55,8 +55,10 @@ read, a program with no profiler flag).
   tests sit beside it). Its profile is kept when tests fail (pytest exit 1),
   with the failed count recorded on the run (`tests_failed`, shown by `evidence
   status`); a suite that could not run (exit 2 to 5) writes nothing. A run
-  stopped by Ctrl-C or SIGTERM still writes what it collected, so a subset of
-  the suite is enough.
+  stopped with Ctrl-C still writes what it collected, so a subset of the suite
+  is enough. SIGTERM, which a timeout sends, writes the profile and ends the
+  process with exit code 143; a Windows kill sends no SIGTERM, so there a
+  killed run leaves nothing.
 - A JavaScript `bin` target prints a `node --cpu-prof` command and a reason in
   place of its ingest line, since its `.cpuprofile` output is not among the
   formats this build reads; a TypeScript `bin` gets a reason only.
