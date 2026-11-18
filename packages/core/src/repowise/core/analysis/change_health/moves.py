@@ -143,8 +143,16 @@ def build_move_map(
     head: Iterable[SymbolBody],
     *,
     rename_map: Mapping[str, str] | None = None,
+    within_file: bool = False,
+    similar: Callable[[SymbolBody, SymbolBody], bool] | None = None,
 ) -> MoveMap:
-    """Pair the base symbols that left their place with the head symbols that appeared."""
+    """Pair the base symbols that left their place with the head symbols that appeared.
+
+    *within_file* lets the first two passes pair inside one file too (a rename
+    in place); the edited pass stays cross-file. *similar* replaces the edited
+    pass's test, for bodies whose token pairs are read only when asked.
+    """
+    cross_file = not within_file
     renamed = dict(rename_map or {})
     based = [(b, replace(b, path=renamed.get(b.path, b.path))) for b in sorted(base, key=_order)]
     head_rows = sorted(head, key=_order)
@@ -155,15 +163,16 @@ def build_move_map(
     removed = [p for p in based if p[1].key not in head_keys and base_keys[p[1].key] == 1]
     added = [h for h in head_rows if h.key not in base_keys and head_keys[h.key] == 1]
 
-    verbatim = _pair_unique(removed, added, lambda b: (b.name, b.digest))
+    verbatim = _pair_unique(removed, added, lambda b: (b.name, b.digest), cross_file=cross_file)
     removed, added = _rest(removed, added, verbatim)
     sized = [h for h in added if h.tokens >= MIN_RENAMED_TOKENS]
-    verbatim += _pair_unique(removed, sized, lambda b: b.digest)
+    verbatim += _pair_unique(removed, sized, lambda b: b.digest, cross_file=cross_file)
     removed, added = _rest(removed, added, verbatim)
+    kept = similar or similar_bodies
     edited = [
         (old, new)
-        for old, new in _pair_unique(removed, added, lambda b: b.name)
-        if _similar(old, new)
+        for old, new in _pair_unique(removed, added, lambda b: b.name, cross_file=True)
+        if kept(old, new)
     ]
     by_new = {new.key: old.key for old, new in verbatim + edited}
     return MoveMap(
@@ -178,15 +187,22 @@ def _pair_unique(
     removed: list[tuple[SymbolBody, SymbolBody]],
     added: list[SymbolBody],
     key: Callable[[SymbolBody], Hashable],
+    *,
+    cross_file: bool,
 ) -> list[tuple[SymbolBody, SymbolBody]]:
-    """``(old, new)`` pairs whose *key* occurs once on each side, across files."""
+    """``(old, new)`` pairs whose *key* occurs once on each side; across files only
+    when *cross_file*."""
     removed_counts = Counter(key(on_head) for _, on_head in removed)
     added_counts = Counter(key(h) for h in added)
     added_by_key = {key(h): h for h in added}
     pairs = []
     for old, on_head in removed:
         k = key(on_head)
-        if removed_counts[k] == 1 and added_counts[k] == 1 and on_head.path != added_by_key[k].path:
+        if (
+            removed_counts[k] == 1
+            and added_counts[k] == 1
+            and (not cross_file or on_head.path != added_by_key[k].path)
+        ):
             pairs.append((old, added_by_key[k]))
     return pairs
 
@@ -205,10 +221,15 @@ def _rest(
     )
 
 
-def _similar(old: SymbolBody, new: SymbolBody) -> bool:
-    """An edited move keeps most of its body; a same-named stranger does not."""
+def sized_alike(old: SymbolBody, new: SymbolBody) -> bool:
+    """Both bodies long enough to compare and within the edited move's growth bound."""
     small, large = sorted((old.tokens, new.tokens))
-    if small < MIN_RENAMED_TOKENS or large > small * _MAX_EDITED_GROWTH:
+    return small >= MIN_RENAMED_TOKENS and large <= small * _MAX_EDITED_GROWTH
+
+
+def similar_bodies(old: SymbolBody, new: SymbolBody) -> bool:
+    """An edited move keeps most of its body; a same-named stranger does not."""
+    if not sized_alike(old, new):
         return False
     shared = len(old.pairs & new.pairs)
     return shared >= _MIN_EDITED_OVERLAP * max(len(old.pairs), len(new.pairs), 1)

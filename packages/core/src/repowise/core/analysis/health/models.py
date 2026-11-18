@@ -271,6 +271,12 @@ class HealthReport:
     # closure whose performance rows/plans were recomputed for full parity.
     authoritative_paths: set[str] = field(default_factory=set)
     performance_authoritative_paths: set[str] = field(default_factory=set)
+    # What an incremental run diffed, for the writer that carries each
+    # function's lineage (``analysis.lineage``): the base commit, renamed
+    # files ``{old: new}`` and deleted files.
+    base_commit: str | None = None
+    renamed_paths: dict[str, str] = field(default_factory=dict)
+    deleted_paths: set[str] = field(default_factory=set)
     # Plan policy for the writer that persists these findings. The performance
     # plans in ``refactoring_suggestions`` above are a report-level convenience
     # built from one run's findings; the authoritative ones are generated once,

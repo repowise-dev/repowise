@@ -2347,8 +2347,8 @@ class FunctionFact(Base):
     # new name or path. NULL where the walk produced no token rows.
     body_digest: Mapped[str | None] = mapped_column(String(32), nullable=True)
     body_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # The function's identity across renames and moves (16 hex). NULL until
-    # an update pairs or mints it.
+    # The function's identity across renames and moves (16 hex,
+    # ``analysis.lineage``). NULL on rows written before it existed.
     lineage_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # The nearest test functions (``analysis.function_test_map``), as
     # ``[[selector, hops], ...]``: ``[]`` when no test reaches the function,
@@ -2356,6 +2356,40 @@ class FunctionFact(Base):
     tests_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class SymbolLineageEvent(Base):
+    """One lineage decision a run made when it rewrote ``function_facts``.
+
+    A function that moved, was renamed or had its file renamed carries its
+    ``lineage_id`` to the new symbol id; a ``broken`` row says why a candidate
+    was not taken (``analysis.lineage``). Append-only, newest
+    ``crud.analysis.function_facts.LINEAGE_EVENT_CAP`` per repository kept.
+    """
+
+    __tablename__ = "symbol_lineage_events"
+    __table_args__ = (
+        Index("ix_symbol_lineage_events_repo_from", "repository_id", "from_symbol_id"),
+    )
+
+    # Insertion order, which the prune keeps the newest of.
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    # The surviving lineage, or the one that ended for ``broken``.
+    lineage_id: Mapped[str] = mapped_column(String(16), nullable=False)
+    from_symbol_id: Mapped[str] = mapped_column(Text, nullable=False)
+    # NULL for ``broken``.
+    to_symbol_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The commit the run analysed; NULL when it could not be read.
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # ``file_rename``, ``verbatim_move``, ``body_rename``, ``edited_move``, ``broken``.
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now_utc
+    )
 
 
 class RefactoringPayoff(Base):
