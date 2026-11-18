@@ -643,7 +643,7 @@ _KEYWORD_AFTER = re.compile(r"\s*=(?!=)")
 _SLOT_BEFORE = re.compile(r"(?:^|[{(,])\s*$")
 _SLOT_AFTER = re.compile(r"\s*:(?!:)")
 # Object roots that are the caller's own instance or class, never a module.
-_OWN_RECEIVERS = frozenset({"self", "cls"})
+_OWN_RECEIVERS = frozenset({"self", "cls", "this"})
 
 
 class _Foreign:
@@ -664,10 +664,10 @@ class _Foreign:
 
     Only uses the tokenizer or mask reads as code are judged. Ceiling: a
     module bound without an import (``m = importlib.import_module(...)``,
-    ``m = load()`` returning one) reads as a plain object. The dynamic-use
-    reason marks the first; for the second, a Python use on such an object
-    sets ``on_object``, and the caller asks whether the file imports, as a
-    module, one that holds the name.
+    ``m = load()`` or ``load()`` returning one, ``const m = ns``) reads as a
+    plain object. The dynamic-use reason marks the first; for the rest, a use
+    on such an object sets ``on_object``, and the caller asks whether the
+    file hands on, as a module object, one that holds the name.
     """
 
     def __init__(
@@ -689,9 +689,10 @@ class _Foreign:
             root = _OBJECT_ROOT.search(before)
             if root is not None and root.group(1) in self._words:
                 return False
-            # Ceiling: ``load().name`` has no root name and is not counted: a
-            # call's result is mostly a value (``Path(p).resolve()``), rarely a module.
-            if self._python and root is not None and root.group(1) not in _OWN_RECEIVERS:
+            # ``load().name`` has no root name: a call's result is mostly a
+            # value (``Path(p).resolve()``), so the caller counts it only in a
+            # file that hands a module object on.
+            if root is None or root.group(1) not in _OWN_RECEIVERS:
                 self.on_object = True
             return True
         if _SLOT_BEFORE.search(before) and _SLOT_AFTER.match(after):
@@ -1317,9 +1318,40 @@ async def _definition_span(
 
 
 def _module_names(path: str) -> set[str]:
-    """Names a Python import of the module at *path* binds: its stem, or its package's."""
+    """Names an import of the module at *path* spells: its stem, or its
+    directory's for a Python ``__init__`` or a JavaScript ``index``."""
     p = PurePosixPath(path)
-    return {p.parent.name} if p.stem == "__init__" else {p.stem}
+    return {p.parent.name} if p.stem in ("__init__", "index") else {p.stem}
+
+
+# ``import * as ns from "./m"`` and ``const ns = require("./m")``: a whole module bound.
+_JS_NAMESPACE = re.compile(
+    r"\*\s*as\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\("
+)
+
+
+def _module_bindings(lines: list[str], imports: set[int], stems: set[str], python: bool) -> set[str]:
+    """Local names the import lines bind to a whole module named by one of *stems*.
+
+    Python binds a module by ``import`` (its name or an ``as`` alias);
+    JavaScript and TypeScript by ``import * as ns`` or ``require``.
+    """
+    local: set[str] = set()
+    for n in imports:
+        text = lines[n - 1]
+        if not python:
+            source = _IMPORT_SOURCE.search(text)
+            spec = (source.group(1) or source.group(2)) if source is not None else None
+            if spec and PurePosixPath(spec).name.split(".")[0] in stems:
+                local.update(m.group(1) or m.group(2) for m in _JS_NAMESPACE.finditer(text))
+            continue
+        for stem in stems:
+            esc = re.escape(stem)
+            local.update(m.group(1) for m in re.finditer(rf"(?<!\w){esc}\s+as\s+(\w+)", text))
+            plain = list(re.finditer(rf"(?<![\w.]){esc}(?![\w.])(?!\s+as\b)", text))
+            if _outside_module(text, plain):
+                local.add(stem)
+    return local
 
 
 def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
@@ -1333,20 +1365,13 @@ def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     if lines is None:
         return False
     imports = _import_lines(lines)
-    local: set[str] = set()
-    for stem in {s for p in module_paths for s in _module_names(p)}:
-        esc = re.escape(stem)
-        aliased = re.compile(rf"(?<!\w){esc}\s+as\s+(\w+)")
-        plain = re.compile(rf"(?<![\w.]){esc}(?![\w.])(?!\s+as\b)")
-        for n in imports:
-            text = lines[n - 1]
-            local.update(m.group(1) for m in aliased.finditer(text))
-            if _outside_module(text, list(plain.finditer(text))):
-                local.add(stem)
+    stems = {s for p in module_paths for s in _module_names(p)}
+    python = Path(rel).suffix in _PYTHON_EXTENSIONS
+    local = _module_bindings(lines, imports, stems, python)
     if not local:
         return False
     alt = "|".join(re.escape(a) for a in sorted(local))
-    handed = re.compile(rf"(?:\b(?:return|yield)\s+|(?<![=!<>])=\s*)(?:{alt})\s*(?:[#;]|$)")
+    handed = re.compile(rf"(?:\b(?:return|yield)\s+|(?<![=!<>])=\s*)(?:{alt})\s*(?:[#;}}]|//|$)")
     return any(handed.search(t) for n, t in enumerate(lines, 1) if n not in imports)
 
 

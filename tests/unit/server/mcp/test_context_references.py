@@ -304,6 +304,77 @@ async def test_a_module_object_call_the_graph_resolved_is_listed(
 
 
 @pytest.mark.asyncio
+async def test_a_call_on_a_returned_module_with_no_root_name_is_incomplete(
+    session, repo_id, tmp_path
+):
+    """``_catalog().backend_of`` has no root name, yet the file hands the module on."""
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/lazy.py", _DEF, "imports", {"imported_names_json": '["catalog"]'})],
+    )
+    body = "from pkg import catalog\n\n\ndef _catalog():\n    return catalog\n\n\n"
+    body += "def run():\n    return _catalog().backend_of(1)\n"
+    (tmp_path / "app" / "lazy.py").write_text(body, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert out["reasons"] == [
+        "may be called through a module object outside an import: app/lazy.py"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        "import * as a from './a'\nconst m = a\nexport const f = () => m.pick(1)\n",
+        "import * as a from './a'\nfunction load() { return a }\nexport const f = () => load().pick(1)\n",
+        "import * as a from './a'\nfunction load() { return a; }\n"
+        "export function f() { const m = load(); return m.pick(1) }\n",
+        "const a = require('./a')\nconst m = a // the module\nexport const f = () => m.pick(1)\n",
+    ],
+)
+async def test_a_typescript_namespace_handed_on_is_incomplete(session, repo_id, tmp_path, text):
+    """A namespace import or ``require`` handed on reaches ``pick`` through a
+    local no import binds, which the scan cannot follow."""
+    node = await _seed_js(session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.ts": text})
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert out["reasons"] == [
+        "may be called through a module object outside an import: web/b.ts"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Read through the namespace itself: a listed site.
+        "import * as a from './a'\nexport const f = () => a.pick(1)\n",
+        # Another module's namespace is handed on, not the one holding ``pick``.
+        "import * as a from './a'\nimport * as z from './z'\nconst m = z\n"
+        "export const f = () => m.pick(1)\n",
+        # The object is the class's own instance.
+        "import * as a from './a'\nconst m = a\nclass C { g() { return this.pick(1) } }\n",
+    ],
+)
+async def test_a_typescript_namespace_not_handed_on_stays_complete(
+    session, repo_id, tmp_path, text
+):
+    node = await _seed_js(session, repo_id, tmp_path, {"web/a.ts": _PICK, "web/b.ts": text})
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is True
+    assert "reasons" not in out
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("body", "names"),
     [
@@ -320,6 +391,8 @@ async def test_a_module_object_call_the_graph_resolved_is_listed(
         ),
         # An object use with no module import of a file holding the name.
         ("from pkg.catalog import MODELS\n\ndef f(ctx):\n    return ctx.backend_of()\n", '["MODELS"]'),
+        # A call's result, in a file that never hands the module on.
+        ("from pkg import catalog\n\ndef f(make):\n    return make().backend_of()\n", '["catalog"]'),
     ],
 )
 async def test_object_use_without_a_module_object_stays_complete(
