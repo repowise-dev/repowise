@@ -54,10 +54,12 @@ def health_analyzer_changed(state: dict[str, Any]) -> bool:
     existing install once on upgrade for no stated defect. They pick the stamp
     up on their first re-score from any other trigger.
     """
+    stored = state.get("health_analyzer_version")
+    if stored is None:
+        return False
     from .engine import HEALTH_ANALYZER_VERSION
 
-    stored = state.get("health_analyzer_version")
-    return stored is not None and stored != HEALTH_ANALYZER_VERSION
+    return stored != HEALTH_ANALYZER_VERSION
 
 
 def __getattr__(name: str) -> Any:

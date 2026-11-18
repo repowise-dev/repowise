@@ -805,6 +805,8 @@ async def _full_index_update(
             symbol_count=result.symbol_count,
             kg_state=kg_state,
             git_history_refreshed=getattr(result, "git_summary", None) is not None,
+            # The full pipeline scores every file with this build's analyzer.
+            health_rescored=getattr(result, "health_report", None) is not None,
         )
     except Exception as exc:
         return RepoUpdateResult(

@@ -178,7 +178,8 @@ def test_defaults_keep_the_full_index_fallback(tmp_path, stub_full_pipeline):  #
     assert result.updated is True
     assert result.skipped_reason is None
     assert result.full_index_reason is None
-    assert result.health_rescored is False
+    # The full pipeline scored every file, so the caller stamps the analyzer.
+    assert result.health_rescored is True
 
 
 def test_update_drops_the_graph_seed_before_rewriting_the_graph(
