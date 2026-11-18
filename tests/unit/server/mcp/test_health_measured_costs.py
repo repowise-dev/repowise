@@ -226,10 +226,31 @@ async def test_summary_names_the_queue_call_only_when_the_queue_is_not_here(
 @pytest.mark.asyncio
 async def test_an_index_from_before_the_workload_view_says_to_update(setup_mcp, session, materialized):
     await _seed(session, materialized, [])
-    await replace_symbol_hotness(
-        session, materialized, [{"symbol_id": LOGIN, "rank": 1, "tier": "ranked", "freshness": "current"}]
-    )
+    ranked = {"symbol_id": LOGIN, "rank": 1, "tier": "ranked", "freshness": "current"}
+    await replace_symbol_hotness(session, materialized, [{**ranked, "run_id": "r1"}])
     await session.commit()
     assert await _measured() == {
         "basis": "unknown", "status": "needs_update", "command": "repowise update",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_thin_newest_run_beside_a_ranked_older_one_is_not_ranked(
+    setup_mcp, session, materialized
+):
+    """The view is built and empty: an update could never change that answer."""
+    from datetime import timedelta
+
+    await _seed(session, materialized, [])
+    session.add(
+        EvidenceRun(
+            id="r1-new", repository_id=materialized, run_key="r1-new", kind="profile",
+            format="repowise-evidence-v1", source="cli", workload_name="w-r1",
+            workload_class="entry_point", measured_at=MEASURED_AT + timedelta(days=1),
+        )
+    )
+    # Ranked in the older run of the workload only.
+    ranked = {"symbol_id": LOGIN, "rank": 1, "tier": "ranked", "freshness": "current"}
+    await replace_symbol_hotness(session, materialized, [{**ranked, "run_id": "r1"}])
+    await session.commit()
+    assert await _measured() == {"basis": "unknown", "status": "not_ranked"}

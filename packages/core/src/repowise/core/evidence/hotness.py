@@ -217,7 +217,7 @@ def derive_hotness(
                 r.tier = "lead_candidate"
         basis = min(rows, key=_basis_order)
         symbols.append(_stored(basis, run_count=len({r.run.id for r in rows})))
-    newest = _newest_runs(runs)
+    newest = newest_runs(runs)
     workloads = [
         _workload_row(r)
         for rows in rows_by_symbol.values()
@@ -228,9 +228,13 @@ def derive_hotness(
     return Hotness(symbols, workloads)
 
 
-def _newest_runs(runs: Sequence[RunFacts]) -> set[str]:
-    """The id of each workload's newest run, by name and environment."""
-    newest: dict[tuple[str, str], RunFacts] = {}
+def newest_runs(runs: Iterable[Any]) -> set[str]:
+    """The id of each workload's newest run, by name and environment.
+
+    *runs* carry ``id``, ``workload_name``, ``environment`` and
+    ``measured_at`` (the ingest time when the run did not say).
+    """
+    newest: dict[tuple[str, str], Any] = {}
     for run in runs:
         key = (run.workload_name, run.environment)
         if key not in newest or _age_key(run) > _age_key(newest[key]):
@@ -238,7 +242,7 @@ def _newest_runs(runs: Sequence[RunFacts]) -> set[str]:
     return {run.id for run in newest.values()}
 
 
-def _age_key(run: RunFacts) -> tuple[float, str]:
+def _age_key(run: Any) -> tuple[float, str]:
     return (run.measured_at.timestamp() if run.measured_at else 0.0, run.id)
 
 
@@ -510,6 +514,7 @@ __all__ = [
     "RunFacts",
     "derive_hotness",
     "hotness_rules",
+    "newest_runs",
     "rebuild_symbol_hotness",
     "refresh_symbol_hotness",
     "run_samples",

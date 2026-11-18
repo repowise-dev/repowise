@@ -359,11 +359,12 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
 
     ``no_runtime_data``: no profile run is stored. ``stale``: every function
     the stored runs mapped is stale (measured at another commit, body changed
-    since). ``needs_update``: the per-function view ranks functions but the
-    per-workload one was never built (a store from before it existed, until
-    the next update or ingest rebuilds both). ``not_ranked``: current evidence
-    that ranks nothing (too few samples in production code, or no production
-    frame). At most four indexed lookups.
+    since). ``needs_update``: a workload's newest run ranks functions in the
+    per-function view but the per-workload view holds nothing (a store from
+    before it existed, until the next update or ingest rebuilds both); a
+    newest run that ranks nothing beside an older one that did is
+    ``not_ranked``, never this. ``not_ranked``: current evidence that ranks
+    nothing (too few samples in production code, or no production frame).
     """
     has_profile = select(EvidenceRun.id).where(
         EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "profile"
@@ -373,18 +374,57 @@ async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
     mapped = select(SymbolHotness.symbol_id).where(SymbolHotness.repository_id == repository_id)
     fresh = mapped.where(SymbolHotness.freshness != "stale")
     if (await session.execute(fresh.limit(1))).first() is not None:
-        ranked = fresh.where(SymbolHotness.tier.in_(("ranked", "lead_candidate")))
-        built = select(WorkloadHotness.run_id).where(
-            WorkloadHotness.repository_id == repository_id
-        )
-        if (await session.execute(ranked.limit(1))).first() is not None and (
-            await session.execute(built.limit(1))
-        ).first() is None:
+        if await _workload_view_missing(session, repository_id):
             return "needs_update"
         return "not_ranked"
     if (await session.execute(mapped.limit(1))).first() is not None:
         return "stale"
     return "not_ranked"
+
+
+async def _workload_view_missing(session: AsyncSession, repository_id: str) -> bool:
+    """A workload's newest run is the basis of a ranked function, yet
+    ``workload_hotness`` is empty: the per-workload view was never built.
+
+    Built, that run's ranked functions would be rows there, so an empty view
+    beside ranked older runs only (a thin newest run) is not this.
+    """
+    from types import SimpleNamespace
+
+    from ....evidence.hotness import newest_runs
+
+    built = select(WorkloadHotness.run_id).where(WorkloadHotness.repository_id == repository_id)
+    if (await session.execute(built.limit(1))).first() is not None:
+        return False
+    result = await session.execute(
+        select(
+            EvidenceRun.id,
+            EvidenceRun.workload_name,
+            EvidenceRun.environment,
+            EvidenceRun.measured_at,
+            EvidenceRun.ingested_at,
+        ).where(
+            EvidenceRun.repository_id == repository_id,
+            EvidenceRun.kind == "profile",
+            EvidenceRun.mapping_partial.is_(False),
+        )
+    )
+    newest = newest_runs(
+        SimpleNamespace(
+            id=r.id,
+            workload_name=r.workload_name,
+            environment=r.environment,
+            measured_at=r.measured_at or r.ingested_at,
+        )
+        for r in result
+    )
+    ranked = select(SymbolHotness.symbol_id).where(
+        SymbolHotness.repository_id == repository_id,
+        SymbolHotness.tier.in_(("ranked", "lead_candidate")),
+        SymbolHotness.freshness != "stale",
+        SymbolHotness.run_id.in_(sorted(newest)),
+    )
+    return bool(newest) and (await session.execute(ranked.limit(1))).first() is not None
 
 
 def _refuse_repeated_keys(table: Table, rows: list[dict[str, Any]]) -> None:
