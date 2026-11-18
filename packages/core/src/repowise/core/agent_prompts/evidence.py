@@ -18,7 +18,9 @@ CONNECT_EVIDENCE = (
     "printed, without changing their flags. If a step fails, read the error, fix the cause "
     "(a missing tool or dependency) and run the step again. When the steps are done, run "
     "`repowise evidence setup --format json` again and follow the new `next_call`. Stop "
-    "when `next_call` is null or repeats steps you already ran. Then tell me what `repowise "
+    "when `next_call` is null or repeats steps you already ran. A runtime target whose "
+    "`command` ends in `<args>` is yours to finish: replace `<args>` with arguments that "
+    "exercise real work, then run it and its `ingest` line. Then tell me what `repowise "
     "evidence status` reports, and the `reason` setup gave or why you stopped."
 )
 
