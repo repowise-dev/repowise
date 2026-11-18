@@ -30,6 +30,7 @@ import networkx as nx
 
 from repowise.core.analysis.execution_flows import rank_by_importance
 from repowise.core.fsutils import strip_dir_prefix as relative_to
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 # The diagram stays small enough to read without zooming.
 _MAX_PARTS = 9
@@ -153,10 +154,10 @@ def _flow_steps(
 
 def _runs_here(trace: Sequence[str], members: set[str]) -> bool:
     """Whether a trace starts in the module and enough of it stays there to draw."""
-    inside = sum(1 for n in trace if n.split("::")[0] in members)
+    inside = sum(1 for n in trace if file_of_symbol(n) in members)
     return (
         bool(trace)
-        and trace[0].split("::")[0] in members
+        and file_of_symbol(trace[0]) in members
         and inside >= _MIN_FLOW_STEPS_INSIDE
         and len(trace) >= _MIN_FLOW_STEPS
     )
@@ -290,7 +291,7 @@ def symbol_weight(
     weight: Counter[str] = Counter()
     for flow in flows:
         weight.update(
-            {n: 2 for n in set(getattr(flow, "trace", ()) or ()) if n.split("::")[0] in members}
+            {n: 2 for n in set(getattr(flow, "trace", ()) or ()) if file_of_symbol(n) in members}
         )
     if graph is not None:
         weight.update(_outside_calls(graph, members, symbol_index))
@@ -317,7 +318,7 @@ def _outside_calls(
         calls[node] = sum(
             1
             for src, _, d in graph.in_edges(node, data=True)
-            if d.get("edge_type") == "calls" and str(src).split("::")[0] != own
+            if d.get("edge_type") == "calls" and file_of_symbol(str(src)) != own
         )
     return calls
 

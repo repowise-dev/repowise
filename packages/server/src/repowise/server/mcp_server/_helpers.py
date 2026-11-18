@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.decisions.lifecycle import HISTORY_CURRENCIES, is_governing
 from repowise.core.analysis.decisions.scope import binds_to_paths
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud.repository import get_repository_by_path
 from repowise.core.persistence.models import (
     Repository,
@@ -861,7 +862,7 @@ def filter_embedded_path_ids(ids: list, spec: Any) -> list:
     """Shape E: ids look like ``"path::Name"``; match on the file portion."""
     if not spec:
         return ids
-    return [i for i in ids if not is_excluded(i.split("::", 1)[0], spec)]
+    return [i for i in ids if not is_excluded(file_of_symbol(i), spec)]
 
 
 def drop_echoed_target(targets: Any) -> None:

@@ -22,10 +22,14 @@ from typing import Any, TypeVar
 
 from sqlalchemy import select
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.models import GraphNode, Repository
 from repowise.server.mcp_server._index_state import index_state_key
 
 _T = TypeVar("_T")
+
+# Kept importable under its old name for code outside this package.
+node_to_file = file_of_symbol
 
 # repo_id -> (index state key, {projection name: value}), least recently used
 # first. Bounded by repos because one entry holds whole-repo projections; a
@@ -44,11 +48,6 @@ CALLS_CONF_FLOOR = 0.5
 def is_symbol_node(node_id: str) -> bool:
     """Whether *node_id* addresses a symbol rather than a file."""
     return "::" in node_id
-
-
-def node_to_file(node_id: str) -> str:
-    """``a/b.py::Klass.meth`` -> ``a/b.py``. A file node id is returned unchanged."""
-    return node_id.split("::", 1)[0]
 
 
 def file_ext(path: str) -> str:

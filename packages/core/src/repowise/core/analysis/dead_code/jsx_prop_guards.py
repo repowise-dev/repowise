@@ -7,6 +7,8 @@ from typing import Any
 
 from tree_sitter import Language, Parser
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 
 _FUNCTION_NODES = ("function_declaration", "arrow_function", "function_expression", "method_definition")
@@ -441,7 +443,7 @@ def unsatisfied_prop_guard(
 
     resolved_guards: list[tuple[str, str]] = []
     for pred in predecessors:
-        pred_file = pred.split("::")[0] if "::" in pred else pred
+        pred_file = file_of_symbol(pred)
         if not pred_file.endswith((".tsx", ".jsx", ".ts", ".js")):
             continue
         guard = _blocked_guard(graph, guarded_renders(pred_file), pred, sym_name)

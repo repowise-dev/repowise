@@ -24,6 +24,7 @@ from repowise.core.ingestion.models import (
     NON_DEPENDENCY_EDGE_TYPES,
     SYMBOL_USE_EDGE_TYPES,
 )
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
     GraphEdge,
@@ -150,7 +151,7 @@ async def _compact_symbol_rows(
             "line": s.start_line,
         }
         sid = symbol_identity(s.symbol_id)
-        if sid != f"{path}::{s.name}":
+        if sid != make_symbol_id(path, s.name):
             row["symbol_id"] = sid
         scored.append(
             ((_kind_rank(s.kind), -rank.get(s.symbol_id, 0.0), s.start_line or 0), row)
@@ -625,7 +626,7 @@ async def _symbol_user_files(
     for source_node_id, file_path, confidence, origin in res.all():
         if not shows_call_origin(origin, sym.file_path):
             continue
-        path = file_path or source_node_id.split("::", 1)[0]
+        path = file_path or file_of_symbol(source_node_id)
         user_files.add(path)
         if (
             path == sym.file_path

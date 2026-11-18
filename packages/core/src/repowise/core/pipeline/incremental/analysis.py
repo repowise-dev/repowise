@@ -212,7 +212,7 @@ def run_partial_analysis(
                 # The writer replaces facts only for the re-scored files, so a
                 # sink file's rows would land on top of its stored ones.
                 if partial_health_report.function_facts is not None:
-                    from repowise.core.analysis.execution_graph import file_of_symbol
+                    from repowise.core.ingestion.symbol_identity import file_of_symbol
 
                     _rescored = _health_changed | _performance_changed
                     partial_health_report.function_facts = [

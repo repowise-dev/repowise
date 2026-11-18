@@ -10,6 +10,7 @@ import re
 from collections.abc import Iterator
 from pathlib import Path
 
+from repowise.core.ingestion.symbol_identity import make_symbol_id
 from repowise.server.mcp_server._verify import NOT_A_DEFINITION
 from repowise.server.mcp_server.tool_answer.source import (
     _read_repo_text,
@@ -221,7 +222,7 @@ def _withheld_entry(
         "name": name,
         "kind": kind,
         "line": line_no,
-        "symbol_id": f"{path}::{name}",
+        "symbol_id": make_symbol_id(path, name),
         "signature": (sig or f"{kind} {name}").strip(),
     }
     if cut:

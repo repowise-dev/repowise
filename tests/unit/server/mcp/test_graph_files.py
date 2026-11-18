@@ -6,13 +6,10 @@ from repowise.server.mcp_server._graph_files import (
     file_ext,
     is_symbol_node,
     keep_projected_edge,
-    node_to_file,
 )
 
 
-def test_node_to_file_projects_symbols_and_passes_files_through():
-    assert node_to_file("a/b.py::Klass.meth") == "a/b.py"
-    assert node_to_file("a/b.py") == "a/b.py"
+def test_is_symbol_node():
     assert is_symbol_node("a/b.py::X") and not is_symbol_node("a/b.py")
 
 

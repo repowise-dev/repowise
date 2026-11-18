@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 
-from repowise.core.analysis.execution_graph import file_of_symbol
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 # A hub is a module most of the code imports: fan-in above the absolute bar, or
 # in the top 1% of the repository's files and at least the floor. Far stricter

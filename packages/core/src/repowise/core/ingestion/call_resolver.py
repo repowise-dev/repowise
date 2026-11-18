@@ -113,7 +113,7 @@ from .return_types import (
     normalize_return_type,
     signature_parameter_count,
 )
-from .symbol_identity import id_segment_name, outer_scope, same_parameters
+from .symbol_identity import id_segment_name, module_symbol_id, outer_scope, same_parameters
 from .type_names import (
     bare_type_name,
     builtin_type_spelling,
@@ -1036,7 +1036,7 @@ class CallResolver(
         for call in calls:
             if not call.caller_symbol_id:
                 # Module-level call — assign to synthetic __module__ symbol
-                call = replace(call, caller_symbol_id=f"{file_path}::__module__")
+                call = replace(call, caller_symbol_id=module_symbol_id(file_path))
             call = self._typed_arguments(file_path, call)
 
             resolved = self._overload_sibling_call(call) or self._resolve_one(file_path, call)

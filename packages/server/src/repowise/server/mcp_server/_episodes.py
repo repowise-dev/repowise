@@ -18,6 +18,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from repowise.core.git_sha import is_full_sha
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.precedent.currency import (
     GIT_UNASKED,
     recorded_on,
@@ -371,4 +372,4 @@ def enrich_episode_counts(results: Sequence[dict], root: Path) -> None:
 
 def _file_of(target: str) -> str:
     """The file a target names, dropping any ``::symbol`` suffix."""
-    return target.split("::", 1)[0].strip()
+    return file_of_symbol(target).strip()

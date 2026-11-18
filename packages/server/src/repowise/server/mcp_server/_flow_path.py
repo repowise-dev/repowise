@@ -39,12 +39,12 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.code_origin import prefer_production
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.models import GraphEdge, Page, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._graph_files import (
     file_ext,
     keep_projected_edge,
-    node_to_file,
     per_index,
 )
 
@@ -228,8 +228,8 @@ async def _load_file_adjacency(session: Any, repo_id: str) -> dict[str, list[str
     )
     adj: dict[str, set[str]] = {}
     for src, tgt, etype, conf in res.all():
-        src = node_to_file(src or "")
-        tgt = node_to_file(tgt or "")
+        src = file_of_symbol(src or "")
+        tgt = file_of_symbol(tgt or "")
         if not keep_projected_edge(src, tgt, etype, conf):
             continue
         adj.setdefault(src, set()).add(tgt)
@@ -411,7 +411,7 @@ async def expand_via_flow_path(
 
     adj = await file_adjacency(session, repo_id)
 
-    retrieved = {node_to_file(h.get("target_path") or "") for h in hits}
+    retrieved = {file_of_symbol(h.get("target_path") or "") for h in hits}
     retrieved.update(p for p, src in anchors.items() if src == "symbol")
     paths = _grounded_paths(adj, endpoints, retrieved)
 

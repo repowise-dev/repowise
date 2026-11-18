@@ -46,6 +46,7 @@ import re
 from typing import TYPE_CHECKING, NamedTuple
 
 from ...models import FileInfo, Symbol
+from ...symbol_identity import make_symbol_id
 from ..helpers import node_text
 from ._helpers import build_synthetic_symbol
 
@@ -345,7 +346,7 @@ def _emit_builder(
         file_info=file_info, parent_name=class_name,
     )
     # A member type's id names every enclosing type, as a written one's does.
-    builder.id = f"{file_info.path}::{scope}::{builder_class}"
+    builder.id = make_symbol_id(file_info.path, scope, builder_class)
     out.append(builder)
     _add(out, file_info, name="builder", kind="method",
          parent=class_name, line=line,

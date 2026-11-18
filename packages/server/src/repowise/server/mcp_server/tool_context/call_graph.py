@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ingestion.models import SYMBOL_USE_EDGE_TYPES
-from repowise.core.ingestion.symbol_identity import id_segment_name
+from repowise.core.ingestion.symbol_identity import file_of_symbol, id_segment_name
 from repowise.core.persistence.crud import (
     get_graph_edges_for_node,
     get_graph_node,
@@ -19,7 +19,7 @@ from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
 from repowise.server.mcp_server._basis import call_resolution_basis
 from repowise.server.mcp_server._budget import OmissionCollector, cap_collection
 from repowise.server.mcp_server._edit_sites import attach_call_text, first_call_line
-from repowise.server.mcp_server._graph_files import keep_projected_edge, node_to_file
+from repowise.server.mcp_server._graph_files import keep_projected_edge
 from repowise.server.mcp_server._helpers import filter_dicts_by_key
 from repowise.server.mcp_server._index_state import index_state_key
 from repowise.server.mcp_server._symbol_facts import shows_call_origin
@@ -308,7 +308,7 @@ def _neighbor_entry(
         "kind": other_node.kind if other_node else None,
         "file": other_node.file_path
         if other_node
-        else (other_id.split("::")[0] if "::" in other_id else other_id),
+        else file_of_symbol(other_id),
         # Definition line of the other symbol.
         "line": other_node.start_line if other_node else None,
         "confidence": edge.confidence,
@@ -639,7 +639,7 @@ async def _file_inbound_calls(
     # The shared projection rule every calls-onto-files surface uses. Its
     # same-extension guard drops genuine cross-language calls: a known ceiling.
     for src_id, confidence, origin in edge_res.all():
-        src_file = node_to_file(src_id)
+        src_file = file_of_symbol(src_id)
         if not shows_call_origin(origin, target_file):
             continue
         if not keep_projected_edge(src_file, target_file, "calls", confidence):
@@ -647,7 +647,7 @@ async def _file_inbound_calls(
         calls_by_file[src_file] = calls_by_file.get(src_file, 0) + 1
     interface_by_file: dict[str, int] = {}
     for edge, _base in await interface_call_edges(session, repo_id, sym_ids):
-        src_file = node_to_file(edge.source_node_id)
+        src_file = file_of_symbol(edge.source_node_id)
         if keep_projected_edge(src_file, target_file, "calls", edge.confidence):
             interface_by_file[src_file] = interface_by_file.get(src_file, 0) + 1
     return calls_by_file, interface_by_file

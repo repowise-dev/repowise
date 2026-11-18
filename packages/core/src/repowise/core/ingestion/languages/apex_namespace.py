@@ -36,7 +36,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from ..symbol_identity import outer_scope, symbol_id_path
+from ..symbol_identity import file_of_symbol, outer_scope
 from ..type_names import bare_type_name, dotted_type_segments, type_qualifier
 
 _SFDX_PROJECT = "sfdx-project.json"
@@ -99,7 +99,7 @@ class ApexNamespaces:
             found = self._top_level(project, path, name)
             if found is None and path not in self.project_of:
                 found = self._unique_elsewhere(project, name)
-        return symbol_id_path(found) if found else None
+        return file_of_symbol(found) if found else None
 
     def _unique_elsewhere(self, project: str, name: str) -> str | None:
         """The one type *name* names when one other, un-namespaced project declares it once."""
@@ -177,7 +177,7 @@ class ApexNamespaces:
             found = tuple(
                 type_id
                 for type_id in found
-                if self._deploy_unit(project, symbol_id_path(type_id)) == unit
+                if self._deploy_unit(project, file_of_symbol(type_id)) == unit
             )
         return found
 

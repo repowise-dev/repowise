@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....analysis.execution_graph import file_of_symbol
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ....analysis.function_test_map import (
     FunctionTests,
     MappedTest,

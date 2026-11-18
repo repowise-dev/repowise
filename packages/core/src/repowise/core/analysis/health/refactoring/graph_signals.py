@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ....ingestion.cohesion import cannot_close_cycle
 from ....ingestion.models import FILE_DEPENDENCY_EDGE_TYPES
 
@@ -149,7 +151,7 @@ def build_methods_by_file(graph: Any) -> dict[str, tuple[str, ...]]:
             and data.get("kind") == "method"
             and "::" in node_id
         ):
-            prefix_map.setdefault(node_id.split("::", 1)[0], set()).add(node_id)
+            prefix_map.setdefault(file_of_symbol(node_id), set()).add(node_id)
     for u, v, data in graph.edges(data=True):
         if data.get("edge_type") != "defines":
             continue

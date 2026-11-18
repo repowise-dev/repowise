@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from ..framework_facts import ANGULAR, ANGULAR_WORKSPACE_FILES, angular_entry_files
 from ..framework_routes import match_paren
 from ..resolvers import ResolverContext
+from ..symbol_identity import module_symbol_id
 from .base import (
     JS_STRING_LITERAL_RE,
     DetectionContext,
@@ -164,7 +165,7 @@ class _AngularHandler:
             if any(bootstrap for _, bootstrap in refs):
                 count += anchor_edge(graph, ANGULAR, path)
             local = {s.name: s.id for s in parsed.symbols if not s.parent_name}
-            module_sym = f"{path}::__module__"
+            module_sym = module_symbol_id(path)
             imported: dict[str, str] | None = None
             for name in {name for name, _ in refs}:
                 if name in local:

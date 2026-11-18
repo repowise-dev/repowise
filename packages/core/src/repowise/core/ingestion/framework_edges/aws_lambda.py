@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from ..resolvers import ResolverContext
+from ..symbol_identity import module_symbol_id
 from .aws_lambda_terraform import SOURCE_SUFFIXES, terraform_handlers, wanted
 from .base import (
     DetectionContext,
@@ -138,7 +139,7 @@ def _link(
             None,
         )
         if symbol is not None:
-            count += add_symbol_edge(graph, f"{config}::__module__", symbol)
+            count += add_symbol_edge(graph, module_symbol_id(config), symbol)
         # ``exports.create = handler`` (a name, not a function written
         # there) declares no symbol, so the name in the text is the evidence
         # that the handler exists.

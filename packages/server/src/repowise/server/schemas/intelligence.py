@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from repowise.core.persistence.models import GraphEdge, GraphNode
 
@@ -65,7 +67,7 @@ class CallerCalleeEntry(BaseModel):
             kind=other.kind if other and other.kind else "unknown",
             file=other.file_path
             if other and other.file_path
-            else (other_id.split("::")[0] if "::" in other_id else other_id),
+            else file_of_symbol(other_id),
             start_line=other.start_line if other else None,
             edge_type=edge.edge_type,
             confidence=round(edge.confidence or 0.0, 3),

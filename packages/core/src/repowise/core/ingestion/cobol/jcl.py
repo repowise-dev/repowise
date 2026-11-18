@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass, field
 
 from ..models import FileInfo, ParsedFile, Symbol
+from ..symbol_identity import make_symbol_id
 
 _NAME = r"[A-Z0-9#@$][A-Z0-9#@$]{0,7}"
 _STATEMENT = re.compile(rf"^//(?P<name>{_NAME})?\s+(?P<op>\S+)\s*(?P<operands>.*)$", re.I)
@@ -135,7 +136,7 @@ def parse_jcl_file(file_info: FileInfo, source: bytes) -> ParsedFile:
 
 def _symbol(path: str, name: str, kind: str, signature: str, start: int, end: int) -> Symbol:
     return Symbol(
-        id=f"{path}::{name}",
+        id=make_symbol_id(path, name),
         name=name,
         qualified_name=name,
         kind=kind,  # type: ignore[arg-type]

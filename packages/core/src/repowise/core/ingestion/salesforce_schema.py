@@ -20,6 +20,7 @@ from xml.parsers import expat
 import yaml
 
 from .models import FileInfo, ParsedFile, SchemaReference, Symbol
+from .symbol_identity import make_symbol_id
 
 if TYPE_CHECKING:  # read paths import this module and must not load networkx
     import networkx as nx
@@ -99,7 +100,7 @@ def _object_symbol(path: str, name: str, root: _Element) -> Symbol:
     label = root.first("label")
     signature = f'SObject {name} "{label}"' if label else f"SObject {name}"
     return Symbol(
-        id=f"{path}::{name}",
+        id=make_symbol_id(path, name),
         name=name,
         qualified_name=name,
         kind="class",
@@ -152,7 +153,7 @@ def parse_object_metadata(file_info: FileInfo, source: bytes) -> ParsedFile:
         # objects/<Obj>/fields/<F>.field-meta.xml; any other layout names no object.
         obj = pure.parent.parent.name if pure.parent.name == "fields" else None
         obj = _strip_namespace_tokens(obj) if obj else None
-        sym, refs = _field_symbol(f"{path}::{name}", obj, name, root, None)
+        sym, refs = _field_symbol(make_symbol_id(path, name), obj, name, root, None)
         symbols.append(sym)
     elif root.tag == "CustomObject":
         suffix = _OBJECT_META if lowered.endswith(_OBJECT_META) else ".object"
@@ -164,7 +165,7 @@ def parse_object_metadata(file_info: FileInfo, source: bytes) -> ParsedFile:
             if not name:
                 continue
             name = _strip_namespace_tokens(name)
-            sym, field_refs = _field_symbol(f"{path}::{obj}::{name}", obj, name, el, obj)
+            sym, field_refs = _field_symbol(make_symbol_id(path, obj, name), obj, name, el, obj)
             symbols.append(sym)
             refs.extend(field_refs)
     return ParsedFile(

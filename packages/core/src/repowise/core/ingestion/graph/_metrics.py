@@ -22,6 +22,7 @@ import structlog
 
 from ..cohesion import cannot_close_cycle
 from ..models import NON_CODE_EDGE_TYPES, SYMBOL_USE_EDGE_TYPES
+from ..symbol_identity import file_of_symbol
 from ..symbol_use import SymbolUse, symbol_use_counts
 
 log = structlog.get_logger(__name__)
@@ -740,7 +741,7 @@ class MetricsMixin:
 
         for node_id in self._graph.nodes():
             if node_id not in merged_cd and "::" in node_id:
-                file_path = node_id.split("::")[0]
+                file_path = file_of_symbol(node_id)
                 if file_path in file_cd:
                     merged_cd[node_id] = file_cd[file_path]
 

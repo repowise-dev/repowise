@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..framework_routes import express_routes, js_router_bindings, match_paren
 from ..resolvers import ResolverContext
+from ..symbol_identity import module_symbol_id
 from .base import (
     JS_STRING_LITERAL_RE,
     DetectionContext,
@@ -96,7 +97,7 @@ def _add_express_route_edges(graph: nx.DiGraph, path: str, parsed: Any, text: st
     if not (local_funcs and receivers):
         return 0
     count = 0
-    module_sym = f"{path}::__module__"
+    module_sym = module_symbol_id(path)
     for route in express_routes(text):
         if route.receiver not in receivers:
             continue

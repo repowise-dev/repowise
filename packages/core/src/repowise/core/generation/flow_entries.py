@@ -33,6 +33,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from repowise.core.fs_walk import walk_repo
+from repowise.core.ingestion.symbol_identity import file_of_symbol, make_symbol_id
 from repowise.core.support_paths import DOC_EXTENSIONS, is_support_path
 from repowise.core.test_paths import is_test_path
 
@@ -126,7 +127,7 @@ def entry_cite(graph: Any, entry: Entry) -> str:
     """``path:line`` where *entry* is declared: its symbol's first line, or its own node."""
     attrs = graph.nodes.get(entry.node, {}) if entry.node in graph else {}
     path, line = attrs.get("file_path"), attrs.get("start_line")
-    return f"{path}:{line}" if path and line else entry.node.split("::", 1)[0]
+    return f"{path}:{line}" if path and line else file_of_symbol(entry.node)
 
 
 def _cli_public(program: str, command: str) -> str:
@@ -170,7 +171,7 @@ def _go_named_command(path: str, lines: list[str], i: int, graph: Any, program: 
     """simplecobra: ``func (c *x) Name() string { return "lit" }`` on a type with ``Run``."""
     m = _GO_NAME.match(lines[i])
     lit = _GO_RETURN.match(lines[i + 1]) if m and i + 1 < len(lines) else None
-    node = f"{path}::{m.group(1)}::Run" if m else ""
+    node = make_symbol_id(path, m.group(1), "Run") if m else ""
     return Entry(node, CLI, _cli_public(program, lit.group(1))) if lit and node in graph else None
 
 
@@ -229,7 +230,7 @@ def _reexported(src: str, names: str, symbols: list[tuple[str, str]]) -> Iterabl
         name, alias = bits[0], bits[-1]
         prefix = f"{src}::{name}::"
         for method, node in symbols:
-            if node == f"{src}::{name}":
+            if node == make_symbol_id(src, name):
                 yield Entry(node, API, alias)
             elif node.startswith(prefix) and not method.startswith("_"):
                 yield Entry(node, API, f"{alias}.{method}")

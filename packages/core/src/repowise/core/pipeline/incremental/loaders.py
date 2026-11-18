@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ._common import LogFn, _noop_log
 
 
@@ -128,7 +130,7 @@ async def load_stored_performance_callers(
             except (TypeError, ValueError, AttributeError):
                 continue
             if any(
-                isinstance(node, str) and node.split("::", 1)[0] in changed_paths for node in path
+                isinstance(node, str) and file_of_symbol(node) in changed_paths for node in path
             ):
                 callers.add(file_path)
         return callers

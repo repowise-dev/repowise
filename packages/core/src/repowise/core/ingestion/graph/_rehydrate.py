@@ -24,6 +24,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.ingestion.symbol_identity import module_symbol_id
+
 from ...build_units import BuildUnitIndex
 
 log = structlog.get_logger(__name__)
@@ -67,7 +69,7 @@ def _restore_spawn_lines(graph: Any, parsed: Any) -> None:
     rehydrated ``calls`` edge takes them back from the re-parse: the caller's
     spawned call to the callee's name at a line the edge already records.
     """
-    module = f"{parsed.file_info.path}::__module__"
+    module = module_symbol_id(parsed.file_info.path)
     for call in parsed.calls:
         caller = call.caller_symbol_id or module
         if not call.spawned or caller not in graph:

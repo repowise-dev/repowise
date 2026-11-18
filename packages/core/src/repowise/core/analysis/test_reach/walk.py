@@ -16,8 +16,8 @@ from pathlib import PurePosixPath
 from typing import TypeVar
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
-from repowise.core.analysis.execution_graph import file_of_symbol
 from repowise.core.analysis.test_selection import is_code_file, is_runnable_test
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.test_paths import names_test_for
 
 from .hubs import HUB_MIN_FAN_IN
@@ -113,7 +113,7 @@ def call_walk(
                 continue
             if owner in avoid:
                 # A hub carries on only the seeds it declares itself.
-                carried = {s: d for s, d in carried.items() if s.split("::", 1)[0] == owner}
+                carried = {s: d for s, d in carried.items() if file_of_symbol(s) == owner}
             if not _carry_closer(origins, caller, carried):
                 continue
             if caller not in queued:
@@ -286,7 +286,7 @@ def helper_walk(
         if tests and (tests == who or PurePosixPath(middle).name in BARREL_FILENAMES):
             for target in middles[middle]:
                 reached.setdefault(target, set()).update(tests)
-    edited = frozenset(c.split("::", 1)[0] for c in targets)
+    edited = frozenset(file_of_symbol(c) for c in targets)
     return {
         target: capped(target, tests, "import-graph", changed=targets, edited=edited, rank=rank)
         for target, tests in reached.items()
@@ -338,7 +338,7 @@ def package_walk(
                 elif _carry_in_package(dependent, carried, home, origins):
                     queued[dependent] = None
         frontier = list(queued)
-    edited = frozenset(c.split("::", 1)[0] for c in seeds)
+    edited = frozenset(file_of_symbol(c) for c in seeds)
     return {
         target: capped(target, found, "import-graph", changed=seeds, edited=edited, rank=rank)
         for target, found in reached.items()
@@ -385,7 +385,7 @@ def use_walk(
             tests = set(found.get(symbol, ())) | loaded.get(file_of_symbol(symbol), set())
             if tests:
                 reached.setdefault(seed, set()).update(tests)
-    edited = frozenset(c.split("::", 1)[0] for c in seeds)
+    edited = frozenset(file_of_symbol(c) for c in seeds)
     return {
         seed: capped(seed, tests, "call-graph", changed=seeds, edited=edited, rank=rank)
         for seed, tests in reached.items()
@@ -463,7 +463,7 @@ def _carry_to_callers(
             origins.setdefault(caller, set()).update(fresh)
             queued[caller] = None
             # A caller in another file than the seed is where its tests may join.
-            for seed in (s for s in fresh if owner != s.split("::", 1)[0]):
+            for seed in (s for s in fresh if owner != file_of_symbol(s)):
                 joins.setdefault(seed, set()).add(caller)
     return list(queued)
 
@@ -516,7 +516,7 @@ def _carry_in_package(
 
 def _directory(path: str) -> str:
     """The directory part of a file path or a directory, ``""`` at the root."""
-    return path.split("::", 1)[0].rpartition("/")[0]
+    return file_of_symbol(path).rpartition("/")[0]
 
 
 def tier_walk(
@@ -553,7 +553,7 @@ def tier_walk(
     if not seeds or not test_files:
         return {}
     out: dict[str, ReachedBy] = {}
-    edited = frozenset(c.split("::", 1)[0] for c in seeds)
+    edited = frozenset(file_of_symbol(c) for c in seeds)
     if call_depth >= 1:
         found = yield from call_walk(
             seeds, test_files, call_depth, symbol_seeds=symbol_seeds, avoid=avoid, groups=groups
@@ -578,7 +578,7 @@ def tier_walk(
     if unanswered and import_depth >= 1:
         found, entries = yield from import_walk(unanswered, test_files, import_depth, groups)
         for seed, tests in found.items():
-            file = seed.split("::", 1)[0]
+            file = file_of_symbol(seed)
             by_test = {t: frozenset(via) for t, via in entries[seed].items()}
             # A test importing the target itself, not a file on the way to it.
             direct = {t for t, via in by_test.items() if file in via}
@@ -678,7 +678,7 @@ def closure_walk(
 ) -> Walk[dict[str, ReachedBy]]:
     """Tests anywhere up the import closure of each target, in batches of ``CLOSURE_SEED_CAP``."""
     out: dict[str, ReachedBy] = {}
-    edited = frozenset(c.split("::", 1)[0] for c in targets)
+    edited = frozenset(file_of_symbol(c) for c in targets)
     for start in range(0, len(targets), CLOSURE_SEED_CAP):
         batch = targets[start : start + CLOSURE_SEED_CAP]
         found, entries = yield from import_walk(batch, test_files, CLOSURE_DEPTH)
