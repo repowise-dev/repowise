@@ -124,15 +124,21 @@ def bot_ai(state: str, depth: str | None, repo_slug: str | None, fmt: str) -> No
     result, status = _set_review_mode(repo, config)
     if result.get("ok"):
         result["message"] = f"AI review is {state} for {repo}."
+    _report(result, status, fmt)
+
+
+def _report(result: dict[str, Any], status: dict[str, Any] | None, fmt: str) -> None:
+    """Print a bot action's outcome and the state after it; exit as :func:`exit_code` says."""
     if fmt == "json":
         emit_json(result)
     else:
         console.print(escape(result["message"]))
         if status:
             render_status(status)
-    code = exit_code(status, None) if result.get("ok") and status else 0
     if not result.get("ok"):
         code = exit_code(result, result.get("error"))
+    else:
+        code = exit_code(status, None) if status else 0
     if code:
         raise SystemExit(code)
 
