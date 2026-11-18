@@ -13,6 +13,7 @@ from repowise.core.build_units.adapters import dotnet as dotnet_adapter
 from repowise.core.build_units.adapters import go as go_adapter
 from repowise.core.build_units.collect import collect_build_units
 from repowise.core.ingestion.resolvers.context import ResolverContext
+from repowise.core.ingestion.resolvers.rust_workspace import get_or_build_cargo_workspace_index
 
 
 def _write(root: Path, files: dict[str, str]) -> None:
@@ -307,6 +308,66 @@ def test_cargo_crate_with_no_root_manifest(tmp_path):
     })
     assert set(index.units) == {"cargo:native", "manifest:."}
     assert _owners(index, "native/src/lib.rs") == ["cargo:native"]
+
+
+def test_gradle_root_project_and_quoted_configurations(tmp_path):
+    index = _collect(tmp_path, {
+        "settings.gradle.kts": 'include("lib", "gen", "app")\n',
+        "build.gradle.kts": 'dependencies {\n    dokka(project(":lib"))\n}\n',
+        "lib/build.gradle.kts": 'dependencies {\n    "kspTest"(project(":gen"))\n}\n',
+        "lib/src/main/kotlin/l/Lib.kt": "package l\n",
+        "gen/build.gradle.kts": "",
+        "gen/src/main/kotlin/g/Gen.kt": "package g\n",
+        "app/build.gradle": (
+            "dependencies {\n    testImplementation project(':gen')\n"
+            "    'kapt' project(path: ':lib')\n}\n"
+        ),
+        "app/src/main/java/a/App.java": "package a;\n",
+    })
+    assert _deps(index) == {
+        "gradle::": ("gradle::lib",),
+        "gradle::app": ("gradle::gen", "gradle::lib"),
+        "gradle::gen": (),
+        "gradle::lib": ("gradle::gen",),
+    }
+    root = index.unit("gradle::")
+    assert (root.root, root.manifest, root.name) == ("", "build.gradle.kts", ":")
+    assert _owners(index, "lib/src/main/kotlin/l/Lib.kt") == ["gradle::lib"]
+
+
+def test_cargo_crate_outside_the_workspace_reads_its_path_deps(tmp_path):
+    index = _collect(tmp_path, {
+        "Cargo.toml": '[workspace]\nmembers = ["crates/globset"]\nexclude = ["fuzz"]\n',
+        "crates/globset/Cargo.toml": '[package]\nname = "globset"\n',
+        "crates/globset/src/lib.rs": "",
+        "fuzz/Cargo.toml": (
+            '[package]\nname = "fuzz"\n[workspace]\nmembers = ["."]\n'
+            '[dependencies]\nglobset = { path = "../crates/globset" }\n'
+            'other = { path = "../../outside/other" }\n'
+        ),
+        "fuzz/src/lib.rs": "",
+    })
+    assert index.unit("cargo:fuzz").deps == ("cargo:globset",)
+    assert [u.id for u in index.dependents("cargo:globset")] == ["cargo:fuzz"]
+
+
+def test_root_binary_outside_src_is_one_crate(tmp_path):
+    files = {
+        "Cargo.toml": (
+            '[package]\nname = "rg"\n[[bin]]\nname = "rg"\npath = "crates/core/main.rs"\n'
+            '[workspace]\nmembers = ["crates/globset"]\n'
+            '[dependencies]\nglobset = { path = "crates/globset" }\n'
+        ),
+        "crates/core/main.rs": "fn main() {}",
+        "crates/globset/Cargo.toml": '[package]\nname = "globset"\n',
+        "crates/globset/src/lib.rs": "",
+    }
+    _write(tmp_path, files)
+    crates = get_or_build_cargo_workspace_index(_ctx(tmp_path)).crates
+    assert sorted(crate.name for crate in crates) == ["globset", "rg"]
+    index = collect_build_units(_ctx(tmp_path))
+    assert index.unit("cargo:rg").deps == ("cargo:globset",)
+    assert _owners(index, "crates/core/main.rs") == ["cargo:rg"]
 
 
 def test_cargo_path_dep_outside_the_repo_links_no_same_named_crate(tmp_path):

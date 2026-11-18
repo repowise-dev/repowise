@@ -319,9 +319,14 @@ def _discover_isolated_crates(
     Dependencies are not parsed here: nothing in this pass needs the crate
     resolvable as a ``use``-able sibling, only whether its explicit-path
     targets keep a file alive (#2936).
+
+    A file outside every crate's ``src/`` (a root binary at
+    ``crates/core/main.rs``) can walk up to a manifest an existing crate was
+    already read from; that manifest adds nothing and is skipped.
     """
     path_set = getattr(ctx, "path_set", None) or ()
     probe = CargoWorkspaceIndex(crates=existing)
+    read_dirs = {(repo / crate.src_dir).parent for crate in existing}
     manifest_dirs: set[Path] = set()
     for path in path_set:
         if not path.endswith(".rs") or probe.lookup_crate_for_file(path) is not None:
@@ -329,7 +334,8 @@ def _discover_isolated_crates(
         current = (repo / path).parent
         while True:
             if (current / "Cargo.toml").is_file():
-                manifest_dirs.add(current)
+                if current not in read_dirs:
+                    manifest_dirs.add(current)
                 break
             if current == repo or current.parent == current:
                 break

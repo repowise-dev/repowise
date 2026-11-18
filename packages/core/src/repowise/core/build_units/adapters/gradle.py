@@ -3,7 +3,12 @@
 A project's files are the indexed files under its source-set directories,
 which may sit outside the project (``srcDirs("../shared/src")``). Deps are
 the ``project(":x")`` arguments of configuration calls in the project's build
-script (``implementation(project(":core"))``, ``api project(':api')``).
+script (``implementation(project(":core"))``, ``api project(':api')``,
+``"kspTest"(project(":codegen"))``). The root project is a unit whenever it
+has a build script, also when settings lists modules, which is when the
+resolver's index leaves it out: that index feeds source-set and publishing
+stamps, and a root aggregator's script configures its subprojects
+(``allprojects { ... }``), so its guesses must not become the root's own.
 Ceiling: type-safe accessors (``projects.core``) and dependencies added by a
 convention plugin are not read; reading Gradle's own model export is the
 upgrade path.
@@ -24,10 +29,12 @@ from repowise.core.ingestion.resolvers.jvm_gradle import (
     get_or_build_jvm_gradle_index,
 )
 
-# ``<configuration>(project(":x"))`` or ``<configuration> project(path: ':x')``.
-# A bare ``project(":x") { ... }`` configures a project and is no dependency.
+# ``<configuration>(project(":x"))``, ``<configuration> project(path: ':x')``,
+# or a configuration named by a string (``"kspTest"(project(":x"))``). A bare
+# ``project(":x") { ... }`` configures a project and is no dependency.
 _PROJECT_DEP_RE = re.compile(
-    r"""(?<![\w.])[a-z]\w*\s*(?:\(\s*|\s+)project\s*\(\s*(?:path\s*[:=]\s*)?["'](:[^"']*)["']"""
+    r"""(?<![\w.])(?:[a-z]\w*|"[a-z]\w*"|'[a-z]\w*')\s*(?:\(\s*|\s+)"""
+    r"""project\s*\(\s*(?:path\s*[:=]\s*)?["'](:[^"']*)["']"""
 )
 _BUILD_SCRIPTS = ("build.gradle.kts", "build.gradle")
 _SETTINGS = ("settings.gradle.kts", "settings.gradle")
@@ -57,13 +64,12 @@ def _src_dirs(project: JvmGradleProject) -> set[str]:
     return {d for d in dirs if d != ".." and not d.startswith("../")}
 
 
-def _unit(project: JvmGradleProject, repo: Path) -> BuildUnit:
-    root = project.root_dir
+def _unit(project_path: str, root: str, repo: Path) -> BuildUnit:
     script = _read_build_script(repo / root)
     return BuildUnit(
-        id=f"gradle:{_project_path(project)}",
+        id=f"gradle:{project_path}",
         ecosystem="gradle",
-        name=project.id.rsplit(":", 1)[-1] if root else ":",
+        name=project_path.rsplit(":", 1)[-1] or ":",
         root=root,
         manifest=_manifest(repo, root),
         source="gradle",
@@ -93,11 +99,12 @@ def units(ctx: ResolverContext) -> Found:
         for i in {i for d in dirs for i in by_src_dir.get(d, ())}:
             listed[i].append(path)
     claims = [
-        (_unit(project, ctx.repo_path), tuple(files))
+        (_unit(_project_path(project), project.root_dir, ctx.repo_path), tuple(files))
         for project, files in zip(projects, listed, strict=True)
     ]
-    # The settings script, and a root build script beside it that configures
-    # the listed projects, were read and are no unit of their own.
-    root_scripts = (*_SETTINGS, *_BUILD_SCRIPTS)
-    ruled_out = frozenset(name for name in root_scripts if (ctx.repo_path / name).is_file())
+    has_root_script = any((ctx.repo_path / name).is_file() for name in _BUILD_SCRIPTS)
+    if has_root_script and all(project.root_dir for project in projects):
+        claims.append((_unit(":", "", ctx.repo_path), ()))
+    # The settings script was read and is no unit of its own.
+    ruled_out = frozenset(name for name in _SETTINGS if (ctx.repo_path / name).is_file())
     return Found(claims, ruled_out)
