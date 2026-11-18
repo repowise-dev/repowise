@@ -314,7 +314,11 @@ class _Resolver:
 
 
 def compute_public_api(
-    material: Iterable[str], parsed: Mapping[str, Any], package_roots: set[str]
+    material: Iterable[str],
+    parsed: Mapping[str, Any],
+    package_roots: set[str],
+    *,
+    resolver: _Resolver | None = None,
 ) -> list[dict]:
     """``[{name, id, kind, file, signature, doc}]`` a page's files publish, entry order.
 
@@ -322,8 +326,14 @@ def compute_public_api(
     again with ``alias_of`` and no excerpt. Ceiling: ``export { default as X }``,
     computed ``__all__`` values, computed lazy-export maps, and an ``import``
     followed by a bare ``export { X }`` are not followed.
+
+    *resolver*, built over the same *parsed*, saves rebuilding the module index
+    and re-walking re-exports on every call. Sharing it is exact: a walk that
+    met a cycle is never memoized, so a memoized file reaches no file a later
+    walk could still be visiting.
     """
-    resolver = _Resolver(parsed)
+    if resolver is None:
+        resolver = _Resolver(parsed)
     first_name: dict[tuple[str, str], str] = {}  # (file, symbol) -> first public name
     seen: set[tuple[str, str, str]] = set()
     api: list[dict] = []

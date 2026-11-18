@@ -273,12 +273,18 @@ def _clip(text: str) -> str:
     return text[:_MAX_DECISION_CHARS].rsplit(" ", 1)[0] + "..."
 
 
-def symbol_weight(graph: Any, files: Iterable[str], flows: Sequence[Any] = ()) -> dict[str, int]:
+def symbol_weight(
+    graph: Any,
+    files: Iterable[str],
+    flows: Sequence[Any] = (),
+    symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
+) -> dict[str, int]:
     """How much other code runs through each symbol of *files*.
 
     Each call from another file counts once, and each traced flow the symbol
     sits on counts twice: the code an operation passes through is the code a
-    reader needs to see first.
+    reader needs to see first. *symbol_index* (``build_symbol_index``) spares a
+    scan of every graph node per call.
     """
     members = set(files)
     weight: Counter[str] = Counter()
@@ -287,14 +293,24 @@ def symbol_weight(graph: Any, files: Iterable[str], flows: Sequence[Any] = ()) -
             {n: 2 for n in set(getattr(flow, "trace", ()) or ()) if n.split("::")[0] in members}
         )
     if graph is not None:
-        weight.update(_outside_calls(graph, members))
+        weight.update(_outside_calls(graph, members, symbol_index))
     return {k: v for k, v in weight.items() if v}
 
 
-def _outside_calls(graph: Any, members: set[str]) -> Counter[str]:
+def _outside_calls(
+    graph: Any,
+    members: set[str],
+    symbol_index: dict[str, list[tuple[Any, dict]]] | None = None,
+) -> Counter[str]:
     """Calls into each symbol of *members* from another file."""
     calls: Counter[str] = Counter()
-    for node, data in graph.nodes(data=True):
+    if symbol_index is not None:
+        nodes: Iterable[tuple[Any, dict]] = (
+            entry for path in members for entry in symbol_index.get(path, ())
+        )
+    else:
+        nodes = graph.nodes(data=True)
+    for node, data in nodes:
         own = data.get("file_path")
         if data.get("node_type") != "symbol" or own not in members:
             continue

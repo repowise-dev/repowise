@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import networkx as nx
 
 from repowise.core.generation.context.contexts import ModulePageContext
+from repowise.core.generation.context.graph_intelligence import build_symbol_index
 from repowise.core.generation.context.module_facts import (
     build_module_facts,
     git_activity,
@@ -143,6 +144,8 @@ def test_symbols_other_code_runs_through_weigh_more():
     weight = symbol_weight(g, _FILES, [flow])
     assert weight["src/shop/billing/charge.py::charge"] == 3
     assert weight["src/shop/orders/place.py::place_order"] == 2
+    # The per-run symbol index gives the weights the node scan does.
+    assert symbol_weight(g, _FILES, [flow], build_symbol_index(g)) == weight
 
 
 def test_the_default_style_reads_and_writes_more_for_a_bigger_module():
