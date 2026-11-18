@@ -45,7 +45,8 @@ def test_an_indexed_repository_runs_then_ingests(tmp_path: Path) -> None:
         "repowise coverage add coverage.xml .coverage",
         "repowise coverage status",
     ]
-    assert steps[0]["run"] == "python -m pip install pytest pytest-cov"
+    # The tests import the project, so it is installed with the test tools.
+    assert steps[0]["run"] == "python -m pip install -e . pytest pytest-cov"
     assert steps[1]["run"].startswith("pytest --cov=app")
     assert all(s["cwd"] == str(tmp_path) for s in steps)
     assert plan["commit"] == "a" * 40
