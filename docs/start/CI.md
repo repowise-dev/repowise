@@ -87,7 +87,7 @@ jobs:
   repowise:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - run: pytest --cov=src --cov-report=lcov:coverage/lcov.info
@@ -102,6 +102,8 @@ jobs:
 - Pin a release tag, not `main`; `version:` pins the Repowise release.
 - With a shallow checkout, the action fetches the history and target branch
   that coverage, security, health and risk need; `fetch-depth: 0` skips that.
+- The action's steps run on Node 24, so a self-hosted runner needs version
+  2.327.1 or newer. GitHub-hosted runners already are.
 
 | Input | Default | What it does |
 |-------|---------|--------------|
@@ -332,17 +334,17 @@ jobs:
       matrix: {shard: [1, 2, 3]}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: pytest tests/shard${{ matrix.shard }} --cov=src --cov-report=lcov:coverage/lcov.info
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: {name: "coverage-${{ matrix.shard }}", path: coverage/lcov.info}
   coverage:
     needs: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {fetch-depth: 0}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: {pattern: "coverage-*", path: artifacts}
       - uses: repowise-dev/repowise@main
         with:
@@ -485,14 +487,14 @@ GitHub Actions, one job on default-branch pushes and pull requests,
 - if: github.event_name == 'push'
   run: mkdir -p base-coverage && cp coverage/lcov.info base-coverage/
 - if: github.event_name == 'push'
-  uses: actions/cache/save@v4
+  uses: actions/cache/save@v6
   with: {path: base-coverage, key: "coverage-${{ github.sha }}"}
 - if: github.event_name == 'pull_request'
   id: merge-base
   run: echo "sha=$(git merge-base "origin/$GITHUB_BASE_REF" HEAD)" >> "$GITHUB_OUTPUT"
 - if: github.event_name == 'pull_request'
   id: base
-  uses: actions/cache/restore@v4
+  uses: actions/cache/restore@v6
   with: {path: base-coverage, key: "coverage-${{ steps.merge-base.outputs.sha }}"}
 - if: github.event_name == 'pull_request'
   uses: repowise-dev/repowise@main
@@ -668,21 +670,21 @@ jobs:
   index:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: {fetch-depth: 0}
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with: {path: .repowise, key: "repowise-${{ github.sha }}", restore-keys: "repowise-"}
       - run: pip install repowise
       - run: if [ -f .repowise/state.json ]; then repowise update --index-only; else repowise init --yes --no-prose; fi
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v6
         with: {path: .repowise, key: "repowise-${{ github.sha }}"}
 ```
 
 ```yaml
 # in the pull request workflow
-- uses: actions/checkout@v4
+- uses: actions/checkout@v7
   with: {fetch-depth: 0}
-- uses: actions/cache/restore@v4
+- uses: actions/cache/restore@v6
   with: {path: .repowise, key: "repowise-${{ github.event.pull_request.base.sha }}", restore-keys: "repowise-"}
 - id: select
   uses: repowise-dev/repowise@main

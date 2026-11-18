@@ -72,6 +72,13 @@ updates:
     open-pull-requests-limit: 3
     commit-message:
       prefix: "ci(deps)"
+    # setup-uv stopped publishing major tags at v8, so its newest major tag is
+    # v7. Workflows pin an exact release (setup-uv@v10.3.3), and without this
+    # rule the group "updates" that pin down to @v7. Exact releases from v10
+    # on still arrive.
+    ignore:
+      - dependency-name: "astral-sh/setup-uv"
+        versions: ["< 10"]
     groups:
       actions-all:
         patterns:

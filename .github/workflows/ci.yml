@@ -50,7 +50,7 @@ jobs:
       - name: Python-relevant files
         id: python
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           predicate-quantifier: every
           filters: |
@@ -62,7 +62,7 @@ jobs:
       - name: Node-relevant files
         id: node
         if: github.event_name == 'pull_request'
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             shared: &shared
@@ -107,7 +107,7 @@ jobs:
         include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python":"3.12","shard":"1/2"},{"python":"3.12","shard":"2/2"}]' || '[{"python":"3.11","shard":""},{"python":"3.12","shard":"1/2"},{"python":"3.12","shard":"2/2"},{"python":"3.13","shard":""}]') }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
@@ -129,7 +129,7 @@ jobs:
       # here with retries, the tests load them from disk. The language pack
       # version in uv.lock decides the grammar files, so the lock keys them.
       - name: Cache runtime grammars
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/grammars
           key: grammars-${{ runner.os }}-${{ hashFiles('uv.lock') }}
@@ -176,7 +176,7 @@ jobs:
 
       - name: Keep the coverage data
         if: always() && matrix.shard != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-data-${{ strategy.job-index }}
           path: .coverage
@@ -188,7 +188,7 @@ jobs:
       - name: Keep the test report
         if: always() && matrix.shard != ''
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: junit-${{ strategy.job-index }}
           path: junit.xml
@@ -214,7 +214,7 @@ jobs:
       actions: write   # deletes older index caches; main pushes only
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         continue-on-error: true
         with:
           fetch-depth: 0
@@ -236,7 +236,7 @@ jobs:
       # The newest earlier index, brought up to this commit.
       - name: Restore the previous index
         continue-on-error: true
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .repowise
           key: repowise-index-${{ github.sha }}
@@ -259,7 +259,7 @@ jobs:
       - name: Save the index
         if: steps.build.outcome == 'success'
         continue-on-error: true
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .repowise
           key: repowise-index-${{ github.sha }}
@@ -287,7 +287,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         continue-on-error: true
         with:
           fetch-depth: 0
@@ -319,7 +319,7 @@ jobs:
       - name: Restore the main index
         id: index
         continue-on-error: true
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .repowise
           key: repowise-index-${{ steps.base.outputs.sha }}
@@ -351,7 +351,7 @@ jobs:
       - name: Upload the selection
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: impacted-tests-selection
           path: shadow/
@@ -371,7 +371,7 @@ jobs:
 
     steps:
       # The script needs only the standard library and the shared CI helpers.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         continue-on-error: true
         with:
           sparse-checkout: |
@@ -381,7 +381,7 @@ jobs:
 
       - name: Download the selection
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: impacted-tests-selection
           path: shadow
@@ -389,7 +389,7 @@ jobs:
       # One report per shard, each in its own folder.
       - name: Download the test reports
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: junit-*
           path: shadow/junit
@@ -412,7 +412,7 @@ jobs:
       - name: Upload the record
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: impacted-shadow
           path: impacted-shadow.json
@@ -437,10 +437,10 @@ jobs:
       id-token: write   # proves the coverage upload comes from this repository
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: needs.test-python.result != 'skipped' && github.event_name != 'schedule'
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         id: coverage-data
         if: needs.test-python.result != 'skipped' && github.event_name != 'schedule'
         with:
@@ -467,7 +467,7 @@ jobs:
       # The Repowise coverage job below gates the pull request on this report.
       - name: Keep coverage.xml for the coverage gate
         if: steps.combine.outcome == 'success' && github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-xml
           path: coverage.xml
@@ -530,7 +530,7 @@ jobs:
     if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
@@ -548,7 +548,7 @@ jobs:
 
       # Same staging as the Python tests job: COBOL and Apex download on first use.
       - name: Cache runtime grammars
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/grammars
           key: grammars-${{ runner.os }}-${{ hashFiles('uv.lock') }}
@@ -587,7 +587,7 @@ jobs:
     if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
@@ -669,7 +669,7 @@ jobs:
     if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run ruff
         uses: astral-sh/ruff-action@v4.1.0
@@ -687,7 +687,7 @@ jobs:
     if: needs.changes.outputs.python == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
@@ -717,7 +717,7 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -741,11 +741,11 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: coverage-xml
 
@@ -768,11 +768,11 @@ jobs:
     if: github.event_name == 'pull_request'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check whether the MCP surface changed
         id: changed
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             mcp:
@@ -813,7 +813,7 @@ jobs:
     if: github.event_name != 'pull_request'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.3
@@ -839,10 +839,10 @@ jobs:
     if: needs.changes.outputs.web == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -917,10 +917,10 @@ jobs:
     if: needs.changes.outputs.vscode == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
@@ -935,7 +935,7 @@ jobs:
           echo "version=$(node --input-type=module -e 'import { vscodeVersion } from "./packages/vscode/.vscode-test.mjs"; console.log(vscodeVersion)')" >> "$GITHUB_OUTPUT"
 
       - name: Cache VS Code test editor
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: packages/vscode/.vscode-test
           key: vscode-test-${{ runner.os }}-${{ steps.vscode-test-version.outputs.version }}
@@ -984,11 +984,11 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check whether the emitter changed
         id: changed
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             emitter:
