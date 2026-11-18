@@ -426,6 +426,12 @@ def test_a_trimpath_build_or_a_memory_profile_is_refused() -> None:
         read(heap)
     with pytest.raises(EvidenceFormatError):
         read((PPROF_DIR / "cpu.pprof").read_bytes()[:200])
+    missing_location = _pprof(
+        samples=[([9], [1, 10])], locations={1: [(1, 8)]},
+        functions={1: ("calc.Primes", "D:/src/pprofgo/calc/calc.go", 5)},
+    )
+    with pytest.raises(EvidenceFormatError, match="location 9"):
+        read(missing_location)
 
 
 # -- registry ------------------------------------------------------------------

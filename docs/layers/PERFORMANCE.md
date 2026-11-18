@@ -258,8 +258,9 @@ it to this shape first. The format is detected from the content;
 - A profile whose frames name TypeScript files of the checkout is refused:
   its positions are in the compiled JavaScript.
 - A Go binary built with `-trimpath` names its files by import path, under no
-  checkout, so its profile is refused. Profile a build without it; on CI, pass
-  the build directory as `--checkout-root`.
+  checkout, so its profile is refused. Profile a build without it. A build made
+  in another directory (CI, a container) joins with that directory as
+  `--checkout-root`.
 - New formats register on the `profile-format` [seam](../reference/PLUGINS.md#seams),
   so a plugin can add one.
 

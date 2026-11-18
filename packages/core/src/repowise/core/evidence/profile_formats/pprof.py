@@ -57,13 +57,14 @@ def read(data: bytes) -> ProfileRun:
                 "pass the file the profiler wrote, e.g. go test -cpuprofile cpu.pprof",
             ) from None
     try:
-        profile = _Profile(data)
+        return _Profile(data).run()
+    except EvidenceFormatError:
+        raise
     except (IndexError, ValueError) as exc:
         raise EvidenceFormatError(
             f"not a readable pprof profile ({exc})",
             "pass the file the profiler wrote, e.g. go test -cpuprofile cpu.pprof",
         ) from None
-    return profile.run()
 
 
 class _Profile:
@@ -218,6 +219,8 @@ def _scalars(data: bytes, pos: int, end: int) -> Iterator[tuple[int, int]]:
 def _packed(data: bytes, pos: int, end: int) -> Iterator[int]:
     while pos < end:
         value, pos = _varint(data, pos)
+        if pos > end:
+            raise ValueError("a packed value runs past its field")
         yield value
 
 
@@ -246,7 +249,7 @@ def _fields(data: bytes, pos: int, end: int) -> Iterator[tuple[int, int, int, in
         else:
             raise ValueError(f"wire type {wire} at byte {pos}")
     if pos != end:
-        raise ValueError("a fixed-width field runs past its message")
+        raise ValueError("a field runs past its message")
 
 
 def _varint(data: bytes, pos: int) -> tuple[int, int]:
@@ -292,7 +295,7 @@ def _looks_like_profile(head: bytes) -> bool:
                 sample_types += 1
             pos += length
     except IndexError:
-        pass  # cut off mid-field by the sniff window
+        return sample_types > 0  # cut off mid-field by the sniff window
     except ValueError:
         return False
     return sample_types > 0
