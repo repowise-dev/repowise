@@ -14,8 +14,8 @@ set verbatim, and the cascade layer expands it before it reaches the engine.
 
 from __future__ import annotations
 
-import fnmatch
 from dataclasses import dataclass, field
+from typing import Any
 
 from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
 
@@ -97,18 +97,32 @@ class PageSelectionResult:
         return len(self.page_ids)
 
 
-def _matches_glob(target_path: str, globs: tuple[str, ...]) -> bool:
-    """True if *target_path* matches any glob (both slash-normalized).
+def _compile_globs(globs: tuple[str, ...]) -> list[Any]:
+    """Compile each glob with the one engine for user-written globs (#5779).
 
-    A bare prefix like ``packages/cli`` matches everything under it, so callers
-    can pass a directory without a trailing ``/**``.
+    Gitignore semantics, as in health rules and exclude patterns: a lone ``*``
+    stops at one directory, ``**/x`` also matches ``x`` at the root, and a bare
+    prefix like ``packages/cli`` matches everything under it, so callers can
+    pass a directory without a trailing ``/**``. Backslashes are taken as path
+    separators, so a Windows-style ``src\\cli`` works.
     """
-    norm = target_path.replace("\\", "/")
-    for raw in globs:
-        g = raw.replace("\\", "/").rstrip("/")
-        if fnmatch.fnmatch(norm, g) or fnmatch.fnmatch(norm, f"{g}/*") or norm == g:
-            return True
-    return False
+    from repowise.core.analysis.health.config import _compile_glob
+
+    return [_compile_glob(raw.replace("\\", "/")) for raw in globs]
+
+
+# Page types whose ``target_path`` is a directory (written without a trailing
+# slash). Only these are also tried as a directory, so a directory-only glob
+# like ``src/`` selects the ``src`` module page but ``*.py/`` never selects a
+# file page.
+_DIRECTORY_PAGE_TYPES = frozenset({"module_page"})
+
+
+def _matches_glob(record: PageRecord, matchers: list[Any]) -> bool:
+    """True if *record*'s target path (slash-normalized) matches any compiled glob."""
+    norm = record.target_path.replace("\\", "/")
+    candidates = [norm, f"{norm}/"] if record.page_type in _DIRECTORY_PAGE_TYPES else [norm]
+    return any(m.match_file(c) for m in matchers for c in candidates)
 
 
 def resolve_page_selection(
@@ -145,9 +159,8 @@ def resolve_page_selection(
     # doc once and it should keep following the code (issue #812).
     selected.update(r.page_id for r in records if r.pinned)
     if intent.path_globs:
-        selected.update(
-            r.page_id for r in records if _matches_glob(r.target_path, intent.path_globs)
-        )
+        matchers = _compile_globs(intent.path_globs)
+        selected.update(r.page_id for r in records if _matches_glob(r, matchers))
 
     unknown: list[str] = []
     for pid in intent.page_ids:

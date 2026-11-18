@@ -40,6 +40,7 @@ they start with `server/`, which means `packages/server/src/repowise/server/`.
 | Content hash | `ingestion/models.py`: `compute_content_hash(source)` | The sha256 a file's bytes are keyed by, computed once at ingestion | Hash the same bytes again with another algorithm for a cache key |
 | Edge-type sets | `ingestion/models.py`: `EdgeType`, `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, `EXECUTION_EDGE_TYPES`, `NON_CODE_EDGE_TYPES` | Which edge types count as a file dependency, a symbol use, an execution step, or non-code | Re-type the full sets. Named subsets that are still local are listed under [planned consolidations](#planned-consolidations) |
 | Health bands | `analysis/health/grading.py`: `band_for(score)`, `BAND_LABEL`, `BAND_ORDER` | The score cut-offs and labels for health bands. The TypeScript mirror in `packages/types/src/health.ts` is parity-tested | Compare a score against literal cut-offs |
+| Glob matching for user-written patterns | `analysis/health/config.py`: `_compile_glob(pattern)` | What a path glob a user writes matches, with gitignore semantics: a lone `*` stops at one directory, `**/x` also matches `x` at the root, a pattern without a wildcard covers the subtree under it. Health rules, exclude patterns, `generate --path` and `workspace scan --exclude` all go through it | Match a user glob with `fnmatch`, where `*` crosses `/` and the same pattern selects different files than it does elsewhere ([#5779](https://github.com/repowise-dev/repowise/issues/5779)) |
 
 ## Adding to an owner
 
@@ -74,7 +75,6 @@ expected behaviour.
 | Concept | Where the copies are | Target owner | Issue |
 |---|---|---|---|
 | PageRank percentile | The REST Files table, the REST file page, the MCP graph utilities (`server/mcp_server/_graph_utils.percentile_rank`) and `get_context` signals each compute it, with different formulas | One percentile function used by REST and MCP | [#5745](https://github.com/repowise-dev/repowise/issues/5745), [#5774](https://github.com/repowise-dev/repowise/pull/5774) |
-| Glob matching for user-written patterns | Generate `path_globs` (`generation/page_selection.py`) and workspace excludes use `fnmatch`, where `*` crosses `/`; everything else uses pathspec | pathspec through `analysis/health/config._compile_glob` | [#5779](https://github.com/repowise-dev/repowise/issues/5779) |
 | Per-file size caps | The traverser, change health, diff risk and the MCP file preview each define their own byte limit | The traverser's source ceiling, imported | [#5780](https://github.com/repowise-dev/repowise/issues/5780) |
 | Package of a file | `ingestion/package_roots.py` `module_for` and `owning_package` answer it from manifest roots, beside the build-unit index | `BuildUnitIndex.units_owning` | |
 | Test status from paths | Analysis and MCP call sites re-derive test status from the path where a stored `is_test` flag exists | The stored flag, with `test_paths` as the path fallback | [#3235](https://github.com/repowise-dev/repowise/issues/3235), [#3236](https://github.com/repowise-dev/repowise/issues/3236) |
