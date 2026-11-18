@@ -344,6 +344,15 @@ async def persist_edges(ctx: IncrementalPersist) -> None:
         )
 
 
+async def persist_units(ctx: IncrementalPersist) -> None:
+    # Replaced whole, so a deleted file or a removed member leaves no row and
+    # the prune has nothing to add.
+    from repowise.core.pipeline.persist import persist_build_units
+
+    with timed(ctx.timings, "persist.build_units"):
+        await persist_build_units(ctx.session, ctx.repo_id, ctx.graph_builder)
+
+
 async def backfill_related(ctx: IncrementalPersist) -> None:
     # Refresh related-pages metadata across the whole wiki. LLM-free, so even
     # index-only updates heal pages generated before the feature shipped (or
@@ -481,6 +490,13 @@ def _has_git_input(ctx: IncrementalPersist) -> bool:
     return bool(ctx.git_meta_map or ctx.git_decay_map or ctx.full_git_summary is not None)
 
 
+#: Shared with the docs-mode writer. Skipped when the build collected no units.
+BUILD_UNITS_STEP = Step(
+    "Build units persist",
+    persist_units,
+    when=lambda ctx: getattr(ctx.graph_builder, "build_units", None) is not None,
+)
+
 # Range-scoped steps are the ones a later run cannot heal on its own; the
 # membership test is in persist_incremental_index's docstring.
 INCREMENTAL_STEPS: tuple[Step, ...] = (
@@ -528,6 +544,7 @@ INCREMENTAL_STEPS: tuple[Step, ...] = (
     Step("Symbol persist", persist_symbols, range_scoped=True),
     Step("Security persist", persist_security, range_scoped=True),
     Step("Graph edges persist", persist_edges, range_scoped=True),
+    BUILD_UNITS_STEP,
     Step("Related-pages backfill", backfill_related),
     Step(
         "Knowledge-graph persist",
