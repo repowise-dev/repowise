@@ -734,9 +734,9 @@ function NoCoverageState({
 }
 
 /** Shapes and widths match the real layout, so nothing reflows when data lands. */
-export function CoverageSkeleton() {
+function CoverageSkeleton() {
   return (
-    <div className="flex flex-col gap-6 sm:gap-8" data-testid="coverage-skeleton">
+    <div className="flex flex-col gap-6 sm:gap-8">
       <div className="flex flex-col gap-5 lg:flex-row lg:gap-12">
         <Skeleton className="h-[92px] w-full rounded-lg lg:w-[220px]" />
         <Skeleton className="h-[92px] w-full max-w-[62ch] rounded-lg" />
