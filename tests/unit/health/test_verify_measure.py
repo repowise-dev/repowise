@@ -24,7 +24,7 @@ from repowise.core.persistence.crud.analysis.refactoring_recommendations import 
 from repowise.core.persistence.database import init_db
 from tests.unit.persistence.helpers import insert_repo
 
-_TARGET = {"workload": "app", "class": "entry_point", "command": "python -c \"import sys\"", "cwd": ""}
+_TARGET = {"workload": "pytest bench", "class": "benchmark", "command": "pytest --benchmark-only", "cwd": ""}
 
 
 def _plan(rtype: str, file_path: str = "app/rows.py") -> RefactoringSuggestion:
@@ -106,9 +106,10 @@ def test_the_recipe_of_a_performance_plan_names_the_measure() -> None:
     assert verify["measure"]["baseline"] == "before-rows.load_rows"
 
 
-async def test_hydration_with_a_checkout_times_the_units_entry_point(tmp_path: Path) -> None:
+async def test_hydration_with_a_checkout_times_the_units_benchmark(tmp_path: Path) -> None:
     (tmp_path / "pyproject.toml").write_text(
-        '[project]\nname = "app"\n[project.scripts]\napp = "app.cli:main"\n'
+        '[project]\nname = "app"\ndependencies = ["pytest-benchmark"]\n'
+        '[project.scripts]\napp = "app.cli:main"\n'
     )
     (tmp_path / "app").mkdir()
     (tmp_path / "app" / "__init__.py").write_text("")
@@ -135,9 +136,9 @@ async def test_hydration_with_a_checkout_times_the_units_entry_point(tmp_path: P
     assert perf.rank_facts()["validation"]["measure"] == measure
     assert perf.detail_dict()["validation"]["measure"] == measure
     assert "measure" not in perf.as_dict()["validation"]
-    assert (measure["workload"], measure["workload_class"]) == ("app", "entry_point")
-    assert "pyinstrument" not in measure["command"]
-    assert "from app.cli import main" in measure["command"]
+    # The entry point waits for its arguments, so the benchmark is timed.
+    assert (measure["workload"], measure["workload_class"]) == ("pytest bench", "benchmark")
+    assert "--benchmark-json" not in measure["command"]
     assert "measure" not in other.validation.detail_dict()
     # Without a checkout there is nothing to read the unit from.
     assert "measure" not in live.validation.detail_dict()

@@ -72,6 +72,48 @@ async def test_a_rebuild_replaces_the_repositorys_rows_whole(async_session) -> N
     assert all(r.built_at is not None for r in rows)
 
 
+async def test_hotness_for_symbols_reads_whole_files_by_key_range(async_session) -> None:
+    repo = await insert_repo(async_session)
+    other = await insert_repo(async_session, name="other", local_path="/other")
+    ids = ["src/m.py::f", "src/m.py::C::g", "src/m.pyx::h", "src/m.py.bak::i", "src/n.py::j"]
+    await replace_symbol_hotness(async_session, repo.id, [{"symbol_id": sid} for sid in ids])
+    await replace_symbol_hotness(async_session, other.id, [{"symbol_id": "src/m.py::k"}])
+    found = await hotness_for_symbols(async_session, repo.id, ["src/n.py::j"], files=["src/m.py"])
+    assert sorted(found) == ["src/m.py::C::g", "src/m.py::f", "src/n.py::j"]
+    assert await hotness_for_symbols(async_session, repo.id, [], files=[]) == {}
+
+
+async def test_hotness_for_symbols_chunks_files_and_ids_past_one_statement(async_session) -> None:
+    from sqlalchemy import event
+
+    from repowise.core.persistence.crud.analysis.function_facts import RANGES_PER_STATEMENT
+
+    repo = await insert_repo(async_session)
+    n_files = RANGES_PER_STATEMENT * 2 + 1
+    files = [f"src/f{i}.py" for i in range(n_files)]
+    ids = [f"src/g{i}.py::x" for i in range(1201)]
+    await replace_symbol_hotness(
+        async_session, repo.id, [{"symbol_id": f"{p}::f"} for p in files] + [{"symbol_id": s} for s in ids]
+    )
+    selects: list[int] = []
+    engine = async_session.bind.sync_engine
+
+    def _count(conn, cursor, statement, params, context, executemany):
+        if statement.lstrip().upper().startswith("SELECT"):
+            selects.append(len(params))
+
+    event.listen(engine, "before_cursor_execute", _count)
+    try:
+        found = await hotness_for_symbols(async_session, repo.id, ids, files=files)
+    finally:
+        event.remove(engine, "before_cursor_execute", _count)
+    assert len(found) == n_files + len(ids)
+    # Three id chunks and three range chunks, paired: three statements, each
+    # under SQLite's oldest 999 bound-variable ceiling.
+    assert len(selects) == 3
+    assert max(selects) < 999
+
+
 async def test_rebuild_reads_the_profile_runs_and_the_readers_serve_them(async_session) -> None:
     repo = await insert_repo(async_session)
     await _facts(async_session, repo.id, "src/m.py::big", "src/m.py::small", "src/t.py::thin")

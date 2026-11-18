@@ -26,13 +26,6 @@ def _workload(measure: Mapping[str, Any]) -> str:
     return f"`{measure['workload']}` ({kind})"
 
 
-def _arguments(measure: Mapping[str, Any]) -> str:
-    """An entry point runs what its arguments ask for, so the agent picks them."""
-    if measure.get("workload_class") != "entry_point":
-        return ""
-    return " Add the arguments that reach the changed code after the command, the same both times."
-
-
 def _verdict_rule(measure: Mapping[str, Any]) -> str:
     """How to report the timing: the verdict with its interval, never "faster" on inconclusive."""
     return (
@@ -47,7 +40,7 @@ def _verdict_rule(measure: Mapping[str, Any]) -> str:
 def measure_lines(measure: Mapping[str, Any]) -> list[str]:
     """The timing part of a Verify block: before and after, then how to report it."""
     return [
-        f"Time {_workload(measure)} {_where(measure)}.{_arguments(measure)} Before the edit:",
+        f"Time {_workload(measure)} {_where(measure)}. Before the edit:",
         "",
         "```",
         measure["before"],
@@ -80,8 +73,7 @@ def render_fix_and_verify(check: Mapping[str, Any], flavor: str = "generic") -> 
     return "\n\n".join(
         [
             ROLE[flavor],
-            f"Make the performance change and show whether it worked, timing {_workload(measure)}."
-            f"{_arguments(measure)}",
+            f"Make the performance change and show whether it worked, timing {_workload(measure)}.",
             f"1. Before you edit, save a baseline {_where(measure)}:\n\n{_fence([measure['before']])}",
             "2. Make the change.",
             tests,

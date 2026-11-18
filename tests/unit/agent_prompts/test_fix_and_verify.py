@@ -16,8 +16,9 @@ _BENCH = verify_measure(
     {"workload": "pytest bench", "class": "benchmark", "command": "pytest --benchmark-only", "cwd": ""},
     "load_rows",
 )
-_ENTRY = verify_measure(
-    {"workload": "api: app", "class": "entry_point", "command": "python -m app", "cwd": "api"},
+_NESTED = verify_measure(
+    {"workload": "api: go bench ./work", "class": "benchmark",
+     "command": "go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./work", "cwd": "api"},
     "load_rows",
 )
 _CHECK = {
@@ -55,11 +56,9 @@ def test_without_plan_tests_the_prompt_still_asks_for_a_test_run() -> None:
     assert "Run the tests that exercise the change" in prompt
 
 
-def test_an_entry_point_asks_for_its_arguments_and_names_its_directory() -> None:
-    prompt = render_fix_and_verify({**_CHECK, "measure": _ENTRY})
-    assert "Add the arguments" in prompt
-    assert "from `api`" in prompt
-    assert "Add the arguments" not in render_fix_and_verify(_CHECK)
+def test_a_nested_unit_is_measured_from_its_directory() -> None:
+    assert "from `api`" in render_fix_and_verify({**_CHECK, "measure": _NESTED})
+    assert "from the repository root" in render_fix_and_verify(_CHECK)
 
 
 def test_the_plan_verify_block_adds_the_timing_after_the_tests() -> None:

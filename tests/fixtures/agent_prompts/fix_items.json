@@ -43,7 +43,7 @@
       }
     },
     {
-      "name": "perf_fix_measured_entry_point",
+      "name": "perf_fix_measured_benchmark",
       "repo_name": "acme/api",
       "item": {
         "id": "fix1_00000000000000000001",
@@ -97,14 +97,14 @@
           "basis": "inferred",
           "prerequisite": null,
           "measure": {
-            "command": "python -c \"import sys;sys.argv=['app']+sys.argv[1:];from app.cli import main;sys.exit(main())\"",
-            "before": "repowise perf measure --save before-Report.render -- python -c \"import sys;sys.argv=['app']+sys.argv[1:];from app.cli import main;sys.exit(main())\"",
-            "after": "repowise perf measure --against before-Report.render -- python -c \"import sys;sys.argv=['app']+sys.argv[1:];from app.cli import main;sys.exit(main())\"",
+            "command": "go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./report",
+            "before": "repowise perf measure --save before-report.Render -- go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./report",
+            "after": "repowise perf measure --against before-report.Render -- go test '-run=^$' -bench . -benchtime=10x -benchmem -count=1 ./report",
             "metric": "median wall time",
-            "baseline": "before-Report.render",
+            "baseline": "before-report.Render",
             "tolerance": 0.05,
-            "workload": "api: app",
-            "workload_class": "entry_point",
+            "workload": "api: go bench ./report",
+            "workload_class": "benchmark",
             "cwd": "api"
           }
         },

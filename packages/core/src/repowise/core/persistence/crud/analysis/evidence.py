@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import Table, delete, insert, select
+from sqlalchemy import Table, delete, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
@@ -270,19 +271,32 @@ async def replace_symbol_hotness(
 
 
 async def hotness_for_symbols(
-    session: AsyncSession, repository_id: str, symbol_ids: Iterable[str]
+    session: AsyncSession,
+    repository_id: str,
+    symbol_ids: Iterable[str],
+    *,
+    files: Iterable[str] = (),
 ) -> dict[str, SymbolHotness]:
-    """The ``symbol_hotness`` row of each of *symbol_ids* that has one.
+    """The row of each of *symbol_ids*, and of every symbol in *files*, that has one.
 
-    A symbol missing from the result has no runtime evidence: unknown, never cold.
+    A symbol missing from the result has no runtime evidence: unknown, never
+    cold. A file is read as its key range. Each statement takes one chunk of
+    ids and one chunk of ranges (``key_range_chunks``), under SQLite's bound
+    variable limit, so a few symbols and files cost one keyed statement.
     """
+    from .function_facts import key_range_chunks
+
     wanted = sorted(set(symbol_ids))
+    sid = SymbolHotness.symbol_id
+    id_chunks = [wanted[i : i + _BATCH_SIZE] for i in range(0, len(wanted), _BATCH_SIZE)]
+    range_chunks = list(key_range_chunks(sid, files))
     out: dict[str, SymbolHotness] = {}
-    for i in range(0, len(wanted), _BATCH_SIZE):
+    for ids, ranges in zip_longest(id_chunks, range_chunks, fillvalue=[]):
+        clauses: list[Any] = [sid.in_(ids)] if ids else []
+        clauses += ranges
         result = await session.execute(
             select(SymbolHotness).where(
-                SymbolHotness.repository_id == repository_id,
-                SymbolHotness.symbol_id.in_(wanted[i : i + _BATCH_SIZE]),
+                SymbolHotness.repository_id == repository_id, or_(*clauses)
             )
         )
         out.update({row.symbol_id: row for row in result.scalars()})
@@ -294,9 +308,9 @@ async def ranked_hotness(
     repository_id: str,
     *,
     workload_classes: Collection[str] | None = None,
-    limit: int = 10,
+    limit: int | None = 10,
 ) -> list[SymbolHotness]:
-    """The repository's ranked functions, strongest first, at most *limit*.
+    """The repository's ranked functions, strongest first, at most *limit* (``None``: all).
 
     Ranked means tier ``ranked`` or ``lead_candidate`` from evidence that is
     not stale. *workload_classes* keeps rows whose basis run has one of those
@@ -321,6 +335,29 @@ async def ranked_hotness(
         )
     )
     return rows[:limit]
+
+
+async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
+    """Why :func:`ranked_hotness` has no row, as one token.
+
+    ``no_runtime_data``: no profile run is stored. ``stale``: every function
+    the stored runs mapped is stale (measured at another commit, body changed
+    since). ``not_ranked``: current evidence that ranks nothing (too few
+    samples in production code, or no production frame). At most three
+    indexed lookups.
+    """
+    has_profile = select(EvidenceRun.id).where(
+        EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "profile"
+    )
+    if (await session.execute(has_profile.limit(1))).first() is None:
+        return "no_runtime_data"
+    mapped = select(SymbolHotness.symbol_id).where(SymbolHotness.repository_id == repository_id)
+    fresh = mapped.where(SymbolHotness.freshness != "stale")
+    if (await session.execute(fresh.limit(1))).first() is not None:
+        return "not_ranked"
+    if (await session.execute(mapped.limit(1))).first() is not None:
+        return "stale"
+    return "not_ranked"
 
 
 def _refuse_repeated_keys(table: Table, rows: list[dict[str, Any]]) -> None:
@@ -362,4 +399,5 @@ __all__ = [
     "ranked_hotness",
     "replace_symbol_hotness",
     "save_evidence_run",
+    "unranked_reason",
 ]

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+from collections import Counter
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,9 @@ CLASS_ORDER = ("entry_point", "benchmark", "unit_test")
 _TS = (".ts", ".tsx", ".mts", ".cts")
 _JS = (".js", ".mjs", ".cjs")
 _PYTEST_BENCHMARK = re.compile(r"pytest[-_]benchmark")
+_PYTEST_WORD = re.compile(r"(?<![\w-])pytest(?![\w-])")
+#: Origins whose tests and benchmarks are not profiled.
+_NOT_OURS = frozenset({"vendored", "generated"})
 # Paths and module names reach printed commands; anything a shell could read
 # as more than a path (``$``, quotes, ``;``, ``,`` in PowerShell) is left out.
 _SAFE_PATH = re.compile(r"(?!-)[\w.+=/-]*")
@@ -52,15 +56,29 @@ _LAUNCHERS = (("uv", "run"), ("poetry", "run"), ("pdm", "run"), ("hatch", "run")
 # wrote only import frames on Windows, and its renderer drops most frames
 # unless the filter threshold is 0. The profile is written at exit, so a
 # program that calls ``sys.exit`` is still profiled; the path is fixed before
-# the program runs, so a ``chdir`` does not move it. Double quotes outside,
-# single inside: one spelling for sh and PowerShell.
+# the program runs, so a ``chdir`` does not move it. A run that fails (an
+# uncaught exception, or ``sys.exit`` with a nonzero code) writes no profile
+# and an older one is removed first, so ``evidence add`` has nothing to store;
+# ceiling: a bare ``raise SystemExit(1)``, ``from sys import exit``, or a
+# program that installs its own ``sys.excepthook`` still counts as clean; a
+# failing test fails the suite's run too. Double quotes
+# outside, single inside: one spelling for sh and PowerShell.
 _PYINSTRUMENT = (
     "import sys,os,atexit;from pyinstrument import Profiler;"
     "from pyinstrument.renderers import SpeedscopeRenderer;p=Profiler();"
     "o=os.path.abspath('{out}');os.makedirs(os.path.dirname(o),exist_ok=True);"
-    "atexit.register(lambda:(p.stop(),open(o,'w',encoding='utf-8').write("
+    "os.path.exists(o) and os.remove(o);f=[];"
+    "sys.excepthook=(lambda h:lambda *a:(f.append(1),h(*a)))(sys.excepthook);"
+    "x=sys.exit;sys.exit=lambda c=None:(c in (None,0) or f.append(1),x(c));"
+    "atexit.register(lambda:(p.stop(),f or open(o,'w',encoding='utf-8').write("
     "p.output(SpeedscopeRenderer(processor_options={{'filter_threshold':0}})))));"
     "p.start();{run}"
+)
+#: Stands for an entry point's arguments; a shell refuses to run it as printed.
+ARGS_PLACEHOLDER = "<args>"
+_ARGS_REASON = (
+    f"Replace {ARGS_PLACEHOLDER} with the arguments of a representative run, then run it; "
+    "with no arguments the program only prints its usage."
 )
 
 
@@ -70,9 +88,9 @@ class RuntimeInputs:
 
     #: Production files the index flags as entry points, best first.
     entry_files: tuple[str, ...] = ()
-    #: ``(path, function)`` of every stored benchmark function.
+    #: ``(path, function)`` of every stored benchmark function outside vendored and generated code.
     benchmarks: tuple[tuple[str, str], ...] = ()
-    #: Stored test files, for the unit-test suite's package.
+    #: Stored test files outside vendored and generated code, for the unit-test suite's package.
     test_files: tuple[str, ...] = ()
     #: ``(workload, commit)`` of every stored run, so a workload measured at
     #: HEAD is not asked for again.
@@ -97,7 +115,7 @@ async def load_runtime_inputs(session: Any, repository_id: str) -> RuntimeInputs
     )
     rows = list(files)
     entries = [r.node_id for r in rows if r.is_entry_point]
-    origins = await load_origins(session, repository_id, entries)
+    tests = [r.node_id for r in rows if r.is_test]
     symbols = await session.execute(
         select(WikiSymbol.file_path, WikiSymbol.name).where(
             WikiSymbol.repository_id == repository_id,
@@ -112,14 +130,16 @@ async def load_runtime_inputs(session: Any, repository_id: str) -> RuntimeInputs
             ),
         )
     )
+    benchmarks = {(r.file_path, r.name) for r in symbols if is_benchmark_function(r.file_path, r.name)}
+    origins = await load_origins(session, repository_id, [*entries, *tests, *(p for p, _ in benchmarks)])
+    # A copied library's or a generator's tests and benchmarks measure code nobody here maintains.
+    ours = {p for p, origin in origins.items() if origin not in _NOT_OURS}
     return RuntimeInputs(
         entry_files=tuple(
             rank_entry_point_paths(p for p in entries if origins.get(p) == "production")
         ),
-        benchmarks=tuple(
-            sorted({(r.file_path, r.name) for r in symbols if is_benchmark_function(r.file_path, r.name)})
-        ),
-        test_files=tuple(sorted(r.node_id for r in rows if r.is_test)),
+        benchmarks=tuple(sorted(b for b in benchmarks if b[0] in ours)),
+        test_files=tuple(sorted(p for p in tests if p in ours)),
         measured=frozenset(
             (run.workload_name, run.commit_sha)
             for run in await list_evidence_runs(session, repository_id)
@@ -176,6 +196,15 @@ def _from(root: str, path: str) -> str:
     return posixpath.relpath(path, root) if root else path
 
 
+def _fresh(path: str) -> str:
+    """A step that removes an older profile at *path*, so a run that fails leaves nothing to ingest.
+
+    git, since evidence needs a checkout anyway, spells it the same in sh and
+    PowerShell; ``-x`` reaches the ignored ``.repowise/``.
+    """
+    return f"git clean -fqx -- {path}"
+
+
 def evidence_ingest_line(profile: str, workload: str, workload_class: str, commit: str) -> str:
     """The ``evidence add`` line for a profile, run from the repository root."""
     return (
@@ -205,7 +234,8 @@ def _target(
     ``ingest`` is None when the run cannot be read yet: no commit, or
     *input_format* (what the recipe writes) is not a registered profile
     format in this build. ``next_call`` only takes targets with an ingest
-    line, so a recipe whose output would be refused never leads the loop.
+    line and no ``reason``, so a recipe whose output would be refused, or one
+    an agent must finish first (an entry point's arguments), never leads the loop.
     """
     ingest = None
     if command and profile and reason is None:
@@ -253,17 +283,14 @@ def _env_prefix(stack: Stack) -> list[str]:
     return out
 
 
-def _python_launcher(stack: Stack, repo_root: Path) -> tuple[str, list[str]]:
+def _python_launcher(stack: Stack) -> tuple[str, list[str]]:
     """The ``python`` that runs with pyinstrument in the unit's environment, and its install steps."""
     prefix = _env_prefix(stack)
     if prefix[:2] == ["uv", "run"]:
         return " ".join([*prefix, "--with", "pyinstrument", "python"]), []
     python = " ".join([*prefix, "python"])
-    steps = []
-    if not prefix and (repo_root / stack.root / "src").is_dir():
-        # A src layout imports only once installed.
-        steps.append("python -m pip install -e .")
-    return python, [*steps, f"{python} -m pip install pyinstrument"]
+    # The unit's own test install (the project and its test dependencies), then the profiler.
+    return python, [*stack.requires, f"{python} -m pip install pyinstrument"]
 
 
 def _pyinstrument(launcher: str, out: str, run: str) -> str:
@@ -277,16 +304,14 @@ def _python_targets(
 
     root = stack.root
     cwd = str(repo_root / root) if root else str(repo_root)
-    launcher, needs = _python_launcher(stack, repo_root)
-    python = " ".join([*_env_prefix(stack), "python"])
+    launcher, needs = _python_launcher(stack)
     out: list[dict[str, Any]] = []
 
     def profiled(cls: str, name: str, run: str, extra: Sequence[str] = ()) -> dict[str, Any]:
         workload, profile = _named(root, name, ".speedscope.json")
         command = _pyinstrument(launcher, _from(root, profile), run)
         return _target(cls, workload, cwd=cwd, command=command, profile=profile, commit=commit,
-                       input_format="speedscope", prerequisites=[*needs, *extra],
-                       timed=f'{python} -c "import sys;{run}"')
+                       input_format="speedscope", prerequisites=[*needs, *extra])
 
     for name, (module, function) in sorted(console_scripts(repo_root / root).items()):
         argv = f"sys.argv=['{name}']+sys.argv[1:];"
@@ -307,28 +332,40 @@ def _python_targets(
     out = out[:PER_CLASS]
 
     if _declares_pytest_benchmark(repo_root, root):
-        # Node ids are relative to pytest's rootdir, so this one runs from the repository root.
-        name, profile = _named(root, "pytest bench", ".json")
-        target = [root] if root else []
-        # Rounds fill a fixed time (``--benchmark-max-time``) whatever one call
-        # costs; with none, each benchmark runs its minimum rounds, so wall time
-        # follows the change. (``--benchmark-disable`` is refused with ``--benchmark-only``.)
-        timed = " ".join(
-            [*_env_prefix(stack), "pytest", *target, "--benchmark-only",
-             "--benchmark-max-time=0", "--benchmark-min-rounds=10"]
-        )
-        command = " ".join(
-            [*_env_prefix(stack), "pytest", *target, "--benchmark-only", f"--benchmark-json={profile}"]
-        )
-        out.append(_target("benchmark", name, cwd=str(repo_root), command=command,
-                           profile=profile, commit=commit, input_format="pytest-benchmark",
-                           timed=timed))
+        out.append(_pytest_benchmark(stack, repo_root, commit))
     if stack.test:
         run = "import pytest;sys.exit(pytest.main(sys.argv[1:]))"
-        # The coverage command's own install brings pytest only in CI, so install it here too.
-        extra = [f"{launcher} -m pip install pytest"] if needs else []
+        # A launcher outside uv whose installs do not bring pytest installs it here.
+        extra = (
+            [f"{launcher} -m pip install pytest"]
+            if needs and not any(_PYTEST_WORD.search(n) for n in stack.requires) else []
+        )
         out.append(profiled("unit_test", "python tests", run, extra))
     return out
+
+
+def _pytest_benchmark(stack: Stack, repo_root: Path, commit: str | None) -> dict[str, Any]:
+    """pytest-benchmark over the unit, in the unit's environment.
+
+    Node ids are relative to pytest's rootdir, so this runs from the repository
+    root; uv is pointed at the unit's project. Ceiling: a nested unit outside
+    uv gets no install steps, since its install lines name paths from its own
+    directory.
+    """
+    root = stack.root
+    name, profile = _named(root, "pytest bench", ".json")
+    prefix = _env_prefix(stack)
+    if root and prefix[:2] == ["uv", "run"]:
+        prefix[2:2] = ["--project", root]
+    run = [*prefix, "pytest", *([root] if root else []), "--benchmark-only"]
+    # Rounds fill a fixed time (``--benchmark-max-time``) whatever one call
+    # costs; with none, each benchmark runs its minimum rounds, so wall time
+    # follows the change. (``--benchmark-disable`` is refused with ``--benchmark-only``.)
+    timed = " ".join([*run, "--benchmark-max-time=0", "--benchmark-min-rounds=10"])
+    command = " ".join([*run, f"--benchmark-json={profile}"])
+    return _target("benchmark", name, cwd=str(repo_root), command=command, profile=profile, commit=commit,
+                   input_format="pytest-benchmark",
+                   prerequisites=[*(() if root else stack.requires), _fresh(profile)], timed=timed)
 
 
 def _declares_pytest_benchmark(repo_root: Path, root: str) -> bool:
@@ -406,18 +443,19 @@ def _go_targets(
             root, rel_dir, "'-run=^$' -bench . -benchmem", f"go bench {_go_package_arg(rel_dir)}"
         )
         out.append(_target("benchmark", name, cwd=cwd, command=command, profile=profile, commit=commit,
-                           input_format="pprof", timed=timed))
-    test_dirs = sorted(
-        {posixpath.dirname(rel) for p in inputs.test_files
-         if p.endswith("_test.go") and (rel := _owned(root, roots, p)) is not None},
-        key=lambda d: (d.count("/") + bool(d), d),
+                           input_format="pprof", prerequisites=[_fresh(_from(root, profile))], timed=timed))
+    # The package with the most test files runs the most code; depth breaks ties.
+    test_counts = Counter(
+        posixpath.dirname(rel) for p in inputs.test_files
+        if p.endswith("_test.go") and (rel := _owned(root, roots, p)) is not None
     )
+    test_dirs = sorted(test_counts, key=lambda d: (-test_counts[d], d.count("/") + bool(d), d))
     if test_dirs:
         name, command, profile, _ = _go_profiled(
             root, test_dirs[0], "", f"go test {_go_package_arg(test_dirs[0])}"
         )
-        out.append(_target("unit_test", name, cwd=cwd, command=command,
-                           profile=profile, commit=commit, input_format="pprof"))
+        out.append(_target("unit_test", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                           input_format="pprof", prerequisites=[_fresh(_from(root, profile))]))
     return out
 
 
@@ -459,7 +497,7 @@ def _node_targets(
             f"--cpu-prof-name={posixpath.basename(profile)} {rel}"
         )
         out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
-                           input_format="cpuprofile", timed=f"node {rel}"))
+                           input_format="cpuprofile"))
     return out
 
 
@@ -477,7 +515,7 @@ def runtime_targets(
     unit's. A unit whose root a shell could misread gets none.
     """
     found = _unit_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
-    return [{k: v for k, v in t.items() if k != "timed"} for t in found]
+    return [_awaiting_args({k: v for k, v in t.items() if k != "timed"}) for t in found]
 
 
 def _unit_targets(
@@ -501,9 +539,22 @@ def _unit_targets(
     return sorted(found, key=lambda t: CLASS_ORDER.index(t["class"]))
 
 
-#: The workload classes a timing may come from: a unit-test suite runs far
-#: more than the change, so its wall time says little about it.
-TIMED_CLASSES = ("entry_point", "benchmark")
+def _awaiting_args(target: dict[str, Any]) -> dict[str, Any]:
+    """An entry point with the arguments left for the agent: run as printed, it measures its usage screen."""
+    if target["class"] != "entry_point" or not target["command"]:
+        return target
+    return {
+        **target,
+        "command": f"{target['command']} {ARGS_PLACEHOLDER}",
+        "reason": target["reason"] or _ARGS_REASON,
+    }
+
+
+#: The workload classes a timing may come from. A unit-test suite runs far more
+#: than the change, and an entry point waits for its arguments
+#: (``ARGS_PLACEHOLDER``): run without them it times its usage screen. Neither
+#: leads ``next_call``, and neither is timed.
+TIMED_CLASSES = ("benchmark",)
 #: The language family (:func:`~repowise.core.analysis.health.refactoring.language_family.language_family`)
 #: each stack with runtime targets builds.
 _STACK_FAMILY = {"python": "python", "go": "go", "node": "js"}
@@ -518,8 +569,8 @@ def timed_target(
 ) -> dict[str, Any] | None:
     """The workload ``perf measure`` times for a change to *path*, or None.
 
-    The first entry point or benchmark :func:`runtime_targets` lists for the
-    deepest unit of *path*'s language that holds it, without the profiler:
+    The first benchmark :func:`runtime_targets` lists for the deepest unit of
+    *path*'s language that holds it, without the profiler:
     ``{workload, class, command, cwd}``, *cwd* repo-relative (``""`` the root).
     """
     from ..analysis.health.refactoring.language_family import language_family

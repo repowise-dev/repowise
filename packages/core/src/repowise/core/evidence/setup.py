@@ -164,9 +164,13 @@ def _coverage_call(repo_root: Path, units: Sequence[dict[str, Any]]) -> dict[str
 def _runtime_call(
     repo_root: Path, units: Sequence[dict[str, Any]], done: Collection[str]
 ) -> dict[str, Any] | None:
-    """Profile the best target not in *done* (entry point, then benchmark, then tests) and ingest it."""
+    """Profile the best target not in *done* (entry point, then benchmark, then tests) and ingest it.
+
+    A target with a ``reason`` (an entry point waiting for its arguments) is the agent's to finish, never a step.
+    """
     targets = [
-        t for u in units for t in u.get("runtime", ()) if t["ingest"] and t["workload"] not in done
+        t for u in units for t in u.get("runtime", ())
+        if t["ingest"] and t["reason"] is None and t["workload"] not in done
     ]
     if not targets:
         return None

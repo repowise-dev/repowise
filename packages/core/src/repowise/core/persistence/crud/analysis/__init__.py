@@ -78,6 +78,7 @@ from .evidence import (
     ranked_hotness,
     replace_symbol_hotness,
     save_evidence_run,
+    unranked_reason,
 )
 from .function_facts import (
     get_function_facts,
@@ -127,6 +128,7 @@ from .performance import (
     list_evidence_for_opportunities,
     list_opportunity_evidence,
     list_performance_opportunities,
+    measured_costs,
     opportunity_details,
     performance_area_counts,
     performance_facet_counts,
@@ -228,6 +230,7 @@ __all__ = [
     "load_file_coverage",
     "load_ingest_at_commit",
     "load_newest_ingest",
+    "measured_costs",
     "opportunity_details",
     "performance_area_counts",
     "performance_facet_counts",
@@ -263,6 +266,7 @@ __all__ = [
     "tests_covering",
     "tests_covering_files",
     "tests_for_functions",
+    "unranked_reason",
     "update_dead_code_status",
     "update_health_finding_status",
     "update_refactoring_opportunity_status",

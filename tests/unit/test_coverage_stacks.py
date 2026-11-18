@@ -78,7 +78,11 @@ def test_the_root_stack_matches_every_stack_fixture(case):
         ("node_jest_npm", "npm test -- --ci", "npm test -- --ci --coverage --coverageReporters=lcov",
          "coverage/lcov.info"),
         ("node_jest_npm", "npx jest --ci", "npx jest --coverage --coverageReporters=lcov --ci", "coverage/lcov.info"),
-        ("node_vitest_pnpm", "pnpm test", "pnpm test -- --coverage.enabled --coverage.reporter=lcov",
+        # pnpm reads ``pnpm test --flag`` as its own option and passes a ``--`` on to the script.
+        ("node_vitest_pnpm", "pnpm test",
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure", "coverage/lcov.info"),
+        ("node_vitest_pnpm", "pnpm test -- --ci",
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure -- --ci",
          "coverage/lcov.info"),
         ("node_mocha_yarn", "yarn test", "npx --yes c8 --reporter=lcov yarn test", "coverage/lcov.info"),
         ("go", "go test -race ./...", "go test -coverprofile=coverage.out -race ./...", "coverage.out"),
@@ -118,7 +122,7 @@ def test_tools_that_need_an_install_say_so():
     assert poetry.edit("poetry run pytest").prepare == ("- run: poetry run pip install pytest-cov",)
     vitest = detect_stacks(*_load("node_vitest_pnpm"))[0]
     assert vitest.prepare == ('- run: pnpm add -D "@vitest/coverage-v8@^2.1.0"',)
-    assert vitest.requires == ('pnpm add -D "@vitest/coverage-v8@^2.1.0"',)
+    assert vitest.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D "@vitest/coverage-v8@^2.1.0"')
     rust = detect_stacks(*_load("rust"))[0]
     assert rust.edit("cargo test").prepare == ("- uses: taiki-e/install-action@cargo-llvm-cov",)
     assert rust.requires == ("cargo install cargo-llvm-cov",)
@@ -246,7 +250,11 @@ def test_workspace_members_are_run_by_the_workspace_root():
 
 
 def test_npm_workspace_members_get_their_own_stacks():
-    assert [s.root for s in detect_stacks(*_load("node_monorepo"))] == ["", "packages/a", "packages/b"]
+    # The root delegates to turbo, so members with tests are units; packages/b has none.
+    root, member = detect_stacks(*_load("node_monorepo"))
+    assert (root.root, member.root) == ("", "packages/a")
+    # The member has no lockfile of its own: the workspace root's picks npm and its install.
+    assert (member.package_manager, member.requires) == ("npm", ("npm ci",))
 
 
 MONOREPO = {
@@ -404,3 +412,148 @@ def test_the_dotnet_sdk_covers_the_app_projects_too():
     (stack,) = detect_stacks(paths, files)
     assert "      8.0.x" in stack.setup and "      9.0.x" in stack.setup
     assert not any("coverlet" in note for note in stack.notes)
+
+
+# ---------------------------------------------------------------------------
+# JavaScript workspaces, installs and runners, in the layouts real repositories use
+# ---------------------------------------------------------------------------
+
+_VITEST = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure"
+
+
+def _package(scripts: dict | None = None, **fields) -> str:
+    return json.dumps({"name": "x", **({"scripts": scripts} if scripts is not None else {}), **fields})
+
+
+PNPM_WORKSPACE = {
+    "package.json": _package({"test": "vitest"}, private=True,
+                             devDependencies={"vitest": "^3", "@vitest/coverage-v8": "^3"}),
+    "pnpm-workspace.yaml": "packages:\n  - 'packages/*'\n",
+    "pnpm-lock.yaml": "",
+    "vitest.config.ts": "",
+    "packages/reactivity/package.json": _package(),
+    "packages/reactivity/src/index.ts": "",
+    "packages/shared/package.json": _package({"build": "tsc"}),
+    "packages/shared/src/index.ts": "",
+}
+
+
+def test_a_pnpm_workspace_root_runs_its_packages_tests(tmp_path):
+    _write(tmp_path, PNPM_WORKSPACE)
+    members = _index(("npm", "packages/reactivity", "packages/reactivity/package.json"),
+                     ("npm", "packages/shared", "packages/shared/package.json"))
+    # The index lists only the members; the root's vitest still runs them all.
+    for found in (detect_repo_stacks(tmp_path, members), detect_repo_stacks(tmp_path)):
+        (stack,) = found
+        assert (stack.root, stack.package_manager, stack.runner) == ("", "pnpm", "vitest")
+        assert stack.test == f"pnpm run test {_VITEST}"
+        assert stack.requires == ("pnpm install --frozen-lockfile",)
+
+
+def test_a_workspaces_root_with_its_own_runner_runs_the_members_too():
+    files = {
+        "package.json": _package({"test": "vitest run"}, workspaces=["packages/*"]),
+        "packages/zod/package.json": _package({"test": "vitest run"}),
+        "packages/docs/package.json": _package({"dev": "next dev"}),
+    }
+    paths = [*files, "pnpm-lock.yaml"]
+    (stack,) = detect_stacks(paths, files)
+    assert (stack.root, stack.package_manager, stack.test) == ("", "pnpm", f"pnpm run test {_VITEST}")
+
+
+@pytest.mark.parametrize("script", ["yarn workspaces run test", "node scripts/test.js"])
+def test_a_workspaces_root_without_a_known_runner_leaves_the_members_theirs(script):
+    files = {
+        "package.json": _package({"test": script}, workspaces=["packages/*"]),
+        "packages/a/package.json": _package({"test": "vitest"}, devDependencies={"@vitest/coverage-v8": "1"}),
+    }
+    found = detect_stacks([*files, "yarn.lock"], files)
+    member = next(s for s in found if s.root == "packages/a")
+    assert (member.package_manager, member.test) == ("yarn", f"yarn test {_VITEST}")
+
+
+def test_a_package_with_no_lockfile_installs_before_its_tests():
+    files = {"package.json": _package({"test": "mocha --check-leaks test/"}, devDependencies={"mocha": "1"})}
+    (stack,) = detect_stacks(["package.json", "test/app.js"], files)
+    assert stack.to_dict()["prerequisites"] == ["npm install"]
+    assert stack.test == "npx --yes c8 --reporter=lcov npm test"
+
+
+@pytest.mark.parametrize(
+    ("script", "runner", "command"),
+    [
+        # Arguments land on the last command of a chain, where the runner is.
+        ("tsc -p tsconfig.spec.json && vp test --run", "vitest", f"pnpm run test {_VITEST}"),
+        ("tsc -p tsconfig.json && bun test", "bun", "pnpm run test --coverage --coverage-reporter=lcov"),
+        ("cross-env CI=1 jest", "jest", "pnpm run test --coverage --coverageReporters=lcov"),
+        # A runner before the last command would run without the flags.
+        ("vitest run && node scripts/check.js", None, ""),
+        ("jest && vitest run", None, ""),
+    ],
+)
+def test_a_runner_at_the_end_of_a_chain_is_recognised(script, runner, command):
+    files = {"package.json": _package({"test": script}, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert (stack.runner, stack.test) == (runner, command)
+
+
+def test_a_test_script_chaining_other_scripts_falls_back_to_the_one_running_the_runner():
+    scripts = {
+        "test": "npm-run-all build lint test:unit",
+        "test:unit": "run-p test:vitest:min test:ts",
+        "test:vitest": "cross-env COVERAGE=true vitest run",
+        "test:vitest:min": "cross-env MINIFY=true vitest run",
+        "test:vitest:watch": "vitest",
+        "test:ts": "tsc -p test/ts/",
+    }
+    files = {"package.json": _package(scripts, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.test == f"pnpm run test:vitest {_VITEST}"
+    # Two runners among the candidates is a guess too far.
+    scripts["test:e2e"] = "jest -c e2e"
+    files = {"package.json": _package(scripts)}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.test == "" and stack.to_dict()["reason"]
+
+
+@pytest.mark.parametrize("scripts", [{"build": "vite build"}, {"test": 'echo "Error: no test specified" && exit 1'}])
+def test_a_package_with_no_tests_is_no_unit(scripts):
+    files = {"go.mod": "module example.com/app\n", "static/admin/package.json": _package(scripts)}
+    paths = [*files, "main.go", "main_test.go", "static/admin/yarn.lock"]
+    assert [(s.root, s.language) for s in detect_stacks(paths, files)] == [("", "go")]
+
+
+def test_npm_passes_flags_after_a_separator_and_yarn_as_they_are():
+    files = {"package.json": _package({"test": "vitest run"}, devDependencies={"@vitest/coverage-v8": "1"})}
+    (npm,) = detect_stacks(["package.json", "package-lock.json"], files)
+    (yarn,) = detect_stacks(["package.json", "yarn.lock"], files)
+    assert npm.test == f"npm test -- {_VITEST}" and npm.requires == ("npm ci",)
+    assert yarn.test == f"yarn test {_VITEST}" and yarn.requires == ("yarn install --frozen-lockfile",)
+
+
+def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
+    files = {"package.json": _package({"test": "vitest"}, devDependencies={"vitest": "3.0.0"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
+                             {**files, "pnpm-workspace.yaml": "packages: []\n"})
+    assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
+
+
+@pytest.mark.parametrize(
+    ("scripts", "command"),
+    [
+        # Two suites with one runner: neither alone is the whole run.
+        ({"test": "run-s test:unit test:integration", "test:unit": "vitest run",
+          "test:integration": "vitest run -c integration.config.ts"}, ""),
+        ({"test": "npm-run-all test:*", "test:a": "jest", "test:b": "jest -c b"}, ""),
+        # The one suite test names is the run, beside others it does not name.
+        ({"test": "npm run lint && npm run test:unit", "test:unit": "vitest run",
+          "test:smoke": "vitest run -c smoke.config.ts"}, f"pnpm run test:unit {_VITEST}"),
+        # A Playwright suite writes no source coverage; the unit suite is what these flags can measure.
+        ({"test": "run-s test:unit test:e2e", "test:unit": "vitest run", "test:e2e": "playwright test"},
+         f"pnpm run test:unit {_VITEST}"),
+    ],
+)
+def test_a_fallback_script_is_picked_only_when_it_is_the_whole_run(scripts, command):
+    files = {"package.json": _package(scripts, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.test == command
