@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
 
 from repowise.core.frame_resolver import ProfileFrame
@@ -29,11 +30,18 @@ _UNITS = {
 }
 #: Exporters known to time wall-clock: pyinstrument samples the wall clock.
 _WALL_CLOCK_TOOLS = frozenset({"pyinstrument"})
+#: The ``$schema`` key every speedscope file carries.
+_SCHEMA_RE = re.compile(
+    rb'"\$schema"\s*:\s*"https?://(?:www\.)?speedscope\.app/file-format-schema\.json"'
+)
 
 
 def sniff(head: bytes) -> bool:
+    # Anchored on the schema key, so another JSON format that only mentions
+    # speedscope (a test id, a commit message) is not claimed, and the order
+    # JSON formats are sniffed in does not decide between them.
     text = head.lstrip(b"\xef\xbb\xbf").lstrip()
-    return text.startswith(b"{") and b"speedscope" in text
+    return text.startswith(b"{") and _SCHEMA_RE.search(text) is not None
 
 
 def read(data: bytes) -> ProfileRun:
