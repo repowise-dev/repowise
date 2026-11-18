@@ -1327,6 +1327,50 @@ class TestWorkspaceMetrics:
         assert data["cycle_count"] is None
         assert data["evidence"]["state"] == "insufficient"
 
+    def test_metrics_score_color_maps_to_health_bands(self, runner, tmp_path, monkeypatch):
+        """Scores 9, 7.5, 6, 4.5, 3 map to shared health band colors (issue #5783)."""
+        import dataclasses
+
+        from repowise.cli import helpers
+        from repowise.core.workspace import architecture_metrics as am
+
+        self._write(tmp_path, [("frontend", "api"), ("api", "db")], [])
+
+        recorded_prints: list[str] = []
+        orig_print = helpers.console.print
+
+        def fake_print(*args, **kwargs):
+            if args:
+                recorded_prints.append(str(args[0]))
+            orig_print(*args, **kwargs)
+
+        monkeypatch.setattr(helpers.console, "print", fake_print)
+
+        expected = [
+            (9.0, "green"),  # excellent
+            (7.5, "green"),  # good
+            (6.0, "yellow"),  # fair
+            (4.5, "dark_orange"),  # needs_work
+            (3.0, "red"),  # at_risk
+        ]
+
+        real_compute = am.compute_architecture_metrics
+        for score, color in expected:
+            recorded_prints.clear()
+
+            def mock_compute(*a, score=score, **kw):
+                m = real_compute(*a, **kw)
+                return dataclasses.replace(m, score=score)
+
+            monkeypatch.setattr(am, "compute_architecture_metrics", mock_compute)
+            result = runner.invoke(cli, ["workspace", "metrics", str(tmp_path)])
+            assert result.exit_code == 0, result.output
+            score_line = [p for p in recorded_prints if "Architecture score" in p]
+            assert score_line, f"Architecture score line missing for {score}"
+            assert f"[bold {color}]" in score_line[0], (
+                f"Score {score} expected color {color}, got: {score_line[0]}"
+            )
+
     def test_a_repo_read_without_contracts_is_not_told_to_rerun(self, runner, tmp_path):
         from repowise.core.workspace.system_graph import (
             SystemEdge,

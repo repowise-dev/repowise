@@ -33,7 +33,7 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
     from repowise.core.workspace.cycles import cycle_total
     from repowise.core.workspace.system_graph import load_system_graph
 
-    fmt =resolve_format(fmt, as_json)
+    fmt = resolve_format(fmt, as_json)
     start = resolve_repo_path(path)
     ws_root, ws_config = _require_workspace(start)
 
@@ -83,8 +83,10 @@ def workspace_metrics(path: str | None, fmt: str, as_json: bool) -> None:
         )
         return
 
+    from repowise.core.analysis.health.grading import BAND_TERMINAL_COLOR, band_for
+
     qualifier = "" if evidence is None or evidence["state"] == "measured" else ", partial evidence"
-    score_color = "green" if metrics.score >= 8 else "yellow" if metrics.score >= 4 else "red"
+    score_color = BAND_TERMINAL_COLOR[band_for(metrics.score)]
     console.print(
         f"\n  Architecture score  [bold {score_color}]{metrics.score:.1f}[/bold {score_color}]"
         f" / 10   [dim]({metrics.architecture_type}{qualifier})[/dim]"
