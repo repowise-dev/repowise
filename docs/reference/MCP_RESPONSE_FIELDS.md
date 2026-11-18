@@ -335,6 +335,7 @@ Each target gets an equal share; unused share passes on. Over its share, a targe
 | `facts`, `tests` | Function and symbol facts; see [symbol facts](#symbol-facts) |
 | `outlined`, `members`, `more_members`, `members_total` | A class or other container, served as its members |
 | fallback lines | On a miss, closest matches from a live grep |
+| `kind: "file"`, `symbols`, `symbols_total` | A bare file path: its top-level symbol names in source order (15 max; `symbols_total` when there are more), no source |
 | `source`, `created_at`, `original_tokens`, `lines_total` | Omission ref: where the stored content came from (`lines_total` only when the query matched nothing) |
 
 `outlined: true` puts the header in `source` and `members` (each `name`, `signature`, `lines`, docstring `summary`; `kind` when not a method; `symbol_id` when it is not the container's id plus `::<name>`) in place of the body, with no `_meta.complete`. Past a budget the rest are named with their first line in `more_members`; `members_total` counts any beyond that. A container whose body is no larger than its outline is served whole.
