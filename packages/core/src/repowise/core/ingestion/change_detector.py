@@ -846,9 +846,18 @@ def _counts_as_change(
     editor file dirty on every run. *item* is the ``HEAD`` diff entry of a
     tracked path, whose committed text tells a refreshed block from an edit.
     """
-    if not is_candidate_source_path(path, repo_path, output_dirs):
+    a_blob = getattr(item, "a_blob", None) if item is not None else None
+    source: bytes | None = None
+    if a_blob is not None and not (repo_path / path).is_file():
+        # A deleted file has no bytes on disk; its committed blob's first
+        # line says whether the indexed file was a script (#5787). Only the
+        # head is read — the shebang check never needs the whole blob.
+        try:
+            source = a_blob.data_stream.read(800)
+        except Exception:
+            source = None
+    if not is_candidate_source_path(path, repo_path, output_dirs, source=source):
         return False
-    a_blob = getattr(item, "a_blob", None)
     committed = (lambda: a_blob.data_stream.read().decode("utf-8", "replace")) if a_blob else None
     try:
         return not is_repowise_output(repo_path / path, path, committed)
