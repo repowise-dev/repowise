@@ -1,7 +1,7 @@
 """Module pages get their own decisions, ranked (#1587).
 
 Two halves. The behaviour half exercises the helpers directly. The guard half
-is an architecture check in the style of ``test_no_test_path_copies``: a page
+is an architecture check in the style of ``TestNoTestPathCopies``: a page
 type must not go back to slicing the repo-wide list, because the slice is not
 only rendered, it is prompt context for the page being written.
 """
