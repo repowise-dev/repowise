@@ -15,11 +15,14 @@ import pytest
 
 from repowise.core.persistence.crud import replace_symbol_hotness
 from repowise.core.persistence.models import EvidenceRun
-from tests.unit.server.mcp.test_performance_levels import materialized  # noqa: F401
+from tests.unit.server.mcp import test_performance_levels
 
 LOGIN = "src/auth/service.py::login"
 SHARED = "src/shared.py::load"
 MEASURED_AT = datetime(2026, 11, 15, tzinfo=UTC)
+
+#: Five callers behind one shared helper, materialized into the queue.
+materialized = test_performance_levels.materialized
 
 
 def _hot(symbol_id: str, *, cls: str = "entry_point", run: str = "r1", **over) -> dict:
@@ -78,7 +81,7 @@ def _size(result: dict) -> int:
 
 
 @pytest.mark.asyncio
-async def test_no_runtime_data_is_one_token_and_a_command(setup_mcp, materialized):  # noqa: F811
+async def test_no_runtime_data_is_one_token_and_a_command(setup_mcp, materialized):
     assert await _measured() == {
         "basis": "unknown",
         "status": "no_runtime_data",
@@ -87,7 +90,7 @@ async def test_no_runtime_data_is_one_token_and_a_command(setup_mcp, materialize
 
 
 @pytest.mark.asyncio
-async def test_stale_and_not_ranked(setup_mcp, session, materialized):  # noqa: F811
+async def test_stale_and_not_ranked(setup_mcp, session, materialized):
     await _seed(session, materialized, [_hot(LOGIN, tier="measured", freshness="stale", rank=None)])
     assert (await _measured())["status"] == "stale"
 
@@ -97,7 +100,7 @@ async def test_stale_and_not_ranked(setup_mcp, session, materialized):  # noqa: 
 
 
 @pytest.mark.asyncio
-async def test_rows_carry_their_basis_and_cap(setup_mcp, session, materialized):  # noqa: F811
+async def test_rows_carry_their_basis_and_cap(setup_mcp, session, materialized):
     rows = [_hot(LOGIN)]
     rows += [_hot(f"src/app.py::f{i}", rank=i + 2) for i in range(4)]
     rows += [_hot("src/app.py::t", cls="unit_test", run="r3")]
@@ -139,14 +142,14 @@ async def test_rows_carry_their_basis_and_cap(setup_mcp, session, materialized):
 
 
 @pytest.mark.asyncio
-async def test_no_surface_word_hot_or_cold(setup_mcp, session, materialized):  # noqa: F811
+async def test_no_surface_word_hot_or_cold(setup_mcp, session, materialized):
     await _seed(session, materialized, [_hot(LOGIN), _hot("src/app.py::t", cls="unit_test")])
     text = json.dumps(await _measured(limit=10))
     assert not re.search(r"\b(hot|cold)", text, re.IGNORECASE), text
 
 
 @pytest.mark.asyncio
-async def test_other_calls_do_not_move(setup_mcp, session, materialized):  # noqa: F811
+async def test_other_calls_do_not_move(setup_mcp, session, materialized):
     """Evidence reaches only ``include=["performance"]`` on the dashboard."""
     from repowise.server.mcp_server import get_health
 
@@ -166,7 +169,7 @@ async def test_other_calls_do_not_move(setup_mcp, session, materialized):  # noq
 
 @pytest.mark.asyncio
 async def test_summary_names_the_queue_call_only_when_the_queue_is_not_here(
-    setup_mcp, materialized  # noqa: F811
+    setup_mcp, materialized
 ):
     from repowise.server.mcp_server import get_health
 
