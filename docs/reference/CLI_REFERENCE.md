@@ -1356,10 +1356,10 @@ repowise coverage suggest-gates --format json
 ### `repowise evidence`
 
 Ingest runtime evidence: a profile, benchmark results, test timings or query counts, as one
-[`repowise-evidence-v1`](../layers/PERFORMANCE.md#runtime-evidence-format) file per run, or a
+[`repowise-evidence-v1`](../layers/RUNTIME_EVIDENCE.md#the-repowise-evidence-v1-document) file per run, or a
 profile in the profiler's own format ([Speedscope JSON, Go pprof or collapsed
-stacks](../layers/PERFORMANCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
-runner's ([pytest-benchmark JSON](../layers/PERFORMANCE.md#benchmark-results-as-the-runner-wrote-them)),
+stacks](../layers/RUNTIME_EVIDENCE.md#profiles-as-the-profiler-wrote-them)) or benchmark results in the
+runner's ([pytest-benchmark JSON](../layers/RUNTIME_EVIDENCE.md#benchmark-results-as-the-runner-wrote-them)),
 converted first.
 
 ```bash
