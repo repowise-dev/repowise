@@ -790,7 +790,8 @@ def evidence_status_command(repo: str | None, fmt: str) -> None:
     """Show the runtime evidence stored: the newest run of each workload.
 
     Each run says how fresh it is against the indexed commit (current, stale
-    or unknown), how much of the run repo code explains, and what was skipped.
+    or unknown), where its time went (production repo code itself, waits,
+    libraries), and what was skipped.
     """
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
