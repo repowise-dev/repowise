@@ -59,7 +59,9 @@ _LAUNCHERS = (("uv", "run"), ("poetry", "run"), ("pdm", "run"), ("hatch", "run")
 # the program runs, so a ``chdir`` does not move it. A run that fails (an
 # uncaught exception, or ``sys.exit`` with a nonzero code) writes no profile
 # and an older one is removed first, so ``evidence add`` has nothing to store;
-# ceiling: a bare ``raise SystemExit(1)`` still counts as clean. Double quotes
+# ceiling: a bare ``raise SystemExit(1)``, ``from sys import exit``, or a
+# program that installs its own ``sys.excepthook`` still counts as clean; a
+# failing test fails the suite's run too. Double quotes
 # outside, single inside: one spelling for sh and PowerShell.
 _PYINSTRUMENT = (
     "import sys,os,atexit;from pyinstrument import Profiler;"
@@ -498,12 +500,18 @@ def runtime_targets(
         found = _node_targets(stack, repo_root, commit, unit_roots)
     else:
         found = []
-    for target in found:
-        if target["class"] == "entry_point" and target["command"]:
-            # Run as printed, a program measures its usage screen: the agent supplies the arguments.
-            target["command"] += f" {ARGS_PLACEHOLDER}"
-            target["reason"] = target["reason"] or _ARGS_REASON
-    return sorted(found, key=lambda t: CLASS_ORDER.index(t["class"]))
+    return sorted((_awaiting_args(t) for t in found), key=lambda t: CLASS_ORDER.index(t["class"]))
+
+
+def _awaiting_args(target: dict[str, Any]) -> dict[str, Any]:
+    """An entry point with the arguments left for the agent: run as printed, it measures its usage screen."""
+    if target["class"] != "entry_point" or not target["command"]:
+        return target
+    return {
+        **target,
+        "command": f"{target['command']} {ARGS_PLACEHOLDER}",
+        "reason": target["reason"] or _ARGS_REASON,
+    }
 
 
 __all__ = [
