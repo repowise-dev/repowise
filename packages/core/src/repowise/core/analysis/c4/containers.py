@@ -1,6 +1,9 @@
 """Assign files to C4 containers.
 
-A directory holding a package manifest is a container root. Manifests under
+A directory holding a package manifest (the language registry's
+``is_package_manifest``) is a container root, even when the manifest declares
+no external dependencies, so a package like ``packages/core`` is its own
+container instead of dissolving into the repo-root catch-all. Manifests under
 test or example trees are fixtures and samples, not the system's containers, so
 they are dropped and their files fold into the nearest remaining ancestor
 container (or into none, when no ancestor exists). With no manifest at all, the
@@ -13,33 +16,9 @@ from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 
+from repowise.core.ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from repowise.core.ingestion.workspace_members import manifest_package_name
 from repowise.core.support_paths import is_test_or_example_path
-
-# Package-manifest basenames. A directory holding one of these is a container
-# root even when the manifest declares no external dependencies (so a package
-# like ``packages/core`` is its own container instead of dissolving into the
-# repo-root catch-all).
-_MANIFEST_BASENAMES = frozenset(
-    {
-        "pyproject.toml",
-        "setup.py",
-        "setup.cfg",
-        "package.json",
-        "cargo.toml",
-        "go.mod",
-        "pom.xml",
-        "build.gradle",
-        "composer.json",
-        "gemfile",
-    }
-)
-_MANIFEST_SUFFIXES = (".csproj",)
-
-
-def is_manifest(path: str) -> bool:
-    base = path.rsplit("/", 1)[-1].lower()
-    return base in _MANIFEST_BASENAMES or base.endswith(_MANIFEST_SUFFIXES)
 
 
 def manifest_roots(manifests: Iterable[str]) -> dict[str, list[str]]:
@@ -64,7 +43,7 @@ def assign_containers(
     present = set(paths)
     roots = manifest_roots(
         m
-        for m in {*manifests, *(p for p in paths if is_manifest(p))}
+        for m in {*manifests, *filter(_LANG_REGISTRY.is_package_manifest, paths)}
         if not _is_package_module(m, present)
     )
     candidates = set(roots) or _top_level_dirs(p for p in paths if not is_test_or_example_path(p))
