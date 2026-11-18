@@ -31,9 +31,13 @@ _CLOCKS = {"cpu": "cpu", "wall": "wall"}
 #: pprof unit -> the evidence unit.
 _UNITS = {"nanoseconds": "ns", "microseconds": "us", "milliseconds": "ms", "seconds": "s"}
 _GZIP_MAGIC = b"\x1f\x8b"
-# Wire types of the Profile message's fields (profile.proto): 0 varint, 2 bytes.
+# Wire types each Profile field may use (profile.proto): 0 varint, 2 bytes. The
+# repeated int64 ``comment`` may be packed (2) or not (0); proto3 packs by default.
+_SCALAR, _BYTES, _REPEATED_INT = frozenset({0}), frozenset({2}), frozenset({0, 2})
 _PROFILE_WIRE = {
-    1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 0, 8: 0, 9: 0, 10: 0, 11: 2, 12: 0, 13: 0, 14: 0, 15: 0,
+    **dict.fromkeys((1, 2, 3, 4, 5, 6, 11), _BYTES),
+    **dict.fromkeys((7, 8, 9, 10, 12, 14, 15), _SCALAR),
+    13: _REPEATED_INT,
 }
 _INT64_SIGN = 1 << 63
 
@@ -79,7 +83,7 @@ class _Profile:
         self.functions: dict[int, tuple[int, int, int]] = {}
         self.strings: list[str] = []
         for field, wire, value, end in _fields(data, 0, len(data)):
-            if _PROFILE_WIRE.get(field) != wire:
+            if wire not in _PROFILE_WIRE.get(field, ()):
                 continue  # a field this decoder does not read, or a newer one
             if field == 1:
                 vt = dict(_scalars(data, value, end))
@@ -301,7 +305,7 @@ def _looks_like_profile(head: bytes) -> bool:
         while pos < end:
             tag, pos = _varint(head, pos)
             field, wire = tag >> 3, tag & 7
-            if _PROFILE_WIRE.get(field) != wire:
+            if wire not in _PROFILE_WIRE.get(field, ()):
                 return False
             if wire == 0:
                 _, pos = _varint(head, pos)

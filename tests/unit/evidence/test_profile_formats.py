@@ -330,6 +330,20 @@ def test_a_go_cpu_profile_is_sniffed_gzipped_or_raw() -> None:
     assert detect_profile_format(b"\x0a\x04hello") is None
 
 
+def test_comments_packed_or_not_still_sniff_and_read() -> None:
+    body = _pprof(
+        samples=[([1], [2, 20])],
+        locations={1: [(1, 8)]},
+        functions={1: ("example.com/pprofgo/calc.Primes", "D:/src/pprofgo/calc/calc.go", 5)},
+    )
+    for comment in (_pb(13, _pb_varint(1) + _pb_varint(2)), _pb(13, 1) + _pb(13, 2)):
+        # The comment leads, so the sniff walks over it before any sample type.
+        data = comment + body
+        assert detect_profile_format(data) == "pprof"
+        run = profile_formats.get("pprof").read(gzip.compress(data))
+        assert sum(s.samples or 0 for s in run.stacks) == 2
+
+
 def test_a_real_go_profile_reads_cpu_time_with_inlined_frames_innermost_last() -> None:
     run = profile_formats.get("pprof").read((PPROF_DIR / "cpu.pprof").read_bytes())
     assert (run.unit, run.value_kind) == ("ns", "cpu")
