@@ -270,7 +270,7 @@ async def test_module_object_bound_outside_an_import_is_incomplete(session, repo
     assert out["reasons"] == [
         "may be called through a module object outside an import: app/lazy.py"
     ]
-    assert out["hint"] == r'every line naming it: search_codebase(query="\bbackend_of\b")'
+    assert out["hint"] == r'lines naming it: search_codebase(query="\bbackend_of\b")'
     assert "app/lazy.py" not in out["files"]
 
 
@@ -1730,3 +1730,29 @@ def test_a_module_handed_on_is_found_by_the_name_its_import_spells(
     (tmp_path / rel).write_text(user, encoding="utf-8")
 
     assert _edit_sites._hands_on_module(tmp_path, rel, {holder}) is handed
+
+
+@pytest.mark.parametrize("name", ["backend_of", "$scope", "operator+", "__init__"])
+def test_the_hint_query_is_read_as_a_regex_by_search_codebase(name):
+    from repowise.server.mcp_server._query_shape import query_pattern
+
+    shape = query_pattern(_edit_sites._word_regex(name))
+
+    assert shape is not None and shape[0] == "regex"
+
+
+@pytest.mark.asyncio
+async def test_a_budget_cut_beside_another_reason_still_gives_the_hint(
+    session, repo_id, tmp_path, monkeypatch
+):
+    files = {"web/a.ts": _PICK, "web/m.ts": "import * as a from './a'\nconst m = a\nm.pick(1)\n"}
+    files.update({f"web/u{i:02}.ts": "import { pick } from './a'\npick(1)\n" for i in range(40)})
+    node = await _seed_js(session, repo_id, tmp_path, files)
+    node.name = "web.a.pick"  # a qualified name: the query keeps its last part
+    monkeypatch.setattr(_edit_sites, "effective_char_budget", lambda: 1000)
+
+    out = await edit_set_block(session, repo_id, tmp_path, node, _collector(tmp_path))
+
+    assert len(out["reasons"]) > 1
+    assert "files shown to fit" in out["reasons"][-1]
+    assert out["hint"] == r'lines naming it: search_codebase(query="\bpick\b")'

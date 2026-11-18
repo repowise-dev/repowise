@@ -1889,7 +1889,8 @@ async def edit_set_block(
         # The budget cut names its own way back; any other reason means lines
         # the set may have missed, which a text search lists.
         if len(reasons) > (len(shown) < len(by_file)):
-            out["hint"] = f'every line naming it: search_codebase(query="{_word_regex(node.name)}")'
+            query = _word_regex(_bare_name(node))
+            out["hint"] = f'lines naming it: search_codebase(query="{query}")'
     out["files"] = shown
     return out
 
