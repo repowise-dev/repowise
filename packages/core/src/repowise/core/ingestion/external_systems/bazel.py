@@ -277,8 +277,8 @@ def discover_bazel_packages(repo_root: Path, *, max_files: int = 5000) -> list[B
     """Walk the repo for every ``BUILD`` / ``BUILD.bazel`` file."""
     repo_root = repo_root.resolve()
     out: list[BazelFile] = []
-    skip_dirs = {".git", "node_modules", "bazel-bin", "bazel-out", "bazel-testlogs",
-                 "bazel-" + repo_root.name, ".venv", "venv", "build"}
+    # Bazel output dirs on top of the never-source set iter_glob prunes.
+    skip_dirs = {"bazel-bin", "bazel-out", "bazel-testlogs", "bazel-" + repo_root.name, "build"}
     from repowise.core.fs_walk import iter_glob
 
     for candidate in ("BUILD", "BUILD.bazel"):

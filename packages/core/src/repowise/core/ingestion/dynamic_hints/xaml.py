@@ -41,7 +41,8 @@ from pathlib import Path
 
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"bin", "obj", ".vs", "node_modules", ".git", "packages"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"bin", "obj", ".vs", "packages"}
 _XAML_EXTS = (".xaml", ".axaml")
 
 # xmlns:prefix="clr-namespace:Foo.Bar"        — WPF

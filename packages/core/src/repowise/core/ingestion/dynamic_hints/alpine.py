@@ -40,7 +40,8 @@ from pathlib import Path
 
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"node_modules", ".git", "dist", "build", ".next", "vendor"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"dist", "build", ".next"}
 _JS_EXTS = (".js", ".mjs", ".cjs", ".ts")
 
 # Alpine.data('explorer', explorer) / .store / .magic / .directive — capture

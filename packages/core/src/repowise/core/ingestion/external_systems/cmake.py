@@ -646,8 +646,8 @@ def discover_cmake_reactor(
 
     # Catch any orphan CMakeLists not referenced via add_subdirectory.
     # Cap the rglob to a reasonable depth to avoid pathological monorepos.
-    skip_dirs = {".git", "build", "_build", "out", "_deps", "cmake-build-debug",
-                 "cmake-build-release", "node_modules", ".venv", "venv"}
+    # CMake build trees on top of the never-source set the walk prunes.
+    skip_dirs = {"build", "_build", "out", "_deps", "cmake-build-debug", "cmake-build-release"}
     if len(out) < max_files:
         from repowise.core.fs_walk import glob_via
 
