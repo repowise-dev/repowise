@@ -270,14 +270,16 @@ def cap_rows(
 ) -> tuple[list[dict[str, Any]], int]:
     """The rows kept under the cap, and how many were dropped.
 
-    A profile keeps its costliest symbols (inclusive, then self, then id, so
-    the cut is stable); other kinds keep the document's order.
+    A profile keeps its costliest symbols (self, the cost waits excluded,
+    then inclusive, then id, so the cut is stable): a leaf that does the work
+    outlives the frames that only call it. Other kinds keep the document's
+    order.
     """
     if kind == "profile":
         limit = caps.max_symbols_per_run
         rows = sorted(
             rows,
-            key=lambda r: (-(r["total_value"] or 0.0), -(r["self_value"] or 0.0), r["symbol_id"]),
+            key=lambda r: (-(r["self_value"] or 0.0), -(r["total_value"] or 0.0), r["symbol_id"]),
         )
     else:
         limit = caps.max_rows_per_run
@@ -344,6 +346,9 @@ def run_fields(
         "unmatched_sample_json": json.dumps(joined.unmatched_sample),
         "total_value": doc.total,
         "explained_value": doc.explained,
+        "repo_self_value": doc.repo_self,
+        "wait_value": doc.waits,
+        "library_value": doc.libraries,
         "total_samples": doc.total_samples,
         "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,

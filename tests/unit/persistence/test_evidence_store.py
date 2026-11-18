@@ -342,7 +342,9 @@ def test_migration_matches_the_models_and_downgrades(tmp_path: Path, warm_start:
     if warm_start:
         # init_db may create the tables before the migration runs.
         _init_db(migrated)
-    command.upgrade(config, "0131")
+    # Warm, init_db already wrote every model column; 0131 is the last evidence
+    # migration that must tolerate that (0132 creates tables of its own).
+    command.upgrade(config, "0131" if warm_start else "head")
 
     created = tmp_path / "created.db"
     _init_db(created)
@@ -375,7 +377,7 @@ def test_an_existing_store_gains_the_tables_on_init(tmp_path: Path) -> None:
 
 
 def test_a_store_from_before_the_hotness_basis_gains_its_columns_on_init(tmp_path: Path) -> None:
-    """The reconciler adds the nullable columns 0131 adds; keys stay as they were."""
+    """The reconciler adds the nullable columns later migrations add; keys stay as they were."""
     old = tmp_path / "old.db"
     command.upgrade(_alembic_config(old), "0125")
     with sqlite3.connect(old) as connection:

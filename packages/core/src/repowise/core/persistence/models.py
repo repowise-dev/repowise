@@ -3061,10 +3061,15 @@ class EvidenceRun(Base):
     # A capped sample of the entries that did not map, for the diagnostic.
     unmatched_sample_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The run's whole value (samples or time), and the part with a resolved
-    # repo frame on the stack: their ratio is how much of the run repo code
-    # explains.
+    # production frame anywhere on the stack (kept for older readers; it says
+    # nothing about cost).
     total_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     explained_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Where a profile run's time went (``evidence.profile_convert``): production
+    # repo code itself, blocked in waits, in libraries. NULL: not recorded.
+    repo_self_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wait_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    library_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     # How many samples the whole run holds, whatever its unit: the ``n`` of a
     # share's interval. NULL when the profiler counted none (a traced or an
     # evented profile).
@@ -3094,8 +3099,9 @@ def _repository_fk() -> Any:
 class EvidenceSymbolCost(Base):
     """One symbol's cost in one profile run, in the run's ``unit``.
 
-    ``symbol_id`` is the id at the evidence commit. ``self`` is time in the
-    symbol's own body, ``total`` includes its callees. Sample counts are kept
+    ``symbol_id`` is the id at the evidence commit. ``self`` is what the
+    symbol costs: its own body and the built-ins and libraries it called,
+    waits excluded; ``total`` includes its callees. Sample counts are kept
     beside the values because a time unit hides how many samples it rests on.
     ``call_count`` comes only from deterministic tracers, never inferred.
     """
@@ -3271,17 +3277,22 @@ class SymbolHotness(Base):
     )
     # The basis run (``evidence_runs.id``) the numbers below come from.
     run_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # 1-based place among the run's production functions by inclusive time;
-    # NULL when the evidence is stale.
+    # 1-based place among the run's production functions by self time (the
+    # cost, waits excluded); NULL when the evidence is stale.
     rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Samples on the function and in the whole run; NULL when not counted.
+    # Self samples on the function and samples in the whole run; NULL when not counted.
     samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # The interval of the function's share of all samples; NULL without counts.
+    # The interval of the function's self share of all samples; NULL without counts.
     share_low: Mapped[float | None] = mapped_column(Float, nullable=True)
     share_high: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # How much of the run production code explains (``evidence.status``).
+    # The share of the run with a production frame anywhere on the stack (kept
+    # for older readers; ``repo_self_share`` is the one surfaces state).
     explained_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The basis run's split (``evidence.status.time_split``).
+    repo_self_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    wait_share: Mapped[float | None] = mapped_column(Float, nullable=True)
+    library_share: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Functions the run measured outside production code: counted, not listed.
     run_unlisted: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # ``cpu`` or ``wall``.

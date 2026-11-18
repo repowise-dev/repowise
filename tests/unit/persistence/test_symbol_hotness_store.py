@@ -119,7 +119,7 @@ async def test_rebuild_reads_the_profile_runs_and_the_readers_serve_them(async_s
     await _facts(async_session, repo.id, "src/m.py::big", "src/m.py::small", "src/t.py::thin")
     await save_evidence_run(
         async_session, repo.id, _run("e"),
-        _costs(("src/m.py::big", 300), ("src/m.py::small", 40), ("tests/test_m.py::t", 900)),
+        _costs(("src/m.py::big", 300), ("src/m.py::small", 70), ("tests/test_m.py::t", 900)),
         history_runs=5, max_runs=50,
     )
     await save_evidence_run(
@@ -142,8 +142,9 @@ async def test_rebuild_reads_the_profile_runs_and_the_readers_serve_them(async_s
     assert (big.tier, big.rank, big.freshness, big.run_unlisted) == (
         "lead_candidate", 1, "current", 1,
     )
-    assert (big.samples, big.run_samples, big.explained_share) == (300, 1000, 0.5)
-    assert big.share_low < 0.3 < big.share_high
+    # Samples are the cost's: self, not inclusive.
+    assert (big.samples, big.run_samples, big.explained_share) == (150, 1000, 0.5)
+    assert big.share_low < 0.15 < big.share_high
 
     ranked = await ranked_hotness(async_session, repo.id)
     # Lead candidates first, then by rank within their runs.
