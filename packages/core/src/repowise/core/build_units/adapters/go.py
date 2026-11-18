@@ -54,26 +54,21 @@ def units(ctx: ResolverContext) -> Found:
 
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
     for module_dir, module_path, requires, replaced, local_replacements in modules:
-        alias_to_module: dict[str, str] = {}
-        for target_dir, imp_path in local_replacements:
-            if target_dir in dir_to_module:
-                alias_to_module[imp_path] = dir_to_module[target_dir]
-                continue
-            best_mod: str | None = None
-            best_len = -1
-            for mod_dir, mod_path in dir_to_module.items():
-                if (
-                    mod_dir == "" or target_dir == mod_dir or target_dir.startswith(mod_dir + "/")
-                ) and len(mod_dir) > best_len:
-                    best_mod = mod_path
-                    best_len = len(mod_dir)
-            if best_mod is not None:
-                alias_to_module[imp_path] = best_mod
+        alias_to_module = {
+            imp_path: dir_to_module[target_dir]
+            for target_dir, imp_path in local_replacements
+            if target_dir in dir_to_module
+        }
 
         resolved_deps: set[str] = set()
         for name in (*requires, *replaced):
-            target = alias_to_module.get(name) or (name if name in paths else None)
-            if target and target != module_path:
+            if name in alias_to_module:
+                target = alias_to_module[name]
+            elif name not in replaced and name in paths:
+                target = name
+            else:
+                continue
+            if target != module_path:
                 resolved_deps.add(f"go:{target}")
 
         unit = BuildUnit(
