@@ -430,7 +430,7 @@ def read_sides(
 
 #: Decorators whose function runs once for every later caller in the process.
 _MEMO_DECORATORS = frozenset({"lru_cache", "cache", "cached_property"})
-_DECORATOR_LINE = re.compile(r"^\s*@\s*((?:\w+\.)*(\w+))\s*(\(.*)?$")
+_DECORATOR_LINE = re.compile(r"^\s*@\s*((?:\w+\.)*(\w+))\s*(\(.*|#.*)?$")
 #: Fixture scopes that set up once per test file at most. A test file runs
 #: whole when one of its tests covers a change, so the tests sharing such a
 #: fixture with the one coverage credited run too; a wider scope spans files.

@@ -150,7 +150,7 @@ async def test_no_measured_side_means_no_file_qualifies() -> None:
 
 def test_memos_and_fixtures_shared_across_files_seed_the_symbol_below(tmp_path) -> None:
     (tmp_path / "m.py").write_text(
-        "@cache\n"
+        "@cache  # once per process\n"
         "def memo():\n    pass\n\n"
         '@pytest.fixture(scope="session")\n'
         "def shared():\n    pass\n\n"
