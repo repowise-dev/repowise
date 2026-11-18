@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.analysis.change_candidates import UnknownChangeError, change_identity
+from repowise.core.analysis.change_candidates import (
+    UnknownChangeError,
+    change_identity,
+    is_change_request,
+)
 from repowise.core.repo_config import save_repo_config
 from tests.unit.server.conftest import create_test_repo
 
@@ -250,3 +254,10 @@ def test_a_pinned_request_keys_its_review_by_its_own_commits(tmp_path):
     assert change_identity(str(repo_dir), pinned) == (pinned, tip)
     with pytest.raises(UnknownChangeError):
         change_identity(str(repo_dir), "mr:7")
+
+
+@pytest.mark.parametrize("width", [40, 64])
+def test_a_pinned_request_names_sha1_or_sha256_commits(width: int) -> None:
+    base, head = "a" * width, "b" * width
+    assert is_change_request(f"mr:7@{base}...{head}")
+    assert not is_change_request(f"mr:7@{base}aaaaaaaaaa...{head}bbbbbbbbbb")

@@ -149,6 +149,16 @@ def test_add_stores_the_run_with_its_provenance(indexed) -> None:
     assert len(_stored(root)[0]) == 1
 
 
+def test_an_uppercase_commit_is_stored_lowercase(indexed) -> None:
+    root, head = indexed
+    result = _add(str(_write(root)), "--workload", "w", "--class", "entry_point",
+                  "--commit", head.upper(), "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert _json(result)["dirty"] is False  # read as HEAD, so the tree was checked
+    (run,), _ = _stored(root)
+    assert run.commit_sha == head
+
+
 def test_production_is_never_set_by_a_flag(indexed) -> None:
     root, head = indexed
     result = _add(str(_write(root)), "--workload", "w", "--class", "production",
@@ -162,7 +172,7 @@ def test_production_is_never_set_by_a_flag(indexed) -> None:
     ("args", "message"),
     [
         (["--class", "entry_point"], "which commit was measured"),
-        (["--class", "entry_point", "--commit", "abc"], "40-character"),
+        (["--class", "entry_point", "--commit", "abc"], "40- or 64-character"),
         (["--class", "smoke"], "is not one of"),
         (["--class", "entry_point", "--commit", "b" * 40, "--environment", "my laptop"],
          "one word"),

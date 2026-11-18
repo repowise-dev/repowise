@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
-import re
 import sqlite3
 import subprocess
 import threading
@@ -26,6 +25,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from repowise.core.git_sha import is_full_sha, is_sha_prefix
 from repowise.server.mcp_server._references import (
     _content_id,
     _path_identity,
@@ -53,7 +53,6 @@ _HISTORICAL_SOURCES = frozenset(
 # rationale prose nor history nor a guess.
 _COMPUTED_SOURCES = frozenset({"conventions"})
 _INFERRED_SOURCES = frozenset({"inferred", "semantic"})
-_FULL_COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?$")
 _REFERENCE_CACHE_LIMIT = 4096
 _reference_cache: OrderedDict[tuple[str, str], dict[str, Any]] = OrderedDict()
 _reference_cache_lock = threading.Lock()
@@ -188,9 +187,9 @@ def _full_commit(
     value: object, resolved_commits: Mapping[str, str] | None = None
 ) -> str | None:
     candidate = _commit_value(value).lower()
-    if _FULL_COMMIT_RE.fullmatch(candidate):
+    if is_full_sha(candidate):
         return candidate
-    if len(candidate) < 7 or not re.fullmatch(r"[0-9a-f]+", candidate):
+    if not is_sha_prefix(candidate):
         return None
     return (resolved_commits or {}).get(candidate)
 
@@ -404,11 +403,11 @@ def _resolved_commits(
     for record in records:
         for value in _decision_commits(record):
             candidate = _commit_value(value).lower()
-            if re.fullmatch(r"[0-9a-f]{7,64}", candidate):
+            if is_sha_prefix(candidate):
                 candidates.add(candidate)
         for evidence in getattr(record, "_why_evidence_rows", ()) or ():
             candidate = _commit_value(getattr(evidence, "evidence_commit", None)).lower()
-            if re.fullmatch(r"[0-9a-f]{7,64}", candidate):
+            if is_sha_prefix(candidate):
                 candidates.add(candidate)
 
     def visit(value: object) -> None:
@@ -416,7 +415,7 @@ def _resolved_commits(
             for key, child in value.items():
                 if key in {"commit", "sha", "subject"}:
                     candidate = _commit_value(child).lower()
-                    if re.fullmatch(r"[0-9a-f]{7,64}", candidate):
+                    if is_sha_prefix(candidate):
                         candidates.add(candidate)
                 visit(child)
         elif isinstance(value, list):
@@ -424,7 +423,7 @@ def _resolved_commits(
                 visit(child)
 
     visit(result)
-    resolved = {candidate: candidate for candidate in candidates if _FULL_COMMIT_RE.fullmatch(candidate)}
+    resolved = {candidate: candidate for candidate in candidates if is_full_sha(candidate)}
     prefixes = sorted(candidates - resolved.keys())
     if not prefixes or repo_root is None:
         return resolved
@@ -445,7 +444,7 @@ def _resolved_commits(
         return resolved
     for prefix, line in zip(prefixes, proc.stdout.splitlines(), strict=False):
         parts = line.split()
-        if len(parts) == 2 and parts[1] == "commit" and _FULL_COMMIT_RE.fullmatch(parts[0]):
+        if len(parts) == 2 and parts[1] == "commit" and is_full_sha(parts[0].lower()):
             resolved[prefix] = parts[0].lower()
     return resolved
 

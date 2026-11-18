@@ -55,6 +55,7 @@ import structlog
 
 from repowise.core.analysis.git_cli import _git
 from repowise.core.forges import ForgeKind, change_number, change_refs, detect_forge
+from repowise.core.git_sha import FULL_SHA_PATTERN, is_sha_prefix
 
 logger = structlog.get_logger(__name__)
 
@@ -74,7 +75,7 @@ __all__ = [
 REVERT_SUPERSEDED_PREFIX = "revert:"
 _SUPERSEDED_BY_WIDTH = 32
 
-_BODY_RE = re.compile(r"This reverts commit ([0-9a-f]{40})\b")
+_BODY_RE = re.compile(rf"This reverts commit ({FULL_SHA_PATTERN})\b")
 _SUBJECT_RE = re.compile(r'^Revert "(.+)"$')
 _CONVENTIONAL_RE = re.compile(r"^revert(?:\([^)]*\))?!?:", re.IGNORECASE)
 #: A bare ``#N``: an issue, or a pull request on forges that number both alike.
@@ -436,7 +437,7 @@ def reverted_at_head(links: list[RevertLink]) -> dict[str, RevertLink]:
 def _resolve(sha: str, full_shas: list[str]) -> str | None:
     """A stored sha (possibly abbreviated) as the unique full sha it names."""
     sha = sha.strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{7,40}", sha):
+    if not is_sha_prefix(sha):
         return None
     i = bisect.bisect_left(full_shas, sha)
     if i >= len(full_shas) or not full_shas[i].startswith(sha):

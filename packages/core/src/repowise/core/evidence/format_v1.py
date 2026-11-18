@@ -6,7 +6,7 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
     {
       "format": "repowise-evidence-v1",
       "kind": "profile",                  # profile | benchmark | test_timing | query_count
-      "commit_sha": "<40 hex>",           # optional: the commit measured
+      "commit_sha": "<40 or 64 hex>",     # optional: the commit measured
       "dirty": false,                     # optional: uncommitted changes at measurement
       "tool": {"name": "pyinstrument", "version": "4.6.2"},   # optional
       "value_kind": "wall",               # profile: cpu | wall
@@ -39,6 +39,7 @@ from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
+from repowise.core.git_sha import is_full_sha
 from repowise.core.interchange import format_tag, load_json_object, repo_relative_path
 
 EVIDENCE_FORMAT = "repowise-evidence-v1"
@@ -54,7 +55,6 @@ VALUE_KINDS = frozenset({"cpu", "wall"})
 TEST_OUTCOMES = frozenset({"passed", "failed", "skipped", "error"})
 QUERY_SCOPES = frozenset({"test", "request"})
 
-_COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 # A statement digest, never statement text: hex only, so SQL cannot pass.
 _DIGEST_RE = re.compile(r"[0-9a-f]{8,32}")
 #: Longest name, id or path an entry may carry; longer ones are skipped.
@@ -155,9 +155,12 @@ def _envelope(text: str) -> tuple[dict[str, Any], str, list[Any]]:
 
 def _commit_sha(data: dict[str, Any]) -> str | None:
     commit = data.get("commit_sha")
-    if commit is not None and not (isinstance(commit, str) and _COMMIT_RE.fullmatch(commit)):
+    if commit is None:
+        return None
+    commit = commit.lower() if isinstance(commit, str) else commit
+    if not is_full_sha(commit):
         raise EvidenceFormatError(
-            "commit_sha is not a full 40-character lowercase hex SHA",
+            "commit_sha is not a full 40- or 64-character hex SHA",
             "use the output of `git rev-parse HEAD` at measurement, or leave it out",
         )
     return commit

@@ -11,6 +11,8 @@ from typing import Any
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.git_sha import is_sha_prefix
+
 from ..models import Change, GitCommit
 from ..sql import LIKE_ESCAPE, escape_like
 from ._shared import _BATCH_SIZE, _batch_upsert_keyed, _row_inserter, _row_updater
@@ -274,7 +276,7 @@ async def find_changes(
     ).scalar_one_or_none()
     if by_forge_ref is not None:
         return [by_forge_ref]
-    if len(ref) < 7 or any(c not in "0123456789abcdef" for c in ref.lower()):
+    if not is_sha_prefix(ref.lower()):
         return []
     sha = escape_like(ref.lower())
     rows = await session.execute(

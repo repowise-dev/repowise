@@ -100,9 +100,6 @@ from repowise.cli._helpers.db import (
     repo_index_session as repo_index_session,
 )
 from repowise.cli._helpers.git import (
-    _COMMIT_ID_RE as _COMMIT_ID_RE,
-)
-from repowise.cli._helpers.git import (
     as_commit_id as as_commit_id,
 )
 from repowise.cli._helpers.git import (
