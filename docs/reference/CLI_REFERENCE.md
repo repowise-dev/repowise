@@ -1416,8 +1416,9 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
   `--workload`, `--class` and `--commit` filled in. Workload names and profile files of a unit below
   the root start with its root (`tools: go bench .`). A Python target's `prerequisites` are the
-  unit's own test install plus the profiler; a Python run that fails writes no profile, so its
-  `evidence add` stores nothing. An entry point's `command` ends in `<args>`: replace it with the
+  unit's own test install plus the profiler; a Python run that fails writes no profile, and the
+  pytest-benchmark and Go steps first remove an older profile, so a failed run's `evidence add`
+  stores nothing. An entry point's `command` ends in `<args>`: replace it with the
   arguments of a representative run, since a bare run measures only the usage screen. A target with
   no `command`, no `ingest`, or something left to fill says why in `reason` (`go run` takes no
   profiler flag; TypeScript positions are in the compiled JavaScript; this build does not read the

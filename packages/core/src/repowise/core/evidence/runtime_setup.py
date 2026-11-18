@@ -196,6 +196,15 @@ def _from(root: str, path: str) -> str:
     return posixpath.relpath(path, root) if root else path
 
 
+def _fresh(path: str) -> str:
+    """A step that removes an older profile at *path*, so a run that fails leaves nothing to ingest.
+
+    git, since evidence needs a checkout anyway, spells it the same in sh and
+    PowerShell; ``-x`` reaches the ignored ``.repowise/``.
+    """
+    return f"git clean -fqx -- {path}"
+
+
 def evidence_ingest_line(profile: str, workload: str, workload_class: str, commit: str) -> str:
     """The ``evidence add`` line for a profile, run from the repository root."""
     return (
@@ -347,7 +356,8 @@ def _pytest_benchmark(stack: Stack, repo_root: Path, commit: str | None) -> dict
         [*prefix, "pytest", *([root] if root else []), "--benchmark-only", f"--benchmark-json={profile}"]
     )
     return _target("benchmark", name, cwd=str(repo_root), command=command, profile=profile, commit=commit,
-                   input_format="pytest-benchmark", prerequisites=() if root else stack.requires)
+                   input_format="pytest-benchmark",
+                   prerequisites=[*(() if root else stack.requires), _fresh(profile)])
 
 
 def _declares_pytest_benchmark(repo_root: Path, root: str) -> bool:
@@ -419,7 +429,7 @@ def _go_targets(
             root, rel_dir, "'-run=^$' -bench . -benchmem", f"go bench {_go_package_arg(rel_dir)}"
         )
         out.append(_target("benchmark", name, cwd=cwd, command=command, profile=profile, commit=commit,
-                           input_format="pprof"))
+                           input_format="pprof", prerequisites=[_fresh(_from(root, profile))]))
     # The package with the most test files runs the most code; depth breaks ties.
     test_counts = Counter(
         posixpath.dirname(rel) for p in inputs.test_files
@@ -430,8 +440,8 @@ def _go_targets(
         name, command, profile = _go_profiled(
             root, test_dirs[0], "", f"go test {_go_package_arg(test_dirs[0])}"
         )
-        out.append(_target("unit_test", name, cwd=cwd, command=command,
-                           profile=profile, commit=commit, input_format="pprof"))
+        out.append(_target("unit_test", name, cwd=cwd, command=command, profile=profile, commit=commit,
+                           input_format="pprof", prerequisites=[_fresh(_from(root, profile))]))
     return out
 
 

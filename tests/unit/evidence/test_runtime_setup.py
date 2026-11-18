@@ -179,7 +179,8 @@ def test_pytest_benchmark_runs_in_the_units_environment(tmp_path: Path) -> None:
         "uv run --project libs/core --group test pytest libs/core --benchmark-only "
         "--benchmark-json=.repowise/libs-core-pytest-bench.json"
     )
-    assert bench["cwd"] == str(tmp_path) and bench["prerequisites"] == []
+    assert bench["cwd"] == str(tmp_path)
+    assert bench["prerequisites"] == ["git clean -fqx -- .repowise/libs-core-pytest-bench.json"]
 
 
 def test_pytest_benchmark_at_the_root_installs_what_the_tests_need(tmp_path: Path) -> None:
@@ -187,7 +188,28 @@ def test_pytest_benchmark_at_the_root_installs_what_the_tests_need(tmp_path: Pat
 
     bench = next(t for t in _targets(tmp_path) if t["class"] == "benchmark")
 
-    assert bench["prerequisites"] == ["python -m pip install -e . pytest pytest-cov"]
+    assert bench["prerequisites"] == [
+        "python -m pip install -e . pytest pytest-cov",
+        "git clean -fqx -- .repowise/pytest-bench.json",
+    ]
+
+
+def test_a_stale_profile_is_removed_before_the_run(tmp_path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".gitignore").write_text(".repowise/\n")
+    _python(tmp_path, scripts="", extra='dependencies = ["pytest-benchmark"]\n')
+    stale = tmp_path / ".repowise" / "pytest-bench.json"
+    stale.parent.mkdir()
+    stale.write_text("{}")
+    (tmp_path / ".repowise" / "wiki.db").write_text("")
+    bench = next(t for t in _targets(tmp_path) if t["class"] == "benchmark")
+
+    # The same step in sh and PowerShell: git removes the one ignored file.
+    subprocess.run(bench["prerequisites"][-1].split(), cwd=bench["cwd"], check=True)
+
+    assert not stale.exists() and (tmp_path / ".repowise" / "wiki.db").exists()
 
 
 def test_this_build_reads_pytest_benchmark_so_its_ingest_line_is_printed(tmp_path: Path) -> None:
@@ -258,6 +280,9 @@ def test_go_benchmarks_and_tests_profile_through_go_test(tmp_path: Path, registe
         "go test -count=1 -o .repowise/go-test-work.test -cpuprofile .repowise/go-test-work.pprof ./work"
     )
     assert '--workload "go bench ./work" --class benchmark' in bench["ingest"]
+    # An older profile goes first, so a build that fails leaves nothing to ingest.
+    assert bench["prerequisites"] == ["git clean -fqx -- .repowise/go-bench-work.pprof"]
+    assert tests["prerequisites"] == ["git clean -fqx -- .repowise/go-test-work.pprof"]
 
 
 def test_go_tests_profile_the_package_with_the_most_tests(tmp_path: Path, registered) -> None:
