@@ -479,7 +479,7 @@ def _status_line(run: dict[str, Any]) -> str:
         explained = "explained share unknown"
     else:
         unit = f" {escape(run['unit'])}" if run["unit"] else ""
-        explained = f"repo code explains {share:.0%} of {run['total_value']:g}{unit}"
+        explained = f"repo code explains {share:.0%} of {_total(run['total_value'])}{unit}"
     units = run["units"]
     stored = (
         f"{units['matched']} of {units['total']} entries stored"
@@ -492,6 +492,11 @@ def _status_line(run: dict[str, Any]) -> str:
         f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}; {explained}."
         + (" [red](partial)[/red]" if run["mapping_partial"] else "")
     )
+
+
+def _total(value: float) -> str:
+    """A run total with grouping and never exponent form: 1,234,567 or 0.25."""
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
 
 async def _status(repo_path: Path) -> dict[str, Any]:

@@ -274,3 +274,10 @@ def test_status_names_the_newest_run_of_each_workload(indexed) -> None:
     table = _status()
     assert table.exit_code == 0
     assert "repo code explains 30% of 200 samples" in table.stdout
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"), [(200, "200"), (1234567, "1,234,567"), (1234567.0, "1,234,567"), (0.5, "0.50")]
+)
+def test_status_total_never_uses_exponent_form(value, shown) -> None:
+    assert evidence_cmd._total(value) == shown
