@@ -193,3 +193,7 @@ async def test_summary_names_the_queue_call_only_when_the_queue_is_not_here(
     assert "next_call" not in full["performance_summary"]
     alone = await get_health(include=["performance"], only=["performance_summary"])
     assert alone["performance_summary"]["next_call"]["tool"] == "get_health"
+    # ``limit=0`` lists no item, so the summary still points at the queue.
+    totals_only = await get_health(include=["performance"], limit=0)
+    assert totals_only["performance_opportunities"] == []
+    assert totals_only["performance_summary"]["next_call"]["tool"] == "get_health"

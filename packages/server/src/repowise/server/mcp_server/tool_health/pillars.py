@@ -324,8 +324,8 @@ def _render_performance(
 
     if performance.summary is not None:
         summary = {**performance.summary, "facets": page.facets if page else {}}
-        # Its call returns the queue, which this response already lists.
-        if "performance_opportunities" not in result:
+        # Its call returns the queue: dropped only when this response lists items.
+        if not result.get("performance_opportunities"):
             summary["next_call"] = ActionCommand.call(
                 "The ranked performance opportunities, lead first",
                 "get_health",
