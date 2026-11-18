@@ -745,6 +745,30 @@ def test_lazarus_package_without_indexed_files_is_no_unit(tmp_path):
     assert list(index.units) == ["pascal:App"]
 
 
+def test_lpk_paths_that_hold_no_package_are_no_units(tmp_path):
+    (tmp_path / "a/Folder.lpk").mkdir(parents=True)
+    index = _collect_pascal(tmp_path, {
+        "a/App.lpr": _DPR,
+        "a/NoPackage.lpk": "<CONFIG/>",
+    })
+    assert list(index.units) == ["pascal:App"]
+
+
+def test_lazarus_package_lists_its_non_pascal_files(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "laz/Laz.lpk": _lpk(
+            "Laz",
+            '<Item><Filename Value="forms\\Main.lfm"/></Item>'
+            '<Item><Filename Value="Main.pas"/></Item>',
+        ),
+        "laz/forms/Main.lfm": "object Main: TForm\nend\n",
+        "laz/Main.pas": _unit(),
+        "other/Main.lfm": "object Main: TForm\nend\n",
+    })
+    assert _owners(index, "laz/forms/Main.lfm") == ["pascal:Laz"]
+    assert _owners(index, "other/Main.lfm") == []
+
+
 def test_pascal_projects_sharing_a_name_all_stay_units(tmp_path):
     index = _collect_pascal(tmp_path, {
         "demo1/Project1.dpr": _DPR,

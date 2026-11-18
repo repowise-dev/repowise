@@ -43,8 +43,8 @@ from __future__ import annotations
 import posixpath
 import re
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from repowise.core.fs_walk import glob_via
@@ -158,23 +158,26 @@ def _join(base_dir: str, rel: str) -> str:
     return "" if joined == "." else joined
 
 
+def _ansi_spellings(text: str) -> Iterator[str]:
+    """*text*, taken as undecoded ANSI bytes, under each code page that can decode it."""
+    try:
+        raw = text.encode("latin-1")
+    except UnicodeEncodeError:
+        return
+    for code_page in _ANSI_CODE_PAGES:
+        try:
+            yield raw.decode(code_page)
+        except UnicodeDecodeError:
+            continue
+
+
 def _repo_file(base_dir: str, rel: str, by_lower: dict[str, str]) -> str | None:
     """The repo file *rel* names, trying *rel* as undecoded ANSI bytes when it misses."""
     hit = by_lower.get(_join(base_dir, rel).lower())
     if hit is not None or rel.isascii():
         return hit
-    try:
-        raw = rel.encode("latin-1")
-    except UnicodeEncodeError:
-        return None
-    for code_page in _ANSI_CODE_PAGES:
-        try:
-            hit = by_lower.get(_join(base_dir, raw.decode(code_page)).lower())
-        except UnicodeDecodeError:
-            continue
-        if hit is not None:
-            return hit
-    return None
+    spelled = (by_lower.get(_join(base_dir, text).lower()) for text in _ansi_spellings(rel))
+    return next(filter(None, spelled), None)
 
 
 def _split_list(value: str) -> list[str]:
@@ -186,66 +189,90 @@ def _sibling_text(project: str, extension: str, ctx: ResolverContext) -> str | N
     return _read_text(posixpath.splitext(project)[0] + extension, ctx)
 
 
+def _dpk_packages(source: str) -> list[str]:
+    clause = _REQUIRES_RE.search(source)
+    return _PACKAGE_NAME_RE.findall(clause[1]) if clause else []
+
+
+def _dproj_packages(dproj: str) -> list[str]:
+    if not _USES_PACKAGES_RE.search(dproj):
+        return []
+    return [name for value in _USE_PACKAGE_RE.findall(dproj) for name in _split_list(value)]
+
+
+def _lpi_packages(lpi: str) -> list[str]:
+    blocks = _LPI_REQUIRED_RE.findall(lpi)
+    return [name for block in blocks for name in _LPI_PACKAGE_RE.findall(block)]
+
+
 def _required_packages(
     project: str, source: str, dproj: str | None, lpi: str | None
 ) -> tuple[str, ...]:
     suffix = posixpath.splitext(project)[1].lower()
     names: list[str] = []
     if suffix == ".dpk":
-        if clause := _REQUIRES_RE.search(source):
-            names = _PACKAGE_NAME_RE.findall(clause[1])
+        names = _dpk_packages(source)
     elif suffix == ".dpr":
-        if dproj and _USES_PACKAGES_RE.search(dproj):
-            names = [n for value in _USE_PACKAGE_RE.findall(dproj) for n in _split_list(value)]
-    elif suffix == ".lpr" and lpi:
-        names = [
-            name
-            for block in _LPI_REQUIRED_RE.findall(lpi)
-            for name in _LPI_PACKAGE_RE.findall(block)
-        ]
+        names = _dproj_packages(dproj or "")
+    elif suffix == ".lpr":
+        names = _lpi_packages(lpi or "")
     return tuple(dict.fromkeys(names))
 
 
-def _build_project(project: str, ctx: ResolverContext, by_lower: dict[str, str]) -> PascalProject:
-    base = posixpath.dirname(project)
+def _in_clause_units(source: str, base: str, by_lower: dict[str, str]) -> dict[str, str]:
+    """The lowercased unit names *source* places with ``in``, mapped to their repo files."""
     unit_map: dict[str, str] = {}
-    text = _read_text(project, ctx)
-    source = _COMMENT_RE.sub(" ", text or "")
     for match in _IN_CLAUSE_RE.finditer(source):
         target = _repo_file(base, match.group(2).replace("''", "'"), by_lower)
         if target:
             # A unit's file is named after it, and the stem is decoded where the name may not be.
             name = match.group(1) if match.group(1).isascii() else _stem(target)
             unit_map.setdefault(name.lower(), target)
+    return unit_map
 
-    dirs: list[str] = [base.lower()]
-    namespaces: list[str] = []
-    dproj = _sibling_text(project, ".dproj", ctx)
-    if dproj:
-        for value in _SEARCH_PATH_RE.findall(dproj):
-            dirs.extend(_join(base, item).lower() for item in _split_list(value))
-        for value in _NAMESPACE_RE.findall(dproj):
-            namespaces.extend(item.lower() for item in _split_list(value))
-    lpi = _sibling_text(project, ".lpi", ctx)
-    if lpi:
-        for value in _LPI_UNITS_RE.findall(lpi):
-            dirs.extend(_join(base, item).lower() for item in _split_list(value))
-    search_dirs = tuple(dict.fromkeys(dirs))
 
-    in_dirs = {
+def _listed_dirs(base: str, values: list[str]) -> list[str]:
+    return [_join(base, item).lower() for value in values for item in _split_list(value)]
+
+
+def _search_dirs(base: str, dproj: str | None, lpi: str | None) -> tuple[str, ...]:
+    dirs = [
+        base.lower(),
+        *_listed_dirs(base, _SEARCH_PATH_RE.findall(dproj or "")),
+        *_listed_dirs(base, _LPI_UNITS_RE.findall(lpi or "")),
+    ]
+    return tuple(dict.fromkeys(dirs))
+
+
+def _unit_scopes(dproj: str | None) -> tuple[str, ...]:
+    values = _NAMESPACE_RE.findall(dproj or "")
+    return tuple(dict.fromkeys(item.lower() for value in values for item in _split_list(value)))
+
+
+def _units_in_dirs(search_dirs: tuple[str, ...], ctx: ResolverContext) -> set[str]:
+    return {
         path
         for path in ctx.path_set
         if path.lower().endswith(_UNIT_EXTENSIONS)
         and posixpath.dirname(path).lower() in search_dirs
     }
-    members = frozenset({project, *unit_map.values(), *in_dirs})
+
+
+def _build_project(project: str, ctx: ResolverContext, by_lower: dict[str, str]) -> PascalProject:
+    base = posixpath.dirname(project)
+    text = _read_text(project, ctx)
+    source = _COMMENT_RE.sub(" ", text or "")
+    unit_map = _in_clause_units(source, base, by_lower)
+    dproj = _sibling_text(project, ".dproj", ctx)
+    lpi = _sibling_text(project, ".lpi", ctx)
+    search_dirs = _search_dirs(base, dproj, lpi)
     return PascalProject(
         path=project,
         name=_stem(project),
         unit_map=unit_map,
         search_dirs=search_dirs,
-        namespaces=tuple(dict.fromkeys(namespaces)),
-        members=members,
+        namespaces=_unit_scopes(dproj),
+        members=frozenset({project, *unit_map.values(), *_units_in_dirs(search_dirs, ctx)}),
         requires=_required_packages(project, source, dproj, lpi),
         readable=text is not None,
     )
@@ -256,21 +283,20 @@ def _xml_value(element: ET.Element, path: str) -> str:
     return (node.get("Value") or "").strip() if node is not None else ""
 
 
-def _build_package(
-    path: str, ctx: ResolverContext, by_lower: dict[str, str]
-) -> PascalProject | None:
-    """The Lazarus package at *path*; its members are the indexed files it lists."""
+def _package_element(path: str, ctx: ResolverContext) -> ET.Element | None:
     raw = _read_bytes(path, ctx)
     if raw is None:
         return None
     try:
-        package = ET.fromstring(raw).find("Package")
+        return ET.fromstring(raw).find("Package")
     except (ET.ParseError, ValueError, LookupError):
         return None
-    if package is None:
-        return None
 
-    base = posixpath.dirname(path)
+
+def _package_files(
+    package: ET.Element, base: str, by_lower: dict[str, str]
+) -> tuple[dict[str, str], set[str]]:
+    """The units *package* names, by lowercased name, and every indexed file it lists."""
     unit_map: dict[str, str] = {}
     files: set[str] = set()
     # Entries are <Item> or <Item1>, <Item2>... depending on the Lazarus version.
@@ -283,11 +309,23 @@ def _build_package(
         if target.lower().endswith(_UNIT_EXTENSIONS):
             unit = _xml_value(item, "UnitName") or _stem(target)
             unit_map.setdefault(unit.lower(), target)
+    return unit_map, files
+
+
+def _build_package(
+    path: str, ctx: ResolverContext, by_lower: dict[str, str]
+) -> PascalProject | None:
+    """The Lazarus package at *path*; its members are the indexed files it lists."""
+    package = _package_element(path, ctx)
+    if package is None:
+        return None
+    base = posixpath.dirname(path)
+    unit_map, files = _package_files(package, base, by_lower)
     if not files:
         return None
 
-    unit_paths = _split_list(_xml_value(package, "CompilerOptions/SearchPaths/OtherUnitFiles"))
-    dirs = [base.lower(), *(_join(base, item).lower() for item in unit_paths)]
+    unit_paths = _xml_value(package, "CompilerOptions/SearchPaths/OtherUnitFiles")
+    dirs = [base.lower(), *_listed_dirs(base, [unit_paths])]
     required = (_xml_value(item, "PackageName") for item in package.findall("RequiredPkgs/*"))
     return PascalProject(
         path=path,
@@ -405,11 +443,8 @@ def resolve_pascal_import(module_path: str, importer_path: str, ctx: ResolverCon
     return targets[0] if targets else None
 
 
-def _used_units(path: str, ctx: ResolverContext) -> tuple[str, ...]:
-    """The lowercased unit names in *path*'s ``uses`` and ``contains`` clauses."""
-    text = _read_text(path, ctx) if path.lower().endswith(_SOURCE_EXTENSIONS) else None
-    if text is None:
-        return ()
+def _clause_names(text: str) -> tuple[str, ...]:
+    """The lowercased unit names in the ``uses`` and ``contains`` clauses of *text*."""
     code = _STRING_OR_COMMENT_RE.sub(lambda m: "''" if m[0][0] == "'" else " ", text)
     names: list[str] = []
     for clause in _UNIT_CLAUSE_RE.findall(_IN_PATH_RE.sub("", code)):
@@ -418,6 +453,11 @@ def _used_units(path: str, ctx: ResolverContext) -> tuple[str, ...]:
         if _EXPRESSION_WORDS.isdisjoint(tokens):
             names.extend(tokens)
     return tuple(dict.fromkeys(names))
+
+
+def _used_units(path: str, ctx: ResolverContext) -> tuple[str, ...]:
+    text = _read_text(path, ctx) if path.lower().endswith(_SOURCE_EXTENSIONS) else None
+    return () if text is None else _clause_names(text)
 
 
 def _settle_variants(ambiguous: dict[str, set[str]], seen: set[str]) -> set[str]:
@@ -441,56 +481,73 @@ def _settle_variants(ambiguous: dict[str, set[str]], seen: set[str]) -> set[str]
     return remaining
 
 
-def _compiled_by(
-    project: PascalProject,
-    ctx: ResolverContext,
-    index: PascalProjectIndex,
-    uses: dict[str, tuple[str, ...]],
-    unplaced: dict[tuple[str, str], tuple[str, ...]],
-) -> frozenset[str]:
-    # A .lpk lists its files; a program or .dpk starts from its own source.
-    is_lazarus_package = project.path.lower().endswith(".lpk")
-    roots = project.members if is_lazarus_package else {project.path}
-    seen = {*roots, *project.unit_map.values()}
-    stack = sorted(seen)
-    ambiguous: dict[str, set[str]] = {}
+def _enqueue(paths: Iterable[str], seen: set[str], stack: list[str]) -> None:
+    for path in paths:
+        if path not in seen:
+            seen.add(path)
+            stack.append(path)
 
-    def visit(paths: Iterable[str]) -> None:
-        for path in paths:
-            if path not in seen:
-                seen.add(path)
-                stack.append(path)
 
-    while True:
+@dataclass
+class _UsesWalk:
+    """Follows ``uses`` per project, sharing what does not depend on the project."""
+
+    ctx: ResolverContext
+    index: PascalProjectIndex
+    uses: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    unplaced: dict[tuple[str, str], tuple[str, ...]] = field(default_factory=dict)
+
+    def _used_by(self, path: str) -> tuple[str, ...]:
+        if path not in self.uses:
+            self.uses[path] = _used_units(path, self.ctx)
+        return self.uses[path]
+
+    def _targets(self, project: PascalProject, importer: str, name: str) -> tuple[str, ...]:
+        names = [name, *(f"{ns}.{name}" for ns in project.namespaces)]
+        hit = project.lookup(_unit_candidates(names, importer, self.ctx), names)
+        if hit is not None:
+            return (hit,)
+        key = (importer, name)
+        if key not in self.unplaced:
+            self.unplaced[key] = _resolved_outside_projects(name, importer, self.ctx, self.index)
+        return self.unplaced[key]
+
+    def _drain(
+        self,
+        project: PascalProject,
+        seen: set[str],
+        stack: list[str],
+        ambiguous: dict[str, set[str]],
+    ) -> None:
         while stack:
             importer = stack.pop()
-            if importer not in uses:
-                uses[importer] = _used_units(importer, ctx)
-            for name in uses[importer]:
-                names = [name, *(f"{ns}.{name}" for ns in project.namespaces)]
-                hit = project.lookup(_unit_candidates(names, importer, ctx), names)
-                if hit is not None:
-                    visit((hit,))
-                    continue
-                key = (importer, name)
-                if key not in unplaced:
-                    unplaced[key] = _resolved_outside_projects(name, importer, ctx, index)
-                if len(unplaced[key]) > 1:
-                    ambiguous.setdefault(name, set()).update(unplaced[key])
+            for name in self._used_by(importer):
+                targets = self._targets(project, importer, name)
+                if len(targets) > 1:
+                    ambiguous.setdefault(name, set()).update(targets)
                 else:
-                    visit(unplaced[key])
-        if not ambiguous:
-            return frozenset(seen)
-        visit(sorted(_settle_variants(ambiguous, seen)))
+                    _enqueue(targets, seen, stack)
+
+    def compiled_by(self, project: PascalProject) -> frozenset[str]:
+        # A .lpk lists its files; a program or .dpk starts from its own source.
+        is_lazarus_package = project.path.lower().endswith(".lpk")
+        roots = project.members if is_lazarus_package else {project.path}
+        seen = {*roots, *project.unit_map.values()}
+        stack = sorted(seen)
+        ambiguous: dict[str, set[str]] = {}
+        self._drain(project, seen, stack, ambiguous)
+        while ambiguous:
+            _enqueue(sorted(_settle_variants(ambiguous, seen)), seen, stack)
+            self._drain(project, seen, stack, ambiguous)
+        return frozenset(seen)
 
 
 def compiled_files(ctx: ResolverContext) -> dict[str, frozenset[str]]:
     """Each readable project's path, mapped to the files its ``uses`` closure reaches."""
     index = get_pascal_index(ctx)
-    uses: dict[str, tuple[str, ...]] = {}
-    unplaced: dict[tuple[str, str], tuple[str, ...]] = {}
+    walk = _UsesWalk(ctx, index)
     return {
-        project.path: _compiled_by(project, ctx, index, uses, unplaced)
+        project.path: walk.compiled_by(project)
         for project in index.projects
         if project.readable
     }

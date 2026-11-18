@@ -225,6 +225,37 @@ def test_an_ansi_project_reaches_a_non_ascii_unit_path(tmp_path: Path) -> None:
     assert resolve_pascal_import_all("Модуль", "src/App.dpr", ctx) == ("src/Ядро/Модуль.pas",)
 
 
+def test_a_non_ascii_in_path_naming_no_file_resolves_to_nothing(tmp_path: Path) -> None:
+    ctx = _ctx(
+        tmp_path,
+        {"src/App.dpr": "program App;\nuses\n  Нет in 'Нет.pas';\nbegin\nend.\n"},
+    )
+
+    assert resolve_pascal_import_all("Нет", "src/App.dpr", ctx) == ()
+
+
+def test_an_ansi_in_path_no_code_page_places_resolves_to_nothing(tmp_path: Path) -> None:
+    ctx = _ctx(tmp_path, {"src/App.dpr": ""})
+    (tmp_path / "src/App.dpr").write_bytes(
+        b"program App;\nuses\n  Gone in 'g\x98\xff.pas';\nbegin\nend.\n"
+    )
+
+    assert resolve_pascal_import_all("Gone", "src/App.dpr", ctx) == ()
+
+
+def test_project_text_held_in_memory_resolves_without_a_checkout() -> None:
+    source = b"program App;\nuses\n  uPty in 'Win\\uPty.pas';\nbegin\nend.\n"
+    indexed = {"src/App.dpr", "src/Win/uPty.pas", "src/Posix/uPty.pas"}
+    ctx = ResolverContext(
+        path_set=indexed,
+        stem_map=build_stem_map(indexed),
+        graph=nx.DiGraph(),
+        source_map={"src/App.dpr": source},
+    )
+
+    assert resolve_pascal_import_all("uPty", "src/App.dpr", ctx) == ("src/Win/uPty.pas",)
+
+
 def test_a_commented_out_in_path_is_ignored(tmp_path: Path) -> None:
     ctx = _ctx(
         tmp_path,

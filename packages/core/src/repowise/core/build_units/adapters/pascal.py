@@ -68,32 +68,43 @@ def _required(
     return [p for p in same_kind if posixpath.dirname(p.path) == base] or same_kind
 
 
+def _packages_by_name(projects: list[PascalProject]) -> dict[str, list[PascalProject]]:
+    packages: dict[str, list[PascalProject]] = {}
+    for project in projects:
+        if _suffix(project) in (".dpk", ".lpk"):
+            packages.setdefault(project.name.lower(), []).append(project)
+    return packages
+
+
+def _unit(
+    project: PascalProject, ids: dict[str, str], packages: dict[str, list[PascalProject]]
+) -> BuildUnit:
+    deps = {
+        ids[package.path]
+        for name in project.requires
+        for package in _required(project, name, packages)
+    }
+    return BuildUnit(
+        id=ids[project.path],
+        ecosystem="pascal",
+        name=project.name,
+        root=posixpath.dirname(project.path),
+        manifest=project.path,
+        source="pascal",
+        deps=tuple(sorted(deps)),
+    )
+
+
 def units(ctx: ResolverContext) -> Found:
     if not any(path.lower().endswith(_SOURCE_SUFFIXES) for path in ctx.path_set):
         return Found([])
     projects = [project for project in get_pascal_index(ctx).projects if project.readable]
     ids = _unit_ids(projects)
+    packages = _packages_by_name(projects)
     compiled = compiled_files(ctx)
-    packages: dict[str, list[PascalProject]] = {}
-    for project in projects:
-        if _suffix(project) in (".dpk", ".lpk"):
-            packages.setdefault(project.name.lower(), []).append(project)
-
-    claims: list[tuple[BuildUnit, tuple[str, ...]]] = []
-    for project in projects:
-        deps = {
-            ids[package.path]
-            for name in project.requires
-            for package in _required(project, name, packages)
-        }
-        unit = BuildUnit(
-            id=ids[project.path],
-            ecosystem="pascal",
-            name=project.name,
-            root=posixpath.dirname(project.path),
-            manifest=project.path,
-            source="pascal",
-            deps=tuple(sorted(deps)),
-        )
-        claims.append((unit, tuple(sorted(compiled[project.path]))))
-    return Found(claims)
+    return Found(
+        [
+            (_unit(project, ids, packages), tuple(sorted(compiled[project.path])))
+            for project in projects
+        ]
+    )
