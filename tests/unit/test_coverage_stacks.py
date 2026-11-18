@@ -124,6 +124,20 @@ def test_tools_that_need_an_install_say_so():
     assert rust.requires == ("cargo install cargo-llvm-cov",)
 
 
+@pytest.mark.parametrize(
+    ("case", "install"),
+    [
+        ("python_pip", "python -m pip install pytest pytest-cov"),
+        ("python_hatch", "hatch run python -m pip install pytest pytest-cov"),
+    ],
+)
+def test_a_workstation_installs_what_the_ci_setup_installs(case, install):
+    """pip and hatch install pytest-cov in their CI setup lines, which a workstation never runs."""
+    python = detect_stacks(*_load(case))[0]
+    assert python.requires[-1] == install
+    assert python.to_dict()["prerequisites"][-1] == install
+
+
 def test_python_records_test_contexts_and_sends_the_coverage_db_on_pushes():
     stack = detect_stacks(*_load("python_pip"))[0]
     assert "--cov-context=test" in stack.test and stack.push_reports == ".coverage"
