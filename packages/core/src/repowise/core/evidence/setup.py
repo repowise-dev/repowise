@@ -230,14 +230,16 @@ def evidence_setup(
         _add_runtime(root, stacks, planned, runtime, head)
     covered = head is not None and coverage_commit == head
     done = _measured_at(runtime, head)
-    next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=done)
+    next_call = _with_optional(
+        _next_call(root, planned, indexed=indexed, covered=covered, done=done),
+        _optional_entry_points(planned, done),
+    )
     if next_call is not None:
         reason = None
     elif indexed and covered:
         reason = "Evidence at this commit is ingested; nothing left to run."
     else:
         reason = "No unit has a command repowise is sure of; see each unit's reason."
-    reason = _with_optional(next_call, reason, _optional_entry_points(planned, done))
     if index_error is not None:
         next_call = {
             "purpose": "The index exists but could not be read; find out why.",
@@ -255,15 +257,18 @@ def evidence_setup(
 
 
 def _with_optional(
-    next_call: dict[str, Any] | None, reason: str | None, optional: dict[str, Any] | None
-) -> str | None:
-    """Put *optional* under ``next_call``, or name it in the *reason* when there is no call; the reason."""
+    next_call: dict[str, Any] | None, optional: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """*next_call* carrying *optional* under ``optional``.
+
+    With no step left, the call is still there, with no steps, so an agent
+    that stops at a null ``next_call`` never stops before the entry points.
+    """
     if optional is None:
-        return reason
-    if next_call is not None:
-        next_call["optional"] = optional
-        return reason
-    return f"{reason} Optional: {', '.join(optional['workloads'])}. {optional['purpose']}"
+        return next_call
+    if next_call is None:
+        next_call = {"purpose": "Only entry points waiting for their arguments are left.", "steps": []}
+    return {**next_call, "optional": optional}
 
 
 def _optional_entry_points(
@@ -272,14 +277,18 @@ def _optional_entry_points(
     """Entry points waiting for their arguments and not measured here, by workload.
 
     Never a step, so named here. An entry point counts as measured once any
-    run of it is stored at this commit (``app`` or ``app build``). Only names,
+    run of it is stored at this commit (``app`` or ``app build``), but not one
+    stored under the unfilled name (``app <args>``). Only names,
     so the default answer stays small; each target's command and ingest line
     are in ``units[].runtime``.
     """
     workloads = [
         t["workload"] for u in planned for t in u.get("runtime", ())
         if t["command"] and t["command"].endswith(ARGS_PLACEHOLDER) and t["ingest"]
-        and not any(d == t["workload"] or d.startswith(t["workload"] + " ") for d in done)
+        and not any(
+            (d == t["workload"] or d.startswith(t["workload"] + " ")) and ARGS_PLACEHOLDER not in d
+            for d in done
+        )
     ]
     if not workloads:
         return None

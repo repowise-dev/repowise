@@ -728,6 +728,10 @@ def _print_setup(repo: str | None, fmt: str, *, coverage_only: bool = False) -> 
     notices.print(f"[bold]Next[/bold]: {escape(call['purpose'])}")
     for step in call["steps"]:
         notices.print(f"  [dim]in {escape(step['cwd'])}[/dim]\n    [cyan]{escape(step['run'])}[/cyan]")
+    if call.get("optional"):
+        optional = call["optional"]
+        notices.print(f"[bold]Optional[/bold]: {escape(', '.join(optional['workloads']))}. "
+                      f"{escape(optional['purpose'])}")
 
 
 def _setup_lines(unit: dict[str, Any]) -> list[str]:

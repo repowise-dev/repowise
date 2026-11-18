@@ -760,15 +760,23 @@ def test_entry_points_waiting_for_arguments_are_named_in_next_call(tmp_path: Pat
 
     assert plan["next_call"]["optional"]["workloads"] == ["app", "tool"]
     assert ARGS_PLACEHOLDER in plan["next_call"]["optional"]["purpose"]
-    # Measured and covered, only the optional entry points are left: the reason names them.
+    # Measured and covered, only the entry points are left: next_call stays, with no steps,
+    # so an agent that stops at null never stops before them.
     measured = RuntimeInputs(measured=frozenset({("python tests", SHA)}))
+    left = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
+    assert left["next_call"]["steps"] == [] and left["reason"] is None
+    assert left["next_call"]["optional"] == plan["next_call"]["optional"]
+    # Once a run of an entry point is stored at this commit under filled arguments, it is
+    # not asked for again; a run stored under the unfilled name does not count.
+    measured = RuntimeInputs(measured=frozenset({
+        ("python tests", SHA), ("app build", SHA), ("tool <args>", SHA),
+    }))
+    left = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
+    assert left["next_call"]["optional"]["workloads"] == ["tool"]
+    measured = RuntimeInputs(measured=frozenset({("python tests", SHA), ("app build", SHA), ("tool x", SHA)}))
     done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
     assert done["next_call"] is None
-    assert done["reason"].startswith("Evidence at this commit is ingested; nothing left to run. Optional: app, tool.")
-    # Once a run of an entry point is stored at this commit, under any arguments, it is not asked for again.
-    measured = RuntimeInputs(measured=frozenset({("python tests", SHA), ("app build", SHA)}))
-    done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
-    assert done["reason"].endswith("Optional: tool. " + plan["next_call"]["optional"]["purpose"])
+    assert done["reason"] == "Evidence at this commit is ingested; nothing left to run."
 
 
 def test_without_entry_points_next_call_has_no_optional_key(tmp_path: Path) -> None:
