@@ -285,56 +285,52 @@ def _pip_install(root: set[str], paths: list[str], files: dict[str, str], pyproj
     return " ".join([*parts, "pytest pytest-cov"])
 
 
-def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+def _python_tool(
+    root: set[str], paths: list[str], files: dict[str, str], args: str
+) -> tuple[str, tuple[str, ...], str, tuple[str, ...]]:
+    """The unit's Python tool, its CI setup, its plain test command, and its workstation installs."""
     pyproject = files.get("pyproject.toml", "")
     toml = parse_toml_or_none(pyproject) or {}
-    reqs = sorted(p for p in root if re.fullmatch(r"requirements[\w.-]*\.txt", p))
-    texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
-    declared = bool(re.search(r"pytest[-_]cov", texts))
-    sources = _python_sources(paths)
-    args = _pytest_args(paths, files)
     version = (
         ("  with:", "    python-version-file: .python-version")
         if ".python-version" in root else ("  with:", '    python-version: "3.12"   # adjust to your version')
     )
-    notes: list[str] = []
     if "uv.lock" in root:
-        tool, sync = "uv", "uv sync --all-packages" if "[tool.uv.workspace]" in pyproject else "uv sync"
+        sync = "uv sync --all-packages" if "[tool.uv.workspace]" in pyproject else "uv sync"
         setup = (*("- uses: astral-sh/setup-uv@v6", "  with:", "    enable-cache: true"), f"- run: {sync}")
         # ``uv run`` syncs only the ``dev`` group; a ``test`` group must be named.
         group = _first(_keys(toml.get("dependency-groups")), _TEST_SETS)
-        base = f"uv run{f' --group {group}' if group else ''} pytest{args}"
-    elif "poetry.lock" in root or "[tool.poetry" in pyproject:
-        tool = "poetry"
+        return "uv", setup, f"uv run{f' --group {group}' if group else ''} pytest{args}", ()
+    if "poetry.lock" in root or "[tool.poetry" in pyproject:
         setup = ("- uses: actions/setup-python@v5", *version, "- run: pipx install poetry", "- run: poetry install")
-        base = f"poetry run pytest{args}"
-    elif "pdm.lock" in root or "[tool.pdm" in pyproject:
-        tool = "pdm"
-        setup = ("- uses: pdm-project/setup-pdm@v4", "- run: pdm install")
-        base = f"pdm run pytest{args}"
-    elif "hatch.toml" in root or "[tool.hatch.envs" in pyproject:
-        tool = "hatch"
+        return "poetry", setup, f"poetry run pytest{args}", ()
+    if "pdm.lock" in root or "[tool.pdm" in pyproject:
+        return "pdm", ("- uses: pdm-project/setup-pdm@v4", "- run: pdm install"), f"pdm run pytest{args}", ()
+    if "hatch.toml" in root or "[tool.hatch.envs" in pyproject:
         setup = ("- uses: actions/setup-python@v5", *version, "- run: pipx install hatch",
                  "- run: hatch run pip install pytest pytest-cov")
-        base = f"hatch run pytest{args}"
-    else:
-        tool = "pip"
-        install = _pip_install(root, paths, files, toml)
-        setup = ("- uses: actions/setup-python@v5", *version, f"- run: pip install {install}   # adjust to your install")
-        base = f"pytest{args}"
+        # Hatch's environment installs the project; it still needs the test tools.
+        return "hatch", setup, f"hatch run pytest{args}", ("hatch run python -m pip install pytest pytest-cov",)
+    install = _pip_install(root, paths, files, toml)
+    setup = ("- uses: actions/setup-python@v5", *version, f"- run: pip install {install}   # adjust to your install")
+    # The CI install lives in ``setup``; a workstation needs the same install.
+    return "pip", setup, f"pytest{args}", (f"python -m pip install {install}",)
+
+
+def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+    reqs = sorted(p for p in root if re.fullmatch(r"requirements[\w.-]*\.txt", p))
+    texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
+    declared = bool(re.search(r"pytest[-_]cov", texts))
+    sources = _python_sources(paths)
+    tool, setup, base, installs = _python_tool(root, paths, files, _pytest_args(paths, files))
+    notes: list[str] = []
     if sources == (".",):
         notes.append("Repowise found no `src/` or package directory, so coverage measures the whole "
                      "checkout; narrow `--cov` to your source directory if you like.")
     editor = partial(_edit_pytest, sources=sources, declared=declared)
     # The standalone pip and hatch install lines already bring pytest-cov.
     test = partial(_edit_pytest, sources=sources, declared=declared or tool in ("pip", "hatch"))(base, _PYTEST.search(base))
-    requires = _run_lines(test.prepare)
-    if tool == "pip":
-        # The CI install lives in ``setup``; a workstation needs the same install.
-        requires += (f"python -m pip install {install}",)
-    elif tool == "hatch":
-        # Hatch's environment installs the project; it still needs the test tools.
-        requires += ("hatch run python -m pip install pytest pytest-cov",)
+    requires = _run_lines(test.prepare) + installs
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
         notes=tuple(notes), requires=requires, pattern=_PYTEST, skip=_PYTEST_ONE_FILE, editor=editor,
