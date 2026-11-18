@@ -545,7 +545,7 @@ def test_a_module_in_a_test_directory_is_no_unit():
 def test_an_odd_global_json_falls_back_to_the_target_frameworks(pin):
     files = {"global.json": pin, "App/App.csproj": "<TargetFramework>net8.0-windows</TargetFramework>"}
     (stack,) = detect_stacks(["App.sln", *files], files)
-    assert stack.notes[0].startswith("The projects target up to net8.0:")
+    assert stack.notes[0].startswith("The projects Repowise read target up to net8.0:")
 
 
 def test_the_shipped_jacoco_init_script_is_the_one_the_workflow_writes():
@@ -554,9 +554,6 @@ def test_the_shipped_jacoco_init_script_is_the_one_the_workflow_writes():
     (stack,) = detect_stacks(*_load("gradle_plain"))
     assert [line[4:] for line in stack.prepare[3:-1]] == body
     assert "apply plugin: 'jacoco'" in body[2] and "xml.required = true" in body[3]
-
-
-    assert stack.notes[0].startswith("The projects Repowise read target up to net8.0:")
 
 
 @pytest.mark.parametrize(
