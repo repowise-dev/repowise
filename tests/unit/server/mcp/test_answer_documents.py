@@ -14,7 +14,12 @@ from types import SimpleNamespace
 import pytest
 
 from repowise.server.mcp_server import _state
-from repowise.server.mcp_server.tool_answer.answer import _Ask, _user_prompt
+from repowise.server.mcp_server.tool_answer.answer import (
+    _Ask,
+    _pre_synthesis_reply,
+    _Retrieved,
+    _user_prompt,
+)
 from repowise.server.mcp_server.tool_answer.callers import NO_EVIDENCE
 from repowise.server.mcp_server.tool_answer.documents import find_documents, place_documents
 
@@ -285,3 +290,37 @@ async def test_a_key_shaped_word_without_its_own_document_is_an_ordinary_word(tm
     root = _repo(tmp_path / "r", {"io.py": "ENC = 'UTF-8'  # force output\n", "CHANGELOG.md": "Force UTF-8 output.\n"})
 
     assert (await _find(root, "why force UTF-8 output")).hits == []
+
+
+async def test_a_named_pages_body_lines_holding_other_question_words_fill_its_lines(tmp_path):
+    policy = (
+        '---\ntitle: "Card network retry policy"\n---\n\n# Card network retry policy\n\n'
+        "We retry card network timeouts at most 4 times.\n\nAgreed with the Risk team.\n"
+    )
+    code = "def with_retry(call):\n    # card network timeouts\n    return call()\n"
+    root = _repo(tmp_path / "r", {"policy.md": policy, "retry.py": code})
+
+    docs = await _find(root, "What retry policy did we agree on for card network timeouts?")
+
+    # ``policy`` names the page from its title; the body line answering is
+    # served for the commoner words it holds, front matter is not.
+    assert docs.hits[0]["excerpt"].splitlines() == [
+        "5: # Card network retry policy",
+        "7: We retry card network timeouts at most 4 times.",
+        '2: title: "Card network retry policy"',
+    ]
+
+
+async def test_another_repos_documents_alone_go_to_synthesis():
+    ask = _Ask("What is PAY-101 about?", SimpleNamespace(), None, "r", None, 0.0)
+    rows = [{"repo": "mirror", "path": "jira/PAY-101.md", "line": 11, "text": "# PAY-101: Duplicate refunds"}]
+
+    def retrieved(other_repo_lines):
+        return _Retrieved([], [], set(), {}, [], other_repo_lines)
+
+    async def neighbors(payload):
+        return payload
+
+    assert await _pre_synthesis_reply(ask, retrieved(rows), False, NO_EVIDENCE, neighbors) is None
+    no_hits = await _pre_synthesis_reply(ask, retrieved([]), False, NO_EVIDENCE, neighbors)
+    assert no_hits["note"].startswith("No wiki hits")
