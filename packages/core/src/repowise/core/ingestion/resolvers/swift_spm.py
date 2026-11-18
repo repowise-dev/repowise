@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from repowise.core.fs_walk import WalkSnapshot, glob_via
 
@@ -32,6 +32,70 @@ _TARGET_RE = re.compile(
 )
 _NAME_RE = re.compile(r'name\s*:\s*"([^"]+)"')
 _PATH_RE = re.compile(r'path\s*:\s*"([^"]+)"')
+
+# Matches the first argument of Package(name: "..."), ignoring other args.
+_PACKAGE_NAME_RE = re.compile(r'\bPackage\s*\(\s*name\s*:\s*"([^"]+)"')
+
+# Matches ``.package(`` calls with a body that tolerates one level of nested
+# parentheses and brackets (sufficient for version specs like
+# ``.upToNextMajor(from: "1.0.0")``).
+_PACKAGE_DEP_RE = re.compile(
+    r"\.package\s*\("
+    r"(?P<body>(?:[^()\[\]]|\([^()]*\)|\[[^\[\]]*\])*?)\)",
+    re.DOTALL,
+)
+_URL_RE = re.compile(r'url\s*:\s*"[^"]*"')
+
+
+class SwiftPackage(NamedTuple):
+    """A parsed Swift package manifest: its name and raw path dependencies."""
+
+    name: str
+    path_deps: tuple[str, ...]
+
+
+def _strip_whole_line_comments(text: str) -> str:
+    """Remove lines whose stripped content starts with ``//``.
+
+    This prevents commented-out ``.package(path: ...)`` lines from being
+    picked up. In-line comments and URLs containing ``//`` are left alone.
+    """
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("//")
+    )
+
+
+def parse_package_manifest(path: Path) -> SwiftPackage | None:
+    """Parse a ``Package.swift`` for its package name and local path dependencies.
+
+    Returns ``None`` if the file cannot be read, does not declare a package
+    name, or declares no package at all.
+    """
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    text = _strip_whole_line_comments(text)
+
+    # Package name must be the FIRST argument of Package(.
+    name_match = _PACKAGE_NAME_RE.search(text)
+    if not name_match:
+        return None
+    name = name_match.group(1)
+
+    path_deps: list[str] = []
+    for dep_match in _PACKAGE_DEP_RE.finditer(text):
+        dep_body = dep_match.group("body")
+        if _URL_RE.search(dep_body):
+            continue
+        path_match = _PATH_RE.search(dep_body)
+        if path_match:
+            path_deps.append(path_match.group(1))
+
+    return SwiftPackage(name=name, path_deps=tuple(path_deps))
 
 
 def parse_package_swift(path: Path) -> dict[str, str]:
