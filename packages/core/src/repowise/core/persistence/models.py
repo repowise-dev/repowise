@@ -3059,6 +3059,9 @@ class EvidenceRun(Base):
     # share's interval. NULL when the profiler counted none (a traced or an
     # evented profile).
     total_samples: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Joined profile rows outside production code (``code_origin``), counted
+    # before the per-run cap drops any; NULL for other kinds or older runs.
+    unlisted_symbols: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Fewer than half the units mapped: stored, but not a basis for ranking.
     mapping_partial: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=false()

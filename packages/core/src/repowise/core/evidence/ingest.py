@@ -314,8 +314,9 @@ def run_fields(
     key: str,
     truncated: int,
     mapping_partial: bool,
+    unlisted: int | None = None,
 ) -> dict[str, Any]:
-    """The ``evidence_runs`` row for one ingest."""
+    """The ``evidence_runs`` row for one ingest; *unlisted* from :func:`unlisted_count`."""
     skipped = Counter(doc.skipped) + joined.skipped
     outside = skipped.get("outside_repo", 0)
     return {
@@ -344,8 +345,16 @@ def run_fields(
         "total_value": doc.total,
         "explained_value": doc.explained,
         "total_samples": doc.total_samples,
+        "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,
     }
+
+
+def unlisted_count(rows: Iterable[Mapping[str, Any]], origins: Mapping[str, str]) -> int:
+    """Profile rows outside production code: counted before a cap drops any, never listed."""
+    from repowise.core.ingestion.symbol_identity import file_of_symbol
+
+    return sum(origins.get(file_of_symbol(row["symbol_id"])) != "production" for row in rows)
 
 
 def entry_paths(doc: EvidenceDocument) -> set[str]:
@@ -481,4 +490,5 @@ __all__ = [
     "stamp_bodies",
     "symbol_lookup",
     "uncommitted_paths",
+    "unlisted_count",
 ]

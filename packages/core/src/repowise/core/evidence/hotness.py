@@ -95,6 +95,8 @@ class RunFacts:
     total_value: float | None
     explained_value: float | None
     total_samples: int | None
+    #: Rows outside production code counted at ingest, before the cap.
+    unlisted_symbols: int | None = None
 
 
 @dataclass(frozen=True)
@@ -213,8 +215,12 @@ def _run_rows(
                 unlisted=len(costs),
             )
         )
+    # Ingest counted before the cap; a run stored without that count falls
+    # back to the rows kept.
     for row in rows:
-        row.unlisted -= len(rows)
+        row.unlisted = (
+            run.unlisted_symbols if run.unlisted_symbols is not None else row.unlisted - len(rows)
+        )
     kept = _one_per_symbol(rows)
     _rank(kept, _run_samples(run), rules)
     return kept

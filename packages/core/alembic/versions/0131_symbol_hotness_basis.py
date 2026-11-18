@@ -1,6 +1,6 @@
 """Symbol hotness basis: the columns the derived ``symbol_hotness`` rows state.
 
-Nullable columns only: the run's sample count on ``evidence_runs``, the body
+Nullable columns only: the run's sample count and unlisted count on ``evidence_runs``, the body
 digest at the commit measured on ``evidence_symbol_costs``, and the basis of
 each ``symbol_hotness`` row (run, rank, samples, share interval, explained
 share, unlisted count, clock, ordering-only flag, freshness). Local SQLite stores get them
@@ -27,7 +27,10 @@ depends_on: str | Sequence[str] | None = None
 def _columns() -> dict[str, tuple[sa.Column, ...]]:
     """Fresh column objects per call: one is bound to its table when added."""
     return {
-        "evidence_runs": (sa.Column("total_samples", sa.Integer, nullable=True),),
+        "evidence_runs": (
+            sa.Column("total_samples", sa.Integer, nullable=True),
+            sa.Column("unlisted_symbols", sa.Integer, nullable=True),
+        ),
         "evidence_symbol_costs": (sa.Column("body_digest", sa.String(32), nullable=True),),
         "symbol_hotness": (
             sa.Column("run_id", sa.String(32), nullable=True),
