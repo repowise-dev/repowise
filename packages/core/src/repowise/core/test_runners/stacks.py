@@ -91,6 +91,8 @@ class Stack:
     requires: tuple[str, ...] = ()
     #: ``""`` when ``test`` runs in any shell; ``github-actions`` when it needs its CI step.
     shell: str = ""
+    #: The command a workstation runs instead, when ``test`` needs its CI step.
+    workstation: str = ""
     #: The unit's directory, repo-relative POSIX; ``""`` is the repository root.
     root: str = ""
     #: Finds this stack's test command in a workflow ``run`` line.
@@ -114,20 +116,20 @@ class Stack:
 
     def to_dict(self) -> dict[str, Any]:
         """What a person or agent needs to collect this unit's coverage, JSON-ready."""
-        known = bool(self.test) and not self.shell
+        # A command that needs its CI step is no command on a workstation, unless it has its own.
+        command = (self.test if not self.shell else self.workstation) or None
         return {
             "root": self.root,
             "stack": self.language,
             "runner": self.runner,
             "package_manager": self.package_manager,
-            # A command that needs its CI step is no command on a workstation.
-            "command": self.test if known else None,
+            "command": command,
             "prerequisites": list(self.requires),
             "reports": list(self.report_paths()),
-            "shell": self.shell or None,
+            "shell": None if command else self.shell or None,
             "notes": list(self.notes),
             # Each builder puts why it has no command last.
-            "reason": None if known else (self.notes[-1] if self.notes else _UNKNOWN_REASON),
+            "reason": None if command else (self.notes[-1] if self.notes else _UNKNOWN_REASON),
         }
 
 
@@ -639,16 +641,13 @@ _GRADLE_TASK = re.compile(r"(?<![\w-])(test|check|build)(?![\w-])")
 _GRADLE = re.compile(
     r"(?<![\w/.-])(?:\./)?gradlew?(?:\.bat)?(?![\w.-])(?=[^;&|#\n]*" + _GRADLE_TASK.pattern + ")"
 )
+#: Applies JaCoCo with its XML report to every Java project; shipped in the wheel for workstations.
+JACOCO_INIT_SCRIPT = Path(__file__).parent / "_data" / "jacoco.gradle"
 _GRADLE_INIT = (
     "- name: Enable JaCoCo XML reports",
     "  run: |",
     "    cat > \"$RUNNER_TEMP/repowise-jacoco.gradle\" <<'EOF'",
-    "    allprojects {",
-    "      plugins.withId('java') {",
-    "        apply plugin: 'jacoco'",
-    "        tasks.named('jacocoTestReport') { reports { xml.required = true } }",
-    "      }",
-    "    }",
+    *(f"    {line}" for line in JACOCO_INIT_SCRIPT.read_text(encoding="utf-8").splitlines()),
     "    EOF",
 )
 
@@ -678,15 +677,17 @@ def _gradle(root: set[str], files: dict[str, str]) -> Stack:
         if not re.search(r"xml\.(required|enabled|isEnabled)|xml\s*\{", build):
             notes.append("Gradle writes JaCoCo's XML report only when asked: add "
                          "`jacocoTestReport { reports { xml.required = true } }` to the build file.")
-        test, prepare = f"{gradle} test jacocoTestReport", ()
+        test, prepare, workstation = f"{gradle} test jacocoTestReport", (), ""
     else:
-        notes.append("Your build applies no JaCoCo plugin, so the workflow adds it for the run with a "
-                     "small init script. Applying the `jacoco` plugin in the build (with "
-                     "`xml.required = true`) does the same.")
+        notes.append("Your build applies no JaCoCo plugin, so the command adds it for the run with a "
+                     "small init script that ships with Repowise. Applying the `jacoco` plugin in the build "
+                     "(with `xml.required = true`) does the same.")
         test, prepare = f'{gradle} test jacocoTestReport --init-script "$RUNNER_TEMP/repowise-jacoco.gradle"', _GRADLE_INIT
+        workstation = f'{gradle} test jacocoTestReport --init-script "{JACOCO_INIT_SCRIPT}"'
     return Stack(
         "java", "gradle", "gradle", reports, setup=(*_JAVA_SETUP, "    cache: gradle"), test=test,
-        prepare=prepare, notes=tuple(notes), shell="" if jacoco else "github-actions", pattern=_GRADLE,
+        prepare=prepare, notes=tuple(notes), shell="" if jacoco else "github-actions", workstation=workstation,
+        pattern=_GRADLE,
         skip=re.compile(r"-x\s+test\b"), editor=partial(_edit_gradle, jacoco=jacoco, reports=reports),
     )
 
@@ -1124,6 +1125,7 @@ def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = Non
 __all__ = [
     "GENERIC_REPORTS",
     "JACOCO",
+    "JACOCO_INIT_SCRIPT",
     "UNKNOWN",
     "CommandEdit",
     "Stack",

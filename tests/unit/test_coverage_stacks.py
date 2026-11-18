@@ -254,9 +254,12 @@ def test_to_dict_is_json_ready():
     for found in (detect_stacks(*_load("python_uv_workspace")), detect_stacks(*_load("gradle_plain"))):
         for stack in found:
             assert json.loads(json.dumps(stack.to_dict())) == stack.to_dict()
-    # Its command needs the init script its CI step writes, so a workstation gets the reason.
-    gradle = detect_stacks(*_load("gradle_plain"))[0].to_dict()
-    assert gradle["shell"] == "github-actions" and gradle["command"] is None and gradle["reason"]
+    # Its CI command needs the init script its CI step writes; a workstation runs the shipped copy.
+    gradle = detect_stacks(*_load("gradle_plain"))[0]
+    assert gradle.shell == "github-actions" and "$RUNNER_TEMP" in gradle.test
+    shown = gradle.to_dict()
+    assert shown["command"] == f'./gradlew test jacocoTestReport --init-script "{stacks.JACOCO_INIT_SCRIPT}"'
+    assert shown["shell"] is None and shown["reason"] is None
 
 
 def _index(*units: tuple[str, str, str]) -> BuildUnitIndex:
@@ -540,3 +543,11 @@ def test_an_odd_global_json_falls_back_to_the_target_frameworks(pin):
     files = {"global.json": pin, "App/App.csproj": "<TargetFramework>net8.0-windows</TargetFramework>"}
     (stack,) = detect_stacks(["App.sln", *files], files)
     assert stack.notes[0].startswith("The projects target up to net8.0:")
+
+
+def test_the_shipped_jacoco_init_script_is_the_one_the_workflow_writes():
+    assert stacks.JACOCO_INIT_SCRIPT.is_file()
+    body = stacks.JACOCO_INIT_SCRIPT.read_text(encoding="utf-8").splitlines()
+    (stack,) = detect_stacks(*_load("gradle_plain"))
+    assert [line[4:] for line in stack.prepare[3:-1]] == body
+    assert "apply plugin: 'jacoco'" in body[2] and "xml.required = true" in body[3]
