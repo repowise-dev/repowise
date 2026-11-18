@@ -25,7 +25,13 @@ from repowise.server.mcp_server._server import StoreUnavailableError
 
 
 async def _no_warm() -> None:
-    return None
+    """Skip the lancedb import but signal it done, as ``_warm_lancedb`` always does.
+
+    Tool dispatch waits on this event before any handler runs; a stub that
+    never sets it makes every tool call sit out the full warmup ceiling.
+    """
+    if _state._lancedb_ready is not None:
+        _state._lancedb_ready.set()
 
 
 def _single_repo(monkeypatch: pytest.MonkeyPatch, repo: Path) -> None:
@@ -122,10 +128,6 @@ async def test_unindexed_directory_starts_and_reports_no_index(
     for name in ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(_state, "_repo_path", str(tmp_path))
-
-    async def _no_warm() -> None:
-        return None
-
     monkeypatch.setattr(_server, "_warm_lancedb", _no_warm)
     monkeypatch.setattr(_server, "_detect_workspace", lambda _p: (None, None, None))
 

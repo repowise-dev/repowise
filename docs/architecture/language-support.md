@@ -249,13 +249,25 @@ give a monorepo in your language proper per-package health; there is no second
 list to edit. `REGISTRY.package_manifest_filenames()` is the single source of
 truth, and both consumers read it.
 
+The registry is the only place that knows manifest names. Every other reader
+asks it by role: `is_package_manifest(path)` (C4 containers, branch overlap),
+`manifest_filenames()` for package manifests plus build config (the tour, the
+update path's config check, the tech stack memo), or `is_manifest(path)` for
+the same question asked of one path. A reader that needs extra non-manifest
+names (a `Dockerfile`, a test runner config) adds them to these sets instead of
+restating the manifests.
+
 `build_config_manifests` defaults to empty, which is nearly always right. Add to
 it only when a name in `manifest_files` configures a build rather than declaring
 a distributable unit, because such files appear in directories that are not
 packages and each one becomes a false root that fragments the rollup. The shipped
 cases are the .NET `Directory.Build.props` / `global.json` family (measured in
 135 non-package directories), `vite.config.js` / `nuxt.config.ts`,
-`svelte.config.js`, Cabal's `Setup.hs`, and `lean-toolchain`.
+`svelte.config.js`, Cabal's `Setup.hs`, `lean-toolchain`, and the CMake and
+Bazel files C and C++ declare (`CMakeLists.txt`, `BUILD`, `BUILD.bazel`,
+`MODULE.bazel`, `WORKSPACE`, `WORKSPACE.bazel`): every CMake subdirectory and
+Bazel package carries one, so their presence says nothing about where a unit
+starts.
 
 `manifest_files` holds exact filenames only, so a language whose package file is
 a *pattern* cannot be expressed. .NET is the live example: `*.csproj` is the real

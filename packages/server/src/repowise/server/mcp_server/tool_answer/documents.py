@@ -121,14 +121,18 @@ def _front_matter_end(lines: list[str]) -> int:
     return next((n for n, line in enumerate(lines[1:], 2) if line.strip() == "---"), 0)
 
 
-def _lines(root: Path, path: str, terms: list[str]) -> list[dict]:
+def _lines(root: Path, path: str, terms: list[str], asked: tuple[str, ...] | list[str] = ()) -> list[dict]:
     """The lines of *path* holding any of *terms*: the body's in file order,
     then front matter's (``key:``, ``url:``), which says less.
 
     A ticket the question names by its key (``PROJ-12`` for ``PROJ-12.md``)
     serves its opening body lines instead of the lines holding its key: those
     are its key, link and heading, while the opening says what the ticket is.
-    The lines another question word holds come first; the opening fills the rest."""
+    The lines another question word holds come first; the opening fills the rest.
+
+    Body lines holding the other *asked* words fill what is left: the word naming a
+    page is often only in its title, while the answer sits in a body line that
+    holds the question's commoner words (``retry``, ``timeouts``)."""
     text = (read_repo_file_text(root, path) or "").splitlines()
     end = _front_matter_end(text)
     own = set(_ISSUE_KEY_RE.findall(Path(path).stem))
@@ -143,6 +147,13 @@ def _lines(root: Path, path: str, terms: list[str]) -> list[dict]:
             rows.setdefault(row["line"], row)
     for n, line in opening[: max(_DOC_LINES_MAX - len(rows), 0)]:
         rows.setdefault(n, _line_row(path, n, line, "match"))
+    for term in (t for t in asked if t not in terms):
+        if len(rows) >= _DOC_LINES_MAX:
+            break
+        for row in (r for r in scan_literal(root, [path], term, True)[0] if r["line"] > end):
+            if len(rows) >= _DOC_LINES_MAX:
+                break
+            rows.setdefault(row["line"], row)
     return [rows[n] for n in sorted(rows, key=lambda n: (n <= end, n))][:_DOC_LINES_MAX]
 
 
@@ -244,7 +255,7 @@ async def _find(
     hits: list[dict] = []
     other: list[dict] = []
     for alias, path in ranked[:_DOC_HITS_MAX]:
-        lines = await asyncio.to_thread(_lines, at[alias], path, by_doc[(alias, path)])
+        lines = await asyncio.to_thread(_lines, at[alias], path, by_doc[(alias, path)], terms)
         if not lines:
             continue  # git grep and the scan disagree on a word edge: no evidence to serve
         if alias is None:

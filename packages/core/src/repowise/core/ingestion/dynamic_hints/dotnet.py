@@ -25,7 +25,8 @@ from pathlib import Path
 from ..type_names import bare_type_name
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"bin", "obj", ".vs", "node_modules", ".git", "packages"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"bin", "obj", ".vs", "packages"}
 
 # services.AddScoped<IFoo, Foo>() / AddSingleton<...> / AddTransient<...>
 # Also matches the framework-specific registration helpers that wire up

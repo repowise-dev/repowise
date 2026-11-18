@@ -27,6 +27,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.git_sha import is_full_sha
+
 from ._constants import _MAX_BLAME_SIZE_BYTES
 
 logger = structlog.get_logger(__name__)
@@ -222,10 +224,10 @@ def _parse_porcelain(
                 boundary_shas.add(current_sha)
             continue
         # Header lines are space-separated; only the very first header of a
-        # block starts with a 40-char hex sha. Other headers start with
+        # block starts with a full hex sha. Other headers start with
         # alphabetic keywords (author, committer, summary, previous, filename).
         head, _, _rest = line.partition(" ")
-        if len(head) == 40 and all(c in "0123456789abcdef" for c in head):
+        if is_full_sha(head):
             parts = line.split(" ")
             current_sha = parts[0]
             if len(parts) >= 3:

@@ -8,7 +8,8 @@ from pathlib import Path
 from ..type_names import bare_type_name
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"target", "project", ".bloop", ".metals", "node_modules", ".git"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"target", "project", ".bloop", ".metals"}
 
 _CLASS_FORNAME_RE = re.compile(r"Class\.forName\s*\(\s*[\"']([\w.]+)[\"']")
 _RUNTIME_MIRROR_RE = re.compile(r"runtimeMirror\s*\(")

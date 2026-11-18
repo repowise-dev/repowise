@@ -8,7 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.serving import ServedFinding, serve_findings
 from repowise.core.attribution import attribution_enabled
-from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES, NON_CODE_EDGE_TYPES
+from repowise.core.exclusion import build_exclude_spec
+from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES
 from repowise.core.persistence.crud.analysis.shown import ungated
 from repowise.core.persistence.models import (
     DeadCodeFinding,
@@ -29,7 +30,7 @@ from repowise.server.schemas import (
     HotFilesGraphResponse,
     HotFilesNodeResponse,
 )
-from repowise.server.services.graph_views import edge_response
+from repowise.server.services.graph_views import edge_response, load_code_graph
 from repowise.server.services.node_signals import (
     EMPTY_SIGNALS,
     collect_node_signals,
@@ -55,32 +56,15 @@ async def ego_graph(
     except ImportError:
         raise HTTPException(status_code=501, detail="networkx not available") from None
 
-    # Temporal and documentation edges are excluded for the reason
-    # `get_dependency_path` gives: a co-change edge is history, not a
-    # reference, so it makes an unrelated file a 1-hop neighbour. Containment
-    # stays — it is the only bridge from the file layer to the symbol layer.
-    edge_result = await session.execute(
-        select(GraphEdge).where(
-            GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
-        )
-    )
-    edges = edge_result.scalars().all()
-
-    graph: nx.DiGraph = nx.DiGraph()
-    for e in edges:
-        graph.add_edge(e.source_node_id, e.target_node_id)
+    # The code graph `get_dependency_path` walks: a co-change edge is history,
+    # not a reference, so it would make an unrelated file a 1-hop neighbour.
+    # Containment stays, the only bridge from the file layer to the symbol layer.
+    code_graph = await load_code_graph(session, repo_id, build_exclude_spec(repo.local_path))
+    graph = code_graph.graph
+    edges = code_graph.edges
 
     if node_id not in graph:
-        node_check = await session.execute(
-            select(GraphNode).where(
-                GraphNode.repository_id == repo_id,
-                GraphNode.node_id == node_id,
-            )
-        )
-        if node_check.scalar_one_or_none() is None:
-            raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
-        graph.add_node(node_id)
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
 
     # Counted on the graph this endpoint returns rather than from the edge
     # rows, so a temporal edge cannot inflate it. Not identical to the length
@@ -142,7 +126,7 @@ async def entry_points_graph(
     repo_id: str,
     request: Request,
     session: AsyncSession = Depends(get_db_session),
-    _repo: object = Depends(with_repo),
+    repo: Repository = Depends(with_repo),
 ) -> GraphExportResponse:
     """Return the subgraph reachable within 3 hops from entry-point nodes."""
     try:
@@ -150,35 +134,17 @@ async def entry_points_graph(
     except ImportError:
         raise HTTPException(status_code=501, detail="networkx not available") from None
 
-    # Same exclusion as /ego, and it matters more here: this walks three hops
-    # from every entry point, so one co-change edge pulls its whole
+    # Same graph as /ego, and the exclusion matters more here: this walks
+    # three hops from every entry point, so one co-change edge pulls its whole
     # neighbourhood into "reachable from an entry point".
-    edge_result = await session.execute(
-        select(GraphEdge).where(
-            GraphEdge.repository_id == repo_id,
-            GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
-        )
-    )
-    edges = edge_result.scalars().all()
-
-    graph: nx.DiGraph = nx.DiGraph()
-    for e in edges:
-        graph.add_edge(e.source_node_id, e.target_node_id)
-
-    ep_result = await session.execute(
-        select(GraphNode).where(
-            GraphNode.repository_id == repo_id,
-            GraphNode.is_entry_point == True,  # noqa: E712
-        )
-    )
-    entry_nodes = ep_result.scalars().all()
+    code_graph = await load_code_graph(session, repo_id, build_exclude_spec(repo.local_path))
+    graph = code_graph.graph
+    edges = code_graph.edges
 
     reachable: set[str] = set()
-    for ep in entry_nodes:
-        reachable.add(ep.node_id)
-        if ep.node_id in graph:
-            paths = nx.single_source_shortest_path_length(graph, ep.node_id, cutoff=3)
-            reachable.update(paths.keys())
+    for ep_id, node in code_graph.nodes.items():
+        if node.is_entry_point:
+            reachable.update(nx.single_source_shortest_path_length(graph, ep_id, cutoff=3))
 
     if not reachable:
         return GraphExportResponse(nodes=[], links=[])

@@ -9,7 +9,9 @@ ancestors to the client and watches the whole recorded chain.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -208,8 +210,7 @@ def test_inactive_when_chain_unresolvable(monkeypatch: pytest.MonkeyPatch) -> No
 
 # The "server" loads _watchdog.py directly by file path (skipping the heavy
 # mcp_server package import), starts the watchdog with a fast poll, signals
-# readiness, then sleeps far past the test timeout. The 60s sleep doubles
-# as cleanup if the watchdog ever fails to fire.
+# readiness, then sleeps far past the test's deadline.
 _SERVER_SCRIPT = textwrap.dedent(
     """
     import importlib.util, time
@@ -226,13 +227,18 @@ _SERVER_SCRIPT = textwrap.dedent(
 
 # The "client" spawns the server, waits until its watchdog is armed, hands
 # the server PID to the test, and exits — orphaning the server exactly the
-# way a crashed MCP client does.
+# way a crashed MCP client does. The server must not inherit the client's
+# stderr: that is the test's capture pipe, and subprocess.run would block
+# until the server closed it. On Linux the client would then sit unreaped
+# as a zombie the whole time, which the watchdog's liveness probe still
+# counts as alive, so the test would only return once the server's sleep
+# ran out and pass whether or not the watchdog works.
 _CLIENT_SCRIPT = textwrap.dedent(
     """
     import subprocess, sys
     proc = subprocess.Popen(
         [sys.executable, "-c", {server_script!r}],
-        stdout=subprocess.PIPE, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
     )
     line = proc.stdout.readline()
     assert line.strip() == "READY", f"unexpected: {{line!r}}"
@@ -249,15 +255,19 @@ def test_server_exits_when_client_dies() -> None:
         [sys.executable, "-c", client_script],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=60,
     )
     assert client.returncode == 0, client.stderr
     server_pid = int(client.stdout.strip().splitlines()[-1])
 
-    # The client is gone; the orphaned server must notice and exit.
-    deadline = time.time() + 30
-    while time.time() < deadline:
+    # The client is gone and reaped; the orphaned server must notice and
+    # exit. The deadline sits far below the server's 60s sleep, so only the
+    # watchdog can end the server in time.
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
         if pid_alive(server_pid) is False:
             return
         time.sleep(0.25)
-    pytest.fail(f"orphaned server (pid {server_pid}) did not exit within 30s")
+    with contextlib.suppress(OSError):
+        os.kill(server_pid, signal.SIGTERM)
+    pytest.fail(f"orphaned server (pid {server_pid}) did not exit within 15s")

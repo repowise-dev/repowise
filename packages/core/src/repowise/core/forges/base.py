@@ -15,6 +15,8 @@ from enum import StrEnum
 from typing import Protocol
 from urllib.parse import quote
 
+from ..git_sha import is_sha_prefix
+
 
 class ForgeKind(StrEnum):
     GITHUB = "github"
@@ -98,10 +100,6 @@ def split_host_port(authority: str) -> tuple[str, str] | None:
     return host, port
 
 
-#: A full or abbreviated commit id (sha1 or sha256), as opposed to a branch.
-_SHA_RE = re.compile(r"[0-9a-fA-F]{7,64}")
-
-
 def line_anchor(line: int | None, end_line: int | None, single: str, span: str) -> str:
     """A blob URL's line fragment: ``""`` without a line, else *single* or *span*.
 
@@ -117,7 +115,8 @@ def line_anchor(line: int | None, end_line: int | None, single: str, span: str) 
 
 
 def looks_like_sha(rev: str) -> bool:
-    return bool(_SHA_RE.fullmatch(rev))
+    """True for a full or abbreviated commit id in any case, as opposed to a branch."""
+    return is_sha_prefix(rev.lower())
 
 
 def quote_segment(segment: str) -> str:

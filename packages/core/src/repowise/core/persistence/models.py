@@ -936,6 +936,44 @@ class Change(Base):
     )
 
 
+class ChangeCommit(Base):
+    """One commit a change landed: ``changes.commit_shas_json`` as rows.
+
+    Lets the health filters join a change to its commits' stored deltas in SQL
+    instead of binding every matching change id. Written with the change.
+    """
+
+    __tablename__ = "change_commits"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "change_id", "sha", name="uq_change_commit"),
+        Index("ix_change_commits_repo_sha", "repository_id", "sha"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    change_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    sha: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class ChangeFile(Base):
+    """One path a change stores: ``changes.files_json`` as rows (the same capped list)."""
+
+    __tablename__ = "change_files"
+    __table_args__ = (
+        UniqueConstraint("repository_id", "change_id", "file_path", name="uq_change_file"),
+        Index("ix_change_files_repo_path", "repository_id", "file_path"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+    )
+    change_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class GitCommitFile(Base):
     """One file a commit touched, and the lines it changed there.
 
@@ -3201,6 +3239,56 @@ class SymbolHotness(Base):
     )
 
     __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class BuildUnitRow(Base):
+    """One build unit of a repository (``repowise.core.build_units.BuildUnit``).
+
+    Replaced whole, with ``build_unit_deps`` and ``build_unit_files``, by every
+    run whose graph build collected units (``crud.build_units``).
+    """
+
+    __tablename__ = "build_units"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    # Ecosystem-prefixed and stable across runs: ``npm:<package>``, ``cargo:<crate>``.
+    unit_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    ecosystem: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Repo-relative POSIX directory, ``""`` at the repo root.
+    root: Mapped[str] = mapped_column(Text, nullable=False)
+    manifest: Mapped[str] = mapped_column(Text, nullable=False)
+    # The reader that produced the unit (``npm-workspace``, ``manifest-root``).
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class BuildUnitDep(Base):
+    """One in-repo dependency of a build unit on another."""
+
+    __tablename__ = "build_unit_deps"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    unit_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    dep_unit_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    __table_args__ = ({"sqlite_with_rowid": False},)
+
+
+class BuildUnitFile(Base):
+    """One indexed file owned by one build unit; a file may have several owners."""
+
+    __tablename__ = "build_unit_files"
+
+    repository_id: Mapped[str] = mapped_column(String(32), _repository_fk(), primary_key=True)
+    path: Mapped[str] = mapped_column(Text, primary_key=True)
+    unit_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    __table_args__ = (
+        Index("ix_build_unit_files_repo_unit", "repository_id", "unit_id"),
+        {"sqlite_with_rowid": False},
+    )
 
 
 class AnswerCache(Base):
