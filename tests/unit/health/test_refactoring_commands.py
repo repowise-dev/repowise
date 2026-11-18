@@ -21,6 +21,7 @@ from repowise.core.analysis.health.refactoring.recommendations import (
 from repowise.core.analysis.health.refactoring.serving import validation_from_profile
 from repowise.core.analysis.test_reachability import ReachedBy
 from repowise.core.ingestion.package_roots import owning_package, scan_package_manifests
+from repowise.core.test_runners.packages import quote_arg
 from tests.unit.health.test_recommendations import _plan
 
 
@@ -127,6 +128,16 @@ def test_a_path_with_a_space_is_quoted(tmp_path: Path) -> None:
         'pytest "tests/test b.py"',
         'npm --prefix "my app" test -- a.test.ts',
     ]
+
+
+def test_a_path_with_a_shell_metacharacter_is_single_quoted() -> None:
+    # $, ` and " expand or split inside double quotes in POSIX shells.
+    assert quote_arg("app/routes/$id.test.tsx") == "'app/routes/$id.test.tsx'"
+    assert quote_arg("my $app/a.test.ts") == "'my $app/a.test.ts'"
+    assert quote_arg("it's.py") == "'it'\\''s.py'"
+    # A plain path stays unquoted and a space-only path double-quoted, as before.
+    assert quote_arg("web/a.test.ts") == "web/a.test.ts"
+    assert quote_arg("my app/a.test.ts") == '"my app/a.test.ts"'
 
 
 def test_the_plan_stores_its_runs_and_reads_them_back() -> None:
