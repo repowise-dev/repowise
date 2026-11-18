@@ -1337,6 +1337,17 @@ _JS_NAMESPACE = re.compile(
 )
 
 
+def _js_namespaces(text: str, stems: set[str]) -> set[str]:
+    """Names one JavaScript or TypeScript import line binds to a whole module of *stems*."""
+    source = _IMPORT_SOURCE.search(text)
+    spec = (source.group(1) or source.group(2)) if source is not None else None
+    base = PurePosixPath(spec).name if spec else ""
+    # ``./user.service`` and ``./a.js`` both name their module file.
+    if not base or not {base, PurePosixPath(base).stem} & stems:
+        return set()
+    return {m.group(1) or m.group(2) for m in _JS_NAMESPACE.finditer(text)}
+
+
 def _module_bindings(lines: list[str], imports: set[int], stems: set[str], python: bool) -> set[str]:
     """Local names the import lines bind to a whole module named by one of *stems*.
 
@@ -1347,12 +1358,7 @@ def _module_bindings(lines: list[str], imports: set[int], stems: set[str], pytho
     for n in imports:
         text = lines[n - 1]
         if not python:
-            source = _IMPORT_SOURCE.search(text)
-            spec = (source.group(1) or source.group(2)) if source is not None else None
-            base = PurePosixPath(spec).name if spec else ""
-            # ``./user.service`` and ``./a.js`` both name their module file.
-            if base and {base, PurePosixPath(base).stem} & stems:
-                local.update(m.group(1) or m.group(2) for m in _JS_NAMESPACE.finditer(text))
+            local |= _js_namespaces(text, stems)
             continue
         for stem in stems:
             esc = re.escape(stem)
