@@ -1,0 +1,3 @@
+gradlew
+app/build.gradle
+app/src/main/java/A.java

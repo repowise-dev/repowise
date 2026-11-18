@@ -1,0 +1,3 @@
+mvnw
+core/pom.xml
+core/src/main/java/A.java

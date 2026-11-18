@@ -9,8 +9,10 @@ The one owner of runner knowledge. Two kinds of caller ask it:
   package from the repository root (``go -C mod test ./pkg``, ``cargo test -p
   crate``), in :mod:`.packages`, which reads manifests and so is imported on its
   own: this module stays light enough for the selection path.
+- Coverage setup needs each build unit's test command with coverage, its
+  prerequisites and report paths, in :mod:`.stacks`.
 
-Both read their test-file suffixes from :data:`LANGUAGE_SUFFIXES`.
+The first two read their test-file suffixes from :data:`LANGUAGE_SUFFIXES`.
 """
 
 from __future__ import annotations

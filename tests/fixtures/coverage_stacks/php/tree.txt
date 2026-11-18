@@ -1,0 +1,4 @@
+composer.lock
+phpunit.xml
+src/A.php
+tests/ATest.php

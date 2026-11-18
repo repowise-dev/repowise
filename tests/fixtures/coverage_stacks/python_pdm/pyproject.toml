@@ -1,0 +1,6 @@
+[project]
+name = "tool"
+version = "0"
+
+[tool.pdm.dev-dependencies]
+test = ["pytest", "pytest-cov"]

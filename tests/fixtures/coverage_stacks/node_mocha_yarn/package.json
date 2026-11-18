@@ -1,0 +1,9 @@
+{
+  "name": "c",
+  "scripts": {
+    "test": "mocha -r ts-node/register 'test/**/*.ts'"
+  },
+  "devDependencies": {
+    "mocha": "^10"
+  }
+}

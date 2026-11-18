@@ -1,0 +1,3 @@
+App.sln
+src/App/App.csproj
+src/App/Program.cs
