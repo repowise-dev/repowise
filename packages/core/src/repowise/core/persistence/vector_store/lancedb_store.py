@@ -8,6 +8,7 @@ from typing import Any
 
 from repowise.core.providers.embedding.base import Embedder
 
+from ..batches import chunked
 from ..search import _SNIPPET_LEN, SearchResult, snippet_around
 from ._base import (
     STORED_SNIPPET_CHARS,
@@ -522,6 +523,23 @@ class LanceDBVectorStore(VectorStore):
                 exc,
             )
             return set()
+
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        if not page_ids:
+            return set()
+        await self._ensure_connected()
+        if self._table is None:
+            return set()
+        present = set()
+        for batch in chunked(sorted(page_ids)):
+            rows = await (
+                self._table.query()
+                .where(_page_ids_in_filter(list(batch)))
+                .select(["page_id"])
+                .to_list()
+            )
+            present.update(row["page_id"] for row in rows)
+        return present
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.

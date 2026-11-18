@@ -188,6 +188,34 @@ async def test_vector_rekey_snapshots_an_occupied_key_chain(
 
 
 @pytest.mark.asyncio
+async def test_vector_rekey_replaces_the_folded_occupant_of_a_destination(
+    async_session, in_memory_vector_store, mock_embedder
+):
+    repo = await insert_repo(async_session)
+    keeper = await _legacy_record(async_session, repo.id, "Keeper", identity_quote="keep")
+    destination = derive_decision_id(
+        repo.id, "Keeper", source="session", evidence_file="src/app.py", identity_quote="keep"
+    )
+    fold_target = derive_decision_id(
+        repo.id, "Stable", source="session", evidence_file="src/app.py", identity_quote="fold"
+    )
+    await _legacy_record(async_session, repo.id, "Stable", id=fold_target, identity_quote="fold")
+    await _legacy_record(async_session, repo.id, "Folded", id=destination, identity_quote="fold")
+    old_key = f"{DECISION_VECTOR_PREFIX}{keeper.id}"
+    new_key = f"{DECISION_VECTOR_PREFIX}{destination}"
+    keeper_value = ([0.25] * mock_embedder.dimensions, {"title": "Keeper"})
+    await in_memory_vector_store.upsert_vectors([
+        (old_key, *keeper_value),
+        (new_key, [0.75] * mock_embedder.dimensions, {"title": "Folded"}),
+    ])
+
+    plan = await apply_id_migration(async_session, repo.id, vector_store=in_memory_vector_store)
+
+    assert plan.counts() == {"rewrite": 1, "stable": 1, "fold": 1}
+    assert in_memory_vector_store._store == {new_key: keeper_value}
+
+
+@pytest.mark.asyncio
 async def test_vector_rekey_preserves_a_live_alias_source(
     async_session, in_memory_vector_store, mock_embedder, monkeypatch
 ):
@@ -266,12 +294,14 @@ async def test_vector_rekey_resumes_with_a_persistent_lancedb_store(
         store = LanceDBVectorStore(str(tmp_path / "decision-vectors"), mock_embedder)
         embed = AsyncMock(side_effect=AssertionError("Persisted vector already exists"))
         monkeypatch.setattr(mock_embedder, "embed", embed)
+        list_all = AsyncMock(wraps=store.list_page_ids)
+        monkeypatch.setattr(store, "list_page_ids", list_all)
 
         await apply_id_migration(async_session, repo.id, vector_store=store)
         await apply_id_migration(async_session, repo.id, vector_store=store)
 
-        assert await store.list_page_ids() == {new_key}
         assert await store._table.query().to_list() == [{**before, "page_id": new_key}]
+        list_all.assert_not_called()
         embed.assert_not_called()
     finally:
         await store.close()

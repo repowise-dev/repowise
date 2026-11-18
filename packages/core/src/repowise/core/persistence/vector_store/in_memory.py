@@ -112,6 +112,9 @@ class InMemoryVectorStore(VectorStore):
     async def list_page_ids(self) -> set[str]:
         return set(self._store.keys())
 
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        return {page_id for page_id in page_ids if page_id in self._store}
+
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
 

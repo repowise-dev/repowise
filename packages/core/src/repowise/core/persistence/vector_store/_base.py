@@ -414,6 +414,10 @@ class VectorStore(ABC):
         """
         return set()  # default: empty (subclasses should override)
 
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        """Return which of the requested IDs currently have a stored vector."""
+        return page_ids & await self.list_page_ids() if page_ids else set()
+
     async def holds_current_vectors(self) -> bool:
         """Whether stored vectors have the width the running embedder writes.
 

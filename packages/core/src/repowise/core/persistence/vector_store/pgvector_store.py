@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from repowise.core.providers.embedding.base import Embedder
 
+from ..batches import chunked
 from ..search import SearchResult
 from ._base import VectorStore, cap_embed_text, iter_embed_chunks
 
@@ -230,6 +231,21 @@ class PgVectorStore(VectorStore):
                 sa_text("SELECT id FROM wiki_pages WHERE embedding IS NOT NULL")
             )
             return {r[0] for r in rows.fetchall()}
+
+    async def existing_page_ids(self, page_ids: set[str]) -> set[str]:
+        if not page_ids:
+            return set()
+        from sqlalchemy import bindparam
+        from sqlalchemy.sql import text as sa_text
+
+        stmt = sa_text("SELECT id FROM wiki_pages WHERE embedding IS NOT NULL AND id IN :ids")
+        stmt = stmt.bindparams(bindparam("ids", expanding=True))
+        present = set()
+        async with self._session_factory() as session:
+            for batch in chunked(sorted(page_ids)):
+                rows = await session.execute(stmt, {"ids": list(batch)})
+                present.update(rows.scalars())
+        return present
 
     async def get_page_summary_by_path(self, path: str) -> dict | None:
         """Return {'summary': str, 'key_exports': list[str]} for a previously-indexed page, or None.
