@@ -202,11 +202,11 @@ def touched_functions(
             )
         else:
             near = added or (new_start, new_start + 1)
-        found.update(
-            (b.chain, b)
-            for line in measured.code(near)
-            if (b := innermost(measured.bodies, line)) is not None
-        )
+        # A neighbour may be blank or a comment and still sit in the function.
+        hit = {b.chain: b for line in near if (b := innermost(measured.bodies, line)) is not None}
+        if not hit:
+            return None  # a change no function holds on the measured side
+        found.update(hit)
     return FileFunctions(path, tuple(found.values())) if found else None
 
 
@@ -446,13 +446,16 @@ async def run_once_symbols(session, repo_id: str, repo_path) -> frozenset[str] |
     later test depends on what it did. Seeds: what module-level code and
     class bodies call (a call under ``if __name__ == "__main__":`` excluded),
     functions used as decorators, memoized functions, fixtures shared across
-    test files (session or package scope) and a conftest's pytest hooks. Then everything they call, and the implicit methods
-    (``__init__``...) of every class among them. Read once per index state;
-    ``None`` when the decorators cannot be listed.
+    test files (session or package scope) and a conftest's pytest hooks. Then
+    everything they call, and the implicit methods (``__init__``...) of every
+    class among them. Read once per index state and working tree: the
+    decorators and ``__main__`` blocks are read from disk, which a long-lived
+    server sees change between indexes. ``None`` when the decorators cannot be
+    listed.
 
     Ceiling: a cache written by hand (a module-level dict) is not seen.
     """
-    key = await _RUN_ONCE.key(session, repo_id, "run_once", str(repo_path))
+    key = await _RUN_ONCE.key(session, repo_id, "run_once", str(repo_path), _tree_stamp(repo_path))
     if key in _RUN_ONCE:
         return _RUN_ONCE.get(key)
     from sqlalchemy import text
@@ -516,6 +519,37 @@ async def run_once_symbols(session, repo_id: str, repo_path) -> frozenset[str] |
             m for m in methods.get(node, ()) if _IMPLICIT_DUNDERS.fullmatch(m.rsplit("::", 1)[-1])
         )
     return _RUN_ONCE.remember(key, frozenset(reached))
+
+
+def _tree_stamp(repo_path) -> str | None:
+    """A fingerprint of the checkout's Python files: ``HEAD``, the diff against it, untracked files.
+
+    ``None`` when git cannot say, which a cache then keys like any other value.
+    """
+    import hashlib
+
+    from .doc_drift.suggest import git_run
+
+    root = Path(repo_path)
+    parts = []
+    for args in (
+        ("rev-parse", "HEAD"),
+        ("diff", "HEAD", "--no-ext-diff", "--", "*.py"),
+        ("ls-files", "-o", "--exclude-standard", "-z", "--", "*.py"),
+    ):
+        ran = git_run(root, *args, pathspec_magic=True)
+        if ran is None or ran[0] != 0:
+            return None
+        parts.append(ran[1])
+    digest = hashlib.sha1(b"\0".join(parts), usedforsecurity=False)
+    for name in parts[2].split(b"\0"):
+        if name:
+            try:
+                st = (root / name.decode("utf-8", "replace")).stat()
+            except OSError:
+                continue
+            digest.update(f"{st.st_mtime_ns}:{st.st_size}".encode())
+    return digest.hexdigest()
 
 
 def _module_seeds(repo_path, module_calls: list[tuple[str, str, str]]) -> set[str]:

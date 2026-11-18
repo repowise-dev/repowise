@@ -205,3 +205,38 @@ def test_a_form_feed_does_not_shift_line_numbers() -> None:
     found = _touched(old, _swap(old, "    y = x + 1\n", "    y = x + 2\n"))
     assert found is not None
     assert found.lines == {7, 8, 9}
+
+
+def test_an_insertion_between_blank_lines_still_names_its_function() -> None:
+    old = "def f():\n    a = 1\n\n\n    b = 2\n\n\ndef g():\n    return 1\n"
+    new = "def f():\n    a = 1\n\n    c = 3\n\n    b = 2\n\n\ndef g():\n    return 2\n"
+    # Line 3 of the old side is blank and so is line 4: f holds both.
+    hunks = [(3, 0, 4, 2), (9, 1, 10, 1)]
+    found = touched_functions("m.py", hunks, "old", old, new)
+    assert found is not None
+    assert {b.chain for b in found.bodies} == {("f",), ("g",)}
+
+
+def test_a_hunk_no_function_holds_on_the_measured_side_keeps_the_graph() -> None:
+    old = "def f():\n    a = 1\n\n\ndef g():\n    return 1\n"
+    new = "def f():\n    a = 1\n\n    c = 3\n\ndef g():\n    return 2\n"
+    # The new line sits in f, but its old neighbours (lines 3 and 4) are past f's end.
+    assert touched_functions("m.py", [(3, 0, 4, 1), (6, 1, 7, 1)], "old", old, new) is None
+
+
+def test_the_run_once_cache_sees_uncommitted_python_edits(tmp_path) -> None:
+    from repowise.core.analysis.function_hunks import _tree_stamp
+
+    def git(*args):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    (tmp_path / "m.py").write_text("x = 1\n", encoding="utf-8")
+    git("init", "-q")
+    git("add", "m.py")
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c")
+    clean = _tree_stamp(tmp_path)
+    (tmp_path / "m.py").write_text("@register\ndef f():\n    pass\n", encoding="utf-8")
+    edited = _tree_stamp(tmp_path)
+    (tmp_path / "n.py").write_text("main()\n", encoding="utf-8")
+    assert len({clean, edited, _tree_stamp(tmp_path)}) == 3
+    assert None not in {clean, edited}
