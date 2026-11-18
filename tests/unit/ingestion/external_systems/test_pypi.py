@@ -74,6 +74,23 @@ black = "^24"
     assert "python" not in by_name  # explicit skip
 
 
+def test_poetry_legacy_dev_dependencies_are_dev(tmp_path):
+    pyproject = _write(
+        tmp_path,
+        "pyproject.toml",
+        """
+[tool.poetry]
+name = "demo"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7"
+local = { path = "../local" }
+""",
+    )
+    records = pypi.parse(pyproject, tmp_path)
+    assert [(r.name, r.is_dev_dep) for r in records] == [("pytest", True)]
+
+
 def test_requirements_txt(tmp_path):
     p = _write(
         tmp_path,
