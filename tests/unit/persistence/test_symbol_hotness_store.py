@@ -72,6 +72,17 @@ async def test_a_rebuild_replaces_the_repositorys_rows_whole(async_session) -> N
     assert all(r.built_at is not None for r in rows)
 
 
+async def test_hotness_for_symbols_reads_whole_files_by_key_range(async_session) -> None:
+    repo = await insert_repo(async_session)
+    other = await insert_repo(async_session, name="other", local_path="/other")
+    ids = ["src/m.py::f", "src/m.py::C::g", "src/m.pyx::h", "src/m.py.bak::i", "src/n.py::j"]
+    await replace_symbol_hotness(async_session, repo.id, [{"symbol_id": sid} for sid in ids])
+    await replace_symbol_hotness(async_session, other.id, [{"symbol_id": "src/m.py::k"}])
+    found = await hotness_for_symbols(async_session, repo.id, ["src/n.py::j"], files=["src/m.py"])
+    assert sorted(found) == ["src/m.py::C::g", "src/m.py::f", "src/n.py::j"]
+    assert await hotness_for_symbols(async_session, repo.id, [], files=[]) == {}
+
+
 async def test_rebuild_reads_the_profile_runs_and_the_readers_serve_them(async_session) -> None:
     repo = await insert_repo(async_session)
     await _facts(async_session, repo.id, "src/m.py::big", "src/m.py::small", "src/t.py::thin")

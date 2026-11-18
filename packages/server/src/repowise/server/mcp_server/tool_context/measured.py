@@ -1,0 +1,184 @@
+"""get_context's ``measured`` line: what a stored profile run measured here.
+
+One short string on a symbol or file card, only when ``symbol_hotness`` has
+a row for the symbol (or for a function in the file). No row means no
+evidence, and then the key is absent: unknown is never written as cold.
+
+The line always names its basis (workload class and name), how much of the
+run repo code explains, and the age; the share's interval when the run counted
+samples; ``ordering only`` for a deterministic tracer. A ``unit_test`` run
+reads "in tests". The ``lead_candidate`` tier is not worded as a claim until
+its thresholds are calibrated: it reads as ranked.
+
+Stale evidence (the body changed since the run) is flagged, never ranked: the
+line says the measurement predates the body, so the agent knows to measure
+again rather than trust an old rank.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+from repowise.core.persistence.crud import hotness_for_symbols
+
+#: Where a card's measured target waits between the card and the batched read.
+#: Popped by :func:`attach_measured`, so it never reaches a response.
+MEASURED_TARGET = "_measured_target"
+
+#: Functions a file card's line names; the rest are counted.
+MAX_NAMED_IN_FILE = 3
+
+_RANKED = ("ranked", "lead_candidate")
+
+
+def mark_measured_target(
+    data: dict[str, Any], target_type: str, file_path: str | None, symbol_id: str | None
+) -> None:
+    """Record what a symbol or file card's ``measured`` line would read."""
+    if target_type == "symbol" and symbol_id:
+        data[MEASURED_TARGET] = ("symbol", symbol_id)
+    elif target_type == "file" and file_path:
+        data[MEASURED_TARGET] = ("file", file_path)
+
+
+async def attach_measured(
+    session: AsyncSession,
+    repository_id: str,
+    cards: dict[str, dict[str, Any]],
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Give each marked card its ``measured`` line, in one keyed read for the call.
+
+    Best effort: a store without the table, or a failed read, leaves every
+    card as it would be with no evidence.
+    """
+    wanted = {
+        name: card.pop(MEASURED_TARGET) for name, card in cards.items() if MEASURED_TARGET in card
+    }
+    if not wanted:
+        return
+    symbols = {key for kind, key in wanted.values() if kind == "symbol"}
+    files = {key for kind, key in wanted.values() if kind == "file"}
+    try:
+        async with session.begin_nested():
+            rows = await hotness_for_symbols(session, repository_id, symbols, files=files)
+    except SQLAlchemyError:
+        return
+    if not rows:
+        return
+    now = now or datetime.now(UTC)
+    for name, (kind, key) in wanted.items():
+        line = _line_for(kind, key, rows, now)
+        if line:
+            cards[name]["measured"] = line
+
+
+def _line_for(kind: str, key: str, rows: dict[str, Any], now: datetime) -> str | None:
+    if kind == "symbol":
+        return symbol_line(rows[key], now) if key in rows else None
+    return file_line([r for sid, r in rows.items() if file_of_symbol(sid) == key], now)
+
+
+def symbol_line(row: Any, now: datetime) -> str:
+    """One symbol's line, e.g. ``rank 3 of repo code in entry_point "cli build"
+    (12% of samples, 9-15%; repo code explains 40%), 2d old``."""
+    if row.freshness == "stale":
+        return f"stale: measured {_basis(row)} before the body changed, {_age(row, now)}"
+    details = "; ".join(d for d in (_share(row), _explained(row)) if d)
+    paren = f" ({details})" if details else ""
+    return f"{_place(row)} {_basis(row)}{paren}, {_age(row, now)}{_earlier(row)}"
+
+
+def file_line(rows: list[Any], now: datetime) -> str | None:
+    """A file's line: the basis once, then up to :data:`MAX_NAMED_IN_FILE` of
+    its functions from that run, strongest first; the rest are counted."""
+    if not rows:
+        return None
+    fresh = sorted((r for r in rows if r.freshness != "stale"), key=_strongest)
+    if not fresh:
+        if len(rows) == 1:
+            return "stale: 1 function measured before its body changed"
+        return f"stale: {len(rows)} functions measured before their bodies changed"
+    lead = fresh[0]
+    named = [r for r in fresh if r.run_id == lead.run_id][:MAX_NAMED_IN_FILE]
+    items = "; ".join(_file_item(r) for r in named)
+    explained = _explained(lead)
+    paren = f" ({explained})" if explained else ""
+    line = f"{_basis(lead)}{paren}, {_age(lead, now)}{_earlier(lead)}: {items}"
+    more = len(rows) - len(named)
+    return f"{line}; {more} more measured" if more else line
+
+
+def _strongest(row: Any) -> tuple[Any, ...]:
+    return (
+        row.tier not in _RANKED,
+        row.rank if row.rank is not None else float("inf"),
+        row.symbol_id,
+    )
+
+
+def _file_item(row: Any) -> str:
+    name = row.symbol_id.split("::", 1)[-1]
+    share = _share(row)
+    place = f"rank {row.rank}" if row.tier in _RANKED and row.rank else "not ranked"
+    return f"{name} {place}" + (f" ({share})" if share else "")
+
+
+def _place(row: Any) -> str:
+    if row.tier in _RANKED and row.rank:
+        return f"rank {row.rank} of repo code"
+    if row.samples is not None:
+        return f"measured, not ranked ({row.samples} samples)"
+    return "measured, not ranked"
+
+
+def _basis(row: Any) -> str:
+    name = row.workload_name or "unnamed"
+    if row.workload_class == "unit_test":
+        return f'in tests "{name}"'
+    return f'in {row.workload_class or "unknown"} "{name}"'
+
+
+def _share(row: Any) -> str | None:
+    """The share with its interval; a tracer run orders and gives none."""
+    if row.ordering_only:
+        return "ordering only"
+    if row.share_low is not None and row.share_high is not None and row.samples and row.run_samples:
+        return (
+            f"{_pct(row.samples / row.run_samples)} of samples, "
+            f"{round(row.share_low * 100)}-{_pct(row.share_high)}"
+        )
+    if row.total_share is not None:
+        return f"{_pct(row.total_share)} of the run"
+    return None
+
+
+def _explained(row: Any) -> str | None:
+    if row.explained_share is None:
+        return None
+    return f"repo code explains {_pct(row.explained_share)}"
+
+
+def _age(row: Any, now: datetime) -> str:
+    at = row.measured_at
+    if at is None:
+        return "age unknown"
+    at = at if at.tzinfo else at.replace(tzinfo=UTC)
+    return f"{max(0, (now - at).days)}d old"
+
+
+def _earlier(row: Any) -> str:
+    return ", earlier commit, same body" if row.freshness == "body_unchanged" else ""
+
+
+def _pct(value: float) -> str:
+    pct = value * 100
+    if 0 < pct < 1:
+        return "<1%"
+    return f"{round(pct)}%"

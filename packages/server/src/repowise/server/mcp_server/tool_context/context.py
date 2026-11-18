@@ -93,6 +93,7 @@ from repowise.server.mcp_server._workspace_routing import (
     run_grouped,
 )
 from repowise.server.mcp_server.tool_context.enrichment import attach_doc_references
+from repowise.server.mcp_server.tool_context.measured import attach_measured
 from repowise.server.mcp_server.tool_context.targets import _resolve_one_target
 
 _log = logging.getLogger("repowise.mcp.context")
@@ -196,12 +197,14 @@ async def get_context(
         raw_results = await _resolve_cards(
             session, repository, targets, include_set, compact, ctx, exclude_spec, collector
         )
+        cards = {r["target"]: r for r in raw_results if isinstance(r, dict)}
         # One batched read on the shared session, not one per target inside the
         # gather: savepoints opened concurrently on one session close each other.
+        await attach_measured(session, repository.id, cards)
         await attach_doc_references(
             session,
             repository,
-            {r["target"]: r for r in raw_results if isinstance(r, dict)},
+            cards,
             exclude_spec=exclude_spec,
             collector=collector,
             repo_root=served_root(repository, ctx.path),

@@ -14,7 +14,7 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import Table, delete, insert, select
+from sqlalchemy import Table, and_, delete, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
@@ -270,19 +270,34 @@ async def replace_symbol_hotness(
 
 
 async def hotness_for_symbols(
-    session: AsyncSession, repository_id: str, symbol_ids: Iterable[str]
+    session: AsyncSession,
+    repository_id: str,
+    symbol_ids: Iterable[str],
+    *,
+    files: Iterable[str] = (),
 ) -> dict[str, SymbolHotness]:
-    """The ``symbol_hotness`` row of each of *symbol_ids* that has one.
+    """The ``symbol_hotness`` row of each of *symbol_ids*, and of every symbol in *files*, that has one.
 
-    A symbol missing from the result has no runtime evidence: unknown, never cold.
+    A symbol missing from the result has no runtime evidence: unknown, never
+    cold. A file is read as its key range, so a few symbols and files cost
+    one keyed statement.
     """
+    from .function_facts import key_range
+
     wanted = sorted(set(symbol_ids))
+    ranges = sorted({key_range(path) for path in files})
+    sid = SymbolHotness.symbol_id
+    chunks = [wanted[i : i + _BATCH_SIZE] for i in range(0, len(wanted), _BATCH_SIZE)] or [[]]
     out: dict[str, SymbolHotness] = {}
-    for i in range(0, len(wanted), _BATCH_SIZE):
+    for n, chunk in enumerate(chunks):
+        clauses: list[Any] = [sid.in_(chunk)] if chunk else []
+        if n == 0:
+            clauses += [and_(sid >= low, sid < high) for low, high in ranges]
+        if not clauses:
+            break
         result = await session.execute(
             select(SymbolHotness).where(
-                SymbolHotness.repository_id == repository_id,
-                SymbolHotness.symbol_id.in_(wanted[i : i + _BATCH_SIZE]),
+                SymbolHotness.repository_id == repository_id, or_(*clauses)
             )
         )
         out.update({row.symbol_id: row for row in result.scalars()})
