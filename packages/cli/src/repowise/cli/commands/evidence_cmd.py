@@ -511,7 +511,8 @@ async def _status(repo_path: Path) -> dict[str, Any]:
         async with get_session(create_session_factory(engine)) as session:
             repo_row = await get_repository_by_path(session, str(repo_path))
             if repo_row is None:
-                return {"repo": str(repo_path), "indexed": False, "workloads": []}
+                # Same keys as an indexed repo, so a JSON reader never meets a missing one.
+                return {"repo": str(repo_path), "indexed": False, **evidence_status([], None)}
             runs = await list_evidence_runs(session, repo_row.id)
             return {
                 "repo": str(repo_path),

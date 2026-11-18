@@ -276,6 +276,28 @@ def test_status_names_the_newest_run_of_each_workload(indexed) -> None:
     assert "repo code explains 30% of 200 samples" in table.stdout
 
 
+def test_status_json_keeps_its_keys_without_an_index(tmp_path, monkeypatch) -> None:
+    async def empty_store() -> None:
+        (tmp_path / ".repowise").mkdir()
+        engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / '.repowise' / 'wiki.db'}")
+        try:
+            await init_db(engine)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(empty_store())
+    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: tmp_path)
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+    payload = _json(_status("--format", "json"))
+
+    assert payload == {
+        "repo": str(tmp_path), "indexed": False,
+        "reference_commit": None, "runs_stored": {}, "workloads": [],
+    }
+
+
 @pytest.mark.parametrize(
     ("value", "shown"), [(200, "200"), (1234567, "1,234,567"), (1234567.0, "1,234,567"), (0.5, "0.50")]
 )
