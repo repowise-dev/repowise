@@ -81,9 +81,9 @@ def test_the_root_stack_matches_every_stack_fixture(case):
         ("node_jest_npm", "npx jest --ci", "npx jest --coverage --coverageReporters=lcov --ci", "coverage/lcov.info"),
         # pnpm reads ``pnpm test --flag`` as its own option and passes a ``--`` on to the script.
         ("node_vitest_pnpm", "pnpm test",
-         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure", "coverage/lcov.info"),
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage", "coverage/lcov.info"),
         ("node_vitest_pnpm", "pnpm test -- --ci",
-         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure -- --ci",
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage -- --ci",
          "coverage/lcov.info"),
         ("node_mocha_yarn", "yarn test", "npx --yes c8 --reporter=lcov yarn test", "coverage/lcov.info"),
         ("go", "go test -race ./...", "go test -coverprofile=coverage.out -race ./...", "coverage.out"),
@@ -423,7 +423,7 @@ def test_the_dotnet_sdk_covers_the_app_projects_too():
 # JavaScript workspaces, installs and runners, in the layouts real repositories use
 # ---------------------------------------------------------------------------
 
-_VITEST = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure"
+_VITEST = "--coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure --coverage.reportsDirectory=coverage"
 
 
 def _package(scripts: dict | None = None, **fields) -> str:
@@ -500,6 +500,40 @@ def test_a_runner_at_the_end_of_a_chain_is_recognised(script, runner, command):
     files = {"package.json": _package({"test": script}, devDependencies={"@vitest/coverage-v8": "1"})}
     (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
     assert (stack.runner, stack.test) == (runner, command)
+
+
+@pytest.mark.parametrize(
+    ("script", "runner"),
+    [
+        # An exec wrapper runs the command after its own flags, whatever the tool.
+        ("nub exec --node vitest run", "vitest"),
+        ("pnpm exec vitest run", "vitest"),
+        ("npm exec -- jest --ci", "jest"),
+        ("npx --yes vitest", "vitest"),
+        ("bunx vitest run", "vitest"),
+        ("cross-env CI=1 yarn exec jest", "jest"),
+        # A flag that takes a value leaves the value where the runner would be.
+        ("npx -p vitest node run.js", None),
+        ("bundle exec rspec", None),
+    ],
+)
+def test_an_exec_wrapper_runs_the_runner_it_names(script, runner):
+    files = {"package.json": _package({"test": script}, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.runner == runner
+    if runner == "vitest":
+        assert stack.test == f"pnpm run test {_VITEST}"
+
+
+def test_vitest_writes_its_report_where_the_ingest_line_looks():
+    # The config's own directory would put lcov.info under coverage/raw/default.
+    files = {
+        "package.json": _package({"test": "vitest run"}, devDependencies={"@vitest/coverage-v8": "1"}),
+        "vitest.config.ts": "export default { test: { coverage: { reportsDirectory: './coverage/raw/default' } } }",
+    }
+    (stack,) = detect_stacks([*files, "pnpm-lock.yaml"], files)
+    assert stack.test.endswith(" --coverage.reportsDirectory=coverage")
+    assert stack.reports == "coverage/lcov.info"
 
 
 def test_a_test_script_chaining_other_scripts_falls_back_to_the_one_running_the_runner():
