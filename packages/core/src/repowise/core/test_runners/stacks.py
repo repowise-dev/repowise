@@ -37,11 +37,12 @@ from pathlib import Path
 from typing import Any
 
 from ..build_units.model import BuildUnitIndex
-from ..code_origin import path_origin
+from ..code_origin import code_origin, path_origin
 from ..fs_walk import INDEX_BLOCKED_DIRS, walk_repo
 from ..ingestion.languages.registry import REGISTRY
 from ..ingestion.resolvers.pnpm_workspace import PNPM_WORKSPACE_FILENAME
 from ..pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
+from ..test_paths import is_test_related_path
 
 #: Where to look when the stack is unknown.
 GENERIC_REPORTS = (
@@ -730,7 +731,7 @@ def _dotnet_setup(root: set[str], projects: str) -> tuple[str, ...]:
     return ("- uses: actions/setup-dotnet@v4", "  with:", "    dotnet-version: |", *(f"      {v}" for v in versions))
 
 
-def _dotnet_sdk(files: dict[str, str], projects: str) -> str | None:
+def _dotnet_sdk(files: dict[str, str], projects: str, scope: str) -> str | None:
     """Which SDK ``dotnet test`` needs: the ``global.json`` pin, else the newest target framework's."""
     try:
         pinned = json.loads(files.get(_DOTNET_SDK_PIN) or "{}").get("sdk", {}).get("version")
@@ -742,14 +743,15 @@ def _dotnet_sdk(files: dict[str, str], projects: str) -> str | None:
     versions = sorted({tuple(map(int, v.split("."))) for v in re.findall(r"(?<![\w.])net(\d+\.\d+)", projects)})
     if versions:
         newest = ".".join(map(str, versions[-1]))
-        return f"The projects target up to net{newest}: `dotnet test` needs the .NET {newest} SDK or later."
+        return (f"The projects {scope} target up to net{newest}: "
+                f"`dotnet test` needs the .NET {newest} SDK or later.")
     return None
 
 
 def _dotnet_notes(
-    tests: list[str], files: dict[str, str], projects: str, target: str | None, found: bool
+    tests: list[str], files: dict[str, str], projects: tuple[str, str], target: str | None, found: bool
 ) -> list[str]:
-    notes = [sdk] if (sdk := _dotnet_sdk(files, projects)) else []
+    notes = [sdk] if (sdk := _dotnet_sdk(files, *projects)) else []
     if tests and not any("coverlet.collector" in t for p, t in files.items() if p in tests):
         notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
                      "test project (`dotnet add package coverlet.collector`).")
@@ -761,6 +763,26 @@ def _dotnet_notes(
     return [*notes, "Repowise found no solution or test project to point `dotnet test` at."]
 
 
+#: A project a solution names: ``"src\App\App.csproj"`` (.sln) or ``Path="src/App/App.csproj"`` (.slnx).
+_SOLUTION_PROJECT = re.compile(r"[\"']([^\"']+\.csproj)[\"']")
+
+
+def _dotnet_projects(files: dict[str, str], target: str | None) -> tuple[str, str]:
+    """The text of the projects the target solution builds, and how the SDK note names them.
+
+    Every project read when the solution's text names none of them, or there is no
+    solution; the note then says so, as a ``samples/`` project outside it counts too.
+    """
+    read = {p: t for p, t in files.items() if p.endswith(".csproj")}
+    if target and target.endswith(_SOLUTIONS):
+        base = _dir(target)
+        refs = _SOLUTION_PROJECT.findall(files.get(target, ""))
+        listed = {posixpath.normpath(_join(base, ref.replace("\\", "/"))) for ref in refs} & read.keys()
+        if listed:
+            return "\n".join(read[p] for p in sorted(listed)), f"in `{target}`"
+    return "\n".join(read.values()), "Repowise read"
+
+
 def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     # A samples or fixture solution is not the one that runs the tests; the unit's own comes first.
     solutions = [p for p in paths if p.endswith(_SOLUTIONS) and _kept(p)]
@@ -768,8 +790,8 @@ def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     solutions = own if len(own) == 1 else solutions
     tests = [p for p in paths if p.endswith(".csproj") and "test" in p.lower() and p.count("/") <= 3]
     target = solutions[0] if len(solutions) == 1 else tests[0] if len(tests) == 1 and not solutions else None
-    projects = "\n".join(t for p, t in files.items() if p.endswith(".csproj"))
-    setup = _dotnet_setup(root, projects)
+    projects = _dotnet_projects(files, target)
+    setup = _dotnet_setup(root, projects[0])
     notes = _dotnet_notes(tests, files, projects, target, bool(solutions or tests))
     test = f"dotnet test {target} {_DOTNET_FLAGS}" if target else ""
     return Stack(
@@ -942,11 +964,16 @@ def _kept(path: str) -> bool:
     """Whether a manifest at *path* can declare a unit: not pruned, not a fixture or sample.
 
     The directory is judged too: a manifest's own origin is ``build``, which hides a
-    ``testdata/`` or ``fixtures/`` directory around it.
+    ``testdata/`` or ``fixtures/`` directory around it. The manifest makes its directory
+    a package root, which keeps a shipped ``test-utils/`` package production, as it
+    does for every file below one.
     """
-    blocked = any(part in INDEX_BLOCKED_DIRS for part in path.split("/")[:-1])
-    plain = _join(_dir(path), _PLAIN_NAME)
-    return not blocked and path_origin(path) not in _SKIP_ORIGINS and path_origin(plain) not in _SKIP_ORIGINS
+    if any(part in INDEX_BLOCKED_DIRS for part in path.split("/")[:-1]) or path_origin(path) in _SKIP_ORIGINS:
+        return False
+    directory = _dir(path)
+    plain = _join(directory, _PLAIN_NAME)
+    is_test = is_test_related_path(plain, package_root=lambda d: d == directory)
+    return code_origin(plain, is_test=is_test) not in _SKIP_ORIGINS
 
 
 def _stacks_of(name: str) -> set[str]:
@@ -1114,6 +1141,8 @@ def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> 
             # Ceiling: _DOTNET_PROJECTS projects; a larger solution may need its SDK named in global.json.
             others = [r for r in projects if r not in tests]
             wanted += [_join(root, r) for r in (tests + others)[:_DOTNET_PROJECTS]]
+            # The solutions too: the SDK note reads which projects the chosen one builds.
+            wanted += [_join(root, r) for r in rel if r.endswith(_SOLUTIONS)]
     return list(dict.fromkeys(wanted))
 
 
