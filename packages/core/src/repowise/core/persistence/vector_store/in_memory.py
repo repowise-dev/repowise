@@ -66,6 +66,15 @@ class InMemoryVectorStore(VectorStore):
             self._store[page_id] = (list(vector), dict(metadata))
         return True
 
+    async def copy_vectors(self, mapping: dict[str, str]) -> set[str]:
+        snapshots = {
+            source: (list(self._store[source][0]), dict(self._store[source][1]))
+            for source in mapping if source in self._store
+        }
+        for source, value in snapshots.items():
+            self._store[mapping[source]] = value
+        return set(snapshots)
+
     async def search(
         self, query: str, limit: int = 10, *, kind: str = "query"
     ) -> list[SearchResult]:

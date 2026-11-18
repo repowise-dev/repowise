@@ -331,6 +331,16 @@ class VectorStore(ABC):
         """
         return False
 
+    async def copy_vectors(self, mapping: dict[str, str]) -> set[str]:
+        """Copy stored vectors and metadata to new IDs without embedding.
+
+        Each destination has one source. Snapshot all sources before writing
+        any destination so occupied-key chains work. Leave sources intact;
+        return the source IDs copied.
+        Unsupported backends return an empty set. Write failures propagate.
+        """
+        return set()
+
     @abstractmethod
     async def search(
         self, query: str, limit: int = 10, *, kind: str = "query"
