@@ -394,8 +394,11 @@ def _edit_script(
     # (Vitest and Jest stop reading options there) and reads ``pnpm test --flag`` as its own
     # option, so it gets ``pnpm run <script> <flags>``. yarn and bun pass arguments as they are.
     tool, run = m.group(1), m.group(2)
-    sep = " --" if tool == "npm" and not re.search(r"(?<!\S)--(?!\S)", after) else ""
-    edits = [(end, f"{sep} {_NODE_FLAGS[runner]}")]
+    dashes = re.search(r"(?<!\S)--(?!\S)", after)
+    sep = " --" if tool == "npm" and not dashes else ""
+    # pnpm: before a ``--`` the line already has, where the runner still reads them.
+    at = m.end() + dashes.start() - 1 if tool == "pnpm" and dashes else end
+    edits = [(at, f"{sep} {_NODE_FLAGS[runner]}")]
     if tool == "pnpm" and not run:
         edits.append((m.start(3), "run "))
     prepare = _vitest_provider(pm, deps, workspace) if runner == "vitest" else ()
@@ -959,11 +962,12 @@ def _aggregates(stack: str, root: str, files: Mapping[str, str]) -> bool:
         pom = files.get(_join(root, "pom.xml"), "")
         return "<modules>" in pom or bool(re.search(r"^\s*include\b", settings, re.M))
     if stack == "node":
-        # A workspace root whose tests run from the root (not through turbo, nx or ``-r``) runs its packages'.
+        # A workspace root whose test script calls a known runner runs its packages' tests. Any
+        # other script (turbo, ``yarn workspaces run``, an unknown tool) leaves the packages theirs.
         package, scripts, _ = _node_package({"package.json": files.get(_join(root, "package.json"), "")})
-        script = str(scripts.get(_test_script(scripts)[0]) or "")
+        runner = _test_script(scripts)[1]
         workspace = _node_workspace(package, _join(root, PNPM_WORKSPACE_FILENAME) in files)
-        return workspace and bool(script) and not _DELEGATES.search(script)
+        return workspace and runner is not None
     return stack == "dotnet"
 
 

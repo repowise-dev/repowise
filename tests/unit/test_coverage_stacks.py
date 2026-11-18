@@ -81,6 +81,9 @@ def test_the_root_stack_matches_every_stack_fixture(case):
         # pnpm reads ``pnpm test --flag`` as its own option and passes a ``--`` on to the script.
         ("node_vitest_pnpm", "pnpm test",
          "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure", "coverage/lcov.info"),
+        ("node_vitest_pnpm", "pnpm test -- --ci",
+         "pnpm run test --coverage.enabled --coverage.reporter=lcov --coverage.reportOnFailure -- --ci",
+         "coverage/lcov.info"),
         ("node_mocha_yarn", "yarn test", "npx --yes c8 --reporter=lcov yarn test", "coverage/lcov.info"),
         ("go", "go test -race ./...", "go test -coverprofile=coverage.out -race ./...", "coverage.out"),
         ("go", "go test -coverprofile=c.out ./...", None, "c.out"),
@@ -388,7 +391,18 @@ def test_a_workspaces_root_with_its_own_runner_runs_the_members_too():
     }
     paths = [*files, "pnpm-lock.yaml"]
     (stack,) = detect_stacks(paths, files)
-    assert (stack.root, stack.package_manager) == ("", "pnpm")
+    assert (stack.root, stack.package_manager, stack.test) == ("", "pnpm", f"pnpm run test {_VITEST}")
+
+
+@pytest.mark.parametrize("script", ["yarn workspaces run test", "node scripts/test.js"])
+def test_a_workspaces_root_without_a_known_runner_leaves_the_members_theirs(script):
+    files = {
+        "package.json": _package({"test": script}, workspaces=["packages/*"]),
+        "packages/a/package.json": _package({"test": "vitest"}, devDependencies={"@vitest/coverage-v8": "1"}),
+    }
+    found = detect_stacks([*files, "yarn.lock"], files)
+    member = next(s for s in found if s.root == "packages/a")
+    assert (member.package_manager, member.test) == ("yarn", f"yarn test {_VITEST}")
 
 
 def test_a_package_with_no_lockfile_installs_before_its_tests():
@@ -454,4 +468,4 @@ def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
     files = {"package.json": _package({"test": "vitest"}, devDependencies={"vitest": "3.0.0"})}
     (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
                              {**files, "pnpm-workspace.yaml": "packages: []\n"})
-    assert stack.requires[-1] == 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"'
+    assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
