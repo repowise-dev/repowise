@@ -611,6 +611,130 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
         )
 
 
+@evidence_group.command("setup")
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@format_option()
+def evidence_setup_command(repo: str | None, fmt: str) -> None:
+    """Print how to collect evidence here; run nothing, write nothing.
+
+    For each build unit: the stack, the command that writes a coverage report
+    repowise reads (run from the unit's root), what it needs first, where the
+    report lands, and the exact ingest line (run from the repository root). A
+    report already on disk is ingested first. ``next_call`` lists the steps to
+    run next, each with its directory. ``stack: unknown`` when repowise is not
+    sure how a unit runs. Works before the repository is indexed.
+
+    Examples:
+
+        repowise evidence setup
+        repowise evidence setup --format json
+    """
+    _print_setup(repo, fmt)
+
+
+def _print_setup(repo: str | None, fmt: str) -> None:
+    """Shared by ``evidence setup`` and ``coverage setup``."""
+    from repowise.core.evidence.setup import evidence_setup
+    from repowise.core.workspace.update.state import get_head_commit
+
+    notices = notice_console(fmt)
+    repo_path = _resolve_repo(repo, notices)
+    indexed, units, coverage_commit, index_error, index_fix = run_async(_stored_units(repo_path))
+    plan = evidence_setup(
+        repo_path,
+        indexed=indexed,
+        units=units,
+        head=get_head_commit(repo_path),
+        coverage_commit=coverage_commit,
+        index_error=index_error,
+        index_fix=index_fix,
+    )
+    if fmt == "json":
+        emit_json(plan)
+        return
+    for unit in plan["units"]:
+        for line in _setup_lines(unit):
+            notices.print(line)
+    call = plan["next_call"]
+    if plan["reason"]:
+        notices.print(f"[yellow]{escape(plan['reason'])}[/yellow]")
+    if call is None:
+        return
+    notices.print(f"[bold]Next[/bold]: {escape(call['purpose'])}")
+    for step in call["steps"]:
+        notices.print(f"  [dim]in {escape(step['cwd'])}[/dim]\n    [cyan]{escape(step['run'])}[/cyan]")
+
+
+def _setup_lines(unit: dict[str, Any]) -> list[str]:
+    """One unit's coverage plan, in words."""
+    cov = unit["coverage"]
+    tools = ", ".join(t for t in (unit["runner"], unit["package_manager"]) if t)
+    head = f"[bold]{unit['stack']}[/bold]" + (f" ({escape(tools)})" if tools else "")
+    lines = [f"{head} at {escape(unit['root'] or 'the repository root')}"]
+    if cov["command"]:
+        lines += [f"  needs: [cyan]{escape(p)}[/cyan]" for p in cov["prerequisites"]]
+        lines.append(f"  coverage: [cyan]{escape(cov['command'])}[/cyan]")
+    elif cov["reason"]:
+        lines.append(f"  [yellow]{escape(cov['reason'])}[/yellow]")
+    if cov["found"]:
+        lines.append(f"  on disk: {escape(', '.join(cov['found']))}")
+    if cov["ingest"]:
+        lines.append(f"  ingest (from the repository root): [cyan]{escape(cov['ingest'])}[/cyan]")
+    return lines
+
+
+async def _stored_units(repo_path: Path) -> tuple[bool, Any, str | None, str | None, str]:
+    """Whether *repo_path* has an index, its stored build units (None without),
+    the commit its newest coverage measured, why an existing index could not
+    be read (None when it could, or when there is none), and the command that
+    fixes it.
+
+    Opens the store only when one exists, so a repository never indexed gets
+    its plan and no empty store is left behind.
+    """
+    from repowise.cli.helpers import StaleIndexError, repo_index_session
+    from repowise.core.evidence.setup import DOCTOR_COMMAND, UPDATE_COMMAND
+    from repowise.core.persistence.crud.analysis.coverage import load_newest_ingest
+    from repowise.core.persistence.crud.build_units import load_build_units
+    from repowise.core.persistence.database import has_db_store
+
+    if not has_db_store(repo_path):
+        return False, None, None, None, DOCTOR_COMMAND
+    try:
+        async with repo_index_session(repo_path) as opened:
+            if opened is not None:
+                session, repo_id = opened
+                ingest = await load_newest_ingest(session, repo_id)
+                commit = ingest.ingested_commit_sha if ingest is not None else None
+                return True, await load_build_units(session, repo_id), commit, None, DOCTOR_COMMAND
+    except StaleIndexError as exc:
+        # Written by an older repowise and not repairable in place; its message says to update.
+        return False, None, None, exc.message, UPDATE_COMMAND
+    # The session swallows read errors; ask once more to tell a store that
+    # does not hold this repository from one that cannot be read.
+    return False, None, None, await _index_read_error(repo_path), DOCTOR_COMMAND
+
+
+async def _index_read_error(repo_path: Path) -> str | None:
+    """Why the existing store cannot be read for *repo_path*, or None when it can."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    try:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                await get_repository_by_path(session, str(repo_path))
+        finally:
+            await engine.dispose()
+    except (SQLAlchemyError, OSError, LookupError) as exc:
+        first = (str(exc).splitlines() or [""])[0]
+        return f"{type(exc).__name__}: {first[:200]}"
+    return None
+
+
 @evidence_group.command("status")
 @click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
 @format_option()

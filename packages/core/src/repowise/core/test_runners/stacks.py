@@ -281,9 +281,14 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     editor = partial(_edit_pytest, sources=sources, declared=declared)
     # The standalone pip and hatch install lines already bring pytest-cov.
     test = partial(_edit_pytest, sources=sources, declared=declared or tool in ("pip", "hatch"))(base, _PYTEST.search(base))
+    requires = _run_lines(test.prepare)
+    if tool in ("pip", "hatch"):
+        # Their CI installs live in ``setup``; a workstation needs the same tools in its environment.
+        python = "hatch run python" if tool == "hatch" else "python"
+        requires += (f"{python} -m pip install pytest pytest-cov",)
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
-        notes=tuple(notes), requires=_run_lines(test.prepare), pattern=_PYTEST, skip=_PYTEST_ONE_FILE, editor=editor,
+        notes=tuple(notes), requires=requires, pattern=_PYTEST, skip=_PYTEST_ONE_FILE, editor=editor,
     )
 
 

@@ -1186,6 +1186,7 @@ caps.
 Ingest coverage reports and gate a change on patch coverage in CI.
 
 ```bash
+repowise coverage setup                 # how to write a report here (`evidence setup`, coverage part)
 repowise coverage add [PATHS...]        # ingest (+ per-test map when contexts exist)
 repowise coverage status                # ingested coverage + "Test-to-code map" counts
 repowise coverage check [REVSPEC]       # gate a change on patch coverage (CI)
@@ -1367,6 +1368,7 @@ repowise evidence add stacks.txt --workload "api" --class load_test --value-kind
 repowise evidence add bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
 repowise evidence add bench.json --workload "go bench" --class benchmark --format json
 repowise evidence status --format json   # newest run of each workload
+repowise evidence setup --format json    # what to run here, per unit, and how to ingest it
 ```
 
 | Flag | What it does | Default |
@@ -1403,6 +1405,15 @@ repowise evidence status --format json   # newest run of each workload
   `unknown` when either commit is missing), how much of the run repo code explains
   (`explained_share`, unknown when the run gave no total or explained value, or a total of 0),
   and its counts.
+- `setup` runs nothing and writes nothing. Per build unit it prints the stack (`unknown` when
+  repowise is not sure, with the reason), the test command with coverage (run from the unit's
+  `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
+  `ingest` line (run from the repository root). `next_call` lists the steps to run next, each with
+  its `cwd`: ingest a report on disk first, else run a unit's command and ingest what it wrote.
+  Once the newest coverage measured the checkout's commit, `next_call` is `null` and `reason`
+  says so, so an agent that reruns `setup` after each step stops.
+  Before the repository is indexed, the steps are `repowise init --yes --no-prose` and `setup`
+  again; no store is created. `coverage setup` prints the same plan. Takes `--path` and `--format`.
 
 ---
 
