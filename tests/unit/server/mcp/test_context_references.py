@@ -767,6 +767,26 @@ async def test_mock_patch_targets_are_strings_not_references(session, repo_id, t
 
 
 @pytest.mark.asyncio
+async def test_forward_reference_annotations_stay_references(session, repo_id, tmp_path):
+    node = await _seed(session, repo_id, tmp_path)
+    with (tmp_path / _USER).open("a", encoding="utf-8") as fh:
+        fh.write(
+            'def t2(u: "backend_of") -> None: ...\n'
+            'def t3() -> "backend_of": ...\n'
+            'T = TypeVar("T", bound="backend_of")\n'
+            'v = cast("backend_of", w)\n'
+            'getattr(catalog, "backend_of")\n'
+        )
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    # A type written as a string uses it in code; a getattr name does not.
+    files = out["files"][_USER]
+    assert files["reference"] == [11, 12, 13, 14]
+    assert files["string"] == [10, 15]
+
+
+@pytest.mark.asyncio
 async def test_spy_targets_in_typescript_are_strings(session, repo_id, tmp_path):
     node = await _seed_js(
         session,

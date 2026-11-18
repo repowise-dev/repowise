@@ -444,8 +444,13 @@ class _ProseLines:
         at: set[tuple[int, int]] = set()
         # ``(line, start, end)`` of one-line, non-f strings that spell the name as code.
         named: set[tuple[int, int, int]] = set()
+        # The two tokens before the current one, past line continuations and comments.
+        before: tuple[str, str] = ("", "")
         try:
             for t in tokenize.generate_tokens(io.StringIO(text).readline):
+                if t.type in (tokenize.NL, tokenize.COMMENT):
+                    continue
+                prev, before = before, (before[1], t.string)
                 if t.type == tokenize.NAME and t.string == self._name:
                     code.add(t.start[0])
                     at.add(t.start)
@@ -462,6 +467,7 @@ class _ProseLines:
                         not fstring
                         and _NAMED_BODY.fullmatch(m.group(3))
                         and t.start[0] == t.end[0]
+                        and not _annotation_slot(prev)
                     ):
                         named.add((t.start[0], t.start[1], t.end[1]))
         except (tokenize.TokenError, SyntaxError):
@@ -538,6 +544,13 @@ class _ProseLines:
             )
         full, comments = read[0][n - 1], read[1][n - 1]
         return all(_masked_string_hit(text, full, comments, m) for m in hits)
+
+
+def _annotation_slot(prev: tuple[str, str]) -> bool:
+    """Whether a string after tokens *prev* is a type written as a string, a
+    forward reference (``u: "User"``, ``-> "User"``, ``bound="User"``,
+    ``cast("User", x)``), which uses the type in code."""
+    return prev[1] in (":", "->") or prev in (("bound", "="), ("cast", "("))
 
 
 def _masked_string_hit(text: str, full: str, comments: str, m: re.Match[str]) -> bool:
