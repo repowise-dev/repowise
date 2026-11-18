@@ -95,10 +95,35 @@ _CURRENT: ContextVar[Interaction | None] = ContextVar("_repowise_mcp_interaction
 #: it rather than accumulating for the life of the server.
 _SESSIONS: WeakKeyDictionary[Any, tuple[str, dict[str, str], str]] = WeakKeyDictionary()
 
+#: File reads each connection has already been credited with. Weak for the same
+#: reason as :data:`_SESSIONS`: the record ends with the connection.
+_CREDITED_READS: WeakKeyDictionary[Any, set[bytes]] = WeakKeyDictionary()
+
 
 def current() -> Interaction | None:
     """The invocation in flight, or ``None`` outside one."""
     return _CURRENT.get()
+
+
+def first_credit(read: bytes) -> bool:
+    """Whether this connection is being credited with *read* for the first time.
+
+    A call with no session to remember it by always counts as the first.
+    """
+    try:
+        session = _context().session  # type: ignore[union-attr]
+    except Exception:
+        return True
+    if session is None:
+        return True
+    try:
+        credited = _CREDITED_READS.setdefault(session, set())
+    except TypeError:  # a session that cannot be weak-referenced
+        return True
+    if read in credited:
+        return False
+    credited.add(read)
+    return True
 
 
 #: Every ``error_reason`` a tool call can report. Fixed slugs, never message text.

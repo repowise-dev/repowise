@@ -119,7 +119,7 @@ async def _render_ambiguous(
             targets=sorted({r.file_path for r in rows}),
         ),
     }
-    _finish_ambiguous(response, whole_bodies, not_rendered, text_cache)
+    _finish_ambiguous(response, whole_bodies, not_rendered, repo_root, text_cache)
     return response
 
 
@@ -127,6 +127,7 @@ def _finish_ambiguous(
     response: dict[str, Any],
     whole_bodies: int,
     not_rendered: list[dict],
+    repo_root: Path,
     text_cache: dict[str, str | None],
 ) -> None:
     """Completeness, the not-rendered list and the replaced-read savings."""
@@ -140,11 +141,12 @@ def _finish_ambiguous(
         )
 
     from repowise.server.mcp_server._savings import declare_replaced
-    from repowise.server.mcp_server._savings.reads import read_tokens
+    from repowise.server.mcp_server._savings.reads import read_credit
 
-    full_tokens = sum(read_tokens(t) for t in text_cache.values() if t)
-    if full_tokens:
-        declare_replaced(response, full_tokens)
+    declare_replaced(
+        response,
+        sum(read_credit(repo_root, path, text) for path, text in text_cache.items() if text),
+    )
 
 
 def _correct_ambiguity_note(result: dict[str, Any], _collector: Any) -> None:

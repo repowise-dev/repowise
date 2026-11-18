@@ -69,13 +69,10 @@ async def _resolve_range_read(
     if _pkg.is_excluded(path, _get_exclude_spec(ctx.path)):
         return _err("not_found", f"'{path}' is excluded from indexing.")
 
-    text = _read_file_text(Path(str(ctx.path)), path)
+    repo_root = Path(str(ctx.path))
+    text = _read_file_text(repo_root, path)
     if text is None:
         return _err("not_found", f"File could not be read: {path!r}")
-
-    from repowise.server.mcp_server._savings.reads import read_tokens
-
-    full_tokens = read_tokens(text)
 
     if end < start:
         start, end = end, start
@@ -130,8 +127,9 @@ async def _resolve_range_read(
             f"Continue in one call: get_symbol({response['continuation']!r})."
         )
     from repowise.server.mcp_server._savings import declare_replaced
+    from repowise.server.mcp_server._savings.reads import read_credit
 
-    declare_replaced(response, full_tokens)
+    declare_replaced(response, read_credit(repo_root, path, text))
     return response
 
 

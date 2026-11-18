@@ -21,7 +21,7 @@ must be adjacent to it. If inferred tokens are nonzero, label the headline
 separate dimension and do not inflate the input headline.
 
 Current distill sizes use `chars_per_token_floor_v1`, defined as
-`floor(serialized_characters / 4)`; MCP events use `chars_per_token_floor_v2`,
+`floor(serialized_characters / 4)`; MCP events use `chars_per_token_floor_v3`,
 the same scale with the counterfactual table under "MCP counterfactuals". These are estimated tokens measured on a
 stable local scale, not provider-billed tokenizer counts. Every event names its
 unit and estimator; reports must not silently combine unlike units.
@@ -95,9 +95,10 @@ either. Query counts use result state plus `is_usable`, never token-field presen
 answer. The formulas live in `server/mcp_server/_savings/counterfactual.py`; a
 tool that holds the evidence (a file on disk, a scored diff) declares `R`
 through them, and the dict-only estimator with flat floors is the fallback.
-Events carrying this table record the estimator `chars_per_token_floor_v2`: the
+Events carrying this table record the estimator `chars_per_token_floor_v3`: the
 same `floor(chars / 4)` scale as v1, with the baselines below. Events written
-before it keep v1 and are not re-scored, because the ledger stores no payloads.
+under an earlier table keep their estimator and are not re-scored, because the
+ledger stores no payloads.
 
 **A Read** is one rangeless Read of the file: its first 2,000 lines, which is
 what Read returns without an offset or limit. When the caller is Claude Code
@@ -108,7 +109,7 @@ sides, since Claude Code numbers the replacement it is handed too.
 
 | Tool | `R` | Why that is what it replaces |
 |---|---|---|
-| `get_symbol` | one Read of each file a served body came from | the agent opens the file to find and read the symbol |
+| `get_symbol` | one Read of each file a served body came from, once per file content per MCP connection; a later call on the same content has no `R` | one Read gives the agent every symbol in the file, and an edited file has to be read again |
 | `get_context` file card, with or without skeleton | one Read of the file, once per file per call | the card answers what the file holds and how it is laid out, which is why the agent would open it |
 | `get_context` module / symbol card | 600 per listed child file (cap 20,000) / 1,200 | a directory skim / locating a definition and its callers |
 | `get_answer`, synthesised at high or medium confidence | 400 for the search plus one Read of each cited file | the answer stands in for finding and reading its sources |
