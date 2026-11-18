@@ -16,6 +16,7 @@ import networkx as nx
 import structlog
 
 from ...analysis.public_api import stamp_public_api
+from ...build_units import BuildUnitIndex
 from ...cancellation import check_cancelled
 from ..cohesion import (
     MODULE_DECLARATION_HINT,
@@ -119,6 +120,10 @@ class GraphBuilder(
         # Resolver-built DotNetProjectIndex, stashed by build() for the
         # dynamic-hints phase to reuse (see build()).
         self.dotnet_index: Any | None = None
+        # The repo's build units, collected by build() from the warmed
+        # resolver indexes, or read from the store for a rehydrated builder.
+        # None until either happens.
+        self.build_units: BuildUnitIndex | None = None
         # {(file, partial type's bare name): every file declaring a fragment
         # of that type}, filled by ``_resolve_dotnet_partials`` so the call
         # resolver can treat the fragments as the one class scope they are.
@@ -321,6 +326,16 @@ class GraphBuilder(
             parsed_files=self._parsed_files,
             source_map=self._source_map,
         )
+
+    def _collect_build_units(self, ctx: ResolverContext) -> None:
+        """Set :attr:`build_units` from the indexes the warmups left on *ctx*."""
+        from repowise.core.build_units.collect import collect_build_units
+
+        try:
+            self.build_units = collect_build_units(ctx)
+        except Exception as exc:  # a unit reader bug must not fail the index
+            log.warning("build_units_collection_failed", error=str(exc))
+            self.build_units = None
 
     def _shared_cpp_index(self, ctx: ResolverContext) -> Any | None:
         """The warmup's C/C++ workspace index, when the call resolver would build the same.
@@ -525,6 +540,7 @@ class GraphBuilder(
         from ..graph_warmups import run_warmups
 
         run_warmups(self._parsed_files, ctx, progress=progress)
+        self._collect_build_units(ctx)
 
         # Tests the import graph cannot see into, from the bytes already held,
         # so selection reads a stored fact and never re-reads test files.

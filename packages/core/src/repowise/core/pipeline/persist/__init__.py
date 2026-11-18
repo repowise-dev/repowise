@@ -66,6 +66,7 @@ from .health import (
     snapshot_health_from_store,
 )
 from .ingestion import (
+    persist_build_units,
     persist_ingestion,
 )
 from .prune import (
