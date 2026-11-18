@@ -14,6 +14,7 @@ for the same reason - they can no longer describe the current tree.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -981,6 +982,251 @@ async def get_health_finding_by_public_id(
     return result.scalars().first()
 
 
+# ---------------------------------------------------------------------------
+# Measured costs: what stored runs measured, beside the static causes
+# ---------------------------------------------------------------------------
+
+_MEASURED_CALLERS = 3
+_MEASURED_TESTS = 3
+
+
+async def measured_costs(
+    session: AsyncSession,
+    repository_id: str,
+    *,
+    limit: int = 10,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """The functions stored runs measured and ranked, beside the static causes.
+
+    Read at request time from ``symbol_hotness``, which every ingest and
+    update rebuilds, so nothing new is stored and an index without evidence
+    pays one indexed lookup. ``None`` when no function is ranked: callers add
+    nothing then, and every output stays as it was.
+
+    - ``measured``: functions ranked in a workload class that may lead
+      (``evidence.hotness.LEAD_CLASSES``) with no open static performance
+      finding on them, at most *limit*.
+    - ``measured_in_tests``: functions ranked under ``unit_test``, listed
+      apart and never leading, at most *limit*.
+    - ``on_static_findings``: ranked functions an open static finding already
+      sits on, with its cause ids. They get no row of their own.
+
+    Each group names its runs (workload class and name, commit, age, samples,
+    how much of the run production code explains). Each row carries the
+    function's lines, callers, owner and nearest tests. Stale evidence and
+    code outside production are never rows (``symbol_hotness`` holds neither).
+    """
+    from ....evidence.hotness import LEAD_CLASSES
+    from ....ingestion.symbol_identity import file_of_symbol
+    from .evidence import ranked_hotness
+
+    ranked = await ranked_hotness(session, repository_id, limit=None)
+    if not ranked:
+        return None
+    ids = [row.symbol_id for row in ranked]
+    spans = await _symbol_spans(session, repository_id, {file_of_symbol(i) for i in ids})
+    covered = await _static_causes_on(session, repository_id, set(ids), spans)
+    lead = [r for r in ranked if r.workload_class in LEAD_CLASSES and r.symbol_id not in covered]
+    tests = [r for r in ranked if r.workload_class == "unit_test" and r.symbol_id not in covered]
+    lead, tests = lead[:limit], tests[:limit]
+    context = await _function_context(
+        session, repository_id, [r.symbol_id for r in (*lead, *tests)]
+    )
+    at = now or _now_utc()
+    view: dict[str, Any] = {}
+    for key, rows in (("measured", lead), ("measured_in_tests", tests)):
+        if rows:
+            view[key] = {
+                "runs": _measured_runs(rows, at),
+                "rows": [_measured_row(r, spans, context) for r in rows],
+            }
+    # Not cut to *limit*: a ranked row is at most ``evidence.rank_top_n`` per run.
+    linked = [r for r in ranked if r.symbol_id in covered]
+    if linked:
+        view["on_static_findings"] = [
+            {
+                "symbol_id": r.symbol_id,
+                "opportunity_ids": sorted(covered[r.symbol_id]),
+                "rank": r.rank,
+                "workload_class": r.workload_class,
+                "workload_name": r.workload_name,
+            }
+            for r in linked
+        ]
+    return view or None
+
+
+async def _symbol_spans(
+    session: AsyncSession, repository_id: str, paths: set[str]
+) -> dict[str, list[Any]]:
+    """Every indexed symbol's span in *paths*, per file."""
+    from ...models import WikiSymbol
+
+    out: dict[str, list[Any]] = {}
+    for batch in chunked(sorted(paths)):
+        result = await session.execute(
+            select(
+                WikiSymbol.file_path,
+                WikiSymbol.symbol_id,
+                WikiSymbol.start_line,
+                WikiSymbol.end_line,
+            ).where(WikiSymbol.repository_id == repository_id, WikiSymbol.file_path.in_(batch))
+        )
+        for row in result:
+            out.setdefault(row.file_path, []).append(row)
+    return out
+
+
+async def _static_causes_on(
+    session: AsyncSession,
+    repository_id: str,
+    symbol_ids: set[str],
+    spans: dict[str, list[Any]],
+) -> dict[str, set[str]]:
+    """The open static performance causes on each of *symbol_ids* that has one.
+
+    On a function means the cause's edit site is the function, or an open
+    performance finding's line falls inside it and in no narrower symbol.
+    A finding with no line names no function, and one with no cause id has
+    no listed cause to carry the measurement, so neither covers a function.
+    """
+    from ....symbol_spans import symbol_at
+
+    out: dict[str, set[str]] = {}
+    for batch in chunked(sorted(symbol_ids)):
+        result = await session.execute(
+            select(
+                PerformanceOpportunity.intervention_symbol, PerformanceOpportunity.opportunity_id
+            ).where(
+                PerformanceOpportunity.repository_id == repository_id,
+                PerformanceOpportunity.status == "open",
+                PerformanceOpportunity.intervention_symbol.in_(batch),
+            )
+        )
+        for symbol_id, opportunity_id in result:
+            out.setdefault(symbol_id, set()).add(opportunity_id)
+    for batch in chunked(sorted(spans)):
+        result = await session.execute(
+            select(
+                HealthFinding.file_path, HealthFinding.line_start, HealthFinding.opportunity_id
+            ).where(
+                HealthFinding.repository_id == repository_id,
+                HealthFinding.dimension == "performance",
+                HealthFinding.status == "open",
+                HealthFinding.file_path.in_(batch),
+            )
+        )
+        for path, line, opportunity_id in result:
+            held = symbol_at(spans[path], line) if line else None
+            if opportunity_id and held is not None and held.symbol_id in symbol_ids:
+                out.setdefault(held.symbol_id, set()).add(opportunity_id)
+    return out
+
+
+class _FunctionContext(NamedTuple):
+    callers_total: dict[str, int]
+    callers: dict[str, list[str]]
+    owners: dict[str, Any]
+    tests: dict[str, Any]
+
+
+async def _function_context(
+    session: AsyncSession, repository_id: str, symbol_ids: list[str]
+) -> _FunctionContext:
+    """Callers, file owner and nearest tests of *symbol_ids*, from the stores
+    ``get_context`` reads: graph edges, git metadata and the function test map."""
+    from ....ingestion.models import SYMBOL_USE_EDGE_TYPES
+    from ....ingestion.symbol_identity import file_of_symbol
+    from ..git import get_git_metadata_bulk
+    from ..graph import get_graph_edges_for_node, get_node_degree_counts_bulk
+    from .function_facts import tests_for_functions
+
+    if not symbol_ids:
+        return _FunctionContext({}, {}, {}, {})
+    edge_types = sorted(SYMBOL_USE_EDGE_TYPES)
+    degrees = await get_node_degree_counts_bulk(
+        session, repository_id, symbol_ids, edge_types=edge_types
+    )
+    callers: dict[str, list[str]] = {}
+    for symbol_id in symbol_ids:
+        if degrees.get(symbol_id, {}).get("in_degree"):
+            edges = await get_graph_edges_for_node(
+                session,
+                repository_id,
+                symbol_id,
+                direction="callers",
+                edge_types=edge_types,
+                limit=_MEASURED_CALLERS,
+            )
+            callers[symbol_id] = [edge.source_node_id for edge in edges]
+    return _FunctionContext(
+        callers_total={i: degrees[i]["in_degree"] for i in symbol_ids if i in degrees},
+        callers=callers,
+        owners=await get_git_metadata_bulk(
+            session, repository_id, sorted({file_of_symbol(i) for i in symbol_ids})
+        ),
+        tests=await tests_for_functions(session, repository_id, symbol_ids, k=_MEASURED_TESTS),
+    )
+
+
+def _measured_runs(rows: list[Any], at: datetime) -> list[dict[str, Any]]:
+    """The basis of *rows*, one entry per run, in row order."""
+    runs: dict[Any, dict[str, Any]] = {}
+    for row in rows:
+        if row.run_id in runs:
+            continue
+        measured_at = row.measured_at
+        if measured_at is not None and measured_at.tzinfo is None:
+            measured_at = measured_at.replace(tzinfo=UTC)
+        runs[row.run_id] = {
+            "run_id": row.run_id,
+            "workload_class": row.workload_class,
+            "workload_name": row.workload_name,
+            "commit": row.evidence_commit_sha,
+            "measured_at": measured_at.isoformat() if measured_at else None,
+            "age_days": max((at - measured_at).days, 0) if measured_at else None,
+            "samples": row.run_samples,
+            "explained_share": row.explained_share,
+            "outside_production": row.run_unlisted,
+            "value_kind": row.value_kind,
+            "ordering_only": bool(row.ordering_only),
+        }
+    return list(runs.values())
+
+
+def _measured_row(row: Any, spans: dict[str, list[Any]], context: _FunctionContext) -> dict[str, Any]:
+    from ....ingestion.symbol_identity import file_of_symbol
+
+    symbol_id = row.symbol_id
+    path = file_of_symbol(symbol_id)
+    span = next((s for s in spans.get(path, ()) if s.symbol_id == symbol_id), None)
+    owner = context.owners.get(path)
+    tests = context.tests.get(symbol_id)
+    return {
+        "symbol_id": symbol_id,
+        "file_path": path,
+        "lines": [span.start_line, span.end_line] if span is not None else None,
+        "run_id": row.run_id,
+        "rank": row.rank,
+        "share": row.total_share,
+        "share_low": row.share_low,
+        "share_high": row.share_high,
+        "self_share": row.self_share,
+        "samples": row.samples,
+        "freshness": row.freshness,
+        "callers_total": context.callers_total.get(symbol_id),
+        "callers": context.callers.get(symbol_id, []),
+        "owner": (
+            {"name": owner.primary_owner_name, "commit_pct": owner.primary_owner_commit_pct}
+            if owner is not None and owner.primary_owner_name
+            else None
+        ),
+        # ``None``: the function was never mapped to tests; ``[]``: no test reaches it.
+        "tests": [t.selector for t in tests] if tests is not None else None,
+    }
+
+
 __all__ = [
     "PerformanceHeadline",
     "finalize_performance_opportunities",
@@ -992,6 +1238,7 @@ __all__ = [
     "list_evidence_for_opportunities",
     "list_opportunity_evidence",
     "list_performance_opportunities",
+    "measured_costs",
     "opportunity_details",
     "performance_facet_counts",
     "performance_headline",
