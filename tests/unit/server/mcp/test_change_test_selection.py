@@ -45,27 +45,19 @@ def _repo(tmp_path: Path, seed: dict[str, str]) -> tuple[Path, str]:
 
 
 async def _index(
+    engine,
     base: str,
     nodes: dict[str, bool | str],
     edges: list[tuple[str, str, str]] = (),
     coverage: list | None = None,
     measured_at: str | None = None,
-    db_file: Path | None = None,
 ):
-    """An index built at *base*: file nodes (``True`` test, ``str`` always-run reason), edges."""
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-    from sqlalchemy.pool import NullPool, StaticPool
+    """An index built at *base* in *engine*: file nodes (``True`` test, ``str`` always-run reason), edges."""
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from repowise.core.persistence.crud import save_test_coverage
-    from repowise.core.persistence.database import init_db
     from repowise.core.persistence.models import GraphEdge, GraphNode, Repository
 
-    engine = create_async_engine(
-        f"sqlite+aiosqlite:///{db_file.as_posix()}" if db_file else "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=NullPool if db_file else StaticPool,
-    )
-    await init_db(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     async with factory() as s:
         s.add(
@@ -81,6 +73,7 @@ async def _index(
                 updated_at=_NOW,
             )
         )
+        await s.flush()  # the store enforces foreign keys; the repository row goes first
         for path, kind in nodes.items():
             s.add(
                 GraphNode(
@@ -149,10 +142,11 @@ _STATUS = {
 
 
 @pytest.mark.asyncio
-async def test_a_test_that_runs_with_every_subset_is_named(tmp_path, monkeypatch) -> None:
+async def test_a_test_that_runs_with_every_subset_is_named(engine, tmp_path, monkeypatch) -> None:
     repo, base = _repo(tmp_path, _STATUS)
     _commit(repo, {"src/status.py": "def status():\n    return 2\n"}, "fix: status")
     factory = await _index(
+        engine,
         base,
         {
             "src/status.py": False,
@@ -186,7 +180,7 @@ async def test_a_test_that_runs_with_every_subset_is_named(tmp_path, monkeypatch
     ids=["none", "exclude_patterns", "extensions", "include_paths"],
 )
 async def test_change_risk_selects_tests_once_while_it_scores(
-    tmp_path, monkeypatch, filters
+    engine, tmp_path, monkeypatch, filters
 ) -> None:
     """The selection starts beside the score, and the tests block joins it.
 
@@ -206,10 +200,10 @@ async def test_change_risk_selects_tests_once_while_it_scores(
         "fix: status",
     )
     factory = await _index(
+        engine,
         base,
         {"src/status.py": False, "tests/test_status.py": True},
         [("tests/test_status.py", "src/status.py", "imports")],
-        db_file=tmp_path / "wiki.db",
     )
     runs: list[str] = []
     real = _test_selection._select_here
@@ -244,7 +238,7 @@ async def test_change_risk_selects_tests_once_while_it_scores(
 
 @pytest.mark.asyncio
 async def test_a_change_past_the_ceiling_runs_every_test_without_selecting(
-    tmp_path, monkeypatch
+    engine, tmp_path, monkeypatch
 ) -> None:
     """Past the ceiling the answer is "run every test" at once.
 
@@ -261,6 +255,7 @@ async def test_a_change_past_the_ceiling_runs_every_test_without_selecting(
         "fix: status",
     )
     factory = await _index(
+        engine,
         base,
         {"src/status.py": False, "tests/test_status.py": True},
         [("tests/test_status.py", "src/status.py", "imports")],
@@ -288,7 +283,7 @@ async def test_a_change_past_the_ceiling_runs_every_test_without_selecting(
 
 
 @pytest.mark.asyncio
-async def test_a_change_at_the_ceiling_is_still_selected_from(tmp_path, monkeypatch) -> None:
+async def test_a_change_at_the_ceiling_is_still_selected_from(engine, tmp_path, monkeypatch) -> None:
     from repowise.core.analysis.change_health import service
 
     repo, base = _repo(tmp_path, _STATUS)
@@ -298,6 +293,7 @@ async def test_a_change_at_the_ceiling_is_still_selected_from(tmp_path, monkeypa
         "fix: status",
     )
     factory = await _index(
+        engine,
         base,
         {"src/status.py": False, "tests/test_status.py": True},
         [("tests/test_status.py", "src/status.py", "imports")],
@@ -310,7 +306,7 @@ async def test_a_change_at_the_ceiling_is_still_selected_from(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_a_conftest_change_runs_every_test_under_it(tmp_path, monkeypatch) -> None:
+async def test_a_conftest_change_runs_every_test_under_it(engine, tmp_path, monkeypatch) -> None:
     files = {
         "tests/conftest.py": "import pytest\n",
         "tests/test_a.py": "def test_a():\n    pass\n",
@@ -320,6 +316,7 @@ async def test_a_conftest_change_runs_every_test_under_it(tmp_path, monkeypatch)
     repo, base = _repo(tmp_path, files)
     _commit(repo, {"tests/conftest.py": "import pytest\n\nX = 1\n"}, "test: fixture")
     factory = await _index(
+        engine,
         base,
         {
             "tests/conftest.py": True,
@@ -338,7 +335,7 @@ async def test_a_conftest_change_runs_every_test_under_it(tmp_path, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_manifest_change_runs_everything_on_both_tools(tmp_path, monkeypatch) -> None:
+async def test_a_manifest_change_runs_everything_on_both_tools(engine, tmp_path, monkeypatch) -> None:
     repo, base = _repo(tmp_path, {**_STATUS, "package.json": "{}\n"})
     _commit(repo, {"package.json": '{"name": "x"}\n'}, "chore: manifest")
     nodes = {"src/status.py": False, "tests/test_status.py": True, "tests/test_walks.py": True}
@@ -346,7 +343,7 @@ async def test_a_manifest_change_runs_everything_on_both_tools(tmp_path, monkeyp
         ("tests/test_status.py", "src/status.py", "imports"),
         ("tests/test_walks.py", "src/status.py", "imports"),
     ]
-    factory = await _index(base, nodes, edges)
+    factory = await _index(engine, base, nodes, edges)
 
     result = await _change_risk(monkeypatch, repo, factory)
     it = result["impacted_tests"]
@@ -361,7 +358,7 @@ async def test_a_manifest_change_runs_everything_on_both_tools(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_get_risk_never_lists_a_test_package_init_as_a_test(tmp_path, monkeypatch) -> None:
+async def test_get_risk_never_lists_a_test_package_init_as_a_test(engine, tmp_path, monkeypatch) -> None:
     files = {
         "src/a.py": "A = 1\n",
         "tests/__init__.py": "from src import a\n",
@@ -369,6 +366,7 @@ async def test_get_risk_never_lists_a_test_package_init_as_a_test(tmp_path, monk
     }
     repo, base = _repo(tmp_path, files)
     factory = await _index(
+        engine,
         base,
         {"src/a.py": False, "tests/__init__.py": True, "tests/test_a.py": True},
         [("tests/__init__.py", "src/a.py", "imports"), ("tests/test_a.py", "src/a.py", "imports")],
@@ -382,7 +380,7 @@ async def test_get_risk_never_lists_a_test_package_init_as_a_test(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_tests_to_update_reads_imports_not_runner_wiring(tmp_path, monkeypatch) -> None:
+async def test_tests_to_update_reads_imports_not_runner_wiring(engine, tmp_path, monkeypatch) -> None:
     files = {
         "src/core.py": "C = 1\n",
         "tests/test_direct.py": "from src import core\n",
@@ -390,6 +388,7 @@ async def test_tests_to_update_reads_imports_not_runner_wiring(tmp_path, monkeyp
     }
     repo, base = _repo(tmp_path, files)
     factory = await _index(
+        engine,
         base,
         {"src/core.py": False, "tests/test_direct.py": True, "tests/test_wired.py": True},
         [
@@ -406,7 +405,7 @@ async def test_tests_to_update_reads_imports_not_runner_wiring(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_a_map_measured_at_the_base_matches_the_old_lines(tmp_path, monkeypatch) -> None:
+async def test_a_map_measured_at_the_base_matches_the_old_lines(engine, tmp_path, monkeypatch) -> None:
     files = {
         "src/app.py": "a\nb\nc\nd\ne\nf\n",
         "tests/test_line2.py": "def test_2():\n    pass\n",
@@ -419,6 +418,7 @@ async def test_a_map_measured_at_the_base_matches_the_old_lines(tmp_path, monkey
     # numbers (1, 2, 8) would hit the test of the untouched old line 2.
     _commit(repo, {"src/app.py": "n1\nn2\na\nb\nc\nd\ne\nF\n"}, "feat: app")
     factory = await _index(
+        engine,
         base,
         {
             "src/app.py": False,
@@ -455,7 +455,7 @@ async def test_a_map_measured_at_the_base_matches_the_old_lines(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_a_selection_over_its_time_budget_says_so(tmp_path, monkeypatch) -> None:
+async def test_a_selection_over_its_time_budget_says_so(engine, tmp_path, monkeypatch) -> None:
     import asyncio
 
     from repowise.server.mcp_server import _test_selection
@@ -466,7 +466,7 @@ async def test_a_selection_over_its_time_budget_says_so(tmp_path, monkeypatch) -
     monkeypatch.setattr(_test_selection, "SELECTION_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(_test_selection, "_select", _slow)
     repo, base = _repo(tmp_path, _STATUS)
-    factory = await _index(base, {"src/status.py": False})
+    factory = await _index(engine, base, {"src/status.py": False})
 
     directive = await _risk_directive(monkeypatch, repo, factory, ["src/status.py"])
 
@@ -477,10 +477,11 @@ async def test_a_selection_over_its_time_budget_says_so(tmp_path, monkeypatch) -
 
 @pytest.mark.asyncio
 async def test_a_path_the_checkout_lacks_fails_closed_and_backslashes_are_paths(
-    tmp_path, monkeypatch
+    engine, tmp_path, monkeypatch
 ) -> None:
     repo, base = _repo(tmp_path, _STATUS)
     factory = await _index(
+        engine,
         base,
         {"src/status.py": False, "tests/test_status.py": True, "tests/test_walks.py": True},
         [
@@ -520,7 +521,7 @@ def test_a_checkout_git_could_not_list_does_not_read_as_no_tests() -> None:
 
 
 @pytest.mark.asyncio
-async def test_workspace_get_risk_selects_in_the_member_repository(tmp_path, monkeypatch) -> None:
+async def test_workspace_get_risk_selects_in_the_member_repository(engine, tmp_path, monkeypatch) -> None:
     """In a workspace the selection reads the aliased member's checkout and index."""
     import repowise.server.mcp_server as mcp_mod
 
@@ -528,6 +529,7 @@ async def test_workspace_get_risk_selects_in_the_member_repository(tmp_path, mon
 
     repo, base = _repo(tmp_path, _STATUS)
     factory = await _index(
+        engine,
         base,
         {"src/status.py": False, "tests/test_status.py": True},
         [("tests/test_status.py", "src/status.py", "imports")],
@@ -557,7 +559,7 @@ async def test_workspace_get_risk_selects_in_the_member_repository(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_both_tools_list_tests_in_the_selections_run_order(tmp_path, monkeypatch) -> None:
+async def test_both_tools_list_tests_in_the_selections_run_order(engine, tmp_path, monkeypatch) -> None:
     import json
 
     from repowise.core.persistence.models import GitMetadata
@@ -565,6 +567,7 @@ async def test_both_tools_list_tests_in_the_selections_run_order(tmp_path, monke
     repo, base = _repo(tmp_path, {**_STATUS, "tests/test_z.py": "from src.status import status\n"})
     _commit(repo, {"src/status.py": "def status():\n    return 2\n"}, "fix: status")
     factory = await _index(
+        engine,
         base,
         {"src/status.py": False, "tests/test_status.py": True, "tests/test_z.py": True},
         [
@@ -596,7 +599,7 @@ async def test_both_tools_list_tests_in_the_selections_run_order(tmp_path, monke
 
 @pytest.mark.asyncio
 async def test_a_repeated_selection_is_reused_until_the_tree_or_index_moves(
-    tmp_path, monkeypatch
+    engine, tmp_path, monkeypatch
 ) -> None:
     import threading
     from collections import OrderedDict
@@ -608,9 +611,9 @@ async def test_a_repeated_selection_is_reused_until_the_tree_or_index_moves(
 
     repo, base = _repo(tmp_path, _STATUS)
     factory = await _index(
+        engine,
         base,
         {"src/status.py": False, "tests/test_status.py": True},
-        db_file=tmp_path / "wiki.db",
     )
     threads: list[int] = []
     real = _test_selection._select_here
@@ -759,7 +762,7 @@ def test_only_a_named_commit_starts_a_selection_before_the_score() -> None:
     ids=["none", "exclude_patterns"],
 )
 async def test_change_risk_compares_health_once_while_it_scores(
-    tmp_path, monkeypatch, filters
+    engine, tmp_path, monkeypatch, filters
 ) -> None:
     """A named change's health comparison starts beside the score, with the excludes it counts."""
     import asyncio
@@ -770,7 +773,7 @@ async def test_change_risk_compares_health_once_while_it_scores(
         {"src/status.py": "def status():\n    return 2\n", "docs/notes.md": "two\n"},
         "fix: status",
     )
-    factory = await _index(base, {"src/status.py": False, "tests/test_status.py": True})
+    factory = await _index(engine, base, {"src/status.py": False, "tests/test_status.py": True})
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
     real_compare = module._compare_health
     compared: list[tuple] = []
@@ -928,7 +931,7 @@ def test_get_risk_never_lists_a_rule_selected_test(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_direct_test_selectors_read_the_edited_functions_links(tmp_path) -> None:
+async def test_direct_test_selectors_read_the_edited_functions_links(engine, tmp_path) -> None:
     """One-hop tests of the functions whose lines changed, in a run the selection makes."""
     import json
 
@@ -936,7 +939,7 @@ async def test_direct_test_selectors_read_the_edited_functions_links(tmp_path) -
     from repowise.core.persistence.models import FunctionFact, WikiSymbol
     from repowise.server.mcp_server._test_selection import direct_test_selectors
 
-    factory = await _index("base", {"src/a.py": False, "tests/test_a.py": True})
+    factory = await _index(engine, "base", {"src/a.py": False, "tests/test_a.py": True})
     async with factory() as s:
         for name, start, end, tests in (
             ("edited", 1, 5, [["tests/test_a.py::test_edited", 1], ["tests/test_a.py::test_far", 2]]),
