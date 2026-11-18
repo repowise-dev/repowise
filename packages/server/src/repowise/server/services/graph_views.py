@@ -10,9 +10,11 @@ SAME functions so both serving paths emit byte-identical shapes
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import Counter
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import Row, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES, NON_CODE_EDGE_TYPES
 from repowise.core.persistence import crud
+from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.support_paths import FilePopulation, file_population
 from repowise.server.mcp_server._graph_utils import (
@@ -175,6 +178,104 @@ def edge_response(e: GraphEdge | Row) -> GraphEdgeResponse:
         edge_type=e.edge_type,
         confidence=e.confidence,
     )
+
+
+# The node columns the code graph readers use: the exclude rule reads node_type
+# and file_path, the no-path diagnostics read community_id and pagerank, the
+# entry-point view reads is_entry_point.
+_CODE_NODE_COLUMNS = (
+    GraphNode.node_id,
+    GraphNode.node_type,
+    GraphNode.file_path,
+    GraphNode.community_id,
+    GraphNode.pagerank,
+    GraphNode.is_entry_point,
+)
+# One index state per repository is kept (older ones are dropped on rebuild),
+# so this bounds how many repositories hold a graph in memory at once.
+_code_graphs = IndexStampCache(4)
+# One build per repository at a time, so a cold burst of requests loads once.
+_code_graph_locks: dict[str, asyncio.Lock] = {}
+
+
+@dataclass(frozen=True)
+class CodeGraph:
+    """The repository's code graph after the exclude rules: read-only, shared.
+
+    ``graph`` holds every surviving node and one arc per surviving code edge
+    pair (``edge_type`` is the last row's). ``edges`` keeps every row, parallel
+    edge types included, as :data:`_EDGE_COLUMNS` rows.
+    """
+
+    graph: Any
+    nodes: dict[str, Row]
+    edges: list[Row]
+
+
+def clear_code_graph_cache() -> None:
+    _code_graphs.clear()
+    # A lock is bound to the loop that first waited on it.
+    _code_graph_locks.clear()
+
+
+def _spec_key(exclude_spec: Any) -> tuple[str, ...] | None:
+    """The rules a spec was compiled from: equal rules share one cached graph."""
+    if exclude_spec is None:
+        return None
+    return tuple(str(p.pattern) for p in exclude_spec.patterns)
+
+
+async def load_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any) -> CodeGraph:
+    """Every code node and edge of *repo_id*, minus excluded files, as a DiGraph.
+
+    Non-code relations (history, prose) are left out: a ``co_changes`` edge
+    records that two files move together, so it would be a free hop no code
+    creates. Containment stays, since ``defines`` is the only bridge from the
+    file layer to the symbol layer. Kept per index state and exclude rules;
+    callers must not mutate the result.
+    """
+    key = await _code_graphs.key(session, repo_id, _spec_key(exclude_spec))
+    if key in _code_graphs:
+        return _code_graphs.get(key)
+    async with _code_graph_locks.setdefault(repo_id, asyncio.Lock()):
+        if key in _code_graphs:
+            return _code_graphs.get(key)
+        loaded = await _build_code_graph(session, repo_id, exclude_spec)
+        # Older index states are never asked for again; other exclude rules
+        # at this state stay.
+        _code_graphs.drop_repo_except(repo_id, key[:3])
+        return _code_graphs.remember(key, loaded)
+
+
+async def _build_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any) -> CodeGraph:
+    import networkx as nx
+
+    from repowise.server.mcp_server._helpers import filter_graph_nodes
+
+    node_rows = (
+        await session.execute(select(*_CODE_NODE_COLUMNS).where(GraphNode.repository_id == repo_id))
+    ).all()
+    nodes = {n.node_id: n for n in filter_graph_nodes(node_rows, exclude_spec)}
+    edge_rows = (
+        await session.execute(
+            select(*_EDGE_COLUMNS).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
+            )
+        )
+    ).all()
+    if exclude_spec is not None:
+        edge_rows = [
+            e for e in edge_rows if e.source_node_id in nodes and e.target_node_id in nodes
+        ]
+
+    graph = nx.DiGraph()
+    # Every indexed node, not just edge endpoints: a file whose only edges were
+    # temporal is still indexed and must not read as "not found".
+    graph.add_nodes_from(nodes)
+    for e in edge_rows:
+        graph.add_edge(e.source_node_id, e.target_node_id, edge_type=e.edge_type)
+    return CodeGraph(graph, nodes, edge_rows)
 
 
 async def build_architecture_graph(
