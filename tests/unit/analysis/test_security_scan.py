@@ -1835,3 +1835,29 @@ def test_verbatim_interpolation_trailing_backslash_preserves_following_code(pref
         + "\nNext();\n"
     )
     assert len(masked) == len(source)
+
+
+def test_rust_lifetimes_and_labels_do_not_swallow_subsequent_code() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    source = (
+        "fn process<'a>(input: &'static str, extra: &'a str) -> char {\n"
+        "    'outer: loop {\n"
+        "        let quote = '\\'';\n"
+        '        let password = "real_secret_value_1234";\n'
+        "        return 'x';\n"
+        "    }\n"
+        "}\n"
+    )
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("src/lib.rs")
+    )
+    assert "let password = " in masked
+    assert "real_secret_value_1234" not in masked
+    assert "return    ;" in masked
+    assert len(masked) == len(source)
+
+    findings = scan_source("src/lib.rs", source)
+    assert any(f["kind"] == "hardcoded_password" for f in findings)
+
