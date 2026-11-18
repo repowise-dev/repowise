@@ -434,6 +434,7 @@ async def _store(
         checkout_root=str(root),
         dirty=dirty,
         environment=environment,
+        tests_failed=read.run.tests_failed if read.run is not None else None,
     )
     summary = _summary(doc, provenance, joined, partial, index_commit, target.head_sha)
     summary["input_format"] = read.format
@@ -574,6 +575,7 @@ def _summary(
         "unlinked": dict(sorted(joined.unlinked.items())),
         "mapping_partial": partial,
         "unmatched_sample": joined.unmatched_sample,
+        "tests_failed": provenance.tests_failed,
     }
 
 
@@ -616,6 +618,11 @@ def _report_stored(
             notices.print(f"[yellow]{label}, by reason: {escape(reasons)}.[/yellow]")
     if truncated:
         notices.print(f"[yellow]{truncated} entries left out at the per-run cap.[/yellow]")
+    if summary["tests_failed"]:
+        notices.print(
+            f"[yellow]{summary['tests_failed']:,} tests failed in the profiled run; the suite "
+            "still ran, so the profile is kept and the count is recorded on the run.[/yellow]"
+        )
     if summary["mapping_partial"]:
         report_stored_partial("evidence", out=notices)
     _report_staleness(notices, summary, index_commit)
@@ -826,7 +833,9 @@ def _status_line(run: dict[str, Any]) -> str:
     return (
         f"[bold]{escape(run['workload'])}[/bold] ({run['kind']}, {run['class']}, "
         f"{escape(run['environment'])}): {run['freshness']} at "
-        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}; {explained}."
+        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}; {explained}"
+        + (f"; {run['tests_failed']:,} tests failed" if run["tests_failed"] else "")
+        + "."
         + (" [red](partial)[/red]" if run["mapping_partial"] else "")
     )
 

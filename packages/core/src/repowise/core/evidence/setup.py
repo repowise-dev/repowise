@@ -37,6 +37,11 @@ DOCTOR_COMMAND = "repowise doctor"
 #: Brings an index written by an older repowise up to date.
 UPDATE_COMMAND = "repowise update"
 
+#: A profiled test suite need not finish: the recipe keeps what it collected.
+_SUBSET_NOTE = (
+    " A subset of the tests is enough: failing tests are fine, and a run stopped early "
+    "(Ctrl-C or a timeout) still writes its profile."
+)
 # A report glob ``coverage add`` expands itself, so no shell may expand it first.
 _GLOB = re.compile(r"[*?\[\]{}]")
 
@@ -177,7 +182,8 @@ def _runtime_call(
     best = min(targets, key=lambda t: CLASS_ORDER.index(t["class"]))
     cwd = {"cwd": best["cwd"]}
     return {
-        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile.",
+        "purpose": f"Profile {best['workload']} ({best['class']}), then ingest the profile."
+        + (_SUBSET_NOTE if best["class"] == "unit_test" else ""),
         "steps": [
             *({**cwd, "run": p} for p in best["prerequisites"]),
             {**cwd, "run": best["command"]},

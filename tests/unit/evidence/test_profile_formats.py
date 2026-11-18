@@ -516,3 +516,10 @@ def test_speedscope_is_sniffed_by_its_schema_key_not_the_word() -> None:
     assert detect_profile_format(
         b'{"exporter": "x", "$schema": "https://www.speedscope.app/file-format-schema.json"}'
     ) == "speedscope"
+
+
+@pytest.mark.parametrize(("given", "read"), [(3, 3), (0, 0), (-1, None), ("3", None), (True, None)])
+def test_a_speedscope_file_carries_the_failed_test_count_of_its_run(given, read) -> None:
+    run = profile_formats.get("speedscope").read(_bytes({**PYINSTRUMENT, "testsFailed": given}))
+    assert run.tests_failed == read
+    assert profile_formats.get("speedscope").read(_bytes(PYINSTRUMENT)).tests_failed is None

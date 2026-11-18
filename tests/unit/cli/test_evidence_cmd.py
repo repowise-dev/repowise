@@ -634,3 +634,24 @@ def test_a_benchmark_never_links_to_a_method_sharing_its_bare_name(indexed) -> N
     assert result.exit_code == 0, result.output
     assert _json(result)["unlinked"] == {"unknown_symbol": 1}
     assert [r.symbol_id for r in _benchmarks(root)] == [None]
+
+
+def test_a_red_suites_profile_is_stored_with_its_failed_count(indexed) -> None:
+    root, head = indexed
+    path = root / "suite.speedscope.json"
+    path.write_text(json.dumps({
+        "$schema": "https://www.speedscope.app/file-format-schema.json",
+        "exporter": "pyinstrument@5.1.3",
+        "shared": {"frames": [{"name": "build", "file": str(root / "src" / "app.py"), "line": 1}]},
+        "profiles": [{"type": "sampled", "unit": "seconds", "samples": [[0], [0]], "weights": [0.5, 0.5]}],
+        "testsFailed": 2,
+    }))
+
+    result = _add(str(path), "--workload", "python tests", "--class", "unit_test",
+                  "--commit", head, "--format", "json")
+
+    assert result.exit_code == 0, result.output
+    assert _json(result)["tests_failed"] == 2
+    (run,), _ = _stored(root)
+    assert run.tests_failed == 2
+    assert "2 tests failed" in _status().stdout

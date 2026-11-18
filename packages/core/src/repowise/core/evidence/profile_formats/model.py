@@ -41,6 +41,8 @@ class ProfileRun:
     tool_version: str | None = None
     #: Records the reader could not use, by reason (a malformed line).
     skipped: dict[str, int] = field(default_factory=dict)
+    #: Tests that failed in a profiled test suite, when the profile says.
+    tests_failed: int | None = None
 
 
 class StackTally:

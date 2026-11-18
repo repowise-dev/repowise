@@ -48,6 +48,15 @@ read, a program with no profiler flag).
 - Each unit lists up to three targets per class. A unit below the repository
   root prefixes its workload names with its root (`tools: go bench .`), so two
   units never share a workload.
+- A Python profile is written when the program's own exit is clean; an
+  uncaught exception or a nonzero exit writes nothing, and an older profile is
+  removed first, so a crashed run is never stored. The unit-test suite runs the
+  test paths the unit's coverage command runs (`tests/unit` when integration
+  tests sit beside it). Its profile is kept when tests fail (pytest exit 1),
+  with the failed count recorded on the run (`tests_failed`, shown by `evidence
+  status`); a suite that could not run (exit 2 to 5) writes nothing. A run
+  stopped by Ctrl-C or SIGTERM still writes what it collected, so a subset of
+  the suite is enough.
 - A JavaScript `bin` target prints a `node --cpu-prof` command and a reason in
   place of its ingest line, since its `.cpuprofile` output is not among the
   formats this build reads; a TypeScript `bin` gets a reason only.
@@ -139,7 +148,7 @@ but does not store has `stored: false` and a `reason` (`no_index`,
 stored, what was skipped by reason and whether the run reads as stale. The JSON
 result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `index_commit`,
 `stale`, `dirty`, `entries`, `matched`, `skipped`, `unlinked`, `mapping_partial`,
-`unmatched_sample`, `input_format`, `conversion` (for a converted profile:
+`unmatched_sample`, `tests_failed`, `input_format`, `conversion` (for a converted profile:
 `total`, `unit`, `explained_share`, `skip_rate`, `skipped_share_by_reason`,
 `self_unattributed`, `symbols`), and once stored `run_id`, `restamped`,
 `rows_written`, `truncated` and `runs_pruned`. Every flag:

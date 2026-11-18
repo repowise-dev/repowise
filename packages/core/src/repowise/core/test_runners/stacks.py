@@ -99,6 +99,8 @@ class Stack:
     workstation: str = ""
     #: The unit's directory, repo-relative POSIX; ``""`` is the repository root.
     root: str = ""
+    #: The test paths ``test`` names, relative to ``root``; empty when the runner picks.
+    test_paths: tuple[str, ...] = ()
     #: Finds this stack's test command in a workflow ``run`` line.
     pattern: re.Pattern | None = field(default=None, compare=False, repr=False)
     #: A matching line that is not a full test run (``-DskipTests``, one file).
@@ -348,7 +350,8 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
     declared = bool(re.search(r"pytest[-_]cov", texts))
     sources = _python_sources(paths)
-    tool, setup, base, installs = _python_tool(root, paths, files, _pytest_args(paths, files))
+    args = _pytest_args(paths, files)
+    tool, setup, base, installs = _python_tool(root, paths, files, args)
     notes: list[str] = []
     if sources == (".",):
         notes.append("Repowise found no `src/` or package directory, so coverage measures the whole "
@@ -359,7 +362,8 @@ def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     requires = _run_lines(test.prepare) + installs
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
-        notes=tuple(notes), requires=requires, pattern=_PYTEST, skip=_PYTEST_ONE_FILE, editor=editor,
+        notes=tuple(notes), requires=requires, test_paths=tuple(args.split()), pattern=_PYTEST,
+        skip=_PYTEST_ONE_FILE, editor=editor,
     )
 
 

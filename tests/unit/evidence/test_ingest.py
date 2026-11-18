@@ -196,3 +196,11 @@ def test_the_run_key_covers_the_provenance() -> None:
     ):
         assert run_key("{}", other, "profile") != key
     assert run_key("{ }", base, "profile") != key
+
+
+def test_a_failed_test_count_is_part_of_the_run_and_its_key() -> None:
+    base = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False)
+    red = RunProvenance("python tests", "unit_test", "a" * 40, "/repo", False, tests_failed=2)
+    # A run that does not report the count keeps the key it always had.
+    assert run_key("{}", base, "profile") != run_key("{}", red, "profile")
+    assert run_key("{}", red, "profile") == run_key("{}", red, "profile")

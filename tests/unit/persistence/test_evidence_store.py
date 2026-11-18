@@ -343,6 +343,8 @@ def test_migration_matches_the_models_and_downgrades(tmp_path: Path, warm_start:
         # init_db may create the tables before the migration runs.
         _init_db(migrated)
     command.upgrade(config, "0131")
+    command.stamp(config, "0132")  # 0132 is not the evidence store's; it refuses a warm start
+    command.upgrade(config, "0133")
 
     created = tmp_path / "created.db"
     _init_db(created)
@@ -350,6 +352,9 @@ def test_migration_matches_the_models_and_downgrades(tmp_path: Path, warm_start:
         assert _columns(migrated, table) == _columns(created, table), table
         assert _indexes(migrated, table) == _indexes(created, table), table
 
+    command.downgrade(config, "0132")
+    assert "tests_failed" not in _columns(migrated, "evidence_runs")
+    command.stamp(config, "0131")
     command.downgrade(config, "0124")
     for table in _TABLES:
         assert _columns(migrated, table) == {}
