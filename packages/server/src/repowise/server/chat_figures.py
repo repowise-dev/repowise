@@ -46,6 +46,8 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from repowise.core.git_sha import SHA_PREFIX_PATTERN
+
 # A leading minus is a sign only when no word character or digit precedes it,
 # so "10-20" stays a range and "utf-8" an identifier.
 _NUMBER = re.compile(
@@ -117,7 +119,7 @@ _MASKS = re.compile(
     r"|https?://\S+|\]\([^)\s]*\)"
     r"|[0-9]{4}-[0-9]{2}-[0-9]{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?(?:\.[0-9]+)?Z?)?"
     r"|[\w./\\-]+\.[A-Za-z]\w*:[0-9]+(?:[-–:][0-9]+)?"
-    r"|#[0-9]+|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b",
+    rf"|#[0-9]+|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9]){SHA_PREFIX_PATTERN}\b",
     re.DOTALL,
 )
 # The word just before a number that makes it a position, label or version.

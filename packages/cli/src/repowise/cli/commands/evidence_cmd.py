@@ -30,8 +30,7 @@ from repowise.cli.helpers import (
 )
 from repowise.cli.output import emit_json, emit_refusal, format_option, notice_console
 from repowise.core.evidence.ingest import FLAG_WORKLOAD_CLASSES
-
-_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+from repowise.core.git_sha import is_full_sha
 
 
 def _resolve_repo(path: str | None, notices: Any) -> Path:
@@ -115,6 +114,7 @@ def evidence_add(
     """
     configure_cli_logging(verbose=verbose)
     notices = notice_console(fmt)
+    commit = commit.lower() if commit is not None else None
     _check_options(workload, workload_class, environment, commit)
 
     repo_path = _resolve_repo(repo, notices)
@@ -171,9 +171,9 @@ def _check_options(
         raise click.BadParameter(
             "one word of up to 32 letters, digits, '.', '_' or '-'.", param_hint="--environment"
         )
-    if commit is not None and not _COMMIT_RE.match(commit):
+    if commit is not None and not is_full_sha(commit):
         raise click.BadParameter(
-            "the full 40-character SHA, e.g. $(git rev-parse HEAD).", param_hint="--commit"
+            "the full 40- or 64-character SHA, e.g. $(git rev-parse HEAD).", param_hint="--commit"
         )
 
 

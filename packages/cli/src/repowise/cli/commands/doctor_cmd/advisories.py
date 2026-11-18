@@ -5,6 +5,7 @@ from __future__ import annotations
 from rich.table import Table
 
 from repowise.cli.helpers import console
+from repowise.core.git_sha import SHA_PREFIX_PATTERN
 
 
 def _claude_md_stamp_status(repo_path, state: dict) -> tuple[bool, str] | None:
@@ -25,7 +26,7 @@ def _claude_md_stamp_status(repo_path, state: dict) -> tuple[bool, str] | None:
         text = claude_md.read_text(encoding="utf-8")
     except OSError:
         return None
-    m = re.search(r"Last indexed:.*?\(commit\s+([0-9a-fA-F]{7,})\)", text)
+    m = re.search(rf"Last indexed:.*?\(commit\s+({SHA_PREFIX_PATTERN})\)", text, re.I)
     if not m:
         # No stamp, or a too-short/abbreviated sha we can't compare safely.
         return None

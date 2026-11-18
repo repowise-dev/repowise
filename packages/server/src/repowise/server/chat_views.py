@@ -31,6 +31,7 @@ from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
+from repowise.core.git_sha import is_sha_prefix
 from repowise.core.registry.plugins import SeamRegistry, load_plugins
 from repowise.server import chat_spec
 from repowise.server.chat_artifacts import ARTIFACT_ID_FIELD
@@ -56,9 +57,6 @@ ATTRIBUTION_COVERAGE_FLOOR = 0.30
 
 
 _PART = TypeAdapter(ViewPart)
-
-
-_SHA = re.compile(r"^[0-9a-f]{7,64}$")
 
 
 _PERSON = re.compile(
@@ -267,7 +265,7 @@ def finish_part(
         id=part_id,
         source=dict(source),
         stale=stale,
-        as_of=as_of if isinstance(as_of, str) and _SHA.match(as_of) else None,
+        as_of=as_of if is_sha_prefix(as_of) else None,
     )
     if part.get("kind") == "chart" and _all_zero(part):
         raise ViewError(

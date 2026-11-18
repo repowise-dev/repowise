@@ -61,6 +61,8 @@ def test_a_profile_reads_its_run_fields_and_symbols() -> None:
         (json.dumps({"format": EVIDENCE_FORMAT, "kind": {"a": 1}}), "unknown kind"),
         (_doc(commit_sha="abc123"), "commit_sha"),
         (_doc(commit_sha=SHA + "\n"), "commit_sha"),
+        (_doc(commit_sha="a" * 50), "commit_sha"),
+        (_doc(commit_sha=40), "commit_sha"),
         (_doc(value_kind=["wall"]), "value_kind"),
         (_doc(value_kind="alloc"), "value_kind"),
         (_doc(unit=None), "needs a unit"),
@@ -70,6 +72,11 @@ def test_whole_document_problems_raise_with_a_hint(text: str, message: str) -> N
     with pytest.raises(EvidenceFormatError, match=message) as caught:
         parse_evidence(text)
     assert caught.value.hint
+
+
+@pytest.mark.parametrize("commit", ["b" * 64, "B" * 64, "A" * 40])
+def test_a_sha256_or_uppercase_commit_is_read_lowercase(commit: str) -> None:
+    assert parse_evidence(_doc(commit_sha=commit)).commit_sha == commit.lower()
 
 
 def test_bad_entries_are_skipped_by_reason() -> None:

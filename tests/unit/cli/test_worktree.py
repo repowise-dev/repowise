@@ -116,8 +116,9 @@ def test_as_commit_id_accepts_only_hex_commit_ids() -> None:
     from repowise.cli.helpers import as_commit_id
 
     assert as_commit_id("a" * 40) == "a" * 40
-    assert as_commit_id("DeadBee") == "DeadBee"
-    for bad in ("--output=x", "-abcdef0", "abc123", "a" * 41, "HEAD", "", None, 7):
+    assert as_commit_id("a" * 64) == "a" * 64
+    assert as_commit_id("DeadBee") == "deadbee"
+    for bad in ("--output=x", "-abcdef0", "abc123", "a" * 65, "HEAD", "", None, 7):
         assert as_commit_id(bad) is None
 
 

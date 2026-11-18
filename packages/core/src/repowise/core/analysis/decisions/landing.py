@@ -19,7 +19,6 @@ only ever leaves a record as stale as it was, and never puts one in force.
 
 from __future__ import annotations
 
-import re
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -29,10 +28,10 @@ from pathlib import Path
 import structlog
 
 from repowise.core.analysis.git_cli import run_git
+from repowise.core.git_sha import is_sha_prefix
 
 logger = structlog.get_logger(__name__)
 
-_SHA = re.compile(r"[0-9a-f]{7,40}")
 _FIELD = "\x1f"
 _RECORD = "\x1e"
 # Files follow the last field, from ``--name-only``.
@@ -122,7 +121,7 @@ def _resolve(
 ) -> tuple[dict[str, Landing], frozenset[str]]:
     """Landings on *ref*, and the stored values git holds as commits."""
     keys = {e.strip().lower() for e in evidence if isinstance(e, str)}
-    wanted = sorted(k for k in keys if _SHA.fullmatch(k))
+    wanted = sorted(k for k in keys if is_sha_prefix(k))
     if not wanted:
         return {}, frozenset()
     try:
@@ -159,7 +158,7 @@ def _named(
 
 def is_commit_ref(value: str) -> bool:
     """Whether *value* reads as a commit sha, the evidence a landing can be found for."""
-    return bool(_SHA.fullmatch(value.strip().lower()))
+    return is_sha_prefix(value.strip().lower())
 
 
 def record_landing(
