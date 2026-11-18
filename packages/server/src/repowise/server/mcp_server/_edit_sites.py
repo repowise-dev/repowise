@@ -1318,15 +1318,22 @@ async def _definition_span(
 
 
 def _module_names(path: str) -> set[str]:
-    """Names an import of the module at *path* spells: its stem, or its
-    directory's for a Python ``__init__`` or a JavaScript ``index``."""
+    """Names an import of the module at *path* spells: its stem, its package's
+    for a Python ``__init__``, and also its directory's for a JavaScript ``index``."""
     p = PurePosixPath(path)
-    return {p.parent.name} if p.stem in ("__init__", "index") else {p.stem}
+    python = p.suffix in _PYTHON_EXTENSIONS
+    if p.stem == "__init__" and python:
+        return {p.parent.name}
+    if p.stem == "index" and not python:
+        return {p.parent.name, p.stem}
+    return {p.stem}
 
 
-# ``import * as ns from "./m"`` and ``const ns = require("./m")``: a whole module bound.
+# ``import * as ns from "./m"``, ``const ns = require("./m")`` and TypeScript's
+# ``import ns = require("./m")``: a whole module bound.
 _JS_NAMESPACE = re.compile(
-    r"\*\s*as\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\("
+    r"\*\s*as\s+([A-Za-z_$][\w$]*)"
+    r"|(?:const|let|var|import)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\("
 )
 
 
@@ -1342,7 +1349,9 @@ def _module_bindings(lines: list[str], imports: set[int], stems: set[str], pytho
         if not python:
             source = _IMPORT_SOURCE.search(text)
             spec = (source.group(1) or source.group(2)) if source is not None else None
-            if spec and PurePosixPath(spec).name.split(".")[0] in stems:
+            base = PurePosixPath(spec).name if spec else ""
+            # ``./user.service`` and ``./a.js`` both name their module file.
+            if base and {base, PurePosixPath(base).stem} & stems:
                 local.update(m.group(1) or m.group(2) for m in _JS_NAMESPACE.finditer(text))
             continue
         for stem in stems:
@@ -1371,7 +1380,12 @@ def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     if not local:
         return False
     alt = "|".join(re.escape(a) for a in sorted(local))
-    handed = re.compile(rf"(?:\b(?:return|yield)\s+|(?<![=!<>])=\s*)(?:{alt})\s*(?:[#;}}]|//|$)")
+    # A Python keyword argument (``patch.object(target=mod, ...)``) stays
+    # out, as ``f(mod)`` does; JavaScript ends the value at more tokens.
+    end = r"\s*(?:#|;|$)" if python else r"(?:\s*(?:[;}),!]|//|$)|\s+(?:as|satisfies)\b)"
+    handed = re.compile(
+        rf"(?:\b(?:return|yield|export\s+default)\s+|(?<![=!<>])=>?\s*)(?:{alt}){end}"
+    )
     return any(handed.search(t) for n, t in enumerate(lines, 1) if n not in imports)
 
 

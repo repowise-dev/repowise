@@ -335,6 +335,9 @@ async def test_a_call_on_a_returned_module_with_no_root_name_is_incomplete(
         "import * as a from './a'\nfunction load() { return a; }\n"
         "export function f() { const m = load(); return m.pick(1) }\n",
         "const a = require('./a')\nconst m = a // the module\nexport const f = () => m.pick(1)\n",
+        "import a = require('./a.js')\nconst load = () => a\nexport const f = () => load().pick(1)\n",
+        "import * as a from './a'\nexport default a\nexport const f = (m: any) => m.pick(1)\n",
+        "import * as a from './a'\nconst m = a as any\nexport const f = () => m.pick(1)\n",
     ],
 )
 async def test_a_typescript_namespace_handed_on_is_incomplete(session, repo_id, tmp_path, text):
@@ -1588,3 +1591,26 @@ async def test_another_class_member_of_the_same_name_is_not_listed(session, repo
     assert [s for s in _sites(out) if s[0] == "app/other.py"] == [("app/other.py", 6, "reference")]
     assert out["complete"] is False
     assert any(r.startswith("another class defines its own member") for r in out["reasons"])
+
+
+@pytest.mark.parametrize(
+    ("holder", "user", "handed"),
+    [
+        # A dotted file name and an index file are named by their import specifier.
+        ("web/user.service.ts", "import * as s from './user.service'\nconst m = s\n", True),
+        ("web/lib/index.ts", "import * as s from './lib/index'\nconst m = s\n", True),
+        ("web/lib/index.ts", "import * as s from './lib'\nconst m = s\n", True),
+        # A Python module named index is imported by that name.
+        ("pkg/index.py", "from pkg import index\nm = index\n", True),
+        # A keyword argument passes the module to a call, as a positional one does.
+        ("pkg/catalog.py", "from pkg import catalog\npatch.object(target=catalog, attr='x')\n", False),
+    ],
+)
+def test_a_module_handed_on_is_found_by_the_name_its_import_spells(
+    tmp_path, holder, user, handed
+):
+    rel = "web/u.ts" if holder.startswith("web/") else "app/u.py"
+    (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / rel).write_text(user, encoding="utf-8")
+
+    assert _edit_sites._hands_on_module(tmp_path, rel, {holder}) is handed
