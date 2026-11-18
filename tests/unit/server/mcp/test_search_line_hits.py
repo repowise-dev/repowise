@@ -1054,3 +1054,35 @@ def test_a_group_drops_its_tests_only_beside_shipped_code():
 
     assert groups == [[shipped], only_tests]
     assert reasons == ["1 lines in tests not shown beside shipped code: lines_omitted counts them"]
+
+
+async def test_an_incomplete_edit_set_says_which_search_lists_every_line(tree, monkeypatch):
+    # An uncommitted file the index never read names the symbol: the edit set
+    # cannot vouch for it, and the hint names the scan that reads it.
+    (tree / "app" / "late.py").write_text(
+        "import pkg.catalog as c\nc.backend_of('n')\n", encoding="utf-8"
+    )
+    _dirty(monkeypatch, frozenset({"app/late.py"}))
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    assert out["complete"] is False
+    assert out["hint"] == _edit_sites.incomplete_hint("backend_of")
+    follow = await search_codebase(r"\bbackend_of\b")
+    assert ("app/late.py", 2) in {(r["path"], r["line"]) for r in follow["lines"]}
+
+
+async def test_a_cut_naming_where_the_rest_are_gets_no_hint(tree, session, setup_mcp):
+    (tree / "tests").mkdir()
+    (tree / "tests" / "test_widget.py").write_text(
+        "from pkg.catalog import backend_of\n"
+        + "".join(f"mock.patch('pkg.catalog.backend_of', side_effect={i})\n" for i in range(20)),
+        encoding="utf-8",
+    )
+    _importer(session, setup_mcp, "tests/test_widget.py", "pkg/catalog.py", '["backend_of"]', "python")
+    await session.commit()
+
+    out = await search_codebase("backend_of", mode="symbol")
+
+    assert out["complete"] is False
+    assert "hint" not in out

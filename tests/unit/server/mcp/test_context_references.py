@@ -270,7 +270,10 @@ async def test_module_object_bound_outside_an_import_is_incomplete(session, repo
     assert out["reasons"] == [
         "may be called through a module object outside an import: app/lazy.py"
     ]
-    assert out["hint"] == r'lines naming it: search_codebase(query="\bbackend_of\b")'
+    assert out["hint"] == (
+        r'Not every site is listed. Before answering, run search_codebase(query="\bbackend_of\b")'
+        " for every line naming it."
+    )
     assert "app/lazy.py" not in out["files"]
 
 
@@ -1755,4 +1758,5 @@ async def test_a_budget_cut_beside_another_reason_still_gives_the_hint(
 
     assert len(out["reasons"]) > 1
     assert "files shown to fit" in out["reasons"][-1]
-    assert out["hint"] == r'lines naming it: search_codebase(query="\bpick\b")'
+    assert out["hint"] == _edit_sites.incomplete_hint("pick")
+    assert r'query="\bpick\b"' in out["hint"]

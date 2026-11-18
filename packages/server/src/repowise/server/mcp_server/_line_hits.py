@@ -43,6 +43,7 @@ from repowise.server.mcp_server._edit_sites import (
     _bare_name,
     _cap_references_per_file,
     _read_lines,
+    incomplete_hint,
     reference_edit_set,
 )
 from repowise.server.mcp_server._federation import Federation
@@ -96,6 +97,7 @@ _MIXED_KIND_ORDER = {
 }
 _QUOTED = re.compile(r"""^(["'`])(.+)\1$""")
 _TOKEN = re.compile(r"^[A-Za-z0-9_$][\w$.]*$")
+_IDENTIFIER = re.compile(r"[A-Za-z_$][\w$]*")
 # Code punctuation: a leading decorator ``@``, an identifier glued to an opening
 # ``(`` or ``{`` (``send(``), or a glued ``=`` (``path="/x"``). Prose such as
 # ``Add (optional) support`` has a space before its parenthesis and matches none.
@@ -787,6 +789,12 @@ def _serve_lines(
     response["complete"] = not reasons
     if reasons:
         response["reasons"] = reasons
+        # Lines from one name's edit set that may miss sites; the regex scan
+        # reads every file. A cut naming _meta.omitted already says where.
+        name = query.strip()
+        missed = any("_meta.omitted" not in r for r in reasons)
+        if missed and not literal_scan and _IDENTIFIER.fullmatch(name):
+            response.setdefault("hint", incomplete_hint(name))
     else:
         _drop_sweep_advice(response)
     _drop_pages_beside_definitions(response, every_page=not mixed)
