@@ -1613,6 +1613,12 @@ async def test_another_class_member_of_the_same_name_is_not_listed(session, repo
         ("web/a.ts", "import * as s from './a'\nconst api = { k: s, j: 1 }\n", True),
         ("web/a.ts", "import * as s from './a'\nconst all = [s]\n", True),
         ("web/a.ts", "import * as s from './a'\nconst api = { a, s }\n", True),
+        # Call arguments are not a literal, as ``f(mod)`` is not.
+        ("web/a.ts", "import * as s from './a'\nexpect(a, s, b)\n", False),
+        ("web/a.ts", "import * as s from './a'\nf({ a }, s, b)\n", False),
+        # A package specifier names an index by its directory.
+        ("web/lib/index.ts", "import * as s from 'pkg/index'\nconst m = s\n", False),
+        ("web/lib/index.ts", "import * as s from 'app/lib/index'\nconst m = s\n", True),
         # A member of the required module is not the module.
         ("web/m.ts", "const s = require('./m').helper\nconst m = s\n", False),
         # A comparison reads the namespace, it does not hand it on.

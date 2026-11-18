@@ -1367,8 +1367,10 @@ def _js_namespaces(text: str, rel: str, module_paths: set[str], stems: set[str])
         if not any(named & _js_import_targets(p) for p in module_paths):
             return set()
     else:
-        base = PurePosixPath(spec).name
-        if not {base, PurePosixPath(base).stem} & stems:
+        path = PurePosixPath(spec)
+        # ``pkg/index`` names the package by its directory, as ``pkg`` does.
+        base = path.parent.name if path.stem == "index" else path.name
+        if not base or not {base, PurePosixPath(base).stem} & stems:
             return set()
     return {m.group(1) or m.group(2) for m in _JS_NAMESPACE.finditer(text)}
 
@@ -1419,9 +1421,15 @@ def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     # A JavaScript ``!`` ends it as a non-null assertion, not as ``!=``.
     end = r"\s*(?:#|;|$)" if python else r"(?:\s*(?:[;}),]|!(?!=)|//|$)|\s+(?:as|satisfies)\b)"
     # A JavaScript literal holding it hands it on too: ``{ ns }``, ``[x, ns]``,
-    # ``{ k: ns }``. A Python one stays out: tests patch ``{"m": mod}`` into
-    # ``sys.modules`` as they pass ``f(mod)``. Ceiling: an element alone on its line is not read.
-    literal = "" if python else rf"|[{{\[:,]\s*(?:{alt})\s*[,}}\]]"
+    # ``{ k: ns }``; a comma counts only inside an open ``{`` or ``[``, so
+    # ``f(a, ns, b)`` stays out. A Python one stays out: tests patch
+    # ``{"m": mod}`` into ``sys.modules`` as they pass ``f(mod)``.
+    # Ceiling: an element alone on its line is not read.
+    literal = (
+        ""
+        if python
+        else rf"|(?:[{{\[](?:[^(){{}}\[\]]*,)?|:)\s*(?:{alt})\s*[,}}\]]"
+    )
     handed = re.compile(
         rf"(?:\b(?:return|yield|export\s+default)\s+|(?<![=!<>])=>?\s*)(?:{alt}){end}{literal}"
     )
