@@ -21,6 +21,35 @@ _YIELD = re.compile(r"\byield\b")
 # first segment is the local name an import binds.
 _NAME_RETURNED = re.compile(r"\s*(([A-Za-z_]\w*)(?:\.[A-Za-z_]\w*)*)\s*(?:#.*)?")
 _IMPORT_LINE = re.compile(r"^\s*(?:from\s+[\w.]+\s+)?import\s")
+# A statement no path runs past: a return or raise, alone or after ``else:``
+# or a ``with`` header on its line.
+_ENDS = re.compile(r"^\s*(?:(?:else|(?:async\s+)?with\b[^#\n]*?)\s*:\s*)?(?:return|raise)\b")
+
+
+def _ends_in_return(lines: list[str], body: list[int], start_line: int) -> bool:
+    """Whether the last statement of the body in *body* (lines of a def at
+    *start_line*) is at the body's own indentation and returns or raises.
+
+    Ceiling: a body ending in an ``if``/``else`` or ``try`` whose every branch
+    returns reads as falling through, so the function types nothing.
+    """
+
+    def indent(text: str) -> int:
+        return len(text) - len(text.lstrip())
+
+    head = indent(lines[start_line - 1]) if start_line <= len(lines) else 0
+    statements = [
+        lines[n - 1]
+        for n in body
+        if start_line < n <= len(lines)
+        and lines[n - 1].strip()
+        and not lines[n - 1].lstrip().startswith("#")
+        and indent(lines[n - 1]) > head
+    ]
+    if not statements:
+        return False
+    last = statements[-1]
+    return indent(last) == min(map(indent, statements)) and _ENDS.match(last) is not None
 
 
 class PythonReturnTypes:
@@ -57,8 +86,9 @@ class PythonReturnTypes:
         ``load().f()`` and ``m = load(); m.f()`` call ``mod.f``. Every return
         in the body, the defs and classes the parser lists inside it aside,
         must name the same module through an import (``mod``, an ``as``
-        alias, or a dotted ``pkg.mod`` that ``import pkg.mod`` binds), and the
-        body must not yield.
+        alias, or a dotted ``pkg.mod`` that ``import pkg.mod`` binds), the
+        body must not yield, and its last statement must return or raise, so
+        no path falls through to ``None``.
 
         Ceiling: a return on the ``def`` line, or spread over several lines,
         is not read, and the function types nothing. A decorator that
@@ -82,6 +112,8 @@ class PythonReturnTypes:
                 None if name is None else self._module_named(path, body, *name.group(1, 2))
             )
         found = next(iter(returned)) if len(returned) == 1 else None
+        if found is not None and not _ends_in_return(lines, body, symbol.start_line):
+            found = None
         self._returned_modules[symbol.id] = found
         return found
 

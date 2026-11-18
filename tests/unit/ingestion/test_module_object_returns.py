@@ -98,6 +98,10 @@ def test_call_on_a_returned_module_reaches_its_function(tmp_path, returner, orig
     [
         # One return hands on a value, not the module.
         "def load(flag):\n    if flag:\n        return catalog\n    return None\n",
+        # The body can fall through to None.
+        "def load(flag):\n    if flag:\n        return catalog\n",
+        "def load(flag):\n    if flag: return catalog\n",
+        "def load(flag):\n    for _ in flag:\n        return catalog\n    print(flag)\n",
         # A return on its if header's line hands on another value.
         "def load(flag):\n    if flag: return object()\n    return catalog\n",
         "def load(flag):\n    if flag:\n        return catalog\n    else: return other\n",
