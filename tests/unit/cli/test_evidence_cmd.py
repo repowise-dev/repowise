@@ -503,3 +503,20 @@ def test_value_kind_on_a_benchmark_file_says_it_has_no_clock(indexed) -> None:
     assert result.exit_code == 2
     assert "records no clock" in result.stderr
     assert _stored(root) == ([], [])
+
+
+def test_a_benchmark_never_links_to_a_method_sharing_its_bare_name(indexed) -> None:
+    root, head = indexed
+    _index_benchmarks(root)
+    data = json.loads(_bench_file(root, head).read_text())
+    bench = data["benchmarks"][0]
+    bench["name"], bench["fullname"] = "test_get", "benchmarks/test_speed.py::test_get"
+    data["benchmarks"] = [bench]
+    path = root / "bench.json"
+    path.write_text(json.dumps(data, indent=4))
+    result = _add(
+        str(path), "--workload", "w", "--class", "benchmark", "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    assert _json(result)["unlinked"] == {"unknown_symbol": 1}
+    assert [r.symbol_id for r in _benchmarks(root)] == [None]

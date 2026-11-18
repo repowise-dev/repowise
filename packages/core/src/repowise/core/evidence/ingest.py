@@ -105,14 +105,17 @@ def resolve_location(
     """The symbol id a ``{path, function, line}`` names, or ``(None, reason)``.
 
     Exact: the qualified name or the id after the file first, the bare name
-    when that is all the file declares under it. More than one match is narrowed by the start line and
-    refused when it stays ambiguous.
+    when that is all the file declares under it, unless the location says
+    ``exact``. More than one match is narrowed by the start line and refused
+    when it stays ambiguous.
     """
     names = by_file.get(location["path"])
     if names is None:
         return None, "unknown_file"
     found = names.get(location["function"], [])
     by_qualified = [s for s in found if _exact(s, location["function"])]
+    if location.get("exact"):
+        found = by_qualified
     line = location.get("line")
     # A bare name must also agree on the line when one is given: a method
     # reported as ``read`` is not the module's own ``read``.

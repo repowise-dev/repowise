@@ -75,6 +75,8 @@ def _entry(raw: dict[str, Any]) -> dict[str, Any]:
     if symbol_id is not None:
         entry["path"] = file_of_symbol(symbol_id)
         entry["function"] = local_symbol_id(symbol_id)
+        # The node id is the symbol id: a method sharing the bare name is not it.
+        entry["exact"] = True
     return entry
 
 

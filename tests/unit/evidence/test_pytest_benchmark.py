@@ -50,6 +50,7 @@ def test_each_benchmark_is_one_series_value_naming_its_function() -> None:
     method = by_name["benchmarks/test_speed.py::TestCache::test_get"]
     assert method["location"] == {
         "path": "benchmarks/test_speed.py", "function": "TestCache::test_get", "line": None,
+        "exact": True,
     }
     # Parameters name the series, not the function.
     assert by_name["benchmarks/test_speed.py::test_sized[20]"]["location"]["function"] == (

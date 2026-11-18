@@ -208,6 +208,8 @@ file holds one run of one kind:
 - A location is `path` (repo-relative, forward slashes), `function` (the
   qualified name, or the symbol's id after its file as a test runner names
   it, `TestCache::test_get`) and `line` (where the function starts).
+  `"exact": true` says `function` is the symbol's own name, so a bare name
+  never links to a method that shares it.
 - `value_kind` (`cpu` or `wall`) and `unit` are required for a profile.
   `total` and `explained` (the value with a repo frame on the stack) say how
   much of the run repo code explains.
@@ -279,8 +281,8 @@ repowise evidence add .repowise/bench.json --workload "pytest bench" --class ben
 
 - The node id without its parameters is the benchmark function's symbol id,
   so `benchmarks/test_io.py::TestCache::test_get[small]` links to
-  `TestCache::test_get` in `benchmarks/test_io.py`. A benchmark whose function
-  is not indexed keeps its series, counted under `unlinked`. Node ids are
+  `TestCache::test_get` in `benchmarks/test_io.py`, and only that exact
+  symbol. A benchmark whose function is not indexed keeps its series, counted under `unlinked`. Node ids are
   relative to pytest's rootdir, so run pytest from the repository root;
   from a subdirectory every benchmark is `unlinked` as `unknown_file`.
 - The row names the benchmark, not the cost of the production functions it
