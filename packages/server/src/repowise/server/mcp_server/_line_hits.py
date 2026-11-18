@@ -98,7 +98,8 @@ _MIXED_KIND_ORDER = {
 }
 _QUOTED = re.compile(r"""^(["'`])(.+)\1$""")
 _TOKEN = re.compile(r"^[A-Za-z0-9_$][\w$.]*$")
-_IDENTIFIER = re.compile(r"[A-Za-z_$][\w$]*")
+# Any letter opens a name, as ``\w`` in the hint's regex reads it (``été``).
+_IDENTIFIER = re.compile(r"(?:[^\W\d]|\$)[\w$]*")
 # Code punctuation: a leading decorator ``@``, an identifier glued to an opening
 # ``(`` or ``{`` (``send(``), or a glued ``=`` (``path="/x"``). Prose such as
 # ``Add (optional) support`` has a space before its parenthesis and matches none.

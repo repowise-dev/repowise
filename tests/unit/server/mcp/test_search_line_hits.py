@@ -1103,3 +1103,11 @@ async def test_a_cut_to_the_line_cap_gets_no_hint(tree, monkeypatch):
 
     assert out["reasons"] == [_line_hits.OVER_LINES]
     assert "hint" not in out
+
+
+@pytest.mark.parametrize(
+    ("name", "ok"),
+    [("backend_of", True), ("$el", True), ("été", True), ("_x1", True), ("1x", False), ("a b", False)],
+)
+def test_the_hint_takes_a_name_any_letter_opens(name, ok):
+    assert bool(_line_hits._IDENTIFIER.fullmatch(name)) is ok
