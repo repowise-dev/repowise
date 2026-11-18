@@ -1,11 +1,9 @@
-"""Every package root on disk, for ecosystems no specific adapter reads (Python, Maven, Ruby ...).
+"""Every package root on disk, for ecosystems no specific adapter reads (Ruby, PHP, Swift ...).
 
-The roots come from :func:`scan_package_manifests`, which reads the language
-registry's manifest names; the repo root, which that scan leaves out, is
-added when it holds a manifest. A root whose every manifest *decided*
-accepts (called with the manifest's repo-relative path) is skipped: a specific
-adapter already ruled on each. These units carry
-no deps.
+The roots come from :func:`package_manifests`, which reads the language
+registry's manifest names. A root whose every manifest *decided* accepts
+(called with the manifest's repo-relative path) is skipped: a specific
+adapter already ruled on each. These units carry no deps.
 """
 
 from __future__ import annotations
@@ -18,6 +16,8 @@ from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.ingestion.package_roots import scan_package_manifests
 from repowise.core.ingestion.resolvers.context import ResolverContext
+
+_CACHE_KEY = "_build_unit_manifests"
 
 
 def _root_manifests(repo: Path) -> frozenset[str]:
@@ -33,17 +33,28 @@ def _root_manifests(repo: Path) -> frozenset[str]:
         return frozenset()
 
 
+def package_manifests(ctx: ResolverContext) -> dict[str, frozenset[str]]:
+    """Each package root (``""`` for the repo root) to its manifest filenames, scanned once per *ctx*.
+
+    Empty without a repo path.
+    """
+    cached = getattr(ctx, _CACHE_KEY, None)
+    if cached is not None:
+        return cached
+    roots: dict[str, frozenset[str]] = {}
+    if ctx.repo_path is not None:
+        roots = scan_package_manifests(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
+        if at_root := _root_manifests(ctx.repo_path):
+            roots[""] = at_root
+    setattr(ctx, _CACHE_KEY, roots)
+    return roots
+
+
 def units(
     ctx: ResolverContext, decided: Callable[[str], bool]
 ) -> list[tuple[BuildUnit, tuple[str, ...]]]:
-    if ctx.repo_path is None:
-        return []
-    roots = scan_package_manifests(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
-    if at_root := _root_manifests(ctx.repo_path):
-        roots[""] = at_root
-
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
-    for root, names in roots.items():
+    for root, names in package_manifests(ctx).items():
         if all(decided(f"{root}/{name}" if root else name) for name in names):
             continue
         manifest = min(names)

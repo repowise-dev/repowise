@@ -11,6 +11,8 @@ import pytest
 from repowise.core.build_units.adapters import cargo as cargo_adapter
 from repowise.core.build_units.adapters import dotnet as dotnet_adapter
 from repowise.core.build_units.adapters import go as go_adapter
+from repowise.core.build_units.adapters import maven as maven_adapter
+from repowise.core.build_units.adapters import python as python_adapter
 from repowise.core.build_units.collect import collect_build_units
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.rust_workspace import get_or_build_cargo_workspace_index
@@ -164,16 +166,16 @@ def test_adapter_beats_fallback_and_nested_roots_deepest_wins(tmp_path):
         "package.json": json.dumps({"name": "root", "workspaces": ["packages/*"]}),
         "packages/a/package.json": json.dumps({"name": "a"}),
         # Not all of this root's manifests are npm's, but npm's unit holds the root.
-        "packages/a/pyproject.toml": "[project]\nname = 'a'\n",
-        "py/pyproject.toml": "[project]\nname = 'py'\n",
-        "py/y.py": "",
-        "py/sub/pyproject.toml": "[project]\nname = 'sub'\n",
-        "py/sub/x.py": "",
+        "packages/a/Gemfile": "",
+        "rb/Gemfile": "",
+        "rb/y.rb": "",
+        "rb/sub/Gemfile": "",
+        "rb/sub/x.rb": "",
     })
-    assert set(index.units) == {"manifest:py", "manifest:py/sub", "npm:a"}
-    assert index.unit("manifest:py/sub").manifest == "py/sub/pyproject.toml"
-    assert _owners(index, "py/sub/x.py") == ["manifest:py/sub"]
-    assert _owners(index, "py/y.py") == ["manifest:py"]
+    assert set(index.units) == {"manifest:rb", "manifest:rb/sub", "npm:a"}
+    assert index.unit("manifest:rb/sub").manifest == "rb/sub/Gemfile"
+    assert _owners(index, "rb/sub/x.rb") == ["manifest:rb/sub"]
+    assert _owners(index, "rb/y.rb") == ["manifest:rb"]
 
 
 def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
@@ -182,9 +184,17 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
 
     monkeypatch.setattr(dotnet_adapter, "get_or_build_index", boom)
     monkeypatch.setattr(go_adapter, "get_or_build_go_index", boom)
-    index = _collect(tmp_path, {"pkg/pyproject.toml": "[project]\nname = 'pkg'\n", "pkg/m.py": ""})
-    assert list(index.units) == ["manifest:pkg"]
-    assert _owners(index, "pkg/m.py") == ["manifest:pkg"]
+    monkeypatch.setattr(python_adapter, "package_manifests", boom)
+    monkeypatch.setattr(maven_adapter, "load_maven_reactor", boom)
+    index = _collect(tmp_path, {
+        "pkg/Gemfile": "",
+        "pkg/m.rb": "",
+        # Manifests alone do not wake an adapter: there is no source for it to own.
+        "pyproject.toml": "[project]\nname = 'root'\n",
+        "pom.xml": "<project><groupId>g</groupId><artifactId>a</artifactId></project>",
+    })
+    assert list(index.units) == ["manifest:.", "manifest:pkg"]
+    assert _owners(index, "pkg/m.rb") == ["manifest:pkg"]
 
 
 def test_failing_index_is_skipped_and_its_roots_fall_back(tmp_path, monkeypatch):
@@ -403,3 +413,233 @@ def test_cargo_path_dep_outside_the_repo_links_no_same_named_crate(tmp_path):
         "crates/app/src/main.rs": "",
     })
     assert index.unit("cargo:app").deps == ()
+
+
+def test_python_uv_workspace_and_path_sources(tmp_path):
+    index = _collect(tmp_path, {
+        # A virtual workspace root names no distribution: the fallback keeps it.
+        "pyproject.toml": '[tool.uv.workspace]\nmembers = ["packages/*"]\n',
+        "scripts/run.py": "",
+        "packages/core/pyproject.toml": '[project]\nname = "Acme_Core"\n',
+        "packages/core/src/acme/core.py": "",
+        "packages/cli/pyproject.toml": (
+            '[project]\nname = "acme-cli"\ndependencies = ["acme-core>=1", "acme-tools", "requests"]\n'
+            # uv's list form: one source per marker.
+            '[tool.uv.sources]\nacme-core = [{ workspace = true, marker = "python_version >= \'3.11\'" }]\n'
+            'acme-tools = { git = "https://example.com/tools.git" }\n'
+        ),
+        "packages/cli/main.py": "",
+        "packages/server/pyproject.toml": (
+            '[project]\nname = "acme-server"\n'
+            '[tool.uv.sources]\nlib = { path = "../../libs/renamed", editable = true }\n'
+        ),
+        "libs/renamed/pyproject.toml": '[project]\nname = "acme-lib"\n',
+        "libs/tools/pyproject.toml": '[project]\nname = "acme-tools"\n',
+    })
+    assert _deps(index) == {
+        "manifest:.": (),
+        "python:acme-cli": ("python:acme-core",),
+        "python:acme-core": (),
+        "python:acme-lib": (),
+        # A git source names an outside distribution, whatever the repo holds.
+        "python:acme-tools": (),
+        "python:acme-server": ("python:acme-lib",),
+    }
+    core = index.unit("python:acme-core")
+    assert (core.name, core.root, core.manifest, core.source) == (
+        "Acme_Core", "packages/core", "packages/core/pyproject.toml", "pyproject",
+    )
+    assert _owners(index, "packages/core/src/acme/core.py") == ["python:acme-core"]
+    assert _owners(index, "scripts/run.py") == ["manifest:."]
+    assert [u.id for u in index.dependents("python:acme-core")] == ["python:acme-cli"]
+
+
+def test_python_poetry_path_deps_and_name_matched_deps(tmp_path):
+    index = _collect(tmp_path, {
+        "app/pyproject.toml": (
+            '[tool.poetry]\nname = "app"\n'
+            '[tool.poetry.dependencies]\npython = "^3.11"\nlib = { path = "../lib", develop = true }\n'
+            '[tool.poetry.group.dev.dependencies]\ntestkit = { path = "../testkit" }\n'
+            'tooling = { path = ".." }\n'
+            # Outside the repo: links nothing, even though a unit has this name.
+            'lib-utils = { path = "../../elsewhere/utils" }\n'
+        ),
+        "pyproject.toml": '[project]\nname = "root-tools"\n',
+        "app/app.py": "",
+        "lib/pyproject.toml": '[tool.poetry]\nname = "lib"\n',
+        "testkit/pyproject.toml": '[tool.poetry]\nname = "testkit"\n',
+        "web/pyproject.toml": (
+            '[project]\nname = "web"\n'
+            'dependencies = ["Lib.Utils @ file:///${PROJECT_ROOT}/../utils"]\n'
+            '[project.optional-dependencies]\ntest = ["testkit[extra]>=1"]\n'
+        ),
+        "utils/pyproject.toml": '[project]\nname = "lib-utils"\n',
+    })
+    assert _deps(index) == {
+        "python:app": ("python:lib", "python:root-tools", "python:testkit"),
+        "python:lib": (),
+        "python:lib-utils": (),
+        "python:root-tools": (),
+        "python:testkit": (),
+        "python:web": ("python:lib-utils", "python:testkit"),
+    }
+
+
+def test_python_unit_beats_fallback_at_its_root(tmp_path):
+    index = _collect(tmp_path, {
+        "pkg/pyproject.toml": '[project]\nname = "pkg"\n',
+        "pkg/setup.py": "",
+        "pkg/m.py": "",
+        "legacy/setup.py": "",
+        "legacy/l.py": "",
+        "bare/pyproject.toml": "[tool.ruff]\nline-length = 100\n",
+    })
+    assert set(index.units) == {"manifest:bare", "manifest:legacy", "python:pkg"}
+    assert _owners(index, "pkg/m.py") == ["python:pkg"]
+
+
+_POM = (
+    '<project xmlns="http://maven.apache.org/POM/4.0.0">'
+    "<modelVersion>4.0.0</modelVersion>{body}</project>"
+)
+
+
+def _parent(artifact: str, group: str = "com.acme") -> str:
+    return f"<parent><groupId>{group}</groupId><artifactId>{artifact}</artifactId><version>1</version></parent>"
+
+
+def _dep(coordinate: str, scope: str = "") -> str:
+    group, artifact = coordinate.split(":")
+    scope_tag = f"<scope>{scope}</scope>" if scope else ""
+    return f"<dependency><groupId>{group}</groupId><artifactId>{artifact}</artifactId>{scope_tag}</dependency>"
+
+
+def test_maven_reactor_modules_inherited_group_and_test_scope_deps(tmp_path):
+    index = _collect(tmp_path, {
+        "pom.xml": _POM.format(body=(
+            "<groupId>com.acme</groupId><artifactId>parent</artifactId><version>1</version>"
+            "<packaging>pom</packaging>"
+            "<modules><module>core</module><module>app</module>"
+            "<module>testkit</module><module>services</module></modules>"
+        )),
+        "core/pom.xml": _POM.format(body=_parent("parent") + "<artifactId>core</artifactId>"),
+        "core/src/main/java/a/Core.java": "package a; class Core {}",
+        "testkit/pom.xml": _POM.format(body=_parent("parent") + "<artifactId>testkit</artifactId>"),
+        "app/pom.xml": _POM.format(body=(
+            _parent("parent") + "<artifactId>app</artifactId><dependencies>"
+            + _dep("com.acme:core") + _dep("com.acme:testkit", "test") + _dep("junit:junit", "test")
+            + "</dependencies>"
+        )),
+        "services/pom.xml": _POM.format(body=(
+            _parent("parent") + "<groupId>com.acme.svc</groupId><artifactId>services</artifactId>"
+            "<packaging>pom</packaging><modules><module>api</module></modules>"
+        )),
+        "services/api/pom.xml": _POM.format(body=(
+            _parent("services", "com.acme.svc") + "<artifactId>api</artifactId>"
+            "<dependencies>" + _dep("com.acme:core") + "</dependencies>"
+        )),
+        "services/api/src/main/java/s/Api.java": "package s; class Api {}",
+        # Outside the reactor: no unit, and the fallback leaves it too.
+        "examples/demo/pom.xml": _POM.format(body="<groupId>x</groupId><artifactId>demo</artifactId>"),
+        "examples/demo/Demo.java": "class Demo {}",
+    })
+    assert _deps(index) == {
+        "maven:com.acme.svc:api": ("maven:com.acme:core",),
+        "maven:com.acme.svc:services": (),
+        "maven:com.acme:app": ("maven:com.acme:core", "maven:com.acme:testkit"),
+        "maven:com.acme:core": (),
+        "maven:com.acme:parent": (),
+        "maven:com.acme:testkit": (),
+    }
+    api = index.unit("maven:com.acme.svc:api")
+    assert (api.name, api.root, api.manifest, api.source) == (
+        "api", "services/api", "services/api/pom.xml", "maven",
+    )
+    assert index.unit("maven:com.acme:parent").root == ""
+    assert _owners(index, "services/api/src/main/java/s/Api.java") == ["maven:com.acme.svc:api"]
+    assert _owners(index, "examples/demo/Demo.java") == ["maven:com.acme:parent"]
+
+
+def test_maven_without_root_pom_falls_back(tmp_path):
+    index = _collect(tmp_path, {
+        "lib/pom.xml": _POM.format(body="<groupId>g</groupId><artifactId>lib</artifactId>"),
+        "lib/src/main/java/L.java": "class L {}",
+    })
+    assert list(index.units) == ["manifest:lib"]
+
+
+def test_python_unreadable_pyproject_falls_back_alone(tmp_path):
+    _write(tmp_path, {
+        "good/pyproject.toml": '[project]\nname = "good"\n',
+        "good/g.py": "",
+    })
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "pyproject.toml").write_bytes(b'[project]\nname = "caf\xe9"\n')
+    (tmp_path / "bad" / "b.py").write_text("", encoding="utf-8")
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"manifest:bad", "python:good"}
+
+
+def test_python_path_source_to_a_dropped_duplicate_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "a/dup/pyproject.toml": '[project]\nname = "dup"\n',
+        "b/dup/pyproject.toml": '[project]\nname = "Dup"\n',
+        "b/dup/d.py": "",
+        "app/pyproject.toml": (
+            '[project]\nname = "app"\n[tool.uv.sources]\nother = { path = "../b/dup" }\n'
+        ),
+        "web/pyproject.toml": (
+            '[project]\nname = "web"\n[tool.uv.sources]\nkept = { path = "../a/dup" }\n'
+        ),
+    })
+    assert index.unit("python:dup").root == "a/dup"
+    assert index.unit("python:app").deps == ()
+    assert index.unit("python:web").deps == ("python:dup",)
+    assert _owners(index, "b/dup/d.py") == ["manifest:b/dup"]
+
+
+def test_python_poetry_legacy_dev_dependencies(tmp_path):
+    index = _collect(tmp_path, {
+        "app/pyproject.toml": (
+            '[tool.poetry]\nname = "app"\n'
+            '[tool.poetry.dev-dependencies]\ntestkit = { path = "../testkit", develop = true }\n'
+            'helpers = "*"\n'
+        ),
+        "app/app.py": "",
+        "testkit/pyproject.toml": '[tool.poetry]\nname = "testkit"\n',
+        "helpers/pyproject.toml": '[tool.poetry]\nname = "helpers"\n',
+    })
+    assert index.unit("python:app").deps == ("python:helpers", "python:testkit")
+
+
+def test_python_marker_split_uv_source_keeps_the_workspace_edge(tmp_path):
+    index = _collect(tmp_path, {
+        "core/pyproject.toml": '[project]\nname = "core"\n',
+        "core/c.py": "",
+        "cli/pyproject.toml": (
+            '[project]\nname = "cli"\ndependencies = ["core", "ext"]\n[tool.uv.sources]\n'
+            'core = [\n  { workspace = true, marker = "sys_platform == \'linux\'" },\n'
+            '  { index = "mirror", marker = "sys_platform != \'linux\'" },\n]\n'
+            'ext = [{ index = "mirror" }, { url = "https://example.com/ext.whl" }]\n'
+        ),
+        "ext/pyproject.toml": '[project]\nname = "ext"\n',
+    })
+    assert index.unit("python:cli").deps == ("python:core",)
+
+
+def test_maven_unparsed_or_unresolved_module_falls_back(tmp_path):
+    _write(tmp_path, {
+        "pom.xml": _POM.format(body=(
+            "<groupId>g</groupId><artifactId>root</artifactId><packaging>pom</packaging>"
+            "<modules><module>a</module><module>bad</module><module>prop</module></modules>"
+        )),
+        "a/pom.xml": _POM.format(body=_parent("root", "g") + "<artifactId>a</artifactId>"),
+        "a/src/main/java/A.java": "class A {}",
+        "prop/pom.xml": _POM.format(body=_parent("root", "g") + "<artifactId>${missing}</artifactId>"),
+        "prop/src/main/java/P.java": "class P {}",
+    })
+    (tmp_path / "bad").mkdir()
+    (tmp_path / "bad" / "pom.xml").write_bytes(b"<project><artifactId>caf\xe9</artifactId><oops></project>")
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"manifest:bad", "manifest:prop", "maven:g:a", "maven:g:root"}
+    assert _owners(index, "prop/src/main/java/P.java") == ["manifest:prop"]

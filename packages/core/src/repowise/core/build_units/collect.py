@@ -14,7 +14,9 @@ from repowise.core.build_units.adapters import (
     go,
     gradle,
     manifest_roots,
+    maven,
     npm,
+    python,
 )
 from repowise.core.build_units.model import BuildUnit, BuildUnitIndex
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -32,6 +34,8 @@ _ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
     ("gradle", gradle.units),
     ("npm", npm.units),
     ("go", go.units),
+    ("maven", maven.units),
+    ("python", python.units),
 )
 
 
