@@ -353,7 +353,7 @@ and commit the budget diff.
 - Write a clear description of what and why
 - Reference any related issues
 - Ensure CI passes before requesting review
-- The Repowise bot reviews every PR; its verdict is the `Repowise review` check. If
+- The [Repowise bot](https://repowise.dev/bot) reviews every PR; its verdict is the `Repowise review` check. If
   one of its inline points is fixed or wrong, reply in that thread (for example
   "Fixed in <sha>") and it rechecks and resolves it. A 👍 or 👎 on a point tells it
   whether the point was useful.
