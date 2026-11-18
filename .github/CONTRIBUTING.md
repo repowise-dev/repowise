@@ -301,7 +301,9 @@ runs and what a failure does. Start from the
 it checks, when it runs and the command that reproduces it locally. A pull
 request runs the Python 3.12 tests in two shards, plus only the suites its
 changed paths need; `Python tests` is the one Python check that must pass.
-Run one shard locally with `uv run pytest tests/unit/ --shard 1/2`.
+Run one shard locally with `uv run pytest tests/unit/ --shard 1/2`. The
+"Test selection compared" job summary shows which tests `repowise impacted-tests`
+would have picked for your change; it is recorded only and never blocks.
 
 ### Retrieval guard
 
