@@ -292,6 +292,11 @@ runs and what a failure does. Start from the
   `caplog.set_level(logging.INFO, logger="<full logger name>")`. Setting the root
   level is not enough, because ancestors such as `repowise.core` set their own.
 
+### How CI runs
+
+[docs/architecture/ci.md](../docs/architecture/ci.md) lists every CI job, what
+it checks, when it runs and the command that reproduces it locally.
+
 ### Retrieval guard
 
 `tests/unit/server/mcp/test_retrieval_guard.py` indexes `tests/fixtures/sample_repo`

@@ -12,6 +12,16 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # uv's default 30 s read timeout fails large wheel downloads (lancedb) on a
+  # slow connection, most often on the Windows runner.
+  UV_HTTP_TIMEOUT: "120"
+
+# Every uv job pins setup-uv and uv itself and keys its cache on uv.lock plus
+# the Python it installs for (cache-suffix), so jobs installing the same set
+# share one entry. A job whose key already exists restores it and saves
+# nothing.
+
 jobs:
   # ---------------------------------------------------------------------------
   # Python tests — matrix across Python 3.11, 3.12, 3.13
@@ -34,10 +44,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py${{ matrix.python-version }}
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
@@ -48,7 +60,14 @@ jobs:
       # Apex and COBOL grammars download from GitHub releases on first use, and
       # a failed load is not retried within a process. Left to the tests, one
       # 504 empties every Apex or COBOL result on that xdist worker. Staged once
-      # here with retries, the tests load them from disk.
+      # here with retries, the tests load them from disk. The language pack
+      # version in uv.lock decides the grammar files, so the lock keys them.
+      - name: Cache runtime grammars
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/grammars
+          key: grammars-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
       - name: Stage runtime grammars
         run: |
           dir="$RUNNER_TEMP/grammars/libs"
@@ -135,10 +154,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         run: uv sync --all-packages
@@ -147,6 +168,12 @@ jobs:
         run: uv pip install "tree-sitter==0.25.0"
 
       # Same staging as the Python tests job: COBOL and Apex download on first use.
+      - name: Cache runtime grammars
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/grammars
+          key: grammars-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+
       - name: Stage runtime grammars
         run: |
           dir="$RUNNER_TEMP/grammars/libs"
@@ -182,10 +209,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Set up Python 3.12
         run: uv python install 3.12
@@ -249,6 +278,8 @@ jobs:
   # test matrix: the result is identical on 3.11/3.12/3.13 (target-version is
   # pinned in pyproject.toml), so running it there would burn three runners to
   # learn one thing, and a lint failure would masquerade as a test failure.
+  # The standalone binary at the ruff version uv.lock pins, so no project
+  # install; rules come from pyproject.toml as before.
   # ---------------------------------------------------------------------------
   lint-python:
     name: Python lint (ruff)
@@ -257,17 +288,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --all-packages
-
       - name: Run ruff
-        run: uv run ruff check .
+        uses: astral-sh/ruff-action@v4.1.0
+        with:
+          version-file: uv.lock
+          args: check
 
   # ---------------------------------------------------------------------------
   # Documentation drift over the checkout, no index; the baseline says what it holds.
@@ -280,10 +305,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         run: uv sync --all-packages
@@ -375,10 +402,12 @@ jobs:
 
       - name: Install uv
         if: steps.changed.outputs.mcp == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         if: steps.changed.outputs.mcp == 'true'
@@ -402,10 +431,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         run: uv sync --all-packages
@@ -582,10 +613,12 @@ jobs:
 
       - name: Install uv
         if: steps.changed.outputs.emitter == 'true'
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v10.3.3
         with:
-          version: "latest"
+          version: "0.13.9"
           enable-cache: true
+          cache-dependency-glob: uv.lock
+          cache-suffix: py3.12
 
       - name: Install dependencies
         if: steps.changed.outputs.emitter == 'true'
