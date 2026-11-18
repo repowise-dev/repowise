@@ -5,7 +5,7 @@ through ``init_db``; neither path can change a key later, so the keys here
 are final.
 
 Revision ID: 0129
-Revises: 0126
+Revises: 0127
 Create Date: 2026-11-18
 """
 
@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0129"
-down_revision: str | None = "0126"
+down_revision: str | None = "0127"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -269,7 +269,7 @@ def test_keys_are_the_reviewed_ones() -> None:
 def test_the_migration_creates_and_drops_the_tables(tmp_path: Path, warm_start: bool) -> None:
     path = tmp_path / "wiki.db"
     config = _alembic_config(path)
-    command.upgrade(config, "0126")
+    command.upgrade(config, "0127")
     if warm_start:
         # init_db's create_all may create the tables before the migration runs.
         async def warm() -> None:
@@ -293,7 +293,7 @@ def test_the_migration_creates_and_drops_the_tables(tmp_path: Path, warm_start: 
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(build_unit_files)")}
         assert "ix_build_unit_files_repo_unit" in indexes
 
-    command.downgrade(config, "0126")
+    command.downgrade(config, "0127")
     with sqlite3.connect(path) as connection:
         for model in _TABLES:
             assert connection.execute(f"PRAGMA table_info({model.__tablename__})").fetchall() == []
