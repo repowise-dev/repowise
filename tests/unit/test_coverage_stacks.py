@@ -602,3 +602,21 @@ def test_a_dotnet_sln_names_its_projects_with_backslashes():
              "samples/D/D.csproj": "<TargetFramework>net10.0</TargetFramework>"}
     (stack,) = detect_stacks(list(files), files)
     assert stack.notes[0].startswith("The projects in `App.sln` target up to net8.0:")
+
+
+def test_a_dotnet_unit_below_the_root_reads_the_nearest_sdk_pin_above_it():
+    # dotnet walks up from the working directory to the first global.json.
+    files = {
+        "global.json": json.dumps({"sdk": {"version": "10.0.100"}}),
+        "src/Svc/Svc.sln": "",
+        "src/Svc/App/App.csproj": "<TargetFramework>net8.0</TargetFramework>",
+    }
+    paths = list(files)
+    assert "global.json" in files_to_read(paths)
+    (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths)})
+    assert stack.root == "src/Svc" and "10.0.100" in stack.notes[0]
+    # A nearer pin wins.
+    files["src/Svc/global.json"] = json.dumps({"sdk": {"version": "9.0.100"}})
+    paths = list(files)
+    (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths)})
+    assert "9.0.100" in stack.notes[0]

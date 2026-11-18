@@ -1084,6 +1084,13 @@ def _governing_lock(root: str, present: set[str]) -> set[str]:
     return set()
 
 
+def _sdk_pin(root: str, present: set[str]) -> str | None:
+    """The ``global.json`` the .NET SDK uses at *root*: the nearest one at or above it, as dotnet walks up."""
+    return next(
+        (p for d in (root, *reversed(_ancestors(root))) if (p := _join(d, _DOTNET_SDK_PIN)) in present), None
+    )
+
+
 def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set[str]]) -> list[str]:
     """*paths* below *root*, rebased; a .NET root leaves out nested .NET roots' files."""
     rel = [r for p in paths if (r := _under(root, p)) is not None]
@@ -1116,6 +1123,8 @@ def detect_stacks(
                 names = {p for p in rel if "/" not in p}
                 if stack == "node":
                     names |= _governing_lock(root, present)
+                if stack == "dotnet" and (pin := _sdk_pin(root, present)) in files:
+                    texts = {**texts, _DOTNET_SDK_PIN: files[pin]}
                 built = _BUILDERS[stack](names, rel, texts)
                 if built is not None:
                     here.append(replace(built, root=root))
@@ -1143,6 +1152,8 @@ def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> 
             wanted += [_join(root, r) for r in (tests + others)[:_DOTNET_PROJECTS]]
             # The solutions too: the SDK note reads which projects the chosen one builds.
             wanted += [_join(root, r) for r in rel if r.endswith(_SOLUTIONS)]
+            if (pin := _sdk_pin(root, present)) is not None:
+                wanted.append(pin)
     return list(dict.fromkeys(wanted))
 
 
