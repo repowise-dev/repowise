@@ -514,6 +514,10 @@ def test_a_runner_at_the_end_of_a_chain_is_recognised(script, runner, command):
         ("cross-env CI=1 yarn exec jest", "jest"),
         # A flag that takes a value leaves the value where the runner would be.
         ("npx -p vitest node run.js", None),
+        ("npx --package=vitest vitest run", None),
+        # Only ``-p`` and ``--package`` themselves: a longer flag starting the same way is a plain flag.
+        ("npx --package-lock=false vitest run", "vitest"),
+        ("npx -p-x vitest run", "vitest"),
         ("npm exec --prefix pkg vitest", None),
         # The wrapped command keeps its own reading: c8 still gets its lcov report step.
         ("npx c8 mocha", "report:c8"),
