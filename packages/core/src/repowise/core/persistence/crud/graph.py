@@ -824,6 +824,35 @@ async def get_all_file_metrics(
     return list(result.scalars().all())
 
 
+def _extract_owned_items(
+    nodes: Sequence[Any] | Mapping[str, float],
+    attr: str,
+) -> list[tuple[str, float]]:
+    """Extract (id, metric) pairs for owned files, skipping external/framework nodes."""
+    if isinstance(nodes, Mapping):
+        return [(k, float(v or 0.0)) for k, v in nodes.items() if not is_external(k)]
+    items: list[tuple[str, float]] = []
+    for idx, item in enumerate(nodes):
+        if hasattr(item, "node_id"):
+            if not is_external(item.node_id):
+                items.append((item.node_id, float(getattr(item, attr, 0.0) or 0.0)))
+        elif isinstance(item, tuple) and len(item) == 2:
+            if not is_external(item[0]):
+                items.append((item[0], float(item[1] or 0.0)))
+        elif isinstance(item, (int, float)):
+            items.append((str(idx), float(item)))
+    return items
+
+
+def _percentile_of(value: float, ordered: list[float]) -> float:
+    """Compute percentile rank for a single value against ordered peer values."""
+    n = len(ordered)
+    if n == 1:
+        return 100.0 if float(value) >= ordered[0] else 0.0
+    below = min(bisect.bisect_left(ordered, float(value)), n - 1)
+    return round(below / (n - 1) * 100.0, 1)
+
+
 def percentile_rank(
     value: float | None = None,
     nodes: Sequence[Any] | Mapping[str, float] = (),
@@ -840,43 +869,19 @@ def percentile_rank(
     When *value* is a float, returns the percentile rank of that value
     among the owned nodes as a ``float``.
     """
-    items: list[tuple[str, float]] = []
-    if isinstance(nodes, Mapping):
-        for k, v in nodes.items():
-            if not is_external(k):
-                items.append((k, float(v or 0.0)))
-    else:
-        for idx, item in enumerate(nodes):
-            if hasattr(item, "node_id"):
-                if not is_external(item.node_id):
-                    val = getattr(item, attr, 0.0) or 0.0
-                    items.append((item.node_id, float(val)))
-            elif isinstance(item, tuple) and len(item) == 2:
-                if not is_external(item[0]):
-                    items.append((item[0], float(item[1] or 0.0)))
-            elif isinstance(item, (int, float)):
-                items.append((str(idx), float(item)))
-
+    items = _extract_owned_items(nodes, attr)
     if not items:
         return 0.0 if value is not None else {}
 
     ordered = sorted(v for _, v in items)
+    if value is not None:
+        return _percentile_of(value, ordered)
+
+    if len(ordered) == 1:
+        return {k: 100.0 for k, _ in items}
+
     n = len(ordered)
-    if n == 1:
-        if value is None:
-            return {k: 100.0 for k, _ in items}
-        return 100.0 if float(value) >= ordered[0] else 0.0
-
-    if value is None:
-        out: dict[str, float] = {}
-        for k, v in items:
-            below = bisect.bisect_left(ordered, v)
-            out[k] = round(below / (n - 1) * 100.0, 1)
-        return out
-
-    below = bisect.bisect_left(ordered, float(value))
-    below = min(below, n - 1)
-    return round(below / (n - 1) * 100.0, 1)
+    return {k: round(bisect.bisect_left(ordered, v) / (n - 1) * 100.0, 1) for k, v in items}
 
 
 async def get_pagerank_percentile(
