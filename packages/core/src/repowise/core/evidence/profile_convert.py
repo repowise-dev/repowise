@@ -143,6 +143,10 @@ def convert_profile(
         "skipped": dict(sorted(skipped.items())),
         "symbols": entries,
     }
+    # The run's sample count only when every stack counted its samples: a
+    # partial count would put the wrong ``n`` under every share's interval.
+    if run.stacks and all(s.samples is not None for s in run.stacks):
+        document["total_samples"] = tally.samples
     if run.tool_name:
         document["tool"] = {"name": run.tool_name, "version": run.tool_version}
     return ProfileConversion(
@@ -172,6 +176,7 @@ class _Tally:
         self.self_unattributed: Counter[str] = Counter()
         self.total = 0.0
         self.explained = 0.0
+        self.samples = 0
 
     def _production(self, path: str) -> bool:
         return (self._origins.get(path) or path_origin(path)) == "production"
@@ -179,6 +184,7 @@ class _Tally:
     def add(self, stack: Stack) -> None:
         weight, samples = stack.weight, stack.samples or 0
         self.total += weight
+        self.samples += samples
         on_stack: set[str] = set()
         in_production = False
         for i in stack.frames:

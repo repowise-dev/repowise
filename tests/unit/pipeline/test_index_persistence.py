@@ -200,7 +200,7 @@ async def test_init_applies_again_after_checkpointed_analysis(writer):
     publish = AsyncMock()
 
     async def apply(session, repo_id, write):
-        assert write.traversed_paths == (frozenset({"new.py"}) if write.mode == "full" else None)
+        assert write.traversed_paths is None
         complexity = await session.scalar(text("SELECT complexity_estimate FROM wiki_symbols"))
         observed.append((write.mode, complexity))
 
