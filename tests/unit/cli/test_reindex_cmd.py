@@ -175,9 +175,12 @@ async def test_reindex_aborts_when_every_item_failed(
     assert "Last error: embedder down" in exc_info.value.message
 
 
-def test_batch_recovery_does_not_split_a_refused_dimension_setting() -> None:
-    """A width the model cannot give fails every input alike: retrying it page by
-    page only repeats the same refusal once per page (issue #5738)."""
+def test_batch_recovery_keeps_a_refused_dimension_setting_terminal() -> None:
+    """Control: a refused width stays terminal for the whole batch (issue #5738).
+
+    httpx keeps the status on ``.response``, which ``_is_input_specific_error``
+    does not read, so this held before the refusal became a ``ValueError`` too.
+    """
     import httpx
 
     request = httpx.Request("POST", "http://localhost:11434/api/embed")

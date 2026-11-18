@@ -195,8 +195,7 @@ class OllamaEmbedder:
         httpx's message names only the status line, while Ollama says why in
         the body's ``error`` field. A width larger than the model's is a
         configuration error, not a bad input: it becomes a ``ValueError`` that
-        names the setting to change, with no HTTP status on it, so callers do
-        not retry it per item as if one page were at fault.
+        names the setting to change.
         """
         detail = _refusal_detail(exc.response)
         match = _DIMS_TOO_LARGE.search(detail)

@@ -282,8 +282,7 @@ async def test_a_width_larger_than_the_model_names_the_setting() -> None:
     assert "dimensions=3072" in msg
     assert "OLLAMA_EMBEDDING_DIMS=1024" in msg
     assert "REPOWISE_EMBEDDING_DIMS=1024" in msg
-    # A configuration error, not one bad input: nothing on it reads as an HTTP
-    # status, so callers that split a batch on a 400 do not retry it per page.
+    # A configuration error, not one bad input: nothing on it reads as an HTTP status.
     assert getattr(exc_info.value, "status_code", None) is None
     assert getattr(exc_info.value, "response", None) is None
 
