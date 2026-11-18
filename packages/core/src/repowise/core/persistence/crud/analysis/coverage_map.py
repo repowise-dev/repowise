@@ -1,14 +1,13 @@
-"""CRUD for the per-test coverage map (``test_coverage`` table).
+"""CRUD for the per-test coverage map (``test_coverage_sources`` + ``test_coverage_tests``).
 
 Module named ``coverage_map`` (not ``test_coverage``) so pytest does not
 collect it as a test module.
 
 
 The reverse index - "given a changed source file and lines, which tests hit
-them" - is :func:`tests_covering`; the forward direction ("what does this
-test cover") is :func:`files_covered_by`. Both are straight indexed queries
-scoped to a repository. Rows are point-in-time (overwritten per ingest run),
-mirroring ``coverage_files``.
+them" - is :func:`tests_covering`: one primary-key read per file, whose row
+lists every covering test by number with its lines as ranges. Rows are
+point-in-time (overwritten per ingest run), mirroring ``coverage_files``.
 """
 
 from __future__ import annotations
@@ -17,19 +16,23 @@ import json
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import TestCoverageEntry, _new_uuid
+from repowise.core.analysis.changed_lines import line_ranges
+
+from ...models import TestCoverageSource, TestCoverageTest
 from .._shared import _BATCH_SIZE, _now_utc
 
-# Upper bound on rows persisted per repo, so a pathological O(tests x files)
-# report can't balloon the table unbounded. Generous headroom: a 2000-test
-# suite touching 100 files each is 200k pairs. Whole tests are kept, so a
-# truncated map stores at least this many rows (at most one test's rows more):
-# readers take ``pair_count >= MAX_TEST_COVERAGE_ROWS`` as "truncated" and run
+# Upper bound on ``(test, source file)`` pairs persisted per repo: a trust
+# boundary, since the map is built from an uploaded report. Measured on this
+# repository's own suite with per-test contexts: 24.3 pairs and 25 covered
+# lines a pair per test, so a 50k-test suite is about 1.22M pairs (90 MB
+# stored). The cap is 1.6x that. Whole tests are kept, so a truncated map
+# stores at least this many pairs (at most one test's pairs more): readers
+# take ``pair_count >= MAX_TEST_COVERAGE_ROWS`` as "truncated" and run
 # everything rather than trust a map with tests missing.
-MAX_TEST_COVERAGE_ROWS = 250_000
+MAX_TEST_COVERAGE_ROWS = 2_000_000
 
 #: Rows per bulk insert statement.
 _BULK_ROWS = 5_000
@@ -52,6 +55,7 @@ class TestMapWrite:
     # Not a pytest test class despite the ``Test`` prefix.
     __test__ = False
 
+    # ``(test_id, source_file)`` pairs stored.
     written: int
     # ``(test_id, source_file)`` pairs that repeated and were merged.
     merged: int = 0
@@ -73,12 +77,12 @@ def cap_test_map(
 ) -> tuple[list[Any], int, tuple[str, ...]]:
     """``(rows, merged, dropped_tests)``: *records* deduped, then capped by whole tests.
 
-    Pure. A repeated ``(test_id, file_path)`` pair - the table's unique key -
-    is merged, its covered lines unioned, before anything is counted against
-    *max_rows*. Tests are then kept in a stable order (test file, then test
-    id) while fewer than *max_rows* rows are kept; the test that reaches the
-    cap is kept whole, every later one is dropped whole. A partial test would
-    look measured and answer "these are all the tests" for its files.
+    Pure. A repeated ``(test_id, file_path)`` pair is merged, its covered
+    lines unioned, before anything is counted against *max_rows*. Tests are
+    then kept in a stable order (test file, then test id) while fewer than
+    *max_rows* rows are kept; the test that reaches the cap is kept whole,
+    every later one is dropped whole. A partial test would look measured and
+    answer "these are all the tests" for its files.
     """
     pairs: dict[tuple[str, str], Any] = {}
     repeated: dict[tuple[str, str], set[int]] = {}
@@ -96,12 +100,7 @@ def cap_test_map(
     by_test: dict[str, list[Any]] = {}
     for rec in pairs.values():
         by_test.setdefault(rec.test_id, []).append(rec)
-    # A test's file sorts by its first named one, whatever order records came in.
-    test_file = {
-        t: min((r.test_file for r in recs if r.test_file), default="")
-        for t, recs in by_test.items()
-    }
-    order = sorted(by_test, key=lambda t: (test_file[t], t))
+    order = sorted(by_test, key=lambda t: (_test_file(by_test[t]), t))
     rows: list[Any] = []
     dropped: list[str] = []
     for test_id in order:
@@ -110,6 +109,36 @@ def cap_test_map(
         else:
             rows.extend(by_test[test_id])
     return rows, merged, tuple(dropped)
+
+
+def _test_file(recs: list[Any]) -> str:
+    """A test's file: the first named one, whatever order its records came in."""
+    return min((r.test_file for r in recs if r.test_file), default="")
+
+
+def _encode_lines(lines: Any) -> str:
+    """Line numbers as inclusive ranges: ``[1, 2, 3, 7]`` -> ``"1-3,7"``."""
+    return ",".join(str(lo) if lo == hi else f"{lo}-{hi}" for lo, hi in line_ranges(lines or ()))
+
+
+def _decode_lines(text: str) -> list[int]:
+    """The lines :func:`_encode_lines` wrote; a malformed part costs only itself."""
+    out: list[int] = []
+    for part in text.split(","):
+        lo, _, hi = part.partition("-")
+        try:
+            out.extend(range(int(lo), int(hi or lo) + 1))
+        except ValueError:
+            continue
+    return out
+
+
+def _decode_tests(tests_json: str) -> list[tuple[int, str]]:
+    """``(test_no, ranges)`` pairs of a :class:`TestCoverageSource` row."""
+    try:
+        return [(int(no), str(ranges)) for no, ranges in json.loads(tests_json)]
+    except (ValueError, TypeError):
+        return []
 
 
 async def save_test_coverage(
@@ -121,43 +150,140 @@ async def save_test_coverage(
     ingested_commit_sha: str | None = None,
     max_rows: int = MAX_TEST_COVERAGE_ROWS,
 ) -> TestMapWrite:
-    """Replace the test-coverage rows for *repository_id* with *records*.
+    """Replace the test-coverage map for *repository_id* with *records*.
 
     *records* are resolved ``TestCoverage`` dataclasses (canonical
     ``file_path`` / ``test_file``), deduped and capped by :func:`cap_test_map`.
-    One bulk delete, then batched bulk inserts.
+    One bulk delete per table, then batched bulk inserts: a row per test and
+    a row per covered source file.
     """
     rows, merged, dropped = cap_test_map(records, max_rows)
     await session.execute(
-        delete(TestCoverageEntry).where(TestCoverageEntry.repository_id == repository_id)
+        delete(TestCoverageSource).where(TestCoverageSource.repository_id == repository_id)
     )
-    at = _now_utc()
-    for i in range(0, len(rows), _BULK_ROWS):
-        await session.execute(
-            insert(TestCoverageEntry.__table__),
-            [
-                {
-                    "id": _new_uuid(),
-                    "repository_id": repository_id,
-                    "test_id": rec.test_id,
-                    "test_file": rec.test_file,
-                    "source_file": rec.file_path,
-                    "covered_lines_json": json.dumps(list(rec.covered_lines or [])),
-                    "source_format": source_format,
-                    "ingested_at": at,
-                    "ingested_commit_sha": ingested_commit_sha,
-                }
-                for rec in rows[i : i + _BULK_ROWS]
-            ],
+    await session.execute(
+        delete(TestCoverageTest).where(TestCoverageTest.repository_id == repository_id)
+    )
+    by_test: dict[str, list[Any]] = {}
+    for rec in rows:
+        by_test.setdefault(rec.test_id, []).append(rec)
+    test_no = {test_id: no for no, test_id in enumerate(by_test)}
+    by_source: dict[str, list[tuple[int, str]]] = {}
+    for rec in rows:
+        by_source.setdefault(rec.file_path, []).append(
+            (test_no[rec.test_id], _encode_lines(rec.covered_lines))
         )
+    tests = [
+        {
+            "repository_id": repository_id,
+            "test_no": no,
+            "test_id": test_id,
+            "test_file": _test_file(by_test[test_id]) or None,
+        }
+        for test_id, no in test_no.items()
+    ]
+    at = _now_utc()
+    sources = [
+        {
+            "repository_id": repository_id,
+            "source_file": source,
+            "tests_json": json.dumps(sorted(entries), separators=(",", ":")),
+            "test_count": len(entries),
+            "source_format": source_format,
+            "ingested_at": at,
+            "ingested_commit_sha": ingested_commit_sha,
+        }
+        for source, entries in by_source.items()
+    ]
+    for table, values in ((TestCoverageTest, tests), (TestCoverageSource, sources)):
+        for i in range(0, len(values), _BULK_ROWS):
+            await session.execute(insert(table.__table__), values[i : i + _BULK_ROWS])
     return TestMapWrite(written=len(rows), merged=merged, dropped_tests=dropped)
 
 
-def _decode_lines(row: TestCoverageEntry) -> list[int]:
-    try:
-        return list(json.loads(row.covered_lines_json))
-    except (ValueError, TypeError):
-        return []
+async def _source_rows(
+    session: AsyncSession, repository_id: str, source_files: set[str]
+) -> list[TestCoverageSource]:
+    """The map rows of *source_files*, by file. SQLite caps the bound
+    parameters per statement, so the set goes out in fixed-size pieces."""
+    ordered = sorted(source_files)
+    rows: list[TestCoverageSource] = []
+    for start in range(0, len(ordered), _BATCH_SIZE):
+        result = await session.execute(
+            select(TestCoverageSource)
+            .where(
+                TestCoverageSource.repository_id == repository_id,
+                TestCoverageSource.source_file.in_(ordered[start : start + _BATCH_SIZE]),
+            )
+            .order_by(TestCoverageSource.source_file.asc())
+        )
+        rows.extend(result.scalars().all())
+    return rows
+
+
+async def _tests_by_no(
+    session: AsyncSession, repository_id: str, numbers: set[int]
+) -> dict[int, tuple[str, str | None]]:
+    """``{test_no: (test_id, test_file)}`` for *numbers*."""
+    ordered = sorted(numbers)
+    out: dict[int, tuple[str, str | None]] = {}
+    for start in range(0, len(ordered), _BATCH_SIZE):
+        result = await session.execute(
+            select(
+                TestCoverageTest.test_no, TestCoverageTest.test_id, TestCoverageTest.test_file
+            ).where(
+                TestCoverageTest.repository_id == repository_id,
+                TestCoverageTest.test_no.in_(ordered[start : start + _BATCH_SIZE]),
+            )
+        )
+        out.update({no: (test_id, test_file) for no, test_id, test_file in result.all()})
+    return out
+
+
+async def _covering(
+    session: AsyncSession,
+    repository_id: str,
+    source_files: set[str],
+    lines: set[int] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """``{source_file: [{test_id, test_file, covered_lines, source_format}]}``.
+
+    With *lines*, a test is kept only when it ran one of them and its
+    ``covered_lines`` narrow to those it ran. Each file's tests are ordered by
+    test id, then test file.
+    """
+    if not source_files:
+        return {}
+    decoded: list[tuple[TestCoverageSource, list[tuple[int, list[int]]]]] = []
+    numbers: set[int] = set()
+    for row in await _source_rows(session, repository_id, source_files):
+        hits: list[tuple[int, list[int]]] = []
+        for no, ranges in _decode_tests(row.tests_json):
+            covered = _decode_lines(ranges)
+            if lines is not None:
+                covered = sorted(lines.intersection(covered))
+                if not covered:
+                    continue
+            hits.append((no, covered))
+            numbers.add(no)
+        decoded.append((row, hits))
+    names = await _tests_by_no(session, repository_id, numbers)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for row, hits in decoded:
+        entries = [
+            {
+                "test_id": names[no][0],
+                "test_file": names[no][1],
+                "covered_lines": covered,
+                "source_format": row.source_format,
+            }
+            for no, covered in hits
+            if no in names
+        ]
+        if entries:
+            entries.sort(key=lambda e: (e["test_id"], e["test_file"] or ""))
+            out[row.source_file] = entries
+    return out
 
 
 async def tests_covering(
@@ -174,31 +300,8 @@ async def tests_covering(
     ``{test_id, test_file, covered_lines, source_format}``, with
     ``covered_lines`` narrowed to the intersecting lines when *lines* is set.
     """
-    result = await session.execute(
-        select(TestCoverageEntry).where(
-            TestCoverageEntry.repository_id == repository_id,
-            TestCoverageEntry.source_file == source_file,
-        )
-    )
-    out: list[dict[str, Any]] = []
-    for row in result.scalars().all():
-        covered = _decode_lines(row)
-        if lines is not None:
-            hit = sorted(lines.intersection(covered))
-            if not hit:
-                continue
-            covered_out = hit
-        else:
-            covered_out = covered
-        out.append(
-            {
-                "test_id": row.test_id,
-                "test_file": row.test_file,
-                "covered_lines": covered_out,
-                "source_format": row.source_format,
-            }
-        )
-    return out
+    found = await _covering(session, repository_id, {source_file}, lines)
+    return found.get(source_file, [])
 
 
 async def tests_covering_files(
@@ -208,47 +311,14 @@ async def tests_covering_files(
 ) -> dict[str, list[dict[str, Any]]]:
     """Bulk reverse index for recommendation validation.
 
-    Unlike :func:`tests_covering`, this performs indexed queries over the
-    complete target set, one per bounded piece of it.  Callers may then apply
-    plan-specific line ranges in
+    Unlike :func:`tests_covering`, this reads the complete target set in
+    bounded pieces. Callers may then apply plan-specific line ranges in
     memory without turning recommendation hydration into one query per plan.
-    Rows and buckets are ordered deterministically; ``covered_lines`` remains
-    complete so a caller can distinguish a measured line hit from a file-only
-    match.
+    Buckets and their rows are ordered deterministically; ``covered_lines``
+    remains complete so a caller can distinguish a measured line hit from a
+    file-only match.
     """
-    if not source_files:
-        return {}
-    out: dict[str, list[dict[str, Any]]] = {}
-    # A full re-score asks for every file in the repository, and SQLite caps the
-    # bound parameters per statement, so the set goes out in fixed-size pieces
-    # (the same reason every other ``IN`` list here does). A file appears in
-    # exactly one piece, so each file's rows keep their order.
-    ordered = sorted(source_files)
-    rows: list[TestCoverageEntry] = []
-    for start in range(0, len(ordered), _BATCH_SIZE):
-        result = await session.execute(
-            select(TestCoverageEntry)
-            .where(
-                TestCoverageEntry.repository_id == repository_id,
-                TestCoverageEntry.source_file.in_(ordered[start : start + _BATCH_SIZE]),
-            )
-            .order_by(
-                TestCoverageEntry.source_file.asc(),
-                TestCoverageEntry.test_id.asc(),
-                TestCoverageEntry.test_file.asc(),
-            )
-        )
-        rows.extend(result.scalars().all())
-    for row in rows:
-        out.setdefault(row.source_file, []).append(
-            {
-                "test_id": row.test_id,
-                "test_file": row.test_file,
-                "covered_lines": _decode_lines(row),
-                "source_format": row.source_format,
-            }
-        )
-    return out
+    return await _covering(session, repository_id, source_files)
 
 
 async def covered_source_files(
@@ -263,45 +333,21 @@ async def covered_source_files(
     "unknown" (the coverage run may simply not have exercised it), never a
     proof of absence, so callers fall back to a labelled filename guess for
     those rather than asserting a test gap. Each file maps to its covering
-    test files, sorted; a row without a test file path (a coverage.py
-    dynamic-context id) is named by its test id.
+    test files, sorted; a test without a test file path is named by its test id.
     """
     if not source_files:
         return {}
-    result = await session.execute(
-        select(
-            TestCoverageEntry.source_file, TestCoverageEntry.test_file, TestCoverageEntry.test_id
-        ).where(
-            TestCoverageEntry.repository_id == repository_id,
-            TestCoverageEntry.source_file.in_(source_files),
-        )
-    )
-    out: dict[str, set[str]] = {}
-    for source, test_file, test_id in result.all():
-        out.setdefault(source, set()).add(test_file or test_id)
-    return {source: sorted(tests) for source, tests in out.items()}
-
-
-async def files_covered_by(
-    session: AsyncSession,
-    repository_id: str,
-    test_id: str,
-) -> list[dict[str, Any]]:
-    """Forward direction: source files (and lines) a given test covers."""
-    result = await session.execute(
-        select(TestCoverageEntry).where(
-            TestCoverageEntry.repository_id == repository_id,
-            TestCoverageEntry.test_id == test_id,
-        )
-    )
-    return [
-        {
-            "source_file": row.source_file,
-            "covered_lines": _decode_lines(row),
-            "source_format": row.source_format,
-        }
-        for row in result.scalars().all()
-    ]
+    rows = await _source_rows(session, repository_id, source_files)
+    numbers_by_source = {
+        row.source_file: {no for no, _ in _decode_tests(row.tests_json)} for row in rows
+    }
+    names = await _tests_by_no(session, repository_id, set().union(*numbers_by_source.values()))
+    out: dict[str, list[str]] = {}
+    for source, numbers in numbers_by_source.items():
+        tests = {names[no][1] or names[no][0] for no in numbers if no in names}
+        if tests:
+            out[source] = sorted(tests)
+    return out
 
 
 async def get_test_coverage_summary(
@@ -309,11 +355,15 @@ async def get_test_coverage_summary(
     repository_id: str,
 ) -> dict[str, Any]:
     """Repo-level shape of the map (counts + provenance). Empty when no rows."""
-    result = await session.execute(
-        select(TestCoverageEntry).where(TestCoverageEntry.repository_id == repository_id)
-    )
-    rows = list(result.scalars().all())
-    if not rows:
+    pair_count, source_file_count = (
+        await session.execute(
+            select(
+                func.coalesce(func.sum(TestCoverageSource.test_count), 0),
+                func.count(),
+            ).where(TestCoverageSource.repository_id == repository_id)
+        )
+    ).one()
+    if not source_file_count:
         return {
             "pair_count": 0,
             "test_count": 0,
@@ -322,11 +372,27 @@ async def get_test_coverage_summary(
             "ingested_at": None,
             "ingested_commit_sha": None,
         }
-    latest = max(rows, key=lambda r: r.ingested_at)
+    test_count = (
+        await session.execute(
+            select(func.count()).where(TestCoverageTest.repository_id == repository_id)
+        )
+    ).scalar_one()
+    latest = (
+        await session.execute(
+            select(
+                TestCoverageSource.source_format,
+                TestCoverageSource.ingested_at,
+                TestCoverageSource.ingested_commit_sha,
+            )
+            .where(TestCoverageSource.repository_id == repository_id)
+            .order_by(TestCoverageSource.ingested_at.desc())
+            .limit(1)
+        )
+    ).one()
     return {
-        "pair_count": len(rows),
-        "test_count": len({r.test_id for r in rows}),
-        "source_file_count": len({r.source_file for r in rows}),
+        "pair_count": int(pair_count),
+        "test_count": test_count,
+        "source_file_count": source_file_count,
         "source_format": latest.source_format,
         "ingested_at": latest.ingested_at,
         "ingested_commit_sha": latest.ingested_commit_sha,

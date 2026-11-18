@@ -1918,7 +1918,7 @@ class DocDriftReference(Base):
     drifted reference resolves to nothing, so it can never appear here, and no
     surface may read one as evidence against the other.
 
-    A table, not a graph edge, for :class:`TestCoverageEntry`'s reason - the
+    A table, not a graph edge, for :class:`TestCoverageSource`'s reason - the
     consumer is a straight lookup keyed by file path. It is stored at all
     because the process answering "which documents mention this file" holds no
     ``source_map``: 0.7 ms to serve, 243 ms to re-run the pass, 1,562 ms on a
@@ -2925,57 +2925,67 @@ class ReadSnapshot(Base):
     )
 
 
-class TestCoverageEntry(Base):
-    """One ``(test, source file)`` coverage fact - the test-to-code map.
+class TestCoverageTest(Base):
+    """One test of the per-test coverage map, numbered within its repository.
 
-    Where :class:`CoverageFile` stores per-file aggregate coverage (a file is
-    covered, merged across every test), this keeps the test dimension: a row
-    says test ``test_id`` covered ``covered_lines_json`` of ``source_file``.
-    It backs the reverse index "given changed lines, which tests hit them"
-    that run-only-affected-tests and coverage-backed missing-test signals
-    lean on.
-
-    Design: a table, not a graph edge. The first consumer is a CI lookup
-    keyed by changed source file + lines, which is a straight table query; a
-    projected graph edge (composing with blast-radius) is deferred until a
-    consumer needs graph composition.
-
-    Point-in-time only: rows are overwritten per ingest run (delete-then
-    -insert by ``repository_id``), no history - mirroring ``CoverageFile``.
-    Populated only from context-carrying reports; ``covered_lines_json`` is a
-    JSON int list (ceiling: fine at current scale, swap to a bitmap/RLE
-    encoding if O(tests x files) row size becomes a problem).
+    :class:`TestCoverageSource` rows name tests by ``test_no``, so a long test
+    id is stored once rather than once per file it covers.
     """
 
-    __tablename__ = "test_coverage"
+    __tablename__ = "test_coverage_tests"
     # Not a pytest test class despite the ``Test`` prefix.
     __test__ = False
 
-    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_uuid)
     repository_id: Mapped[str] = mapped_column(
-        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), nullable=False
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True
     )
-    # Raw test identifier from the report (coverage.py context
-    # ``module::qualname|phase`` or an lcov ``TN:`` name).
+    test_no: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    # The test's id from the report: a pytest nodeid (phases merged) or an
+    # lcov ``TN:`` name.
     test_id: Mapped[str] = mapped_column(Text, nullable=False)
     # Canonical repo key of the test's own source file, when resolvable.
     test_file: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (Index("ix_test_coverage_tests_repo_test", "repository_id", "test_id"),)
+
+
+class TestCoverageSource(Base):
+    """The per-test coverage of one source file - the test-to-code map.
+
+    Where :class:`CoverageFile` stores per-file aggregate coverage (a file is
+    covered, merged across every test), this keeps the test dimension:
+    ``tests_json`` lists ``[test_no, "1-4,9"]`` for each test that ran a line
+    of ``source_file``, lines as inclusive ranges. It backs the reverse index
+    "given changed lines, which tests hit them" that run-only-affected-tests
+    and coverage-backed missing-test signals lean on, which reads one row per
+    changed file.
+
+    One row per file rather than per ``(test, file)`` pair: a large suite has
+    a million pairs, and a row per pair repeated the test id and source path
+    in every row and two indexes (about 1 KB a pair).
+
+    Point-in-time only: rows are overwritten per ingest run (delete-then
+    -insert by ``repository_id``), no history - mirroring ``CoverageFile``.
+    Populated only from context-carrying reports.
+    """
+
+    __tablename__ = "test_coverage_sources"
+    # Not a pytest test class despite the ``Test`` prefix.
+    __test__ = False
+
+    repository_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True
+    )
     # Canonical repo key of the covered source file.
-    source_file: Mapped[str] = mapped_column(Text, nullable=False)
-    covered_lines_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    source_file: Mapped[str] = mapped_column(Text, primary_key=True)
+    tests_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    # How many tests ``tests_json`` lists, so the map's size reads without decoding it.
+    test_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     source_format: Mapped[str] = mapped_column(String(32), nullable=False)
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_now_utc
     )
     ingested_commit_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
-
-    __table_args__ = (
-        UniqueConstraint("repository_id", "test_id", "source_file", name="uq_test_coverage"),
-        # Reverse index (changed source file -> covering tests) is the hot path.
-        Index("ix_test_coverage_repo_source", "repository_id", "source_file"),
-        # Forward index (test -> files it covers).
-        Index("ix_test_coverage_repo_test", "repository_id", "test_id"),
-    )
 
 
 # ---------------------------------------------------------------------------
