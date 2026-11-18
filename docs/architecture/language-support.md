@@ -251,11 +251,11 @@ truth, and both consumers read it.
 
 The registry is the only place that knows manifest names. Every other reader
 asks it by role: `is_package_manifest(path)` (C4 containers, branch overlap),
-`is_manifest(path)` and `manifest_filenames()` (package manifests plus build
-config: the tour, the update path's config check, the tech stack memo),
-`build_config_filenames()` and `lock_filenames()`. A reader that needs extra
-non-manifest names (a `Dockerfile`, a test runner config) adds them to these
-sets instead of restating the manifests.
+`manifest_filenames()` for package manifests plus build config (the tour, the
+update path's config check, the tech stack memo), or `is_manifest(path)` for
+the same question asked of one path. A reader that needs extra non-manifest
+names (a `Dockerfile`, a test runner config) adds them to these sets instead of
+restating the manifests.
 
 `build_config_manifests` defaults to empty, which is nearly always right. Add to
 it only when a name in `manifest_files` configures a build rather than declaring

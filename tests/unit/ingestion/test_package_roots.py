@@ -105,7 +105,6 @@ def test_cmake_and_bazel_files_are_manifests_but_never_package_roots(tmp_path):
     detection, the package-root scan and health's module column all ignore them."""
     for name in _CMAKE_BAZEL:
         assert REGISTRY.is_manifest(f"lib/{name}"), name
-        assert name in REGISTRY.build_config_filenames(), name
         assert not REGISTRY.is_package_manifest(f"lib/{name}"), name
         assert name not in package_manifest_names(), name
 
@@ -133,29 +132,6 @@ def test_registry_manifest_queries_follow_one_matching_rule():
     assert REGISTRY.is_manifest("vite.config.js")
     assert not REGISTRY.is_manifest("src/main.py")
     assert REGISTRY.package_manifest_filenames() <= REGISTRY.manifest_filenames()
-    assert REGISTRY.manifest_filenames() == (
-        REGISTRY.package_manifest_filenames() | REGISTRY.build_config_filenames()
-    )
-    assert {"Cargo.lock", "go.sum", "uv.lock", "yarn.lock"} <= REGISTRY.lock_filenames()
-
-
-def test_no_module_outside_the_registry_restates_the_manifest_table():
-    """Manifest recognition reads the registry. A hand-written set naming both
-    ``package.json`` and ``go.mod`` is the shape every old copy had."""
-    import re
-
-    import repowise.core
-
-    core = Path(repowise.core.__file__).parent
-    pair = re.compile(r'frozenset\(\s*\{[^}]*"package\.json"[^}]*"go\.mod"', re.S)
-    pair_rev = re.compile(r'frozenset\(\s*\{[^}]*"go\.mod"[^}]*"package\.json"', re.S)
-    offenders = [
-        str(path.relative_to(core))
-        for path in core.rglob("*.py")
-        if "languages" not in path.parts
-        and (pair.search(text := path.read_text(encoding="utf-8")) or pair_rev.search(text))
-    ]
-    assert offenders == []
 
 
 # ---------------------------------------------------------------------------

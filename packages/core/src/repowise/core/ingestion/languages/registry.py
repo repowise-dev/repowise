@@ -247,14 +247,6 @@ class LanguageRegistry:
         """Glob patterns that mark their directory as a package root (``*.csproj``)."""
         return frozenset(g for s in self._specs.values() for g in s.manifest_globs)
 
-    def build_config_filenames(self) -> frozenset[str]:
-        """Manifest names that configure a build but never mark a package root."""
-        return frozenset(f for s in self._specs.values() for f in s.build_config_manifests)
-
-    def lock_filenames(self) -> frozenset[str]:
-        """Every lockfile name a spec declares (``Cargo.lock``, ``uv.lock``)."""
-        return frozenset(f for s in self._specs.values() for f in s.lock_files)
-
     def matches_package_manifest_glob(self, name: str) -> bool:
         """Whether file *name* matches a package-manifest glob, ignoring case."""
         return self._manifest_glob is not None and self._manifest_glob.match(name) is not None
