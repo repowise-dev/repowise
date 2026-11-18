@@ -32,13 +32,23 @@ and not a shard or a version.
 ## Shards
 
 On a pull request, the Python 3.12 unit tests run in two shards with coverage.
-`--shard K/N` (defined in `tests/conftest.py`) keeps whole test files together
-and picks each file's shard from a hash of its path, so a file always lands in
-the same shard and `--dist loadfile` still holds. `tests/providers/` runs in the
-first shard. Reproduce a shard locally with:
+`--shard K/N` (defined in `tests/conftest.py`) keeps whole test files together,
+so `--dist loadfile` still holds. Files listed in `tests/shard_weights.json` are
+packed by their recorded seconds, heaviest first, into the lighter shard; any
+other file goes by a hash of its path. Every run of the same files splits the
+same way. `tests/providers/` runs in the first shard. Reproduce a shard locally
+with:
 
 ```bash
 uv run pytest tests/unit/ --shard 1/2 -n auto --dist loadfile
+```
+
+When one shard runs much longer than the other, refresh the weights from the
+JUnit reports the shards upload (`junit-*` artifacts) and commit the result:
+
+```bash
+gh run download <run id> -p 'junit-*' -D junit
+python scripts/shard_weights.py junit/*/junit.xml
 ```
 
 ## Path filters

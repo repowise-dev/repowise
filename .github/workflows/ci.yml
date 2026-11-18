@@ -162,15 +162,17 @@ jobs:
         run: uv run pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25
 
       # --shard (tests/conftest.py) keeps whole test files together, so
-      # loadfile still holds. sysmon (Python 3.12+) measures lines with far
-      # less overhead than the tracer; it cannot record per-test contexts,
-      # which this report omits. Each shard keeps its raw data for the
-      # combine in "Python tests".
+      # loadfile still holds, and packs them by tests/shard_weights.json.
+      # sysmon (Python 3.12+) measures lines with far less overhead than the
+      # tracer; it cannot record per-test contexts, which this report omits.
+      # Each shard keeps its raw data for the combine in "Python tests", and
+      # a JUnit report (xunit1 names each case's file) that refreshes the
+      # shard weights.
       - name: Run unit tests with coverage
         if: matrix.shard != ''
         env:
           COVERAGE_CORE: sysmon
-        run: uv run --with pytest-cov pytest tests/unit/ --shard ${{ matrix.shard }} -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages --cov-report=
+        run: uv run --with pytest-cov pytest tests/unit/ --shard ${{ matrix.shard }} -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages --cov-report= --junitxml=junit.xml -o junit_family=xunit1
 
       - name: Keep the coverage data
         if: always() && matrix.shard != ''
@@ -180,8 +182,19 @@ jobs:
           path: .coverage
           include-hidden-files: true
           retention-days: 1
-          if-no-files-found: ignore
+          if-no-files-found: error
           overwrite: true   # a re-run of the job uploads again
+
+      - name: Keep the test report
+        if: always() && matrix.shard != ''
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ strategy.job-index }}
+          path: junit.xml
+          retention-days: 30
+          if-no-files-found: ignore
+          overwrite: true
 
   # ---------------------------------------------------------------------------
   # The one Python check to require. It passes when every Python test job
