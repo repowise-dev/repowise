@@ -120,6 +120,16 @@ async def save_evidence_run(
     return EvidenceWrite(run_id, restamped=False, rows_written=len(filled), runs_pruned=pruned)
 
 
+async def list_evidence_runs(session: AsyncSession, repository_id: str) -> list[EvidenceRun]:
+    """Every stored run of the repository, newest first (bounded by the prune caps)."""
+    result = await session.execute(
+        select(EvidenceRun)
+        .where(EvidenceRun.repository_id == repository_id)
+        .order_by(EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc())
+    )
+    return list(result.scalars())
+
+
 async def prune_evidence_runs(
     session: AsyncSession,
     repository_id: str,
@@ -207,6 +217,7 @@ __all__ = [
     "EVIDENCE_ROW_TABLES",
     "EvidenceWrite",
     "delete_evidence_runs",
+    "list_evidence_runs",
     "prune_evidence_runs",
     "save_evidence_run",
 ]

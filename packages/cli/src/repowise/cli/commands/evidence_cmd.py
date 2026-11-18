@@ -442,3 +442,82 @@ def _report_staleness(notices: Any, summary: dict[str, Any], index_commit: str |
             "[cyan]repowise update[/cyan] and add the file again to join it to the "
             "current code.[/yellow]"
         )
+
+
+@evidence_group.command("status")
+@click.option("--path", "repo", default=None, help="Repo path (defaults to cwd / workspace primary).")
+@format_option()
+def evidence_status_command(repo: str | None, fmt: str) -> None:
+    """Show the runtime evidence stored: the newest run of each workload.
+
+    Each run says how fresh it is against the indexed commit (current, stale
+    or unknown), how much of the run repo code explains, and what was skipped.
+    """
+    notices = notice_console(fmt)
+    repo_path = _resolve_repo(repo, notices)
+    payload = run_async(_status(repo_path))
+    if fmt == "json":
+        emit_json(payload)
+        return
+    if not payload["indexed"]:
+        notices.print("[yellow]No index yet. Run `repowise init`.[/yellow]")
+        return
+    if not payload["workloads"]:
+        notices.print(
+            "[yellow]No runtime evidence stored.[/yellow] Add a run with "
+            "[cyan]repowise evidence add <file> --workload <name> --class <class>[/cyan]."
+        )
+        return
+    for run in payload["workloads"]:
+        notices.print(_status_line(run))
+
+
+def _status_line(run: dict[str, Any]) -> str:
+    """One workload's newest run, in words; an unknown value says so, never 0."""
+    share = run["explained_share"]
+    if share is None:
+        explained = "explained share unknown"
+    else:
+        unit = f" {escape(run['unit'])}" if run["unit"] else ""
+        explained = f"repo code explains {share:.0%} of {_total(run['total_value'])}{unit}"
+    units = run["units"]
+    stored = (
+        f"{units['matched']} of {units['total']} entries stored"
+        if units["matched"] is not None and units["total"] is not None
+        else "entry counts unknown"
+    )
+    return (
+        f"[bold]{escape(run['workload'])}[/bold] ({run['kind']}, {run['class']}, "
+        f"{escape(run['environment'])}): {run['freshness']} at "
+        f"{(run['commit_sha'] or 'unknown')[:12]}; {stored}; {explained}."
+        + (" [red](partial)[/red]" if run["mapping_partial"] else "")
+    )
+
+
+def _total(value: float) -> str:
+    """A run total with grouping and never exponent form: 1,234,567 or 0.25."""
+    return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
+
+
+async def _status(repo_path: Path) -> dict[str, Any]:
+    from repowise.core.evidence.status import evidence_status
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path, list_evidence_runs
+
+    url = get_db_url_for_repo(repo_path)
+    await reconcile_schema_best_effort(url)
+    engine = create_engine(url)
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo_row = await get_repository_by_path(session, str(repo_path))
+            if repo_row is None:
+                # Same keys as an indexed repo, so a JSON reader never meets a missing one.
+                return {"repo": str(repo_path), "indexed": False, **evidence_status([], None)}
+            runs = await list_evidence_runs(session, repo_row.id)
+            return {
+                "repo": str(repo_path),
+                "indexed": True,
+                **evidence_status(runs, repo_row.head_commit),
+            }
+    finally:
+        await engine.dispose()

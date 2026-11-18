@@ -246,3 +246,60 @@ def test_a_file_over_the_size_cap_is_refused_before_it_is_read(indexed) -> None:
                   "--commit", head, "--format", "json")
     assert result.exit_code == 1
     assert _json(result)["error"] == "file_too_large"
+
+
+def _status(*args: str):
+    return CliRunner(mix_stderr=False).invoke(evidence_cmd.evidence_group, ["status", *args])
+
+
+def test_status_names_the_newest_run_of_each_workload(indexed) -> None:
+    root, head = indexed
+    empty = _json(_status("--format", "json"))
+    assert (empty["indexed"], empty["workloads"]) == (True, [])
+
+    for workload in ("cli build", "cli build", "cli test"):
+        _add(str(_write(root, total=200 if workload == "cli test" else 100)),
+             "--workload", workload, "--class", "entry_point", "--commit", head)
+    payload = _json(_status("--format", "json"))
+    assert payload["runs_stored"] == {"profile": 2}
+    assert [w["workload"] for w in payload["workloads"]] == ["cli test", "cli build"]
+    newest = payload["workloads"][0]
+    # The fixture's index row names no commit, so freshness is unknown, never current.
+    assert newest["freshness"] == "unknown"
+    assert newest["explained_share"] == 0.3
+    assert newest["units"] == {
+        "total": 7, "matched": 1, "skipped": 1, "outside_repo": 5, "truncated": 0,
+    }
+
+    table = _status()
+    assert table.exit_code == 0
+    assert "repo code explains 30% of 200 samples" in table.stdout
+
+
+def test_status_json_keeps_its_keys_without_an_index(tmp_path, monkeypatch) -> None:
+    async def empty_store() -> None:
+        (tmp_path / ".repowise").mkdir()
+        engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / '.repowise' / 'wiki.db'}")
+        try:
+            await init_db(engine)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(empty_store())
+    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: tmp_path)
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+    payload = _json(_status("--format", "json"))
+
+    assert payload == {
+        "repo": str(tmp_path), "indexed": False,
+        "reference_commit": None, "runs_stored": {}, "workloads": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"), [(200, "200"), (1234567, "1,234,567"), (1234567.0, "1,234,567"), (0.5, "0.50")]
+)
+def test_status_total_never_uses_exponent_form(value, shown) -> None:
+    assert evidence_cmd._total(value) == shown
