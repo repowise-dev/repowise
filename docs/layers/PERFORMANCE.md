@@ -278,7 +278,9 @@ repowise evidence add .repowise/bench.json --workload "pytest bench" --class ben
 - The node id without its parameters is the benchmark function's symbol id,
   so `benchmarks/test_io.py::TestCache::test_get[small]` links to
   `TestCache::test_get` in `benchmarks/test_io.py`. A benchmark whose function
-  is not indexed keeps its series, counted under `unlinked`.
+  is not indexed keeps its series, counted under `unlinked`. Node ids are
+  relative to pytest's rootdir, so run pytest from the repository root;
+  from a subdirectory every benchmark is `unlinked` as `unknown_file`.
 - The row names the benchmark, not the cost of the production functions it
   calls; benchmark files are test or tooling code.
 - `--commit` is required. The commit pytest-benchmark recorded is only a
