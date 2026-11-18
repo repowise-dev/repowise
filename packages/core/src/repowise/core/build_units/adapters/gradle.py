@@ -9,6 +9,10 @@ has a build script, also when settings lists modules, which is when the
 resolver's index leaves it out: that index feeds source-set and publishing
 stamps, and a root aggregator's script configures its subprojects
 (``allprojects { ... }``), so its guesses must not become the root's own.
+An edge declared inside a property-gated branch
+(``when (testMode) { KSP -> "kspTest"(project(":x")) }``) is kept: an edge
+any build mode declares counts, and a static reader does not evaluate
+properties.
 Ceiling: type-safe accessors (``projects.core``) and dependencies added by a
 convention plugin are not read; reading Gradle's own model export is the
 upgrade path.

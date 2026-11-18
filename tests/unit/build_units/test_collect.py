@@ -351,6 +351,27 @@ def test_cargo_crate_outside_the_workspace_reads_its_path_deps(tmp_path):
     assert [u.id for u in index.dependents("cargo:globset")] == ["cargo:fuzz"]
 
 
+def test_excluded_crate_with_explicit_targets_keeps_its_deps(tmp_path):
+    index = _collect(tmp_path, {
+        "Cargo.toml": (
+            '[package]\nname = "app"\nversion = "0.1.0"\n'
+            '[workspace]\nmembers = ["a"]\nexclude = ["fuzz"]\n'
+        ),
+        "src/main.rs": "fn main() {}",
+        "a/Cargo.toml": '[package]\nname = "a"\nversion = "0.1.0"\n',
+        "a/src/lib.rs": "",
+        "fuzz/Cargo.toml": (
+            '[package]\nname = "fuzz"\nversion = "0.0.1"\n'
+            '[dependencies]\na = { path = "../a" }\n'
+            '[workspace]\nmembers = ["."]\n'
+            '[[bin]]\nname = "x"\npath = "fuzz_targets/x.rs"\n'
+        ),
+        "fuzz/fuzz_targets/x.rs": "fn main() {}",
+    })
+    assert _deps(index) == {"cargo:a": (), "cargo:app": (), "cargo:fuzz": ("cargo:a",)}
+    assert _owners(index, "fuzz/fuzz_targets/x.rs") == ["cargo:fuzz"]
+
+
 def test_root_binary_outside_src_is_one_crate(tmp_path):
     files = {
         "Cargo.toml": (

@@ -316,9 +316,10 @@ def _discover_isolated_crates(
     opened. For every parsed ``.rs`` file no existing crate already owns, walk
     up to the nearest ``Cargo.toml`` and read its target tables.
 
-    Dependencies are not parsed here: nothing in this pass needs the crate
-    resolvable as a ``use``-able sibling, only whether its explicit-path
-    targets keep a file alive (#2936).
+    Only a manifest with explicit-path targets is kept, since only those keep
+    a file alive (#2936). Its dependency tables are parsed like a member's,
+    against its own directory and its own ``[workspace.dependencies]``, so
+    the crate's path dependencies are known too.
 
     A file outside every crate's ``src/`` (a root binary at
     ``crates/core/main.rs``) can walk up to a manifest an existing crate was
@@ -358,9 +359,19 @@ def _discover_isolated_crates(
         if not bin_paths and not root_paths:
             continue
         pkg_name = (data.get("package") or {}).get("name") or member_rel or "isolated"
+        own_workspace = data.get("workspace") or {}
+        deps = _parse_deps(
+            {**data.get("dependencies", {}),
+             **data.get("dev-dependencies", {}),
+             **data.get("build-dependencies", {})},
+            manifest_dir,
+            repo,
+            ws_deps=own_workspace.get("dependencies", {}),
+        )
         crates.append(CargoCrate(
             name=str(pkg_name),
             src_dir=f"{member_rel}/src" if member_rel else "src",
+            dependencies=deps,
             bin_paths=bin_paths,
             reachability_root_paths=root_paths,
         ))
