@@ -220,3 +220,15 @@ def test_root_manifest_is_a_unit(tmp_path, root_manifest):
     index = _collect(tmp_path, {root_manifest: "", "src/x.py": ""})
     assert index.unit("manifest:.").manifest == root_manifest
     assert _owners(index, "src/x.py") == ["manifest:."]
+
+
+def test_duplicate_id_keeps_the_shallowest_root(tmp_path):
+    index = _collect(tmp_path, {
+        "a/go.mod": "module example.com/same\n",
+        "a/a.go": "package a\n",
+        "b/copy/go.mod": "module example.com/same\n",
+        "b/copy/b.go": "package b\n",
+    })
+    assert list(index.units) == ["go:example.com/same"]
+    assert index.unit("go:example.com/same").root == "a"
+    assert _owners(index, "b/copy/b.go") == []

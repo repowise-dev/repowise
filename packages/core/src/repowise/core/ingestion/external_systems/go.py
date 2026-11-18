@@ -23,6 +23,23 @@ _REQ_LINE = re.compile(r"^\s*([^\s]+)\s+([^\s]+)(?:\s*//\s*(indirect))?\s*$")
 _REPLACE_LINE = re.compile(r"^\s*([^\s]+)(?:\s+[^\s]+)?\s*=>\s*(\S+)")
 
 
+def _single_line_form(
+    line: str, requires: list[tuple[str, str, bool]], replaced_by_local: set[str]
+) -> bool:
+    """Record a one-line ``require x v`` or ``replace x => y``; False for any other line."""
+    if "(" in line:
+        return False
+    if line.startswith("require "):
+        m = _REQ_LINE.match(line[len("require ") :].strip())
+        if m:
+            requires.append((m.group(1), m.group(2), bool(m.group(3))))
+        return True
+    if line.startswith("replace "):
+        _handle_replace(line[len("replace ") :].strip(), replaced_by_local)
+        return True
+    return False
+
+
 def scan_go_mod(text: str) -> tuple[list[tuple[str, str, bool]], set[str]]:
     """``(requires, replaced_by_local)`` of a ``go.mod`` text.
 
@@ -39,16 +56,7 @@ def scan_go_mod(text: str) -> tuple[list[tuple[str, str, bool]], set[str]]:
         line = raw.strip()
         if not line or line.startswith("//"):
             continue
-        # Single-line forms
-        if line.startswith("require ") and "(" not in line:
-            entry = line[len("require ") :].strip()
-            m = _REQ_LINE.match(entry)
-            if m:
-                requires.append((m.group(1), m.group(2), bool(m.group(3))))
-            continue
-        if line.startswith("replace ") and "(" not in line:
-            entry = line[len("replace ") :].strip()
-            _handle_replace(entry, replaced_by_local)
+        if _single_line_form(line, requires, replaced_by_local):
             continue
         # Block forms
         if line.startswith("require ("):

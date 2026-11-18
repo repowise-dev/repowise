@@ -22,6 +22,18 @@ def _rel(path: Path, repo: Path) -> str | None:
     return "" if rel == "." else rel
 
 
+def _listed_files(
+    file_to_project: dict[Path, Path], repo: Path, path_set: set[str]
+) -> dict[Path, list[str]]:
+    """Each project's indexed source files, repo-relative."""
+    listed: dict[Path, list[str]] = {}
+    for file, project in file_to_project.items():
+        rel = _rel(file, repo)
+        if rel is not None and rel in path_set:
+            listed.setdefault(project, []).append(rel)
+    return listed
+
+
 def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
     if not any(path.endswith(_SOURCE_SUFFIXES) for path in ctx.path_set):
         return []
@@ -29,13 +41,7 @@ def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
     if index is None:
         return []
     repo = index.repo_path  # resolved, like every path the index holds
-
-    listed: dict[Path, list[str]] = {}
-    for file, project in index.file_to_project.items():
-        rel = _rel(file, repo)
-        if rel is not None and rel in ctx.path_set:
-            listed.setdefault(project, []).append(rel)
-
+    listed = _listed_files(index.file_to_project, repo, ctx.path_set)
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
     for path, project in index.projects.items():
         manifest = _rel(path, repo)

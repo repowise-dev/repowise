@@ -45,6 +45,23 @@ def _run(name: str, adapter: Adapter, ctx: ResolverContext) -> list[tuple[BuildU
     return sorted(found, key=lambda claim: (claim[0].root, claim[0].id))
 
 
+def _add(
+    found: list[tuple[BuildUnit, tuple[str, ...]]],
+    units: dict[str, BuildUnit],
+    listed: dict[str, list[str]],
+    path_set: set[str],
+) -> None:
+    """Add *found* to *units*, keeping an id already present, and its indexed files to *listed*."""
+    for unit, files in found:
+        if unit.id in units:
+            log.warning("build_units_duplicate_id", unit_id=unit.id, root=unit.root)
+            continue
+        units[unit.id] = unit
+        for path in files:
+            if path in path_set:
+                listed.setdefault(path, []).append(unit.id)
+
+
 def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
     """Every build unit of the repo *ctx* resolves, and the units owning each indexed file.
 
@@ -61,14 +78,7 @@ def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
         found = _run(name, adapter, ctx)
         if found:
             authoritative.extend(manifests)
-        for unit, files in found:
-            if unit.id in units:
-                log.debug("build_units_duplicate_id", unit_id=unit.id, root=unit.root)
-                continue
-            units[unit.id] = unit
-            for path in files:
-                if path in ctx.path_set:
-                    listed.setdefault(path, []).append(unit.id)
+        _add(found, units, listed, ctx.path_set)
 
     def decided(manifest_name: str) -> bool:
         lowered = manifest_name.lower()

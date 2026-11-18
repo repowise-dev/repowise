@@ -45,7 +45,7 @@ def units(
         unit = BuildUnit(
             id=f"manifest:{root or '.'}",
             ecosystem="manifest",
-            name=root.rsplit("/", 1)[-1] or repo.resolve().name,
+            name=root.rsplit("/", 1)[-1] or ".",
             root=root,
             manifest=f"{root}/{manifest}" if root else manifest,
             source="manifest-root",
