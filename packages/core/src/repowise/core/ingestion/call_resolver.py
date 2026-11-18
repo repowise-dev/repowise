@@ -1128,8 +1128,10 @@ class CallResolver(
         """Whether the inner call of chained *call* resolves to a repo function or method."""
         assert call.receiver_call is not None
         language = self._language_of(file_path) or ""
-        inner = self._chain_inner_callee(file_path, call, call.receiver_call, caller_id, language)
-        symbol = self._symbols_by_id.get(inner) if inner is not None else None
+        # Not gated on the return-type chain lane: whether the inner call is a
+        # repo function needs no return type, so every language gets the carve-out.
+        inner = self._chain_inner_link(file_path, call, call.receiver_call, caller_id, language)
+        symbol = self._symbols_by_id.get(inner.callee_id) if inner is not None else None
         return symbol is not None and symbol.kind in ("function", "method")
 
     def _through_kotlin_alias(
@@ -1175,8 +1177,9 @@ class CallResolver(
         if hit is not None and call.receiver_call is not None:
             # ``Path(p).resolve()``: a library call or a constructor returns a
             # value, and a value's method is never a module-level function of
-            # that name. Only a repo function may hand back a module
-            # (``_lazy_mod().helper()``), so only its result keeps the name.
+            # that name. Only a repo function or method may hand back a module
+            # (``_lazy_mod().helper()``, ``self._backend().helper()``), so only
+            # its result keeps the name.
             function = alias is not None and alias.kind == "function"
             return None if function and not self._chain_from_repo_function(file_path, call, caller_id) else hit
         if hit is None:
@@ -1475,6 +1478,24 @@ class CallResolver(
             return None
         return methods.get(inner.target_name)
 
+    def _chain_inner_link(
+        self,
+        file_path: str,
+        call: CallSite,
+        inner: CallReceiver,
+        caller_id: str,
+        language: str,
+    ) -> ResolvedCall | None:
+        """The inner call of a chain resolved, in any language; None inside a cycle."""
+        link = (file_path, call.line, inner.receiver_name, inner.target_name)
+        memo_key = (*link, inner.argument_count, caller_id)
+        if memo_key in self._chain_inner_resolved:
+            return self._chain_inner_resolved[memo_key]
+        if link in self._chain_links_in_flight:
+            self._chain_cycle_hits += 1
+            return None
+        return self._resolve_chain_link(file_path, call, inner, caller_id, language)
+
     def _chain_inner_callee(
         self,
         file_path: str,
@@ -1488,15 +1509,7 @@ class CallResolver(
             # Admitted by its table alone; inferring from repository return
             # types is not admitted for this language.
             return None
-        link = (file_path, call.line, inner.receiver_name, inner.target_name)
-        memo_key = (*link, inner.argument_count, caller_id)
-        if memo_key in self._chain_inner_resolved:
-            resolved_inner = self._chain_inner_resolved[memo_key]
-        elif link in self._chain_links_in_flight:
-            self._chain_cycle_hits += 1
-            return None
-        else:
-            resolved_inner = self._resolve_chain_link(file_path, call, inner, caller_id, language)
+        resolved_inner = self._chain_inner_link(file_path, call, inner, caller_id, language)
         if resolved_inner is None:
             return None
         # The overload the inner call's arguments select is the one whose type it returns.

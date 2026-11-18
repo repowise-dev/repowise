@@ -464,9 +464,9 @@ def test_go_chain_on_an_external_return_type_refuses_the_bare_name(tmp_path: Pat
         "cmd/run.go", [call]
     )
 
-    # Without the chain lane the bare-name tier still refuses: a call's result
-    # is a value, and its method is never a package-level function.
-    assert before == []
+    # Without the lane only the inner call is known: a repo function, which may
+    # hand back a package, so the bare name stays.
+    assert [edge.callee_id for edge in before] == ["logging/log.go::Err"]
     assert after == []
 
 
