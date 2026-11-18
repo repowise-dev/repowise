@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
+from pathlib import Path
 
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.package_roots import (
@@ -22,20 +23,23 @@ from repowise.core.ingestion.package_roots import (
 from repowise.core.ingestion.resolvers.context import ResolverContext
 
 
+def _root_manifests(repo: Path) -> frozenset[str]:
+    """The package manifests directly in *repo*, which the scan leaves out."""
+    try:
+        with os.scandir(repo) as listing:
+            top = [entry.name for entry in listing if entry.is_file()]
+    except OSError:
+        return frozenset()
+    return _manifests_in(top, package_manifest_names())
+
+
 def units(
     ctx: ResolverContext, decided: Callable[[str], bool]
 ) -> list[tuple[BuildUnit, tuple[str, ...]]]:
     if ctx.repo_path is None:
         return []
-    repo = ctx.repo_path
-    roots = scan_package_manifests(repo, prune_nested_git=ctx.prune_nested_git)
-    try:
-        with os.scandir(repo) as listing:
-            top = [entry.name for entry in listing if entry.is_file()]
-    except OSError:
-        top = []
-    at_root = _manifests_in(top, package_manifest_names())
-    if at_root:
+    roots = scan_package_manifests(ctx.repo_path, prune_nested_git=ctx.prune_nested_git)
+    if at_root := _root_manifests(ctx.repo_path):
         roots[""] = at_root
 
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
