@@ -10,7 +10,6 @@ decisions, and dead-code findings for the file.
 
 from __future__ import annotations
 
-import bisect
 import json
 from typing import Any
 
@@ -125,23 +124,8 @@ def _symbol_slim(s: Any) -> dict:
 
 
 def _percentile_map(values: dict[str, float]) -> dict[str, float]:
-    """Map each key to the percentile rank (0-100) of its value within the set.
-
-    Ties share the same rank. Returns an empty map for an empty input. O(n log n)
-    via a single sort — never the O(n²) of per-row `percentile_rank` scans.
-    """
-    if not values:
-        return {}
-    ordered = sorted(values.values())
-    n = len(ordered)
-    if n == 1:
-        return {k: 100.0 for k in values}
-    # For each distinct value, the share of entries strictly below it.
-    out: dict[str, float] = {}
-    for key, v in values.items():
-        below = bisect.bisect_left(ordered, v)
-        out[key] = round(below / (n - 1) * 100.0, 1)
-    return out
+    """Map each key to the percentile rank (0-100) of its value within the set (#5745)."""
+    return crud.percentile_rank(None, values)
 
 
 @router.get("/{repo_id}/files")

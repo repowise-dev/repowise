@@ -205,9 +205,9 @@ class GraphMetricsResponse(BaseModel):
     target: str
     node_type: str
     pagerank: float
-    pagerank_percentile: int
+    pagerank_percentile: float
     betweenness: float
-    betweenness_percentile: int
+    betweenness_percentile: float
     # False when this node appeared after the last exact centrality scoring, so
     # the two fields above are the column default rather than a measurement.
     # Additive and defaulted so existing clients keep their shape.

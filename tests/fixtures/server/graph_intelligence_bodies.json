@@ -580,7 +580,7 @@
   200,
   {
    "betweenness": 0.2,
-   "betweenness_percentile": 67,
+   "betweenness_percentile": 100.0,
    "betweenness_scored": false,
    "community_id": 1,
    "community_label": null,
@@ -592,7 +592,7 @@
    "node_type": "file",
    "out_degree": 1,
    "pagerank": 0.4,
-   "pagerank_percentile": 67,
+   "pagerank_percentile": 100.0,
    "target": "src/a.py"
   }
  ],
@@ -606,7 +606,7 @@
   200,
   {
    "betweenness": 0.15,
-   "betweenness_percentile": 67,
+   "betweenness_percentile": 100.0,
    "betweenness_scored": true,
    "community_id": 1,
    "community_label": "entry",
@@ -618,7 +618,7 @@
    "node_type": "symbol",
    "out_degree": 2,
    "pagerank": 0.35,
-   "pagerank_percentile": 67,
+   "pagerank_percentile": 100.0,
    "target": "src/a.py::main"
   }
  ]

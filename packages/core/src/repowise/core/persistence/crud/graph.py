@@ -6,12 +6,15 @@ every public name, so existing imports are unaffected.
 
 from __future__ import annotations
 
+import bisect
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
-from sqlalchemy import and_, case, delete, func, not_, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.ids import is_external
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 
 from ..models import (
@@ -821,37 +824,67 @@ async def get_all_file_metrics(
     return list(result.scalars().all())
 
 
+def percentile_rank(
+    value: float | None = None,
+    nodes: Sequence[Any] | Mapping[str, float] = (),
+    attr: str = "pagerank",
+) -> float | dict[str, float]:
+    """Compute percentile rank (0.0-100.0) among owned file nodes (#5745).
+
+    Filters out external and framework nodes (``is_external``).
+    Uses the Files table formula: ``round(below / (n - 1) * 100.0, 1)`` for
+    ``n > 1``, ``100.0`` for a single file, and ``0.0`` for empty.
+
+    When *value* is ``None``, returns ``dict[str, float]`` mapping each
+    owned node's id to its percentile rank.
+    When *value* is a float, returns the percentile rank of that value
+    among the owned nodes as a ``float``.
+    """
+    items: list[tuple[str, float]] = []
+    if isinstance(nodes, Mapping):
+        for k, v in nodes.items():
+            if not is_external(k):
+                items.append((k, float(v or 0.0)))
+    else:
+        for idx, item in enumerate(nodes):
+            if hasattr(item, "node_id"):
+                if not is_external(item.node_id):
+                    val = getattr(item, attr, 0.0) or 0.0
+                    items.append((item.node_id, float(val)))
+            elif isinstance(item, tuple) and len(item) == 2:
+                if not is_external(item[0]):
+                    items.append((item[0], float(item[1] or 0.0)))
+            elif isinstance(item, (int, float)):
+                items.append((str(idx), float(item)))
+
+    if not items:
+        return 0.0 if value is not None else {}
+
+    ordered = sorted(v for _, v in items)
+    n = len(ordered)
+    if n == 1:
+        return 100.0 if value is not None else {k: 100.0 for k, _ in items}
+
+    if value is None:
+        out: dict[str, float] = {}
+        for k, v in items:
+            below = bisect.bisect_left(ordered, v)
+            out[k] = round(below / (n - 1) * 100.0, 1)
+        return out
+
+    below = bisect.bisect_left(ordered, float(value))
+    below = min(below, n - 1)
+    return round(below / (n - 1) * 100.0, 1)
+
+
 async def get_pagerank_percentile(
     session: AsyncSession,
     repository_id: str,
     pagerank: float,
 ) -> float:
-    """Percentile rank (0-100) of *pagerank* among the repo's owned file nodes.
-
-    Counted in SQL over owned repository files (excluding ``external:`` and
-    ``framework:`` nodes), matching the Files table's formula:
-    ``round(100.0 * below / (n - 1), 1)`` for ``n > 1``, and ``100.0`` for
-    a single file (#5745).
-    """
-    row = (
-        await session.execute(
-            select(
-                func.count().label("total"),
-                func.sum(case((GraphNode.pagerank < pagerank, 1), else_=0)).label("below"),
-            ).where(
-                GraphNode.repository_id == repository_id,
-                GraphNode.node_type == "file",
-                not_(GraphNode.node_id.startswith("external:")),
-                not_(GraphNode.node_id.startswith("framework:")),
-            )
-        )
-    ).one()
-    total = row.total or 0
-    if not total:
-        return 0.0
-    if total == 1:
-        return 100.0
-    return round(100.0 * (row.below or 0) / (total - 1), 1)
+    """Percentile rank (0-100) of *pagerank* among the repo's owned file nodes (#5745)."""
+    all_nodes = await get_all_file_metrics(session, repository_id)
+    return percentile_rank(pagerank, all_nodes, attr="pagerank")
 
 
 async def get_cross_community_edges(
