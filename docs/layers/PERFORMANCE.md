@@ -246,7 +246,9 @@ it to this shape first. The format is detected from the content;
   `bad_line` for a frame with no line, `dirty`, `generated`, `vendored`).
 - Lambdas, generator expressions and nested functions with no symbol of
   their own are charged to the enclosing function when the frame's qualified
-  name shows it; module bodies are charged to the file.
+  name shows it. A module body (import-time code) resolves to its file and counts
+  as explained, but the index keeps no symbol for a file's top level, so its own
+  time is reported under `self_unattributed` as `module_body`, never dropped.
 - Each function gets inclusive time (every stack it is on, once per stack) and
   self time (stacks where it is the innermost repo frame; built-ins and
   dependencies below it count as its own).

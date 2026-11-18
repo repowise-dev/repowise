@@ -49,19 +49,17 @@ def read(data: bytes) -> ProfileRun:
     unit = next(iter(units))
     tally = StackTally()
     skipped: dict[str, int] = {}
-    counted = True
     for profile in profiles:
         if profile.get("type") == "sampled":
             _sampled(profile, len(frames), tally, skipped, timed=unit != "none")
         elif profile.get("type") == "evented":
-            counted = False
             _evented(profile, len(frames), tally, skipped)
         else:
             skipped["unknown_profile_type"] = skipped.get("unknown_profile_type", 0) + 1
     tool, version = _exporter(doc.get("exporter"))
     return ProfileRun(
         frames=frames,
-        stacks=tally.stacks(counted=counted),
+        stacks=tally.stacks(),
         unit=_UNITS[unit],
         value_kind="wall" if tool in _WALL_CLOCK_TOOLS else None,
         tool_name=tool,
@@ -141,7 +139,8 @@ def _sampled(
             skipped["bad_sample"] = skipped.get("bad_sample", 0) + 1
             continue
         # An empty stack is a sample all the same: it counts in the run's total.
-        tally.add(stack, weight)
+        # Unit "none" weights are sample counts already.
+        tally.add(stack, weight, 1 if timed else round(weight))
 
 
 def _evented(

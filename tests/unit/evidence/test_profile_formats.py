@@ -458,3 +458,36 @@ def test_one_stack_longer_than_the_sniff_window_is_still_collapsed() -> None:
     deep = ";".join(f"f{i} (/r/a.py:{i + 1})" for i in range(400)) + " 3\n"
     assert len(deep) > 4096
     assert detect_profile_format(deep.encode()) == "collapsed"
+
+
+def test_module_body_self_time_is_reported_unattributed_not_dropped() -> None:
+    doc = {**PYSPY, "shared": {"frames": [
+        {"name": "<module>", "file": _f("pkg\\app.py"), "line": 35},
+        {"name": "loads", "file": "C:\\Python\\json.py", "line": 3},
+    ]}, "profiles": [{"type": "sampled", "unit": "none", "samples": [[0, 1], [0]],
+                      "weights": [2, 1]}]}
+    conv = _convert(profile_formats.get("speedscope").read(_bytes(doc)))
+    assert conv.document["symbols"] == []
+    assert conv.explained == 3.0
+    assert conv.self_unattributed == {"module_body": 3.0}
+    assert conv.summary()["self_unattributed"] == {"module_body": 1.0}
+
+
+def test_unit_none_weights_are_sample_counts() -> None:
+    doc = {**PYSPY, "profiles": [{"type": "sampled", "unit": "none",
+                                  "samples": [[0, 1, 2], [0, 1]], "weights": [5, 2]}]}
+    got = _entries(_convert(profile_formats.get("speedscope").read(_bytes(doc))))
+    assert got["pkg.app.App.run"]["total"] == got["pkg.app.App.run"]["total_samples"] == 7
+    assert got["pkg.app.App.load"]["self_samples"] == 5
+
+
+def test_an_evented_profile_keeps_sample_counts_of_sampled_ones_in_the_file() -> None:
+    sampled = {"type": "sampled", "unit": "seconds", "samples": [[2]], "weights": [0.5]}
+    evented = {"type": "evented", "unit": "seconds", "events": [
+        {"type": "O", "at": 0, "frame": 1}, {"type": "C", "at": 1, "frame": 1},
+    ]}
+    run = profile_formats.get("speedscope").read(
+        _bytes({**PYSPY, "profiles": [sampled, evented]})
+    )
+    samples = {s.frames: s.samples for s in run.stacks}
+    assert samples == {(2,): 1, (1,): None}
