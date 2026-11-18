@@ -637,19 +637,19 @@ async def _rekey_vectors(
     session: AsyncSession,
     moved: dict[str, str],
     fresh_sources: set[str] | None = None,
-    folded_keys: set[str] | None = None,
 ) -> int:
     """Preserve stored values; release old keys only after destination readback."""
     if not moved:
         return 0
-    folded = folded_keys or set()
+    fresh = fresh_sources or set()
     keys = {f"{DECISION_VECTOR_PREFIX}{key}" for key in moved.keys() | set(moved.values())}
     try:
         present = await _existing_vector_ids(vector_store, keys)
-        mapping = _pending_vector_mapping(moved, present, fresh_sources or set())
+        mapping = _pending_vector_mapping(moved, present, fresh)
         if not mapping:
             return 0
-        missing = await _copy_rekeyed_vectors(vector_store, mapping, present, folded)
+        fresh_keys = {f"{DECISION_VECTOR_PREFIX}{old}" for old in fresh}
+        missing = await _copy_rekeyed_vectors(vector_store, mapping, present, fresh_keys)
     except Exception:
         # A failed copy must remain retryable without recomputing its source.
         return 0
@@ -662,7 +662,8 @@ async def _rekey_vectors(
     except Exception:
         return 0
     destinations = set(mapping.values())
-    unconfirmed = folded & missing
+    # Existence alone cannot confirm a replacement at an already occupied key.
+    unconfirmed = {mapping[old] for old in fresh_keys} & missing
     landed = {
         old for old, new in mapping.items()
         if old in present and new in present and old not in destinations and new not in unconfirmed
@@ -684,16 +685,17 @@ def _pending_vector_mapping(
 
 
 async def _copy_rekeyed_vectors(
-    vector_store: Any, mapping: dict[str, str], present: set[str], folded_keys: set[str]
+    vector_store: Any, mapping: dict[str, str], present: set[str], fresh_keys: set[str]
 ) -> set[str]:
     """Copy retained sources; return destinations needing the embedding fallback."""
     pending = {
         old: new for old, new in mapping.items()
-        if new not in present or new in mapping or new in folded_keys
+        if old in fresh_keys or new not in present or new in mapping
     }
-    # Several historical aliases may name one canonical decision. Pick one
-    # retained source per destination, then release all landed aliases.
-    sources_by_target = {new: old for old, new in sorted(pending.items()) if old in present}
+    # A fresh source owns its vector. Prefer it over an older alias if
+    # both point to the same destination.
+    ordered = sorted(pending, key=lambda old: (old in fresh_keys, old))
+    sources_by_target = {pending[old]: old for old in ordered if old in present}
     copies = {old: new for new, old in sources_by_target.items()}
     copy = getattr(vector_store, "copy_vectors", None)
     copied = await copy(copies) if copies and copy is not None else set()
@@ -797,7 +799,7 @@ async def apply_id_migration(
         moved = await _vector_rewrites(session, repository_id, rewrites)
         folded_keys = {f"{DECISION_VECTOR_PREFIX}{row.old_id}" for row in folds}
         rekeyed = await _rekey_vectors(
-            vector_store, session, moved, {row.old_id for row in rewrites}, folded_keys
+            vector_store, session, moved, {row.old_id for row in rewrites}
         )
         # Rewritten destinations now belong to their keepers.
         dropped = await _drop_folded_vectors(

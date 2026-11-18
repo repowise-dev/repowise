@@ -49,7 +49,7 @@ async def test_vector_rekey_preserves_an_existing_canonical_embedding(
 ):
     repo = await insert_repo(async_session)
     legacy = await _legacy_record(async_session, repo.id, "Legacy one")
-    plan = await plan_id_migration(async_session, repo.id)
+    plan = await apply_id_migration(async_session, repo.id)
     old_key = f"{DECISION_VECTOR_PREFIX}{legacy.id}"
     new_key = f"{DECISION_VECTOR_PREFIX}{plan.rewrites()[0].new_id}"
     canonical = ([0.75] * mock_embedder.dimensions, {"title": "Current wording"})
@@ -63,6 +63,29 @@ async def test_vector_rekey_preserves_an_existing_canonical_embedding(
     await apply_id_migration(async_session, repo.id, vector_store=in_memory_vector_store)
 
     assert in_memory_vector_store._store == {new_key: canonical}
+    embed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fresh_rekey_replaces_a_stale_destination(
+    async_session, in_memory_vector_store, mock_embedder, monkeypatch
+):
+    repo = await insert_repo(async_session)
+    legacy = await _legacy_record(async_session, repo.id, "Legacy one")
+    plan = await plan_id_migration(async_session, repo.id)
+    old_key = f"{DECISION_VECTOR_PREFIX}{legacy.id}"
+    new_key = f"{DECISION_VECTOR_PREFIX}{plan.rewrites()[0].new_id}"
+    retained = ([0.25] * mock_embedder.dimensions, {"title": "Legacy one"})
+    await in_memory_vector_store.upsert_vectors([
+        (old_key, *retained),
+        (new_key, [0.75] * mock_embedder.dimensions, {"title": "Retired record"}),
+    ])
+    embed = AsyncMock(side_effect=AssertionError("The retained vector can be copied"))
+    monkeypatch.setattr(mock_embedder, "embed", embed)
+
+    await apply_id_migration(async_session, repo.id, vector_store=in_memory_vector_store)
+
+    assert in_memory_vector_store._store == {new_key: retained}
     embed.assert_not_called()
 
 
