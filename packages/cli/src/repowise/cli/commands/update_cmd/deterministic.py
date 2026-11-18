@@ -534,17 +534,10 @@ def hydrate_symbol_complexity(repo_path: Path, parsed_files: list, paths: set[st
     """
     if not paths:
         return
+    from repowise.core.pipeline.persist import apply_stored_complexity
+
     stored = run_async(_load_symbol_complexity(repo_path))
-    if not stored:
-        return
-    for pf in parsed_files:
-        if pf.file_info.path not in paths:
-            continue
-        for sym in pf.symbols:
-            sid = getattr(sym, "id", None) or f"{pf.file_info.path}::{sym.name}"
-            value = stored.get(sid)
-            if value:
-                sym.complexity_estimate = value
+    apply_stored_complexity([pf for pf in parsed_files if pf.file_info.path in paths], stored)
 
 
 async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
@@ -553,21 +546,14 @@ async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
 
     engine = create_engine(get_db_url_for_repo(repo_path))
     try:
-        from sqlalchemy import select as sa_select
-
         from repowise.core.persistence.crud import get_repository_by_path
-        from repowise.core.persistence.models import WikiSymbol
+        from repowise.core.pipeline.persist import stored_symbol_complexity
 
         async with get_session(create_session_factory(engine)) as session:
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 return {}
-            rows = await session.execute(
-                sa_select(WikiSymbol.symbol_id, WikiSymbol.complexity_estimate).where(
-                    WikiSymbol.repository_id == repo.id
-                )
-            )
-            return {sid: int(value or 0) for sid, value in rows}
+            return await stored_symbol_complexity(session, repo.id)
     except Exception:
         return {}
     finally:

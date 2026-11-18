@@ -238,6 +238,76 @@ async def test_module_import_then_attribute_access_is_found(session, repo_id, tm
     assert out["complete"] is True
 
 
+_MODULE_OBJECT_USER = """from pkg import catalog
+
+
+def _catalog():
+    return catalog
+
+
+def run():
+    c = _catalog()
+    return c.backend_of(1)
+"""
+
+
+@pytest.mark.asyncio
+async def test_module_object_bound_outside_an_import_is_incomplete(session, repo_id, tmp_path):
+    """``c = _catalog()`` hands the module on under a name no import binds:
+    ``c.backend_of`` may be the symbol, so the set does not claim to be whole."""
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/lazy.py", _DEF, "imports", {"imported_names_json": '["catalog"]'})],
+    )
+    (tmp_path / "app" / "lazy.py").write_text(_MODULE_OBJECT_USER, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is False
+    assert out["reasons"] == [
+        "may be called through a module object outside an import: app/lazy.py"
+    ]
+    assert "app/lazy.py" not in out["files"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "names"),
+    [
+        # The module is imported, but the object use is the file's own instance.
+        (
+            "from pkg import catalog\n\nclass C:\n    def f(self):\n        return self.backend_of()\n",
+            '["catalog"]',
+        ),
+        # The module object is only read through and passed to a patch, never handed on.
+        (
+            "from pkg import catalog\n\ndef f(ctx, mp):\n"
+            "    mp.setattr(catalog, 'x', 1)\n    return ctx.backend_of(catalog.MODELS)\n",
+            '["catalog"]',
+        ),
+        # An object use with no module import of a file holding the name.
+        ("from pkg.catalog import MODELS\n\ndef f(ctx):\n    return ctx.backend_of()\n", '["MODELS"]'),
+    ],
+)
+async def test_object_use_without_a_module_object_stays_complete(
+    session, repo_id, tmp_path, body, names
+):
+    node = await _seed(
+        session,
+        repo_id,
+        tmp_path,
+        extra=[("app/other.py", _DEF, "imports", {"imported_names_json": names})],
+    )
+    (tmp_path / "app" / "other.py").write_text(body, encoding="utf-8")
+
+    out = await edit_set_block(session, repo_id, tmp_path, node)
+
+    assert out["complete"] is True
+    assert "reasons" not in out
+
+
 @pytest.mark.asyncio
 async def test_importer_with_unknown_names_is_followed_onward(session, repo_id, tmp_path):
     node = await _seed(

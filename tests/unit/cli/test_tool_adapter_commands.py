@@ -1163,3 +1163,32 @@ def test_ask_with_no_workspace_serves_one_repo(monkeypatch, tmp_path):
     ws = _workspace(tmp_path)
     seen = _workspace_roots(monkeypatch, ["--path", str(ws / "code"), "--no-workspace"])
     assert seen == [((ws / "code").resolve(), None)]
+
+
+WHY_CANDIDATES_ONLY_PAYLOAD = {
+    "mode": "path",
+    "path": "a.py",
+    "answer_basis": "candidate",
+    "decisions": [],
+    "candidates": [
+        {"id": "d1", "title": "List core tools for eager-schema clients", "status": "proposed",
+         "decision": "list the core tools", "confidence": 0.6}
+    ],
+    "candidates_note": "1 background record(s) mention this path. None is in force.",
+    "more": 'Origin story, commits, episodes and contributors: get_why(targets=["a.py"], include=["history"])',
+    "_meta": {},
+}
+
+
+def test_why_path_with_only_background_records_is_not_empty(monkeypatch, repo):
+    """Path mode serves candidates and a history pointer, not decisions or archaeology."""
+    out = project_why(WHY_CANDIDATES_ONLY_PAYLOAD)
+    assert out["candidates"][0]["title"] == "List core tools for eager-schema clients"
+    assert "confidence" not in out["candidates"][0]
+    assert out["more"]
+
+    result = _invoke(monkeypatch, why_command, ["a.py"], repo, WHY_CANDIDATES_ONLY_PAYLOAD)
+    assert "Nothing recorded" not in result.stdout
+    assert "Candidates, not in force" in result.stdout
+    assert "List core tools for eager-schema clients" in result.stdout
+    assert "--full" in result.stdout

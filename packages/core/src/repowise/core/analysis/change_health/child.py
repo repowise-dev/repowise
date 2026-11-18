@@ -21,6 +21,7 @@ from pathlib import Path
 
 import structlog
 
+from . import service as _service
 from .models import ChangeHealthDelta
 from .service import ChangeHealthDeltaService, DeltaRequest
 from .sources import GitRevisionSource, RevisionPair
@@ -55,7 +56,7 @@ class ChildProcessDeltaService(ChangeHealthDeltaService):
     """
 
     def _compare_uncached(self, request: DeltaRequest, pair: RevisionPair) -> ChangeHealthDelta:
-        if not self._wants_child(pair) or not _CHILD_SLOTS.acquire(blocking=False):
+        if not self._wants_child(request, pair) or not _CHILD_SLOTS.acquire(blocking=False):
             return super()._compare_uncached(request, pair)
         try:
             return _run_child(self.repo_path, self.rules_fingerprint, self.cache_dir, request, pair)
@@ -65,10 +66,13 @@ class ChildProcessDeltaService(ChangeHealthDeltaService):
             _CHILD_SLOTS.release()
         return super()._compare_uncached(request, pair)
 
-    def _wants_child(self, pair: RevisionPair) -> bool:
+    def _wants_child(self, request: DeltaRequest, pair: RevisionPair) -> bool:
         return not (
             pair.working_tree
             or len(pair.changes) < CHILD_MIN_FILES
+            # Past the ceiling the answer is "too large" without analysing a
+            # file, so shipping the whole diff to a child only delays it.
+            or self.eligible_count(request, pair) > _service.MAX_CHANGED_FILES
             or self._custom_analyzer
             or self.health_config is not None
             or not isinstance(self.source, GitRevisionSource)

@@ -13,6 +13,7 @@ from . import (  # noqa: F401
     coverage_map,
     dead_code,
     doc_drift,
+    evidence,
     function_facts,
     health,
     performance,
@@ -65,6 +66,14 @@ from .doc_drift import (
     serialize_doc_drift_reference_row,
     serialize_doc_drift_row,
     summarize_confidence_rows,
+)
+from .evidence import (
+    EVIDENCE_ROW_TABLES,
+    EvidenceWrite,
+    delete_evidence_runs,
+    list_evidence_runs,
+    prune_evidence_runs,
+    save_evidence_run,
 )
 from .function_facts import get_function_facts, tests_for_functions, write_function_facts
 from .health import (
@@ -138,8 +147,10 @@ from .refactoring_opportunities import (
 from .refactoring_payoff import PayoffContext, plan_payoff
 
 __all__ = [
+    "EVIDENCE_ROW_TABLES",
     "FILE_TREND_SNAPSHOT_WINDOW",
     "HEALTH_SNAPSHOT_RETENTION",
+    "EvidenceWrite",
     "HealthSnapshotHeadline",
     "HealthSnapshotScalars",
     "PayoffContext",
@@ -150,6 +161,7 @@ __all__ = [
     "coverage_by_module",
     "coverage_row_dict",
     "covered_source_files",
+    "delete_evidence_runs",
     "doc_drift_findings_stored",
     "doc_drift_last_written",
     "doc_drift_pass_ran",
@@ -194,6 +206,7 @@ __all__ = [
     "health_finding_priorities",
     "is_new_doc_drift_row",
     "list_evidence_for_opportunities",
+    "list_evidence_runs",
     "list_health_snapshots",
     "list_opportunity_evidence",
     "list_performance_opportunities",
@@ -210,6 +223,7 @@ __all__ = [
     "performance_file_rollups",
     "performance_headline",
     "plan_payoff",
+    "prune_evidence_runs",
     "prune_unscored_health_rows",
     "ranked_refactoring_suggestions",
     "refactoring_facet_counts",
@@ -220,6 +234,7 @@ __all__ = [
     "replace_governance_findings",
     "save_coverage_files",
     "save_dead_code_findings",
+    "save_evidence_run",
     "save_health_findings",
     "save_health_metrics",
     "save_health_snapshot",

@@ -17,6 +17,7 @@ _BLOCK_STOP = re.compile(r"/\*|\*/")
 _RAW_BACKTICK_STOP = re.compile("`")
 _INTERPOLATED_STOP = re.compile(r'[{}"\\]')
 _INTERPOLATED_VERBATIM_STOP = re.compile(r'[{}]|"')
+_RUST_CHAR_LITERAL = re.compile(r"'(?:[^'\\\n]|\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|.))'")
 # Languages whose block comments nest, and Go, whose backtick string is raw: a
 # backslash there is a character, not an escape.
 _NESTED_COMMENT_SUFFIXES = (".kt", ".kts", ".scala", ".sc", ".swift", ".rs", ".dart")
@@ -29,6 +30,7 @@ def mask_dialect(file_path: str) -> dict[str, bool]:
     return {
         "nested_comments": lowered.endswith(_NESTED_COMMENT_SUFFIXES),
         "raw_backticks": lowered.endswith(_RAW_BACKTICK_SUFFIXES),
+        "lifetimes": lowered.endswith(".rs"),
     }
 
 
@@ -55,6 +57,7 @@ def mask_comments_and_strings(
     nested_comments: bool = False,
     raw_backticks: bool = False,
     hash_comments: bool = True,
+    lifetimes: bool = False,
 ) -> str:
     """Blank common comments (and strings, unless *strings* is false), keeping offsets.
 
@@ -221,6 +224,16 @@ def mask_comments_and_strings(
             i += 1
             state = "template"
         elif char in {"'", '"'}:
+            if lifetimes and char == "'":
+                char_lit = _RUST_CHAR_LITERAL.match(source, i)
+                if char_lit is not None:
+                    if strings:
+                        blank(i, char_lit.end())
+                    i = char_lit.end()
+                else:
+                    # Rust lifetime ('a, 'static, '_) or loop label ('outer:).
+                    i += 1
+                continue
             quote = char
             triple = source.startswith(quote * 3, i)
             width = 3 if triple else 1

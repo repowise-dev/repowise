@@ -644,11 +644,34 @@ class TestScanFile:
             ('reason = f"SELECT * inside a {kind}: the shape changes"\n', False),
             # Python source quoted inside a string, as a test fixture holds it.
             ("src = 'q = f\"SELECT * FROM t WHERE id = {uid}\"'\n", False),
+            # An earlier f-string on the same line must not swallow the SQL f-string.
+            ('q = f"{prefix}" + f"SELECT * FROM users WHERE id = {user_id}"\n', True),
+            ('q = f"{prefix}" + f"SELECT * FROM users"\n', False),
         ],
     )
     def test_fstring_sql_needs_a_value_written_into_a_query(self, source: str, expected: bool) -> None:
         findings = scan_source("db.py", source)
         assert bool([f for f in findings if f["kind"] == "fstring_sql"]) is expected
+
+    def test_match_fstring_sql_helper_branches(self) -> None:
+        from repowise.core.analysis.security.patterns import _PATTERNS
+        from repowise.core.analysis.security.scanner import _match_fstring_sql
+
+        pattern = next(p for p, k, _ in _PATTERNS if k == "fstring_sql")
+        # Case 1: Match starts in masked code (e.g. comment) -> returns None
+        line = '# f"SELECT * FROM users WHERE id = {user_id}"'
+        masked = " " * len(line)
+        assert _match_fstring_sql(pattern, line, masked, [line], 1) is None
+
+        # Case 2: No match in line -> returns None
+        line_no_match = "x = 42"
+        assert _match_fstring_sql(pattern, line_no_match, line_no_match, [line_no_match], 1) is None
+
+        # Case 3: Match valid in unmasked code -> returns Match
+        line_valid = 'q = f"{p}" + f"SELECT * FROM users WHERE id = {uid}"'
+        match = _match_fstring_sql(pattern, line_valid, line_valid, [line_valid], 1)
+        assert match is not None
+        assert "SELECT" in match.group()
 
     @pytest.mark.parametrize(
         ("line", "kind"),
@@ -1812,3 +1835,29 @@ def test_verbatim_interpolation_trailing_backslash_preserves_following_code(pref
         + "\nNext();\n"
     )
     assert len(masked) == len(source)
+
+
+def test_rust_lifetimes_and_labels_do_not_swallow_subsequent_code() -> None:
+    from repowise.core.analysis.security.masking import mask_comments_and_strings, mask_dialect
+    from repowise.core.analysis.security.scanner import scan_source
+
+    source = (
+        "fn process<'a>(input: &'static str, extra: &'a str) -> char {\n"
+        "    'outer: loop {\n"
+        "        let quote = '\\'';\n"
+        '        let password = "real_secret_value_1234";\n'
+        "        return 'x';\n"
+        "    }\n"
+        "}\n"
+    )
+    masked = mask_comments_and_strings(
+        source, strings=True, hash_comments=False, **mask_dialect("src/lib.rs")
+    )
+    assert "let password = " in masked
+    assert "real_secret_value_1234" not in masked
+    assert "return    ;" in masked
+    assert len(masked) == len(source)
+
+    findings = scan_source("src/lib.rs", source)
+    assert any(f["kind"] == "hardcoded_password" for f in findings)
+

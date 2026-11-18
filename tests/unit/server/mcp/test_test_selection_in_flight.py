@@ -58,6 +58,38 @@ async def test_two_calls_for_one_change_share_the_running_selection(tmp_path, ga
 
 
 @pytest.mark.asyncio
+async def test_a_finished_selection_is_shared_until_its_cache_key_is_rechecked(
+    tmp_path, gated, monkeypatch
+) -> None:
+    from collections import OrderedDict
+
+    gate, runs = gated
+    publishing = asyncio.Event()
+    publish = asyncio.Event()
+    checks = 0
+
+    async def _done_key(*_args):
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            publishing.set()
+            await publish.wait()
+        return ("same-change",)
+
+    monkeypatch.setattr(_test_selection, "_done_key", _done_key)
+    monkeypatch.setattr(_test_selection, "_DONE", OrderedDict())
+    gate.set()
+    first = _call(tmp_path, _change("a.py"))
+    await asyncio.wait_for(publishing.wait(), timeout=1)
+    second = _call(tmp_path, _change("a.py"))
+    await _settle()
+    publish.set()
+
+    assert (await first)[0] == (await second)[0] == {"for": "a.py"}
+    assert len(runs) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_call_for_another_change_runs_after_the_running_one(tmp_path, gated) -> None:
     gate, runs = gated
     first = _call(tmp_path, _change("a.py"))

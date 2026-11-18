@@ -8,12 +8,12 @@
     "source": "github"
   },
   "websiteUrl": "https://www.repowise.dev",
-  "version": "0.60.1",
+  "version": "0.61.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "repowise",
-      "version": "0.60.1",
+      "version": "0.61.0",
       "transport": {
         "type": "stdio"
       },

@@ -14,6 +14,7 @@ from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._call_tasks import start_call_task
 from repowise.server.mcp_server._test_selection import (
     change_tests_block,
+    changed_file_count,
     degraded_block,
 )
 from repowise.server.mcp_server._test_selection import unselected_block as _empty_impacted
@@ -53,6 +54,17 @@ def _serialize_missing(report: Any) -> dict[str, Any]:
     }
 
 
+def _selection_ceiling() -> int:
+    """Files past which the tests block skips selection: the health comparison's ceiling.
+
+    A change that wide needs every test in practice, and selecting from it
+    spent the whole selection budget before saying so.
+    """
+    from repowise.core.analysis.change_health.service import MAX_CHANGED_FILES
+
+    return MAX_CHANGED_FILES
+
+
 def _start_selection(ctx: Any, revspec: str | None) -> asyncio.Task | None:
     """Begin a committed change's test selection while git scores it, or ``None``.
 
@@ -77,6 +89,8 @@ async def _select_committed(ctx: Any, revspec: str) -> None:
         change = await asyncio.to_thread(
             partial(change_set, str(ctx.path), revspec, exclude_patterns=owned)
         )
+        if changed_file_count(change) > _selection_ceiling():
+            return  # the tests block answers "run every test" without selecting
         await _pkg.select_change_tests(ctx.path, ctx.session_factory, change)
     except Exception as exc:  # the tests block asks again and reports the failure
         log.debug("impacted_tests_head_start_failed", error=f"{type(exc).__name__}: {exc}")
@@ -119,6 +133,7 @@ async def _impacted_tests_block(
         owned_excludes=owned_excludes,
         detail=detail,
         agent=True,
+        max_files=_selection_ceiling(),
     )
     if made is None:
         return block

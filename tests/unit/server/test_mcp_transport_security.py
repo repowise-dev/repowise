@@ -129,7 +129,7 @@ def test_real_middleware_validates_ipv6_host_header(header_host: str, expected: 
     assert middleware._validate_host(header_host) is expected
 
 
-def test_run_mcp_applies_transport_security_for_streamable_http(monkeypatch) -> None:
+def test_run_mcp_applies_transport_security_for_streamable_http(monkeypatch, isolated_run_mcp) -> None:
     calls: list[dict] = []
     monkeypatch.setattr(_server.mcp, "run", lambda **kw: calls.append(kw))
     monkeypatch.delenv("REPOWISE_API_KEY", raising=False)
@@ -141,7 +141,7 @@ def test_run_mcp_applies_transport_security_for_streamable_http(monkeypatch) -> 
     assert "172.21.12.48:*" in settings.allowed_hosts
 
 
-def test_run_mcp_applies_transport_security_for_sse(monkeypatch) -> None:
+def test_run_mcp_applies_transport_security_for_sse(monkeypatch, isolated_run_mcp) -> None:
     calls: list[dict] = []
     monkeypatch.setattr(_server.mcp, "run", lambda **kw: calls.append(kw))
     monkeypatch.delenv("REPOWISE_API_KEY", raising=False)
@@ -153,11 +153,10 @@ def test_run_mcp_applies_transport_security_for_sse(monkeypatch) -> None:
     assert "172.21.12.48:*" in settings.allowed_hosts
 
 
-def test_run_mcp_stdio_does_not_touch_transport_security(monkeypatch) -> None:
+def test_run_mcp_stdio_does_not_touch_transport_security(monkeypatch, isolated_run_mcp) -> None:
     """stdio never binds a socket — there's nothing for the allowlist to gate."""
     before = _server.mcp.settings.transport_security
     monkeypatch.setattr(_server.mcp, "run", lambda **kw: None)
-    monkeypatch.setattr("repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None)
 
     _server.run_mcp(transport="stdio")
 

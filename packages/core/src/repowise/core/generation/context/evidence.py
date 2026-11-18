@@ -232,9 +232,11 @@ def _resolve_reference_excerpt(
     parsed = parsed_by_path.get(path)
     if parsed is None:
         return None, "parsed_file_not_found"
-    symbol = next(
+    # References retain identity, not the physical declaration selected upstream.
+    symbol = min(
         (candidate for candidate in getattr(parsed, "symbols", ()) if candidate.id == reference),
-        None,
+        key=lambda candidate: getattr(candidate, "is_declaration", False),
+        default=None,
     )
     if symbol is None:
         return None, "symbol_not_found"

@@ -53,12 +53,19 @@ def _globbed(repo_root: Path, includes: list, excludes: list) -> set[str]:
     return out
 
 
-def read_toml(path: Path) -> dict:
+def read_toml_or_none(path: Path) -> dict | None:
+    """*path* parsed as TOML, or None when it cannot be read, decoded or parsed."""
     try:
         with open(path, "rb") as f:
             return tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return {}
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+
+
+def read_toml(path: Path) -> dict:
+    """*path* parsed as TOML, ``{}`` when it cannot be read."""
+    data = read_toml_or_none(path)
+    return {} if data is None else data
 
 
 def _toml_workspace(repo_root: Path, manifest: str, *table: str) -> set[str] | None:

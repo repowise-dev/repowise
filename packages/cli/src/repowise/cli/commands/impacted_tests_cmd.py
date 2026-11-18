@@ -55,7 +55,7 @@ from repowise.cli.helpers import (
 from repowise.cli.output import emit_json
 from repowise.core.analysis.health.coverage.contexts import PER_TEST_COVERAGE_COMMAND
 from repowise.core.analysis.test_collection import plan_scopes, read_checkout, select
-from repowise.core.analysis.test_selection import RUNNERS
+from repowise.core.test_runners import RUNNERS
 
 # Candidates the table prints per changed file; json and list carry them all.
 _TABLE_CANDIDATES = 10
@@ -340,7 +340,7 @@ def _render_selection(
     result: dict, fmt: str, runner: str, explain: str | None = None, prioritize: bool = False
 ) -> None:
     """``--format args`` (one line, reasons on stderr) or ``--format json``."""
-    from repowise.core.analysis.test_selection import (
+    from repowise.core.test_runners import (
         format_args,
         left_out,
         resolve_runner,

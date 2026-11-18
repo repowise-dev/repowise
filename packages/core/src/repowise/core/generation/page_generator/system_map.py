@@ -18,7 +18,6 @@ import structlog
 from repowise.core.analysis.c4.containers import (
     assign_containers,
     container_name,
-    is_manifest,
     manifest_roots,
 )
 from repowise.core.analysis.external_systems import build_declaration_links
@@ -45,7 +44,11 @@ def build_run_system_map(run: Any) -> SystemMap | None:
         return None
     graph = run.graph_builder.graph()
     manifests = {s.get("declared_in") for s in run.external_systems if s.get("declared_in")}
-    manifests |= {pf.file_info.path for pf in run.parsed_files if is_manifest(pf.file_info.path)}
+    manifests |= {
+        pf.file_info.path
+        for pf in run.parsed_files
+        if REGISTRY.is_package_manifest(pf.file_info.path)
+    }
     repo_root = Path(run.repo_path) if run.repo_path else None
     links, routes = _http_links(run, files, manifests)
     package_names = {

@@ -34,27 +34,25 @@ from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-# Files a graph step opens by exact name (lowercased), wherever they sit.
+# Files a graph step opens by exact name (lowercased), wherever they sit, on
+# top of every manifest and descriptor name the language registry declares
+# (:func:`_registry_names`), which this list does not restate.
 _READ_NAMES = frozenset(
     name.lower()
     for name in (
         # traversal: ignore rules, submodules, console scripts, test roots
         ".gitignore", ".gitattributes", ".gitmodules", ".repowiseignore",
-        "pytest.ini", "tox.ini", "setup.cfg", "setup.py", "pyproject.toml",
+        "pytest.ini", "tox.ini",
         "phpunit.xml", "phpunit.dist.xml", "phpunit.xml.dist", "ProjectVersion.txt",
         # JS / TS workspaces, entries, aliases, tool configs
-        "package.json", "plugin.json", "jsconfig.json", "pnpm-workspace.yaml",
+        "plugin.json", "jsconfig.json", "pnpm-workspace.yaml",
         "angular.json", "project.json", "deno.json", "deno.jsonc",
-        # other ecosystems' build files and manifests
-        "go.mod", "go.work", "Cargo.toml", "composer.json", "pubspec.yaml",
-        "Package.swift", "Gemfile", "build.sbt", "build.sc", "pom.xml",
-        "settings.gradle", "settings.gradle.kts", "build.gradle", "build.gradle.kts",
-        "Directory.Build.props", "Directory.Build.targets", "Directory.Packages.props",
-        "PublicAPI.Shipped.txt", "CMakeLists.txt", "BUILD", "BUILD.bazel",
-        "WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel", "compile_commands.json",
+        # other ecosystems' workspace and build files no spec declares
+        "go.work", "build.sc", "settings.gradle", "settings.gradle.kts",
+        "PublicAPI.Shipped.txt", "compile_commands.json",
         "AndroidManifest.xml", "web.xml", "spring.factories",
-        "sfdx-project.json", "cumulusci.yml", "dbt_project.yml",
-        "default.project.json", ".luaurc", "project.godot", "plugin.cfg",
+        "cumulusci.yml", "dbt_project.yml",
+        ".luaurc", "plugin.cfg",
         "serverless.yml", "serverless.yaml", "template.yml", "template.yaml",
         "Dockerfile", "docker-compose.yml", "docker-compose.yaml",
         # docs-site markers that change sibling files' code origin
@@ -67,7 +65,7 @@ _READ_NAMES = frozenset(
 _READ_GLOBS = (
     "tsconfig*.json", "vitest.config.*", "vite.config.*", "jest.config.*",
     "playwright.config.*", "*.mdx",
-    "*.csproj", "*.vbproj", "*.fsproj", "*.sln", "*.props", "*.targets",
+    "*.vbproj", "*.fsproj", "*.sln", "*.props", "*.targets",
     "*.gemspec", "phpstan*.neon", "phpstan*.neon.dist", "*.tf",
     "*.uid", "*.pro", "*.vcxproj", "*.rc", "*.cmake", "*.bzl",
     "*.dproj", "*.lpi", "*.dpr", "*.dpk", "*.lpr",
@@ -93,12 +91,16 @@ def _registry_names() -> frozenset[str]:
     """Every manifest or descriptor name a language spec declares, lowercased."""
     from repowise.core.ingestion.languages.registry import REGISTRY
 
-    names = (
-        REGISTRY.manifest_filenames()
-        | REGISTRY.package_manifest_filenames()
-        | REGISTRY.descriptor_filenames()
-    )
+    names = REGISTRY.manifest_filenames() | REGISTRY.descriptor_filenames()
     return frozenset(name.lower() for name in names)
+
+
+@cache
+def _read_globs() -> tuple[str, ...]:
+    """:data:`_READ_GLOBS` plus the registry's package-manifest globs, lowercased."""
+    from repowise.core.ingestion.languages.registry import REGISTRY
+
+    return (*_READ_GLOBS, *sorted(g.lower() for g in REGISTRY.package_manifest_globs()))
 
 
 def presence_read(path: str) -> bool:
@@ -107,7 +109,7 @@ def presence_read(path: str) -> bool:
     name = pure.name
     if name in _READ_NAMES or name in _registry_names():
         return True
-    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _READ_GLOBS):
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _read_globs()):
         return True
     if _READ_DIR_SEGMENTS.intersection(pure.parts[:-1]):
         return True

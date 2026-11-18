@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
@@ -208,6 +208,28 @@ def hook_flag_enabled(repo_path: Path, flag: str, *, default: bool = False) -> b
         return parse_flag(value)
     except Exception:
         return False
+
+
+def listed_tools(repo_path: Path, client: str | None, names: Iterable[str]) -> frozenset[str]:
+    """Which of *names* the MCP server here lists to this hook's *client*.
+
+    *client* is the ``--client`` marker (``None`` is Claude Code). The rule is
+    the server's own, over the repo's ``mcp.tools``, so hook text names a tool
+    only when the agent was listed it. A config that cannot be read reads as
+    unset. Called only on paths that already emit text, never per tool call.
+    """
+    from repowise.core.registry.tool_selection import listed_default_tools
+
+    override = None
+    try:
+        from repowise.core.repo_config import load_repo_config
+
+        mcp = load_repo_config(repo_path).get("mcp")
+        tools = mcp.get("tools") if isinstance(mcp, dict) else None
+        override = tools if isinstance(tools, (str, list)) else None
+    except Exception:
+        pass
+    return listed_default_tools(names, client=client or "claude_code", override=override)
 
 
 #: The counterfactual's own table. Deliberately *not* the ``savings`` ledger:

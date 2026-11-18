@@ -50,6 +50,7 @@ from .extractors.visibility import (
     ts_visibility,
     vbnet_visibility,
 )
+from .languages.perl_packages import perl_sub_name
 
 
 def _identity_name(name: str, _node_type: str) -> str:
@@ -156,6 +157,11 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             # Top-level const/let with a literal value (the .scm pattern is
             # program-anchored). Refined in the parser like Python assignments.
             "variable_declarator": "constant",
+            # ``obj.f = function () {}`` (the .scm pattern gates on a function
+            # value). A value kind here, like the declarator above, so an
+            # assignment never reads as a callable that hides the definitions
+            # nested under it; the parser sets the kind.
+            "assignment_expression": "constant",
             # Overload signatures (the .scm keeps method ones to class bodies).
             "function_signature": "function",
             "method_signature": "method",
@@ -178,6 +184,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
             "method_definition": "method",
             "lexical_declaration": "function",
             "variable_declarator": "constant",
+            "assignment_expression": "constant",  # see typescript
         },
         import_node_types=["import_statement"],
         export_node_types=["export_statement"],
@@ -746,6 +753,21 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         visibility_fn=public_by_default,
         parent_extraction="none",
         parent_class_types=frozenset(),
+    ),
+    "perl": LanguageConfig(
+        # `package Foo;` scopes the subs that follow it as siblings, not
+        # children, so the parser reads a sub's package off the tree
+        # (`parser/symbols.py`) rather than by nesting.
+        symbol_node_types={
+            "subroutine_declaration_statement": "function",
+            "method_declaration_statement": "method",
+        },
+        import_node_types=["use_statement", "require_expression"],
+        export_node_types=[],
+        visibility_fn=public_by_default,
+        parent_extraction="none",
+        parent_class_types=frozenset(),
+        symbol_name_fn=perl_sub_name,
     ),
 }
 

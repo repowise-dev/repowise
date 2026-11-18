@@ -190,8 +190,6 @@ def _print_generation_plan(
     est: Any, result: Any, provider: Any, *, concurrency: int, onboarding: bool
 ) -> None:
     """The priced plan: pages by type and author, languages, and onboarding."""
-    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
-
     # "Written by" answers the question the price below raises: most of this
     # total is free.
     table = Table(title="Generation Plan", border_style=BRAND)
@@ -200,13 +198,15 @@ def _print_generation_plan(
     table.add_column("Written by")
     model_pages = 0
     for plan in est.plans:
-        from_model = plan.page_type not in STRUCTURAL_PAGE_TYPES
-        model_pages += plan.count if from_model else 0
-        table.add_row(
-            page_type_label(plan.page_type),
-            f"{plan.count:,}",
-            "model" if from_model else "[dim]code[/dim]",
-        )
+        by_model = plan.model_count
+        model_pages += by_model
+        if by_model == plan.count:
+            author = "model"
+        elif by_model:
+            author = f"{by_model:,} model, {plan.count - by_model:,} code"
+        else:
+            author = "[dim]code[/dim]"
+        table.add_row(page_type_label(plan.page_type), f"{plan.count:,}", author)
     table.add_section()
     table.add_row(
         "[bold]Total[/bold]",
@@ -231,12 +231,7 @@ def _print_generation_plan(
             f"If you see timeout errors, try [bold]--concurrency 1[/bold]."
         )
 
-    if onboarding:
-        console.print(
-            "  [dim]Plus up to 8 curated onboarding pages (overview, architecture, "
-            "getting started, and so on). Slots without enough signal are skipped.[/dim]"
-        )
-    else:
+    if not onboarding:
         console.print("  [dim]Onboarding collection: disabled (--no-onboarding).[/dim]")
     console.print()
 

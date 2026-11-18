@@ -30,10 +30,11 @@ async def rehydrate_graph_builder(
 ) -> Any:
     """Rebuild a :class:`GraphBuilder` from persisted rows for *repo_id*.
 
-    Reads every persisted node and edge plus the materialized metric snapshot
-    and hands them to ``GraphBuilder.from_persisted``. The returned builder is
-    already finalized (``_built = True``) with file-level metrics served from
-    SQL — no NetworkX centrality kernel runs and no resolution pass fires.
+    Reads every persisted node and edge, the materialized metric snapshot and
+    the stored build units, and hands them to ``GraphBuilder.from_persisted``.
+    The returned builder is already finalized (``_built = True``) with
+    file-level metrics served from SQL: no NetworkX centrality kernel runs and
+    no resolution pass fires.
 
     Raises ``ValueError`` if the repo has no persisted graph nodes, which means
     it was never indexed (so there is nothing to upgrade).
@@ -44,6 +45,7 @@ async def rehydrate_graph_builder(
         get_all_graph_nodes,
         get_graph_metrics,
     )
+    from repowise.core.persistence.crud import load_build_units
 
     nodes = await get_all_graph_nodes(session, repo_id)
     if not nodes:
@@ -52,8 +54,12 @@ async def rehydrate_graph_builder(
         )
     edges = await get_all_graph_edges(session, repo_id)
     metrics = await get_graph_metrics(session, repo_id)
+    # No stored units (a store written before they were) reads as unknown.
+    units = await load_build_units(session, repo_id)
 
-    builder = GraphBuilder.from_persisted(nodes, edges, metrics, repo_path=repo_path)
+    builder = GraphBuilder.from_persisted(
+        nodes, edges, metrics, repo_path=repo_path, build_units=units if units.units else None
+    )
     log.info(
         "upgrade.graph_rehydrated",
         repo_id=repo_id,

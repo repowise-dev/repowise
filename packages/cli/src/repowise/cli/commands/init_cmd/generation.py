@@ -188,9 +188,7 @@ def structural_page_summary(plans: list[Any]) -> str:
     file, API and symbol pages from the code itself with no provider call. This
     is the one line that says so. Empty string when there are none.
     """
-    from repowise.core.cost_estimator import STRUCTURAL_PAGE_TYPES
-
-    counts = {p.page_type: p.count for p in plans if p.page_type in STRUCTURAL_PAGE_TYPES}
+    counts = {p.page_type: p.count - p.model_count for p in plans if p.count > p.model_count}
     total = sum(counts.values())
     if not total:
         return ""

@@ -123,6 +123,8 @@ _OWN_HEADER = (
         ("src/cmd/go/internal/tool/tool.go", "production"),
         ("tool/release.py", "production"),
         ("benchmarks/bench_app.py", "tooling"),
+        ("benchmark/run.py", "tooling"),
+        ("include/benchmark/benchmark.h", "production"),
         ("app/migrations/0001_initial.py", "tooling"),
         ("db/alembic/versions/abc_add.py", "tooling"),
         ("setup.py", "build"),
@@ -1192,4 +1194,4 @@ def test_a_path_only_origin_reads_python_t_tree_as_tests() -> None:
     # them as tests, and a caller holding only the path now agrees.
     assert code_origin("t/smoke/workers/dev.py") == "test"
     assert code_origin("t/smoke/tasks.py") == "test"
-    assert code_origin("t/basic.pl") == "production"
+    assert code_origin("t/basic.rb") == "production"

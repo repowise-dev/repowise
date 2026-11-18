@@ -90,7 +90,7 @@ describe("performance scope and its URL", () => {
     expect(parsed.scope).toBe("now");
     expect(parsed.actionability).toBeNull();
     expect(parsed.page).toBe(1);
-    // Proof and role cannot narrow "now", whose causes are all measured and served.
+    // Proof and role cannot narrow "now", whose causes are all proven and served.
     expect(read("scope=now&proof=unproven&context=test")).toMatchObject({ proof: null, context: null });
     // "Worth doing now" holds plan-ready and advisory causes only.
     expect(read("scope=now&actionability=investigate").actionability).toBeNull();

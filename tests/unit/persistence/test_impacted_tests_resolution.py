@@ -860,3 +860,36 @@ async def test_an_index_that_never_judged_its_jvm_tests_asks_for_an_update(async
         f"The index has not checked 2 test file(s) for reaching code outside their imports "
         f"(e.g. {_BOOT_TEST}); run `repowise update`."
     )
+
+
+async def test_an_abandoned_selection_stops_between_graph_walks(async_session) -> None:
+    """A selection its caller gave up on stops walking, and is not filed as a graph error.
+
+    The tier walks are most of a wide change's selection. A selection past its
+    budget that kept walking held the interpreter against every block the
+    reply still waited on.
+    """
+    from repowise.core.analysis.test_collection import SelectionCancelledError
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = await insert_repo(async_session)
+    for path, is_test in (("tests/test_round_trips.py", True), ("src/bar.py", False)):
+        async_session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="tests/test_round_trips.py",
+            target_node_id="src/bar.py",
+            edge_type="imports",
+        )
+    )
+    await async_session.commit()
+
+    out = _empty_result(1)
+    with pytest.raises(SelectionCancelledError):
+        await _resolve_impacted(
+            async_session, repo.id, {"src/bar.py": {5}}, _REPO_KEYS, out, cancelled=lambda: True
+        )
+    assert out["graph_error"] is None

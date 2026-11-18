@@ -101,14 +101,21 @@ async def select_change_tests(
     if done_key is not None and done_key in _DONE:
         _DONE.move_to_end(done_key)
         return _DONE[done_key]
+
+    async def select_and_cache(cancel: threading.Event) -> tuple:
+        selected = await _select(repo_path, session_factory, change, config, cancel, repo)
+        # Publish before releasing the flight, including while its key is rechecked.
+        if done_key is not None and done_key == await _done_key(
+            key, session_factory, change, config, repo
+        ):
+            _DONE[done_key] = selected
+            while len(_DONE) > _DONE_CAPACITY:
+                _DONE.popitem(last=False)
+        return selected
+
     loop = asyncio.get_running_loop()
     deadline = loop.time() + SELECTION_TIMEOUT_SECONDS
-    flight = await _flight_for(
-        key,
-        change,
-        deadline,
-        lambda cancel: _select(repo_path, session_factory, change, config, cancel, repo),
-    )
+    flight = await _flight_for(key, change, deadline, select_and_cache)
     # asyncio.wait never cancels the task: one caller leaving keeps it for the rest.
     flight.waiters += 1
     try:
@@ -123,15 +130,7 @@ async def select_change_tests(
             f"Selecting tests took over {SELECTION_TIMEOUT_SECONDS:.0f} s; run "
             "`repowise impacted-tests` for this change.",
         )
-    selected = flight.task.result()
-    # A checkout edited while the selection read it is not cached under the old stamp.
-    if done_key is not None and done_key == await _done_key(
-        key, session_factory, change, config, repo
-    ):
-        _DONE[done_key] = selected
-        while len(_DONE) > _DONE_CAPACITY:
-            _DONE.popitem(last=False)
-    return selected
+    return flight.task.result()
 
 
 async def _done_key(
@@ -562,6 +561,19 @@ def unselected_block(status: str, summary: str) -> dict[str, Any]:
     }
 
 
+def changed_file_count(change: Any) -> int:
+    """Files *change* touches, deletions included."""
+    return len(change.files) + len(change.deleted)
+
+
+def too_large_block(count: int, max_files: int) -> dict[str, Any]:
+    """The tests block for a change too wide to select from: run every test."""
+    return unselected_block(
+        "too_large",
+        f"{count} changed files exceeds the {max_files}-file ceiling for selecting tests.",
+    )
+
+
 async def change_tests_block(
     repo_path: Any,
     session_factory: Any,
@@ -575,6 +587,7 @@ async def change_tests_block(
     detail: bool = True,
     repo: str | None = None,
     agent: bool = False,
+    max_files: int | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], Any] | None]:
     """The tests a scored change needs: ``get_change_risk``, ``repowise risk`` and
     the Review page all read them here.
@@ -586,7 +599,8 @@ async def change_tests_block(
     (:func:`~repowise.core.analysis.change_risk.score_live_change`), so the
     tests are for the change it scored. *agent* shapes the listed head for an
     agent (:func:`agent_head`); the Review page and ``repowise risk`` keep the
-    run list, which they turn into the command. Returns ``(block, (collection result,
+    run list, which they turn into the command. A change of more than
+    *max_files* files answers "run every test" without selecting. Returns ``(block, (collection result,
     change))``, or ``(block, None)`` when no selection was made; never raises,
     so it cannot fail the score beside it.
     """
@@ -608,6 +622,8 @@ async def change_tests_block(
         )
     except Exception:  # git refused the change, or could not run
         return unselected_block("unknown", "Could not read the change from git."), None
+    if max_files is not None and (count := changed_file_count(change)) > max_files:
+        return too_large_block(count, max_files), None
     try:
         result, selection, _ = await select_change_tests(repo_path, session_factory, change, repo)
     except Exception as exc:

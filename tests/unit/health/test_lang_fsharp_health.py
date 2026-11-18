@@ -137,15 +137,33 @@ def test_other_class_names(path: str, language: str, source: str, expected: str)
     assert cls.name == expected
 
 
-@pytest.mark.skip(reason="elif_expression is not a branch kind, so else if adds no CCN")
 def test_else_if() -> None:
     source = "let f (a: int) (b: int) =\n    if a > 0 then 1\n    elif b > 0 then 2\n    else 3\n"
     [fn] = _walk(source).functions
     assert fn.ccn == 3
 
 
+@pytest.mark.parametrize(
+    ("arms", "ccn"),
+    [
+        ("    elif b > 0 then 2\n", 3),
+        ("    elif b > 0 then 2\n    elif a < 0 then 4\n", 4),
+        ("    else if b > 0 then 2\n", 3),
+    ],
+)
+def test_elif_chain_counts_each_arm_and_stays_flat(arms: str, ccn: int) -> None:
+    source = (
+        "let f (a: int) (b: int) =\n    let z = 1\n    if a > 0 then 1\n" + arms + "    else 3\n"
+    )
+    [fn] = _walk(source).functions
+    assert (fn.ccn, fn.max_nesting) == (ccn, 1)
+
+
 @pytest.mark.skip(reason="a following /// doc comment joins the function's span and NLOC")
 def test_trailing_doc_comment() -> None:
-    source = _FAKE + "\n    /// <summary>\n    /// The colon character\n    /// </summary>\n    let Colon = ','\n"
+    source = (
+        _FAKE
+        + "\n    /// <summary>\n    /// The colon character\n    /// </summary>\n    let Colon = ','\n"
+    )
     fn = next(f for f in _walk(source).functions if f.name == "NormalizeVersion")
     assert (fn.end_line, fn.nloc) == (19, 15)

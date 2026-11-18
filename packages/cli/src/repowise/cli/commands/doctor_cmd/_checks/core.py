@@ -312,6 +312,61 @@ def _store_format_row(repo_path: _DoctorPath) -> DoctorCheck:
         return _check(name, True, f"Could not check: {e}", check_id=check_id, warn=True)
 
 
+def _oversize_source_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
+    """One row naming the source files ingestion drops on size (#5415).
+
+    A file excluded at ingestion leaves no index row, so no other check here can
+    see it: the repo reported healthy while its largest classes were absent from
+    every search and every answer. The verdict comes from ``size_verdict``, the
+    same rule that dropped them, so this row cannot drift from the exclusion.
+
+    A warning rather than a failure: dropping a 12 MB generated file is correct,
+    and the point is that the user is told which files it happened to.
+    """
+    import subprocess
+
+    from repowise.core.ingestion.traverser import size_verdict
+
+    try:
+        listed = subprocess.run(
+            # Untracked, unignored files too: ingestion walks them as well.
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            cwd=repo_path,
+            capture_output=True,
+            check=True,
+        ).stdout.decode("utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    skipped: list[tuple[str, int]] = []
+    for rel in filter(None, listed.split("\0")):
+        abs_path = repo_path / rel
+        try:
+            size = abs_path.stat().st_size
+        except OSError:
+            continue
+        verdict = size_verdict(abs_path, size)
+        if verdict is not None and verdict.is_source:
+            skipped.append((rel, size))
+
+    if not skipped:
+        return []
+    skipped.sort(key=lambda item: -item[1])
+    shown = ", ".join(f"{rel} ({size // 1024:,} KB)" for rel, size in skipped[:5])
+    more = "" if len(skipped) <= 5 else f", and {len(skipped) - 5} more"
+    return [
+        _check(
+            "Oversize sources",
+            True,
+            f"{len(skipped)} source file(s) exceed the ingestion size ceiling, so "
+            f"they have no symbols and no pages: {shown}{more}. Split them or raise "
+            "the ceiling.",
+            check_id="oversize-sources",
+            warn=True,
+        )
+    ]
+
+
 def _runtime_grammar_rows(repo_path: _DoctorPath) -> list[DoctorCheck]:
     """One row per runtime-downloaded grammar the repo needs, read from the cache only."""
     import subprocess
@@ -390,4 +445,5 @@ def core_checks(ctx: CheckContext) -> list[DoctorCheck]:
     if stuck is not None:
         checks.append(stuck)
     checks.extend(_runtime_grammar_rows(ctx.repo_path))
+    checks.extend(_oversize_source_rows(ctx.repo_path))
     return checks

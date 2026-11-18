@@ -302,7 +302,7 @@ def _run_coverage_only(payload: dict, client: str | None) -> None:
     cwd = payload.get("cwd", "")
     session_id = payload.get("session_id", "")
     session_id = session_id if isinstance(session_id, str) else ""
-    result = as_result(coverage_reingest_notice(payload.get("tool_input", {}), cwd))
+    result = as_result(coverage_reingest_notice(payload.get("tool_input", {}), cwd, client))
     if result:
         _emit_response(event, result, session_id)
     _count_run(cwd, session_id, event, tool_name, emitted=bool(result))
@@ -542,6 +542,6 @@ def _shell_post(
             _handle_bash_post(tool_input, tool_output, cwd),
             commit_capture_notice(tool_input, tool_output, cwd, session_id),
             # Claude Code gets this from its own ``--coverage-only`` entry.
-            coverage_reingest_notice(tool_input, cwd) if client == "codex" else None,
+            coverage_reingest_notice(tool_input, cwd, client) if client == "codex" else None,
         )
     )

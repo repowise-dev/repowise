@@ -809,3 +809,20 @@ def test_rank_free_reached_ness_returns_same_keys_as_reach_states() -> None:
     assert {k for k, r in ranked.items() if r.state == "reached"} == {
         k for k, r in unranked.items() if r.state == "reached"
     }
+
+
+def test_a_perl_helper_under_t_is_walked_through_not_a_test_leaf() -> None:
+    """``t/basic.t -> t/lib/Helper.pm -> lib/App.pm``: prove runs the ``.t``, the helper is support."""
+    g = _graph(
+        {"t/basic.t": True, "t/lib/Helper.pm": True, "lib/App.pm": False},
+        [
+            ("t/basic.t", "t/lib/Helper.pm", "imports"),
+            ("t/lib/Helper.pm", "lib/App.pm", "imports"),
+        ],
+    )
+    maps = build_walk_maps(g)
+    assert maps.test_files == {"t/basic.t"}
+    assert reaching_by_tier(maps, ["lib/App.pm"])["lib/App.pm"].tests == ["t/basic.t"]
+    assert is_runnable_test("t/basic.t")
+    assert not is_runnable_test("t/lib/Helper.pm")
+    assert not is_runnable_test("t/run.pl")

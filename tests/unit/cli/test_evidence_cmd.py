@@ -1,0 +1,548 @@
+"""``repowise evidence add`` against a small real index."""
+
+from __future__ import annotations
+
+import asyncio
+import gzip
+import json
+from pathlib import Path
+
+import pytest
+from click.testing import CliRunner
+from sqlalchemy import select
+
+from repowise.cli.commands import evidence_cmd
+from repowise.core.persistence import create_session_factory, get_session
+from repowise.core.persistence.database import create_engine, init_db
+from repowise.core.persistence.models import (
+    EvidenceBenchmarkResult,
+    EvidenceRun,
+    EvidenceSymbolCost,
+    HealthFileMetric,
+    Repository,
+    WikiSymbol,
+)
+from tests.unit.evidence.test_profile_formats import _pprof
+
+
+def _git_repo(root: Path) -> str:
+    import git as gitpython
+
+    repo = gitpython.Repo.init(root)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    (root / "src").mkdir()
+    (root / "src" / "app.py").write_text("def build():\n    pass\n")
+    (root / "src" / "edited.py").write_text("def f():\n    pass\n")
+    repo.index.add(["src/app.py", "src/edited.py"])
+    head = repo.index.commit("init").hexsha
+    repo.close()
+    return head
+
+
+def _index(root: Path) -> None:
+    async def build() -> None:
+        (root / ".repowise").mkdir()
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            await init_db(engine)
+            async with get_session(create_session_factory(engine)) as session:
+                session.add(Repository(id="r1", name="t", local_path=str(root), url=""))
+                await session.flush()
+                for path, name in (("src/app.py", "build"), ("src/edited.py", "f")):
+                    session.add(HealthFileMetric(repository_id="r1", file_path=path))
+                    session.add(
+                        WikiSymbol(
+                            repository_id="r1", file_path=path, symbol_id=f"{path}::{name}",
+                            name=name, qualified_name=name, kind="function", start_line=1,
+                            end_line=2,
+                        )
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(build())
+
+
+def _stored(root: Path) -> tuple[list, list]:
+    async def read() -> tuple[list, list]:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                runs = list((await session.execute(select(EvidenceRun))).scalars())
+                costs = list((await session.execute(select(EvidenceSymbolCost))).scalars())
+                return runs, costs
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.fixture
+def indexed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
+    head = _git_repo(tmp_path)
+    _index(tmp_path)
+    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: tmp_path)
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    return tmp_path, head
+
+
+def _write(root: Path, **fields) -> Path:
+    doc = {
+        "format": "repowise-evidence-v1", "kind": "profile", "value_kind": "wall",
+        "unit": "samples", "total": 100, "explained": 60,
+        "tool": {"name": "pyinstrument", "version": "4.6.2"},
+        "skipped": {"outside_repo": 5},
+        "symbols": [
+            {"path": "src/app.py", "function": "build", "line": 1, "self": 10, "total": 60},
+            {"path": "src/app.py", "function": "missing", "total": 3},
+        ],
+        **fields,
+    }
+    path = root / "prof.json"
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def _add(*args: str):
+    return CliRunner(mix_stderr=False).invoke(evidence_cmd.evidence_group, ["add", *args])
+
+
+def _json(result) -> dict:
+    assert result.stdout.strip(), (result.output, result.exception)
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        raise AssertionError(result.stdout[:2000]) from None
+
+
+def test_add_stores_the_run_with_its_provenance(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_write(root)), "--workload", "cli build", "--class", "entry_point",
+        "--commit", head, "--environment", "local", "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert payload["stored"] is True
+    assert (payload["matched"], payload["stale"], payload["dirty"]) == (1, False, False)
+    assert payload["skipped"] == {"outside_repo": 5, "unknown_symbol": 1}
+
+    (run,), (cost,) = _stored(root)
+    assert (run.kind, run.workload_name, run.workload_class) == ("profile", "cli build",
+                                                                  "entry_point")
+    assert (run.commit_sha, run.dirty, run.environment) == (head, False, "local")
+    assert run.checkout_root == str(root.resolve())
+    assert (run.tool_name, run.tool_version, run.value_kind, run.unit) == (
+        "pyinstrument", "4.6.2", "wall", "samples",
+    )
+    assert (run.units_total, run.units_matched, run.units_skipped, run.units_outside_repo) == (
+        7, 1, 1, 5,
+    )
+    assert json.loads(run.skipped_json) == {"outside_repo": 5, "unknown_symbol": 1}
+    assert (run.total_value, run.explained_value, run.source) == (100, 60, "cli")
+    assert (cost.symbol_id, cost.total_value, cost.self_value) == ("src/app.py::build", 60, 10)
+
+    again = _add(
+        str(_write(root)), "--workload", "cli build", "--class", "entry_point",
+        "--commit", head, "--environment", "local", "--format", "json",
+    )
+    assert _json(again)["restamped"] is True
+    assert len(_stored(root)[0]) == 1
+
+
+def test_an_uppercase_commit_is_stored_lowercase(indexed) -> None:
+    root, head = indexed
+    result = _add(str(_write(root)), "--workload", "w", "--class", "entry_point",
+                  "--commit", head.upper(), "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert _json(result)["dirty"] is False  # read as HEAD, so the tree was checked
+    (run,), _ = _stored(root)
+    assert run.commit_sha == head
+
+
+def test_production_is_never_set_by_a_flag(indexed) -> None:
+    root, head = indexed
+    result = _add(str(_write(root)), "--workload", "w", "--class", "production",
+                  "--commit", head)
+    assert result.exit_code == 2
+    assert "verified source" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--class", "entry_point"], "which commit was measured"),
+        (["--class", "entry_point", "--commit", "abc"], "40- or 64-character"),
+        (["--class", "smoke"], "is not one of"),
+        (["--class", "entry_point", "--commit", "b" * 40, "--environment", "my laptop"],
+         "one word"),
+    ],
+)
+def test_usage_errors_exit_2(indexed, args, message) -> None:
+    root, _head = indexed
+    result = _add(str(_write(root)), "--workload", "w", *args)
+    assert result.exit_code == 2
+    assert message in result.stderr
+
+
+def test_a_file_commit_that_disagrees_with_the_flag_is_refused(indexed) -> None:
+    root, head = indexed
+    result = _add(str(_write(root, commit_sha="c" * 40)), "--workload", "w",
+                  "--class", "entry_point", "--commit", head)
+    assert result.exit_code == 2
+    assert "pass the same commit" in result.stderr
+
+
+def test_invalid_files_are_refused_as_json(indexed) -> None:
+    root, head = indexed
+    bad = root / "bad.json"
+    bad.write_text(json.dumps({"format": "repowise-evidence-v1", "kind": "trace"}))
+    result = _add(str(bad), "--workload", "w", "--class", "entry_point", "--commit", head,
+                  "--format", "json")
+    assert result.exit_code == 1
+    assert _json(result)["error"] == "invalid_evidence"
+
+
+def test_entries_in_files_edited_since_the_commit_are_skipped(indexed) -> None:
+    root, head = indexed
+    (root / "src" / "edited.py").write_text("def f():\n    return 1\n")
+    result = _add(
+        str(_write(root, symbols=[
+            {"path": "src/app.py", "function": "build", "total": 5},
+            {"path": "src/edited.py", "function": "f", "total": 5},
+        ])),
+        "--workload", "w", "--class", "unit_test", "--commit", head, "--format", "json",
+    )
+    payload = _json(result)
+    assert payload["dirty"] is True
+    assert payload["skipped"]["dirty_file"] == 1
+
+
+def test_another_commit_is_kept_and_reads_stale(indexed) -> None:
+    root, _head = indexed
+    other = "d" * 40
+    result = _add(str(_write(root)), "--workload", "w", "--class", "benchmark",
+                  "--commit", other, "--format", "json")
+    payload = _json(result)
+    assert (payload["stored"], payload["stale"], payload["dirty"]) == (True, True, None)
+    (run,), _ = _stored(root)
+    assert (run.commit_sha, run.dirty) == (other, None)
+
+
+def test_a_mostly_unmapped_file_stores_nothing_unless_allowed(indexed) -> None:
+    root, head = indexed
+    path = _write(root, symbols=[
+        {"path": "src/app.py", "function": "build", "total": 5},
+        {"path": "lib/a.py", "function": "x", "total": 5},
+        {"path": "lib/b.py", "function": "y", "total": 5},
+    ])
+    refused = _add(str(path), "--workload", "w", "--class", "entry_point", "--commit", head,
+                   "--format", "json")
+    assert refused.exit_code == 1
+    assert _json(refused)["reason"] == "mostly_unmapped"
+    assert _stored(root) == ([], [])
+
+    allowed = _add(str(path), "--workload", "w", "--class", "entry_point", "--commit", head,
+                   "--allow-partial", "--format", "json")
+    assert allowed.exit_code == 0
+    (run,), _ = _stored(root)
+    assert run.mapping_partial is True
+
+
+def test_a_file_over_the_size_cap_is_refused_before_it_is_read(indexed) -> None:
+    root, head = indexed
+    (root / ".repowise" / "config.yaml").write_text("evidence:\n  max_file_mb: 0.0001\n")
+    result = _add(str(_write(root)), "--workload", "w", "--class", "entry_point",
+                  "--commit", head, "--format", "json")
+    assert result.exit_code == 1
+    assert _json(result)["error"] == "file_too_large"
+
+
+def _status(*args: str):
+    return CliRunner(mix_stderr=False).invoke(evidence_cmd.evidence_group, ["status", *args])
+
+
+def test_status_names_the_newest_run_of_each_workload(indexed) -> None:
+    root, head = indexed
+    empty = _json(_status("--format", "json"))
+    assert (empty["indexed"], empty["workloads"]) == (True, [])
+
+    for workload in ("cli build", "cli build", "cli test"):
+        _add(str(_write(root, total=200 if workload == "cli test" else 100)),
+             "--workload", workload, "--class", "entry_point", "--commit", head)
+    payload = _json(_status("--format", "json"))
+    assert payload["runs_stored"] == {"profile": 2}
+    assert [w["workload"] for w in payload["workloads"]] == ["cli test", "cli build"]
+    newest = payload["workloads"][0]
+    # The fixture's index row names no commit, so freshness is unknown, never current.
+    assert newest["freshness"] == "unknown"
+    assert newest["explained_share"] == 0.3
+    assert newest["units"] == {
+        "total": 7, "matched": 1, "skipped": 1, "outside_repo": 5, "truncated": 0,
+    }
+
+    table = _status()
+    assert table.exit_code == 0
+    assert "repo code explains 30% of 200 samples" in table.stdout
+
+
+def test_status_json_keeps_its_keys_without_an_index(tmp_path, monkeypatch) -> None:
+    async def empty_store() -> None:
+        (tmp_path / ".repowise").mkdir()
+        engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / '.repowise' / 'wiki.db'}")
+        try:
+            await init_db(engine)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(empty_store())
+    monkeypatch.setattr(evidence_cmd, "_resolve_repo", lambda _p, _n: tmp_path)
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+
+    payload = _json(_status("--format", "json"))
+
+    assert payload == {
+        "repo": str(tmp_path), "indexed": False,
+        "reference_commit": None, "runs_stored": {}, "workloads": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "shown"), [(200, "200"), (1234567, "1,234,567"), (1234567.0, "1,234,567"), (0.5, "0.50")]
+)
+def test_status_total_never_uses_exponent_form(value, shown) -> None:
+    assert evidence_cmd._total(value) == shown
+
+
+def _collapsed(root: Path, other: Path) -> Path:
+    path = root / "stacks.txt"
+    path.write_text(
+        "\n".join([
+            f"main (/usr/lib/python3/runpy.py:5);build ({root / 'src' / 'app.py'}:2) 6",
+            f"main (/usr/lib/python3/runpy.py:5);build ({other / 'src' / 'app.py'}:2) 3",
+            f"main (/usr/lib/python3/runpy.py:5);gone ({root / 'src' / 'app.py'}:2) 1",
+        ])
+    )
+    return path
+
+
+def test_a_collapsed_profile_is_converted_and_stored(indexed, tmp_path_factory) -> None:
+    root, head = indexed
+    other = tmp_path_factory.mktemp("other-checkout")
+    result = _add(
+        str(_collapsed(root, other)), "--workload", "cli build", "--class", "entry_point",
+        "--commit", head, "--value-kind", "cpu", "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["matched"]) == ("collapsed", 1)
+    assert payload["skipped"] == {"outside_repo": 2, "second_signal_mismatch": 1}
+    conversion = payload["conversion"]
+    assert (conversion["total"], conversion["unit"]) == (10.0, "samples")
+    assert conversion["explained_share"] == 0.6
+    assert conversion["skip_rate"] == round(1 / 7, 4)
+
+    (run,), (cost,) = _stored(root)
+    assert (run.value_kind, run.unit, run.total_value, run.explained_value) == (
+        "cpu", "samples", 10.0, 6.0,
+    )
+    assert (cost.symbol_id, cost.total_value, cost.self_value, cost.total_samples) == (
+        "src/app.py::build", 6.0, 6.0, 6,
+    )
+
+
+def test_a_converted_profile_needs_its_clock(indexed, tmp_path_factory) -> None:
+    root, head = indexed
+    other = tmp_path_factory.mktemp("other-checkout")
+    result = _add(
+        str(_collapsed(root, other)), "--workload", "w", "--class", "entry_point",
+        "--commit", head,
+    )
+    assert result.exit_code == 2
+    assert "--value-kind" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+def test_input_format_is_checked_against_the_registry(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_write(root)), "--workload", "w", "--class", "entry_point", "--commit", head,
+        "--input-format", "jfr",
+    )
+    assert result.exit_code == 2
+    assert all(name in result.stderr for name in ("speedscope", "pprof", "pytest-benchmark", "collapsed"))
+
+
+def test_input_format_overrides_the_sniff(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_write(root)), "--workload", "w", "--class", "entry_point", "--commit", head,
+        "--input-format", "speedscope", "--format", "json",
+    )
+    assert result.exit_code == 1
+    assert _json(result)["error"] == "invalid_evidence"
+
+
+def test_a_gzipped_pprof_profile_is_sniffed_and_keeps_its_own_clock(indexed) -> None:
+    root, head = indexed
+    data = _pprof(
+        samples=[([2, 1], [4, 40_000_000]), ([1], [1, 10_000_000])],
+        locations={1: [(1, 0)], 2: [(2, 2)]},
+        functions={1: ("runtime.main", "/usr/local/go/src/runtime/proc.go", 1),
+                   2: ("build", str(root / "src" / "app.py"), 1)},
+    )
+    path = root / "cpu.pprof"
+    path.write_bytes(gzip.compress(data))
+    result = _add(
+        str(path), "--workload", "w", "--class", "entry_point", "--commit", head,
+        "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["matched"]) == ("pprof", 1)
+    assert payload["conversion"]["unit"] == "ns"
+    assert payload["conversion"]["explained_share"] == 0.8
+    (run,), (cost,) = _stored(root)
+    assert (run.value_kind, run.total_value) == ("cpu", 50_000_000)
+    assert (cost.symbol_id, cost.total_samples) == ("src/app.py::build", 4)
+
+
+_BENCH_FIXTURE = Path(__file__).parents[2] / "fixtures" / "evidence" / "pytest_benchmark.json"
+
+
+def _index_benchmarks(root: Path) -> None:
+    async def add() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                path = "benchmarks/test_speed.py"
+                for sid, name, line in (
+                    ("test_sum", "test_sum", 8),
+                    ("TestCache::test_get", "test_get", 13),
+                    ("test_sized", "test_sized", 18),
+                ):
+                    session.add(
+                        WikiSymbol(
+                            repository_id="r1", file_path=path, symbol_id=f"{path}::{sid}",
+                            name=name, qualified_name="benchmarks.test_speed."
+                            + sid.replace("::", "."), kind="function", start_line=line,
+                            end_line=line + 1,
+                        )
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(add())
+
+
+def _bench_file(root: Path, commit: str) -> Path:
+    data = json.loads(_BENCH_FIXTURE.read_text())
+    data["commit_info"]["id"] = commit
+    path = root / "bench.json"
+    path.write_text(json.dumps(data, indent=4))
+    return path
+
+
+def _benchmarks(root: Path) -> list:
+    async def read() -> list:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                return list((await session.execute(select(EvidenceBenchmarkResult))).scalars())
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def test_pytest_benchmark_output_is_stored_as_a_benchmark_series(indexed) -> None:
+    root, head = indexed
+    _index_benchmarks(root)
+    result = _add(
+        str(_bench_file(root, head)), "--workload", "pytest bench", "--class", "benchmark",
+        "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["kind"], payload["matched"]) == (
+        "pytest-benchmark", "benchmark", 4,
+    )
+    assert (payload["skipped"], payload["unlinked"], payload["dirty"]) == ({}, {}, False)
+    assert "conversion" not in payload
+
+    (run,), costs = _stored(root)
+    assert costs == []
+    assert (run.kind, run.workload_class, run.unit, run.tool_name) == (
+        "benchmark", "benchmark", None, "pytest-benchmark",
+    )
+    rows = {r.benchmark_key: r for r in _benchmarks(root)}
+    assert {k: r.symbol_id for k, r in rows.items()} == {
+        "benchmarks/test_speed.py::test_sum": "benchmarks/test_speed.py::test_sum",
+        "benchmarks/test_speed.py::TestCache::test_get":
+            "benchmarks/test_speed.py::TestCache::test_get",
+        "benchmarks/test_speed.py::test_sized[10]": "benchmarks/test_speed.py::test_sized",
+        "benchmarks/test_speed.py::test_sized[20]": "benchmarks/test_speed.py::test_sized",
+    }
+    get = rows["benchmarks/test_speed.py::TestCache::test_get"]
+    stats = json.loads(_BENCH_FIXTURE.read_text())["benchmarks"][1]["stats"]
+    assert (get.unit, get.median, get.rounds, get.iterations) == (
+        "s", stats["median"], stats["rounds"], stats["iterations"],
+    )
+
+
+def test_a_benchmark_function_not_indexed_keeps_its_series(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_bench_file(root, head)), "--workload", "w", "--class", "benchmark",
+        "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    assert _json(result)["unlinked"] == {"unknown_file": 4}
+    assert {r.symbol_id for r in _benchmarks(root)} == {None}
+
+
+def test_pytest_benchmark_needs_the_commit_flag_and_cross_checks_it(indexed) -> None:
+    root, head = indexed
+    path = _bench_file(root, head)
+    result = _add(str(path), "--workload", "w", "--class", "benchmark")
+    assert result.exit_code == 2
+    assert "--commit" in result.stderr and "commit_sha in the file" not in result.stderr
+
+    other = "e" * 40
+    result = _add(str(path), "--workload", "w", "--class", "benchmark", "--commit", other)
+    assert result.exit_code == 2
+    assert f"records commit {head}" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+def test_value_kind_on_a_benchmark_file_says_it_has_no_clock(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_bench_file(root, head)), "--workload", "w", "--class", "benchmark",
+        "--commit", head, "--value-kind", "wall",
+    )
+    assert result.exit_code == 2
+    assert "records no clock" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+def test_a_benchmark_never_links_to_a_method_sharing_its_bare_name(indexed) -> None:
+    root, head = indexed
+    _index_benchmarks(root)
+    data = json.loads(_bench_file(root, head).read_text())
+    bench = data["benchmarks"][0]
+    bench["name"], bench["fullname"] = "test_get", "benchmarks/test_speed.py::test_get"
+    data["benchmarks"] = [bench]
+    path = root / "bench.json"
+    path.write_text(json.dumps(data, indent=4))
+    result = _add(
+        str(path), "--workload", "w", "--class", "benchmark", "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    assert _json(result)["unlinked"] == {"unknown_symbol": 1}
+    assert [r.symbol_id for r in _benchmarks(root)] == [None]

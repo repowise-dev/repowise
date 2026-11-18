@@ -4,6 +4,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import type { FixFirstQueue, FixItem } from "@repowise-dev/types/fix-first";
+import type { HealthOverviewResponse } from "@repowise-dev/types/health";
+import { TriageView, type CodeHealthAdapter, type FixFirstList } from "@repowise-dev/ui/health";
+
+type ListProps = Parameters<typeof FixFirstList>[0];
+// The list only offers triage for an item with findings, so the handler's
+// empty case is reached by calling the `onTriage` the section passes down.
+const listProps = vi.hoisted(() => ({ onTriage: undefined as ListProps["onTriage"] }));
+vi.mock("@repowise-dev/ui/health", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@repowise-dev/ui/health")>();
+  const { createElement } = await import("react");
+  return {
+    ...mod,
+    FixFirstList: (props: ListProps) => {
+      listProps.onTriage = props.onTriage;
+      return createElement(mod.FixFirstList, props);
+    },
+  };
+});
 
 const getFixFirst = vi.fn();
 const updateFindingStatus = vi.fn();
@@ -155,5 +173,100 @@ describe("FixFirstSection", () => {
       flavor: expect.any(String),
       scope: "production",
     });
+  });
+});
+
+const FAILED = "Could not save all of that. The list shows what was saved.";
+
+const overview = {
+  summary: {
+    average_health: 6.8,
+    maintainability_average: 8.0,
+    hotspot_health: 4.5,
+    performance_average: 9.7,
+    performance_causes: { now: 4, production: 415, all: 926, per_10k_loc: 9.03 },
+    file_count: 3787,
+    open_findings: 14755,
+  },
+} as unknown as HealthOverviewResponse;
+
+describe("FixFirstSection triage re-read", () => {
+  it("keeps the score, the scope and the saved note while the overview re-reads", async () => {
+    getFixFirst.mockReset().mockResolvedValue(queue([item({})]));
+    updateFindingStatus.mockReset().mockResolvedValue({});
+    // The first overview read lands; the re-read after the triage is held open.
+    let release = () => {};
+    const getOverview = vi
+      .fn()
+      .mockResolvedValueOnce(overview)
+      .mockImplementationOnce(
+        () => new Promise((resolve) => (release = () => resolve(overview))),
+      );
+    const adapter = {
+      cacheKey: "r1",
+      getOverview,
+      navigate: vi.fn(),
+      renderFileDrawer: () => null,
+    } as unknown as CodeHealthAdapter;
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <TriageView adapter={adapter} leadSlot={<FixFirstSection repoId="r1" />} />
+      </SWRConfig>,
+    );
+    await screen.findByText("Maintainability");
+    fireEvent.click(await screen.findByLabelText("Include tests"));
+    await waitFor(() => expect(getFixFirst).toHaveBeenCalledWith("r1", { limit: 10, scope: "all" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
+
+    await waitFor(() => expect(getOverview).toHaveBeenCalledTimes(2));
+    // The overview is refetching, and what it showed is still on screen.
+    expect(screen.getByText("Maintainability")).toBeTruthy();
+    expect(screen.getByText("6.8")).toBeTruthy();
+
+    release();
+    expect(await screen.findByText("Saved as resolved.")).toBeTruthy();
+    expect((screen.getByLabelText("Include tests") as HTMLInputElement).checked).toBe(true);
+    expect(getFixFirst).toHaveBeenLastCalledWith("r1", { limit: 10, scope: "all" });
+  });
+
+  it("re-reads the queue once and reports the failure when one of two writes fails", async () => {
+    getFixFirst.mockReset().mockResolvedValue(queue([item({})]));
+    updateFindingStatus
+      .mockReset()
+      .mockImplementation((_repo: string, id: string) =>
+        id === "finding_2" ? Promise.reject(new Error("nope")) : Promise.resolve({}),
+      );
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
+    expect(getFixFirst).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
+    expect(await screen.findByText(FAILED)).toBeTruthy();
+    expect(updateFindingStatus).toHaveBeenCalledTimes(2);
+    expect(getFixFirst).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Saved as resolved.")).toBeNull();
+  });
+
+  it("re-reads nothing when every write fails", async () => {
+    getFixFirst.mockReset().mockResolvedValue(queue([item({})]));
+    updateFindingStatus.mockReset().mockRejectedValue(new Error("nope"));
+    renderSection();
+    fireEvent.click(await screen.findByRole("button", { name: /Extract lines 60-122/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Resolved" }));
+    expect(await screen.findByText(FAILED)).toBeTruthy();
+    expect(updateFindingStatus).toHaveBeenCalledTimes(2);
+    expect(getFixFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it("still re-reads when an item has no findings to write", async () => {
+    getFixFirst.mockReset().mockResolvedValue(queue([item({})]));
+    updateFindingStatus.mockReset().mockResolvedValue({});
+    renderSection();
+    await screen.findByRole("button", { name: /Extract lines 60-122/ });
+    expect(getFixFirst).toHaveBeenCalledTimes(1);
+    const empty = item({ source: { opportunity_id: "refop3_x", plan_ids: [], finding_ids: [] } });
+    await listProps.onTriage!(empty, "resolved");
+    expect(updateFindingStatus).not.toHaveBeenCalled();
+    await waitFor(() => expect(getFixFirst).toHaveBeenCalledTimes(2));
   });
 });

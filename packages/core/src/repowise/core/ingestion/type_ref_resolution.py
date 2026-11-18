@@ -50,8 +50,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from .cohesion import OWN_TYPE_NAME_HINT, withdraw_declaration_hint
-from .models import TS_JS_LANGUAGES, ParsedFile
-from .symbol_identity import symbol_id_path
+from .models import CONTAINMENT_EDGE_TYPES, TS_JS_LANGUAGES, ParsedFile
+from .symbol_identity import file_of_symbol
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -84,6 +84,12 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
     candidate's symbol-successor set cannot change mid-pass. Falsy symbol
     names are excluded, matching the callers, which all skip falsy type
     names before lookup.
+
+    Only containment edges count: they are the only edges into symbols a full
+    build has when this pass runs. A patch build starts from the last graph,
+    which also carries heritage, call and reference edges into symbols; read
+    here, an ``impl Trait for T`` edge made ``T`` a second owner of ``Trait``
+    and the patch lost type-use edges a full build draws.
     """
     sym_name: dict[str, str] = {}
     for node, data in graph.nodes(data=True):
@@ -92,7 +98,9 @@ def _build_defined_name_index(graph: nx.DiGraph) -> dict[str, set[str]]:
             if name:
                 sym_name[node] = name
     index: dict[str, set[str]] = {}
-    for src, dst in graph.edges():
+    for src, dst, edge_type in graph.edges(data="edge_type"):
+        if edge_type not in CONTAINMENT_EDGE_TYPES:
+            continue
         name = sym_name.get(dst)
         if name is not None:
             index.setdefault(src, set()).add(name)
@@ -950,7 +958,7 @@ def _resolve_apex_type_refs(
             continue
         skip.add(name.lower())
         type_id = index.top_level_type(from_path, name)
-        target = symbol_id_path(type_id) if type_id else from_path
+        target = file_of_symbol(type_id) if type_id else from_path
         if target == from_path or not graph.has_node(target):
             continue
         _add_or_merge_type_use_edge(
