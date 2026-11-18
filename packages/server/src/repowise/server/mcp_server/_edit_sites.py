@@ -1418,10 +1418,10 @@ def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     # out, as ``f(mod)`` does; JavaScript ends the value at more tokens.
     # A JavaScript ``!`` ends it as a non-null assertion, not as ``!=``.
     end = r"\s*(?:#|;|$)" if python else r"(?:\s*(?:[;}),]|!(?!=)|//|$)|\s+(?:as|satisfies)\b)"
-    # A JavaScript literal holding it hands it on too: ``{ ns }``, ``[ns]``,
+    # A JavaScript literal holding it hands it on too: ``{ ns }``, ``[x, ns]``,
     # ``{ k: ns }``. A Python one stays out: tests patch ``{"m": mod}`` into
-    # ``sys.modules`` as they pass ``f(mod)``.
-    literal = "" if python else rf"|[{{\[:]\s*(?:{alt})\s*[,}}\]]"
+    # ``sys.modules`` as they pass ``f(mod)``. Ceiling: an element alone on its line is not read.
+    literal = "" if python else rf"|[{{\[:,]\s*(?:{alt})\s*[,}}\]]"
     handed = re.compile(
         rf"(?:\b(?:return|yield|export\s+default)\s+|(?<![=!<>])=>?\s*)(?:{alt}){end}{literal}"
     )
