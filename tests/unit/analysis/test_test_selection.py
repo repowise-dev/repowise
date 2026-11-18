@@ -16,7 +16,9 @@ from repowise.core.analysis.test_selection import (
     TestSelectionConfig,
     doc_readers,
     format_args,
+    is_code_file,
     is_runnable_test,
+    is_test_helper,
     left_out,
     plan_gap,
     plugin_loader,
@@ -1084,3 +1086,11 @@ def test_an_apex_test_class_is_test_code() -> None:
     assert is_runnable_test(path)
     sel = _select([path], _tiers())
     assert not any("is not code" in r for r in sel.reasons), sel.reasons
+
+
+def test_perl_tests_are_collected_and_their_helpers_are_code() -> None:
+    assert is_runnable_test("t/basic.t")
+    assert is_runnable_test("xt/author.t")
+    assert is_code_file("t/lib/Helper.pm") and is_code_file("bin/run.pl")
+    assert is_test_helper("t/lib/Helper.pm")
+    assert not is_runnable_test("t/lib/Helper.pm")
