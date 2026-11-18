@@ -617,13 +617,14 @@ def _print_setup(repo: str | None, fmt: str) -> None:
 
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
-    indexed, units, coverage_commit = run_async(_stored_units(repo_path))
+    indexed, units, coverage_commit, index_error = run_async(_stored_units(repo_path))
     plan = evidence_setup(
         repo_path,
         indexed=indexed,
         units=units,
         head=get_head_commit(repo_path),
         coverage_commit=coverage_commit,
+        index_error=index_error,
     )
     if fmt == "json":
         emit_json(plan)
@@ -632,8 +633,9 @@ def _print_setup(repo: str | None, fmt: str) -> None:
         for line in _setup_lines(unit):
             notices.print(line)
     call = plan["next_call"]
-    if call is None:
+    if plan["reason"]:
         notices.print(f"[yellow]{escape(plan['reason'])}[/yellow]")
+    if call is None:
         return
     notices.print(f"[bold]Next[/bold]: {escape(call['purpose'])}")
     for step in call["steps"]:
@@ -658,9 +660,10 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
     return lines
 
 
-async def _stored_units(repo_path: Path) -> tuple[bool, Any, str | None]:
+async def _stored_units(repo_path: Path) -> tuple[bool, Any, str | None, str | None]:
     """Whether *repo_path* has an index, its stored build units (None without),
-    and the commit its newest coverage measured.
+    the commit its newest coverage measured, and why an existing index could
+    not be read (None when it could, or when there is none).
 
     Opens the store only when one exists, so a repository never indexed gets
     its plan and no empty store is left behind.
@@ -668,14 +671,39 @@ async def _stored_units(repo_path: Path) -> tuple[bool, Any, str | None]:
     from repowise.cli.helpers import repo_index_session
     from repowise.core.persistence.crud.analysis.coverage import load_newest_ingest
     from repowise.core.persistence.crud.build_units import load_build_units
+    from repowise.core.persistence.database import has_db_store
 
+    if not has_db_store(repo_path):
+        return False, None, None, None
     async with repo_index_session(repo_path) as opened:
-        if opened is None:
-            return False, None, None
-        session, repo_id = opened
-        ingest = await load_newest_ingest(session, repo_id)
-        commit = ingest.ingested_commit_sha if ingest is not None else None
-        return True, await load_build_units(session, repo_id), commit
+        if opened is not None:
+            session, repo_id = opened
+            ingest = await load_newest_ingest(session, repo_id)
+            commit = ingest.ingested_commit_sha if ingest is not None else None
+            return True, await load_build_units(session, repo_id), commit, None
+    # The session swallows read errors; ask once more to tell a store that
+    # does not hold this repository from one that cannot be read.
+    return False, None, None, await _index_read_error(repo_path)
+
+
+async def _index_read_error(repo_path: Path) -> str | None:
+    """Why the existing store cannot be read for *repo_path*, or None when it can."""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence import create_engine, create_session_factory, get_session
+    from repowise.core.persistence.crud import get_repository_by_path
+
+    try:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                await get_repository_by_path(session, str(repo_path))
+        finally:
+            await engine.dispose()
+    except (SQLAlchemyError, OSError, LookupError) as exc:
+        first = (str(exc).splitlines() or [""])[0]
+        return f"{type(exc).__name__}: {first[:200]}"
+    return None
 
 
 @evidence_group.command("status")

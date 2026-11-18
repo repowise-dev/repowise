@@ -24,6 +24,8 @@ from ..test_runners.stacks import Stack, detect_repo_stacks
 INIT_COMMAND = "repowise init --yes --no-prose"
 SETUP_COMMAND = "repowise evidence setup --format json"
 COVERAGE_STATUS_COMMAND = "repowise coverage status"
+#: Says what is wrong with an index that exists but cannot be read.
+DOCTOR_COMMAND = "repowise doctor"
 
 # A report glob ``coverage add`` expands itself, so no shell may expand it first.
 _GLOB = re.compile(r"[*?\[\]{}]")
@@ -132,6 +134,7 @@ def evidence_setup(
     units: BuildUnitIndex | None = None,
     head: str | None = None,
     coverage_commit: str | None = None,
+    index_error: str | None = None,
 ) -> dict[str, Any]:
     """The setup plan for the checkout at *repo_root*, JSON-ready.
 
@@ -140,7 +143,9 @@ def evidence_setup(
     line needs it. *head* is the commit the checkout is at, when git can say.
     *coverage_commit* is the commit the newest stored coverage measured: once
     it is *head*, ``next_call`` no longer asks for coverage, so an agent that
-    reruns setup after each step comes to an end.
+    reruns setup after each step comes to an end. *index_error* is why an
+    index that exists could not be read: the plan then sends the agent to
+    ``repowise doctor``, never to a fresh ``init``.
     """
     root = Path(repo_root)
     stacks = detect_repo_stacks(root, units)
@@ -166,6 +171,12 @@ def evidence_setup(
         reason = "Coverage at this commit is ingested; nothing left to run."
     else:
         reason = "No unit has a command repowise is sure of; see each unit's reason."
+    if index_error is not None:
+        next_call = {
+            "purpose": "The index exists but could not be read; find out why.",
+            "steps": [_step(root, "", DOCTOR_COMMAND)],
+        }
+        reason = f"The index could not be read: {index_error}"
     return {
         "repo": str(root),
         "indexed": indexed,
@@ -178,6 +189,7 @@ def evidence_setup(
 
 __all__ = [
     "COVERAGE_STATUS_COMMAND",
+    "DOCTOR_COMMAND",
     "INIT_COMMAND",
     "SETUP_COMMAND",
     "coverage_ingest_line",

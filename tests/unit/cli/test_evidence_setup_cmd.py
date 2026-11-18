@@ -80,3 +80,32 @@ def test_coverage_setup_prints_the_same_plan(repo: Path) -> None:
 
     assert alias.exit_code == 0, (alias.output, alias.exception)
     assert json.loads(alias.stdout) == json.loads(_setup("--format", "json").stdout)
+
+
+def test_an_index_that_cannot_be_read_is_not_mistaken_for_none(repo: Path) -> None:
+    (repo / ".repowise").mkdir()
+    (repo / ".repowise" / "wiki.db").write_bytes(b"not a database " * 100)
+
+    payload = json.loads(_setup("--format", "json").stdout)
+
+    assert payload["next_call"]["steps"] == [{"cwd": str(repo), "run": "repowise doctor"}]
+    assert payload["reason"].startswith("The index could not be read: ")
+    assert "init" not in json.dumps(payload["next_call"])
+
+
+def test_a_store_without_this_repository_is_told_to_index(repo: Path) -> None:
+    async def empty_store() -> None:
+        (repo / ".repowise").mkdir()
+        engine = create_engine(f"sqlite+aiosqlite:///{repo / '.repowise' / 'wiki.db'}")
+        try:
+            await init_db(engine)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(empty_store())
+
+    payload = json.loads(_setup("--format", "json").stdout)
+
+    assert payload["indexed"] is False
+    assert payload["next_call"]["steps"][0]["run"] == "repowise init --yes --no-prose"
+    assert payload["reason"] is None
