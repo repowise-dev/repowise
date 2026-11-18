@@ -101,7 +101,7 @@ def test_file_line_caps_named_functions_and_counts_the_rest():
     assert line.count(" rank ") == measured.MAX_NAMED_IN_FILE
     assert "f0 rank 1 (10% of samples, 10-14%)" in line
     assert "f3" not in line and "old rank" not in line
-    assert line.endswith("; 3 more measured")
+    assert line.endswith("; 2 more measured; 1 stale")
 
 
 def test_file_line_names_only_the_lead_run():
@@ -191,3 +191,36 @@ async def test_store_without_the_table_answers_as_no_evidence(
     card = (await get_context([LOGIN]))["targets"][LOGIN]
     assert card["type"] == "symbol"
     assert "measured" not in card
+
+
+def test_low_share_interval_never_rounds_past_the_estimate():
+    row = _row(samples=4, run_samples=1000, share_low=0.0016, share_high=0.0102)
+    assert "(<1% of samples, 0-1%;" in symbol_line(row, NOW)
+
+
+def test_run_without_a_class_names_only_the_workload():
+    assert 'rank 3 of repo code in "cli build"' in symbol_line(_row(workload_class=None), NOW)
+
+
+def test_a_backslash_file_path_is_marked_with_forward_slashes():
+    data: dict = {}
+    measured.mark_measured_target(data, "file", "src\\auth\\service.py", None)
+    assert data[measured.MEASURED_TARGET] == ("file", FILE)
+    data = {}
+    measured.mark_measured_target(data, "module", "src/auth", None)
+    assert data == {}
+
+
+@pytest.mark.asyncio
+async def test_class_target_and_missed_symbol(setup_mcp, session, populated_db):
+    from repowise.server.mcp_server import get_context
+
+    await _add(session, populated_db, LOGIN)
+    cls, miss = f"{FILE}::AuthService", f"{FILE}::no_such_name"
+    cards = (await get_context([cls, miss]))["targets"]
+    # Rows are per function: a class card has no line of its own.
+    assert cards[cls]["type"] == "symbol"
+    assert "measured" not in cards[cls]
+    # A missed name degrades to the file's card, which carries the file's line.
+    assert cards[miss]["resolved_to"] == FILE
+    assert cards[miss]["measured"].endswith("login rank 3 (12% of samples, 10-14%)")

@@ -17,6 +17,7 @@ again rather than trust an old rank.
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -25,6 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.crud import hotness_for_symbols
+
+_log = logging.getLogger("repowise.mcp.context")
 
 #: Where a card's measured target waits between the card and the batched read.
 #: Popped by :func:`attach_measured`, so it never reaches a response.
@@ -43,7 +46,8 @@ def mark_measured_target(
     if target_type == "symbol" and symbol_id:
         data[MEASURED_TARGET] = ("symbol", symbol_id)
     elif target_type == "file" and file_path:
-        data[MEASURED_TARGET] = ("file", file_path)
+        # Symbol ids carry forward slashes, whatever the caller typed.
+        data[MEASURED_TARGET] = ("file", file_path.replace("\\", "/"))
 
 
 async def attach_measured(
@@ -69,6 +73,8 @@ async def attach_measured(
         async with session.begin_nested():
             rows = await hotness_for_symbols(session, repository_id, symbols, files=files)
     except SQLAlchemyError:
+        # A store older than the table reads as no evidence; so does a failed read.
+        _log.debug("get_context: measured read failed", exc_info=True)
         return
     if not rows:
         return
@@ -111,8 +117,11 @@ def file_line(rows: list[Any], now: datetime) -> str | None:
     explained = _explained(lead)
     paren = f" ({explained})" if explained else ""
     line = f"{_basis(lead)}{paren}, {_age(lead, now)}{_earlier(lead)}: {items}"
-    more = len(rows) - len(named)
-    return f"{line}; {more} more measured" if more else line
+    more = len(fresh) - len(named)
+    stale = len(rows) - len(fresh)
+    if more:
+        line += f"; {more} more measured"
+    return f"{line}; {stale} stale" if stale else line
 
 
 def _strongest(row: Any) -> tuple[Any, ...]:
@@ -142,7 +151,9 @@ def _basis(row: Any) -> str:
     name = row.workload_name or "unnamed"
     if row.workload_class == "unit_test":
         return f'in tests "{name}"'
-    return f'in {row.workload_class or "unknown"} "{name}"'
+    if not row.workload_class:
+        return f'in "{name}"'
+    return f'in {row.workload_class} "{name}"'
 
 
 def _share(row: Any) -> str | None:
@@ -152,7 +163,7 @@ def _share(row: Any) -> str | None:
     if row.share_low is not None and row.share_high is not None and row.samples and row.run_samples:
         return (
             f"{_pct(row.samples / row.run_samples)} of samples, "
-            f"{round(row.share_low * 100)}-{_pct(row.share_high)}"
+            f"{_low(row.share_low)}-{_pct(row.share_high)}"
         )
     if row.total_share is not None:
         return f"{_pct(row.total_share)} of the run"
@@ -175,6 +186,11 @@ def _age(row: Any, now: datetime) -> str:
 
 def _earlier(row: Any) -> str:
     return ", earlier commit, same body" if row.freshness == "body_unchanged" else ""
+
+
+def _low(value: float) -> str:
+    """An interval's lower end without its sign, never rounded up past the estimate."""
+    return str(int(value * 100))
 
 
 def _pct(value: float) -> str:
