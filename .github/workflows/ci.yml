@@ -400,11 +400,13 @@ jobs:
         env:
           PYTHONPATH: packages/core/src
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        # --expect-junit is the number of Python 3.12 shards in test-python's
+        # matrix, so a shard whose report never uploaded still counts as lost.
         run: |
           junit=()
           for f in shadow/junit/*/junit.xml; do [ -f "$f" ] && junit+=(--junit "$f"); done
           python3 scripts/impacted_tests_shadow.py --selection shadow/selection.json \
-            --meta shadow/selector.json "${junit[@]}" --out impacted-shadow.json \
+            --meta shadow/selector.json "${junit[@]}" --expect-junit 2 --out impacted-shadow.json \
             || echo "Test selection comparison could not run." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the record

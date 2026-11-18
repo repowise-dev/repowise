@@ -26,7 +26,7 @@ import json
 import os
 import sys
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -135,9 +135,18 @@ def build_record(
     meta: Mapping[str, Any],
     junit: tuple[dict[str, float], set[str]] | None,
     context: Mapping[str, Any],
+    *,
+    junit_expected: int = 1,
+    junit_lost: Sequence[str] = (),
 ) -> dict[str, Any]:
-    """The one-line record kept per run. Missing inputs leave their fields ``None``."""
+    """The one-line record kept per run. Missing inputs leave their fields ``None``.
+
+    *junit_expected* is how many shard reports the run should have and
+    *junit_lost* those that could not be read; with either short, the record
+    is ``complete: false`` and its misses cover only the reports read.
+    """
     ran, failing_nodes = junit if junit is not None else ({}, set())
+    junit_read = junit_expected - len(junit_lost) if junit is not None else 0
     failing = {file_of(n) for n in failing_nodes}
     record: dict[str, Any] = {
         "version": RECORD_VERSION,
@@ -145,6 +154,10 @@ def build_record(
         **{k: meta.get(k) for k in ("base", "selector_exit", "selector_seconds", "index_cache")},
         "has_selection": selection is not None,
         "has_junit": junit is not None,
+        "junit_expected": junit_expected,
+        "junit_read": junit_read,
+        "junit_lost": list(junit_lost),
+        "complete": selection is not None and junit is not None and junit_read == junit_expected,
         "ran_files": len(ran),
         "total_seconds": round(sum(ran.values()), 1),
         "failing_files": sorted(failing),
@@ -211,13 +224,23 @@ def _saving_lines(record: Mapping[str, Any]) -> list[str]:
 def _failure_lines(record: Mapping[str, Any]) -> list[str]:
     if not record["has_junit"]:
         return ["- No test report was found, so failures could not be compared."]
-    lines = [f"- Failing test files: {len(record['failing_files'])}."]
+    lines = []
+    partial = record["junit_read"] < record["junit_expected"]
+    if partial:
+        lost = ", ".join(code(p) for p in record["junit_lost"]) or "not uploaded"
+        lines.append(
+            f"- **Incomplete:** read {record['junit_read']} of "
+            f"{plural(record['junit_expected'], 'shard report')} (lost: {lost}). "
+            "Failures in a lost shard are not compared."
+        )
+    lines.append(f"- Failing test files: {len(record['failing_files'])}.")
     if not record["has_selection"]:
         return lines
     missed = record["missed"]
+    scope = " in the reports read" if partial else ""
     shown = ", ".join(code(m) for m in missed[:ROW_LIMIT]) or "none"
     rest = more_line(len(missed) - ROW_LIMIT, "files")
-    lines.append(f"- Failing outside the selection: {shown}{', ' + rest if rest else '.'}")
+    lines.append(f"- Failing outside the selection{scope}: {shown}{', ' + rest if rest else '.'}")
     if record["first_failing_rank"] is not None:
         lines.append(
             f"- First failing file in the prioritized order: "
@@ -279,12 +302,19 @@ def _context(env: Mapping[str, str]) -> dict[str, Any]:
 def compare(args: argparse.Namespace, env: Mapping[str, str]) -> dict[str, Any]:
     meta = _load(args.meta, json.loads)
     selection = _load(args.selection, json.loads)
-    reports = (_load(path, read_junit) for path in args.junit or ())
+    paths = args.junit or []
+    reports = [_load(path, read_junit) for path in paths]
+    lost = [path for path, report in zip(paths, reports, strict=True) if report is None]
+    # A shard whose report never uploaded has no path at all.
+    expected = max(args.expect_junit or 0, len(paths))
+    lost += ["(not uploaded)"] * (expected - len(paths))
     return build_record(
         selection if isinstance(selection, dict) else None,
         meta if isinstance(meta, dict) else {},
         merge_junit(r for r in reports if r is not None),
         _context(env),
+        junit_expected=expected,
+        junit_lost=lost,
     )
 
 
@@ -293,6 +323,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("selection", "meta", "out"):
         parser.add_argument(f"--{name}")
     parser.add_argument("--junit", action="append", help="a JUnit report; repeat per shard")
+    parser.add_argument("--expect-junit", type=int, help="how many shard reports the run has")
     args = parser.parse_args(argv)
     # Recorded only: whatever goes wrong here becomes a note, never a failed job.
     try:

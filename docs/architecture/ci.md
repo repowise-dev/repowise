@@ -76,7 +76,8 @@ A skipped job reports as skipped, which a branch rule counts as passing.
 ## Impacted-test shadow
 
 CI records which tests `repowise impacted-tests` would have picked for each
-pull request, push to `main` and nightly run, beside the full run, without skipping any.
+pull request, push to `main` and nightly run, beside the full run, without
+skipping any.
 
 - `Repowise index (main)` builds the Repowise index on each push to `main`
   (`repowise update --index-only` on the previous one) and caches the three
@@ -89,6 +90,9 @@ pull request, push to `main` and nightly run, beside the full run, without skipp
   left out (a miss), and where the first failing file sits in the prioritized
   order. The same record is the `impacted-shadow` artifact
   (`impacted-shadow.json`, one JSON line per run).
+- When a shard's report is missing or does not parse, the summary says
+  **Incomplete** and names it, misses are reported only for the shards read,
+  and the record carries `complete: false`. Aggregate only complete records.
 
 These jobs never block a pull request: every step continues on error, and no
 branch rule requires them. Reproduce a selection locally on an indexed

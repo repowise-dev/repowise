@@ -159,14 +159,47 @@ def test_main_writes_record(tmp_path, monkeypatch) -> None:
     sel.write_text(json.dumps(SELECTION), encoding="utf-8")
     junit = tmp_path / "junit.xml"
     junit.write_text(JUNIT, encoding="utf-8")
-    # A shard with no report: the other shard's report still counts.
-    missing = tmp_path / "missing.xml"
     out = tmp_path / "impacted-shadow.json"
-    args = ["--selection", str(sel), "--junit", str(junit), "--junit", str(missing)]
+    args = ["--selection", str(sel), "--junit", str(junit), "--expect-junit", "1"]
     assert shadow.main([*args, "--out", str(out)]) == 0
     rec = json.loads(out.read_text(encoding="utf-8"))
     assert rec["missed"] == ["tests/unit/sub/test_c.py", "tests/unit/test_d.py"]
     assert rec["ran_files"] == 5
+    assert rec["complete"] is True and rec["junit_lost"] == []
+
+
+def test_a_lost_shard_marks_the_comparison_incomplete(tmp_path, monkeypatch) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    sel = tmp_path / "selection.json"
+    sel.write_text(json.dumps(SELECTION), encoding="utf-8")
+    passing = tmp_path / "shard-1.xml"
+    passing.write_text(
+        '<testsuites><testsuite><testcase classname="tests.unit.test_a" name="t"/>'
+        "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    broken = tmp_path / "shard-2.xml"
+    broken.write_text("<not xml", encoding="utf-8")
+    out = tmp_path / "impacted-shadow.json"
+    # Three shards expected: one read, one unreadable, one never uploaded.
+    args = ["--selection", str(sel), "--junit", str(passing), "--junit", str(broken)]
+    assert shadow.main([*args, "--expect-junit", "3", "--out", str(out)]) == 0
+    rec = json.loads(out.read_text(encoding="utf-8"))
+    assert rec["complete"] is False
+    assert (rec["junit_expected"], rec["junit_read"]) == (3, 1)
+    assert rec["junit_lost"] == [str(broken), "(not uploaded)"]
+    text = summary.read_text(encoding="utf-8")
+    assert "**Incomplete:** read 1 of 3 shard reports" in text
+    # Never a bare "none" on partial data.
+    assert "Failing outside the selection in the reports read: none." in text
+    assert "Failing outside the selection: none" not in text
+
+
+def test_every_shard_lost_is_never_complete() -> None:
+    rec = shadow.build_record(SELECTION, {}, None, {}, junit_expected=2, junit_lost=["a", "b"])
+    assert rec["complete"] is False and rec["junit_read"] == 0
+    assert "No test report was found" in shadow.render_summary(rec)
 
 
 def test_a_node_pick_misses_the_other_failing_nodes_of_its_file() -> None:
