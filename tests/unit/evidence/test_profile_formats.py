@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import gzip
 import json
+from collections import Counter
+from pathlib import Path
 
 import pytest
 
@@ -238,6 +241,211 @@ def test_collapsed_conversion_skips_lineless_frames_and_other_checkouts() -> Non
 def test_a_file_with_no_stack_line_is_refused() -> None:
     with pytest.raises(EvidenceFormatError):
         profile_formats.get("collapsed").read(b"hello\n")
+
+
+# -- pprof ---------------------------------------------------------------------
+
+# A real `go test -run TestPrimes -count=1 -cpuprofile cpu.pprof ./calc` of the
+# fixture module, run from D:\src\pprofgo. isPrime and Primes were inlined into
+# TestPrimes, so one location carries three lines.
+PPROF_DIR = Path(__file__).resolve().parents[2] / "fixtures" / "pprof_go"
+GO_ROOT = "D:\\src\\pprofgo"
+
+
+def _go_symbols() -> dict[str, list[IndexedSymbol]]:
+    """The fixture's functions, with spans checked against its source."""
+    spans = {
+        "calc/calc.go": [
+            ("Primes", 5, 13), ("isPrime", 16, 23), ("SumSquares", 26, 32), ("square", 34, 34),
+        ],
+        "calc/calc_test.go": [("TestPrimes", 5, 17), ("BenchmarkPrimes", 19, 23)],
+    }
+    out: dict[str, list[IndexedSymbol]] = {}
+    for path, funcs in spans.items():
+        lines = (PPROF_DIR / path).read_text(encoding="utf-8").splitlines()
+        for name, start, end in funcs:
+            assert lines[start - 1].startswith(f"func {name}("), (path, name)
+            out.setdefault(path, []).append(_sym(path, f"calc.{name}", start, end, "function"))
+    return out
+
+
+def _go_convert(run: ProfileRun, symbols: dict | None = None):
+    return convert_profile(run, root=GO_ROOT, symbols_by_file=symbols or _go_symbols())
+
+
+def _pb_varint(value: int) -> bytes:
+    value &= (1 << 64) - 1
+    out = bytearray()
+    while True:
+        out.append((value & 0x7F) | (0x80 if value > 0x7F else 0))
+        value >>= 7
+        if not value:
+            return bytes(out)
+
+
+def _pb(field: int, value: int | bytes) -> bytes:
+    if isinstance(value, int):
+        return _pb_varint(field << 3) + _pb_varint(value)
+    return _pb_varint(field << 3 | 2) + _pb_varint(len(value)) + value
+
+
+def _pprof(
+    samples: list[tuple[list[int], list[int]]],
+    locations: dict[int, list[tuple[int, int]]],
+    functions: dict[int, tuple[str, str, int]],
+    sample_types: tuple[tuple[str, str], ...] = (("samples", "count"), ("cpu", "nanoseconds")),
+    packed: bool = True,
+) -> bytes:
+    """A Profile message; each sample is (location ids leaf first, values)."""
+    strings = [""]
+
+    def s(text: str) -> int:
+        if text not in strings:
+            strings.append(text)
+        return strings.index(text)
+
+    out = _pb(9, 1_700_000_000)  # time_nanos first, as Go writes it
+    out += b"".join(_pb(1, _pb(1, s(t)) + _pb(2, s(u))) for t, u in sample_types)
+    for ids, values in samples:
+        if packed:
+            body = _pb(1, b"".join(map(_pb_varint, ids))) + _pb(
+                2, b"".join(map(_pb_varint, values))
+            )
+        else:
+            body = b"".join(_pb(1, i) for i in ids) + b"".join(_pb(2, v) for v in values)
+        out += _pb(2, body)
+    for loc_id, lines in locations.items():
+        line_msgs = b"".join(_pb(4, _pb(1, f) + _pb(2, ln)) for f, ln in lines)
+        out += _pb(4, _pb(1, loc_id) + line_msgs)
+    for fn_id, (name, path, start) in functions.items():
+        out += _pb(5, _pb(1, fn_id) + _pb(2, s(name)) + _pb(4, s(path)) + _pb(5, start))
+    return out + b"".join(_pb(6, text.encode()) for text in strings)
+
+
+def test_a_go_cpu_profile_is_sniffed_gzipped_or_raw() -> None:
+    gz = (PPROF_DIR / "cpu.pprof").read_bytes()
+    assert detect_profile_format(gz) == "pprof"
+    assert detect_profile_format(gzip.decompress(gz)) == "pprof"
+    assert detect_profile_format(gzip.compress(b"hello world\n")) is None
+    assert detect_profile_format(b"\x0a\x04hello") is None
+
+
+def test_comments_packed_or_not_still_sniff_and_read() -> None:
+    body = _pprof(
+        samples=[([1], [2, 20])],
+        locations={1: [(1, 8)]},
+        functions={1: ("example.com/pprofgo/calc.Primes", "D:/src/pprofgo/calc/calc.go", 5)},
+    )
+    for comment in (_pb(13, _pb_varint(1) + _pb_varint(2)), _pb(13, 1) + _pb(13, 2)):
+        # The comment leads, so the sniff walks over it before any sample type.
+        data = comment + body
+        assert detect_profile_format(data) == "pprof"
+        run = profile_formats.get("pprof").read(gzip.compress(data))
+        assert sum(s.samples or 0 for s in run.stacks) == 2
+
+
+def test_a_real_go_profile_reads_cpu_time_with_inlined_frames_innermost_last() -> None:
+    run = profile_formats.get("pprof").read((PPROF_DIR / "cpu.pprof").read_bytes())
+    assert (run.unit, run.value_kind) == ("ns", "cpu")
+    assert sum(s.samples or 0 for s in run.stacks) == 106
+    assert sum(s.weight for s in run.stacks) == 1_060_000_000  # 10 ms per sample
+    names: Counter[tuple[str, ...]] = Counter()
+    for stack in run.stacks:
+        names[tuple(run.frames[i].function.rsplit(".", 1)[-1] for i in stack.frames)] += (
+            stack.samples or 0
+        )
+    # One location: isPrime inlined into Primes inlined into TestPrimes.
+    assert names[("tRunner", "TestPrimes", "Primes", "isPrime")] == 59
+    is_prime = next(f for f in run.frames if f.function.endswith(".isPrime"))
+    assert (is_prime.path, is_prime.start_line, is_prime.language) == (
+        "D:/src/pprofgo/calc/calc.go", 16, "go",
+    )
+
+
+def test_a_real_go_profile_joins_inlined_frames_to_their_own_functions() -> None:
+    run = profile_formats.get("pprof").read((PPROF_DIR / "cpu.pprof").read_bytes())
+    conv = _go_convert(run)
+    got = _entries(conv)
+    assert got["calc.isPrime"]["total_samples"] == 59
+    assert got["calc.isPrime"]["self_samples"] == 59
+    assert got["calc.Primes"]["total_samples"] == 60
+    assert got["calc.SumSquares"]["self_samples"] == 28
+    assert got["calc.TestPrimes"]["total_samples"] == 106
+    assert conv.skip_rate == 0
+    # testing.tRunner, in GOROOT, is the one frame outside the checkout.
+    assert conv.document["skipped"] == {"outside_repo": 1}
+    # Only the stack in TestPrimes alone has no production frame.
+    assert conv.explained_share == pytest.approx(88 / 106)
+
+
+def test_raw_and_gzipped_profiles_read_the_same() -> None:
+    gz = (PPROF_DIR / "cpu.pprof").read_bytes()
+    read = profile_formats.get("pprof").read
+    assert read(gzip.decompress(gz)) == read(gz)
+
+
+def test_a_line_labelled_with_the_wrong_inlined_function_is_skipped() -> None:
+    # The compiler labelled calc.go:18, inside isPrime, as Primes (start line 5).
+    data = _pprof(
+        samples=[([1], [7, 70])],
+        locations={1: [(1, 18)]},
+        functions={1: ("example.com/pprofgo/calc.Primes", "D:/src/pprofgo/calc/calc.go", 5)},
+    )
+    conv = _go_convert(profile_formats.get("pprof").read(data))
+    assert conv.document["symbols"] == []
+    assert conv.document["skipped"] == {"second_signal_mismatch": 1}
+    assert conv.skip_rate == 1
+
+
+def test_an_index_whose_start_line_moved_skips_the_frame() -> None:
+    symbols = _go_symbols()
+    symbols["calc/calc.go"] = [
+        _sym("calc/calc.go", "calc.isPrime", 15, 23, "function") if s.name == "isPrime" else s
+        for s in symbols["calc/calc.go"]
+    ]
+    run = profile_formats.get("pprof").read((PPROF_DIR / "cpu.pprof").read_bytes())
+    conv = _go_convert(run, symbols)
+    assert "calc.isPrime" not in _entries(conv)
+    assert conv.document["skipped"]["second_signal_mismatch"] == 2  # lines 17 and 18
+
+
+def test_frames_outside_the_root_and_unsymbolized_addresses_are_outside() -> None:
+    data = _pprof(
+        samples=[([1, 2, 3], [3, 30])],
+        locations={1: [(1, 18)], 2: [(2, 8)], 3: []},
+        functions={
+            1: ("example.com/pprofgo/calc.isPrime", "D:/src/other/calc/calc.go", 16),
+            2: ("example.com/pprofgo/calc.Primes", "D:/src/pprofgo/calc/calc.go", 5),
+        },
+        packed=False,
+    )
+    run = profile_formats.get("pprof").read(gzip.compress(data))
+    conv = _go_convert(run)
+    # isPrime from another checkout never joins; Primes, its caller, takes the time.
+    assert _entries(conv)["calc.Primes"]["self"] == 30
+    assert conv.document["skipped"] == {"outside_repo": 2}
+
+
+def test_a_trimpath_build_or_a_memory_profile_is_refused() -> None:
+    read = profile_formats.get("pprof").read
+    with pytest.raises(EvidenceFormatError, match="-trimpath"):
+        read((PPROF_DIR / "trimpath.pprof").read_bytes())
+    heap = _pprof(
+        samples=[([1], [1, 512])],
+        locations={1: [(1, 8)]},
+        functions={1: ("calc.Primes", "D:/src/pprofgo/calc/calc.go", 5)},
+        sample_types=(("alloc_objects", "count"), ("alloc_space", "bytes")),
+    )
+    with pytest.raises(EvidenceFormatError, match="alloc_space/bytes"):
+        read(heap)
+    with pytest.raises(EvidenceFormatError):
+        read((PPROF_DIR / "cpu.pprof").read_bytes()[:200])
+    missing_location = _pprof(
+        samples=[([9], [1, 10])], locations={1: [(1, 8)]},
+        functions={1: ("calc.Primes", "D:/src/pprofgo/calc/calc.go", 5)},
+    )
+    with pytest.raises(EvidenceFormatError, match="location 9"):
+        read(missing_location)
 
 
 # -- registry ------------------------------------------------------------------
