@@ -1886,8 +1886,19 @@ async def edit_set_block(
         out["prose_lines"] = left_out
     if reasons:
         out["reasons"] = reasons
+        # The budget cut names its own way back; any other reason means lines
+        # the set may have missed, which a text search lists.
+        if len(reasons) > (len(shown) < len(by_file)):
+            out["hint"] = f'every line naming it: search_codebase(query="{_word_regex(node.name)}")'
     out["files"] = shown
     return out
+
+
+def _word_regex(name: str) -> str:
+    """A search_codebase regex query matching *name* as a whole word."""
+    head = r"\b" if re.match(r"\w", name) else ""
+    tail = r"\b" if re.search(r"\w$", name) else ""
+    return f"{head}{re.escape(name)}{tail}"
 
 
 async def _widen(

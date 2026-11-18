@@ -118,6 +118,7 @@ async def test_definition_import_call_and_same_file_call(session, repo_id, tmp_p
     ]
     assert out["complete"] is True
     assert "reasons" not in out
+    assert "hint" not in out
 
 
 @pytest.mark.asyncio
@@ -269,6 +270,7 @@ async def test_module_object_bound_outside_an_import_is_incomplete(session, repo
     assert out["reasons"] == [
         "may be called through a module object outside an import: app/lazy.py"
     ]
+    assert out["hint"] == r'every line naming it: search_codebase(query="\bbackend_of\b")'
     assert "app/lazy.py" not in out["files"]
 
 
@@ -301,6 +303,14 @@ async def test_a_module_object_call_the_graph_resolved_is_listed(
     assert out["complete"] is complete
     assert ("app/lazy.py" in out["files"]) is True
     assert ("reasons" in out) is not complete
+
+
+@pytest.mark.parametrize(
+    ("name", "query"),
+    [("backend_of", r"\bbackend_of\b"), ("$scope", r"\$scope\b"), ("operator+", r"\boperator\+")],
+)
+def test_the_hint_query_matches_the_name_as_a_whole_word(name, query):
+    assert _edit_sites._word_regex(name) == query
 
 
 @pytest.mark.asyncio
@@ -792,6 +802,8 @@ async def test_block_over_its_budget_serves_leading_files_with_the_exact_total(
     assert out["sites_total"] == 1 + 40 * 2
     assert out["complete"] is False
     assert f"{len(out['files'])} of 41 files shown" in out["reasons"][-1]
+    # The budget cut says where the rest are; no search is needed.
+    assert "hint" not in out
     response: dict = {}
     collector.attach(response)
     assert response["_meta"]["omitted"]["refs"]
