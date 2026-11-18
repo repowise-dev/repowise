@@ -202,6 +202,20 @@ async def test_unit_test_evidence_never_lists_under_measured(async_session) -> N
     assert set(view) == {"measured_in_tests"}
 
 
+async def test_a_class_that_may_not_lead_and_is_not_a_test_is_not_listed(async_session) -> None:
+    repo = await insert_repo(async_session)
+    await _seed_code(async_session, repo.id)
+    # A finding with no line names no function, so ``serve`` keeps its row.
+    async_session.add(_finding(repo.id, 0, "perf3_file"))
+    await async_session.flush()
+    await replace_symbol_hotness(
+        async_session, repo.id, [_hot("serve"), _hot("load", cls="smoke", run="r9", rank=2)]
+    )
+    view = await measured_costs(async_session, repo.id, now=NOW)
+    assert set(view) == {"measured"}
+    assert [r["symbol_id"] for r in view["measured"]["rows"]] == [f"{APP}::serve"]
+
+
 async def test_only_stale_or_unranked_rows_mean_no_view(async_session) -> None:
     repo = await insert_repo(async_session)
     await _seed_code(async_session, repo.id)

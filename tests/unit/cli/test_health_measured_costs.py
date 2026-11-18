@@ -89,3 +89,7 @@ def test_json_adds_the_view_only_with_evidence(monkeypatch) -> None:
     payload = json.loads(stdout[stdout.index("{") :])
     assert payload["measured_costs"] == VIEW
     assert not re.search(r"\b(hot|cold)\b", json.dumps(payload["measured_costs"]))
+
+    # Repository-wide, so a run narrowed to a file leaves it out.
+    stdout, _ = _run(monkeypatch, "--format", "json", "--file", "src/a.py")
+    assert "measured_costs" not in json.loads(stdout[stdout.index("{") :])

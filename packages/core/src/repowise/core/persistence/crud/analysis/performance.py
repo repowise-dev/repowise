@@ -1041,7 +1041,8 @@ async def measured_costs(
                 "runs": _measured_runs(rows, at),
                 "rows": [_measured_row(r, spans, context) for r in rows],
             }
-    linked = [r for r in ranked if r.symbol_id in covered][:limit]
+    # Not cut to *limit*: a ranked row is at most ``evidence.rank_top_n`` per run.
+    linked = [r for r in ranked if r.symbol_id in covered]
     if linked:
         view["on_static_findings"] = [
             {
@@ -1087,6 +1088,7 @@ async def _static_causes_on(
 
     On a function means the cause's edit site is the function, or an open
     performance finding's line falls inside it and in no narrower symbol.
+    A finding with no line names no function, so it covers none.
     """
     from ....symbol_spans import symbol_at
 

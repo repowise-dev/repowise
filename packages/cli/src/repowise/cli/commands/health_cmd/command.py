@@ -515,7 +515,9 @@ def _render_json(
 
     excluded = excluded_types()
     short_history = _load_short_history(repo_path)
-    measured = _load_measured_costs(repo_path)
+    # Repository-wide, so a narrowed run leaves it out, as the table does.
+    narrowed = bool(opts.file_filter or opts.module_filter)
+    measured = None if narrowed else _load_measured_costs(repo_path)
     click.echo(
         json.dumps(
             {
