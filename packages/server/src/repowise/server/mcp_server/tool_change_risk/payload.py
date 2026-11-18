@@ -33,7 +33,8 @@ _SHED_ORDER = response_budget_shed_order("get_change_risk")
 
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
 #: ``diagnostics`` carries the raw model mechanics; ``findings`` lifts the
-#: top-findings cap. Both are projections, recoverable by an exact call.
+#: top-findings cap and lists the changed symbols. Both are projections,
+#: recoverable by an exact call.
 #: ``evidence`` adds the change's evidence checklist, the record ``repowise
 #: changes show`` and the REST change detail serve. ``tests`` adds why each
 #: listed test runs and the evidence that decided each changed file.
@@ -131,7 +132,7 @@ def _attach_health(
         for key in _HEALTH_DIAGNOSTIC_FIELDS:
             block.pop(key, None)
     if expand:
-        from repowise.server.mcp_server._change_health import finding_row
+        from repowise.server.mcp_server._change_health import changed_symbol_rows, finding_row
 
         block["top_findings"] = [
             finding_row(f, revspec, inspect=True) for f in review_order(delta.findings)
@@ -139,6 +140,7 @@ def _attach_health(
         block["findings_emitted"] = len(delta.findings)
         block.pop("findings_reduced_reason", None)
         block.pop("all_findings_via", None)
+        block.update(changed_symbol_rows(delta))
     directive = _directive(delta, payload.get("impacted_tests"))
     if action := _patch_coverage_action(payload.get("patch_coverage")):
         directive["next_actions"].append(action)
