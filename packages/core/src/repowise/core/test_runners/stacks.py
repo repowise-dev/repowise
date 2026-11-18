@@ -585,7 +585,9 @@ def _go(paths: list[str], files: dict[str, str]) -> Stack | None:
     """None for a ``go.mod`` with no ``module`` line or no Go file below it (a build helper, not a module)."""
     gomod = files.get("go.mod")  # None when the caller read no manifests: nothing to judge by
     unnamed = gomod is not None and not re.search(r"^\s*module\s+\S", gomod, re.M)
-    if unnamed or not any(p.endswith(".go") for p in paths):
+    # ``./...`` stops at a nested module, so its Go files are not this module's.
+    nested = [_dir(p) + "/" for p in paths if posixpath.basename(p) == "go.mod" and "/" in p]
+    if unnamed or not any(p.endswith(".go") and not p.startswith(tuple(nested)) for p in paths):
         return None
     return Stack(
         "go", "go test", "go", "coverage.out",
@@ -739,27 +741,26 @@ def _dotnet_setup(root: set[str], projects: str) -> tuple[str, ...]:
     return ("- uses: actions/setup-dotnet@v4", "  with:", "    dotnet-version: |", *(f"      {v}" for v in versions))
 
 
-def _dotnet_sdk(files: dict[str, str], projects: str, scope: str) -> str | None:
-    """Which SDK ``dotnet test`` needs: the ``global.json`` pin, else the newest target framework's."""
+def _dotnet_sdk(files: dict[str, str]) -> str | None:
+    """The SDK ``dotnet test`` needs, when ``global.json`` pins one.
+
+    Ceiling: without a pin the note says nothing; the target frameworks of the
+    projects read are a lower bound only, so they are not named. Reading every
+    project the chosen solution builds would be the upgrade.
+    """
     try:
-        pinned = json.loads(files.get(_DOTNET_SDK_PIN) or "{}").get("sdk", {}).get("version")
+        # A file saved with a BOM is still the pin the SDK reads.
+        pinned = json.loads((files.get(_DOTNET_SDK_PIN) or "{}").lstrip("\ufeff")).get("sdk", {}).get("version")
     except (ValueError, AttributeError):
         pinned = None
     if isinstance(pinned, str) and pinned:
         return (f"`{_DOTNET_SDK_PIN}` pins the .NET SDK to {pinned}: `dotnet --list-sdks` must list it, or a "
                 "later one its `rollForward` allows, before `dotnet test` runs.")
-    versions = sorted({tuple(map(int, v.split("."))) for v in re.findall(r"(?<![\w.])net(\d+\.\d+)", projects)})
-    if versions:
-        newest = ".".join(map(str, versions[-1]))
-        return (f"The projects {scope} target up to net{newest}: "
-                f"`dotnet test` needs the .NET {newest} SDK or later.")
     return None
 
 
-def _dotnet_notes(
-    tests: list[str], files: dict[str, str], projects: tuple[str, str], target: str | None, found: bool
-) -> list[str]:
-    notes = [sdk] if (sdk := _dotnet_sdk(files, *projects)) else []
+def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, found: bool) -> list[str]:
+    notes = [sdk] if (sdk := _dotnet_sdk(files)) else []
     if tests and not any("coverlet.collector" in t for p, t in files.items() if p in tests):
         notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
                      "test project (`dotnet add package coverlet.collector`).")
@@ -771,26 +772,6 @@ def _dotnet_notes(
     return [*notes, "Repowise found no solution or test project to point `dotnet test` at."]
 
 
-#: A project a solution names: ``"src\App\App.csproj"`` (.sln) or ``Path="src/App/App.csproj"`` (.slnx).
-_SOLUTION_PROJECT = re.compile(r"[\"']([^\"']+\.csproj)[\"']")
-
-
-def _dotnet_projects(files: dict[str, str], target: str | None) -> tuple[str, str]:
-    """The text of the projects the target solution builds, and how the SDK note names them.
-
-    Every project read when the solution's text names none of them, or there is no
-    solution; the note then says so, as a ``samples/`` project outside it counts too.
-    """
-    read = {p: t for p, t in files.items() if p.endswith(".csproj")}
-    if target and target.endswith(_SOLUTIONS):
-        base = _dir(target)
-        refs = _SOLUTION_PROJECT.findall(files.get(target, ""))
-        listed = {posixpath.normpath(_join(base, ref.replace("\\", "/"))) for ref in refs} & read.keys()
-        if listed:
-            return "\n".join(read[p] for p in sorted(listed)), f"in `{target}`"
-    return "\n".join(read.values()), "Repowise read"
-
-
 def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     # A samples or fixture solution is not the one that runs the tests; the unit's own comes first.
     solutions = [p for p in paths if p.endswith(_SOLUTIONS) and _kept(p)]
@@ -798,9 +779,8 @@ def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     solutions = own if len(own) == 1 else solutions
     tests = [p for p in paths if p.endswith(".csproj") and "test" in p.lower() and p.count("/") <= 3]
     target = solutions[0] if len(solutions) == 1 else tests[0] if len(tests) == 1 and not solutions else None
-    projects = _dotnet_projects(files, target)
-    setup = _dotnet_setup(root, projects[0])
-    notes = _dotnet_notes(tests, files, projects, target, bool(solutions or tests))
+    setup = _dotnet_setup(root, "\n".join(t for p, t in files.items() if p.endswith(".csproj")))
+    notes = _dotnet_notes(tests, files, target, bool(solutions or tests))
     test = f"dotnet test {target} {_DOTNET_FLAGS}" if target else ""
     return Stack(
         "dotnet", "dotnet test", "dotnet", "coverage/*/coverage.cobertura.xml", setup=tuple(setup),
@@ -1158,8 +1138,6 @@ def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> 
             # Ceiling: _DOTNET_PROJECTS projects; a larger solution may need its SDK named in global.json.
             others = [r for r in projects if r not in tests]
             wanted += [_join(root, r) for r in (tests + others)[:_DOTNET_PROJECTS]]
-            # The solutions too: the SDK note reads which projects the chosen one builds.
-            wanted += [_join(root, r) for r in rel if r.endswith(_SOLUTIONS)]
             if (pin := _sdk_pin(root, present)) is not None:
                 wanted.append(pin)
     return list(dict.fromkeys(wanted))
