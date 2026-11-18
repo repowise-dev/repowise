@@ -93,4 +93,11 @@ describe("GraphHeader", () => {
     expect(screen.getByText("2,048")).toBeTruthy();
     expect(screen.getByText("5,120")).toBeTruthy();
   });
+
+  it("formats counts with en-US grouping (1,261,599) and avoids runtime locale grouping like en-IN", () => {
+    render(<GraphHeader repoName="acme/repo" stats={{ nodes: 1261599, edges: 42000 }} />);
+    expect(screen.getByText("1,261,599")).toBeTruthy();
+    expect((1261599).toLocaleString("en-IN")).toBe("12,61,599");
+    expect(screen.queryByText("12,61,599")).toBeNull();
+  });
 });

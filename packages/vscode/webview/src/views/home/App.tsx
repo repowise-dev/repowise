@@ -30,6 +30,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { EmptyState } from "@repowise-dev/ui/shared";
+import { formatNumber, formatRelativeTime, parseDate } from "@repowise-dev/ui/lib/format";
 import { scoreTextColor } from "@repowise-dev/ui/health/tokens";
 import { formatScore } from "@repowise-dev/types/health";
 import type {
@@ -56,16 +57,11 @@ function scoreTone(score: number | null): string {
 }
 
 /** Compact relative time for the freshness row ("3h ago"). */
-function timeAgo(iso: string): string {
-  const then = Date.parse(iso);
-  if (Number.isNaN(then)) return "";
-  const minutes = Math.floor((Date.now() - then) / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return days < 30 ? `${days}d ago` : new Date(then).toLocaleDateString();
+export function timeAgo(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = parseDate(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return formatRelativeTime(d, { s: "just now" });
 }
 
 function short(commit: string | null): string | null {
@@ -87,7 +83,7 @@ const CARDS: CardSpec[] = [
     icon: Activity,
     subtitle: (s) =>
       s?.health
-        ? `${s.health.openFindings.toLocaleString()} open findings · ${s.health.fileCount.toLocaleString()} files`
+        ? `${formatNumber(s.health.openFindings)} open findings · ${formatNumber(s.health.fileCount)} files`
         : "The score map, its lenses, and the trend",
   },
   {
@@ -108,7 +104,7 @@ const CARDS: CardSpec[] = [
     icon: Wrench,
     subtitle: (s) =>
       s?.counts.refactoringPlans != null
-        ? `${s.counts.refactoringPlans.toLocaleString()} ranked plans`
+        ? `${formatNumber(s.counts.refactoringPlans)} ranked plans`
         : "Server-ranked refactoring opportunities",
   },
   {
@@ -117,7 +113,7 @@ const CARDS: CardSpec[] = [
     icon: Scale,
     subtitle: (s) =>
       s?.counts.decisions != null
-        ? `${s.counts.decisions.toLocaleString()} decision records`
+        ? `${formatNumber(s.counts.decisions)} decision records`
         : "Architectural decision records",
   },
   {
@@ -336,7 +332,7 @@ function Hero({
               </>
             ) : null}
             <span aria-hidden className="text-[var(--color-text-tertiary)]">·</span>
-            <span>{(health?.fileCount ?? 0).toLocaleString()} files</span>
+            <span>{formatNumber(health?.fileCount ?? 0)} files</span>
           </p>
           {hasHotspot && (health?.history.length ?? 0) >= 2 ? (
             <Sparkline values={health?.history ?? []} tone={scoreTone(health?.hotspot ?? null)} />
