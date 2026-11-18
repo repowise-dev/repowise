@@ -746,6 +746,10 @@ def test_entry_points_waiting_for_arguments_are_named_in_next_call(tmp_path: Pat
     done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
     assert done["next_call"] is None
     assert done["reason"].startswith("Evidence at this commit is ingested; nothing left to run. Optional: app, tool.")
+    # Once a run of an entry point is stored at this commit, under any arguments, it is not asked for again.
+    measured = RuntimeInputs(measured=frozenset({("python tests", SHA), ("app build", SHA)}))
+    done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
+    assert done["reason"].endswith("Optional: tool. " + plan["next_call"]["optional"]["purpose"])
 
 
 def test_without_entry_points_next_call_has_no_optional_key(tmp_path: Path) -> None:

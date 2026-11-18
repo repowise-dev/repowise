@@ -415,7 +415,7 @@ async def _store(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
         _report_conversion(notices, read.format, conversion)
-        if workload_class == "entry_point":
+        if workload_class == "entry_point" and doc.value_kind == "wall":
             _warn_short_run(notices, conversion)
 
     paths = entry_paths(doc)
@@ -543,7 +543,7 @@ _SHORT_RUN_S = 3.0
 
 
 def _warn_short_run(notices: Any, conversion: Any) -> None:
-    """Warn (never refuse) when an entry point's profile covers only a few seconds.
+    """Warn (never refuse) when an entry point's wall-clock profile covers only a few seconds.
 
     A program that deferred to another process or printed its usage exits 0
     having measured nothing representative, and its run would still rank.

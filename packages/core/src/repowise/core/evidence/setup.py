@@ -234,8 +234,9 @@ def evidence_setup(
     if not coverage_only:
         _add_runtime(root, stacks, planned, runtime, head)
     covered = head is not None and coverage_commit == head
-    next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=_measured_at(runtime, head))
-    optional = _awaiting_args(planned)
+    done = _measured_at(runtime, head)
+    next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=done)
+    optional = _optional_entry_points(planned, done)
     if next_call is not None:
         reason = None
         if optional:
@@ -262,15 +263,20 @@ def evidence_setup(
     }
 
 
-def _awaiting_args(planned: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
-    """Entry points waiting for their arguments, by workload: never a step, so named here.
+def _optional_entry_points(
+    planned: Sequence[dict[str, Any]], done: Collection[str]
+) -> dict[str, Any] | None:
+    """Entry points waiting for their arguments and not measured here, by workload.
 
-    Only names, so the default answer stays small; each target's command and
-    ingest line are in ``units[].runtime``.
+    Never a step, so named here. An entry point counts as measured once any
+    run of it is stored at this commit (``app`` or ``app build``). Only names,
+    so the default answer stays small; each target's command and ingest line
+    are in ``units[].runtime``.
     """
     workloads = [
         t["workload"] for u in planned for t in u.get("runtime", ())
         if t["command"] and t["command"].endswith(ARGS_PLACEHOLDER) and t["ingest"]
+        and not any(d == t["workload"] or d.startswith(t["workload"] + " ") for d in done)
     ]
     if not workloads:
         return None
