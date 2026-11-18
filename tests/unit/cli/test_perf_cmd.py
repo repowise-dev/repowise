@@ -139,6 +139,7 @@ def test_a_failing_run_exits_two_with_its_last_output(repo: Path, monkeypatch) -
         (["--save", "a", "--against", "b", "--", "pytest"], "usage"),
         (["--against", "missing", "--", "pytest"], "baseline"),
         (["--save", "../x", "--", "pytest"], "baseline"),
+        (["--save", "base\n", "--", "pytest"], "baseline"),
     ],
 )
 def test_refusals_exit_two_with_a_json_error(repo: Path, monkeypatch, args, code) -> None:

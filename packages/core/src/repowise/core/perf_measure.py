@@ -45,7 +45,7 @@ CONFIDENCE = 0.95
 #: change so an old baseline is refused rather than misread.
 BASELINE_DIR = "perf"
 BASELINE_VERSION = 1
-_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
 Verdict = Literal["improved", "regressed", "inconclusive"]
 Mode = Literal["before_after", "interleaved"]
@@ -224,7 +224,7 @@ class Baseline:
 
 def baseline_path(repowise_dir: Path, name: str) -> Path:
     """Where baseline *name* lives. The name is a file name, never a path."""
-    if not _NAME_RE.match(name):
+    if not _NAME_RE.fullmatch(name):
         raise BaselineError(
             f"baseline name {name!r} must be 1-64 letters, digits, '.', '_' or '-', "
             "starting with a letter or digit"
