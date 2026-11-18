@@ -17,6 +17,7 @@ from repowise.core.analysis.health.models import HealthFindingData, Severity
 from repowise.core.analysis.health.perf.opportunities import link_performance_findings
 from repowise.core.persistence.models import (
     HealthFileMetric,
+    HealthFinding,
     PerformanceOpportunity,
 )
 from repowise.core.pipeline.persist import save_full_health_report
@@ -89,6 +90,22 @@ async def _open_perf_ids(session, repo_id: str) -> set[str]:
         .all()
     )
     return {row.opportunity_id for row in rows}
+
+
+async def _open_finding_ids(session, repo_id: str) -> set[str]:
+    rows = (
+        (
+            await session.execute(
+                select(HealthFinding).where(
+                    HealthFinding.repository_id == repo_id,
+                    HealthFinding.status == "open",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.public_id for row in rows}
 
 
 class TestSaveFullHealthReport:
@@ -203,6 +220,35 @@ class TestSaveFullHealthReport:
             .all()
         )
         assert {row.analyzed_commit for row in rows} == {None}
+
+    async def test_a_clean_pass_with_no_findings_resolves_the_open_ones(self, async_session):
+        """A report that scored metrics but found nothing must reconcile the queue.
+
+        `save_health_findings` is what deletes the prior open rows, so guarding
+        it with `if findings:` left rows open forever once a repository was
+        refactored clean (the comment above the call already promised it runs
+        on an empty finding set too).
+        """
+        repo_id = (await insert_repo(async_session)).id
+        await save_full_health_report(
+            async_session, repo_id, _report([_perf_finding(10)]), analyzed_commit="a" * 40
+        )
+        assert await _open_finding_ids(async_session, repo_id)
+
+        clean = _report([], metrics=[_metric()])
+        await save_full_health_report(async_session, repo_id, clean, analyzed_commit="c" * 40)
+
+        assert await _open_finding_ids(async_session, repo_id) == set()
+        metrics = (
+            (
+                await async_session.execute(
+                    select(HealthFileMetric).where(HealthFileMetric.repository_id == repo_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert metrics, "a clean pass must still write the metrics it scored"
 
 
 async def session_rows(session, repo_id: str):
