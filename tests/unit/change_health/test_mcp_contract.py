@@ -170,6 +170,15 @@ def test_changed_symbol_rows_cap_the_list_and_name_a_move():
     assert "moved_from" not in out["changed_symbols"][1]
 
 
+def test_changed_symbol_rows_add_nothing_when_no_symbol_changed():
+    from repowise.core.analysis.change_health.models import ChangeHealthDelta
+    from repowise.server.mcp_server._change_health import changed_symbol_rows
+
+    delta = ChangeHealthDelta("available", "", None, None, "", None, changed_symbols=[])
+
+    assert changed_symbol_rows(delta) == {}
+
+
 # -- drill-down -------------------------------------------------------------
 
 
