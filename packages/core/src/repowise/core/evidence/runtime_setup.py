@@ -195,8 +195,12 @@ def _target(
     input_format: str | None = None,
     prerequisites: Sequence[str] = (),
     reason: str | None = None,
+    timed: str | None = None,
 ) -> dict[str, Any]:
     """One runtime target, JSON-ready.
+
+    *timed* is the same workload without the profiler, for ``perf measure``;
+    it rides under ``timed`` until :func:`runtime_targets` drops it.
 
     ``ingest`` is None when the run cannot be read yet: no commit, or
     *input_format* (what the recipe writes) is not a registered profile
@@ -220,6 +224,7 @@ def _target(
         "profile": profile,
         "ingest": ingest,
         "reason": reason,
+        **({"timed": timed} if command and timed else {}),
     }
 
 
@@ -273,13 +278,15 @@ def _python_targets(
     root = stack.root
     cwd = str(repo_root / root) if root else str(repo_root)
     launcher, needs = _python_launcher(stack, repo_root)
+    python = " ".join([*_env_prefix(stack), "python"])
     out: list[dict[str, Any]] = []
 
     def profiled(cls: str, name: str, run: str, extra: Sequence[str] = ()) -> dict[str, Any]:
         workload, profile = _named(root, name, ".speedscope.json")
         command = _pyinstrument(launcher, _from(root, profile), run)
         return _target(cls, workload, cwd=cwd, command=command, profile=profile, commit=commit,
-                       input_format="speedscope", prerequisites=[*needs, *extra])
+                       input_format="speedscope", prerequisites=[*needs, *extra],
+                       timed=f'{python} -c "import sys;{run}"')
 
     for name, (module, function) in sorted(console_scripts(repo_root / root).items()):
         argv = f"sys.argv=['{name}']+sys.argv[1:];"
@@ -303,11 +310,11 @@ def _python_targets(
         # Node ids are relative to pytest's rootdir, so this one runs from the repository root.
         name, profile = _named(root, "pytest bench", ".json")
         target = [root] if root else []
-        command = " ".join(
-            [*_env_prefix(stack), "pytest", *target, "--benchmark-only", f"--benchmark-json={profile}"]
-        )
+        timed = " ".join([*_env_prefix(stack), "pytest", *target, "--benchmark-only"])
+        command = f"{timed} --benchmark-json={profile}"
         out.append(_target("benchmark", name, cwd=str(repo_root), command=command,
-                           profile=profile, commit=commit, input_format="pytest-benchmark"))
+                           profile=profile, commit=commit, input_format="pytest-benchmark",
+                           timed=timed))
     if stack.test:
         run = "import pytest;sys.exit(pytest.main(sys.argv[1:]))"
         # The coverage command's own install brings pytest only in CI, so install it here too.
@@ -342,13 +349,15 @@ def _go_package_arg(rel_dir: str) -> str:
     return f"./{rel_dir}" if rel_dir else "."
 
 
-def _go_profiled(root: str, rel_dir: str, flags: str, name: str) -> tuple[str, str, str]:
-    """The workload, the ``go test`` line profiling one package, and its profile path."""
+def _go_profiled(root: str, rel_dir: str, flags: str, name: str) -> tuple[str, str, str, str]:
+    """The workload, the ``go test`` line profiling one package, its profile
+    path, and the same line without the profile (what ``perf measure`` times)."""
     workload, profile = _named(root, name, ".pprof")
     binary = profile.removesuffix(".pprof") + ".test"
     parts = ["go test", flags, "-count=1", f"-o {_from(root, binary)}",
              f"-cpuprofile {_from(root, profile)}", _go_package_arg(rel_dir)]
-    return workload, " ".join(p for p in parts if p), profile
+    timed = ["go test", flags, "-count=1", _go_package_arg(rel_dir)]
+    return workload, " ".join(p for p in parts if p), profile, " ".join(p for p in timed if p)
 
 
 def _go_targets(
@@ -381,18 +390,18 @@ def _go_targets(
     })
     for rel_dir in bench_dirs[:PER_CLASS]:
         # Benchmarks only: no unit test runs inside the profile.
-        name, command, profile = _go_profiled(
+        name, command, profile, timed = _go_profiled(
             root, rel_dir, "'-run=^$' -bench . -benchmem", f"go bench {_go_package_arg(rel_dir)}"
         )
         out.append(_target("benchmark", name, cwd=cwd, command=command, profile=profile, commit=commit,
-                           input_format="pprof"))
+                           input_format="pprof", timed=timed))
     test_dirs = sorted(
         {posixpath.dirname(rel) for p in inputs.test_files
          if p.endswith("_test.go") and (rel := _owned(root, roots, p)) is not None},
         key=lambda d: (d.count("/") + bool(d), d),
     )
     if test_dirs:
-        name, command, profile = _go_profiled(
+        name, command, profile, _ = _go_profiled(
             root, test_dirs[0], "", f"go test {_go_package_arg(test_dirs[0])}"
         )
         out.append(_target("unit_test", name, cwd=cwd, command=command,
@@ -438,7 +447,7 @@ def _node_targets(
             f"--cpu-prof-name={posixpath.basename(profile)} {rel}"
         )
         out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
-                           input_format="cpuprofile"))
+                           input_format="cpuprofile", timed=f"node {rel}"))
     return out
 
 
@@ -455,6 +464,18 @@ def runtime_targets(
     *unit_roots* are every unit's root: a file under a deeper unit is that
     unit's. A unit whose root a shell could misread gets none.
     """
+    found = _unit_targets(stack, repo_root, inputs, commit, go_mains, unit_roots)
+    return [{k: v for k, v in t.items() if k != "timed"} for t in found]
+
+
+def _unit_targets(
+    stack: Stack,
+    repo_root: Path,
+    inputs: RuntimeInputs,
+    commit: str | None,
+    go_mains: Sequence[str],
+    unit_roots: Collection[str],
+) -> list[dict[str, Any]]:
     if not _SAFE_PATH.fullmatch(stack.root):
         return []
     if stack.language == "python":
@@ -468,6 +489,48 @@ def runtime_targets(
     return sorted(found, key=lambda t: CLASS_ORDER.index(t["class"]))
 
 
+#: The workload classes a timing may come from: a unit-test suite runs far
+#: more than the change, so its wall time says little about it.
+TIMED_CLASSES = ("entry_point", "benchmark")
+#: The language family (:func:`~repowise.core.analysis.health.refactoring.language_family.language_family`)
+#: each stack with runtime targets builds.
+_STACK_FAMILY = {"python": "python", "go": "go", "node": "js"}
+
+
+def timed_target(
+    stacks: Sequence[Stack],
+    repo_root: Path,
+    inputs: RuntimeInputs,
+    path: str,
+    go_mains: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    """The workload ``perf measure`` times for a change to *path*, or None.
+
+    The first entry point or benchmark :func:`runtime_targets` lists for the
+    deepest unit of *path*'s language that holds it, without the profiler:
+    ``{workload, class, command, cwd}``, *cwd* repo-relative (``""`` the root).
+    """
+    from ..analysis.health.refactoring.language_family import language_family
+
+    family = language_family(path)
+    owners = [s for s in stacks if _STACK_FAMILY.get(s.language) == family and _within(s.root, path)]
+    if not owners:
+        return None
+    root = max(len(s.root) for s in owners)
+    roots = {s.root for s in stacks}
+    for stack in (s for s in owners if len(s.root) == root):
+        for target in _unit_targets(stack, repo_root, inputs, None, go_mains, roots):
+            if target["class"] in TIMED_CLASSES and target.get("timed"):
+                cwd = Path(target["cwd"]).relative_to(repo_root).as_posix()
+                return {
+                    "workload": target["workload"],
+                    "class": target["class"],
+                    "command": target["timed"],
+                    "cwd": "" if cwd == "." else cwd,
+                }
+    return None
+
+
 __all__ = [
     "CLASS_ORDER",
     "EVIDENCE_STATUS_COMMAND",
@@ -476,4 +539,5 @@ __all__ = [
     "evidence_ingest_line",
     "load_runtime_inputs",
     "runtime_targets",
+    "timed_target",
 ]

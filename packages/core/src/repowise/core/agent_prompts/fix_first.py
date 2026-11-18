@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from .fix_and_verify import measure_lines
 from .preamble import preamble
 from .sections import and_more, bullet_list, closing_sections, join_sections, repo_suffix
 
@@ -35,8 +36,15 @@ def _where(target: Mapping[str, Any]) -> str:
 
 
 def render_verify_lines(item: Mapping[str, Any]) -> str:
-    """The Verify block, worded the way the card words it."""
+    """The Verify block, worded the way the card words it, then the timing a
+    performance item carries."""
     verify = item["verify"]
+    measure = verify.get("measure")
+    tests = _test_lines(verify)
+    return "\n".join([tests, "", *measure_lines(measure)]) if measure else tests
+
+
+def _test_lines(verify: Mapping[str, Any]) -> str:
     tests = verify["tests"]
     if not tests:
         # The fallback covers items stored before Verify named its prerequisite.

@@ -25,7 +25,7 @@ import json
 import math
 import re
 import statistics
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -46,6 +46,9 @@ CONFIDENCE = 0.95
 BASELINE_DIR = "perf"
 BASELINE_VERSION = 1
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
+#: What the verdict compares, in the words a plan's ``verify.measure`` uses.
+METRIC = "median wall time"
 
 Verdict = Literal["improved", "regressed", "inconclusive"]
 Mode = Literal["before_after", "interleaved"]
@@ -232,6 +235,35 @@ def baseline_path(repowise_dir: Path, name: str) -> Path:
     return repowise_dir / BASELINE_DIR / f"{name}.json"
 
 
+def baseline_name(label: str | None) -> str:
+    """A valid baseline name for a change to *label* (a function's name): ``before-<label>``."""
+    slug = _NAME_UNSAFE.sub("-", label or "").strip("-.")
+    return f"before-{slug}"[:64].rstrip("-.") if slug else "before"
+
+
+def verify_measure(target: Mapping[str, Any], label: str | None) -> dict[str, Any]:
+    """A fix plan's ``verify.measure``: how to time *target* (a
+    :func:`~repowise.core.evidence.runtime_setup.timed_target`) before and after
+    a change to *label*.
+
+    ``tolerance`` is the before-and-after floor: the verdict calls a change
+    only beyond it, or beyond twice the noise the runs show when that is wider.
+    """
+    name = baseline_name(label)
+    command = target["command"]
+    return {
+        "command": command,
+        "before": f"repowise perf measure --save {name} -- {command}",
+        "after": f"repowise perf measure --against {name} -- {command}",
+        "metric": METRIC,
+        "baseline": name,
+        "tolerance": BEFORE_AFTER_FLOOR,
+        "workload": target["workload"],
+        "workload_class": target["class"],
+        **({"cwd": target["cwd"]} if target.get("cwd") else {}),
+    }
+
+
 def save_baseline(repowise_dir: Path, baseline: Baseline) -> Path:
     path = baseline_path(repowise_dir, baseline.name)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,12 +308,14 @@ __all__ = [
     "BEFORE_AFTER_FLOOR",
     "DEFAULT_RUNS",
     "INTERLEAVED_FLOOR",
+    "METRIC",
     "MIN_RUNS",
     "Baseline",
     "BaselineError",
     "CommandFailedError",
     "Comparison",
     "Side",
+    "baseline_name",
     "baseline_path",
     "collect",
     "collect_interleaved",
@@ -292,4 +326,5 @@ __all__ = [
     "split_noise",
     "threshold",
     "verdict",
+    "verify_measure",
 ]

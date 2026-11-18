@@ -162,3 +162,18 @@ def test_a_damaged_baseline_is_refused(tmp_path: Path, mutate) -> None:
     path.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(BaselineError):
         load_baseline(tmp_path, "base")
+
+
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [("load_rows", "before-load_rows"), ("Report.render", "before-Report.render"),
+     ("<lambda>", "before-lambda"), ("", "before"), (None, "before"), ("x" * 100, "before-" + "x" * 57)],
+)
+def test_a_baseline_name_for_any_function_is_one_perf_measure_accepts(
+    tmp_path: Path, label: str | None, expected: str
+) -> None:
+    from repowise.core.perf_measure import baseline_name, baseline_path
+
+    name = baseline_name(label)
+    assert name == expected
+    assert baseline_path(tmp_path, name).name == f"{name}.json"

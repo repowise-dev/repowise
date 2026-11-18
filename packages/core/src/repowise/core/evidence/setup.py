@@ -20,7 +20,13 @@ from typing import Any
 from ..build_units.model import BuildUnitIndex
 from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack, detect_repo_stacks
-from .runtime_setup import CLASS_ORDER, EVIDENCE_STATUS_COMMAND, RuntimeInputs, runtime_targets
+from .runtime_setup import (
+    CLASS_ORDER,
+    EVIDENCE_STATUS_COMMAND,
+    RuntimeInputs,
+    runtime_targets,
+    timed_target,
+)
 
 #: Builds the index evidence joins to; no model calls, no API key.
 INIT_COMMAND = "repowise init --yes --no-prose"
@@ -282,6 +288,33 @@ def _next_call(
     )
 
 
+def timed_targets(
+    repo_root: str | Path,
+    paths: Iterable[str],
+    *,
+    units: BuildUnitIndex | None,
+    runtime: RuntimeInputs,
+) -> dict[str, dict[str, Any]]:
+    """For each repo-relative path in *paths*, the workload ``perf measure``
+    times for a change there (:func:`~.runtime_setup.timed_target`); a path
+    with none is left out. One stack detection for all of them. Blocking reads.
+    """
+    root = Path(repo_root)
+    stacks = detect_repo_stacks(root, units)
+    mains = _go_mains(root, stacks)
+    out: dict[str, dict[str, Any]] = {}
+    # Files of one language in one directory share a unit, so its targets are read once.
+    seen: dict[tuple[str, str], dict[str, Any] | None] = {}
+    for path in paths:
+        key = (posixpath.splitext(path)[1], posixpath.dirname(path))
+        if key not in seen:
+            seen[key] = timed_target(stacks, root, runtime, path, mains)
+        target = seen[key]
+        if target:
+            out[path] = target
+    return out
+
+
 def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
     """Go ``package main`` directories, read only when a unit is Go."""
     if not any(s.language == "go" for s in stacks):
@@ -299,4 +332,5 @@ __all__ = [
     "UPDATE_COMMAND",
     "coverage_ingest_line",
     "evidence_setup",
+    "timed_targets",
 ]
