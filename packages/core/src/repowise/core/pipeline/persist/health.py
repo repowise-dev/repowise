@@ -132,6 +132,7 @@ async def save_full_health_report(
     is composed once. For a caller whose decisions are already stored (the
     update's re-score); the index stores its decisions after this writer.
     """
+    from repowise.core.evidence.hotness import refresh_symbol_hotness
     from repowise.core.persistence.crud import (
         PayoffContext,
         finalize_performance_opportunities,
@@ -195,6 +196,11 @@ async def save_full_health_report(
                 # unique body; a moved and edited function starts afresh.
                 commit=analyzed_commit,
             )
+        # The measured functions follow the facts just written: ids, lineage
+        # and bodies. Nothing is read past one lookup without stored evidence.
+        await refresh_symbol_hotness(
+            session, repo_id, head_commit=analyzed_commit, repo_path=repo_path
+        )
         # Group the stored performance findings into the materialized causal
         # read model, then reconcile lifecycle and plans.
         await finalize_performance_opportunities(
