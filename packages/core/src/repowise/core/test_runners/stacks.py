@@ -396,7 +396,7 @@ _LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])"
 #: after their own flags. A flag that takes a value (``--prefix pkg``) leaves the value where the
 #: runner would be, so the line names no runner. ``-p``/``--package`` stop the match outright: their
 #: value is a package name, often the runner's own, and is not the command.
-_EXEC_WRAPPER = re.compile(r"^(?:npx|bunx|[\w.-]+\s+exec)(?:\s+-(?!p\b|-package\b)\S+)*\s+")
+_EXEC_WRAPPER = re.compile(r"^(?:npx|bunx|[\w.-]+\s+exec)(?:\s+-(?!(?:p|-package)(?![\w-]))\S+)*\s+")
 
 
 def _node_runner(script: str) -> str | None:
