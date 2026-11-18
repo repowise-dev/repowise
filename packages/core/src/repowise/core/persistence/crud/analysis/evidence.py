@@ -293,9 +293,9 @@ async def ranked_hotness(
     repository_id: str,
     *,
     workload_classes: Collection[str] | None = None,
-    limit: int = 10,
+    limit: int | None = 10,
 ) -> list[SymbolHotness]:
-    """The repository's ranked functions, strongest first, at most *limit*.
+    """The repository's ranked functions, strongest first, at most *limit* (``None``: all).
 
     Ranked means tier ``ranked`` or ``lead_candidate`` from evidence that is
     not stale. *workload_classes* keeps rows whose basis run has one of those
