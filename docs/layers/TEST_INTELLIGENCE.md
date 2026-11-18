@@ -96,9 +96,12 @@ Feed any other runner through the normalized JSON:
 
 coverage.py dynamic contexts ([Quick start](#quick-start)) like
 `tests/test_auth.py::TestLogin::test_ok|run` become test ids, with no runtime dependency
-on coverage.py; per-test LCOV uses distinct `TN:` names and skips blank ones. A report
-with no contexts still stores the per-file aggregate, and `coverage add` says so. The
-map is capped at 250,000 rows, and the CLI reports how many were dropped.
+on coverage.py. The `|setup`, `|run` and `|teardown` contexts of one test merge into its
+nodeid (`tests/test_auth.py::TestLogin::test_ok`), and the test's file is the path before
+`::`. Per-test LCOV uses distinct `TN:` names and skips blank ones. A report with no
+contexts still stores the per-file aggregate, and `coverage add` says so. The map is
+capped at 2,000,000 (test, file) pairs, about 80,000 tests at 25 files each. Past the
+cap whole tests are left out, the CLI says how many, and test selection runs everything.
 
 ## Impacted tests
 

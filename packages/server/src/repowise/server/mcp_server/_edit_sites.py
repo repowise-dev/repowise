@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.fs_walk import PRUNED_DIRS, iter_glob
 from repowise.core.ingestion.languages.registry import REGISTRY
-from repowise.core.ingestion.symbol_identity import id_segment_name
+from repowise.core.ingestion.symbol_identity import file_of_symbol, id_segment_name
 from repowise.core.persistence.batches import chunked
 from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
@@ -1102,7 +1102,7 @@ def _edge_facts(edges: list[Any], node: GraphNode, name: str, files: set[str]) -
             continue
         if tgt != node.node_id or etype in ("imports", "defines"):
             continue
-        src_file = src.split("::", 1)[0]
+        src_file = file_of_symbol(src)
         lines = {int(n) for n in _edge_names(lines_json) if n.isdigit()}
         if etype == "calls" and not lines:
             unlined = True
@@ -1496,7 +1496,7 @@ async def _edit_set(
     bases, overrides = await _dispatch_kin(session, repo_id, node)
     scope = _Scope(
         node.kind in _MEMBER_KINDS or node.node_id.count("::") > 1,
-        frozenset(i.split("::", 1)[0] for i in bases + overrides),
+        frozenset(file_of_symbol(i) for i in bases + overrides),
     )
     scan = _ScanResult(
         *await asyncio.to_thread(

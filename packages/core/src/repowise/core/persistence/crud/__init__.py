@@ -12,8 +12,8 @@ Versioning contract for upsert_page:
                     in place (version increments).  created_at is preserved.
 
 This module is a façade: the implementations live in per-domain submodules
-(repository, pages, graph, external_systems, git, history, analysis, decisions, chat,
-knowledge_graph). Import names from here — sub-module layout may change.
+(repository, pages, graph, external_systems, build_units, git, history, analysis,
+decisions, chat, knowledge_graph). Import names from here; sub-module layout may change.
 
 The ``analysis`` names load on first use: that package pulls in the coverage,
 doc-drift and health analyzers, most of this façade's import cost, and a
@@ -26,6 +26,7 @@ import importlib
 from typing import Any
 
 from .authority import *  # noqa: F403
+from .build_units import *  # noqa: F403
 from .changes import *  # noqa: F403
 from .chat import *  # noqa: F403
 from .decisions import *  # noqa: F403

@@ -132,6 +132,7 @@ async def save_full_health_report(
     is composed once. For a caller whose decisions are already stored (the
     update's re-score); the index stores its decisions after this writer.
     """
+    from repowise.core.evidence.hotness import refresh_symbol_hotness
     from repowise.core.persistence.crud import (
         PayoffContext,
         finalize_performance_opportunities,
@@ -158,8 +159,7 @@ async def save_full_health_report(
     # that were never stored. It runs on an empty finding set too: the queue
     # has to be reconciled to nothing just the same.
     async with session.begin_nested():
-        if findings:
-            await save_health_findings(session, repo_id, findings)
+        await save_health_findings(session, repo_id, findings)
         # Structured refactoring suggestions (Extract Class, ...). Repo-wide
         # reconciliation: an unchanged plan keeps its id and its triage state,
         # and one nobody detects any more resolves rather than disappearing.
@@ -192,7 +192,15 @@ async def save_full_health_report(
                 fact_rows,
                 roles=getattr(hr, "execution_roles", None),
                 tests=getattr(hr, "function_tests", None),
+                # A full run knows no diff: lineage carries by id and by
+                # unique body; a moved and edited function starts afresh.
+                commit=analyzed_commit,
             )
+        # The measured functions follow the facts just written: ids, lineage
+        # and bodies. Nothing is read past one lookup without stored evidence.
+        await refresh_symbol_hotness(
+            session, repo_id, head_commit=analyzed_commit, repo_path=repo_path
+        )
         # Group the stored performance findings into the materialized causal
         # read model, then reconcile lifecycle and plans.
         await finalize_performance_opportunities(

@@ -21,7 +21,16 @@ from typing import Any
 from repowise.core.fts_query import meaningful_terms
 
 from .git_text import _git, read_change_texts
-from .rank import Candidate, SuspectContext, Symptom, prepare, rank_suspects
+from .rank import (
+    Candidate,
+    PreparedSymptom,
+    SuspectContext,
+    Symptom,
+    prepare,
+    rank_suspects,
+    resolvable,
+    resolve_trace,
+)
 
 #: The window the measurement used (prereg/suspects.md): 14 days before the symptom.
 DEFAULT_WINDOW_DAYS = 14
@@ -56,6 +65,50 @@ async def _imports(session: Any, repo_id: str) -> dict[str, set[str]]:
         adj.setdefault(u, set()).add(v)
         adj.setdefault(v, set()).add(u)
     return adj
+
+
+async def _resolve_trace(
+    session: Any, repo_id: str, repo_path: Path, prepared: PreparedSymptom
+) -> PreparedSymptom:
+    """*prepared* with trace frames joined to the indexed symbols they ran in.
+
+    Unchanged when the index records no commit or git cannot say which trace
+    files differ from it: a frame is joined only against the code that ran.
+    ``head_commit`` is the commit the last index run stamped; an index whose
+    symbols were written from another commit is not detected here.
+    """
+    from sqlalchemy import select
+
+    from repowise.core.frame_resolver import checkout_reader, load_frame_symbols
+    from repowise.core.persistence.models import Repository
+
+    files = list(prepared.trace_files)
+    if not files:
+        return prepared
+    head = (
+        await session.execute(select(Repository.head_commit).where(Repository.id == repo_id))
+    ).scalar()
+    if not head:
+        return prepared
+    changed = await asyncio.to_thread(
+        _git, repo_path, "--literal-pathspecs", "diff", "--name-only", "--relative", head, "--", *files
+    )
+    if changed is None:
+        return prepared
+    loaded, origins = await load_frame_symbols(session, repo_id, files)
+    # Every trace file maps to the repo already, so one with no symbols is indexed.
+    symbols = {f: [] for f in files} | loaded
+
+    return await asyncio.to_thread(
+        lambda: resolve_trace(
+            prepared,
+            root=str(repo_path),
+            symbols_by_file=symbols,
+            dirty_paths=set(changed.splitlines()),
+            origins=origins,
+            read_lines=checkout_reader(repo_path),
+        )
+    )
 
 
 def _row(row: Any, attribution: bool) -> dict[str, Any]:
@@ -125,6 +178,8 @@ async def find_suspects(
     ]
     repo_files = await asyncio.to_thread(_tracked_files, repo_path)
     prepared = prepare(symptom, SuspectContext(repo_files=repo_files))
+    if any(resolvable(f) for f in prepared.frames):
+        prepared = await _resolve_trace(session, repo_id, repo_path, prepared)
     named = prepared.files
     ctx = SuspectContext(
         repo_files=repo_files,

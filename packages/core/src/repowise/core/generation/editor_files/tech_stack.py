@@ -15,6 +15,7 @@ from repowise.core.repo_formatters import declares_ruff_format
 
 from ...ingestion.composer import COMPOSER_JSON, read_composer
 from ...ingestion.framework_facts import detect_php_framework
+from ...ingestion.languages.registry import REGISTRY as _LANG_REGISTRY
 from .data import TechStackItem
 
 # package.json dependency -> (display name, category).
@@ -114,26 +115,16 @@ def _find_dotnet_projects(repo_path: Path) -> list[Path]:
     return found
 
 
-# Every root-level path the scan below reads by name. The memo key stats all of
-# them, so adding a read here means adding it there or the memo goes stale on
-# the signal you just added.
-_MANIFEST_FILES = (
-    "package.json",
-    "tsconfig.json",
-    "pyproject.toml",
-    "setup.py",
-    "Cargo.toml",
-    "go.mod",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-    "Gemfile",
-    "composer.json",
-    "Dockerfile",
-    "docker-compose.yml",
-    "docker-compose.yaml",
-    "Directory.Build.props",
-    "Directory.Packages.props",
+# Every root-level path the scan below reads by name: the manifests the
+# language registry declares (a superset of the ones the scan opens) plus the
+# non-manifest files it reads. The memo key stats all of them, so a new
+# non-manifest read here means adding it here or the memo goes stale on the
+# signal you just added.
+_MANIFEST_FILES = tuple(
+    sorted(
+        _LANG_REGISTRY.manifest_filenames()
+        | {"tsconfig.json", "Dockerfile", "docker-compose.yml", "docker-compose.yaml"}
+    )
 )
 
 # repo_path -> (manifest fingerprint, detected stack).

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
+
+from repowise.core.git_sha import is_sha_prefix
 
 # ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
-
-
-_COMMIT_ID_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 
 
 def as_commit_id(value: object) -> str | None:
@@ -21,8 +19,8 @@ def as_commit_id(value: object) -> str | None:
     before they reach a ``git`` argument list, where a leading ``-`` would be
     read as an option.
     """
-    if isinstance(value, str) and _COMMIT_ID_RE.fullmatch(value):
-        return value
+    if isinstance(value, str) and is_sha_prefix(value.lower()):
+        return value.lower()
     return None
 
 

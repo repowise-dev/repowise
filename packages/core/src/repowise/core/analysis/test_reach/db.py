@@ -18,15 +18,17 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.analysis.dead_code.file_reachability import BARREL_FILENAMES
-from repowise.core.analysis.execution_graph import ExecutionGraphIndex, file_of_symbol
+from repowise.core.analysis.execution_graph import ExecutionGraphIndex
 from repowise.core.ingestion.models import EXECUTION_EDGE_TYPES, FILE_DEPENDENCY_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.index_cache import IndexStampCache, index_stamp
 from repowise.core.persistence.models import GraphNode, HealthFileMetric, Repository
 from repowise.core.persistence.read_snapshots import read_snapshot, refresh_snapshot, snapshot_key
+from repowise.core.test_paths import is_test_support_module
 
 from .forward import CallGraphView, files_reached_by_tests
 from .hubs import call_hub_files
-from .maps import LEGACY_CONFTEST_HINT, ImportGraph, Need, Walk
+from .maps import LEGACY_CONFTEST_HINT, NEVER_RUN_SUFFIXES, ImportGraph, Need, Walk
 from .mocks import MASKABLE_SUFFIXES, replaced_files
 from .model import (
     DEFAULT_CALL_DEPTH,
@@ -119,14 +121,14 @@ async def call_graph_from_db(session: AsyncSession, repo_id: str) -> CallGraphVi
 
 
 async def load_test_files(session: AsyncSession, repo_id: str) -> set[str]:
-    """Paths of every file node ingestion classified as a test."""
+    """Paths of every file node ingestion classified as a test, test-tree support modules aside."""
     res = await session.execute(
         select(GraphNode.node_id).where(
             GraphNode.repository_id == repo_id,
             GraphNode.is_test == True,  # noqa: E712
         )
     )
-    return {row[0] for row in res.all()}
+    return {row[0] for row in res.all() if not is_test_support_module(row[0])}
 
 
 # Answers kept in process per (database, repository, index stamp), so one
@@ -691,6 +693,7 @@ async def load_import_graph(session: AsyncSession, repo_id: str) -> ImportGraph:
         text(
             "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
             f"WHERE repository_id = :repo_id AND edge_type IN ({ets}){_LEGACY_CONFTEST_FILTER}"
+            f"{_runs_filter(params)}"
         ),
         params,
     )
@@ -741,6 +744,13 @@ _LEGACY_CONFTEST_FILTER = (
     " AND NOT (edge_type = 'dynamic_uses' "
     f"AND COALESCE(hint_source, '') = '{LEGACY_CONFTEST_HINT}')"
 )
+
+
+def _runs_filter(params: dict[str, Any]) -> str:
+    """SQL leaving out the edges :func:`~.maps.never_runs` leaves out; binds into *params*."""
+    params["never_runs"] = True
+    sources = " OR ".join(f"source_node_id LIKE '%{s}'" for s in NEVER_RUN_SUFFIXES)
+    return f" AND NOT (type_only = :never_runs AND ({sources}))"
 
 
 #: Edges a test file writes itself: imports and references, not the wiring a
@@ -798,7 +808,7 @@ async def _edges_from(
             text(
                 "SELECT DISTINCT source_node_id, target_node_id FROM graph_edges "
                 "WHERE repository_id = :repo_id "
-                f"AND source_node_id IN ({src}) AND edge_type IN ({ets})"
+                f"AND source_node_id IN ({src}) AND edge_type IN ({ets}){_runs_filter(params)}"
             ),
             params,
         )
@@ -828,6 +838,7 @@ async def _edges_into(
         # to survive the filter, and a bare NOT IN would drop it.
         bad = _in_clause("o", sorted(excluded_origins), shared)
         origin_filter = f" AND (resolution_origin IS NULL OR resolution_origin NOT IN ({bad}))"
+    origin_filter += _runs_filter(shared)
     out: list[tuple[str, str]] = []
     # Each target is in one batch only, so a pair is distinct across batches too.
     targets = list(dict.fromkeys(targets))

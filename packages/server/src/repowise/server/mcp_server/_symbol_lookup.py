@@ -26,6 +26,7 @@ from repowise.core.exclusion import is_excluded
 from repowise.core.ingestion.symbol_identity import (
     base_symbol_id,
     id_segment_name,
+    make_symbol_id,
     split_symbol_id,
     untyped_symbol_id,
 )
@@ -94,7 +95,7 @@ def symbol_id_variants(symbol_id: str) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for nv in name_variants(name):
-        sid = f"{file_path}::{nv}"
+        sid = make_symbol_id(file_path, nv)
         if sid not in seen:
             seen.add(sid)
             out.append(sid)

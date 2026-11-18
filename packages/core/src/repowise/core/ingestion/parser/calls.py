@@ -430,6 +430,12 @@ def _call_from_match(
         target_name = target_name.strip()
         if not target_name:
             return None
+    perl_scope = None
+    if language == "perl":
+        perl_names = _perl_call_names(site_node, target_name, receiver_name)
+        if perl_names is None:
+            return None
+        target_name, receiver_name, perl_scope = perl_names
 
     arg_nodes = capture_dict.get("call.arguments", [])
     receiver_call_nodes = capture_dict.get("call.receiver_call", [])
@@ -462,7 +468,7 @@ def _call_from_match(
         start_byte=target_nodes[0].start_byte,
         argument_types=_argument_literal_types(arguments, src, language),
         argument_names=_argument_names(arguments, src),
-        scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else None,
+        scope_name=_node_text(scope_nodes[0], src).strip() if scope_nodes else perl_scope,
         edge_type=(
             "references" if site_node.type in config.reference_call_node_types else "calls"
         ),
@@ -474,6 +480,35 @@ def _call_from_match(
         bare_name_fallback=on_unnamed_object,
     )
     return (site_node.start_byte, site_node.end_byte, target_name), call
+
+
+def _perl_call_names(
+    site_node: Node, target_name: str, receiver_name: str | None
+) -> tuple[str, str | None, str | None] | None:
+    """``(target, receiver, scope)`` of a Perl call; None for the class of ``new Pkg(..)``.
+
+    The grammar nests ``new Pkg(..)``'s ``Pkg(..)`` as a call of its own; the
+    query reads the whole as ``Pkg->new``, so the inner one is no call.
+    """
+    parent = site_node.parent
+    if parent is not None and parent.type == "ambiguous_function_call_expression":
+        function = parent.child_by_field_name("function")
+        if function is not None and function.text == b"new":
+            return None
+    return _split_perl_call_name(target_name, receiver_name)
+
+
+def _split_perl_call_name(
+    target_name: str, receiver_name: str | None
+) -> tuple[str, str | None, str | None] | None:
+    """Split Perl's ``Pkg::sub`` form, preserving package scope for plain subs."""
+    if "::" not in target_name:
+        return target_name, receiver_name, None
+    function_form = receiver_name is None
+    receiver_name, _, target_name = target_name.rpartition("::")
+    if not receiver_name or not target_name:
+        return None
+    return target_name, receiver_name, receiver_name if function_form else None
 
 
 def _call_arguments(
@@ -527,7 +562,9 @@ def _call_names(
         )
         if target_name is None:
             return None
-    if target_name in call_builtins:
+    # A Perl method named like a builtin (``$self->open()``) is the class's own:
+    # only a receiver-less call can mean the builtin.
+    if target_name in call_builtins and not (language == "perl" and receiver_nodes):
         return None
     # Elixir: a definition head (`add(a, b)` in `def add(a, b)`) and a module
     # attribute (`@doc "..."`) are both ``call`` nodes; left in, every function

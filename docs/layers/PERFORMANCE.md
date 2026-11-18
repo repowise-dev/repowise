@@ -22,7 +22,8 @@ Performance risk is one of the three signals in [Code Health](CODE_HEALTH.md).
 That is 21 performance detectors plus `sql_cartesian_join`. They never move the
 defect score, and six of them are listed without moving any score: `io_in_loop`, `nested_loop_with_io`, `lock_in_loop`, `string_concat_in_loop`,
 `membership_test_against_list_in_loop` and `list_insert_zero_in_loop`. In a blind
-study of 705 findings on 64 repositories, 1 in 10 or fewer were worth acting on:
+review of 705 findings on 64 repositories, 1 in 10 or fewer of each marker's
+findings were worth acting on:
 the code was real but sat on a cold path (setup, once per connection, the error
 path), which a static read cannot tell from a hot one.
 
@@ -107,8 +108,11 @@ leaves the loop unknown.
 
 The default queue holds production opportunities in the `plan_ready` and
 `advisory` states. They are ranked by cost first; state only breaks ties. Only
-opportunities whose cost is measured are in it. A loop whose size nothing measured
-is `cost_proof = unproven`, never leads, and shows only with the `proof=unproven`
+opportunities with `cost_proof = proven` are in it: the code shows how the cost
+scales (a loop that grows with the data or is bounded, a cost paid once per call,
+or a shape that grows by itself, such as an unbounded goroutine loop or a
+cartesian join). A loop whose size the code does not show is
+`cost_proof = unproven`, never leads, and shows only with the `proof=unproven`
 filter.
 
 Each opportunity also says what runs its loop (`execution_role`: request, event
@@ -173,8 +177,23 @@ MCP filters: `performance_view` (`detail` or `summary`), `performance_context`
 
 ```python
 get_health(include=["performance"], only=["performance_summary"])
+get_health(include=["performance"], only=["performance_measured"])
 get_health(opportunity_id="perf...")
 ```
+
+`performance_measured` lists the functions stored runs ranked, each with its
+workload class, age, sample size, explained share and interval
+([fields](../reference/MCP_RESPONSE_FIELDS.md#performance)). With no profile
+stored it says `no_runtime_data` and names `repowise evidence setup`.
+
+## Runtime evidence
+
+The findings above come from structure. To add what a real run showed (a
+profile, benchmark results, test timings or query counts), follow
+[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md): `repowise evidence setup` prints
+what to run here, `repowise evidence add` joins the result to the indexed
+functions, and `repowise evidence status` shows what is stored and how fresh it
+is.
 
 ## Limits
 

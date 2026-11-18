@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 from repowise.core.analysis.test_selection import (
+    BUILD_CONFIG_REASON,
     MAX_INDEX_GAP,
     RUN_ALL,
     Selection,
@@ -16,10 +17,14 @@ from repowise.core.analysis.test_selection import (
     TestSelectionConfig,
     doc_readers,
     format_args,
+    full_run_reason,
+    is_code_file,
     is_runnable_test,
+    is_test_helper,
     left_out,
     plan_gap,
     plugin_loader,
+    project_dirs,
     resolve_runner,
     runner_args,
     runner_notes,
@@ -458,6 +463,82 @@ def test_configuration_changed_after_the_index_runs_everything(path, why) -> Non
     assert sel.run_all
     assert why in sel.reasons[0]
     assert plan_gap(["src/b.py", path], _NONE).candidates == ()
+
+
+# -- a build file's name on an ordinary module ---------------------------------
+
+_PROJECT = project_dirs(
+    [
+        "setup.py",
+        "pyproject.toml",
+        "libs/old/setup.cfg",
+        "libs/old/setup.py",
+        "libs/new/pyproject.toml",
+        "libs/new/noxfile.py",
+        "src/pkg/core/evidence/__init__.py",
+        "src/pkg/core/evidence/setup.py",
+        "tools/legacy/setup.py",
+    ]
+)
+
+
+def test_project_dirs_are_the_root_and_dirs_with_a_manifest_no_module_can_be() -> None:
+    # A setup.py does not vouch for its own directory.
+    assert {".", "libs/old", "libs/new"} == _PROJECT
+
+
+@pytest.mark.parametrize(
+    "path", ["setup.py", "noxfile.py", "libs/old/setup.py", "libs/new/noxfile.py"]
+)
+def test_a_module_named_build_file_at_a_project_root_is_build_config(path) -> None:
+    assert full_run_reason(path, project_dirs=_PROJECT) == BUILD_CONFIG_REASON
+
+
+@pytest.mark.parametrize(
+    "path", ["src/pkg/core/evidence/setup.py", "tools/legacy/setup.py", "src/pkg/noxfile.py"]
+)
+def test_a_module_named_build_file_away_from_a_project_root_is_code(path) -> None:
+    assert full_run_reason(path, project_dirs=_PROJECT) is None
+    # Without the checkout's files the name decides, which runs everything.
+    assert full_run_reason(path) == BUILD_CONFIG_REASON
+
+
+@pytest.mark.parametrize(
+    "path", ["src/pkg/package.json", "src/pkg/Cargo.toml", "src/pkg/Makefile", "src/pkg/a/go.mod"]
+)
+def test_a_nested_data_manifest_stays_build_config(path) -> None:
+    assert full_run_reason(path, project_dirs=_PROJECT) is not None
+
+
+def test_a_setup_module_is_selected_by_the_tests_reaching_it() -> None:
+    path = "src/pkg/core/evidence/setup.py"
+    tiers = _tiers(inferred=[_inferred(path, "tests/test_setup.py", "import-graph")])
+    sel = _select([path], tiers, project_dirs=_PROJECT)
+    assert sel.run_all is False
+    assert sel.test_files == ("tests/test_setup.py",)
+    # A module no test is known to reach still runs everything.
+    assert _select(["tools/legacy/setup.py"], _tiers(), project_dirs=_PROJECT).run_all
+    assert _select([path], tiers).run_all
+
+
+def test_a_setup_module_changed_after_the_index_is_traced_not_a_full_run() -> None:
+    path = "src/pkg/core/evidence/setup.py"
+    assert plan_gap(["src/b.py", path], _NONE, project_dirs=_PROJECT).reasons == ()
+    assert plan_gap(["src/b.py", "libs/old/setup.py"], _NONE, project_dirs=_PROJECT).reasons
+    assert plan_gap(["src/b.py", path], _NONE).reasons
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/fixtures/stacks/node/package.json",
+        "tests/fixtures/stacks/rust/Cargo.toml",
+        "tests/fixtures/stacks/maven/pom.xml",
+    ],
+)
+def test_a_fixture_manifest_changed_after_the_index_is_test_data(path) -> None:
+    assert plan_gap(["src/b.py", path], _NONE).reasons == ()
+    assert plan_gap(["src/b.py", "package.json"], _NONE).reasons
 
 
 def test_nothing_is_traced_when_the_change_runs_everything_anyway() -> None:
@@ -1084,3 +1165,11 @@ def test_an_apex_test_class_is_test_code() -> None:
     assert is_runnable_test(path)
     sel = _select([path], _tiers())
     assert not any("is not code" in r for r in sel.reasons), sel.reasons
+
+
+def test_perl_tests_are_collected_and_their_helpers_are_code() -> None:
+    assert is_runnable_test("t/basic.t")
+    assert is_runnable_test("xt/author.t")
+    assert is_code_file("t/lib/Helper.pm") and is_code_file("bin/run.pl")
+    assert is_test_helper("t/lib/Helper.pm")
+    assert not is_runnable_test("t/lib/Helper.pm")

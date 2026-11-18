@@ -37,6 +37,7 @@ import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
 from repowise.core.settings.model import flag, parse_flag
+from repowise.core.test_paths import nodeid_test_file
 
 from .alignment import Alignment, drop_misaligned
 from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
@@ -1250,25 +1251,6 @@ class ResolvedTestCoverage:
         return mostly_unmapped(mapped, mapped + missed)
 
 
-# Extensions that make a test-id prefix look like a real source path (rather
-# than a bare suite name), so we only try to resolve path-shaped ids.
-_CODE_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb", ".java", ".scala")
-
-
-def _extract_test_file(test_id: str) -> str | None:
-    """Pull a resolvable source path out of a raw test id, or ``None``.
-
-    coverage.py contexts look like ``path/to/test_x.py::Class::test|run``:
-    the file lives before ``::`` (and any ``|phase`` suffix). lcov ``TN:``
-    names are often bare suite labels with no path, which we skip.
-    """
-    head = test_id.split("::", 1)[0].split("|", 1)[0].strip()
-    if not head:
-        return None
-    looks_pathy = "/" in head or "\\" in head or head.endswith(_CODE_EXTS)
-    return head if looks_pathy else None
-
-
 def resolve_test_reports(
     report: ContextCoverageReport,
     repo_keys: set[str],
@@ -1315,7 +1297,7 @@ def resolve_test_reports(
             out.matched_suffix += 1
 
         test_key: str | None = None
-        head = rec.test_file or _extract_test_file(rec.test_id)
+        head = rec.test_file or nodeid_test_file(rec.test_id)
         if head:
             tkey, _, _ = _resolve_path(head, repo_keys, suffix_index, **resolve_kw)
             if tkey is not None:

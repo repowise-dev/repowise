@@ -242,8 +242,8 @@ _MANIFESTS = IndexStampCache(8)
 async def _test_runs(session: AsyncSession, repo_id: str, tests: list[str]) -> dict[str, list[str | None]]:
     """Where each test runs (``npm --prefix pkg test``, a Go package...), from the
     checkout's package roots. Without a checkout, only root-level JS runs are known."""
-    from repowise.core.analysis.health.refactoring.commands import js_root_runs, runs_for_tests
     from repowise.core.ingestion.package_roots import scan_package_manifests
+    from repowise.core.test_runners.packages import js_root_runs, runs_for_tests
 
     root = (
         await session.execute(select(Repository.local_path).where(Repository.id == repo_id))

@@ -27,6 +27,7 @@ from .dart import extract_dart_bindings
 from .go import extract_go_bindings
 from .java import extract_java_bindings
 from .kotlin import extract_kotlin_bindings
+from .perl import extract_perl_bindings
 from .php import extract_php_bindings
 from .python import extract_python_bindings
 from .ruby import extract_ruby_bindings
@@ -55,6 +56,7 @@ _DISPATCH: dict[str, Callable[[Node, str], tuple[list[str], list[NamedBinding]]]
     "swift": extract_swift_bindings,
     "scala": extract_scala_bindings,
     "php": extract_php_bindings,
+    "perl": extract_perl_bindings,
 }
 
 
@@ -76,6 +78,7 @@ __all__ = [
     "extract_import_bindings",
     "extract_java_bindings",
     "extract_kotlin_bindings",
+    "extract_perl_bindings",
     "extract_php_bindings",
     "extract_python_bindings",
     "extract_ruby_bindings",
