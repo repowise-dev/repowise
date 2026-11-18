@@ -77,6 +77,22 @@ def _unit(project_path: str, root: str, repo: Path) -> BuildUnit:
     )
 
 
+def _listed_files(projects: list[JvmGradleProject], paths: tuple[str, ...]) -> list[list[str]]:
+    """Each project's indexed files under its source-set directories, in *projects* order."""
+    by_src_dir: dict[str, list[int]] = {}
+    for i, project in enumerate(projects):
+        for src_dir in _src_dirs(project):
+            by_src_dir.setdefault(src_dir, []).append(i)
+    # One pass over the paths: each file looks up the directories above it.
+    listed: list[list[str]] = [[] for _ in projects]
+    for path in paths:
+        parts = path.split("/")
+        dirs = ("/".join(parts[:depth]) for depth in range(1, len(parts)))
+        for i in {i for d in dirs for i in by_src_dir.get(d, ())}:
+            listed[i].append(path)
+    return listed
+
+
 def units(ctx: ResolverContext) -> Found:
     if ctx.repo_path is None:
         return Found([])
@@ -86,18 +102,7 @@ def units(ctx: ResolverContext) -> Found:
     if not projects:
         return Found([])
 
-    by_src_dir: dict[str, list[int]] = {}
-    for i, project in enumerate(projects):
-        for src_dir in _src_dirs(project):
-            by_src_dir.setdefault(src_dir, []).append(i)
-
-    # One pass over the paths: each file looks up the directories above it.
-    listed: list[list[str]] = [[] for _ in projects]
-    for path in ctx.sorted_paths:
-        parts = path.split("/")
-        dirs = ("/".join(parts[:depth]) for depth in range(1, len(parts)))
-        for i in {i for d in dirs for i in by_src_dir.get(d, ())}:
-            listed[i].append(path)
+    listed = _listed_files(projects, ctx.sorted_paths)
     claims = [
         (_unit(_project_path(project), project.root_dir, ctx.repo_path), tuple(files))
         for project, files in zip(projects, listed, strict=True)
