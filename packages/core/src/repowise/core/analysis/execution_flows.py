@@ -19,6 +19,7 @@ from typing import Literal, get_args
 import networkx as nx
 import structlog
 
+from repowise.core import ids
 from repowise.core.analysis import execution_graph
 from repowise.core.analysis.execution_graph import (
     is_excluded_execution_path,
@@ -175,9 +176,9 @@ class ExecutionFlowReport:
 
 @functools.cache
 def _tracer_code_fingerprint() -> bytes:
-    """Hash of the tracer and edge-policy source, so an upgrade never reuses an old report."""
+    """Hash of the tracer, edge-policy and id source, so an upgrade never reuses an old report."""
     digest = hashlib.sha256()
-    for module_file in (__file__, execution_graph.__file__):
+    for module_file in (__file__, execution_graph.__file__, ids.__file__):
         digest.update(Path(module_file).read_bytes())
     return digest.digest()
 

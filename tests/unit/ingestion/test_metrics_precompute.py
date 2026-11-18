@@ -166,12 +166,16 @@ class TestExecutionFlowDiskCache:
         assert len(traces) == 2
 
     def test_fresh_build_retraces_and_replaces(self, tmp_path: Path, traces) -> None:
-        _flow_builder(tmp_path).execution_flows()
+        seeded = _flow_builder(tmp_path)
+        seeded.execution_flows()
+        signature = seeded._centrality_cache._flows[0]
+        seeded._centrality_cache.put_flows(signature=signature, report="stale")
         fresh = _flow_builder(tmp_path)
         fresh.fresh_communities = True
         report = fresh.execution_flows()
         assert len(traces) == 2
-        # The fresh trace is what the next ordinary run reuses.
+        assert report != "stale"
+        # The fresh trace replaced the stored one; the next ordinary run reuses it.
         assert _flow_builder(tmp_path).execution_flows() == report
         assert len(traces) == 2
 
