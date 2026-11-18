@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
+import anyio
 from mcp import types as mcp_types
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel import server as _lowlevel
@@ -273,21 +274,28 @@ def _share_lifespan(server: Any) -> None:
             error = exc
             raise
         finally:
-            async with manager["lock"]:
-                manager["active"] -= 1
-                if manager["active"] == 0:
-                    context = manager["context"]
-                    manager["context"] = None
-                    manager["state"] = None
-                    if context is not None:
-                        teardown_error = (
-                            None if isinstance(error, asyncio.CancelledError) else error
-                        )
-                        await context.__aexit__(
-                            type(teardown_error) if teardown_error is not None else None,
-                            teardown_error,
-                            teardown_error.__traceback__ if teardown_error is not None else None,
-                        )
+            # A session ends by cancelling its anyio task group, and that
+            # cancellation lands on every await below: unshielded, the teardown
+            # was cut short and left the engine, the store and the background
+            # tasks open past the session.
+            with anyio.CancelScope(shield=True):
+                async with manager["lock"]:
+                    manager["active"] -= 1
+                    if manager["active"] == 0:
+                        context = manager["context"]
+                        manager["context"] = None
+                        manager["state"] = None
+                        if context is not None:
+                            teardown_error = (
+                                None if isinstance(error, asyncio.CancelledError) else error
+                            )
+                            await context.__aexit__(
+                                type(teardown_error) if teardown_error is not None else None,
+                                teardown_error,
+                                teardown_error.__traceback__
+                                if teardown_error is not None
+                                else None,
+                            )
 
     server.lifespan = shared
 
