@@ -154,7 +154,9 @@ def run_command(
     full_env = None if env is None else {**os.environ, **env}
     with tempfile.TemporaryFile() as out:
         start = clock()
-        proc = subprocess.Popen(
+        # shell=True by design: the caller typed this exact command line and
+        # it runs as typed (builtins, .cmd shims). Nothing here builds one.
+        proc = subprocess.Popen(  # repowise-security-ignore: subprocess_shell_true
             command,
             shell=True,
             cwd=str(cwd) if cwd is not None else None,
