@@ -2372,8 +2372,8 @@ repowise bot ai off
 
 Exit codes: `0` nothing waits on a person; `3` a person's step is next (`signed_out`, `not_installed`, `needs_plan`,
 `forbidden`, `permission_needed`, `locked` by the organization's bot policy, or a required `next` step whose `who` is
-`human`); `1` any other error (`offline`, `unsupported`, `http_<status>`, `no_repo`). An optional person's step, such as
-merging the coverage setup PR, is named in `next` but exits 0.
+`human`); `1` any other error (`offline`, `unsupported`, `http_<status>`, `no_repo`, `bad_usage`). An optional person's step, such as
+merging the coverage setup PR, is named in `next` but exits 0. `ai on|off` exits `2` when the change was made but the state after it could not be read.
 
 ### `repowise publish [PATH]`
 

@@ -302,6 +302,14 @@ def test_ai_off_keeps_the_signal_checks(server) -> None:
 def test_ai_off_refuses_a_depth(server) -> None:
     assert _bot("ai", "off", "--depth", "deep", "--repo", "acme/api").exit_code == 2
     assert server["sent"] == []
+    code, payload = _json("ai", "off", "--depth", "deep", "--repo", "acme/api")
+    assert code == 1 and payload["error"] == "bad_usage"
+
+
+def test_ai_on_done_but_the_state_after_it_unreadable_exits_2(server) -> None:
+    server["answers"] = [(200, _setup()), (0, {})]
+    code, payload = _json("ai", "on", "--repo", "acme/api")
+    assert code == 2 and payload["ok"] is True and payload["status"] is None
 
 
 def test_ai_on_done_but_a_person_acts_next_exits_3(server) -> None:

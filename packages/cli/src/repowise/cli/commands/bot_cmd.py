@@ -29,14 +29,15 @@ from repowise.cli.commands.hosted_cmd import (
     fetch_setup_status,
     run_bot_action,
 )
-from repowise.cli.exit_codes import EXIT_NEEDS_HUMAN
+from repowise.cli.exit_codes import EXIT_DEGRADED, EXIT_NEEDS_HUMAN
 from repowise.cli.helpers import console
 from repowise.cli.output import emit_json, format_option
 
 _EXIT_HELP = (
     "Exit codes: 0 nothing waits on a person; 3 a person's step is next (sign in, "
     "install, claim, approve or pay: 'next' says who, what and where); 1 error "
-    "(offline, refused, or repowise.dev does not offer this yet)."
+    "(offline, refused, or repowise.dev does not offer this yet); 2 'ai' made the "
+    "change but could not read the state after it."
 )
 
 #: Refusals only a person can clear. Any other failure is an error.
@@ -113,10 +114,11 @@ def bot_ai(state: str, depth: str | None, repo_slug: str | None, fmt: str) -> No
     AI review needs a paid plan and the bot's install on the repo claimed by
     you. When something is in the way the command says what, who clears it
     and where, and exits 3. The JSON carries "status", the same object as
-    'repowise bot status' after the change, or null when it cannot be read.
+    'repowise bot status' after the change, or null when it cannot be read
+    (then the exit is 2: the change was made, the state after it is unknown).
     """
     if depth and state == "off":
-        raise click.UsageError("--depth goes with 'repowise bot ai on'.")
+        _usage_error(fmt, "bad_usage", "--depth goes with 'repowise bot ai on'.")
     repo = _require_repo(repo_slug, fmt)
     config = {"review_mode": "ai" if state == "on" else "signals"}
     if depth:
@@ -138,7 +140,8 @@ def _report(result: dict[str, Any], status: dict[str, Any] | None, fmt: str) -> 
     if not result.get("ok"):
         code = exit_code(result, result.get("error"))
     else:
-        code = exit_code(status, None) if status else 0
+        # The change landed but the state after it is unknown: degraded, not clean.
+        code = exit_code(status, None) if status else EXIT_DEGRADED
     if code:
         raise SystemExit(code)
 
@@ -167,9 +170,16 @@ def _require_repo(repo_slug: str | None, fmt: str) -> str:
     repo = _repo_param(repo_slug)
     if repo is not None:
         return repo
-    message = "This checkout has no GitHub 'origin' remote. Pass --repo owner/name."
+    _usage_error(
+        fmt, "no_repo", "This checkout has no GitHub 'origin' remote. Pass --repo owner/name."
+    )
+    raise AssertionError  # unreachable: _usage_error always exits
+
+
+def _usage_error(fmt: str, code: str, message: str) -> None:
+    """A usage error: one JSON object and exit 1 under json, else Click's usage exit 2."""
     if fmt == "json":
-        emit_json({"repo": None, "error": "no_repo", "message": message})
+        emit_json({"error": code, "message": message})
         raise SystemExit(1)
     raise click.UsageError(message)
 
