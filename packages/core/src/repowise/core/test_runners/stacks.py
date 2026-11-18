@@ -737,7 +737,8 @@ def _dotnet_sdk(files: dict[str, str]) -> str | None:
     """The SDK ``dotnet test`` needs, when ``global.json`` pins one.
 
     Ceiling: without a pin the note says nothing; the target frameworks of the
-    projects read are a lower bound only, so they are not named.
+    projects read are a lower bound only, so they are not named. Reading every
+    project the chosen solution builds would be the upgrade.
     """
     try:
         # A file saved with a BOM is still the pin the SDK reads.
