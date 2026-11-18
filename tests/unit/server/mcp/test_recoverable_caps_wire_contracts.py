@@ -592,17 +592,21 @@ async def _seed_why_decisions(session: Any, rid: str, count: int) -> None:
                 created_at=_NOW,
                 updated_at=_NOW,
                 ),
-                DecisionEdge(
-                    id=f"sealed-lineage-{index}",
-                    repository_id=rid,
-                    src_decision_id=f"sealed-why-{index}",
-                    dst_decision_id=f"sealed-why-ancestor-{index}",
-                    kind="supersedes",
-                    confidence=1.0,
-                    created_at=_NOW,
-                ),
             ]
         )
+    await session.flush()  # the lineage edges reference both records
+    session.add_all(
+        DecisionEdge(
+            id=f"sealed-lineage-{index}",
+            repository_id=rid,
+            src_decision_id=f"sealed-why-{index}",
+            dst_decision_id=f"sealed-why-ancestor-{index}",
+            kind="supersedes",
+            confidence=1.0,
+            created_at=_NOW,
+        )
+        for index in range(count)
+    )
     await session.flush()
 
 

@@ -33,11 +33,16 @@ async def test_a_second_question_on_the_same_index_reuses_the_projection(session
 
 
 @pytest.mark.asyncio
-async def test_concurrent_cold_questions_build_once(session, repo_id):
+async def test_concurrent_cold_questions_build_once(factory, repo_id):
     calls: list[int] = []
     build = _counting_build(calls)
 
-    await asyncio.gather(*(per_index(session, repo_id, "adjacency", build) for _ in range(3)))
+    async def ask():
+        # One session per question, as concurrent tool calls each open their own.
+        async with factory() as s:
+            return await per_index(s, repo_id, "adjacency", build)
+
+    await asyncio.gather(*(ask() for _ in range(3)))
 
     assert calls == [1]
 

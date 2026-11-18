@@ -84,7 +84,9 @@ class _SeedSession(AsyncSession):
 
     Each session has its own connection, and another connection sees only
     committed rows; an open write would also hold the store's write lock
-    against the tool.
+    against the tool. Only an explicit ``flush()`` commits: rows that reach
+    the store through autoflush or ``session.execute(update(...))`` stay
+    uncommitted until a test flushes.
     """
 
     async def flush(self, objects=None) -> None:
