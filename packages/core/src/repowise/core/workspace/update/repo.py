@@ -140,8 +140,9 @@ class RepoUpdateResult:
     # "update_failed". ``skipped_reason`` is then "full_index_required", and
     # ``error`` carries the exception on "update_failed".
     full_index_reason: str | None = None
-    # True when every file's health was re-scored this run, so the caller can
-    # stamp ``last_full_rescore_at`` / ``health_analyzer_version``.
+    # True when every file's health was re-scored this run over git rows that
+    # reached the store, so the caller can stamp ``last_full_rescore_at`` /
+    # ``health_analyzer_version``.
     health_rescored: bool = False
     # The graph rebuild's patch-or-rebuild decision, stamped as state.json
     # "graph_update"; None leaves the stored record alone.
@@ -349,7 +350,9 @@ async def _incremental_repo_update(
         phase_timings=timings.totals,
         working_tree_paths=working_tree_paths,
         git_history_refreshed=bool(full_git_summaries) and "Git persist" not in failed_steps,
-        health_rescored=rescored_report is not None,
+        # The re-score reads git rows from the store: scored over rows that did
+        # not land, it is not stamped, so the next run re-scores with the walk.
+        health_rescored=rescored_report is not None and "Git persist" not in failed_steps,
         graph_update=getattr(graph_builder, "incremental_graph_decision", None),
     )
 

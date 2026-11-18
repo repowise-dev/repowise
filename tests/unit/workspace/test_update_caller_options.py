@@ -149,6 +149,26 @@ def test_rescore_covers_unchanged_files(tmp_path, forbid_full_pipeline):  # noqa
     assert {"a.py", "b.py"} <= {m.file_path for m in sink[0].health_report.metrics}
 
 
+def test_rescore_over_a_failed_git_persist_is_not_stamped(
+    tmp_path,
+    forbid_full_pipeline,  # noqa: F811
+    monkeypatch,
+):
+    import repowise.core.pipeline.persist as persist_mod
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(persist_mod, "persist_git_refresh", _boom)
+    repo = _indexed_repo_with_new_commit(tmp_path)
+
+    result = asyncio.run(update_single_repo_index(repo, rescore_health=True))
+
+    # The re-score read git rows this run failed to write: the next run owes it.
+    assert result.updated is True
+    assert result.health_rescored is False
+
+
 def test_without_rescore_unchanged_files_keep_their_rows(
     tmp_path,
     forbid_full_pipeline,  # noqa: F811

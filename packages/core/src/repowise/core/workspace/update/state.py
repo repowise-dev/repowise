@@ -328,8 +328,12 @@ def stamps_moved(repo_path: Path) -> bool:
     """Whether an indexed repo's health or git history stamp is behind this build.
 
     Work no commit explains: rows scored by an older health analyzer, or git
-    rows written under older history rules. A repo with no store or no
-    recorded sync has no rows for either stamp to describe.
+    rows written under older history rules. A repo with no recorded sync, or
+    no local store and no configured database, has no rows for either stamp
+    to describe. Under a configured database the repository row is not looked
+    up: this check stays offline, and a member with a moved stamp but no rows
+    there is reported stale on purpose, since the full index that update falls
+    back to writes the rows it is missing.
     """
     from ...analysis.health import health_analyzer_changed
     from ...ingestion.git_indexer import git_history_stale
