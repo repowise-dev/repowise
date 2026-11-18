@@ -50,7 +50,7 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
 def _parse_pyproject(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
     try:
         data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return []
     if not isinstance(data, dict):
         return []

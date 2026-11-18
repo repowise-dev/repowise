@@ -14,6 +14,12 @@ def _write(tmp_path: Path, rel: str, content: str) -> Path:
     return p
 
 
+def test_non_utf8_pyproject_yields_nothing(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_bytes(b'[project]\nname = "caf\xe9"\ndependencies = ["httpx"]\n')
+    assert pypi._parse_pyproject(pyproject, tmp_path) == []
+
+
 def test_parses_pep621_dependencies(tmp_path):
     pyproject = _write(
         tmp_path,

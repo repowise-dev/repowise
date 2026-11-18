@@ -6,6 +6,28 @@ import json
 from pathlib import Path
 
 from repowise.core.ingestion.traverser import FileTraverser
+from repowise.core.ingestion.workspace_members import (
+    declared_workspace_members,
+    manifest_package_name,
+    read_toml,
+    read_toml_or_none,
+)
+
+
+def test_non_utf8_toml_reads_as_unreadable(tmp_path: Path) -> None:
+    manifest = tmp_path / "Cargo.toml"
+    manifest.write_bytes(b'[package]\nname = "caf\xe9"\n')
+    assert read_toml_or_none(manifest) is None
+    assert read_toml(manifest) == {}
+    assert manifest_package_name(manifest) is None
+    assert declared_workspace_members(tmp_path) == {}
+
+
+def test_read_toml_tells_empty_from_unreadable(tmp_path: Path) -> None:
+    empty = tmp_path / "empty.toml"
+    empty.write_text("")
+    assert read_toml_or_none(empty) == {}
+    assert read_toml_or_none(tmp_path / "missing.toml") is None
 
 
 def _write(root: Path, rel: str, text: str = "") -> None:

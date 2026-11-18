@@ -10,8 +10,6 @@ resolver's ``_parse_deps`` is the upgrade path.
 
 from __future__ import annotations
 
-import tomllib
-
 from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.package_roots import scan_package_manifests
@@ -20,6 +18,7 @@ from repowise.core.ingestion.resolvers.rust_workspace import (
     CargoCrate,
     get_or_build_cargo_workspace_index,
 )
+from repowise.core.ingestion.workspace_members import read_toml_or_none
 
 
 def _root(crate: CargoCrate) -> str:
@@ -69,11 +68,10 @@ def _package_names(ctx: ResolverContext) -> dict[str, str | None]:
         dirs.append("")  # the scan leaves the repo root out
     names: dict[str, str | None] = {}
     for root in sorted(dirs):
-        try:
-            with open(repo / root / "Cargo.toml", "rb") as f:
-                package = tomllib.load(f).get("package")
-        except (OSError, tomllib.TOMLDecodeError):
+        data = read_toml_or_none(repo / root / "Cargo.toml")
+        if data is None:
             continue
+        package = data.get("package")
         name = package.get("name") if isinstance(package, dict) else None
         names[root] = name if isinstance(name, str) and name else None
     return names
