@@ -484,20 +484,32 @@ def _test_script(scripts: dict) -> tuple[str, str | None]:
     runner = _node_runner(test)
     if runner:
         return "test", runner
-    found = {
-        name: r for name, script in scripts.items()
-        if re.fullmatch(r"test[\w:-]+", name) and "watch" not in name and "--watch" not in str(script)
-        and (r := _node_runner(str(script)))
-    }
+    name = _fallback_script(test, _runner_scripts(scripts))
+    if name:
+        return name, _node_runner(str(scripts[name]))
+    return ("test" if test else ""), None
+
+
+def _runner_scripts(scripts: dict) -> dict[str, str]:
+    """``test...`` scripts that run a known runner, watch modes aside: name -> runner."""
+    found = {}
+    for name, script in scripts.items():
+        if re.fullmatch(r"test[\w:-]+", name) and "watch" not in name and "--watch" not in str(script):
+            runner = _node_runner(str(script))
+            if runner:
+                found[name] = runner
+    return found
+
+
+def _fallback_script(test: str, found: dict[str, str]) -> str:
+    """The one of *found* that is the whole run, or ``""``."""
     named = [n for n in found if re.search(rf"(?<![\w:-]){re.escape(n)}(?![\w:-])", test)]
+    if len(named) == 1:
+        return named[0]
     plain = min(found, key=lambda n: (len(n), n), default="")
     variants = all(n == plain or n.startswith((f"{plain}:", f"{plain}-")) for n in found)
-    if len(named) == 1:
-        return named[0], found[named[0]]
-    if plain and variants and len(set(found.values())) == 1:
-        return plain, found[plain]
     # Several suites (``test:unit`` and ``test:integration``): no one script is the whole run.
-    return ("test" if test else ""), None
+    return plain if variants and len(set(found.values())) == 1 else ""
 
 
 def _node_base(pm: str, scripts: dict, deps: dict) -> tuple[str, str | None]:
