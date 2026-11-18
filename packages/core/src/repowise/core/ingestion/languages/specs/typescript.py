@@ -2,6 +2,17 @@
 
 from ..spec import LanguageSpec
 
+#: The lockfiles that name a JavaScript package manager. TypeScript, JavaScript,
+#: Vue and Svelte share this one tuple: a workspace member reads its root's
+#: lockfile through the spec, so a manager missing here is invisible to it.
+JS_LOCK_FILES: tuple[str, ...] = (
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+)
+
 #: Predeclared / lib.dom / lib.es type names that never resolve to a user-
 #: defined symbol in the workspace. Filtering them before the resolver
 #: lookup avoids polluting the graph with edges for ubiquitous globals
@@ -72,7 +83,7 @@ SPEC = LanguageSpec(
     ),
     entry_point_patterns=("index.ts", "main.ts", "app.ts", "server.ts"),
     manifest_files=("package.json",),
-    lock_files=("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
+    lock_files=JS_LOCK_FILES,
     generated_suffixes=("_pb.ts",),
     shebang_tokens=(),
     blocked_dirs=("node_modules", ".next", "dist", "build"),

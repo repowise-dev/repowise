@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from repowise.core.build_units import BuildUnit, BuildUnitIndex
+from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.test_runners import stacks
 from repowise.core.test_runners.packages import quote_arg
 from repowise.core.test_runners.stacks import detect_repo_stacks, detect_stacks, files_to_read
@@ -464,6 +465,49 @@ def test_a_workspaces_root_with_its_own_runner_runs_the_members_too():
     paths = [*files, "pnpm-lock.yaml"]
     (stack,) = detect_stacks(paths, files)
     assert (stack.root, stack.package_manager, stack.test) == ("", "pnpm", f"pnpm run test {_VITEST}")
+
+
+_BUN_MONOREPO = {
+    "package.json": _package({"test": "turbo test"}, workspaces=["packages/*"]),
+    "packages/a/package.json": _package({"test": "vitest"}, devDependencies={"vitest": "^3"}),
+}
+
+
+@pytest.mark.parametrize("lock", ["bun.lock", "bun.lockb"])
+def test_a_workspace_member_installs_with_the_manager_its_roots_bun_lockfile_names(lock):
+    member = next(s for s in detect_stacks([*_BUN_MONOREPO, lock], _BUN_MONOREPO) if s.root == "packages/a")
+    assert member.package_manager == "bun"
+    assert "- run: bun install --frozen-lockfile" in member.setup
+
+
+@pytest.mark.parametrize(
+    ("lock", "manager", "install"),
+    [
+        ("package-lock.json", "npm", "- run: npm ci"),
+        ("pnpm-lock.yaml", "pnpm", "- run: pnpm install --frozen-lockfile"),
+        ("yarn.lock", "yarn", "- run: yarn install --frozen-lockfile"),
+    ],
+)
+def test_the_other_roots_lockfiles_still_pick_the_members_manager(lock, manager, install):
+    member = next(s for s in detect_stacks([*_BUN_MONOREPO, lock], _BUN_MONOREPO) if s.root == "packages/a")
+    assert member.package_manager == manager
+    assert install in member.setup
+
+
+def test_a_member_with_its_own_lockfile_wins_over_its_roots_bun_lockfile():
+    paths = [*_BUN_MONOREPO, "bun.lock", "packages/a/pnpm-lock.yaml"]
+    member = next(s for s in detect_stacks(paths, _BUN_MONOREPO) if s.root == "packages/a")
+    assert member.package_manager == "pnpm"
+
+
+@pytest.mark.parametrize("tag", ["javascript", "typescript", "vue", "svelte"])
+def test_every_javascript_spec_lists_the_same_lockfiles(tag):
+    assert REGISTRY.get(tag).lock_files == REGISTRY.get("javascript").lock_files
+    assert {"bun.lock", "bun.lockb"} <= set(REGISTRY.get(tag).lock_files)
+
+
+def test_a_pdm_lock_is_a_python_lockfile():
+    assert "pdm.lock" in REGISTRY.get("python").lock_files
 
 
 @pytest.mark.parametrize("script", ["yarn workspaces run test", "node scripts/test.js"])
