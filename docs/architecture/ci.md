@@ -19,6 +19,8 @@ jobs run when, what each one checks, and how to reproduce a failure locally.
 | MCP response gate | when the MCP tools or retrieval change | no |
 | Integration tests | no | yes |
 | Structurizr DSL parses | when the C4 emitter changes | when the C4 emitter changes (push only) |
+| Test selection, Test selection compared (recorded only) | when Python-relevant files change | yes |
+| Repowise index (main) | no | push to `main` only |
 
 ## The check to require
 
@@ -70,6 +72,31 @@ nightly run ignore it and run everything.
   and `uv.lock` trigger every suite.
 
 A skipped job reports as skipped, which a branch rule counts as passing.
+
+## Impacted-test shadow
+
+CI records which tests `repowise impacted-tests` would have picked for each
+pull request, push to `main` and nightly run, beside the full run, without
+skipping any.
+
+- `Repowise index (main)` builds the Repowise index on each push to `main`
+  (`repowise update --index-only` on the previous one) and caches the three
+  newest.
+- `Test selection (recorded only)` restores that index and runs
+  `repowise impacted-tests <base>...HEAD --format json --runner pytest --prioritize`.
+- `Test selection compared (recorded only)` reads the shards' JUnit reports
+  and writes its job summary: selected test files out of those that ran, the
+  test time the selection would have saved, every failing test the selection
+  left out (a miss), and where the first failing file sits in the prioritized
+  order. The same record is the `impacted-shadow` artifact
+  (`impacted-shadow.json`, one JSON line per run).
+- When a shard's report is missing or does not parse, the summary says
+  **Incomplete** and names it, misses are reported only for the shards read,
+  and the record carries `complete: false`. Aggregate only complete records.
+
+These jobs never block a pull request: every step continues on error, and no
+branch rule requires them. Reproduce a selection locally on an indexed
+checkout with `uv run repowise impacted-tests origin/main...HEAD`.
 
 ## Reproducing a job locally
 
