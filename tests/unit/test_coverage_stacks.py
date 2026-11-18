@@ -469,3 +469,24 @@ def test_a_pnpm_workspace_root_adds_the_coverage_provider_to_the_root():
     (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"],
                              {**files, "pnpm-workspace.yaml": "packages: []\n"})
     assert stack.requires == ("pnpm install --frozen-lockfile", 'pnpm add -D -w "@vitest/coverage-v8@3.0.0"')
+
+
+@pytest.mark.parametrize(
+    ("scripts", "command"),
+    [
+        # Two suites with one runner: neither alone is the whole run.
+        ({"test": "run-s test:unit test:integration", "test:unit": "vitest run",
+          "test:integration": "vitest run -c integration.config.ts"}, ""),
+        ({"test": "npm-run-all test:*", "test:a": "jest", "test:b": "jest -c b"}, ""),
+        # The one suite test names is the run, beside others it does not name.
+        ({"test": "npm run lint && npm run test:unit", "test:unit": "vitest run",
+          "test:smoke": "vitest run -c smoke.config.ts"}, f"pnpm run test:unit {_VITEST}"),
+        # A Playwright suite writes no source coverage; the unit suite is what these flags can measure.
+        ({"test": "run-s test:unit test:e2e", "test:unit": "vitest run", "test:e2e": "playwright test"},
+         f"pnpm run test:unit {_VITEST}"),
+    ],
+)
+def test_a_fallback_script_is_picked_only_when_it_is_the_whole_run(scripts, command):
+    files = {"package.json": _package(scripts, devDependencies={"@vitest/coverage-v8": "1"})}
+    (stack,) = detect_stacks(["package.json", "pnpm-lock.yaml"], files)
+    assert stack.test == command
