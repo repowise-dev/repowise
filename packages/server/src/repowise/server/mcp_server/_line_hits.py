@@ -42,6 +42,7 @@ from repowise.server.mcp_server._edit_sites import (
     SMALL_SET_LINES,
     _bare_name,
     _cap_references_per_file,
+    _leaf,
     _read_lines,
     incomplete_hint,
     reference_edit_set,
@@ -790,10 +791,13 @@ def _serve_lines(
     if reasons:
         response["reasons"] = reasons
         # Lines from one name's edit set that may miss sites; the regex scan
-        # reads every file. A cut naming _meta.omitted already says where.
-        name = query.strip()
-        missed = any("_meta.omitted" not in r for r in reasons)
-        if missed and not literal_scan and _IDENTIFIER.fullmatch(name):
+        # reads every file. A cut to the line cap or naming _meta.omitted
+        # already says where the rest is. The edit sets scan the symbol's own
+        # name, also for a ``pkg.mod.name`` or ``path::name`` query.
+        name = _leaf(query.strip())
+        budget = (OVER_LINES, OVER_LINES_MIXED)
+        missed = any("_meta.omitted" not in r and r not in budget for r in reasons)
+        if missed and not literal_scan and not mixed and _IDENTIFIER.fullmatch(name):
             response.setdefault("hint", incomplete_hint(name))
     else:
         _drop_sweep_advice(response)
