@@ -103,13 +103,15 @@ def test_a_console_script_is_profiled_in_process_before_the_test_suite(tmp_path:
 
     assert (entry["class"], entry["workload"]) == ("entry_point", "app")
     assert "from app.cli import main;sys.exit(main())" in entry["command"]
-    assert "'filter_threshold':0" in entry["command"]
+    assert "p=Profiler(interval=0.01)" in entry["command"]
     assert entry["command"].startswith('python -c "') and entry["command"].count('"') == 2
+    # Nothing sh or PowerShell expands inside double quotes.
+    assert not any(ch in entry["command"] + tests["command"] for ch in "$`!")
     # The unit's test install brings the project and pytest; the profiler comes on top.
     install = ["python -m pip install -e . pytest pytest-cov", "python -m pip install pyinstrument"]
     assert entry["prerequisites"] == install
     assert entry["ingest"] == (
-        f'repowise evidence add .repowise/app.speedscope.json --workload "app" '
+        f'repowise evidence add .repowise/app.speedscope.json --workload "app <args>" '
         f"--class entry_point --commit {SHA}"
     )
     assert tests["class"] == "unit_test"
@@ -411,7 +413,8 @@ def _run_recipe(
 ) -> tuple[int, Path]:
     """Run a Python recipe with a stand-in profiler (no pyinstrument needed).
 
-    The stand-in's output is ``{"profiles":[]}``, so what the recipe adds to it shows.
+    The stand-in took one sample, of 10 ms, in ``main`` (pyinstrument's frame
+    identifier: name, file and first line, then the line it was on).
     """
     import os
     import subprocess
@@ -421,14 +424,13 @@ def _run_recipe(
         (root / "app" / "cli.py").write_text(main)
     target = next(t for t in _targets(root) if t["class"] == cls)
     fake = root / "fake"
-    (fake / "pyinstrument" / "renderers").mkdir(parents=True, exist_ok=True)
+    (fake / "pyinstrument").mkdir(parents=True, exist_ok=True)
     (fake / "pyinstrument" / "__init__.py").write_text(
-        "class Profiler:\n    def start(self): pass\n    def stop(self): pass\n"
-        # The real renderer ends its document with a newline.
-        "    def output(self, renderer): return '{\"profiles\":[]}\\n'\n"
-    )
-    (fake / "pyinstrument" / "renderers" / "__init__.py").write_text(
-        "class SpeedscopeRenderer:\n    def __init__(self, **kw): pass\n"
+        "__version__ = '5.1.3'\n"
+        "class _Session:\n"
+        "    frame_records = [(['main' + chr(0) + 'app/cli.py' + chr(0) + '1' + chr(1) + 'l2'], 0.01)]\n"
+        "class Profiler:\n    def __init__(self, interval=0.001): pass\n"
+        "    def start(self): pass\n    def stop(self): return _Session()\n"
     )
     code = target["command"].split('-c "', 1)[1].rsplit('"', 1)[0]
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(fake), str(root)])}
@@ -438,12 +440,29 @@ def _run_recipe(
     return done.returncode, root / target["profile"]
 
 
+#: What the recipe writes for the stand-in's one sample: sampled speedscope, so the count survives.
+_SAMPLED = {
+    "$schema": "https://www.speedscope.app/file-format-schema.json",
+    "exporter": "pyinstrument@5.1.3",
+    "profiles": [{
+        "type": "sampled", "name": "python", "unit": "seconds", "startValue": 0,
+        "endValue": 0.01, "samples": [[0]], "weights": [0.01],
+    }],
+    "shared": {"frames": [{"name": "main", "file": "app/cli.py", "line": 1}]},
+}
+
+
 def test_the_python_recipe_writes_its_profile_where_the_ingest_line_reads_it(tmp_path: Path) -> None:
     _python(tmp_path)
 
     code, profile = _run_recipe(tmp_path, "import os\n\ndef main():\n    os.chdir('..')\n    return 0\n")
 
-    assert code == 0 and profile.read_text() == '{"profiles":[]}'
+    assert code == 0 and json.loads(profile.read_text()) == _SAMPLED
+    # The reader counts every sample, so each share gets an interval.
+    from repowise.core.evidence.profile_formats import profile_formats
+
+    run = profile_formats.get("speedscope").read(profile.read_bytes())
+    assert (run.unit, run.value_kind, [s.samples for s in run.stacks]) == ("s", "wall", [1])
 
 
 def test_only_the_programs_own_exit_is_judged(tmp_path: Path) -> None:
@@ -494,7 +513,7 @@ def test_the_suite_profile_runs_the_tests_its_coverage_command_runs(tmp_path: Pa
 
     assert stack.test.startswith("pytest tests/unit ") and stack.test_paths == ("tests/unit",)
     assert code == 0
-    assert json.loads(profile.read_text()) == {"profiles": [], "testsFailed": 0}
+    assert json.loads(profile.read_text()) == {**_SAMPLED, "testsFailed": 0}
 
 
 def test_a_red_suite_is_profiled_and_its_failures_counted(tmp_path: Path) -> None:
@@ -523,7 +542,7 @@ def test_a_suite_stopped_by_a_timeout_keeps_what_it_collected(tmp_path: Path) ->
 
     code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
 
-    assert code == 2 and json.loads(profile.read_text())["profiles"] == []
+    assert code == 2 and json.loads(profile.read_text())["profiles"] == _SAMPLED["profiles"]
 
 
 def _targets_go(root: Path, inputs: RuntimeInputs, mains: list[str]) -> list[dict]:
@@ -713,3 +732,25 @@ def test_a_pytest_benchmark_is_timed_over_fixed_rounds(tmp_path: Path) -> None:
     assert timed["app/cli.py"]["command"] == (
         "pytest --benchmark-only --benchmark-max-time=0 --benchmark-min-rounds=10"
     )
+
+
+def test_entry_points_waiting_for_arguments_are_named_in_next_call(tmp_path: Path) -> None:
+    _python(tmp_path, scripts='app = "app.cli:main"\ntool = "app.cli:main"\n')
+
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+
+    assert plan["next_call"]["optional"]["workloads"] == ["app", "tool"]
+    assert ARGS_PLACEHOLDER in plan["next_call"]["optional"]["purpose"]
+    # Measured and covered, only the optional entry points are left: the reason names them.
+    measured = RuntimeInputs(measured=frozenset({("python tests", SHA)}))
+    done = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=measured, coverage_commit=SHA)
+    assert done["next_call"] is None
+    assert done["reason"].startswith("Evidence at this commit is ingested; nothing left to run. Optional: app, tool.")
+
+
+def test_without_entry_points_next_call_has_no_optional_key(tmp_path: Path) -> None:
+    _python(tmp_path, scripts="")
+
+    plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
+
+    assert "optional" not in plan["next_call"]

@@ -12,6 +12,7 @@ its class, and what did not map.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -237,7 +238,8 @@ def _read_evidence(
             "file_too_large",
             f"{file} is {size / 1048576:.1f} MB, over evidence.max_file_mb ({max_file_mb:g}).",
             fmt,
-            remedy="Raise evidence.max_file_mb in .repowise/config.yaml, or ingest a smaller run.",
+            remedy=f"Run `repowise config set evidence.max_file_mb {math.ceil(size / 1048576)}`, "
+            "then add the file again, or ingest a smaller run.",
         )
     data = file.read_bytes()
     name = _input_format(input_format, data)
@@ -413,6 +415,8 @@ async def _store(
         text = json.dumps(conversion.document, sort_keys=True)
         doc = parse_evidence(text)
         _report_conversion(notices, read.format, conversion)
+        if workload_class == "entry_point":
+            _warn_short_run(notices, conversion)
 
     paths = entry_paths(doc)
     origins = await load_origins(session, target.repo.id, paths)
@@ -529,6 +533,28 @@ def _report_conversion(notices: Any, name: str, conversion: Any) -> None:
         f"Converted {escape(name)}: repo code explains {explained} of "
         f"{_total(conversion.total)} {escape(conversion.unit)}; {skipped}"
         + (f" ({escape(reasons)})." if reasons else ".")
+    )
+
+
+#: Seconds in one unit of a timed profile; a ``samples`` unit says nothing of time.
+_SECONDS = {"s": 1.0, "ms": 1e-3, "us": 1e-6, "ns": 1e-9}
+#: An entry point measured for less than this most likely did no real work.
+_SHORT_RUN_S = 3.0
+
+
+def _warn_short_run(notices: Any, conversion: Any) -> None:
+    """Warn (never refuse) when an entry point's profile covers only a few seconds.
+
+    A program that deferred to another process or printed its usage exits 0
+    having measured nothing representative, and its run would still rank.
+    """
+    per = _SECONDS.get(conversion.unit)
+    if per is None or conversion.total * per >= _SHORT_RUN_S:
+        return
+    notices.print(
+        f"[yellow]This entry point's profile covers {conversion.total * per:.1f} s: a run "
+        "that deferred its work or printed its usage measures little. Check its output, and "
+        "if it did no real work, run it again with arguments that do.[/yellow]"
     )
 
 

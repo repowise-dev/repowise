@@ -21,6 +21,7 @@ from ..build_units.model import BuildUnitIndex
 from ..test_runners.packages import quote_arg
 from ..test_runners.stacks import Stack, detect_repo_stacks
 from .runtime_setup import (
+    ARGS_PLACEHOLDER,
     CLASS_ORDER,
     EVIDENCE_STATUS_COMMAND,
     RuntimeInputs,
@@ -234,12 +235,17 @@ def evidence_setup(
         _add_runtime(root, stacks, planned, runtime, head)
     covered = head is not None and coverage_commit == head
     next_call = _next_call(root, planned, indexed=indexed, covered=covered, done=_measured_at(runtime, head))
+    optional = _awaiting_args(planned)
     if next_call is not None:
         reason = None
+        if optional:
+            next_call["optional"] = optional
     elif indexed and covered:
         reason = "Evidence at this commit is ingested; nothing left to run."
     else:
         reason = "No unit has a command repowise is sure of; see each unit's reason."
+    if next_call is None and optional:
+        reason += f" Optional: {', '.join(optional['workloads'])}. {optional['purpose']}"
     if index_error is not None:
         next_call = {
             "purpose": "The index exists but could not be read; find out why.",
@@ -253,6 +259,25 @@ def evidence_setup(
         "units": planned,
         "next_call": next_call,
         "reason": reason,
+    }
+
+
+def _awaiting_args(planned: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+    """Entry points waiting for their arguments, by workload: never a step, so named here.
+
+    Only names, so the default answer stays small; each target's command and
+    ingest line are in ``units[].runtime``.
+    """
+    workloads = [
+        t["workload"] for u in planned for t in u.get("runtime", ())
+        if t["command"] and t["command"].endswith(ARGS_PLACEHOLDER) and t["ingest"]
+    ]
+    if not workloads:
+        return None
+    return {
+        "purpose": f"Fill {ARGS_PLACEHOLDER} of these entry points (units[].runtime) with a "
+        "representative run, then run each command and its ingest line.",
+        "workloads": workloads,
     }
 
 

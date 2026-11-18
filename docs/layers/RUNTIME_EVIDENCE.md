@@ -65,27 +65,35 @@ read, a program with no profiler flag).
 ### Python example
 
 On a package whose `pyproject.toml` declares a console script `app =
-"app.cli:main"` and depends on `pytest-benchmark`, `setup` lists three targets:
-`app` (`entry_point`), `pytest bench` (`benchmark`) and `python tests`
-(`unit_test`). Its `next_call` profiles the console script with pyinstrument, in
-process, and ingests the Speedscope file:
+"app.cli:main"` and a `test` extra with `pytest-benchmark`, `setup` lists three
+targets: `app` (`entry_point`), `pytest bench` (`benchmark`) and `python tests`
+(`unit_test`). An entry point waits for its arguments, so `next_call` profiles
+the benchmark and names the entry point under `optional`:
 
 ```json
 "next_call": {
-  "purpose": "Profile app (entry_point), then ingest the profile.",
+  "purpose": "Profile pytest bench (benchmark), then ingest the profile.",
   "steps": [
-    { "cwd": "/work/app", "run": "python -m pip install pyinstrument" },
-    { "cwd": "/work/app", "run": "python -c \"import sys,os,atexit;from pyinstrument import Profiler;from pyinstrument.renderers import SpeedscopeRenderer;p=Profiler();o=os.path.abspath('.repowise/app.speedscope.json');os.makedirs(os.path.dirname(o),exist_ok=True);atexit.register(lambda:(p.stop(),open(o,'w',encoding='utf-8').write(p.output(SpeedscopeRenderer(processor_options={'filter_threshold':0})))));p.start();sys.argv=['app']+sys.argv[1:];from app.cli import main;sys.exit(main())\"" },
-    { "cwd": "/work/app", "run": "repowise evidence add .repowise/app.speedscope.json --workload \"app\" --class entry_point --commit 3f9c2b7e8a41d06c5b19e2f7a0d4c8b6e1f53a92" },
+    { "cwd": "/work/app", "run": "python -m pip install -e \".[test]\" pytest pytest-cov" },
+    { "cwd": "/work/app", "run": "git clean -fqx -- .repowise/pytest-bench.json" },
+    { "cwd": "/work/app", "run": "pytest --benchmark-only --benchmark-json=.repowise/pytest-bench.json" },
+    { "cwd": "/work/app", "run": "repowise evidence add .repowise/pytest-bench.json --workload \"pytest bench\" --class benchmark --commit 3f9c2b7e8a41d06c5b19e2f7a0d4c8b6e1f53a92" },
     { "cwd": "/work/app", "run": "repowise evidence status" }
-  ]
+  ],
+  "optional": {
+    "purpose": "Fill <args> of these entry points (units[].runtime) with a representative run, then run each command and its ingest line.",
+    "workloads": ["app"]
+  }
 }
 ```
 
-The benchmark target is `pytest --benchmark-only
---benchmark-json=.repowise/pytest-bench.json`, run from the repository root. A
-unit that runs under `uv` gets `uv run --with pyinstrument python -c ...` and no
-install step.
+The `app` target's command is `python -c "..." <args>`: pyinstrument in process,
+sampling every 10 ms, written as a sampled Speedscope profile (one sample per
+pyinstrument sample, weighted by the wall time it covered), so every run
+carries its sample count and each share gets an interval. Its ingest line names
+the workload `app <args>`: the agent fills both, so an `app build` run and an
+`app serve` run keep separate histories. A unit that runs under `uv` gets `uv
+run --with pyinstrument python -c ...` and no install step.
 
 ### Go example
 
@@ -112,7 +120,7 @@ The "Connect evidence" prompt hands an agent the loop rather than stack
 commands, so the commands always come from `setup`:
 
 ```text
-Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats steps you already ran. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
+Connect runtime evidence to Repowise for this repository. From the repository root, run `repowise evidence setup --format json`. It prints, for each build unit, how to collect coverage and, where it can, profiles, and a `next_call`: the steps to run next, each with the directory (`cwd`) it runs in. Run those steps in order, exactly as printed, without changing their flags. If a step fails, read the error, fix the cause (a missing tool or dependency) and run the step again. When the steps are done, run `repowise evidence setup --format json` again and follow the new `next_call`. Stop when `next_call` is null or repeats steps you already ran. A runtime target whose `command` ends in `<args>` (`next_call.optional` names them) is yours to finish: replace `<args>` with arguments that exercise real work, in the command and in its `ingest` line's workload (for a CLI `app`: `build --release`, and the workload `app build`), then run both. Then tell me what `repowise evidence status` reports, and the `reason` setup gave or why you stopped.
 ```
 
 From Python, `repowise.core.agent_prompts.render_connect_evidence(flavor)`
@@ -144,8 +152,11 @@ It exits 1 when nothing was stored and 2 on a usage error. A run that reads
 but does not store has `stored: false` and a `reason` (`no_index`,
 `mostly_unmapped`, `nothing_matched`); a file refused before it is read
 (`file_too_large`, `invalid_evidence`) prints an `error`, `message` and
-`remedy` instead. The text output names what was
-stored, what was skipped by reason and whether the run reads as stale. The JSON
+`remedy` instead; for `file_too_large` the remedy is the `repowise config set
+evidence.max_file_mb <n>` line that admits the file. The text output names what was
+stored, what was skipped by reason and whether the run reads as stale. An
+`entry_point` profile that covers under 3 seconds is stored with a warning: a
+program that deferred its work or printed its usage measured little. The JSON
 result carries `stored`, `kind`, `workload`, `class`, `commit_sha`, `index_commit`,
 `stale`, `dirty`, `entries`, `matched`, `skipped`, `unlinked`, `mapping_partial`,
 `unmatched_sample`, `tests_failed`, `input_format`, `conversion` (for a converted profile:
@@ -189,7 +200,7 @@ The format is detected from the content, never the file name;
 
 | Format | Written by | What a frame carries |
 |---|---|---|
-| `speedscope` | `pyinstrument -r speedscope` (or through its API, as `setup` prints), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
+| `speedscope` | pyinstrument through its API, as `setup` prints (sampled), `pyinstrument -r speedscope` (evented, no sample count), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
 | `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
 | `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
 
