@@ -37,7 +37,6 @@ from .coverage import (
 )
 from .coverage_map import (
     covered_source_files,
-    files_covered_by,
     get_test_coverage_summary,
     save_test_coverage,
     tests_covering,
@@ -179,7 +178,6 @@ __all__ = [
     "doc_drift_references_stored",
     "empty_coverage_summary",
     "file_coverage_from_row",
-    "files_covered_by",
     "finalize_performance_opportunities",
     "finalize_refactoring_opportunities",
     "finalize_refactoring_suggestions",

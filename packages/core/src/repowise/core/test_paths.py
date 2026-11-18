@@ -818,6 +818,38 @@ def is_test_to_production_pair(
     return is_test_related_path(code_path, code_language) ^ is_test_related_path(partner_path)
 
 
+#: The suffixes pytest-cov's ``--cov-context=test`` adds, one context per phase.
+_TEST_PHASES = ("|setup", "|run", "|teardown")
+
+# Extensions that make a test-id prefix a source path rather than a bare suite name.
+_TEST_ID_FILE_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rb", ".java", ".scala")
+
+
+def nodeid_without_phase(test_id: str) -> str:
+    """*test_id* without the ``|setup`` / ``|run`` / ``|teardown`` pytest-cov adds.
+
+    The three phases are one test: fixture setup and teardown lines are what
+    that test exercised.
+    """
+    for phase in _TEST_PHASES:
+        if test_id.endswith(phase):
+            return test_id[: -len(phase)]
+    return test_id
+
+
+def nodeid_test_file(test_id: str) -> str | None:
+    """The path a test id names before ``::``, or ``None`` for a bare suite name.
+
+    ``tests/test_x.py::Class::test|run`` gives ``tests/test_x.py``; an lcov
+    ``TN:`` label with no path in it gives ``None``.
+    """
+    head = test_id.split("::", 1)[0].split("|", 1)[0].strip()
+    if not head:
+        return None
+    looks_pathy = "/" in head or "\\" in head or head.endswith(_TEST_ID_FILE_EXTS)
+    return head if looks_pathy else None
+
+
 _PASCAL_UNIT_SUFFIXES = frozenset({".pas", ".pp", ".dpr", ".dpk", ".lpr"})
 
 # JVM and .NET tests are a PascalCase class named for the class under test.
