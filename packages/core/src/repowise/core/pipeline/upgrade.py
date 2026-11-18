@@ -33,7 +33,8 @@ async def rehydrate_graph_builder(
     Reads every persisted node and edge, the materialized metric snapshot and
     the stored build units, and hands them to ``GraphBuilder.from_persisted``.
     The returned builder is already finalized (``_built = True``) with
-    file-level metrics served from SQL — no NetworkX centrality kernel runs and no resolution pass fires.
+    file-level metrics served from SQL: no NetworkX centrality kernel runs and
+    no resolution pass fires.
 
     Raises ``ValueError`` if the repo has no persisted graph nodes, which means
     it was never indexed (so there is nothing to upgrade).

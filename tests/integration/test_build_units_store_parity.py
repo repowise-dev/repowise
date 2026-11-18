@@ -1,4 +1,4 @@
-"""An update that adds a workspace member and deletes a file stores the build units init would."""
+"""An update that adds and removes workspace members and deletes a file stores what init would."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_update_stores_the_units_a_fresh_init_stores(
     before = _units(incremental)
     assert ("packages/b/extra.js", "npm:@x/b") in before["build_unit_files"]
 
-    # A new member depending on an old one, and a deleted file.
+    # A new member depending on an old one, a removed member and a deleted file.
     _write(
         incremental,
         {
@@ -63,7 +63,8 @@ def test_update_stores_the_units_a_fresh_init_stores(
         },
     )
     (incremental / "packages/b/extra.js").unlink()
-    _commit(incremental, "feat: add d, drop extra")
+    shutil.rmtree(incremental / "packages/a")
+    _commit(incremental, "feat: add d, drop a and extra")
     _invoke(runner, incremental, "update", *update_args, "--no-workspace", "--no-agents")
 
     control = tmp_path / "control" / "repo"
@@ -74,7 +75,10 @@ def test_update_stores_the_units_a_fresh_init_stores(
     _invoke(runner, control, *_INIT)
 
     expected = _units(control)
-    assert {"npm:@x/a", "npm:@x/b", "npm:@x/d", "cargo:c"} <= {u[0] for u in expected["build_units"]}
+    assert ("npm:@x/b", "npm:@x/a") in before["build_unit_deps"]
+    unit_ids = {u[0] for u in expected["build_units"]}
+    assert {"npm:@x/b", "npm:@x/d", "cargo:c"} <= unit_ids and "npm:@x/a" not in unit_ids
+    assert not [d for d in expected["build_unit_deps"] if "npm:@x/a" in d]
     assert ("npm:@x/d", "npm:@x/b") in expected["build_unit_deps"]
     assert ("packages/d/index.js", "npm:@x/d") in expected["build_unit_files"]
     assert ("crates/c/src/lib.rs", "cargo:c") in expected["build_unit_files"]
