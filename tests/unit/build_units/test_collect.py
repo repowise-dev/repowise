@@ -12,8 +12,10 @@ from repowise.core.build_units.adapters import cargo as cargo_adapter
 from repowise.core.build_units.adapters import dotnet as dotnet_adapter
 from repowise.core.build_units.adapters import go as go_adapter
 from repowise.core.build_units.adapters import maven as maven_adapter
+from repowise.core.build_units.adapters import pascal as pascal_adapter
 from repowise.core.build_units.adapters import python as python_adapter
 from repowise.core.build_units.collect import collect_build_units
+from repowise.core.ingestion.graph import build_stem_map
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.rust_workspace import get_or_build_cargo_workspace_index
 
@@ -643,3 +645,342 @@ def test_maven_unparsed_or_unresolved_module_falls_back(tmp_path):
     index = collect_build_units(_ctx(tmp_path))
     assert set(index.units) == {"manifest:bad", "manifest:prop", "maven:g:a", "maven:g:root"}
     assert _owners(index, "prop/src/main/java/P.java") == ["manifest:prop"]
+
+
+_PAS = "unit U;\ninterface\nimplementation\nend.\n"
+_DPR = "program P;\nbegin\nend.\n"
+
+
+def _dpk(requires: str = "rtl", contains: str = "U") -> str:
+    return f"package P;\nrequires\n  {requires};\ncontains\n  {contains};\nend.\n"
+
+
+def _lpk(name: str, files: str = "", required: str = "") -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><CONFIG><Package Version="5">'
+        f'<PathDelim Value="\\"/><Name Value="{name}"/>'
+        f"<Files>{files}</Files><RequiredPkgs>{required}</RequiredPkgs>"
+        "</Package></CONFIG>"
+    )
+
+
+def _pascal_ctx(root: Path, files: dict[str, str]) -> ResolverContext:
+    """A context indexing what the traverser indexes: no project option files, no ``.lpk``."""
+    _write(root, files)
+    indexed = {rel for rel in files if not rel.lower().endswith((".dproj", ".lpi", ".lpk"))}
+    return ResolverContext(
+        path_set=indexed, stem_map=build_stem_map(indexed), graph=nx.DiGraph(), repo_path=root
+    )
+
+
+def _collect_pascal(root: Path, files: dict[str, str]):
+    return collect_build_units(_pascal_ctx(root, files))
+
+
+def test_pascal_projects_packages_requires_and_listed_files(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "core/CoreLib.dpk": _dpk(contains="Core.Utils"),
+        "core/Core.Utils.pas": _PAS,
+        "ui/UiKit.dpk": _dpk(requires="rtl, vcl, CoreLib", contains="Ui.Forms"),
+        "ui/Ui.Forms.pas": _PAS,
+        "app/App.dpr": "program App;\nuses\n  Main,\n  Core.Utils in '..\\core\\Core.Utils.pas';\nbegin\nend.\n",
+        "app/App.dproj": "<Project/>",
+        "app/Main.pas": _PAS,
+    })
+    assert _deps(index) == {
+        "pascal:App": (),
+        "pascal:CoreLib": (),
+        "pascal:UiKit": ("pascal:CoreLib",),
+    }
+    app = index.unit("pascal:App")
+    assert (app.ecosystem, app.name, app.root, app.manifest, app.source) == (
+        "pascal", "App", "app", "app/App.dpr", "pascal",
+    )
+    assert _owners(index, "core/Core.Utils.pas") == ["pascal:App", "pascal:CoreLib"]
+    assert _owners(index, "app/Main.pas") == ["pascal:App"]
+    assert _owners(index, "app/App.dpr") == ["pascal:App"]
+    assert [u.id for u in index.dependents("pascal:CoreLib")] == ["pascal:UiKit"]
+
+
+def test_pascal_requires_ignores_case_comments_and_conditional_markers(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "a/Base.dpk": _dpk(),
+        "a/U.pas": _PAS,
+        "b/Off.dpk": _dpk(),
+        "b/U.pas": _PAS,
+        "c/Top.dpk": _dpk(requires="rtl, {$IFDEF X} BASE, {$ENDIF} // Off,\n  { Off, } (* Off *) vcl"),
+        "c/U.pas": _PAS,
+    })
+    assert index.unit("pascal:Top").deps == ("pascal:Base",)
+
+
+def test_lazarus_package_is_named_by_its_manifest_and_lists_its_files(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "base/base.lpk": _lpk(
+            "BaseLib",
+            '<Item><Filename Value="src\\Base.pas"/><UnitName Value="Base"/></Item>',
+            '<Item><PackageName Value="LCL"/></Item>',
+        ),
+        "base/src/Base.pas": _PAS,
+        "base/src/Loose.pas": _PAS,
+        "top/Top.lpk": _lpk(
+            "Top",
+            '<Item1><Filename Value="..\\shared\\Top.pas"/></Item1>',
+            '<Item1><PackageName Value="baselib"/></Item1><Item2><PackageName Value="FCL"/></Item2>',
+        ),
+        "shared/Top.pas": _PAS,
+    })
+    assert _deps(index) == {"pascal:BaseLib": (), "pascal:Top": ("pascal:BaseLib",)}
+    assert index.unit("pascal:BaseLib").manifest == "base/base.lpk"
+    assert _owners(index, "shared/Top.pas") == ["pascal:Top"]
+    # Not in the package's file list, so owned through the package root.
+    assert _owners(index, "base/src/Loose.pas") == ["pascal:BaseLib"]
+
+
+def test_lazarus_package_without_indexed_files_is_no_unit(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "ignored/Old.lpk": _lpk("Old", '<Item><Filename Value="Gone.pas"/></Item>'),
+        "app/App.lpr": _DPR,
+    })
+    assert list(index.units) == ["pascal:App"]
+
+
+def test_pascal_projects_sharing_a_name_all_stay_units(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "demo1/Project1.dpr": _DPR,
+        "demo1/One.pas": _PAS,
+        "demo2/project1.dpr": _DPR,
+        "demo2/Two.pas": _PAS,
+        "tool/Tool.dpr": "program Tool;\nuses\n  A in 'delphi\\A.pas';\nbegin\nend.\n",
+        "tool/delphi/A.pas": _PAS,
+        "tool/Tool.lpr": "program Tool;\nuses\n  B in 'fpc\\B.pas';\nbegin\nend.\n",
+        "tool/fpc/B.pas": _PAS,
+    })
+    assert set(index.units) == {
+        "pascal:demo1/Project1.dpr",
+        "pascal:demo2/project1.dpr",
+        "pascal:tool/Tool.dpr",
+        "pascal:tool/Tool.lpr",
+    }
+    assert index.unit("pascal:demo2/project1.dpr").name == "project1"
+    assert _owners(index, "demo2/Two.pas") == ["pascal:demo2/project1.dpr"]
+    assert _owners(index, "tool/delphi/A.pas") == ["pascal:tool/Tool.dpr"]
+    assert _owners(index, "tool/fpc/B.pas") == ["pascal:tool/Tool.lpr"]
+
+
+def test_pascal_requires_prefers_the_same_kind_then_the_same_directory(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "d10/Base.dpk": _dpk(),
+        "d10/Top.dpk": _dpk(requires="Base"),
+        "d10/U.pas": _PAS,
+        "d11/Base.dpk": _dpk(),
+        "d11/Top.dpk": _dpk(requires="Base"),
+        "d11/U.pas": _PAS,
+        "fpc/Base.lpk": _lpk("Base", '<Item><Filename Value="U.pas"/></Item>'),
+        "fpc/Top.lpk": _lpk(
+            "Top", '<Item><Filename Value="U.pas"/></Item>', '<Item><PackageName Value="Base"/></Item>'
+        ),
+        "fpc/U.pas": _PAS,
+        "other/Use.dpk": _dpk(requires="Base"),
+        "other/U.pas": _PAS,
+    })
+    assert index.unit("pascal:d10/Top.dpk").deps == ("pascal:d10/Base.dpk",)
+    assert index.unit("pascal:d11/Top.dpk").deps == ("pascal:d11/Base.dpk",)
+    assert index.unit("pascal:fpc/Top.lpk").deps == ("pascal:fpc/Base.lpk",)
+    # No package of that name beside it: every same-kind candidate may be the one built.
+    assert index.unit("pascal:Use").deps == ("pascal:d10/Base.dpk", "pascal:d11/Base.dpk")
+
+
+def test_unreadable_pascal_project_leaves_its_files_to_the_deepest_other_unit(tmp_path):
+    ctx = _pascal_ctx(tmp_path, {
+        "a/Good.dpr": _DPR,
+        "a/bad/U.pas": _PAS,
+        "a/broken/U.pas": _PAS,
+        "a/broken/Broken.lpk": "<CONFIG><Package>",
+    })
+    ctx.path_set.add("a/bad/Gone.dpr")
+    index = collect_build_units(ctx)
+    assert list(index.units) == ["pascal:Good"]
+    assert index.failed_ecosystems == frozenset()
+    assert _owners(index, "a/bad/U.pas") == ["pascal:Good"]
+    assert _owners(index, "a/broken/U.pas") == ["pascal:Good"]
+
+
+def test_pascal_project_files_are_read_in_their_own_encoding(tmp_path):
+    ctx = _pascal_ctx(tmp_path, {
+        "base/Base.dpk": _dpk(),
+        "base/U.pas": _PAS,
+        "wide/Wide.dpk": "",
+        "wide/U.pas": _PAS,
+        "be/Be.dpk": "",
+        "be/U.pas": _PAS,
+        "bom/Bom.dpk": "",
+        "bom/U.pas": _PAS,
+    })
+    text = _dpk(requires="rtl, Base")
+    (tmp_path / "wide/Wide.dpk").write_bytes(text.encode("utf-16"))
+    (tmp_path / "be/Be.dpk").write_bytes(b"\xfe\xff" + text.encode("utf-16-be"))
+    (tmp_path / "bom/Bom.dpk").write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
+    index = collect_build_units(ctx)
+    for unit_id in ("pascal:Wide", "pascal:Be", "pascal:Bom"):
+        assert index.unit(unit_id).deps == ("pascal:Base",)
+
+
+_DPROJ_PACKAGES = (
+    "<Project><PropertyGroup>{flag}<DCC_UsePackage>rtl;CoreLib;$(DCC_UsePackage)</DCC_UsePackage>"
+    "</PropertyGroup></Project>"
+)
+
+
+def test_delphi_program_links_packages_only_when_built_with_them(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "core/CoreLib.dpk": _dpk(),
+        "core/U.pas": _PAS,
+        "dyn/Dyn.dpr": _DPR,
+        "dyn/Dyn.dproj": _DPROJ_PACKAGES.format(flag="<UsePackages>true</UsePackages>"),
+        "off/Off.dpr": _DPR,
+        "off/Off.dproj": _DPROJ_PACKAGES.format(flag="<UsePackages>false</UsePackages>"),
+        "plain/Plain.dpr": _DPR,
+        "plain/Plain.dproj": _DPROJ_PACKAGES.format(flag=""),
+    })
+    assert index.unit("pascal:Dyn").deps == ("pascal:CoreLib",)
+    assert index.unit("pascal:Off").deps == ()
+    assert index.unit("pascal:Plain").deps == ()
+
+
+def test_lazarus_program_links_the_packages_its_project_requires(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "lib/base.lpk": _lpk("BaseLib", '<Item><Filename Value="U.pas"/></Item>'),
+        "lib/U.pas": _PAS,
+        "delphi/BaseLib.dpk": _dpk(),
+        "delphi/U.pas": _PAS,
+        "app/App.lpr": _DPR,
+        "app/App.lpi": (
+            '<CONFIG><ProjectOptions><RequiredPackages Count="2">'
+            '<Item1><PackageName Value="LCL"/></Item1>'
+            '<Item2><PackageName Value="baselib"/></Item2>'
+            "</RequiredPackages></ProjectOptions></CONFIG>"
+        ),
+    })
+    assert index.unit("pascal:App").deps == ("pascal:lib/base.lpk",)
+
+
+def _program(uses: str) -> str:
+    return f"program P;\nuses\n  {uses};\nbegin\nend.\n"
+
+
+def _unit(uses: str = "", implementation_uses: str = "") -> str:
+    interface = f"uses {uses};\n" if uses else ""
+    implementation = f"uses {implementation_uses};\n" if implementation_uses else ""
+    return f"unit U;\ninterface\n{interface}implementation\n{implementation}end.\n"
+
+
+def test_pascal_projects_list_only_the_units_they_reach_through_uses(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "src/One.dpr": _program("A"),
+        "src/Two.dpr": _program("B"),
+        "src/A.pas": _unit("Shared"),
+        "src/B.pas": _unit(implementation_uses="Shared"),
+        "src/Shared.pas": _unit(),
+        "src/Unused.pas": _unit(),
+    })
+    assert _owners(index, "src/A.pas") == ["pascal:One"]
+    assert _owners(index, "src/B.pas") == ["pascal:Two"]
+    assert _owners(index, "src/Shared.pas") == ["pascal:One", "pascal:Two"]
+    # Nothing reaches it, so it is owned through the shared root.
+    assert _owners(index, "src/Unused.pas") == ["pascal:One", "pascal:Two"]
+
+
+def test_pascal_project_reaches_units_outside_its_search_paths(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "src/App.dpr": _program("Core"),
+        "src/core/Core.pas": _unit(implementation_uses="Deep"),
+        "src/core/deep/Deep.pas": _unit(),
+        "src/tests/Tests.dpr": _program("Core"),
+    })
+    assert _owners(index, "src/core/Core.pas") == ["pascal:App", "pascal:Tests"]
+    assert _owners(index, "src/core/deep/Deep.pas") == ["pascal:App", "pascal:Tests"]
+
+
+def test_pascal_search_path_picks_a_variant_and_an_unplaced_name_keeps_all(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "app/Win.dpr": _program("uPty"),
+        "app/Win.dproj": (
+            "<Project><PropertyGroup><DCC_UnitSearchPath>..\\win</DCC_UnitSearchPath>"
+            "</PropertyGroup></Project>"
+        ),
+        "tool/Any.dpr": _program("uPty"),
+        "win/uPty.pas": _unit(),
+        "posix/uPty.pas": _unit(),
+    })
+    assert _owners(index, "win/uPty.pas") == ["pascal:Any", "pascal:Win"]
+    assert _owners(index, "posix/uPty.pas") == ["pascal:Any"]
+
+
+def test_pascal_unique_unit_settles_which_same_named_variant_a_project_builds(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "app/App.dpr": _program("uPty, OnlyPosix"),
+        "platform/posix/OnlyPosix.pas": _unit(),
+        "platform/posix/uPty.pas": _unit("uChained"),
+        "platform/posix/uChained.pas": _unit(),
+        "platform/win/uPty.pas": _unit("OnlyWin, uChained"),
+        "platform/win/uChained.pas": _unit(),
+        "platform/win/OnlyWin.pas": _unit(),
+    })
+    assert _owners(index, "platform/posix/uPty.pas") == ["pascal:App"]
+    assert _owners(index, "platform/posix/uChained.pas") == ["pascal:App"]
+    for name in ("uPty", "uChained", "OnlyWin"):
+        assert _owners(index, f"platform/win/{name}.pas") == []
+
+
+def test_pascal_project_reaching_both_variant_directories_keeps_both(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "app/App.dpr": _program("uPty, OnlyPosix, OnlyWin"),
+        "posix/OnlyPosix.pas": _unit(),
+        "posix/uPty.pas": _unit(),
+        "win/OnlyWin.pas": _unit(),
+        "win/uPty.pas": _unit(),
+    })
+    assert _owners(index, "posix/uPty.pas") == ["pascal:App"]
+    assert _owners(index, "win/uPty.pas") == ["pascal:App"]
+
+
+def test_pascal_uses_walk_survives_cycles_and_ignores_text_that_only_looks_like_uses(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "app/App.dpr": _program("A"),
+        "app/A.pas": (
+            "unit A;\ninterface\nuses B;\nimplementation\n"
+            "// uses InLine;\n{ uses InBrace; }\n"
+            "const S = 'uses InString;';\nvar Uses: Integer;\nbegin\n  Uses := 1;\nend.\n"
+        ),
+        "app/B.pas": _unit(implementation_uses="A"),
+        "other/InLine.pas": _unit(),
+        "other/InBrace.pas": _unit(),
+        "other/InString.pas": _unit(),
+    })
+    assert _owners(index, "app/B.pas") == ["pascal:App"]
+    for name in ("InLine", "InBrace", "InString"):
+        assert _owners(index, f"other/{name}.pas") == []
+
+
+def test_pascal_package_walks_its_contains_and_lazarus_its_file_list(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "pkg/Lib.dpk": _dpk(contains="Api"),
+        "pkg/Api.pas": _unit("Inner"),
+        "src/Inner.pas": _unit(),
+        "laz/Laz.lpk": _lpk("Laz", '<Item><Filename Value="Front.pas"/></Item>'),
+        "laz/Front.pas": _unit("Back"),
+        "shared/Back.pas": _unit(),
+    })
+    assert _owners(index, "src/Inner.pas") == ["pascal:Lib"]
+    assert _owners(index, "shared/Back.pas") == ["pascal:Laz"]
+
+
+def test_repo_without_pascal_never_builds_the_pascal_index(tmp_path, monkeypatch):
+    def boom(_ctx):
+        raise AssertionError("index built for an absent ecosystem")
+
+    monkeypatch.setattr(pascal_adapter, "get_pascal_index", boom)
+    index = _collect_pascal(tmp_path, {"pkg/Gemfile": "", "pkg/Stray.lpk": _lpk("Stray")})
+    assert list(index.units) == ["manifest:pkg"]
+    assert index.failed_ecosystems == frozenset()
