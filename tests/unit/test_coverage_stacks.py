@@ -149,6 +149,9 @@ _PROJECT = '[project]\nname = "pkg"\nversion = "0"\n'
          "-e . -r requirements-dev.txt pytest pytest-cov"),
         ({"setup.py": "", "requirements-py3-dev.txt": "x\n", "requirements-unit-tests.txt": "y\n"},
          "-e . -r requirements-py3-dev.txt -r requirements-unit-tests.txt pytest pytest-cov"),
+        # "requirements" after the dev or test word; a docs file stays out either way.
+        ({"setup.py": "", "dev-requirements.txt": "x\n", "test-requirements.txt": "y\n", "docs-requirements.txt": "z\n"},
+         "-e . -r dev-requirements.txt -r test-requirements.txt pytest pytest-cov"),
         # setup.cfg extras: the test extra over dev.
         ({"setup.py": "from setuptools import setup\nsetup()\n",
           "setup.cfg": "[metadata]\nname = pkg\n\n[options.extras_require]\ndev =\n    flake8\ntest =\n    pytest\n"},

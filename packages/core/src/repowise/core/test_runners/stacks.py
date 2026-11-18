@@ -245,7 +245,10 @@ def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
 
 #: Extra and dependency-group names that carry test dependencies, best first.
 _TEST_SETS = ("test", "tests", "testing")
-_TEST_REQUIREMENTS = re.compile(r"requirements(?:[-_.][\w.-]*(?:dev|test)[\w.-]*)?\.txt"
+#: ``requirements.txt``, and a requirements file naming dev or test anywhere
+#: (``requirements-dev.txt``, ``test-requirements.txt``, ``requirements/test.txt``).
+_TEST_REQUIREMENTS = re.compile(r"requirements\.txt"
+                                r"|(?=[\w.-]*(?:dev|test))[\w.-]*requirements[\w.-]*\.txt"
                                 r"|requirements/[\w.-]*(?:dev|test)[\w.-]*\.txt")
 
 
