@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 from repowise.core.build_units import BuildUnit, BuildUnitIndex
 from repowise.core.test_runners import stacks
+from repowise.core.test_runners.packages import quote_arg
 from repowise.core.test_runners.stacks import detect_repo_stacks, detect_stacks, files_to_read
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "coverage_stacks"
@@ -321,9 +322,13 @@ def test_to_dict_is_json_ready():
     for found in (detect_stacks(*_load("python_uv_workspace")), detect_stacks(*_load("gradle_plain"))):
         for stack in found:
             assert json.loads(json.dumps(stack.to_dict())) == stack.to_dict()
-    # Its command needs the init script its CI step writes, so a workstation gets the reason.
-    gradle = detect_stacks(*_load("gradle_plain"))[0].to_dict()
-    assert gradle["shell"] == "github-actions" and gradle["command"] is None and gradle["reason"]
+    # Its CI command needs the init script its CI step writes; a workstation runs the shipped copy.
+    gradle = detect_stacks(*_load("gradle_plain"))[0]
+    assert gradle.shell == "github-actions" and "$RUNNER_TEMP" in gradle.test
+    shown = gradle.to_dict()
+    script = quote_arg(stacks.JACOCO_INIT_SCRIPT.as_posix())
+    assert shown["command"] == f"./gradlew test jacocoTestReport --init-script {script}"
+    assert shown["shell"] is None and shown["reason"] is None
 
 
 def _index(*units: tuple[str, str, str]) -> BuildUnitIndex:
@@ -619,6 +624,14 @@ def test_a_go_module_whose_go_code_is_all_in_nested_modules_is_no_unit():
     assert [s.root for s in detect_stacks(paths, files)] == ["a"]
 
 
+def test_the_shipped_jacoco_init_script_is_the_one_the_workflow_writes():
+    assert stacks.JACOCO_INIT_SCRIPT.is_file()
+    body = stacks.JACOCO_INIT_SCRIPT.read_text(encoding="utf-8").splitlines()
+    (stack,) = detect_stacks(*_load("gradle_plain"))
+    assert [line[4:] for line in stack.prepare[3:-1]] == body
+    assert "apply plugin: 'jacoco'" in body[2] and "xml.required = true" in body[3]
+
+
 @pytest.mark.parametrize(
     ("scripts", "command"),
     [
@@ -666,3 +679,18 @@ def test_a_dotnet_unit_below_the_root_reads_the_nearest_sdk_pin_above_it():
     paths = list(files)
     (stack,) = detect_stacks(paths, {p: files[p] for p in files_to_read(paths)})
     assert "9.0.100" in stack.notes[0]
+
+
+@pytest.mark.parametrize(
+    ("installed", "argument"),
+    [
+        ("/opt/py lib/repowise/jacoco.gradle", '"/opt/py lib/repowise/jacoco.gradle"'),
+        ("C:/Users/a b/repowise/jacoco.gradle", '"C:/Users/a b/repowise/jacoco.gradle"'),
+        # The setup output's one quoting rule leaves a path holding $ or a backtick as it is.
+        ("/home/$u/jacoco.gradle", "/home/$u/jacoco.gradle"),
+    ],
+)
+def test_the_init_script_path_is_quoted_like_every_setup_path(monkeypatch, installed, argument):
+    monkeypatch.setattr(stacks, "JACOCO_INIT_SCRIPT", PurePosixPath(installed))
+    (stack,) = detect_stacks(*_load("gradle_plain"))
+    assert stack.to_dict()["command"] == f"./gradlew test jacocoTestReport --init-script {argument}"

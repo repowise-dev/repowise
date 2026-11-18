@@ -170,6 +170,8 @@ namespaces = true
 # Generated from plugins/shared/commands/ by scripts/gen_plugin_content.py and
 # pinned by tests/unit/cli/test_plugin_content.py.
 "repowise.cli.agent_targets" = ["_data/codex_prompts/*.md"]
+# Gradle init script that applies JaCoCo for `repowise evidence setup`'s workstation command.
+"repowise.core.test_runners" = ["_data/*.gradle"]
 
 # ---------------------------------------------------------------------------
 # uv workspace (kept for local development)
