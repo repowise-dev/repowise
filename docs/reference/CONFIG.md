@@ -924,7 +924,8 @@ agent_provenance:
 Caps on the runtime evidence `repowise evidence add` stores (profiles,
 benchmark results, test timings, query counts). A capped run keeps its
 costliest entries and counts the rest, so a reader shows them as unknown,
-never as zero.
+never as zero. How evidence is collected and joined:
+[RUNTIME_EVIDENCE.md](../layers/RUNTIME_EVIDENCE.md).
 
 <!-- BEGIN GENERATED settings:evidence (python scripts/gen_config_docs.py) -->
 | Key | Default | Values | What it does |
@@ -934,6 +935,11 @@ never as zero.
 | `max_rows_per_run` | `30000` | >= 1 | Most benchmark, test or query rows stored from one run; the rest are counted. |
 | `history_runs` | `20` | >= 1 | Runs kept per workload and environment for each evidence kind; oldest go first. |
 | `max_runs` | `50` | >= 1 | Runs kept per evidence kind across all workloads; oldest go first, but each workload and environment always keeps its newest run, so the kind can exceed this by up to the number of workloads. |
+| `rank_top_n` | `10` | >= 1 | A measured function is ranked when it is among this many production functions with the most inclusive time in its run. |
+| `rank_min_samples` | `30` | >= 1 | Fewest samples on a function for it to be ranked; below this the run has not enough samples in repo code. Runs that count no samples rank by their order alone. |
+| `lead_min_share` | `0.05` | 0-1 | Share of all samples a ranked function needs, in a workload class that may lead, to become a lead candidate from one run. |
+| `lead_min_lower_bound` | `0.02` | 0-1 | Lower bound of the 95% interval on that share a lead candidate needs from one run. |
+| `lead_min_runs` | `2` | >= 2 | Independent runs, in workload classes that may lead, in which a function must be ranked to become a lead candidate without the share rule. |
 <!-- END GENERATED settings:evidence -->
 
 ## The `refactoring:` block

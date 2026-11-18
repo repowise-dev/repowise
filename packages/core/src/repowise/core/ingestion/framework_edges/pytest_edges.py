@@ -19,7 +19,7 @@ config ``usefixtures`` or ``python_functions``, a helper asking for a fixture,
 a request name in a string other than a docstring, code run from a string
 with ``exec``, ``eval`` or ``compile``, a file whose text is not available) is stamped
 :data:`UNRECORDED_HINT` on the conftest edges it could reach, and selection
-keeps every test under those conftests.
+counts that file as using every fixture of those conftests.
 """
 
 from __future__ import annotations

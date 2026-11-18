@@ -236,6 +236,8 @@ def test_collapsed_conversion_skips_lineless_frames_and_other_checkouts() -> Non
     }
     assert conv.total == 52
     assert conv.explained == 40
+    # Every stack counted its samples, so the run's count is known.
+    assert conv.document["total_samples"] == 52
 
 
 def test_a_file_with_no_stack_line_is_refused() -> None:
@@ -505,6 +507,8 @@ def test_an_evented_profile_keeps_sample_counts_of_sampled_ones_in_the_file() ->
     )
     samples = {s.frames: s.samples for s in run.stacks}
     assert samples == {(2,): 1, (1,): None}
+    # Part of the run counted no samples, so the run's count is unknown.
+    assert "total_samples" not in _convert(run).document
 
 
 def test_speedscope_is_sniffed_by_its_schema_key_not_the_word() -> None:
