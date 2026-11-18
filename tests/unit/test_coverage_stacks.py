@@ -1,0 +1,325 @@
+"""Coverage stacks: the command, prerequisites and report each unit of a repository needs.
+
+Each directory under ``fixtures/coverage_stacks`` is a small repository: real
+manifests plus ``tree.txt`` for paths whose content does not matter.
+``expected.json`` holds, per case, the root stack the GitHub setup flow has
+always produced for it.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+import pytest
+
+from repowise.core.build_units import BuildUnit, BuildUnitIndex
+from repowise.core.test_runners import stacks
+from repowise.core.test_runners.stacks import detect_repo_stacks, detect_stacks, files_to_read
+
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "coverage_stacks"
+EXPECTED = json.loads((FIXTURES / "expected.json").read_text(encoding="utf-8"))
+
+
+def _listing(root: Path) -> list[str]:
+    paths = [
+        (Path(d) / name).relative_to(root).as_posix()
+        for d, _, names in os.walk(root)
+        for name in names
+        if name != "tree.txt"
+    ]
+    tree = root / "tree.txt"
+    if tree.is_file():
+        paths += tree.read_text(encoding="utf-8").split()
+    return sorted(paths)
+
+
+def _load(case: str) -> tuple[list[str], dict[str, str]]:
+    root = FIXTURES / case
+    paths = _listing(root)
+    files = {
+        p: (root / p).read_text(encoding="utf-8")
+        for p in files_to_read(paths)
+        if (root / p).is_file()
+    }
+    return paths, files
+
+
+def _write(root: Path, files: dict[str, str]) -> None:
+    for path, text in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+
+
+@pytest.mark.parametrize("case", sorted(EXPECTED))
+def test_the_root_stack_matches_every_stack_fixture(case):
+    stack = detect_stacks(*_load(case))[0]
+    want = EXPECTED[case]
+    assert stack.root == ""
+    assert (stack.language, stack.runner, stack.package_manager, stack.reports) == (
+        want["language"],
+        want["runner"],
+        want["package_manager"],
+        want["reports"],
+    )
+    assert (stack.test or None) == want["test"]
+
+
+@pytest.mark.parametrize(
+    "case, line, expected, reports",
+    [
+        ("python_pip", "pytest -q", "pytest -q --cov=app --cov-report=xml --cov-context=test", "coverage.xml"),
+        ("python_pip", "pytest --cov=app", "pytest --cov=app --cov-report=xml --cov-context=test", "coverage.xml"),
+        ("python_pip", "pytest --cov=app --cov-report=xml:out/cov.xml", None, "out/cov.xml"),
+        ("python_pip", "pytest tests \\", "pytest --cov=app --cov-report=xml --cov-context=test tests \\", "coverage.xml"),
+        ("python_uv_workspace", "uv run pytest -x && echo ok",
+         "uv run --with pytest-cov pytest -x --cov=packages --cov-report=xml --cov-context=test && echo ok", "coverage.xml"),
+        ("node_jest_npm", "npm test -- --ci", "npm test -- --ci --coverage --coverageReporters=lcov",
+         "coverage/lcov.info"),
+        ("node_jest_npm", "npx jest --ci", "npx jest --coverage --coverageReporters=lcov --ci", "coverage/lcov.info"),
+        ("node_vitest_pnpm", "pnpm test", "pnpm test -- --coverage.enabled --coverage.reporter=lcov",
+         "coverage/lcov.info"),
+        ("node_mocha_yarn", "yarn test", "npx --yes c8 --reporter=lcov yarn test", "coverage/lcov.info"),
+        ("go", "go test -race ./...", "go test -coverprofile=coverage.out -race ./...", "coverage.out"),
+        ("go", "go test -coverprofile=c.out ./...", None, "c.out"),
+        ("maven", "./mvnw -B verify", f"./mvnw {stacks.JACOCO}:prepare-agent -B verify {stacks.JACOCO}:report",
+         "target/site/jacoco/jacoco.xml"),
+        ("gradle_jacoco", "./gradlew build --scan",
+         "./gradlew build jacocoTestReport --scan", "build/reports/jacoco/test/jacocoTestReport.xml"),
+        ("rust", "cargo test --workspace", "cargo llvm-cov --lcov --output-path lcov.info --workspace", "lcov.info"),
+        ("dotnet", "dotnet test -c Release",
+         'dotnet test --collect:"XPlat Code Coverage" --results-directory coverage -c Release',
+         "coverage/*/coverage.cobertura.xml"),
+        ("php", "vendor/bin/phpunit", "vendor/bin/phpunit --coverage-clover clover.xml", "clover.xml"),
+        ("ruby_cobertura", "bundle exec rake test", None, "coverage/coverage.xml"),
+    ],
+)
+def test_coverage_is_added_to_a_test_command(case, line, expected, reports):
+    edit = detect_stacks(*_load(case))[0].edit(line)
+    assert (edit.text, edit.reports) == (expected or line, reports)
+
+
+@pytest.mark.parametrize(
+    "case, line",
+    [
+        ("node_jest_npm", "npm test --workspaces"),  # a monorepo run
+        ("maven", "mvn -B verify \\"),  # the report goal would land on the next line
+        ("gradle_plain", "./gradlew test"),  # no JaCoCo plugin to call
+        ("gradle_jacoco", "./gradlew build -x test"),
+    ],
+)
+def test_commands_it_will_not_guess_at(case, line):
+    assert detect_stacks(*_load(case))[0].edit(line) is None
+
+
+def test_tools_that_need_an_install_say_so():
+    poetry = detect_stacks(*_load("python_poetry"))[0]
+    assert poetry.edit("poetry run pytest").prepare == ("- run: poetry run pip install pytest-cov",)
+    vitest = detect_stacks(*_load("node_vitest_pnpm"))[0]
+    assert vitest.prepare == ('- run: pnpm add -D "@vitest/coverage-v8@^2.1.0"',)
+    assert vitest.requires == ('pnpm add -D "@vitest/coverage-v8@^2.1.0"',)
+    rust = detect_stacks(*_load("rust"))[0]
+    assert rust.edit("cargo test").prepare == ("- uses: taiki-e/install-action@cargo-llvm-cov",)
+    assert rust.requires == ("cargo install cargo-llvm-cov",)
+
+
+def test_python_records_test_contexts_and_sends_the_coverage_db_on_pushes():
+    stack = detect_stacks(*_load("python_pip"))[0]
+    assert "--cov-context=test" in stack.test and stack.push_reports == ".coverage"
+
+
+@pytest.mark.parametrize("case", ["go", "node_jest_npm", "rust", "maven", "unknown"])
+def test_other_stacks_send_only_their_aggregate_report(case):
+    assert not detect_stacks(*_load(case))[0].push_reports
+
+
+@pytest.mark.parametrize(
+    ("line", "push"),
+    [
+        ("pytest --cov=app --cov-report=xml", ""),
+        ("pytest --cov=app --cov-report=xml --cov-context=test", ".coverage"),
+        ("pytest --cov=app --cov-context=test", ".coverage"),
+    ],
+)
+def test_a_pytest_command_sends_the_coverage_db_only_when_it_records_contexts(line, push):
+    edit = detect_stacks(*_load("python_pip"))[0].edit(line)
+    assert edit.push_reports == push and edit.text.count("--cov-context=test") == (1 if push else 0)
+
+
+def test_unknown_says_why_and_guesses_no_command():
+    (stack,) = detect_stacks(*_load("unknown"))
+    out = stack.to_dict()
+    assert out["stack"] == "unknown" and out["command"] is None and out["reason"]
+
+
+def test_a_unit_whose_runner_is_unclear_has_no_command_and_a_reason():
+    out = detect_stacks(*_load("node_monorepo"))[0].to_dict()
+    assert out["command"] is None and "monorepo" in out["reason"]
+
+
+def test_workspace_members_are_run_by_the_workspace_root():
+    # Cargo, Maven and Gradle members are built and tested from the root.
+    for case in ("rust", "maven_jacoco_modules", "gradle_plain"):
+        assert [s.root for s in detect_stacks(*_load(case))] == [""], case
+
+
+def test_npm_workspace_members_get_their_own_stacks():
+    assert [s.root for s in detect_stacks(*_load("node_monorepo"))] == ["", "packages/a", "packages/b"]
+
+
+MONOREPO = {
+    "README.md": "# mono\n",
+    "services/api/pyproject.toml": '[project]\nname = "api"\n',
+    "services/api/uv.lock": "",
+    "services/api/api/__init__.py": "",
+    "services/api/tests/test_api.py": "def test_x():\n    pass\n",
+    "services/worker/go.mod": "module example.com/worker\n\ngo 1.22\n",
+    "services/worker/main.go": "package main\n",
+    "services/worker/main_test.go": "package main\n",
+    "tests/fixtures/sample/package.json": "{}",
+    "docs/site/package.json": "{}",
+}
+
+
+def _assert_members(found: list[stacks.Stack]) -> None:
+    by_root = {s.root: s.to_dict() for s in found}
+    assert set(by_root) == {"services/api", "services/worker"}
+    api, worker = by_root["services/api"], by_root["services/worker"]
+    assert (api["stack"], api["package_manager"]) == ("python", "uv")
+    assert api["command"] == "uv run --with pytest-cov pytest --cov=api --cov-report=xml --cov-context=test"
+    assert api["reports"] == ["services/api/coverage.xml"]
+    assert worker["stack"] == "go" and worker["command"] == "go test -coverprofile=coverage.out ./..."
+    assert worker["reports"] == ["services/worker/coverage.out"]
+
+
+def test_monorepo_members_are_found_from_the_listing():
+    paths = sorted(MONOREPO)
+    files = {p: MONOREPO[p] for p in files_to_read(paths)}
+    _assert_members(detect_stacks(paths, files))
+
+
+def test_monorepo_members_come_from_the_build_unit_index(tmp_path):
+    _write(tmp_path, MONOREPO)
+    units = BuildUnitIndex.from_units(
+        [
+            BuildUnit("python:api", "python", "api", "services/api", "services/api/pyproject.toml", "pyproject"),
+            BuildUnit("go:example.com/worker", "go", "example.com/worker", "services/worker",
+                      "services/worker/go.mod", "go-mod"),
+        ],
+        sorted(MONOREPO),
+    )
+    _assert_members(detect_repo_stacks(tmp_path, units))
+
+
+def test_the_index_decides_which_manifests_are_units(tmp_path):
+    # A package.json the index ruled out (outside the npm workspace) starts no stack.
+    files = {**MONOREPO, "tools/script/package.json": '{"scripts": {"test": "jest"}}'}
+    _write(tmp_path, files)
+    units = BuildUnitIndex.from_units(
+        [BuildUnit("go:w", "go", "w", "services/worker", "services/worker/go.mod", "go-mod")], sorted(files)
+    )
+    assert [s.root for s in detect_repo_stacks(tmp_path, units)] == ["services/worker"]
+    assert "tools/script" in {s.root for s in detect_repo_stacks(tmp_path)}
+
+
+def test_an_empty_index_counts_as_none(tmp_path):
+    _write(tmp_path, MONOREPO)
+    _assert_members(detect_repo_stacks(tmp_path, BuildUnitIndex()))
+
+
+def test_to_dict_is_json_ready():
+    for found in (detect_stacks(*_load("python_uv_workspace")), detect_stacks(*_load("gradle_plain"))):
+        for stack in found:
+            assert json.loads(json.dumps(stack.to_dict())) == stack.to_dict()
+    # Its command needs the init script its CI step writes, so a workstation gets the reason.
+    gradle = detect_stacks(*_load("gradle_plain"))[0].to_dict()
+    assert gradle["shell"] == "github-actions" and gradle["command"] is None and gradle["reason"]
+
+
+def _index(*units: tuple[str, str, str]) -> BuildUnitIndex:
+    return BuildUnitIndex.from_units(
+        [BuildUnit(f"{eco}:{root}", eco, root, root, manifest, eco) for eco, root, manifest in units], []
+    )
+
+
+def test_a_virtual_cargo_workspace_runs_its_members_with_an_index(tmp_path):
+    files = {
+        "Cargo.toml": '[workspace]\nmembers = ["a"]\n',
+        "a/Cargo.toml": '[package]\nname = "a"\n',
+        "a/src/lib.rs": "",
+    }
+    _write(tmp_path, files)
+    (stack,) = detect_repo_stacks(tmp_path, _index(("cargo", "a", "a/Cargo.toml")))
+    assert (stack.root, stack.test) == ("", "cargo llvm-cov --workspace --lcov --output-path lcov.info")
+
+
+def test_a_gradle_settings_root_runs_its_projects_with_an_index(tmp_path):
+    files = {
+        "settings.gradle.kts": 'include("app")\n',
+        "app/build.gradle.kts": "plugins { java\n jacoco }\n",
+        "app/src/main/java/A.java": "",
+    }
+    _write(tmp_path, files)
+    found = detect_repo_stacks(tmp_path, _index(("gradle", "app", "app/build.gradle.kts")))
+    assert [(s.root, s.runner) for s in found] == [("", "gradle")]
+
+
+def test_a_root_package_json_without_a_runner_beside_another_stack_is_tooling():
+    paths = ["pyproject.toml", "package.json", "app/__init__.py"]
+    files = {"pyproject.toml": "[project]\nname = 'x'\n", "package.json": "{}"}
+    assert [s.language for s in detect_stacks(paths, files)] == ["python"]
+
+
+def test_a_nested_solution_does_not_hide_the_root_solution():
+    paths = ["A.sln", "src/B.sln", "A/A.csproj", "tests/A.Tests/A.Tests.csproj"]
+    (stack,) = detect_stacks(paths, {})
+    assert stack.test.startswith("dotnet test A.sln ")
+
+
+def test_dotnet_without_a_solution_or_test_project_says_so():
+    (stack,) = detect_stacks(["App/App.csproj", "App/Program.cs"], {})
+    assert not stack.test and "no solution or test project" in stack.to_dict()["reason"]
+
+
+@pytest.mark.parametrize(
+    ("script", "test", "reports"),
+    [
+        # c8 and nyc write text and html by default: their report step writes lcov.
+        ("c8 mocha", "npm test && npx --yes c8 report --reporter=lcov", "coverage/lcov.info"),
+        ("nyc ava", "npm test && npx --yes nyc report --reporter=lcov", "coverage/lcov.info"),
+        # An explicit lcov reporter already writes it.
+        ("c8 --reporter=lcov mocha", "npm test", "coverage/lcov.info coverage/clover.xml"),
+        ("nyc -r lcov ava", "npm test", "coverage/lcov.info coverage/clover.xml"),
+        ("c8 --reporter=text-lcov mocha", "npm test && npx --yes c8 report --reporter=lcov", "coverage/lcov.info"),
+    ],
+)
+def test_c8_and_nyc_scripts_write_an_lcov_report(script, test, reports):
+    files = {"package.json": json.dumps({"scripts": {"test": script}})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert (stack.test, stack.reports) == (test, reports)
+
+
+def test_testpaths_come_from_the_config_pytest_picks():
+    # pytest.ini governs even with no options, so pyproject's testpaths are never read.
+    paths = ["pytest.ini", "pyproject.toml", "tests/unit/test_a.py", "tests/integration/test_b.py"]
+    pyproject = '[project]\nname = "x"\n[tool.pytest.ini_options]\ntestpaths = ["other"]\n'
+    (stack,) = detect_stacks(paths, {"pytest.ini": "", "pyproject.toml": pyproject})
+    assert stack.test.startswith("pytest tests/unit ")
+    (stack,) = detect_stacks(paths[1:], {"pyproject.toml": pyproject})
+    assert stack.test.startswith("pytest --cov")
+
+
+def test_the_dotnet_sdk_covers_the_app_projects_too():
+    files = {
+        "src/App/App.csproj": "<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>",
+        "tests/App.Tests/App.Tests.csproj": (
+            "<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+            '<ItemGroup><PackageReference Include="coverlet.collector" /></ItemGroup></Project>'
+        ),
+    }
+    paths = ["App.sln", *files]
+    assert set(files) <= set(files_to_read(paths))
+    (stack,) = detect_stacks(paths, files)
+    assert "      8.0.x" in stack.setup and "      9.0.x" in stack.setup
+    assert not any("coverlet" in note for note in stack.notes)

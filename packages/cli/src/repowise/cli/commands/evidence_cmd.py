@@ -1,9 +1,10 @@
 """``repowise evidence``: ingest what a real run showed and join it to the code.
 
 ``evidence add`` reads one ``repowise-evidence-v1`` file (a profile,
-benchmark results, test timings or query counts), or a profiler's own output
-in a format of :data:`~repowise.core.evidence.profile_formats.profile_formats`
-(converted to v1 first), joins its entries to the indexed symbols and stores
+benchmark results, test timings or query counts), or a profiler's or
+benchmark runner's own output in a format of
+:data:`~repowise.core.evidence.profile_formats.profile_formats` (converted
+to v1 first), joins its entries to the indexed symbols and stores
 the run with where it came from: the commit, the checkout, the workload and
 its class, and what did not map.
 """
@@ -43,7 +44,7 @@ from repowise.core.git_sha import is_full_sha
 
 @dataclass(frozen=True)
 class _Input:
-    """The file as read: a v1 document, or a profile run still to convert."""
+    """The file as read: a v1 document (written or converted), or a profile run still to convert."""
 
     format: str
     text: str | None = None
@@ -74,7 +75,8 @@ def evidence_group() -> None:
 @click.option(
     "--commit",
     default=None,
-    help="The full SHA measured. Defaults to the file's commit_sha.",
+    help="The full SHA measured. Defaults to the file's commit_sha; required for a "
+    "converted file.",
 )
 @click.option(
     "--checkout-root",
@@ -133,8 +135,9 @@ def evidence_add(
 ) -> None:
     """Ingest one evidence FILE for a named workload.
 
-    FILE is a repowise-evidence-v1 document, or a profile as the profiler
-    wrote it (Speedscope JSON, Go pprof, collapsed stacks), detected from its content.
+    FILE is a repowise-evidence-v1 document, or a profile or benchmark
+    results as the tool wrote them (Speedscope JSON, Go pprof, collapsed stacks,
+    pytest-benchmark JSON), detected from its content.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match
@@ -147,6 +150,7 @@ def evidence_add(
         repowise evidence add prof.json --workload "cli build" --class entry_point
         repowise evidence add prof.speedscope.json --workload "cli build" --class entry_point --commit $(git rev-parse HEAD)
         repowise evidence add stacks.txt --workload "api" --class load_test --value-kind cpu --commit $(git rev-parse HEAD)
+        repowise evidence add bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
         repowise evidence add bench.json --workload "go bench" --class benchmark --format json
 
     Exits 1 when nothing was stored, 2 on a usage error.
@@ -175,7 +179,7 @@ def evidence_add(
             value_kind=value_kind,
             workload=workload.strip(),
             workload_class=workload_class,
-            commit=_measured_commit(commit, read.doc),
+            commit=_measured_commit(commit, read),
             dirty=dirty if dirty is not None or read.doc is None else read.doc.dirty,
             environment=environment,
             allow_partial=allow_partial,
@@ -220,7 +224,7 @@ def _check_options(
 def _read_evidence(
     file: Path, max_file_mb: float, fmt: str, input_format: str | None, root: Path
 ) -> _Input:
-    """*file* read as v1 or as a registered profile format; refuses one too large or unreadable."""
+    """*file* read as v1 or as a registered format; refuses one too large or unreadable."""
     from repowise.core.evidence import EvidenceFormatError, parse_evidence
     from repowise.core.evidence.profile_convert import refuse_typescript
 
@@ -241,7 +245,11 @@ def _read_evidence(
         if name == EVIDENCE_FORMAT:
             text = data.decode("utf-8", errors="replace")
             return _Input(name, text=text, doc=parse_evidence(text))
-        run = profile_formats.get(name).read(data)
+        input_format = profile_formats.get(name)
+        if input_format.to_v1 is not None:
+            text = json.dumps(input_format.to_v1(data), sort_keys=True)
+            return _Input(name, text=text, doc=parse_evidence(text))
+        run = input_format.read(data)
         refuse_typescript(run, str(root))
         return _Input(name, run=run)
     except EvidenceFormatError as exc:
@@ -273,6 +281,12 @@ def _input_format(given: str | None, data: bytes) -> str:
 def _check_value_kind(read: _Input, value_kind: str | None) -> None:
     """A converted profile needs its clock; a v1 file's own must not be contradicted."""
     if read.doc is not None:
+        if value_kind is not None and read.doc.value_kind is None:
+            raise click.BadParameter(
+                f"a {read.doc.kind} file records no clock; --value-kind names the clock "
+                "of a profile only, so leave it out.",
+                param_hint="--value-kind",
+            )
         if value_kind is not None and read.doc.value_kind != value_kind:
             raise click.BadParameter(
                 f"the file's value_kind is {read.doc.value_kind}; --value-kind only names "
@@ -288,19 +302,27 @@ def _check_value_kind(read: _Input, value_kind: str | None) -> None:
         )
 
 
-def _measured_commit(commit: str | None, doc: Any) -> str:
-    """The commit the run measured: ``--commit`` or the file's, which must agree."""
-    in_file = doc.commit_sha if doc is not None else None
+def _measured_commit(commit: str | None, read: _Input) -> str:
+    """The commit the run measured: ``--commit`` or the file's, which must agree.
+
+    A converted file's commit is what its tool recorded, never taken on its
+    own: ``--commit`` is required and the recorded one only cross-checks it.
+    """
+    in_file = read.doc.commit_sha if read.doc is not None else None
+    converted = read.format != EVIDENCE_FORMAT
     if commit is not None and in_file is not None and commit != in_file:
         raise click.BadParameter(
-            f"the file says it measured {in_file}; pass the same commit or none.",
+            f"the {read.format} file records commit {in_file}, so it did not measure "
+            f"{commit}; pass the commit the run measured."
+            if converted
+            else f"the file says it measured {in_file}; pass the same commit or none.",
             param_hint="--commit",
         )
-    measured = commit or in_file
+    measured = commit or (None if converted else in_file)
     if measured is None:
         raise click.BadParameter(
             "say which commit was measured: --commit $(git rev-parse HEAD) at the time "
-            "of the run, or commit_sha in the file.",
+            "of the run" + ("." if converted else ", or commit_sha in the file."),
             param_hint="--commit",
         )
     return measured

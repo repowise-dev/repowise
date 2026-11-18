@@ -1,13 +1,16 @@
-"""Profile format registry: the profiler outputs ``repowise evidence add`` converts.
+"""Input format registry: the tool outputs ``repowise evidence add`` converts.
 
-:data:`profile_formats` is the one list of profile formats: detection, the
-CLI ``--input-format`` choice and user-facing format lists all read it, the
-way the coverage ``PARSERS`` list works for coverage reports. A format is a
-:class:`ProfileFormat`: a ``sniff`` over the file's first bytes and a
-``read`` that turns the whole file into a :class:`ProfileRun` (frames and
-weighted stacks, nothing joined). Joining frames to code and writing the
-``repowise-evidence-v1`` document is shared (:mod:`..profile_convert`), so a
-new format is one module plus one ``register`` call below. A plugin adds
+:data:`profile_formats` is the one list of input formats, profiles and
+benchmark results alike: detection, the CLI ``--input-format`` choice and
+user-facing format lists all read it, the way the coverage ``PARSERS`` list
+works for coverage reports. A format is a :class:`ProfileFormat`: a
+``sniff`` over the file's first bytes and one reader. A profile's ``read``
+turns the whole file into a :class:`ProfileRun` (frames and weighted
+stacks, nothing joined); joining frames to code and writing the
+``repowise-evidence-v1`` document is shared (:mod:`..profile_convert`). Any
+other kind (benchmark results) has ``to_v1`` instead, which writes the v1
+document directly: its entries name their functions, and ingest joins
+them. A new format is one module plus one ``register`` call below. A plugin adds
 one the same way from its ``register()``::
 
     from repowise.core.evidence.profile_formats import ProfileFormat, profile_formats
@@ -23,25 +26,41 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, pprof, speedscope
+from . import collapsed, pprof, pytest_benchmark, speedscope
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
 @dataclass(frozen=True)
 class ProfileFormat:
+    """A format's sniffer and exactly one of its two readers.
+
+    Both readers raise ``EvidenceFormatError`` when the file cannot be read.
+    """
+
     #: Whether a file starting with these bytes (BOM included) is this format.
     sniff: Callable[[bytes], bool]
-    #: The whole file as a run; raises ``EvidenceFormatError`` when it cannot be read.
-    read: Callable[[bytes], ProfileRun]
+    #: A profile: the whole file as a run, converted by :mod:`..profile_convert`.
+    read: Callable[[bytes], ProfileRun] | None = None
+    #: Any other kind: the whole file as a ``repowise-evidence-v1`` object.
+    to_v1: Callable[[bytes], dict[str, Any]] | None = None
+
+    def __post_init__(self) -> None:
+        if (self.read is None) == (self.to_v1 is None):
+            raise ValueError("a format has exactly one of read and to_v1")
 
 
 #: Format name -> format, in the order formats are sniffed and listed.
 profile_formats: SeamRegistry[ProfileFormat] = SeamRegistry("profile-format")
 profile_formats.register("speedscope", ProfileFormat(speedscope.sniff, speedscope.read))
 profile_formats.register("pprof", ProfileFormat(pprof.sniff, pprof.read))
+profile_formats.register(
+    "pytest-benchmark",
+    ProfileFormat(pytest_benchmark.sniff, to_v1=pytest_benchmark.to_v1),
+)
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 
 

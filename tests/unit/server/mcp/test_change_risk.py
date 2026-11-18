@@ -226,31 +226,24 @@ async def test_get_change_risk_rejects_repo_all() -> None:
 
 
 async def _factory_with_repo(
+    engine,
     coverage_records: list | None,
     *,
     head_commit: str | None = None,
     measured_at: str | None = None,
 ):
-    """Build an in-memory session factory seeded with one repo + coverage map.
+    """Seed *engine* with one repo + coverage map and return a session factory.
 
     *head_commit* is the commit the index describes, *measured_at* the one the
     coverage map was measured at.
     """
     from datetime import UTC, datetime
 
-    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-    from sqlalchemy.pool import StaticPool
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from repowise.core.persistence.crud import save_test_coverage
-    from repowise.core.persistence.database import init_db
     from repowise.core.persistence.models import Repository
 
-    engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    await init_db(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
     now = datetime(2026, 7, 18, tzinfo=UTC)
     async with factory() as s:
@@ -299,7 +292,7 @@ def _tc(test_id: str, source_file: str, covered_lines: list[int], test_file: str
 
 
 @pytest.mark.asyncio
-async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -> None:
+async def test_impacted_tests_line_precise_hit_and_miss(engine, tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init", "-q"], repo)
@@ -316,6 +309,7 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
     )
 
     factory = await _factory_with_repo(
+        engine,
         [
             _tc("tests/test_app.py::test_app", "src/app.py", [3], "tests/test_app.py"),
             _tc("tests/test_other.py::test_other", "src/other.py", [9], "tests/test_other.py"),
@@ -359,14 +353,14 @@ async def test_impacted_tests_line_precise_hit_and_miss(tmp_path, monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_impacted_tests_no_map_is_unknown_not_untested(tmp_path, monkeypatch) -> None:
+async def test_impacted_tests_no_map_is_unknown_not_untested(engine, tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init", "-q"], repo)
     _commit(repo, {"src/app.py": "a\nb\n"}, "chore: seed")
     _commit(repo, {"src/app.py": "a\nb\nc\n"}, "feat: add line")
 
-    factory = await _factory_with_repo(None)  # repo present, no coverage rows
+    factory = await _factory_with_repo(engine, None)  # repo present, no coverage rows
 
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
 
@@ -387,7 +381,7 @@ async def test_impacted_tests_no_map_is_unknown_not_untested(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, monkeypatch) -> None:
+async def test_impacted_tests_falls_back_to_the_graph_without_a_map(engine, tmp_path, monkeypatch) -> None:
     """No coverage map, but the graph knows a test imports the changed file.
 
     Replaces a bare "run the full suite" with a candidate list on every repo
@@ -407,7 +401,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     )
     _commit(repo, {"src/app.py": "a\nb\nc\n"}, "feat: add line")
 
-    factory = await _factory_with_repo(None, head_commit=_sha(repo, "HEAD~1"))
+    factory = await _factory_with_repo(engine, None, head_commit=_sha(repo, "HEAD~1"))
     async with factory() as s:
         for path, is_test in (("tests/test_round_trips.py", True), ("src/app.py", False)):
             s.add(
@@ -453,7 +447,7 @@ async def test_impacted_tests_falls_back_to_the_graph_without_a_map(tmp_path, mo
     )
 
 
-async def test_a_test_file_the_change_edits_leads_the_inferred_run_list(tmp_path, monkeypatch):
+async def test_a_test_file_the_change_edits_leads_the_inferred_run_list(engine, tmp_path, monkeypatch):
     """Twelve broad tests import both changed sources; the one test file the
     change edits imports one. It still leads, inside the ten shown."""
     from repowise.core.persistence.models import GraphEdge, GraphNode
@@ -479,7 +473,7 @@ async def test_a_test_file_the_change_edits_leads_the_inferred_run_list(tmp_path
         "feat: edit",
     )
 
-    factory = await _factory_with_repo(None, head_commit=_sha(repo, "HEAD~1"))
+    factory = await _factory_with_repo(engine, None, head_commit=_sha(repo, "HEAD~1"))
     async with factory() as s:
         for path in (*generic, edited, "src/dup.py", "src/tok.py"):
             is_test = path.startswith("tests/")
@@ -576,7 +570,7 @@ def test_a_summary_says_the_listed_tests_lead_with_the_likeliest_to_fail() -> No
 
 
 @pytest.mark.asyncio
-async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> None:
+async def test_impacted_tests_overflow_cap_is_honest(engine, tmp_path, monkeypatch) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(["init", "-q"], repo)
@@ -591,7 +585,7 @@ async def test_impacted_tests_overflow_cap_is_honest(tmp_path, monkeypatch) -> N
     (repo / "tests").mkdir()
     for i in range(12):
         (repo / f"tests/test_{i}.py").write_text("x = 1\n", encoding="utf-8")
-    factory = await _factory_with_repo(records)
+    factory = await _factory_with_repo(engine, records)
 
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
 
@@ -787,7 +781,7 @@ async def test_get_change_risk_untracked_only_tree_is_one_change(tmp_path, monke
 @pytest.mark.parametrize(("user_text", "selected"), [("# Mine\n", False), ("# Mine, edited\n", True)])
 @pytest.mark.asyncio
 async def test_impacted_tests_skip_a_managed_file_only_repowise_changed(
-    tmp_path, monkeypatch, user_text, selected
+    engine, tmp_path, monkeypatch, user_text, selected
 ) -> None:
     """A refreshed managed block leaves test selection; the user's edit beside it does not."""
     from repowise.cli.agent_targets.instructions import DISTILL_MARKER_END, DISTILL_MARKER_START
@@ -812,7 +806,7 @@ async def test_impacted_tests_skip_a_managed_file_only_repowise_changed(
         return change
 
     monkeypatch.setattr(changed_lines, "change_set", _spy)
-    factory = await _factory_with_repo(None)
+    factory = await _factory_with_repo(engine, None)
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
 
     async def _context(_: str | None) -> SimpleNamespace:
@@ -955,7 +949,7 @@ async def test_evidence_for_a_stored_change_is_its_kept_record(tmp_path, monkeyp
     assert "database is locked" in owners["details"][0]["reason"]
 
 
-async def test_a_scored_range_is_reused_until_its_inputs_move(tmp_path, monkeypatch) -> None:
+async def test_a_scored_range_is_reused_until_its_inputs_move(engine, tmp_path, monkeypatch) -> None:
     from datetime import UTC, datetime
 
     from sqlalchemy import update
@@ -967,7 +961,7 @@ async def test_a_scored_range_is_reused_until_its_inputs_move(tmp_path, monkeypa
     _git(["init", "-q"], repo)
     _commit(repo, {"src/app.py": "def f():\n    return 1\n"}, "chore: seed")
     _commit(repo, {"src/app.py": "def f():\n    return 2\n"}, "feat: two")
-    factory = await _factory_with_repo(None, head_commit=_sha(repo))
+    factory = await _factory_with_repo(engine, None, head_commit=_sha(repo))
     module = importlib.import_module("repowise.server.mcp_server.tool_change_risk")
     scores: list[str | None] = []
     real = module.score_live_change

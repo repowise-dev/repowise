@@ -15,6 +15,7 @@ from repowise.cli.commands import evidence_cmd
 from repowise.core.persistence import create_session_factory, get_session
 from repowise.core.persistence.database import create_engine, init_db
 from repowise.core.persistence.models import (
+    EvidenceBenchmarkResult,
     EvidenceRun,
     EvidenceSymbolCost,
     HealthFileMetric,
@@ -374,7 +375,7 @@ def test_input_format_is_checked_against_the_registry(indexed) -> None:
         "--input-format", "jfr",
     )
     assert result.exit_code == 2
-    assert all(name in result.stderr for name in ("speedscope", "pprof", "collapsed"))
+    assert all(name in result.stderr for name in ("speedscope", "pprof", "pytest-benchmark", "collapsed"))
 
 
 def test_input_format_overrides_the_sniff(indexed) -> None:
@@ -409,3 +410,139 @@ def test_a_gzipped_pprof_profile_is_sniffed_and_keeps_its_own_clock(indexed) -> 
     (run,), (cost,) = _stored(root)
     assert (run.value_kind, run.total_value) == ("cpu", 50_000_000)
     assert (cost.symbol_id, cost.total_samples) == ("src/app.py::build", 4)
+
+
+_BENCH_FIXTURE = Path(__file__).parents[2] / "fixtures" / "evidence" / "pytest_benchmark.json"
+
+
+def _index_benchmarks(root: Path) -> None:
+    async def add() -> None:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                path = "benchmarks/test_speed.py"
+                for sid, name, line in (
+                    ("test_sum", "test_sum", 8),
+                    ("TestCache::test_get", "test_get", 13),
+                    ("test_sized", "test_sized", 18),
+                ):
+                    session.add(
+                        WikiSymbol(
+                            repository_id="r1", file_path=path, symbol_id=f"{path}::{sid}",
+                            name=name, qualified_name="benchmarks.test_speed."
+                            + sid.replace("::", "."), kind="function", start_line=line,
+                            end_line=line + 1,
+                        )
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(add())
+
+
+def _bench_file(root: Path, commit: str) -> Path:
+    data = json.loads(_BENCH_FIXTURE.read_text())
+    data["commit_info"]["id"] = commit
+    path = root / "bench.json"
+    path.write_text(json.dumps(data, indent=4))
+    return path
+
+
+def _benchmarks(root: Path) -> list:
+    async def read() -> list:
+        engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
+        try:
+            async with get_session(create_session_factory(engine)) as session:
+                return list((await session.execute(select(EvidenceBenchmarkResult))).scalars())
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+def test_pytest_benchmark_output_is_stored_as_a_benchmark_series(indexed) -> None:
+    root, head = indexed
+    _index_benchmarks(root)
+    result = _add(
+        str(_bench_file(root, head)), "--workload", "pytest bench", "--class", "benchmark",
+        "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["kind"], payload["matched"]) == (
+        "pytest-benchmark", "benchmark", 4,
+    )
+    assert (payload["skipped"], payload["unlinked"], payload["dirty"]) == ({}, {}, False)
+    assert "conversion" not in payload
+
+    (run,), costs = _stored(root)
+    assert costs == []
+    assert (run.kind, run.workload_class, run.unit, run.tool_name) == (
+        "benchmark", "benchmark", None, "pytest-benchmark",
+    )
+    rows = {r.benchmark_key: r for r in _benchmarks(root)}
+    assert {k: r.symbol_id for k, r in rows.items()} == {
+        "benchmarks/test_speed.py::test_sum": "benchmarks/test_speed.py::test_sum",
+        "benchmarks/test_speed.py::TestCache::test_get":
+            "benchmarks/test_speed.py::TestCache::test_get",
+        "benchmarks/test_speed.py::test_sized[10]": "benchmarks/test_speed.py::test_sized",
+        "benchmarks/test_speed.py::test_sized[20]": "benchmarks/test_speed.py::test_sized",
+    }
+    get = rows["benchmarks/test_speed.py::TestCache::test_get"]
+    stats = json.loads(_BENCH_FIXTURE.read_text())["benchmarks"][1]["stats"]
+    assert (get.unit, get.median, get.rounds, get.iterations) == (
+        "s", stats["median"], stats["rounds"], stats["iterations"],
+    )
+
+
+def test_a_benchmark_function_not_indexed_keeps_its_series(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_bench_file(root, head)), "--workload", "w", "--class", "benchmark",
+        "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    assert _json(result)["unlinked"] == {"unknown_file": 4}
+    assert {r.symbol_id for r in _benchmarks(root)} == {None}
+
+
+def test_pytest_benchmark_needs_the_commit_flag_and_cross_checks_it(indexed) -> None:
+    root, head = indexed
+    path = _bench_file(root, head)
+    result = _add(str(path), "--workload", "w", "--class", "benchmark")
+    assert result.exit_code == 2
+    assert "--commit" in result.stderr and "commit_sha in the file" not in result.stderr
+
+    other = "e" * 40
+    result = _add(str(path), "--workload", "w", "--class", "benchmark", "--commit", other)
+    assert result.exit_code == 2
+    assert f"records commit {head}" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+def test_value_kind_on_a_benchmark_file_says_it_has_no_clock(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_bench_file(root, head)), "--workload", "w", "--class", "benchmark",
+        "--commit", head, "--value-kind", "wall",
+    )
+    assert result.exit_code == 2
+    assert "records no clock" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+def test_a_benchmark_never_links_to_a_method_sharing_its_bare_name(indexed) -> None:
+    root, head = indexed
+    _index_benchmarks(root)
+    data = json.loads(_bench_file(root, head).read_text())
+    bench = data["benchmarks"][0]
+    bench["name"], bench["fullname"] = "test_get", "benchmarks/test_speed.py::test_get"
+    data["benchmarks"] = [bench]
+    path = root / "bench.json"
+    path.write_text(json.dumps(data, indent=4))
+    result = _add(
+        str(path), "--workload", "w", "--class", "benchmark", "--commit", head, "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    assert _json(result)["unlinked"] == {"unknown_symbol": 1}
+    assert [r.symbol_id for r in _benchmarks(root)] == [None]
