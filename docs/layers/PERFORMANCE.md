@@ -236,6 +236,7 @@ it to this shape first. The format is detected from the content;
 | Format | Written by | What a frame carries |
 |---|---|---|
 | `speedscope` | `pyinstrument -r speedscope`, `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
+| `pprof` | `go test -run <Test> -count=1 -cpuprofile cpu.pprof ./pkg`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
 | `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
 
 - A frame joins to a function only when its path sits under the checkout root
@@ -261,6 +262,10 @@ it to this shape first. The format is detected from the content;
   pyinstrument (wall clock); pass `--value-kind cpu` or `wall` otherwise.
 - A profile whose frames name TypeScript files of the checkout is refused:
   its positions are in the compiled JavaScript.
+- A Go binary built with `-trimpath` names its files by import path, under no
+  checkout, so its profile is refused. Profile a build without it. A build made
+  in another directory (CI, a container) joins with that directory as
+  `--checkout-root`.
 - New formats register on the `profile-format` [seam](../reference/PLUGINS.md#seams),
   so a plugin can add one.
 

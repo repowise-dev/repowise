@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from repowise.core.persistence.models import (
     Repository,
     WikiSymbol,
 )
+from tests.unit.evidence.test_profile_formats import _pprof
 
 
 def _git_repo(root: Path) -> str:
@@ -370,10 +372,10 @@ def test_input_format_is_checked_against_the_registry(indexed) -> None:
     root, head = indexed
     result = _add(
         str(_write(root)), "--workload", "w", "--class", "entry_point", "--commit", head,
-        "--input-format", "pprof",
+        "--input-format", "jfr",
     )
     assert result.exit_code == 2
-    assert "speedscope" in result.stderr and "collapsed" in result.stderr
+    assert all(name in result.stderr for name in ("speedscope", "pprof", "pytest-benchmark", "collapsed"))
 
 
 def test_input_format_overrides_the_sniff(indexed) -> None:
@@ -384,6 +386,30 @@ def test_input_format_overrides_the_sniff(indexed) -> None:
     )
     assert result.exit_code == 1
     assert _json(result)["error"] == "invalid_evidence"
+
+
+def test_a_gzipped_pprof_profile_is_sniffed_and_keeps_its_own_clock(indexed) -> None:
+    root, head = indexed
+    data = _pprof(
+        samples=[([2, 1], [4, 40_000_000]), ([1], [1, 10_000_000])],
+        locations={1: [(1, 0)], 2: [(2, 2)]},
+        functions={1: ("runtime.main", "/usr/local/go/src/runtime/proc.go", 1),
+                   2: ("build", str(root / "src" / "app.py"), 1)},
+    )
+    path = root / "cpu.pprof"
+    path.write_bytes(gzip.compress(data))
+    result = _add(
+        str(path), "--workload", "w", "--class", "entry_point", "--commit", head,
+        "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["matched"]) == ("pprof", 1)
+    assert payload["conversion"]["unit"] == "ns"
+    assert payload["conversion"]["explained_share"] == 0.8
+    (run,), (cost,) = _stored(root)
+    assert (run.value_kind, run.total_value) == ("cpu", 50_000_000)
+    assert (cost.symbol_id, cost.total_samples) == ("src/app.py::build", 4)
 
 
 _BENCH_FIXTURE = Path(__file__).parents[2] / "fixtures" / "evidence" / "pytest_benchmark.json"
