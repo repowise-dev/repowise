@@ -309,15 +309,36 @@ def _pyproject(root: Path) -> dict[str, Any]:
         return {}
 
 
+# ``module.path:function`` as ``[project.scripts]`` spells a target. The text
+# reaches printed commands, so anything else is dropped.
+_SCRIPT_TARGET = re.compile(r"[A-Za-z_][\w.]*(?::[A-Za-z_][\w.]*)?")
+
+
+def console_scripts(project_dir: Path | str) -> dict[str, tuple[str, str | None]]:
+    """``console script -> (module, function)`` from *project_dir*'s ``pyproject.toml``.
+
+    ``function`` is ``None`` for a bare module target. Entries whose name or
+    target is not a plain identifier path are left out.
+    """
+    scripts = _pyproject(Path(project_dir)).get("scripts") or {}
+    out: dict[str, tuple[str, str | None]] = {}
+    for name, target in scripts.items():
+        target = str(target).strip()
+        if not (_PROGRAM.fullmatch(str(name)) and _SCRIPT_TARGET.fullmatch(target)):
+            continue
+        module, _, function = target.partition(":")
+        out[str(name)] = (module, function or None)
+    return out
+
+
 def python_scripts(repo_root: Path | str | None) -> dict[str, str]:
     """``console script -> package path`` of its entry module (``a.cli.main:run`` -> ``a/cli``)."""
     if not repo_root:
         return {}
-    scripts = _pyproject(Path(repo_root)).get("scripts") or {}
     out = {}
-    for name, target in scripts.items():
-        module = str(target).split(":", 1)[0].strip().split(".")
-        out[name] = "/".join(module[:-1] or module)
+    for name, (module, _) in console_scripts(repo_root).items():
+        parts = module.split(".")
+        out[name] = "/".join(parts[:-1] or parts)
     return out
 
 
