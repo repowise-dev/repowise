@@ -150,8 +150,9 @@ async def _line_id_target(symbol_id: str, ctx: Any) -> str | None:
     """The id a ``path:line`` id stands for, else None for any other id.
 
     The innermost indexed symbol holding the line, or a range of the lines
-    around it when no symbol does (a file the index lacks, or an excluded or
-    missing one, which the range read then names).
+    around it when no symbol does (a file the index lacks, or an excluded one,
+    which the range read then names). A path neither indexed nor on disk is
+    not a location, so it gets None too.
     """
     line_match = _LINE_ID_RE.match(symbol_id.strip())
     if not line_match or "::" in symbol_id:
@@ -166,8 +167,13 @@ async def _line_id_target(symbol_id: str, ctx: Any) -> str | None:
                     WikiSymbol.repository_id == repository.id, WikiSymbol.file_path == path
                 )
             )
-            # A row with no recorded position never owns a line.
-            owner = symbol_at((r for r in res.scalars().all() if r.start_line > 0), line)
+            rows = res.scalars().all()
+        # Neither indexed nor on disk: a "name:12" id, not a location, so the
+        # symbol lookup answers it with its not-found suggestions.
+        if not rows and not (Path(str(ctx.path)) / path).is_file():
+            return None
+        # A row with no recorded position never owns a line.
+        owner = symbol_at((r for r in rows if r.start_line > 0), line)
         if owner is not None:
             return symbol_identity(owner.symbol_id)
     return f"{path}:{max(1, line - _LINE_WINDOW)}-{line + _LINE_WINDOW}"

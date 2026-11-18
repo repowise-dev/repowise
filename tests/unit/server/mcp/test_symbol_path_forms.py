@@ -113,8 +113,20 @@ async def test_a_path_line_id_in_a_file_the_index_lacks(setup_mcp, tmp_path):
     assert result["kind"] == "range"
     assert (result["start_line"], result["end_line"]) == (1, 3)
 
-    missing = await get_symbol("pkg/ghost.py:2")
-    assert missing["error"] == "File could not be read: 'pkg/ghost.py'"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("symbol_id", ["pkg/ghost.py:2", "Foo:3", "login:12"])
+async def test_a_name_line_id_neither_indexed_nor_on_disk_is_a_symbol_miss(
+    setup_mcp, symbol_id
+):
+    """Not a location: the symbol lookup's not-found reply, not a file-read error."""
+    from repowise.server.mcp_server import get_symbol
+
+    ctx = await tool_symbol._resolve_repo_context(None)
+    assert await tool_symbol.ranges._line_id_target(symbol_id, ctx) is None
+    result = await get_symbol(symbol_id)
+    assert result.get("kind") != "range"
+    assert result["error"].startswith(f"Symbol not found: {symbol_id!r}.")
 
 
 @pytest.mark.asyncio
