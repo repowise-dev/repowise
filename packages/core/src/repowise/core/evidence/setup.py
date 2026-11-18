@@ -202,8 +202,6 @@ def evidence_setup(
     for *head* (coverage, a workload's run) is not asked for again, so an
     agent that reruns setup after each step comes to an end.
     *index_error* is why an index that exists could not be read: the plan
-    then sends the agent to ``repowise doctor``, never to a fresh ``init``.
-    *index_error* is why an index that exists could not be read: the plan
     then sends the agent to *index_fix* (``repowise doctor`` unless the
     error names another), never to a fresh ``init``.
     """
