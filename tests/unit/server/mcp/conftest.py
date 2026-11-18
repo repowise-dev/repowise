@@ -1,19 +1,22 @@
 """Unit tests for repowise MCP server tools.
 
-Tests all 9 MCP tools using an in-memory SQLite database with pre-populated
+Tests the MCP tools against a per-test SQLite file store with pre-populated
 test data, mirroring the conftest pattern from the REST API tests.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from repowise.core.persistence.database import init_db
+from repowise.core.persistence.database import create_engine, init_db
 from repowise.core.persistence.models import (
     DeadCodeFinding,
     DecisionRecord,
@@ -31,14 +34,42 @@ from repowise.core.providers.embedding.base import MockEmbedder
 _NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
 
 
+def _sqlite_url(path: Path) -> str:
+    return f"sqlite+aiosqlite:///{path.as_posix()}"
+
+
+@pytest.fixture(scope="session")
+def _store_template(tmp_path_factory) -> Path:
+    """One initialised store per worker, built once and copied by each test.
+
+    A copy takes about 2 ms where ``init_db`` on a fresh store takes about 300.
+    """
+    path = tmp_path_factory.mktemp("store-template") / "wiki.db"
+
+    async def build() -> None:
+        eng = create_engine(_sqlite_url(path))
+        await init_db(eng)
+        await eng.dispose()
+
+    # Its own thread and loop: a session fixture runs outside any test's loop.
+    with ThreadPoolExecutor(1) as pool:
+        pool.submit(asyncio.run, build()).result()
+    return path
+
+
 @pytest.fixture
-async def engine():
-    eng = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
-    await init_db(eng)
+async def engine(_store_template, tmp_path_factory):
+    """A file store opened the way the server opens one.
+
+    Every session gets its own connection. On a shared in-memory connection a
+    tool leg cancelled at its time budget closes that connection under the
+    legs running beside it, and concurrent closes of one aiosqlite connection
+    never return, so the test hung until the timeout.
+    """
+    path = tmp_path_factory.mktemp("store") / "wiki.db"
+    shutil.copyfile(_store_template, path)
+    eng = create_engine(_sqlite_url(path))
+    await init_db(eng)  # the copy carries the schema stamp: two header reads
     yield eng
     await eng.dispose()
 
@@ -48,9 +79,24 @@ async def factory(engine):
     return async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
 
+class _SeedSession(AsyncSession):
+    """Commits on every flush, so rows a test seeds reach the tool's own sessions.
+
+    Each session has its own connection, and another connection sees only
+    committed rows; an open write would also hold the store's write lock
+    against the tool. Only an explicit ``flush()`` commits: rows that reach
+    the store through autoflush or ``session.execute(update(...))`` stay
+    uncommitted until a test flushes.
+    """
+
+    async def flush(self, objects=None) -> None:
+        await super().flush(objects)
+        await self.commit()
+
+
 @pytest.fixture
-async def session(factory):
-    async with factory() as s:
+async def session(engine):
+    async with _SeedSession(engine, expire_on_commit=False) as s:
         yield s
         await s.commit()
 

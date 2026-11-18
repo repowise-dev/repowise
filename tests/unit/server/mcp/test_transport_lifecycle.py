@@ -29,13 +29,6 @@ from repowise.server.mcp_server._transport import (
 )
 
 
-@pytest.fixture
-def no_watchdog(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "repowise.server.mcp_server._watchdog.start_parent_watchdog", lambda: None
-    )
-
-
 @pytest.mark.parametrize(
     "exc",
     [
@@ -198,7 +191,7 @@ def test_the_real_stream_comes_back_after_a_failure() -> None:
 
 
 def test_a_closed_transport_returns_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """The regression: an ordinary hang-up escaped as a traceback."""
     def hang_up(**_kw):
@@ -210,7 +203,7 @@ def test_a_closed_transport_returns_instead_of_raising(
 
 
 def test_a_grouped_closed_transport_returns_too(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     def hang_up(**_kw):
         raise ExceptionGroup("closed", [anyio.ClosedResourceError()])
@@ -221,7 +214,7 @@ def test_a_grouped_closed_transport_returns_too(
 
 
 def test_a_server_fault_still_raises(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """Classification must not turn a real crash into a quiet exit."""
     def boom(**_kw):
@@ -234,7 +227,7 @@ def test_a_server_fault_still_raises(
 
 
 def test_a_clean_stdio_session_names_its_ending(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     monkeypatch.setattr(_server.mcp, "run", lambda **_kw: None)
 
@@ -242,7 +235,7 @@ def test_a_clean_stdio_session_names_its_ending(
 
 
 def test_a_session_that_printed_to_stdout_says_so(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     monkeypatch.setattr(_server.mcp, "run", lambda **_kw: print("stray"))
 
@@ -250,7 +243,7 @@ def test_a_session_that_printed_to_stdout_says_so(
 
 
 def test_a_network_transport_reports_its_own_shutdown(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     monkeypatch.setattr(_server.mcp, "run", lambda **_kw: None)
 
@@ -263,7 +256,7 @@ def test_a_network_transport_never_reports_a_closure() -> None:
 
 
 def test_a_startup_fault_is_never_read_as_a_clean_close(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """A truncated index artifact raises EOFError, which is a hang-up class.
 
@@ -280,7 +273,7 @@ def test_a_startup_fault_is_never_read_as_a_clean_close(
 
 
 def test_a_grouped_startup_fault_is_not_a_closure_either(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     def boom():
         raise ExceptionGroup("startup", [EOFError("truncated artifact")])
@@ -292,7 +285,7 @@ def test_a_grouped_startup_fault_is_not_a_closure_either(
 
 
 def test_an_interrupt_is_not_a_closure(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """Ctrl-C ends a server; it is not the client hanging up."""
     monkeypatch.setattr(
@@ -304,7 +297,7 @@ def test_an_interrupt_is_not_a_closure(
 
 
 def test_an_unopenable_store_is_not_a_closure(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     monkeypatch.setattr(
         _server.mcp,
@@ -334,7 +327,7 @@ def test_the_watchdog_speaks_the_shared_vocabulary(capsys, monkeypatch) -> None:
 
 
 def test_a_session_that_printed_and_then_hung_up_reports_the_hang_up(
-    monkeypatch: pytest.MonkeyPatch, no_watchdog: None
+    monkeypatch: pytest.MonkeyPatch, isolated_run_mcp: None
 ) -> None:
     """How it ended outranks what happened during it; the guard still warns."""
     def print_then_hang_up(**_kw):

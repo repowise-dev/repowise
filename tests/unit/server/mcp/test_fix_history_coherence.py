@@ -22,10 +22,6 @@ async def _add_bug_magnet(session, repo_id: str, path: str, *, fixes: int, days:
     This is the population the old is_hotspot-only filter could never surface,
     which is the point of the test: no amount of re-sorting inside the churn set
     would reach it.
-
-    Uses the fixture session rather than opening its own: the fixtures share one
-    StaticPool connection and commit at teardown, so a second session that
-    commits mid-test drops the seeded data out from under the tool call.
     """
     anchor = (
         await session.execute(

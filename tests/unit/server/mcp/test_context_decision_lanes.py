@@ -68,8 +68,10 @@ async def _lanes(session, rid, records) -> dict:
     whole decision population so a lane assertion is about what it seeded.
     """
     await session.execute(delete(DecisionRecord))
-    for r in records:
-        session.add(r)
+    # Records before the acceptances that reference them.
+    session.add_all([r for r in records if isinstance(r, DecisionRecord)])
+    await session.flush()
+    session.add_all([r for r in records if not isinstance(r, DecisionRecord)])
     await session.flush()
     from repowise.server.mcp_server import get_context
 
