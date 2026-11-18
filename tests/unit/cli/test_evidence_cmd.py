@@ -53,6 +53,7 @@ def _index(root: Path) -> None:
                         WikiSymbol(
                             repository_id="r1", file_path=path, symbol_id=f"{path}::{name}",
                             name=name, qualified_name=name, kind="function", start_line=1,
+                            end_line=2,
                         )
                     )
         finally:
@@ -313,3 +314,72 @@ def test_status_json_keeps_its_keys_without_an_index(tmp_path, monkeypatch) -> N
 )
 def test_status_total_never_uses_exponent_form(value, shown) -> None:
     assert evidence_cmd._total(value) == shown
+
+
+def _collapsed(root: Path, other: Path) -> Path:
+    path = root / "stacks.txt"
+    path.write_text(
+        "\n".join([
+            f"main (/usr/lib/python3/runpy.py:5);build ({root / 'src' / 'app.py'}:2) 6",
+            f"main (/usr/lib/python3/runpy.py:5);build ({other / 'src' / 'app.py'}:2) 3",
+            f"main (/usr/lib/python3/runpy.py:5);gone ({root / 'src' / 'app.py'}:2) 1",
+        ])
+    )
+    return path
+
+
+def test_a_collapsed_profile_is_converted_and_stored(indexed, tmp_path_factory) -> None:
+    root, head = indexed
+    other = tmp_path_factory.mktemp("other-checkout")
+    result = _add(
+        str(_collapsed(root, other)), "--workload", "cli build", "--class", "entry_point",
+        "--commit", head, "--value-kind", "cpu", "--format", "json",
+    )
+    assert result.exit_code == 0, result.output
+    payload = _json(result)
+    assert (payload["input_format"], payload["matched"]) == ("collapsed", 1)
+    assert payload["skipped"] == {"outside_repo": 2, "second_signal_mismatch": 1}
+    conversion = payload["conversion"]
+    assert (conversion["total"], conversion["unit"]) == (10.0, "samples")
+    assert conversion["explained_share"] == 0.6
+    assert conversion["skip_rate"] == round(1 / 7, 4)
+
+    (run,), (cost,) = _stored(root)
+    assert (run.value_kind, run.unit, run.total_value, run.explained_value) == (
+        "cpu", "samples", 10.0, 6.0,
+    )
+    assert (cost.symbol_id, cost.total_value, cost.self_value, cost.total_samples) == (
+        "src/app.py::build", 6.0, 6.0, 6,
+    )
+
+
+def test_a_converted_profile_needs_its_clock(indexed, tmp_path_factory) -> None:
+    root, head = indexed
+    other = tmp_path_factory.mktemp("other-checkout")
+    result = _add(
+        str(_collapsed(root, other)), "--workload", "w", "--class", "entry_point",
+        "--commit", head,
+    )
+    assert result.exit_code == 2
+    assert "--value-kind" in result.stderr
+    assert _stored(root) == ([], [])
+
+
+def test_input_format_is_checked_against_the_registry(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_write(root)), "--workload", "w", "--class", "entry_point", "--commit", head,
+        "--input-format", "pprof",
+    )
+    assert result.exit_code == 2
+    assert "speedscope" in result.stderr and "collapsed" in result.stderr
+
+
+def test_input_format_overrides_the_sniff(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_write(root)), "--workload", "w", "--class", "entry_point", "--commit", head,
+        "--input-format", "speedscope", "--format", "json",
+    )
+    assert result.exit_code == 1
+    assert _json(result)["error"] == "invalid_evidence"

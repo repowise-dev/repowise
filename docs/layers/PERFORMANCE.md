@@ -224,6 +224,43 @@ file holds one run of one kind:
   outside the repo, no value, statement text instead of a digest, a repeat) is
   skipped and counted by reason. A missing value is unknown, never zero.
 
+### Profiles as the profiler wrote them
+
+`evidence add` also reads a profile in the profiler's own format and converts
+it to this shape first. The format is detected from the content;
+`--input-format` names it instead.
+
+| Format | Written by | What a frame carries |
+|---|---|---|
+| `speedscope` | `pyinstrument -r speedscope`, `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
+| `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
+
+- A frame joins to a function only when its path sits under the checkout root
+  (`--checkout-root`, default the repository), the line falls in an indexed
+  function, and a second signal agrees: the qualified name for Python, the
+  start line for Go, the start line and column for JavaScript. A path that
+  only ends like a repo file never joins: a profile can load the package from
+  another checkout. Everything else is skipped and counted by reason
+  (`outside_repo`, `not_indexed`, `no_span`, `second_signal_mismatch`,
+  `bad_line` for a frame with no line, `dirty`, `generated`, `vendored`).
+- Lambdas, generator expressions and nested functions with no symbol of
+  their own are charged to the enclosing function when the frame's qualified
+  name shows it. A module body (import-time code) resolves to its file and counts
+  as explained, but the index keeps no symbol for a file's top level, so its own
+  time is reported under `self_unattributed` as `module_body`, never dropped.
+- Each function gets inclusive time (every stack it is on, once per stack) and
+  self time (stacks where it is the innermost repo frame; built-ins and
+  dependencies below it count as its own).
+- `explained` is the weight of stacks with a resolved production frame. The
+  command prints it beside the skip rate, the share of repo frame time that
+  did not join.
+- A Speedscope file does not say which clock it sampled except from
+  pyinstrument (wall clock); pass `--value-kind cpu` or `wall` otherwise.
+- A profile whose frames name TypeScript files of the checkout is refused:
+  its positions are in the compiled JavaScript.
+- New formats register on the `profile-format` [seam](../reference/PLUGINS.md#seams),
+  so a plugin can add one.
+
 ## Limits
 
 - Dynamic dispatch, monkeypatching and callbacks passed as values leave no call
