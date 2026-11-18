@@ -14,7 +14,7 @@ from pathlib import Path
 import click
 from rich.markup import escape
 
-from repowise.cli.ci import EXIT_GATE_FAILED, cannot_evaluate
+from repowise.cli.ci import cannot_evaluate
 from repowise.cli.helpers import ensure_repowise_dir, find_repowise_repo_root, get_repowise_dir
 from repowise.cli.output import emit_json, format_option, notice_console
 from repowise.core.command_runner import (
@@ -42,6 +42,8 @@ from repowise.core.perf_measure import (
 )
 
 _DEFAULT_TIMEOUT = 600.0
+#: A regressed verdict. Informational: an agent branches on it; nothing gates on it.
+_EXIT_REGRESSED = 1
 
 
 @click.group("perf")
@@ -120,7 +122,7 @@ def perf_measure_command(
     Exit codes: 0 saved, improved or inconclusive; 1 regressed; 2 nothing
     could be measured (a run failed or timed out, a bad baseline). Every run
     must exit 0: a failing command is an error, never a timing. Wall time is
-    noisy, so the exit code informs an agent and is not meant to gate CI.
+    noisy, so the exit code is informational: do not gate CI on it.
     """
     modes = [m for m in (save_name, against_name, base_dir) if m is not None]
     if len(modes) != 1:
@@ -137,8 +139,9 @@ def perf_measure_command(
     shown = " ".join(command)
     try:
         if save_name is not None:
-            repowise_dir = ensure_repowise_dir(_repo_root(here))
-            baseline_path(repowise_dir, save_name)  # refuse a bad name before any run
+            root = _repo_root(here)
+            baseline_path(get_repowise_dir(root), save_name)  # refuse a bad name before any run
+            repowise_dir = ensure_repowise_dir(root)
             notices.print(_plan_line(shown, runs, warmup, sides=1))
             samples = collect(runner, here, runs=runs, warmup=warmup, side="base")
             baseline = Baseline(
@@ -168,11 +171,24 @@ def perf_measure_command(
                 )
             notices.print(_plan_line(shown, runs, warmup, sides=1))
             head = _side(collect(runner, here, runs=runs, warmup=warmup), here)
+            if (
+                head.commit
+                and head.commit == baseline.side.commit
+                and not (head.dirty or baseline.side.dirty)
+            ):
+                notices.print(
+                    "[yellow]Warning:[/yellow] base and head are the same commit with "
+                    "clean trees, so this compares the code with itself"
+                )
             result = compare(baseline.side, head, "before_after")
             _emit_comparison(result, command_str, fmt, baseline=against_name)
             return
         assert base_dir is not None
         base_root = base_dir.resolve()
+        if base_root == here:
+            cannot_evaluate(
+                fmt, "usage", "--base-dir is the current directory; name another checkout"
+            )
         notices.print(_plan_line(shown, runs, warmup, sides=2))
         base_samples, head_samples = collect_interleaved(
             runner, base_root, here, runs=runs, warmup=warmup
@@ -187,6 +203,10 @@ def perf_measure_command(
         cannot_evaluate(fmt, "command_failed", message)
     except BaselineError as exc:
         cannot_evaluate(fmt, "baseline", str(exc))
+    except OSError as exc:
+        cannot_evaluate(fmt, "io_error", f"could not run or store the measurement: {exc}")
+    except KeyboardInterrupt:
+        cannot_evaluate(fmt, "interrupted", "interrupted; nothing was measured or saved")
 
 
 def _run_once(command: str, timeout: float, cwd: Path) -> CommandRun:
@@ -282,7 +302,7 @@ def _emit_comparison(result: Comparison, command: str, fmt: str, *, baseline: st
         )
     # Informational: a regressed verdict exits 1 so an agent can branch on it.
     if result.verdict == "regressed":
-        raise click.exceptions.Exit(EXIT_GATE_FAILED)
+        raise click.exceptions.Exit(_EXIT_REGRESSED)
 
 
 __all__ = ["perf_group", "perf_measure_command"]

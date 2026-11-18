@@ -164,3 +164,21 @@ def test_options_after_the_separator_belong_to_the_command(repo: Path, monkeypat
     assert result.exit_code == 0, result.output
     assert len(calls) == 4
     assert calls[0][0].endswith("tool --runs 9")
+
+
+def test_base_dir_must_be_another_checkout(repo: Path, monkeypatch) -> None:
+    calls = _fake_runner(monkeypatch, _steady(1.0))
+    result = _invoke("--base-dir", str(repo), "--format", "json", "--", "make")
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"] == "usage"
+    assert calls == []
+
+
+def test_a_command_that_cannot_start_exits_two_with_a_document(repo: Path, monkeypatch) -> None:
+    def broken(command: str, *, cwd: Path, timeout: float) -> CommandRun:
+        raise FileNotFoundError("no shell")
+
+    monkeypatch.setattr(perf_cmd, "run_command", broken)
+    result = _invoke("--save", "base", "--format", "json", "--", "make")
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"] == "io_error"

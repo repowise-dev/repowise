@@ -1463,7 +1463,10 @@ repowise perf measure --base-dir ../main-checkout -- python -m mypkg build
   stdout is one document either way: `mode`, `verdict`, `base` and `head` (runs, `median_s`,
   `samples_s`, `noise`, `commit`, `dirty`, `cwd`), `ratio` (`estimate`, `low`, `high`,
   `confidence`), `threshold`, `command` and `baseline`; an error is `{"error", "message"}`.
-- Wall time is noisy evidence. The exit code tells an agent what happened; it is not a CI gate.
+- Wall time is noisy evidence. The exit code is informational, for an agent to branch on; do not
+  gate CI on it.
+- `--base-dir` must name another checkout. An editable install can load one checkout's code for
+  both sides; run each side with its own environment when that applies.
 
 ---
 

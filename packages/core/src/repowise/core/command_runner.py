@@ -146,6 +146,10 @@ def run_command(
     Output goes to a temporary file rather than a pipe: nothing has to drain
     it while the command runs, and a grandchild that outlives a killed shell
     cannot block the read.
+
+    Only the last :data:`_TAIL_BYTES` are read back, decoded as UTF-8. The
+    file itself is not capped: a command that prints gigabytes writes them to
+    the temp directory. Cap it here if that ever bites.
     """
     full_env = None if env is None else {**os.environ, **env}
     with tempfile.TemporaryFile() as out:
