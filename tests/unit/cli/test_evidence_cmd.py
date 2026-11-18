@@ -492,3 +492,14 @@ def test_pytest_benchmark_needs_the_commit_flag_and_cross_checks_it(indexed) -> 
     assert result.exit_code == 2
     assert f"records commit {head}" in result.stderr
     assert _stored(root) == ([], [])
+
+
+def test_value_kind_on_a_benchmark_file_says_it_has_no_clock(indexed) -> None:
+    root, head = indexed
+    result = _add(
+        str(_bench_file(root, head)), "--workload", "w", "--class", "benchmark",
+        "--commit", head, "--value-kind", "wall",
+    )
+    assert result.exit_code == 2
+    assert "records no clock" in result.stderr
+    assert _stored(root) == ([], [])

@@ -94,3 +94,11 @@ def test_a_format_has_exactly_one_reader() -> None:
         ProfileFormat(lambda _h: False)
     with pytest.raises(ValueError, match="exactly one"):
         ProfileFormat(lambda _h: False, read=lambda _d: None, to_v1=lambda _d: {})
+
+
+def test_a_benchmark_file_mentioning_speedscope_is_not_claimed_by_it() -> None:
+    data = json.loads(FIXTURE.read_text())
+    data["commit_info"]["message"] = "speedscope export for the speedscope viewer"
+    head = json.dumps(data).encode()[:4096]
+    assert b"speedscope" in head
+    assert detect_profile_format(head) == "pytest-benchmark"

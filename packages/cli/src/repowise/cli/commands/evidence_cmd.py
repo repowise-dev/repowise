@@ -281,6 +281,12 @@ def _input_format(given: str | None, data: bytes) -> str:
 def _check_value_kind(read: _Input, value_kind: str | None) -> None:
     """A converted profile needs its clock; a v1 file's own must not be contradicted."""
     if read.doc is not None:
+        if value_kind is not None and read.doc.value_kind is None:
+            raise click.BadParameter(
+                f"a {read.doc.kind} file records no clock; --value-kind names the clock "
+                "of a profile only, so leave it out.",
+                param_hint="--value-kind",
+            )
         if value_kind is not None and read.doc.value_kind != value_kind:
             raise click.BadParameter(
                 f"the file's value_kind is {read.doc.value_kind}; --value-kind only names "

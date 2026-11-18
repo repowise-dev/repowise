@@ -297,3 +297,10 @@ def test_an_evented_profile_keeps_sample_counts_of_sampled_ones_in_the_file() ->
     )
     samples = {s.frames: s.samples for s in run.stacks}
     assert samples == {(2,): 1, (1,): None}
+
+
+def test_speedscope_is_sniffed_by_its_schema_key_not_the_word() -> None:
+    assert detect_profile_format(b'{"name": "speedscope run", "profiles": []}') is None
+    assert detect_profile_format(
+        b'{"exporter": "x", "$schema": "https://www.speedscope.app/file-format-schema.json"}'
+    ) == "speedscope"
