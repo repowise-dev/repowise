@@ -515,16 +515,11 @@ def test_dotnet_prefers_the_solution_at_its_root_over_nested_ones():
     assert stack.test.startswith("dotnet test Clean.Architecture.slnx ")
 
 
-def test_dotnet_without_a_pin_names_the_sdk_the_newest_framework_needs():
-    files = {
-        "src/App/App.csproj": "<TargetFrameworks>net10.0;net9.0</TargetFrameworks>",
-        "bench/App.Bench/App.Bench.csproj": "<TargetFramework>net11.0</TargetFramework>",
-    }
+def test_dotnet_without_a_pin_names_no_sdk():
+    # Target frameworks of the projects read are only a lower bound, so no SDK is named from them.
+    files = {"src/App/App.csproj": "<TargetFramework>net11.0</TargetFramework>"}
     (stack,) = detect_stacks(["App.slnx", *files], files)
-    # No solution text was read, so the note names the projects it saw.
-    assert stack.notes[0] == (
-        "The projects Repowise read target up to net11.0: `dotnet test` needs the .NET 11.0 SDK or later."
-    )
+    assert not any("SDK" in note for note in stack.notes)
 
 
 def test_a_go_module_is_judged_by_its_module_line_only_when_it_was_read():
@@ -539,10 +534,22 @@ def test_a_module_in_a_test_directory_is_no_unit():
 
 
 @pytest.mark.parametrize("pin", ['{"sdk": "11.0.100"}', "[1]", "// comment\n{}", '{"sdk": {"version": 11}}'])
-def test_an_odd_global_json_falls_back_to_the_target_frameworks(pin):
-    files = {"global.json": pin, "App/App.csproj": "<TargetFramework>net8.0-windows</TargetFramework>"}
+def test_an_odd_global_json_names_no_sdk(pin):
+    files = {"global.json": pin, "App/App.csproj": "<TargetFramework>net8.0</TargetFramework>"}
     (stack,) = detect_stacks(["App.sln", *files], files)
-    assert stack.notes[0].startswith("The projects Repowise read target up to net8.0:")
+    assert not any("SDK" in note for note in stack.notes)
+
+
+def test_a_global_json_saved_with_a_bom_still_names_its_pin():
+    files = {"global.json": "\ufeff" + json.dumps({"sdk": {"version": "10.0.100"}})}
+    (stack,) = detect_stacks(["App.sln", "global.json"], files)
+    assert "10.0.100" in stack.notes[0]
+
+
+def test_a_go_module_whose_go_code_is_all_in_nested_modules_is_no_unit():
+    files = {"go.mod": "module example.com/tools\n", "a/go.mod": "module example.com/a\n"}
+    paths = [*files, "a/a.go", "a/a_test.go"]
+    assert [s.root for s in detect_stacks(paths, files)] == ["a"]
 
 
 @pytest.mark.parametrize(
@@ -574,34 +581,6 @@ def test_a_shipped_test_utils_package_is_a_unit():
              "x/testdata/app/package.json": _package({"test": "vitest run"})}
     paths = [*files, "test-utils/src/index.js", "pnpm-lock.yaml"]
     assert [s.root for s in detect_stacks(paths, files)] == ["", "test-utils"]
-
-
-@pytest.mark.parametrize(
-    ("solution", "scope"),
-    [
-        ('<Solution><Project Path="src/App/App.csproj" /></Solution>', "in `App.slnx`"),
-        ("", "Repowise read"),  # a solution naming no project read: every project read counts
-    ],
-)
-def test_the_sdk_note_reads_the_projects_the_chosen_solution_builds(solution, scope):
-    files = {
-        "App.slnx": solution,
-        "src/App/App.csproj": "<TargetFramework>net9.0</TargetFramework>",
-        "samples/Demo/Demo.csproj": "<TargetFramework>net11.0</TargetFramework>",
-    }
-    paths = [*files, "samples/Samples.slnx"]
-    assert "App.slnx" in files_to_read(paths)
-    (stack,) = detect_stacks(paths, files)
-    newest = "9.0" if solution else "11.0"
-    assert stack.notes[0].startswith(f"The projects {scope} target up to net{newest}:")
-
-
-def test_a_dotnet_sln_names_its_projects_with_backslashes():
-    sln = 'Project("{FAE04EC0}") = "App", "src\\App\\App.csproj", "{1}"\nEndProject\n'
-    files = {"App.sln": sln, "src/App/App.csproj": "<TargetFramework>net8.0</TargetFramework>",
-             "samples/D/D.csproj": "<TargetFramework>net10.0</TargetFramework>"}
-    (stack,) = detect_stacks(list(files), files)
-    assert stack.notes[0].startswith("The projects in `App.sln` target up to net8.0:")
 
 
 def test_a_dotnet_unit_below_the_root_reads_the_nearest_sdk_pin_above_it():
