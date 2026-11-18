@@ -165,6 +165,46 @@ async def test_a_kept_file_row_goes_when_its_file_is_deleted(async_session) -> N
     )
 
 
+async def test_a_kept_fallback_unit_yields_to_a_fresh_specific_unit_at_its_root(
+    async_session,
+) -> None:
+    repo = await insert_repo(async_session)
+    fallback = BuildUnit("manifest:c", "manifest", "c", "c", "c/Cargo.toml", "manifest-root")
+    other = BuildUnit("manifest:py", "manifest", "py", "py", "py/pyproject.toml", "manifest-root")
+    # The Cargo reader failed with nothing stored for it, so the fallback stood in.
+    await replace_build_units(
+        async_session,
+        repo.id,
+        BuildUnitIndex(
+            units={u.id: u for u in (_A, fallback, other)},
+            file_owners={"c/x.rs": ("manifest:c",), "py/m.py": ("manifest:py",)},
+            failed_ecosystems=frozenset({"cargo"}),
+        ),
+    )
+    # Now the fallback fails and the Cargo reader claims the root.
+    crate = BuildUnit("cargo:c", "cargo", "c", "c", "c/Cargo.toml", "cargo")
+    await replace_build_units(
+        async_session,
+        repo.id,
+        BuildUnitIndex(
+            units={u.id: u for u in (_A, crate)},
+            file_owners={"c/x.rs": ("cargo:c",), "a/z.js": ("npm:a",)},
+            failed_ecosystems=frozenset({"manifest"}),
+        ),
+    )
+    await async_session.commit()
+    assert await load_build_units(async_session, repo.id) == _index(
+        _A,
+        crate,
+        other,
+        owners={"c/x.rs": ("cargo:c",), "a/z.js": ("npm:a",)},
+    )
+    # The kept fallback unit elsewhere survives; its file, owned by nothing
+    # fresh, falls back to the deepest root on read.
+    stored = await load_build_units(async_session, repo.id)
+    assert [u.id for u in stored.units_owning("py/m.py")] == ["manifest:py"]
+
+
 def _index(*units: BuildUnit, owners: dict[str, tuple[str, ...]]) -> BuildUnitIndex:
     return BuildUnitIndex(units={u.id: u for u in units}, file_owners=owners)
 

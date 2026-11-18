@@ -71,30 +71,37 @@ async def replace_build_units(
 def _keep_failed(fresh: BuildUnitIndex, kept: BuildUnitIndex) -> BuildUnitIndex:
     """*fresh* with the stored units of its failed ecosystems, *kept*, put back.
 
-    A failed reader left its manifests undecided, so the manifest fallback may
-    have given their roots ``manifest:`` units: one at the root of a kept unit
-    stands in for it and is dropped, with the fresh units of a failed
-    ecosystem (a reader that failed produced none). A kept unit keeps its
-    stored deps. A kept file row stays only while *fresh* still owns the path,
-    so a deleted file leaves no row; a path *fresh* gave only to a dropped
-    unit goes back to its kept owners.
+    A specific unit wins at a root over a ``manifest:`` fallback unit, in
+    both directions. A failed reader left its manifests undecided, so the
+    fallback may have given their roots ``manifest:`` units: one at the root
+    of a kept unit stands in for it and is dropped, with the fresh units of a
+    failed ecosystem (a reader that failed produced none). When the fallback
+    itself failed, a kept ``manifest:`` unit at the root of a fresh unit is
+    dropped instead. A kept unit keeps its stored deps. A kept file row stays
+    only while *fresh* still owns the path, so a deleted file leaves no row; a
+    path *fresh* gave only to a dropped unit goes back to its kept owners.
     """
-    kept_roots = {unit.root for unit in kept.units.values()}
-    dropped = {
-        uid
-        for uid, unit in fresh.units.items()
-        if unit.ecosystem in fresh.failed_ecosystems
-        or uid in kept.units
-        or (unit.ecosystem == "manifest" and unit.root in kept_roots)
-    }
+    dropped = {uid for uid, unit in fresh.units.items() if unit.ecosystem in fresh.failed_ecosystems}
+    dropped |= set(kept.units) & set(fresh.units)
+    dropped |= _fallbacks_at(fresh, {unit.root for unit in kept.units.values()})
     units = {uid: unit for uid, unit in fresh.units.items() if uid not in dropped}
-    units.update(kept.units)
+    stale = _fallbacks_at(kept, {unit.root for unit in units.values()})
+    units.update((uid, unit) for uid, unit in kept.units.items() if uid not in stale)
     owners: dict[str, tuple[str, ...]] = {}
     for path, ids in fresh.file_owners.items():
-        merged = tuple(uid for uid in ids if uid not in dropped) + kept.file_owners.get(path, ())
+        merged = tuple(uid for uid in ids if uid not in dropped) + tuple(
+            uid for uid in kept.file_owners.get(path, ()) if uid not in stale
+        )
         if merged:
             owners[path] = merged
     return BuildUnitIndex(units=units, file_owners=owners)
+
+
+def _fallbacks_at(index: BuildUnitIndex, roots: set[str]) -> set[str]:
+    """Ids of *index*'s ``manifest:`` fallback units whose root is one of *roots*."""
+    return {
+        uid for uid, unit in index.units.items() if unit.ecosystem == "manifest" and unit.root in roots
+    }
 
 
 async def load_build_units(session: AsyncSession, repository_id: str) -> BuildUnitIndex:
