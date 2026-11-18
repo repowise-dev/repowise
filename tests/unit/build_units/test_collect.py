@@ -148,6 +148,30 @@ def test_go_modules_and_in_repo_requires(tmp_path):
     assert _owners(index, "main.go") == ["go:example.com/root"]
 
 
+def test_go_modules_replace_only_dependency(tmp_path):
+    index = _collect(tmp_path, {
+        "a/go.mod": "module example.com/a\n\ngo 1.22\n\nreplace example.com/b => ../b\n",
+        "a/main.go": "package main\nfunc main() {}\n",
+        "b/go.mod": "module example.com/b\n\ngo 1.22\n",
+        "b/b.go": "package b\n",
+    })
+    assert _deps(index) == {"go:example.com/a": ("go:example.com/b",), "go:example.com/b": ()}
+
+
+def test_go_modules_replace_alias_dependency(tmp_path):
+    index = _collect(tmp_path, {
+        "a/go.mod": (
+            "module example.com/a\n\ngo 1.22\n\n"
+            "require example.com/old v0.0.0\n"
+            "replace example.com/old => ../b\n"
+        ),
+        "a/main.go": "package main\nfunc main() {}\n",
+        "b/go.mod": "module example.com/b\n\ngo 1.22\n",
+        "b/b.go": "package b\n",
+    })
+    assert _deps(index) == {"go:example.com/a": ("go:example.com/b",), "go:example.com/b": ()}
+
+
 def test_two_units_at_one_root_both_own_unlisted_files(tmp_path):
     index = _collect(tmp_path, {
         "package.json": json.dumps({"name": "root", "workspaces": ["web"]}),

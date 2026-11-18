@@ -22,7 +22,7 @@ def units(ctx: ResolverContext) -> Found:
     # ``index.modules`` also carries local ``replace`` targets, keyed by the
     # replaced import path; a module is a directory holding a ``go.mod``,
     # named by its own ``module`` directive.
-    modules: list[tuple[str, str, list[str]]] = []
+    modules: list[tuple[str, str, list[str], set[str]]] = []
     for module_dir in sorted({module_dir for module_dir, _path in index.modules}):
         go_mod = ctx.repo_path / module_dir / "go.mod"
         module_path = _read_module_directive(go_mod) if go_mod.is_file() else None
@@ -32,12 +32,35 @@ def units(ctx: ResolverContext) -> Found:
             text = go_mod.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        requires, _replaced = scan_go_mod(text)
-        modules.append((module_dir, module_path, [name for name, _v, _i in requires]))
+        requires, replaced = scan_go_mod(text)
+        modules.append((module_dir, module_path, [name for name, _v, _i in requires], replaced))
 
-    paths = {module_path for _dir, module_path, _req in modules}
+    paths = {module_path for _dir, module_path, _req, _rep in modules}
+    dir_to_module = {module_dir: module_path for module_dir, module_path, _req, _rep in modules}
+    import_to_module: dict[str, str] = {}
+    for target_dir, imp_path in index.modules:
+        if target_dir in dir_to_module:
+            import_to_module[imp_path] = dir_to_module[target_dir]
+            continue
+        best_mod: str | None = None
+        best_len = -1
+        for mod_dir, mod_path in dir_to_module.items():
+            if (
+                mod_dir == "" or target_dir == mod_dir or target_dir.startswith(mod_dir + "/")
+            ) and len(mod_dir) > best_len:
+                best_mod = mod_path
+                best_len = len(mod_dir)
+        if best_mod is not None:
+            import_to_module[imp_path] = best_mod
+
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
-    for module_dir, module_path, requires in modules:
+    for module_dir, module_path, requires, replaced in modules:
+        resolved_deps: set[str] = set()
+        for name in (*requires, *replaced):
+            target = name if name in paths else import_to_module.get(name)
+            if target and target != module_path:
+                resolved_deps.add(f"go:{target}")
+
         unit = BuildUnit(
             id=f"go:{module_path}",
             ecosystem="go",
@@ -45,7 +68,7 @@ def units(ctx: ResolverContext) -> Found:
             root=module_dir,
             manifest=f"{module_dir}/go.mod" if module_dir else "go.mod",
             source="go-mod",
-            deps=tuple(f"go:{name}" for name in requires if name in paths),
+            deps=tuple(sorted(resolved_deps)),
         )
         out.append((unit, ()))
     return Found(out)
