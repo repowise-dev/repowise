@@ -326,6 +326,8 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "churn_complexity[]",
             "untested_complexity[]",
             "doc_drift.findings[]",
+            "performance_measured.on_static_findings[]",
+            "performance_measured.in_tests[]",
             "test_findings[]",
             "top_findings[]",
             "findings[]",
@@ -338,6 +340,7 @@ _CONTRACTS: dict[str, ResponseBudgetContract] = {
             "refactoring_summary",
             "performance_opportunities[]",
             "performance_summary",
+            "performance_measured.rows[]",
             "high_leverage_files[]",
             "secondary_rankings",
             # A named page holds up to 25 items; its tail goes last of all.

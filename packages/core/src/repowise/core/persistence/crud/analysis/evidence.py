@@ -337,6 +337,29 @@ async def ranked_hotness(
     return rows[:limit]
 
 
+async def unranked_reason(session: AsyncSession, repository_id: str) -> str:
+    """Why :func:`ranked_hotness` has no row, as one token.
+
+    ``no_runtime_data``: no profile run is stored. ``stale``: every function
+    the stored runs mapped is stale (measured at another commit, body changed
+    since). ``not_ranked``: current evidence that ranks nothing (too few
+    samples in production code, or no production frame). At most three
+    indexed lookups.
+    """
+    has_profile = select(EvidenceRun.id).where(
+        EvidenceRun.repository_id == repository_id, EvidenceRun.kind == "profile"
+    )
+    if (await session.execute(has_profile.limit(1))).first() is None:
+        return "no_runtime_data"
+    mapped = select(SymbolHotness.symbol_id).where(SymbolHotness.repository_id == repository_id)
+    fresh = mapped.where(SymbolHotness.freshness != "stale")
+    if (await session.execute(fresh.limit(1))).first() is not None:
+        return "not_ranked"
+    if (await session.execute(mapped.limit(1))).first() is not None:
+        return "stale"
+    return "not_ranked"
+
+
 def _refuse_repeated_keys(table: Table, rows: list[dict[str, Any]]) -> None:
     key = [column.name for column in table.primary_key.columns]
     seen: set[tuple[Any, ...]] = set()
@@ -376,4 +399,5 @@ __all__ = [
     "ranked_hotness",
     "replace_symbol_hotness",
     "save_evidence_run",
+    "unranked_reason",
 ]
