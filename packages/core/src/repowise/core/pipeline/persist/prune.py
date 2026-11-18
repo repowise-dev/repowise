@@ -342,6 +342,7 @@ async def prune_deleted_file_rows(
     from repowise.core.analysis.dead_code.analyzer import _is_synthetic_node
     from repowise.core.persistence.crud.analysis.function_facts import delete_file_rows
     from repowise.core.persistence.models import (
+        CoverageFile,
         DeadCodeFinding,
         DocDriftFinding,
         DocDriftReference,
@@ -454,11 +455,10 @@ async def prune_deleted_file_rows(
     # On the document only. A reference to a deleted *target* is drift, not a
     # dead row: the next pass re-resolves it into a finding, and pruning by
     # target here would delete the evidence before anything reported it.
-    await _prune_table(
-        DocDriftReference, DocDriftReference.document_path, "doc_drift_references"
-    )
+    await _prune_table(DocDriftReference, DocDriftReference.document_path, "doc_drift_references")
     await _prune_table(HealthFileMetric, HealthFileMetric.file_path, "health_file_metrics")
     await _prune_table(HealthFinding, HealthFinding.file_path, "health_findings")
+    await _prune_table(CoverageFile, CoverageFile.file_path, "coverage_files")
     # git_metadata is keyed off the git indexer on a full run, but an
     # incremental run only indexes the changed files, so the same liveness
     # question is the only authority available here too.
