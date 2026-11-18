@@ -65,6 +65,29 @@ def _conditioned(root: ET.Element) -> set[int]:
     }
 
 
+def _is_test_package_elem(elem: ET.Element) -> bool:
+    """Whether *elem* is an Include or Update of a test package."""
+    tag = elem.tag.split("}")[-1].lower()
+    if tag not in ("packagereference", "packageversion"):
+        return False
+    for attr_name, attr_val in elem.attrib.items():
+        if (
+            attr_name.split("}")[-1].lower() in ("include", "update")
+            and attr_val.strip().lower() in TEST_PACKAGES
+        ):
+            return True
+    return False
+
+
+def _parse_is_test_project(elem: ET.Element) -> bool | None:
+    val = (elem.text or "").strip().lower()
+    if val in ("true", "enable", "1"):
+        return True
+    if val in ("false", "disable", "0"):
+        return False
+    return None
+
+
 def is_test_project_csproj(text: str) -> bool | None:
     """Whether a .csproj XML string describes a test project.
 
@@ -84,34 +107,25 @@ def is_test_project_csproj(text: str) -> bool | None:
     except (ET.ParseError, ValueError):
         return None
 
-    explicit_is_test: bool | None = (
-        True if "mstest.sdk" in (root.get("Sdk") or "").lower() else None
-    )
+    explicit_is_test: bool | None = None
+    if "mstest.sdk" in (root.get("Sdk") or "").lower():
+        explicit_is_test = True
+
     has_test_package = False
     conditioned = _conditioned(root)
 
     for elem in root.iter():
         if id(elem) in conditioned:
             continue
-        local_tag = elem.tag.split("}")[-1].lower()
-        if local_tag == "istestproject":
-            val = (elem.text or "").strip().lower()
-            if val in ("true", "enable", "1"):
-                explicit_is_test = True
-            elif val in ("false", "disable", "0"):
-                explicit_is_test = False
-        elif local_tag in ("packagereference", "packageversion"):
-            for attr_name, attr_val in elem.attrib.items():
-                if (
-                    attr_name.split("}")[-1].lower() in ("include", "update")
-                    and attr_val.strip().lower() in TEST_PACKAGES
-                ):
-                    has_test_package = True
+        tag = elem.tag.split("}")[-1].lower()
+        if tag == "istestproject":
+            if (flag := _parse_is_test_project(elem)) is not None:
+                explicit_is_test = flag
+        elif _is_test_package_elem(elem):
+            has_test_package = True
 
-    if explicit_is_test is False:
-        return False
-    if explicit_is_test is True:
-        return True
+    if explicit_is_test is not None:
+        return explicit_is_test
     return has_test_package
 
 

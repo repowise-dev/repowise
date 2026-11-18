@@ -315,3 +315,22 @@ def test_conditioned_test_package_does_not_make_project_a_test_project_for_runne
         encoding="utf-8",
     )
     assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {"src/Sample/SampleTests.cs": None}
+
+
+def test_package_reference_update_and_package_version_recognized_by_runner(
+    tmp_path: Path,
+) -> None:
+    """PackageReference Update and PackageVersion are recognized by the runner."""
+    project = tmp_path / "src/Sample/Sample.csproj"
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        "  <ItemGroup>\n"
+        '    <PackageReference Update="xunit.v3" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {
+        "src/Sample/SampleTests.cs": "src/Sample/Sample.csproj"
+    }

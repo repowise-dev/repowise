@@ -187,8 +187,8 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
                 project.project_references.append(target)
         elif tag == "Compile":
             project.compile_includes.extend(_compile_items(elem.get("Include")))
-        elif tag == "PackageReference":
-            pkg = elem.get("Include")
+        elif tag in ("PackageReference", "PackageVersion"):
+            pkg = elem.get("Include") or elem.get("Update")
             if pkg:
                 project.package_references.add(pkg.strip())
                 if id(elem) not in conditioned:
