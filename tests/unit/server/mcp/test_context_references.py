@@ -1413,15 +1413,16 @@ async def test_member_call_on_a_variable_named_like_a_definition_keyword(
         "from pkg.store import Store\n\n"
         "rows = Store().fetch_rows()\n"
         "for sub in subs: sub.fetch_rows()\n"
-        "if fn is not None and fn.fetch_rows(): pass\n",
+        "if fn is not None and fn.fetch_rows(): pass\n"
+        "tail = rows[::fetch_rows(2)]\n",
         encoding="utf-8",
     )
 
     out = await reference_edit_set(session, repo_id, tmp_path, node)
 
     kinds = {n: k for p, n, k in _sites(out) if p == "app/use.py"}
-    # A variable named ``sub`` or ``fn`` opens no definition.
-    assert kinds == {3: "call", 4: "call", 5: "call"}
+    # A variable named ``sub`` or ``fn`` opens no definition; a slice step is no receiver.
+    assert kinds == {3: "call", 4: "call", 5: "call", 6: "reference"}
 
 
 @pytest.mark.asyncio
