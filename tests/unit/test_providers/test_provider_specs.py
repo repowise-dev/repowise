@@ -21,8 +21,8 @@ from repowise.core.providers.embedding.registry import _BUILTIN_EMBEDDERS
 from repowise.core.providers.llm import registry
 from repowise.core.providers.llm.registry import get_provider
 from repowise.core.providers.llm.specs import PROVIDER_SPECS
-
-_PACKAGES = Path(__file__).parents[3] / "packages"
+from tests.unit._source_tree import PACKAGES as _PACKAGES
+from tests.unit._source_tree import SourceFile, sources_under
 
 # --- the link between the two registries -----------------------------------
 
@@ -154,17 +154,20 @@ def _name_literals(tree: ast.AST):
             yield from names(node.args[0])
 
 
-def _sources():
-    return sorted(p for p in _PACKAGES.glob("*/src/**/*.py"))
+def _sources() -> list[SourceFile]:
+    return sources_under(*_PACKAGES.glob("*/src"))
 
 
 def test_no_module_branches_on_a_provider_name():
+    sources = _sources()
+    unparsed = [src.rel for src in sources if src.tree is None]
+    assert not unparsed, f"sources that do not parse: {unparsed}"
     offenders = sorted(
         {
-            f"{path.relative_to(_PACKAGES).as_posix()}:{node.lineno} {node.value!r}"
-            for path in _sources()
-            for node in _name_literals(ast.parse(path.read_text(encoding="utf-8")))
-            if not _is_allowed(path, node.value)
+            f"{src.path.relative_to(_PACKAGES).as_posix()}:{node.lineno} {node.value!r}"
+            for src in sources
+            for node in _name_literals(src.tree)
+            if not _is_allowed(src.path, node.value)
         }
     )
     assert not offenders, (

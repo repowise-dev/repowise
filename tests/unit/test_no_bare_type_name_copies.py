@@ -28,11 +28,12 @@ site cannot leave a stale exemption behind.
 from __future__ import annotations
 
 import ast
-import pathlib
 
 import pytest
 
 import repowise.core.ingestion.type_names as type_names
+from tests.unit._source_tree import PACKAGES as _PACKAGES
+from tests.unit._source_tree import python_sources, sources_under
 
 # Splitting on one of these is how a qualifier is taken off a type name.
 _SEPARATORS = frozenset({".", "::", "\\"})
@@ -43,7 +44,6 @@ _OPENERS = frozenset({"<", "[", "("})
 
 _SPLIT_METHODS = frozenset({"split", "rsplit", "partition", "rpartition"})
 
-_PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 _INGESTION = _PACKAGES / "core" / "src" / "repowise" / "core" / "ingestion"
 
 # Where the question gets asked. Everything here reduces a type name written in
@@ -162,19 +162,14 @@ def _splits_on_a_qualifier(node: ast.AST) -> str | None:
     return f"{node.func.attr}({first.value!r})"
 
 
-def _python_files() -> list[pathlib.Path]:
-    files: list[pathlib.Path] = []
-    for entry in _SCOPE:
-        files.extend(sorted(entry.rglob("*.py")) if entry.is_dir() else [entry])
-    return files
-
-
 def _offenders() -> dict[str, list[str]]:
     """Map of repo-relative path -> the splitting expressions it holds."""
     found: dict[str, list[str]] = {}
-    for path in _python_files():
-        rel = path.relative_to(_PACKAGES.parent).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    missing = [entry for entry in _SCOPE if not entry.exists()]
+    assert not missing, f"_SCOPE names paths that are gone: {missing}"
+    for src in sources_under(*_SCOPE):
+        rel, tree = src.rel, src.tree
+        assert tree is not None, f"{rel} does not parse"
         hits = [
             f"line {node.lineno}: {described}"
             for node in ast.walk(tree)
@@ -230,12 +225,9 @@ def test_the_shape_is_what_gets_caught() -> None:
 
 def test_builtin_type_lists_live_on_the_language_specs() -> None:
     strays: dict[str, list[str]] = {}
-    for path in sorted(_PACKAGES.rglob("*.py")):
-        if _SPECS in path.parents:
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (SyntaxError, UnicodeDecodeError):  # not ours to police
+    for src in python_sources():
+        path, tree = src.path, src.tree
+        if _SPECS in path.parents or tree is None:  # unparseable: not ours to police
             continue
         names: list[str] = []
         for node in ast.walk(tree):
