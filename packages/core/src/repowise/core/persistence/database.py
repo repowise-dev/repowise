@@ -487,10 +487,10 @@ _DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
 }
 
 
-def _link_unlinked_changes(connection: object) -> int:
+def _link_unlinked_changes(connection: Any) -> int:
     from repowise.core.persistence.crud.changes import link_unlinked_changes
 
-    return link_unlinked_changes(connection)  # type: ignore[arg-type]
+    return link_unlinked_changes(connection)
 
 
 #: One-time data fills that must run when ``create_all`` creates a table on a
@@ -508,10 +508,10 @@ def _table_names(connection: object) -> set[str]:
 def _fill_created_tables(connection: object, before: set[str]) -> None:
     """Run the :data:`_DATA_STEPS_ON_CREATE` of each table missing from *before*.
 
-    A brand-new store (*before* empty) has nothing to fill. A step that does
-    not finish here is not retried on the next open, since the table then
-    exists; each step's own caller has to repair that (a change refresh links
-    any change still unlinked).
+    A brand-new store (*before* empty) has nothing to fill. On SQLite the
+    table's DDL has already autocommitted, so a step that fails here is not
+    retried on the next open; each step's own caller has to repair that (a
+    change refresh links any change still unlinked).
     """
     if not before:
         return
