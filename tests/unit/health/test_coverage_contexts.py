@@ -140,6 +140,18 @@ def test_sqlite_merges_pytest_cov_phases_into_one_test(tmp_path: Path) -> None:
     assert by_key[(nodeid, "src/foo.py")].test_file == "tests/test_foo.py"
 
 
+def test_sqlite_drops_a_bare_phase_context(tmp_path: Path) -> None:
+    db = tmp_path / ".coverage"
+    _write_coverage_db(
+        db,
+        files={1: "src/foo.py"},
+        contexts={1: "|run", 2: "tests/test_foo.py::test_a|run"},
+        line_bits=[(1, 1, [1]), (1, 2, [2])],
+    )
+    report = parse_coverage_sqlite(db)
+    assert [r.test_id for r in report.records] == ["tests/test_foo.py::test_a"]
+
+
 def test_sqlite_without_contexts_degrades_loudly(tmp_path: Path) -> None:
     db = tmp_path / ".coverage"
     _write_coverage_db(

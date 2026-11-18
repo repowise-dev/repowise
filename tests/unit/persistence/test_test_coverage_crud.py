@@ -67,6 +67,19 @@ async def test_lines_round_trip_through_ranges(async_session) -> None:
     assert hits[0]["covered_lines"] == [9, 402]
 
 
+def test_malformed_ranges_cost_only_themselves() -> None:
+    from repowise.core.persistence.crud.analysis.coverage_map import (
+        _decode_lines,
+        _decode_tests,
+        _in_ranges,
+    )
+
+    assert _decode_lines("1-3,x,7,") == [1, 2, 3, 7]
+    assert _in_ranges(7, "1-3,x,7")
+    assert not _in_ranges(5, "1-3,x,7")
+    assert _decode_tests("not json") == []
+
+
 async def test_reverse_index_intersects_changed_lines(async_session) -> None:
     repo = await insert_repo(async_session)
     await save_test_coverage(

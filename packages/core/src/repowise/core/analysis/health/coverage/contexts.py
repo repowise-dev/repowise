@@ -177,7 +177,8 @@ def parse_coverage_sqlite(db_path: str | Path) -> ContextCoverageReport:
 
     try:
         contexts = {cid: ctx for cid, ctx in conn.execute("SELECT id, context FROM context")}
-        named = {cid: nodeid_without_phase(ctx) for cid, ctx in contexts.items() if ctx}
+        stripped = {cid: nodeid_without_phase(ctx) for cid, ctx in contexts.items() if ctx}
+        named = {cid: test_id for cid, test_id in stripped.items() if test_id}
         if not named:
             # A .coverage without contexts: one empty context, aggregate only.
             return ContextCoverageReport(source_format="coverage.py", has_contexts=False)

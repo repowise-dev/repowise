@@ -133,6 +133,18 @@ def _decode_lines(text: str) -> list[int]:
     return out
 
 
+def _in_ranges(line: int, text: str) -> bool:
+    """Whether :func:`_encode_lines` output *text* contains *line*."""
+    for part in text.split(","):
+        lo, _, hi = part.partition("-")
+        try:
+            if int(lo) <= line <= int(hi or lo):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def _decode_tests(tests_json: str) -> list[tuple[int, str]]:
     """``(test_no, ranges)`` pairs of a :class:`TestCoverageSource` row."""
     try:
@@ -259,11 +271,13 @@ async def _covering(
     for row in await _source_rows(session, repository_id, source_files):
         hits: list[tuple[int, list[int]]] = []
         for no, ranges in _decode_tests(row.tests_json):
-            covered = _decode_lines(ranges)
             if lines is not None:
-                covered = sorted(lines.intersection(covered))
+                # Ranges are checked as spans, never expanded to every line.
+                covered = sorted(n for n in lines if _in_ranges(n, ranges))
                 if not covered:
                     continue
+            else:
+                covered = _decode_lines(ranges)
             hits.append((no, covered))
             numbers.add(no)
         decoded.append((row, hits))
