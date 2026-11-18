@@ -6,6 +6,8 @@ Every smell test has a paired negative asserting silence.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from repowise.core.analysis.health.biomarkers.base import FileContext
 from repowise.core.analysis.health.biomarkers.registry import detect_all
 from repowise.core.analysis.health.models import Severity
@@ -18,7 +20,9 @@ from repowise.core.analysis.health.sql_complexity import (
     _body_ccn,
     _statement_smells,
     walk_sql_file,
+    walks_statements,
 )
+from repowise.core.code_origin import CODE_ORIGINS
 
 
 def _walk(sql: str):
@@ -337,3 +341,75 @@ class TestScoringDimensions:
         assert scores["defect"] == 10.0
         assert scores["maintainability"] < 10.0
         assert scores["performance"] < 10.0
+
+
+# ---------------------------------------------------------------------------
+# Statement smells by code origin
+# ---------------------------------------------------------------------------
+
+_SMELLY_SQL = (
+    "CREATE VIEW v AS SELECT * FROM t;\n"
+    "UPDATE users SET active = 0;\n"
+    "SELECT a.x FROM a, b;\n"
+    "CREATE FUNCTION f() RETURNS INT AS $$\nBEGIN\n"
+    + "".join(f"IF x = {i} THEN RETURN {i}; END IF;\n" for i in range(12))
+    + "END $$;\n"
+)
+_SMELLS = ["sql_cartesian_join", "sql_select_star", "sql_update_delete_without_where"]
+
+
+class TestStatementSmellsByOrigin:
+    def test_walk_without_statements_keeps_routines(self) -> None:
+        full = walk_sql_file(_SMELLY_SQL.encode(), None)
+        routines_only = walk_sql_file(_SMELLY_SQL.encode(), None, statements=False)
+        assert routines_only.functions == full.functions
+        assert [h.kind for h in routines_only.perf_hits] == ["sql_high_complexity"]
+
+    def test_only_test_generated_and_vendored_skip_them(self) -> None:
+        skipped = {o for o in CODE_ORIGINS if not walks_statements(o)}
+        assert skipped == {"test", "generated", "vendored"}
+
+    def test_analyzer_keeps_production_sql_findings_and_drops_test_ones(
+        self, tmp_path: Path
+    ) -> None:
+        import networkx as nx
+
+        from repowise.core.analysis.health.engine import HealthAnalyzer
+        from repowise.core.ingestion import ASTParser, FileTraverser
+
+        for rel in ("db/views.sql", "migrations/0001_init.sql", "tests/queries/q.sql"):
+            path = tmp_path / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_SMELLY_SQL)
+        (tmp_path / ".repowise").mkdir()
+        parser = ASTParser()
+        parsed = [
+            parser.parse_file(fi, Path(fi.abs_path).read_bytes())
+            for fi in FileTraverser(tmp_path).traverse()
+        ]
+        report = HealthAnalyzer(
+            nx.DiGraph(),
+            git_meta_map={},
+            parsed_files=parsed,
+            duplication_cache_dir=tmp_path / ".repowise",
+            repo_root=tmp_path,
+        ).analyze(None)
+
+        def sql_kinds(path: str) -> list[str]:
+            return sorted(
+                f.biomarker_type
+                for f in report.findings
+                if f.file_path == path and f.biomarker_type.startswith("sql_")
+            )
+
+        # Production and tooling SQL: every finding the full walk yields.
+        expected = sorted(
+            r.biomarker_type
+            for r in detect_all(_ctx_for(_SMELLY_SQL))
+            if r.biomarker_type.startswith("sql_")
+        )
+        assert expected == sorted([*_SMELLS, "sql_high_complexity"])
+        assert sql_kinds("db/views.sql") == expected
+        assert sql_kinds("migrations/0001_init.sql") == expected
+        # Test SQL: routine complexity only.
+        assert sql_kinds("tests/queries/q.sql") == ["sql_high_complexity"]

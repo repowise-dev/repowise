@@ -54,6 +54,8 @@ _EDGE_VERB: dict[str, str] = {
     "defines": "contains",
     "has_method": "contains",
     "co_changes": "co-changes",
+    # Prose naming a file; C4 relations skip it, so this only keeps the map total.
+    "documents": "documents",
 }
 
 # When an aggregated edge carries several types, a concrete code dependency is
@@ -75,6 +77,7 @@ _VERB_PRIORITY: tuple[str, ...] = (
     "references",
     "contains",
     "co-changes",
+    "documents",
 )
 
 # Pair-count thresholds (inclusive lower bounds) for the coupling buckets.

@@ -344,3 +344,76 @@ def test_update_after_a_force_push_matches_init(tmp_path: Path, monkeypatch) -> 
     expected, actual = _store(control), _store(incremental)
     bad = [table for table, rows in expected.items() if actual[table] != rows]
     assert not bad, bad
+
+
+_REGISTRAR = {
+    "src/app/__init__.py": "",
+    "src/app/registry.py": (
+        "_RULES = []\n\n\ndef rule(fn):\n    _RULES.append(fn)\n    return fn\n\n\n"
+        "def run(value):\n    return [check(value) for check in _RULES]\n"
+    ),
+    "src/app/checks_a.py": (
+        "from app.registry import rule\n\n\n@rule\ndef check_a(value):\n    return value + 1\n"
+    ),
+    "src/app/checks_b.py": (
+        "from app.registry import rule\nfrom app.util import helper\n\n\n"
+        "@rule\ndef check_b(value):\n    return helper(value)\n"
+    ),
+    "src/app/util.py": "def helper(value):\n    return value + 1\n",
+    "pyproject.toml": "[project]\nname = 'registrar'\n",
+    ".gitignore": ".repowise/\n",
+}
+
+
+def _graph_update(repo: Path) -> dict:
+    state = json.loads((repo / ".repowise" / "state.json").read_text(encoding="utf-8"))
+    return state["graph_update"]
+
+
+def test_editing_one_decorated_file_keeps_the_graph_patchable(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A decorator that registers two files' functions: an update that
+    reconciles one of them keeps the decorator's edge into the other, so the
+    store matches the graph and the next update patches from its snapshot."""
+    incremental = tmp_path / "incremental" / "repo"
+    incremental.mkdir(parents=True)
+    _write(incremental, _REGISTRAR)
+    _git(incremental, "init", "-q")
+    _commit(incremental, "seed")
+    runner = CliRunner()
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{incremental / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, incremental, *_INIT)
+
+    # A util.py edit reconciles its caller check_b but not the decorator's file;
+    # a checks_a.py edit reconciles the decorator's file but not check_b.
+    util = _REGISTRAR["src/app/util.py"]
+    edits = [
+        ("src/app/util.py", util.replace("+ 1", "+ 2")),
+        ("src/app/checks_a.py", _REGISTRAR["src/app/checks_a.py"].replace("+ 1", "+ 5")),
+        ("src/app/util.py", util.replace("+ 1", "+ 3")),
+    ]
+    for path, text in edits:
+        _write(incremental, {path: text})
+        _commit(incremental, f"chore: edit {path}")
+        _invoke(runner, incremental, "update", "--index-only", "--no-workspace", "--no-agents")
+        assert _graph_update(incremental)["mode"] == "patch", (path, _graph_update(incremental))
+
+    control = tmp_path / "control" / "repo"
+    shutil.copytree(incremental, control, ignore=shutil.ignore_patterns(".repowise"))
+    monkeypatch.setenv(
+        "REPOWISE_DB_URL", f"sqlite+aiosqlite:///{control / '.repowise' / 'wiki.db'}"
+    )
+    _invoke(runner, control, *_INIT)
+
+    expected = _store(control)["graph_edges"]
+    registrations = {
+        edge[:2] for edge in expected if edge[5] == "decorator_registration"
+    }
+    assert registrations == {
+        ("src/app/registry.py::rule", "src/app/checks_a.py::check_a"),
+        ("src/app/registry.py::rule", "src/app/checks_b.py::check_b"),
+    }, "fixture must register both checks"
+    assert _store(incremental)["graph_edges"] == expected

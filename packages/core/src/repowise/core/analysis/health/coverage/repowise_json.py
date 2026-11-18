@@ -35,9 +35,9 @@ that pins down neither is skipped (absent, *not* zero — see Phase-7 §5).
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
+
+from repowise.core.interchange import load_json_object, posix_path
 
 from .model import CoverageReport, FileCoverage
 
@@ -45,11 +45,8 @@ _FORMAT_TAG = "repowise-coverage-v1"
 
 
 def parse_repowise_json(text: str) -> CoverageReport:
-    try:
-        data = json.loads(text)
-    except (ValueError, TypeError):
-        return CoverageReport(source_format="unknown")
-    if not isinstance(data, dict):
+    data = load_json_object(text)
+    if data is None:
         return CoverageReport(source_format="unknown")
 
     raw_files = data.get("files")
@@ -76,7 +73,7 @@ def _parse_entry(key: str | None, entry: dict[str, Any]) -> FileCoverage | None:
     path = key or entry.get("file_path") or entry.get("path")
     if not path:
         return None
-    path = Path(str(path).replace("\\", "/")).as_posix()
+    path = posix_path(path)
 
     covered_lines = _line_set(entry.get("covered_lines"))
     coverable_lines = _line_set(entry.get("coverable_lines"))

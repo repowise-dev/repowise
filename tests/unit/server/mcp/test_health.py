@@ -327,7 +327,7 @@ async def test_entity_recovery_retains_health_semantics_and_freshness(
     assert "health_semantics" not in finding_detail["_meta"]
     asked = await get_health(finding_id=finding["id"], include=["semantics"])
     assert asked["_meta"]["health_semantics"]
-    assert finding_detail["_meta"]["health_analysis"]["recomputed_this_call"] is False
+    assert finding_detail["_meta"]["health_analysis"]["status"] == "provenance_unknown"
 
     await _seed_plans(
         session,
@@ -351,7 +351,7 @@ async def test_entity_recovery_retains_health_semantics_and_freshness(
     plan_detail = await get_health(plan_id=plan["id"])
     assert plan_detail["plan"]["id"] == plan["id"]
     assert plan_detail["plan"]["file_path"] == plan["file_path"]
-    assert plan_detail["_meta"]["health_analysis"]["recomputed_this_call"] is False
+    assert plan_detail["_meta"]["health_analysis"]["status"] == "provenance_unknown"
 
 
 @pytest.mark.asyncio
@@ -2002,7 +2002,10 @@ def test_unknown_only_hint_skips_an_include_already_passed():
         performance_confidence=None, performance_actionability=None, performance_sort=None,
         scope="all", counts="everything",
     )
-    assert _unknown_only_hint(req, ["performance_opportunities"]) == _UNKNOWN_ONLY_HINT
+    assert (
+        _unknown_only_hint(req, ["performance_opportunities"], {"mode": "dashboard"})
+        == _UNKNOWN_ONLY_HINT
+    )
 
 
 @pytest.mark.asyncio
@@ -2678,22 +2681,12 @@ async def test_meta_omits_the_commit_when_no_row_records_one(setup_mcp, health_d
     meta = (await get_health())["_meta"]
     assert "health_analyzed_commit" not in meta
     assert isinstance(meta["health_analyzed_at"], str)
-    assert meta["health_analysis"]["source"] == "stored_health_analysis"
-    assert meta["health_analysis"]["recomputed_this_call"] is False
-    assert meta["health_analysis"]["live_verification"] == {
-        "basis": "unavailable",
-        "source_bytes_verified": False,
-    }
     analysis = meta["health_analysis"]
     # Usable metrics with no recorded commit: a provenance gap, not a failed
     # capability, which is what ``degraded`` means everywhere else on the wire.
     assert analysis["status"] == "provenance_unknown"
     assert analysis["reason"] == "analysis_commit_not_recorded"
-    assert analysis["refresh"] == {
-        "command": "repowise update",
-        "precondition": "commit health-relevant working-tree changes first",
-        "required_before_comparison": True,
-    }
+    assert analysis["refresh"] == "repowise update"
 
 
 @pytest.mark.asyncio
@@ -3186,3 +3179,116 @@ async def test_meta_names_the_analyzer_the_stored_scores_came_from(
     dashboard = await get_health(only=["kpis"])
     for result in (scoped, dashboard):
         assert result["_meta"]["health_analysis"]["analyzer_version"] == HEALTH_ANALYZER_VERSION
+
+
+@pytest.fixture
+async def many_findings_data(session, health_data: str) -> str:
+    """Seven more findings on one file, past the targeted default cap."""
+    from repowise.core.persistence.crud import save_health_findings
+
+    await save_health_findings(
+        session,
+        health_data,
+        [
+            {
+                "file_path": "src/auth/service.py",
+                "biomarker_type": "complex_method",
+                "severity": "medium",
+                "function_name": f"helper_{i}",
+                "line_start": 100 + 10 * i,
+                "line_end": 105 + 10 * i,
+                "details": {"ccn": 9},
+                "health_impact": 0.5 - i / 100,
+                "reason": f"helper_{i} has 9 independent paths",
+            }
+            for i in range(7)
+        ],
+    )
+    await session.flush()
+    return health_data
+
+
+@pytest.mark.asyncio
+async def test_targeted_findings_list_the_top_few_unless_a_limit_is_passed(
+    setup_mcp, many_findings_data
+):
+    """A file call lists the highest-impact five, states the total, and names
+    the call for the rest; ``limit`` lists more."""
+    from repowise.server.mcp_server import get_health
+    from repowise.server.mcp_server.tool_health.request import TARGETED_FINDINGS_CAP
+
+    bare = await get_health(targets=["src/auth/service.py"])
+    total = bare["findings_total"]
+    assert total > TARGETED_FINDINGS_CAP
+    assert len(bare["findings"]) == TARGETED_FINDINGS_CAP
+    impacts = [f["health_impact"] for f in bare["findings"]]
+    assert impacts[0] == max(impacts)
+    assert bare["findings_reduced_reason"] == "collection_cap"
+    rest = bare["recovery"]["findings"]
+    assert rest["remaining"] == total - TARGETED_FINDINGS_CAP
+    assert "repo=None" not in rest["call"] and "cursor=5" in rest["call"]
+
+    asked = await get_health(targets=["src/auth/service.py"], limit=20)
+    assert len(asked["findings"]) == total
+
+
+@pytest.mark.asyncio
+async def test_no_internal_leaks_in_default_health_responses(setup_mcp, many_findings_data):
+    """No unset argument written as ``None`` in a suggested call, no unclamped
+    score series, and no constant provenance block in ``_meta``."""
+    import json
+
+    from repowise.server.mcp_server import get_health
+
+    for result in (
+        await get_health(),
+        await get_health(targets=["src/auth/service.py"]),
+        await get_health(targets=["module:auth"]),
+    ):
+        text = json.dumps(result)
+        assert "=None" not in text
+        assert "unclamped" not in text
+        analysis = result["_meta"]["health_analysis"]
+        assert set(analysis) <= {"status", "reason", "refresh", "analyzer_version"}
+
+
+def test_trends_carry_the_reported_score_only(monkeypatch):
+    """A floored file's trend is the score it reports, never a below-floor series."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server.tool_health import targeted
+
+    point = SimpleNamespace
+    trend = SimpleNamespace(
+        file_path="a.py",
+        points=[point(score=1.0, unclamped_score=-0.2), point(score=1.0, unclamped_score=0.4)],
+        current=1.0,
+        delta=0.0,
+        declining=False,
+        unclamped_delta=0.6,
+    )
+    monkeypatch.setattr(targeted, "file_trend", lambda snapshots, path: trend)
+    data = SimpleNamespace(metric_rows=[SimpleNamespace(file_path="a.py")], snapshots=[])
+    (row,) = targeted._file_trends(data)
+    assert row == {
+        "file_path": "a.py",
+        "series": [1.0, 1.0],
+        "current": 1.0,
+        "delta": 0.0,
+        "declining": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_targeted_only_hint_names_the_keys_this_call_has(setup_mcp, health_data):
+    """#4089: a targeted call's hint names its own keys, not dashboard ones."""
+    from repowise.server.mcp_server import get_health
+
+    result = await get_health(targets=["src/auth/service.py"], only=["files"])
+    assert result["unknown_only_keys"] == ["files"]
+    hint = result["unknown_only_keys_hint"]
+    assert "metrics, findings" in hint and "trends" in hint
+    assert "fix_first" not in hint
+
+    kept = await get_health(targets=["src/auth/service.py"], only=["metrics"])
+    assert len(kept["metrics"]) == 1 and "unknown_only_keys" not in kept

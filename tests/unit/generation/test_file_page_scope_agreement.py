@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from repowise.core.cost_estimator import build_generation_plan
 from repowise.core.generation.context_assembler import ContextAssembler
 from repowise.core.generation.models import GenerationConfig
@@ -42,12 +44,13 @@ def _repo_files() -> list[ParsedFile]:
         _parsed("pkg/adapters/a.py", ["handle"]),
         _parsed("pkg/adapters/b.py", ["handle"]),
         _parsed("pkg/adapters/c.py", ["handle"]),
-        # No symbols and no entry or hotspot signal: never selected.
+        # No symbols or entry signal: selected only when marked as a hotspot.
         _parsed("pkg/barrel.py", []),
     ]
 
 
-async def test_generation_plan_and_scope_count_the_same_file_pages() -> None:
+@pytest.mark.parametrize("hotspot", [False, True])
+async def test_generation_plan_and_scope_count_the_same_file_pages(hotspot: bool) -> None:
     parsed = _repo_files()
     builder = GraphBuilder()
     for p in parsed:
@@ -64,16 +67,28 @@ async def test_generation_plan_and_scope_count_the_same_file_pages() -> None:
         entry_points=[],
     )
 
+    git_meta_map = {"pkg/barrel.py": {"is_hotspot": True}} if hotspot else None
     pages = await gen.generate_all(
-        parsed, {p.file_info.path: b"def f(): pass" for p in parsed}, builder, repo, "r"
+        parsed,
+        {p.file_info.path: b"def f(): pass" for p in parsed},
+        builder,
+        repo,
+        "r",
+        git_meta_map=git_meta_map,
     )
 
-    eligible = eligible_file_page_paths(parsed, builder.pagerank(), hotspots=set())
+    hotspots = {"pkg/barrel.py"} if hotspot else set()
+    eligible = eligible_file_page_paths(parsed, builder.pagerank(), hotspots=hotspots)
     written = {p.target_path for p in pages if p.page_type == "file_page"}
-    planned = {
-        plan.page_type: plan.count for plan in build_generation_plan(parsed, builder, config)
-    }
-    assert len(eligible) == 2
+    default_plans = build_generation_plan(parsed, builder, config)
+    plans = build_generation_plan(parsed, builder, config, git_meta_map=git_meta_map)
+    planned = {plan.page_type: plan.count for plan in plans}
+    assert [plan.page_type for plan in plans] == [plan.page_type for plan in default_plans]
+    if not hotspot:
+        assert plans == default_plans
+    assert len(eligible) == (3 if hotspot else 2)
+    assert ("pkg/barrel.py" in written) == hotspot
+    assert len(written & {"pkg/adapters/a.py", "pkg/adapters/b.py", "pkg/adapters/c.py"}) == 1
     assert written == eligible
     assert gen.selection.eligible_file_pages == len(eligible)
     assert planned["file_page"] == len(eligible)

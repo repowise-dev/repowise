@@ -80,7 +80,10 @@ export const FACET_LABEL: Record<PerformanceFacetKey, string> = {
 };
 
 const PROOF_LABEL: Record<PerformanceCostProof, string> = {
-  proven: "Measured",
+  // Static: the code shows how the cost scales (a loop that grows with data or
+  // is bounded, a per-call cost, or a shape that grows by itself). Nothing
+  // timed it, so this never says "measured".
+  proven: "Loop size known",
   unproven: "Unproven: loop size unknown",
   background_unproven: "Unproven: scheduled job, growth not shown",
 };

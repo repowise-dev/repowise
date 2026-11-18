@@ -125,7 +125,7 @@ async def test_interface_callers_alone_still_fill_callers(setup_mcp, session):
     t = await _ctx(IMPL_RUN)
 
     assert len(t["callers"]) == 10 and t["callers_total"] == N_CALLERS
-    assert "Nothing calls" not in t.get("_call_graph_note", "")
+    assert "No resolved call reaches" not in t.get("_call_graph_note", "")
 
 
 @pytest.mark.asyncio

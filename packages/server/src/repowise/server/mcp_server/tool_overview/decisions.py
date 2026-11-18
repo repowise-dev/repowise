@@ -61,6 +61,10 @@ async def _build_key_decisions(
     record nobody agreed to must not appear under a heading that presents it
     as what the repository has settled on.
     """
+    from repowise.core.analysis.decisions.policy_store import layer_mode
+
+    if layer_mode(getattr(repository, "local_path", None)) == "off":
+        return {}
     try:
         # Over-fetch, then drop records anchored entirely in excluded paths,
         # so the repo's top decisions are never vendored or scratch junk.

@@ -156,9 +156,7 @@ async def _search_one_repo(
     paths: list[str] = []
     c: list[dict] = []
     if plan.mode in ("symbol", "hybrid"):
-        s = await _pkg.search_symbols_single(
-            ctx, plan.symbol_query, plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
-        )
+        s = await _symbol_rows(ctx, plan)
     if plan.mode == "path":
         f = await search_paths_single(ctx, plan.query, plan.limit)
         async with get_session(ctx.session_factory) as session:
@@ -177,6 +175,31 @@ async def _search_one_repo(
     for rows in (s, f, c):
         _tag_repo(rows, ctx, plan.multi)
     return s, f, paths, c
+
+
+async def _symbol_rows(ctx: Any, plan: _SearchPlan) -> list[dict]:
+    """Symbol rows for the plan, best first.
+
+    Two or more names (``a|b``, or a question naming both) are searched one
+    at a time: scored as one string, each name's exact symbol loses to
+    neighbours sharing words with both, and the reply then says the name is
+    not indexed.
+    """
+    names = _embedded_identifiers(plan.query, plan.names) if plan.mode == "hybrid" else []
+    queries = list(dict.fromkeys(names)) if len(set(names)) > 1 else [plan.symbol_query]
+    if len(queries) == 1:
+        return await _pkg.search_symbols_single(
+            ctx, queries[0], plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
+        )
+    rows: dict[Any, dict] = {}
+    for q in queries:
+        for row in await _pkg.search_symbols_single(
+            ctx, q, plan.fetch, symbol_kind=plan.symbol_kind, kind=plan.kind
+        ):
+            key = row.get("symbol_id") or id(row)
+            if key not in rows or (row.get("score") or 0) > (rows[key].get("score") or 0):
+                rows[key] = row
+    return sorted(rows.values(), key=_neg_score("score"))
 
 
 def _vector_store_loaded(ctx: Any) -> bool:
@@ -272,14 +295,32 @@ def _named_directory(query: str, paths: list[str]) -> str | None:
     return found.pop() if len(found) == 1 else None
 
 
-def _directory_action(plan: _SearchPlan, pools: _Pools) -> list[str]:
-    """The get_context call listing a directory's files, for a path query naming one."""
+def _directory_action(plan: _SearchPlan, pools: _Pools) -> str | None:
+    """The directory a path query names, else None."""
     if plan.mode != "path" or plan.multi:
-        return []
-    folder = _named_directory(plan.query, pools.indexed_paths)
-    if folder is None:
-        return []
-    return [f'get_context(targets=["{folder}"], include=["files"]): its files and their tests']
+        return None
+    return _named_directory(plan.query, pools.indexed_paths)
+
+
+def _add_directory_hit(response: dict, folder: str, limit: int) -> None:
+    """Lead ``results`` with the directory the query names, and say how to list it."""
+    row = {"type": "directory", "path": folder, "next": "get_context"}
+    response["results"] = [row, *response.get("results", [])][:limit]
+    action = f'get_context(targets=["{folder}"], include=["files"]): its files and their tests'
+    response["next_actions"] = [action, *response.get("next_actions", [])]
+
+
+async def attach_directory_hit(response: dict, query: str, repo: str | None, limit: int) -> None:
+    """A one-word query naming an indexed directory (``tool_search``,
+    ``dead-code``) and no symbol gets that directory as its first hit."""
+    q = query.strip()
+    if len(q) < 3 or any(ch in q for ch in " /\\|*?") or response.get("exact_match"):
+        return
+    ctx = await _pkg._resolve_repo_context(repo)
+    async with get_session(ctx.session_factory) as session:
+        paths = (await file_path_index(session, (await _get_repo(session)).id)).paths
+    if folder := _named_directory(q, list(paths)):
+        _add_directory_hit(response, folder, limit)
 
 
 async def _single_repository(contexts: list[Any], multi: bool) -> Any:
@@ -418,8 +459,8 @@ async def _structured_search(
     }
     if fuzzy_omitted:
         response["fuzzy_omitted"] = fuzzy_omitted
-    if actions := _directory_action(plan, pools):
-        response["next_actions"] = actions
+    if folder := _directory_action(plan, pools):
+        _add_directory_hit(response, folder, limit)
     # Not ``candidates``: that name holds the query's identifiers the note quotes.
     if file_cands := file_candidates(results, limit=limit):
         response["candidates"] = file_cands

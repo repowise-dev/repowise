@@ -19,10 +19,11 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from repowise.cli.helpers import console, run_async
+from repowise.cli.helpers import console, resolve_max_file_pages, run_async
 from repowise.core.persistence import (
     load_stale_structural_file_paths as load_stale_structural_file_paths,
 )
+from repowise.core.settings.model import flag
 
 
 def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) -> str:
@@ -39,7 +40,8 @@ def deterministic_embedder_name(cfg: dict, repo_path: Path | str | None = None) 
     from repowise.core.providers.llm.resolve import repo_getenv
 
     env_lookup = repo_getenv(repo_path)
-    chosen = cfg.get("embedder") or (env_lookup("REPOWISE_EMBEDDER") or "").strip()
+    # The variable beats the pin, as it does on every other path.
+    chosen = (env_lookup("REPOWISE_EMBEDDER") or "").strip() or cfg.get("embedder")
     if chosen:
         return str(chosen)
     # Nothing was chosen, so whatever resolve_embedder returns was inferred
@@ -260,8 +262,9 @@ def _render_pages(
             file_pages_only=not complete_context,
             max_concurrency=concurrency,
             language=cfg.get("language", "en"),
-            enable_onboarding=bool(cfg.get("enable_onboarding", True)),
+            enable_onboarding=flag(cfg.get("enable_onboarding"), True),
             wiki_style=cfg.get("wiki_style", "comprehensive"),
+            max_file_pages=resolve_max_file_pages(config=cfg),
         )
 
         # Only build a store when there is a real embedder to build it with.
@@ -531,17 +534,10 @@ def hydrate_symbol_complexity(repo_path: Path, parsed_files: list, paths: set[st
     """
     if not paths:
         return
+    from repowise.core.pipeline.persist import apply_stored_complexity
+
     stored = run_async(_load_symbol_complexity(repo_path))
-    if not stored:
-        return
-    for pf in parsed_files:
-        if pf.file_info.path not in paths:
-            continue
-        for sym in pf.symbols:
-            sid = getattr(sym, "id", None) or f"{pf.file_info.path}::{sym.name}"
-            value = stored.get(sid)
-            if value:
-                sym.complexity_estimate = value
+    apply_stored_complexity([pf for pf in parsed_files if pf.file_info.path in paths], stored)
 
 
 async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
@@ -550,21 +546,14 @@ async def _load_symbol_complexity(repo_path: Path) -> dict[str, int]:
 
     engine = create_engine(get_db_url_for_repo(repo_path))
     try:
-        from sqlalchemy import select as sa_select
-
         from repowise.core.persistence.crud import get_repository_by_path
-        from repowise.core.persistence.models import WikiSymbol
+        from repowise.core.pipeline.persist import stored_symbol_complexity
 
         async with get_session(create_session_factory(engine)) as session:
             repo = await get_repository_by_path(session, str(repo_path))
             if repo is None:
                 return {}
-            rows = await session.execute(
-                sa_select(WikiSymbol.symbol_id, WikiSymbol.complexity_estimate).where(
-                    WikiSymbol.repository_id == repo.id
-                )
-            )
-            return {sid: int(value or 0) for sid, value in rows}
+            return await stored_symbol_complexity(session, repo.id)
     except Exception:
         return {}
     finally:
@@ -722,7 +711,13 @@ async def _load_cascade_overflow_split(
             rows = await session.execute(
                 sa_select(Page.page_type, Page.target_path, Page.metadata_json).where(
                     Page.page_type.in_(
-                        ["file_page", "module_page", "flow_page", "scc_page", *_REPO_WIDE_MODEL_TYPES]
+                        [
+                            "file_page",
+                            "module_page",
+                            "flow_page",
+                            "scc_page",
+                            *_REPO_WIDE_MODEL_TYPES,
+                        ]
                     ),
                     Page.freshness_status != "tombstone",
                 )

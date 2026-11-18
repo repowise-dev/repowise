@@ -27,7 +27,13 @@ import sqlite3
 from pathlib import Path
 
 from . import fast_lookup
-from ._shared import HookResult, _extract_output_text, _find_repo_root, sqlite_wait_s
+from ._shared import (
+    HookResult,
+    _checkout_root,
+    _extract_output_text,
+    _find_repo_root,
+    sqlite_wait_s,
+)
 
 # NOTE: repowise.core.persistence.sql is imported inside _rescue/_triage, not
 # here. At module scope it costs ~790ms on every single hook invocation — it
@@ -88,6 +94,9 @@ def _handle_search_post(
     repo_path = _find_repo_root(Path(cwd))
     if repo_path is None:
         return HookResult()
+    # A worktree reading its main checkout's index: its grep paths are
+    # relative to the worktree, and its tree may differ from the index.
+    checkout = _checkout_root(Path(cwd), repo_path)
 
     result_count = _search_result_count(tool_output)
     if result_count is None:
@@ -112,6 +121,7 @@ def _handle_search_post(
                 groups,
                 session_id,
                 adapter=adapter,
+                checkout=checkout,
             )
         # Unparseable output (e.g. Glob path lists, or a single-file context
         # grep, see search_digest), or one or two files: fall through to triage.
@@ -125,33 +135,14 @@ def _handle_search_post(
     if _looks_like_path_lookup(pattern):
         return HookResult()
 
-    # Decision tree. The skip case is the most common — that's by design.
-    if result_count == 0:
-        # Rescue relevance guards. A regex pattern loses its structure in the
-        # symbol-lookup sanitizer (`distill|savings` → `distillsavings`), so
-        # any "closest symbol" answer would be luck, not signal. And a grep
-        # scoped to one non-code file is a config-key check, not a symbol
-        # hunt — the wiki has nothing useful to add to either.
-        if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
-            return HookResult()
-        mode = "rescue"
-    elif result_count >= _TRIAGE_THRESHOLD:
-        mode = "triage"
-    elif _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
-        # Same two guards as the zero-result rescue, for the same reasons.
+    mode = _search_mode(pattern, result_count, tool_input)
+    if mode is None:
         return HookResult()
-    elif len(_pattern_terms(pattern)) < 2:
-        # A third guard the zero-result rescue does not need. Replayed over
-        # this machine's real greps, every false positive the widened rescue
-        # produced came from a single-token pattern (`coverage`, `score`,
-        # `provider`) where "a symbol by that name is defined elsewhere" is
-        # true of half the repo and interesting nowhere. Under zero results
-        # even a generic name is the only lead going; under real results it
-        # competes with evidence. Free to check, and it runs before the
-        # query, so it also keeps the cost off the common path.
+    if mode != "triage" and checkout != repo_path:
+        # Both rescues point at where the index says a symbol is defined. A
+        # grep in a worktree misses most often because the branch moved or
+        # removed that symbol, which the main checkout's index cannot know.
         return HookResult()
-    else:
-        mode = "rescue_wide"
 
     # Both surviving modes are answers *about the agent's own results*, so
     # neither may run without them. Triage ranks the matched files and rescue
@@ -159,7 +150,7 @@ def _handle_search_post(
     # the result set has no honest question to answer and stays silent.
     matched = None
     if mode != "rescue":
-        matched = _matched_files(repo_path, tool_output, output_text)
+        matched = _matched_files(checkout, tool_output, output_text)
         if not matched:
             return HookResult()
 
@@ -175,6 +166,36 @@ def _handle_search_post(
     return HookResult(context=enrichment or None)
 
 
+def _search_mode(pattern: str, result_count: int, tool_input: dict) -> str | None:
+    """``rescue``, ``triage`` or ``rescue_wide`` for this search, or None to skip."""
+    # Decision tree. The skip case is the most common — that's by design.
+    if result_count == 0:
+        # Rescue relevance guards. A regex pattern loses its structure in the
+        # symbol-lookup sanitizer (`distill|savings` → `distillsavings`), so
+        # any "closest symbol" answer would be luck, not signal. And a grep
+        # scoped to one non-code file is a config-key check, not a symbol
+        # hunt — the wiki has nothing useful to add to either.
+        if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
+            return None
+        return "rescue"
+    if result_count >= _TRIAGE_THRESHOLD:
+        return "triage"
+    if _looks_like_regex(pattern) or _targets_single_non_code_file(tool_input):
+        # Same two guards as the zero-result rescue, for the same reasons.
+        return None
+    if len(_pattern_terms(pattern)) < 2:
+        # A third guard the zero-result rescue does not need. Replayed over
+        # this machine's real greps, every false positive the widened rescue
+        # produced came from a single-token pattern (`coverage`, `score`,
+        # `provider`) where "a symbol by that name is defined elsewhere" is
+        # true of half the repo and interesting nowhere. Under zero results
+        # even a generic name is the only lead going; under real results it
+        # competes with evidence. Free to check, and it runs before the
+        # query, so it also keeps the cost off the common path.
+        return None
+    return "rescue_wide"
+
+
 def _digest_result(
     repo_path: Path,
     tool_name: str,
@@ -185,6 +206,7 @@ def _digest_result(
     session_id: str,
     *,
     adapter,
+    checkout: Path | None = None,
 ) -> HookResult:
     """Serve the digest in place of the flood, or say nothing.
 
@@ -216,7 +238,7 @@ def _digest_result(
         build=lambda: digest_replacement(
             pattern if isinstance(pattern, str) else "",
             output_text,
-            _grep_flood_digest(repo_path, groups),
+            _grep_flood_digest(repo_path, groups, checkout),
         ),
     )
     if served is not None:
@@ -269,7 +291,7 @@ def _flood_groups(output_text: str) -> dict | None:
     return groups
 
 
-def _grep_flood_digest(repo_path: Path, groups: dict) -> str:
+def _grep_flood_digest(repo_path: Path, groups: dict, checkout: Path | None = None) -> str:
     """Compact per-file digest of a grouped Grep flood, index-ranked when possible.
 
     PageRank ordering is attempted against the index and silently skipped
@@ -278,13 +300,13 @@ def _grep_flood_digest(repo_path: Path, groups: dict) -> str:
     from repowise.core.distill.filters.search_results import render_search_digest
 
     paths = list(groups.keys())
-    file_order = _fast_pagerank_file_order(repo_path, paths)
+    file_order = _fast_pagerank_file_order(repo_path, paths, checkout)
     if file_order is _ORM:
         file_order = None
         try:
             import asyncio
 
-            file_order = asyncio.run(_pagerank_file_order(repo_path, paths))
+            file_order = asyncio.run(_pagerank_file_order(repo_path, paths, checkout))
         except Exception:
             file_order = None
     ranked_by_graph = file_order is not None
@@ -303,7 +325,8 @@ def _as_node_ids(repo_path: Path, paths: list[str]) -> dict[str, str]:
     Grep output paths may be absolute or OS-native; graph node ids and
     ``WikiSymbol.file_path`` are repo-relative POSIX. Every index lookup in
     this module goes through here so the two spellings only have to be
-    reconciled once.
+    reconciled once. *repo_path* is the checkout the grep ran in, which for a
+    worktree reading its main checkout's index is the worktree.
     """
     normalized: dict[str, str] = {}
     repo_posix = repo_path.as_posix().rstrip("/") + "/"
@@ -348,7 +371,9 @@ def _matched_files(repo_path: Path, tool_output: object, output_text: str) -> di
     return dict.fromkeys(_as_node_ids(repo_path, names), 1) or None
 
 
-async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | None:
+async def _pagerank_file_order(
+    repo_path: Path, paths: list[str], checkout: Path | None = None
+) -> list[str] | None:
     """Order *paths* by indexed PageRank, or None when the graph can't help."""
     db_path = repo_path / ".repowise" / "wiki.db"
     if not db_path.exists():
@@ -364,7 +389,7 @@ async def _pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] |
     from repowise.core.persistence.crud import get_repository_by_path
     from repowise.core.persistence.database import resolve_db_url
 
-    normalized = _as_node_ids(repo_path, paths)
+    normalized = _as_node_ids(checkout or repo_path, paths)
 
     engine = create_engine(resolve_db_url(repo_path), busy_timeout_ms=_orm_busy_timeout_ms())
     try:
@@ -434,7 +459,9 @@ def _wiki_db_exists(repo_path: Path) -> bool:
     return (repo_path / ".repowise" / "wiki.db").exists()
 
 
-def _fast_pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | object | None:
+def _fast_pagerank_file_order(
+    repo_path: Path, paths: list[str], checkout: Path | None = None
+) -> list[str] | object | None:
     """``_pagerank_file_order`` over stdlib sqlite3. ``_ORM`` to fall back."""
     if not _wiki_db_exists(repo_path):
         return None
@@ -445,7 +472,7 @@ def _fast_pagerank_file_order(repo_path: Path, paths: list[str]) -> list[str] | 
         repository_id = fast_lookup.repo_id(conn, repo_path)
         if repository_id is None:
             return None
-        normalized = _as_node_ids(repo_path, paths)
+        normalized = _as_node_ids(checkout or repo_path, paths)
         by_node = fast_lookup.pagerank(conn, repository_id, list(normalized))
         return _order_by_pagerank(paths, normalized, by_node)
     except sqlite3.Error:

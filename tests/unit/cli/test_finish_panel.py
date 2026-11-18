@@ -230,7 +230,7 @@ def test_stood_out_names_the_four_findings():
     assert "7.4/10 Good  scheduler/planner.py is lowest at 3.1" in text
     assert "38 files nothing reaches, 12 findings safe to delete" in text
     assert "Hotspot       auth/session.py, changed in 48 commits" in text
-    assert "14 candidates to review" in text
+    assert "14 background records from history" in text
     assert "confirmed" not in text and "decisions found" not in text
     # The count rows they replace are gone; the rest stay.
     assert "Git history" not in text and "unused export" not in text
@@ -269,7 +269,7 @@ def test_unmeasured_findings_are_left_out():
     text = _panel(StoodOut(dead_unreachable=0, decision_candidates=1))
     assert "Health" not in text and "Hotspot" not in text
     assert "no unreachable files" in text
-    assert "1 candidate to review" in text
+    assert "1 background record from history" in text
     assert "What stood out" not in _panel(StoodOut())
 
 

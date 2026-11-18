@@ -37,17 +37,22 @@ async def _why_reference(
 
     meta = _build_meta(repository=repository)
     if candidates:
-        return {
-            "mode": "reference",
-            "reference_id": reference_id,
-            "resolved": False,
-            "ambiguous": True,
-            "candidates": candidates,
-            "error": f"Decision id prefix {reference_id!r} is ambiguous; candidates: {', '.join(candidates)}",
-            "decisions": [],
-            "evidence_refs": [],
-            "_meta": meta,
-        }
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "invalid_args",
+            {
+                "mode": "reference",
+                "reference_id": reference_id,
+                "resolved": False,
+                "ambiguous": True,
+                "candidates": candidates,
+                "error": f"Decision id prefix {reference_id!r} is ambiguous; candidates: {', '.join(candidates)}",
+                "decisions": [],
+                "evidence_refs": [],
+                "_meta": meta,
+            },
+        )
 
     reference_id = resolved_id
 

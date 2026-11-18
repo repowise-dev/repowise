@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from ...code_origin import code_origin
 from ...ingestion import compute_content_hash
 from ...ingestion.graph.builder import GraphBuilder
 from ...ingestion.models import (
@@ -41,8 +42,6 @@ if TYPE_CHECKING:
 #: Files above this size are skipped rather than parsed on both sides.
 MAX_FILE_BYTES = 1_500_000
 
-_GENERATED_MARKERS = (b"GENERATED CODE", b"AUTO-GENERATED", b"@generated", b"DO NOT EDIT")
-
 
 def language_of(path: str) -> str | None:
     """The language *path* is written in, whether or not health can read it."""
@@ -61,12 +60,6 @@ def language_for(path: str) -> str | None:
     """
     language = language_of(path)
     return language if has_health_dialect(language) else None
-
-
-def is_generated(source: bytes) -> bool:
-    """True when the file announces itself as generated in its header."""
-    header = source[:512].upper()
-    return any(marker.upper() in header for marker in _GENERATED_MARKERS)
 
 
 def is_binary(source: bytes) -> bool:
@@ -224,7 +217,9 @@ class RevisionHealthAnalyzer:
             return "too_large"
         if is_binary(raw):
             return "binary"
-        if is_generated(raw):
+        # The classifier the index stores ``code_origin`` from, read from this
+        # revision's bytes: the stored row describes the indexed revision.
+        if code_origin(path, raw) == "generated":
             return "generated"
         return None
 

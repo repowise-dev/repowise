@@ -1,8 +1,8 @@
 """Calibration of PRBlastRadiusAnalyzer._compute_overall_risk.
 
 Regression: the old ``min(raw * 100, 10)`` normalisation scaled the 0-1
-breadth bonus to 0-20 points, so any PR with >=20 transitive dependents â€”
-i.e. any PR touching a hotspot â€” reported exactly 10.0. The score must
+breadth bonus to 0-20 points, so any PR with >=20 transitive dependents —
+i.e. any PR touching a hotspot — reported exactly 10.0. The score must
 discriminate between small clean diffs, moderate diffs, and hotspot-heavy
 diffs, and only approach 10 asymptotically.
 """

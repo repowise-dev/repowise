@@ -908,6 +908,25 @@ def test_two_targets_share_the_budget_instead_of_one_being_dropped():
         assert "callers" in out["dropped_blocks"][name]
 
 
+def test_a_dropped_edit_set_keeps_its_counts_and_stops_claiming_whole():
+    from repowise.server.mcp_server.tool_context import _truncate_to_budget
+
+    card = _card("a.py", symbols=2, callers=0)
+    card["references"] = {
+        "complete": True,
+        "sites_total": 900,
+        "files": {f"f{j}.py": {"call": list(range(1, 40))} for j in range(60)},
+    }
+    out = _truncate_to_budget({"targets": {"a.py": card}, "_meta": {}}, char_budget=4000)
+
+    assert "references" in out["dropped_blocks"]["a.py"]
+    assert out["targets"]["a.py"]["references"] == {
+        "sites_total": 900,
+        "complete": False,
+        "reasons": ["dropped to fit the response budget"],
+    }
+
+
 def test_a_small_target_keeps_everything_while_a_large_one_degrades():
     from repowise.server.mcp_server.tool_context import _truncate_to_budget
 

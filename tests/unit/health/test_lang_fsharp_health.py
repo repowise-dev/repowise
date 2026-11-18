@@ -83,27 +83,87 @@ def test_record_members() -> None:
     assert (cls.method_count, cls.total_nloc) == (5, 7)
 
 
+def test_module_and_class_values_are_not_units() -> None:
+    source = (
+        "module M\n"
+        "let Colon = ','\n"
+        "let f x = x\n"
+        "\n"
+        "type C() =\n"
+        "    let mutable n = 1\n"
+        "    member x.M() = n\n"
+    )
+    fcx = _walk(source)
+    assert sorted(f.name for f in fcx.functions) == ["M", "f"]
+    [cls] = fcx.classes
+    assert cls.method_count == 1
+
+
 @pytest.mark.skip(reason="curried and tupled F# parameters are not counted: param_count is 0")
 def test_parameters() -> None:
     params = {f.name: f.param_count for f in [*_walk(_CURRIED).functions, *_walk(_FAKE).functions]}
     assert params == {"getCookiesAndManageCookieContainer": 6, "NormalizeVersion": 1}
 
 
-@pytest.mark.skip(reason="an F# type is named <anonymous>: its type_name is not read")
-def test_type_name() -> None:
-    [cls] = _walk(_HTML_PARSER).classes
-    assert cls.name == "CharList"
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (_HTML_PARSER, "CharList"),
+        ("type CharList = { mutable Contents: int }", "CharList"),
+        ("type Counter(initial: int) =\n    member x.Value = initial", "Counter"),
+        ("type Shape = | Circle of float | Empty", "Shape"),
+        ("type Color = | Red = 0 | Blue = 1", "Color"),
+        ("type Box<'T> = { Value: 'T }", "Box"),
+        ("type private Hidden = { Value: int }", "Hidden"),
+        ("type ``Two Words`` = { Value: int }", "``Two Words``"),
+    ],
+)
+def test_type_name(source: str, expected: str) -> None:
+    # Types without members still have a class row, but no function rows.
+    [cls] = walk_file("src/Types.fs", "fsharp", (source + "\n").encode()).classes
+    assert cls.name == expected
 
 
-@pytest.mark.skip(reason="elif_expression is not a branch kind, so else if adds no CCN")
+@pytest.mark.parametrize(
+    ("path", "language", "source", "expected"),
+    [
+        ("src/a.py", "python", "class Counter:\n    pass\n", "Counter"),
+        ("src/a.rs", "rust", "impl Counter { fn count(&self) -> i32 { 1 } }", "Counter"),
+        ("src/a.js", "javascript", "export default class { count() { return 1; } }", "<anonymous>"),
+    ],
+)
+def test_other_class_names(path: str, language: str, source: str, expected: str) -> None:
+    [cls] = walk_file(path, language, source.encode()).classes
+    assert cls.name == expected
+
+
 def test_else_if() -> None:
     source = "let f (a: int) (b: int) =\n    if a > 0 then 1\n    elif b > 0 then 2\n    else 3\n"
     [fn] = _walk(source).functions
     assert fn.ccn == 3
 
 
+@pytest.mark.parametrize(
+    ("arms", "ccn"),
+    [
+        ("    elif b > 0 then 2\n", 3),
+        ("    elif b > 0 then 2\n    elif a < 0 then 4\n", 4),
+        ("    else if b > 0 then 2\n", 3),
+    ],
+)
+def test_elif_chain_counts_each_arm_and_stays_flat(arms: str, ccn: int) -> None:
+    source = (
+        "let f (a: int) (b: int) =\n    let z = 1\n    if a > 0 then 1\n" + arms + "    else 3\n"
+    )
+    [fn] = _walk(source).functions
+    assert (fn.ccn, fn.max_nesting) == (ccn, 1)
+
+
 @pytest.mark.skip(reason="a following /// doc comment joins the function's span and NLOC")
 def test_trailing_doc_comment() -> None:
-    source = _FAKE + "\n    /// <summary>\n    /// The colon character\n    /// </summary>\n    let Colon = ','\n"
+    source = (
+        _FAKE
+        + "\n    /// <summary>\n    /// The colon character\n    /// </summary>\n    let Colon = ','\n"
+    )
     fn = next(f for f in _walk(source).functions if f.name == "NormalizeVersion")
     assert (fn.end_line, fn.nloc) == (19, 15)

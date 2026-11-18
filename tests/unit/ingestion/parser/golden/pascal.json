@@ -130,6 +130,7 @@
         "line": 21,
         "argument_count": null,
         "receiver_call": null,
+        "start_byte": 303,
         "scope_name": null,
         "edge_type": "calls",
         "supplied_props": null,

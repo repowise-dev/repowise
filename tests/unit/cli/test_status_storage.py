@@ -90,8 +90,17 @@ class TestStatusKeylessUpgradeNote:
 
     def test_template_only_scope_prints_the_note(self, monkeypatch, tmp_path) -> None:
         out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "deterministic"})
-        assert "repowise generate writes the subsystem pages" in out
-        assert "--provider ollama" in out
+        assert "answers and docs: `repowise generate`" in out
+        assert "a provider key or a local model" in out
+
+    def test_template_only_scope_names_a_signed_in_plan(self, monkeypatch, tmp_path) -> None:
+        from repowise.core.index_scope import FreeRoute
+
+        route = FreeRoute("claude_cli", "Claude Code", minutes=4)
+        monkeypatch.setattr(status_cmd, "upgrade_route", lambda _repo: route)
+        out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "deterministic"})
+        assert "`repowise generate --provider claude_cli` uses your Claude Code" in out
+        assert "about 4 minutes" in out
 
     def test_note_uses_the_scopes_own_next_command(self, monkeypatch, tmp_path) -> None:
         state = {
@@ -112,7 +121,7 @@ class TestStatusKeylessUpgradeNote:
     def test_model_backed_scope_does_not_print_it(self, monkeypatch, tmp_path) -> None:
         out = self._status_output(monkeypatch, tmp_path, {"docs_mode": "llm"})
         assert "Scope" in out
-        assert "repowise generate writes the subsystem pages" not in out
+        assert "answers and docs" not in out
 
 
 def test_sync_state_totals_match_the_pages_table(tmp_path: Path, monkeypatch) -> None:

@@ -581,7 +581,7 @@ async def test_no_decision_and_unsupported_modes_remain_compatible(
     # On disk, so path mode answers rather than reporting the path missing.
     (tmp_path / "src/other").mkdir(parents=True)
     (tmp_path / "src/other/utils.py").write_text("x = 1\n", encoding="utf-8")
-    fallback = await get_why("src/other/utils.py")
+    fallback = await get_why("src/other/utils.py", include=["history"])
     assert list(fallback)[:5] == [
         "mode",
         "path",

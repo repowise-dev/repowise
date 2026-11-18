@@ -793,7 +793,7 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
             value={formatNumber(Number(counts.stale ?? stale.length))}
           />
           <StatRow
-            label="Proposed"
+            label="Background"
             value={formatNumber(Number(counts.proposed ?? proposed.length))}
           />
           <StatRow
@@ -829,7 +829,7 @@ export function DecisionsRenderer({ data }: { data: DecisionsArtifactData }) {
         )}
         {proposed.length > 0 && (
           <div>
-            <SectionTitle icon={Sparkles}>Proposed</SectionTitle>
+            <SectionTitle icon={Sparkles}>Background</SectionTitle>
             <ul className="space-y-1">
               {proposed.slice(0, 8).map((d, i) => (
                 <li key={i} className="text-xs text-[var(--color-text-secondary)]">

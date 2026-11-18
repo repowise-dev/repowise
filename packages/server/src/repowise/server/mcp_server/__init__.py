@@ -141,6 +141,7 @@ def tool_middleware(fn: Any) -> Any:
     from repowise.server.mcp_server._savings import event as savings_event
     from repowise.server.mcp_server._savings import instrument
     from repowise.server.mcp_server._savings import interaction as savings_interaction
+    from repowise.server.mcp_server._why_deliveries import record_why_delivery
 
     evidence_kind = getattr(fn, "__repowise_trust_kind__", None)
     signature = inspect.signature(fn)
@@ -240,6 +241,7 @@ def tool_middleware(fn: Any) -> Any:
                 with savings_interaction.begin(fn.__name__) as live:
                     result = await inner(*args, **kwargs)
                     savings_event.record(live, result)
+                    record_why_delivery(fn.__name__, live, result, kwargs)
                     return result
             finally:
                 _checkout.close_call(token)

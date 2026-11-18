@@ -338,6 +338,49 @@ async def test_execute_job_uses_repository_vector_store(session_factory, tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_execute_job_writes_fulltext_rows_to_repository_index(session_factory, tmp_path):
+    """A workspace job indexes pages in the repo's own FTS, which search reads (#5602)."""
+    job_id = await _seed_repo_and_job(session_factory, tmp_path)
+    async with session_factory() as session:
+        repo_id = (await get_generation_job(session, job_id)).repository_id
+    repo_fts = MagicMock(name="repo_fts")
+    app_state = SimpleNamespace(
+        session_factory=session_factory,
+        fts=MagicMock(name="primary_fts"),
+        vector_store=None,
+        workspace_fts={repo_id: repo_fts},
+    )
+    refresh_fts = AsyncMock()
+
+    with (
+        patch("repowise.server.job_executor.run_pipeline", AsyncMock(return_value=_fake_result())),
+        patch("repowise.server.job_executor.persist_pipeline_result", AsyncMock()),
+        patch("repowise.server.job_executor._refresh_fts", refresh_fts),
+        patch(
+            "repowise.server.provider_config.get_chat_provider_instance",
+            side_effect=RuntimeError("no provider"),
+        ),
+    ):
+        await execute_job(job_id, app_state)
+
+    refresh_fts.assert_awaited_once()
+    assert refresh_fts.await_args.args[0] is repo_fts
+
+
+def test_job_fts_skips_the_primary_index_for_a_member_without_its_own():
+    """A member DB whose FTS failed to open must not write into the primary's index."""
+    from repowise.server.job_executor import _resolve_job_fts
+
+    primary = MagicMock(name="primary_fts")
+    spec = SimpleNamespace(repo_id="member")
+    member_state = SimpleNamespace(fts=primary, workspace_fts={}, workspace_sessions={"member": object()})
+    single_state = SimpleNamespace(fts=primary)
+
+    assert _resolve_job_fts(member_state, spec) is None
+    assert _resolve_job_fts(single_state, spec) is primary
+
+
+@pytest.mark.asyncio
 async def test_incremental_page_regen_passes_repo_path(tmp_path):
     """Incremental regen must forward repo_path to generate_all.
 

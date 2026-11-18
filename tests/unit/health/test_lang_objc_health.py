@@ -130,7 +130,6 @@ def test_c_function_parameters() -> None:
     assert fn.param_count == 2
 
 
-@pytest.mark.skip(reason="method selector parameters are not counted: param_count is 0 for every method")
 def test_method_parameters() -> None:
     params = {f.name: f.param_count for f in _walk(_AFNETWORKING).functions}
     assert params["validateResponse"] == 3
@@ -155,3 +154,17 @@ def test_class_members() -> None:
         # A category is measured under the class it extends.
         "Post": (3, 20),
     }
+
+
+def test_method_parameters_count_arguments_not_selector_keywords() -> None:
+    source = (
+        "@implementation A\n"
+        "- (BOOL)validateResponse:(NSHTTPURLResponse *)response data:(NSData *)data"
+        " error:(NSError **)error {\n    return YES;\n}\n"
+        "- (void)run {\n}\n"
+        "+ (id)withName:(NSString *)name {\n    return nil;\n}\n"
+        "@end\n"
+        "int cfn(int a, int b) {\n    return a + b;\n}\n"
+    )
+    params = {f.name: f.param_count for f in _walk(source).functions}
+    assert params == {"validateResponse": 3, "run": 0, "withName": 1, "cfn": 2}

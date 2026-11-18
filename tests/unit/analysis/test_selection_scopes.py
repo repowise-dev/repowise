@@ -516,3 +516,28 @@ def test_an_empty_untracked_code_file_needs_no_tests(tmp_path) -> None:
     sel = select_tests(SelectionInput(list(only), (), _tiers(), _NONE, scopes=only))
     assert not sel.run_all
     assert "1 changed file(s) are new and empty: no tests needed." in sel.reasons
+
+
+def test_an_owner_package_scope_routes_through_one_package_walk(tmp_path) -> None:
+    """The package's code is walked as one ``<package>/`` route, not a route per file."""
+    import subprocess
+
+    from repowise.core.analysis.changed_lines import ChangeSet, FileDiff
+    from repowise.core.analysis.test_collection import plan_scopes, read_checkout
+
+    for path in ("web/package.json", "web/src/app.ts", "web/src/util.ts"):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text("{}\n" if path.endswith(".json") else "x\n", "utf-8")
+    css = "web/src/styles/layout.css"
+    (tmp_path / css).parent.mkdir(parents=True)
+    (tmp_path / css).write_text("a {}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True)
+    # A changed module in the package is looked up as itself, by its lines, not in the walk.
+    files = {p: FileDiff(path=p) for p in (css, "web/src/util.ts")}
+    change = ChangeSet(files=files, deleted=set(), label="t", base=None, head="h")
+    plan = plan_scopes(change, _NONE, read_checkout(tmp_path))
+    assert plan.scopes[css].basis == "owner-package"
+    assert plan.scopes[css].routes == ("web/",)
+    assert plan.routes == ["web/"]
+    assert plan.groups == {"web/": ("web/src/app.ts",)}

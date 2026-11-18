@@ -744,10 +744,12 @@ def _distill_opted_out(repo_root: Path | None) -> bool:
         cfg = load_repo_config(repo_root).get("distill")
         if not isinstance(cfg, dict):
             return False
-        if cfg.get("enabled") is False:
+        from repowise.core.settings.model import flag
+
+        if not flag(cfg.get("enabled"), True):
             return True
         commands = cfg.get("commands")
-        return isinstance(commands, dict) and commands.get("enabled") is False
+        return isinstance(commands, dict) and not flag(commands.get("enabled"), True)
     except Exception:
         return False
 

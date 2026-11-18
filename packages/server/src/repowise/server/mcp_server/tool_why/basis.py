@@ -85,6 +85,7 @@ def _stamp_answer_basis(result: dict) -> dict:
     ]
     candidate_rows = [
         *(r for e in entries for r in (e.get("candidate_decisions") or [])),
+        *(result.get("candidates") or []),
         *(r for r in result.get("decisions") or [] if not _is_accepted_row(r)),
     ]
     if rests_on_decision(result):

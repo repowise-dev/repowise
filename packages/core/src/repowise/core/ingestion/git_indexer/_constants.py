@@ -53,6 +53,31 @@ _MIN_MESSAGE_LEN = 12
 # stored as commit rows. Every default ``commit_limit`` reads this one value.
 _DEFAULT_COMMIT_LIMIT: int = 5000
 
+
+def parse_commit_limit(raw: object) -> int:
+    """A configured ``commit_limit`` as the window it gives, or ``ValueError``.
+
+    No upper bound: a window deeper than the history reads the whole history.
+    Anything but a positive whole number is not a limit.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("must be a whole number")
+    if raw < 1:
+        raise ValueError("must be at least 1")
+    return raw
+
+
+def clamp_commit_limit(raw: object) -> int:
+    """:func:`parse_commit_limit`, with the default for unset or unusable values.
+
+    Every reader of ``commit_limit`` goes through this, so ``update`` walks the
+    same window ``init`` did for the same config.
+    """
+    try:
+        return parse_commit_limit(raw)
+    except ValueError:
+        return _DEFAULT_COMMIT_LIMIT
+
 # Depth of the second, deeper repo-wide log walk that serves files absent
 # from the recent-window commit index. On repos whose history is much
 # deeper than _DEFAULT_COMMIT_LIMIT, most tracked files miss the window
@@ -378,6 +403,21 @@ HOTSPOT_HIGH_COMMITS_90D: int = 8
 # Co-change detection still runs across ALL tracked files regardless.
 # Derived from the centralised LanguageRegistry — all code language extensions.
 _CODE_EXTENSIONS: frozenset[str] = _LANG_REGISTRY.all_code_extensions()
+
+# Pack memory each git process the indexer runs may map. Git maps pack files
+# in windows and, with its 64-bit defaults, never unmaps one: on a 15 GiB pack a
+# history walk or the commit-graph write touched every window and showed ~15 GiB
+# resident, and eight blame workers each held their own windows. Those pages are
+# file-backed (the machine's free memory barely moves) but they count toward a
+# process's resident size and a container's limit. These bounds keep a blame or
+# history walk well under 1 GiB; eight blames at once ran 2% slower with them.
+_PACK_WINDOW_OPTIONS: tuple[str, ...] = ("core.packedGitLimit=1g", "core.packedGitWindowSize=128m")
+# The commit-graph write reads every tree in the pack once, so remapping costs
+# it more: 17% at these bounds (1 GiB resident instead of 17), 28% at the ones above.
+_GRAPH_PACK_WINDOW_OPTIONS: tuple[str, ...] = (
+    "core.packedGitLimit=2g",
+    "core.packedGitWindowSize=256m",
+)
 
 # Files larger than this skip git blame.  blame is O(lines) and blocks the
 # executor thread — for large files the commit-based ownership estimate is

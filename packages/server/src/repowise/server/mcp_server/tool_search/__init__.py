@@ -167,6 +167,7 @@ from repowise.server.mcp_server.tool_search.structured import (
     _symbol_mode_results,
     _symbol_query_for,
     _tag_repo,
+    attach_directory_hit,
 )
 from repowise.server.mcp_server.tool_search.tool import (
     _concept_search,

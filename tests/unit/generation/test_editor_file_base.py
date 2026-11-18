@@ -82,7 +82,7 @@ def test_render_names_only_what_a_degraded_index_lacks(gen):
         },
     )
     result = gen.render(data)
-    assert "Scope: essential Git history only · model upgrade pending." in result
+    assert "Scope: essential Git history only; model upgrade pending." in result
     # MCP serves the full scope in `_meta` and on get_overview; this file is
     # read into every session, so it names the gaps only.
     assert "eligible file pages omitted" not in result
@@ -126,7 +126,7 @@ _KEYED_SCOPE = {
     "provider": {"embedder": "openai", "model_cost_possible": True},
     "search": {"full_text": "available", "semantic": "available"},
 }
-_KEYLESS_BULLET = "No model on this index:"
+_KEYLESS_BULLET = "`repowise generate` adds a model; suggest it, do not run it."
 
 
 @pytest.fixture(params=["claude_md.j2", "agents_md.j2"])
@@ -154,18 +154,17 @@ def test_keyless_index_gets_keyless_steering(any_gen):
     assert _KEYLESS_BULLET in result
     # Template pages store confidence 1.0, so the figure would read as 100%.
     assert "Confidence:" not in result
-    assert "(commit a1b2c3d).\nScope: Built from code (no model, full-text search)." in result
+    assert "\n\nScope: Built from code (no model, full-text search)." in result
     # A built-from-code index is already full: `--full` has nothing to add.
     assert "repowise update --full" not in result
     assert "[fts]` only has no semantic agreement" not in result
     assert 'Cite `confidence: "high"`' not in result
     assert "`degraded` means no prose; `confidence` rates the evidence" in result
-    assert "provider key and `repowise generate`" in result
 
 
 def test_index_only_keyless_names_the_fast_to_full_command(any_gen):
     result = any_gen.render(_scoped({**_KEYLESS_SCOPE, "content_provenance": "none"}))
-    assert "provider key and `repowise update --full`" in result
+    assert "`repowise update --full` adds a model" in result
     assert "Scope: Index only (no documentation, full-text search)." in result
 
 
@@ -251,7 +250,11 @@ def test_the_default_health_line_is_the_headline_and_worst_file(gen):
         ),
         fix_first=[{"title": "Split f", "where": "src/bad.py:3", "why": "long"}],
     )
-    result = gen.render(dataclasses.replace(_minimal_data(), code_health=block))
+    result = gen.render(
+        dataclasses.replace(
+            _minimal_data(), code_health=block, sections=DEFAULT_SECTIONS | {"health", "tools"}
+        )
+    )
     assert "### Code health\n7.5/10 avg (Good), worst `src/bad.py` at 2.0/10." in result
     for detail in ("hotspot health", "maintainability", "worth fixing now", "Fix first"):
         assert detail not in result.split("### Tools")[0]
@@ -516,7 +519,7 @@ def test_render_hotspot_section_no_longer_claims_to_rank_by_churn(gen):
     # get_risk, a defect tool. The list and its own instruction disagreed.
     import dataclasses
 
-    data = dataclasses.replace(_minimal_data(), hotspots=[_hotspot("src/a.py")])
+    data = dataclasses.replace(_minimal_data(), sections=DEFAULT_SECTIONS | {"hotspots"}, hotspots=[_hotspot("src/a.py")])
     result = gen.render(data)
     assert "high churn" not in result
     assert "get_risk" in result
@@ -526,7 +529,7 @@ def test_render_hotspot_row_leads_with_fix_history(gen):
     import dataclasses
 
     data = dataclasses.replace(
-        _minimal_data(),
+        _minimal_data(), sections=DEFAULT_SECTIONS | {"hotspots"},
         hotspots=[_hotspot("src/a.py", fix_count=5, bug_magnet=True, last_fix_date="2026-03-14")],
     )
     result = gen.render(data)
@@ -537,7 +540,7 @@ def test_render_hotspot_row_singularizes_one_fix(gen):
     import dataclasses
 
     data = dataclasses.replace(
-        _minimal_data(),
+        _minimal_data(), sections=DEFAULT_SECTIONS | {"hotspots"},
         hotspots=[_hotspot("src/a.py", fix_count=1, last_fix_date="2026-03-27")],
     )
     result = gen.render(data)
@@ -550,7 +553,7 @@ def test_render_hotspot_row_falls_back_to_churn_without_fix_history(gen):
     # everywhere. The section must still render, on churn alone.
     import dataclasses
 
-    data = dataclasses.replace(_minimal_data(), hotspots=[_hotspot("src/a.py")])
+    data = dataclasses.replace(_minimal_data(), sections=DEFAULT_SECTIONS | {"hotspots"}, hotspots=[_hotspot("src/a.py")])
     result = gen.render(data)
     assert "- `src/a.py`: 28 commits/90d" in result
     assert "bug fix" not in result
@@ -562,7 +565,7 @@ def test_render_never_shows_a_fix_count_without_its_age(gen):
     import dataclasses
 
     data = dataclasses.replace(
-        _minimal_data(),
+        _minimal_data(), sections=DEFAULT_SECTIONS | {"hotspots"},
         hotspots=[_hotspot("src/a.py", fix_count=9, bug_magnet=True, last_fix_date=None)],
     )
     result = gen.render(data)

@@ -87,7 +87,9 @@ def _run_and_docs(*, git_changed: bool = False, provider: object | None = object
 
 def _mine(run, docs, policy=None) -> None:
     opts = SimpleNamespace(verbose=False)
-    decision_passes._mine_new_history(opts, run, docs, policy or preset_policy("default"))
+    policy = policy or preset_policy("default").with_update_mining(True)
+    provider = docs.provider if policy.update_llm else None
+    decision_passes._mine_new_history(opts, run, docs, policy, provider)
 
 
 def test_update_mines_pr_and_commits_in_its_own_range(stubbed):
@@ -119,7 +121,7 @@ def test_no_provider_mines_nothing(stubbed):
 def test_a_policy_with_the_model_off_mines_nothing(stubbed):
     run, docs = _run_and_docs()
 
-    _mine(run, docs, preset_policy("default").with_llm(False))
+    _mine(run, docs, preset_policy("default").with_update_mining(True).with_llm(False))
 
     assert stubbed == []
 

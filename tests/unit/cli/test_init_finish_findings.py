@@ -64,7 +64,11 @@ def no_probe(monkeypatch):
     """No agent CLI, no key, and a store that reports 14 candidates."""
     monkeypatch.setattr(reporting, "_signed_in_agent", lambda: None)
     monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)
-    monkeypatch.setattr(reporting, "_decision_candidates", lambda _repo: 14)
+    monkeypatch.setattr(
+        reporting,
+        "_decision_counts",
+        lambda _repo: {"decision_candidates": 14, "discovery_records": 9},
+    )
 
 
 # -- the findings ------------------------------------------------------------------
@@ -84,6 +88,7 @@ def test_findings_come_from_the_run(no_probe):
     assert stood.dead_safe == sum(1 for f in result.dead_code_report.findings if is_safe(f)) == 1
     assert (stood.hotspot_file, stood.hotspot_commits) == ("auth/session.py", 48)
     assert stood.decision_candidates == 14
+    assert stood.discovery_records == 9
 
 
 def test_unmeasured_findings_stay_none(no_probe):
@@ -103,7 +108,7 @@ def test_too_little_analysed_keeps_the_score_and_drops_the_word():
 
 
 def test_candidates_are_none_without_a_store(tmp_path):
-    assert reporting._decision_candidates(tmp_path) is None
+    assert reporting._decision_counts(tmp_path) == {}
 
 
 # -- the model command -----------------------------------------------------------
@@ -131,7 +136,7 @@ def test_no_cli_is_probed_with_the_network_off(monkeypatch, tmp_path, var):
         "repowise.core.agents.identity.AgentIdentity.which", lambda self: self.executable
     )
     monkeypatch.setattr(
-        "repowise.cli.ui.subscription.subprocess.run",
+        "repowise.core.providers.llm.subscription.subprocess.run",
         lambda *a, **k: pytest.fail("probed an agent CLI"),
     )
     monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)
@@ -180,7 +185,7 @@ def _complete(monkeypatch, tmp_path, *, index_only: bool, first_index: bool = Fa
 def test_keyless_completion_shows_findings_model_block_and_tour(monkeypatch, tmp_path, no_probe):
     completion, out, _ = _complete(monkeypatch, tmp_path, index_only=True)
     assert "What stood out" in out
-    assert "7.4/10 Good" in out and "14 candidates to review" in out
+    assert "7.4/10 Good" in out and "14 background records from history" in out
     assert "Add a model when you want more" in out
     assert completion.model_upgrade == ModelUpgrade("repowise generate")
     assert completion.steps[0][0] == "repowise serve"
@@ -276,7 +281,7 @@ def test_a_failed_candidate_count_drops_the_row_and_is_null(
     async def _raise(_repo):
         raise error
 
-    monkeypatch.setattr(reporting, "_count_candidates", _raise)
+    monkeypatch.setattr(reporting, "_count_decisions", _raise)
     monkeypatch.setattr(reporting, "_signed_in_agent", lambda: None)
     monkeypatch.setattr(reporting, "_keyed_provider", lambda _repo: None)
     logged: list[str] = []
@@ -285,7 +290,33 @@ def test_a_failed_candidate_count_drops_the_row_and_is_null(
     completion, out, _ = _complete(monkeypatch, tmp_path, index_only=True)
 
     assert completion.stood_out.decision_candidates is None
-    assert "candidates to review" not in out and "Decisions" not in out
+    assert completion.stood_out.discovery_records is None
+    assert "background record" not in out and "Decisions" not in out
+    assert "decision discover" not in out
     assert completion.stood_out.as_summary()["decision_candidates"] is None
     # Only an error a store cannot explain is logged as a bug.
     assert logged == (["decision_candidate_count_failed"] if logged_as_bug else [])
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ("'off'", {}),
+        ("read_only", {"decision_candidates": 3}),
+        ("full", {"decision_candidates": 3, "discovery_records": 2}),
+    ],
+)
+def test_the_mode_decides_the_decisions_row_and_the_discover_step(
+    monkeypatch, tmp_path, mode, expected
+):
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "config.yaml").write_text(
+        f"decisions:\n  mode: {mode}\n", encoding="utf-8"
+    )
+
+    async def counts(_repo):
+        return {"decision_candidates": 3, "discovery_records": 2}
+
+    monkeypatch.setattr(reporting, "_count_decisions", counts)
+
+    assert reporting._decision_counts(tmp_path) == expected

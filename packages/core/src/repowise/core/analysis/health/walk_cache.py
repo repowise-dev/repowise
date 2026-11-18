@@ -39,6 +39,8 @@ _CACHE_VERSION = 2
 #: relative to ``repowise/core``.
 WALK_INPUTS: tuple[str, ...] = (
     "analysis/health/complexity/*.py",
+    "analysis/health/duplication/tokenizer.py",
+    "analysis/symbol_body.py",
     "analysis/health/dataflow/**/*.py",
     "analysis/health/perf/dialects/*.py",
     "analysis/health/perf/io_boundaries.py",
@@ -61,8 +63,14 @@ WALK_INPUTS: tuple[str, ...] = (
 
 
 def walker_fingerprint() -> str:
-    """The stamp a cached walk must carry to be served."""
-    return source_fingerprint(WALK_INPUTS, grammar_choices())
+    """The stamp a cached walk must carry to be served.
+
+    The body digest drops each language's import kinds, which come from
+    ingestion's language configs, so their values join the code.
+    """
+    from .duplication.tokenizer import import_kinds_signature
+
+    return source_fingerprint(WALK_INPUTS, f"{grammar_choices()}{import_kinds_signature()}")
 
 
 class HealthWalkCache:
@@ -82,7 +90,14 @@ class HealthWalkCache:
         self.misses = 0
 
     @staticmethod
-    def key(grammar: str, content_hash: str, vocabulary: str = "", sql_dialect: str = "") -> str:
+    def key(
+        grammar: str,
+        content_hash: str,
+        vocabulary: str = "",
+        sql_dialect: str = "",
+        *,
+        sql_statements: bool = True,
+    ) -> str:
         """The cache key, optionally qualified by a configured vocabulary or dialect.
 
         *grammar* is the tree-sitter grammar the walk used, which for ``.tsx``
@@ -94,8 +109,12 @@ class HealthWalkCache:
         vocabulary joins the key and an edit to it simply misses and ages out.
         Empty is the overwhelmingly common case and keys exactly as before, so
         no existing cache is invalidated by this parameter existing. A ``.sql``
-        file's configured dialect joins the key the same way.
+        file's configured dialect joins the key the same way, and so does a
+        ``.sql`` walk without its statement smells (*sql_statements* False):
+        that choice follows the file's origin, which its bytes do not carry.
         """
+        if not sql_statements:
+            sql_dialect = f"{sql_dialect}#routines"
         if sql_dialect:
             return f"{grammar}:{content_hash}:{vocabulary}:{sql_dialect}"
         if not vocabulary:

@@ -51,10 +51,31 @@ def test_dimensions_openai_large():
     assert emb.dimensions == 3072
 
 
-def test_unknown_model_raises_at_construction():
+def test_unknown_model_raises_at_construction(monkeypatch):
     """Unknown models must fail fast — a silent dim fallback would corrupt the vector store."""
-    with pytest.raises(ValueError, match="Unknown embedding model"):
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DECLARED_DIMS", raising=False)
+    with pytest.raises(ValueError, match="REPOWISE_EMBEDDING_DIMS"):
         OpenRouterEmbedder(api_key="k", model="some/future-model")
+
+
+@pytest.mark.parametrize(
+    ("kwarg", "env", "expected"),
+    [
+        ({"dimensions": 2048}, None, (2048, 2048)),
+        ({"declared_dimensions": 1024}, None, (1024, None)),
+        ({}, ("REPOWISE_EMBEDDING_DIMS", "2048"), (2048, 2048)),
+        ({}, ("REPOWISE_EMBEDDING_DECLARED_DIMS", "1024"), (1024, None)),
+    ],
+)
+def test_unknown_model_accepted_with_a_configured_width(monkeypatch, kwarg, env, expected):
+    # #5723: a configured width is exactly what the table would have supplied.
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DIMS", raising=False)
+    monkeypatch.delenv("REPOWISE_EMBEDDING_DECLARED_DIMS", raising=False)
+    if env:
+        monkeypatch.setenv(*env)
+    emb = OpenRouterEmbedder(api_key="k", model="mongodb/voyage-code-4", **kwarg)
+    assert (emb.dimensions, emb._request_dimensions) == expected
 
 
 def test_malformed_env_raises_the_same_message(monkeypatch):

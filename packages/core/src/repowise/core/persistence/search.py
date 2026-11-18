@@ -34,6 +34,7 @@ from repowise.core.fts_query import match_term as _match_term
 from repowise.core.fts_query import meaningful_terms as _meaningful_terms
 
 from .batches import chunked
+from .database import hold_schema_lock
 from .information_floor import information_floor, meets_information_floor, substantive_text
 
 
@@ -293,8 +294,11 @@ def strip_leading_headings(text: str) -> str:
 class FullTextSearch:
     """Full-text search backed by SQLite FTS5 or PostgreSQL tsvector."""
 
-    def __init__(self, engine: AsyncEngine) -> None:
+    def __init__(self, engine: AsyncEngine, *, repository_id: str | None = None) -> None:
         self._engine = engine
+        # Set on a store several repositories share: search() reads this one's
+        # pages unless a call names another.
+        self._repository_id = repository_id
         self._dialect = engine.dialect.name  # "sqlite" or "postgresql"
         # term → how many pages it matches. "" is the corpus size.
         self._df_cache: OrderedDict[str, int] = OrderedDict()
@@ -322,6 +326,8 @@ class FullTextSearch:
             await self.prune_orphans()
         elif self._dialect == "postgresql":
             async with self._engine.begin() as conn:
+                # IF NOT EXISTS alone still races a concurrent creator.
+                await hold_schema_lock(conn)
                 await conn.execute(
                     text(
                         "CREATE INDEX IF NOT EXISTS idx_wiki_pages_fts "
@@ -699,6 +705,8 @@ class FullTextSearch:
         """
         if not query.strip():
             return []
+        if repository_id is None:
+            repository_id = self._repository_id
 
         if self._dialect == "sqlite":
             return await self._search_sqlite(query, limit, repository_id=repository_id)

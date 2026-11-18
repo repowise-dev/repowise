@@ -81,7 +81,10 @@ async def accept_landed_decisions(
     pending = await _agent_candidates(session, repository_id)
     if not pending:
         return result
-    if load_policy(repo_path).policy.require_approval:
+    policy = load_policy(repo_path).policy
+    # Read-only and off capture nothing, and a landing granting authority is
+    # capture: the record waits until the repository is back at full.
+    if policy.require_approval or policy.mode != "full":
         result["waiting"] = len(pending)
         return result
     line = main_line(repo_path, [c for rec, _ in pending for c in _commits(rec)])

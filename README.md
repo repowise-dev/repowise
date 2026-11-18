@@ -563,7 +563,7 @@ languages moving up the ladder: **[roadmap →](ROADMAP.md#languages)**
 
 ## Supported agents and editors
 
-**Eight agents wired end to end · two at the Full tier · every other MCP host one
+**Nine agents wired end to end · two at the Full tier · every other MCP host one
 paste away.**
 
 <p>
@@ -580,12 +580,16 @@ paste away.**
   <img src="https://img.shields.io/badge/GitHub_Copilot_CLI-000000?style=flat-square&logo=githubcopilot&logoColor=white" alt="GitHub Copilot CLI" />
   <img src="https://img.shields.io/badge/Kiro-790ECB?style=flat-square&logoColor=white" alt="Kiro" />
 </p>
+<p>
+  <strong>Basic tier &nbsp;</strong>
+  <img src="https://img.shields.io/badge/Windsurf-0B100F?style=flat-square&logo=windsurf&logoColor=white" alt="Windsurf" />
+</p>
 
 **Full** is every surface Repowise has: MCP tools, skills, slash commands, a managed
 instructions file, hook-level interception of tool calls, and transcript mining after
 the session. **Good** is MCP tools plus an instructions file or skills, without transcript mining
 (hooks only where the matrix says). **Basic** is the MCP config alone. Anything else that speaks MCP is one snippet away:
-`repowise agents print-config claude-code` prints a server entry for Cline, Windsurf,
+`repowise agents print-config claude-code` prints a server entry for Cline,
 Zed, Gemini CLI or any host that reads `mcpServers`.
 [Integration matrix →](docs/agent/INTEGRATIONS.md)
 

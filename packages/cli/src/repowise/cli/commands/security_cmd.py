@@ -537,7 +537,10 @@ def _markdown(v: _Verdict) -> str:
 
 
 def _emit_markdown(v: _Verdict) -> None:
+    from repowise.core.analysis.security_gate import gate_summary
+
     click.echo(_markdown(v), nl=False)
+    write_gate_summary(gate_summary(v.scan.findings, v.gate))
 
 
 def _emit_github(v: _Verdict) -> None:

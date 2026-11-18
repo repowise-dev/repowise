@@ -483,6 +483,7 @@ def test_an_interrupt_is_not_reported_as_a_crash(monkeypatch, tmp_path: Path) ->
     CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
     assert "error_leaves" not in recorded
+    assert recorded["transport_outcome"] == "server_stopped"
 
 
 def test_the_way_a_session_ended_reaches_the_invocation_outcome(
@@ -523,7 +524,8 @@ def test_a_store_failure_reports_its_reason_code(monkeypatch, tmp_path: Path) ->
     result = CliRunner().invoke(cli, ["mcp", str(tmp_path)])
 
     assert result.exit_code == 1
-    assert recorded["transport_outcome"] == "server_fault"
+    # A deliberate exit with a reason, not a crash.
+    assert recorded["transport_outcome"] == "server_refused"
     assert recorded["failure_reason"] == "db_url_unreachable"
 
 

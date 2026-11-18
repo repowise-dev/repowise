@@ -64,6 +64,7 @@ from repowise.server.job_state import (
     _stamp_last_sync_commit,
     newer_health_analyzer,
 )
+from repowise.server.managed_checkout import sync_managed_checkout
 from repowise.server.services.areas import warm_area_model
 from repowise.server.services.coupling import warm_coupling_model
 
@@ -437,11 +438,11 @@ async def execute_job(
         # Inside the try, so a missing app_state attribute fails the job
         # instead of leaving it pending.
         session_factory = session_factory_override or app_state.session_factory
-        fts = app_state.fts
 
         spec = await _start_job(session_factory, job_id)
         if spec is None:
             return
+        fts = _resolve_job_fts(app_state, spec)
         vector_store = await _resolve_job_vector_store(app_state, spec)
         logger.info("job_started", job_id=job_id, repo_path=spec.repo_path, mode=spec.mode)
         llm_client, docs_skip_reason = _resolve_llm_client(spec)
@@ -525,6 +526,20 @@ async def _start_job(session_factory: Any, job_id: str) -> _JobSpec | None:
         # Mark running
         await update_job_status(session, job_id, "running")
     return spec
+
+
+def _resolve_job_fts(app_state: Any, spec: _JobSpec) -> Any:
+    """The repository's own fulltext index, where search reads it.
+
+    A repository without a registered index (single-repo serve) uses the primary one.
+    A member with its own database whose index failed to open gets ``None``
+    (no fulltext writes), not the primary's index, which holds other pages."""
+    repo_fts = (getattr(app_state, "workspace_fts", None) or {}).get(spec.repo_id)
+    if repo_fts is not None:
+        return repo_fts
+    if spec.repo_id in (getattr(app_state, "workspace_sessions", None) or {}):
+        return None
+    return app_state.fts
 
 
 async def _resolve_job_vector_store(app_state: Any, spec: _JobSpec) -> Any:
@@ -626,6 +641,9 @@ async def _run_index_job(run: _JobRun, app_state: Any) -> None:
         return
     try:
         await asyncio.to_thread(_refuse_older_analyzer, repo_path)
+        # A checkout the server owns moves to its remote head first; any
+        # other checkout is indexed as it stands.
+        await asyncio.to_thread(sync_managed_checkout, repo_path)
         await _run_locked_index_job(run, app_state)
     finally:
         release_update_lock(repo_path)

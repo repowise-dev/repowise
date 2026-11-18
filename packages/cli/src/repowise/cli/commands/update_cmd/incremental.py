@@ -67,7 +67,6 @@ def _build_repo_graph(
     collect_sources: bool = False,
     include_submodules: bool = False,
     include_nested_repos: bool = False,
-    rescore_due: bool = True,
 ) -> tuple[list, dict[str, bytes], Any, Any, int]:
     """Traverse + parse the repo and build the graph (+ framework-aware edges).
 
@@ -85,7 +84,6 @@ def _build_repo_graph(
         include_submodules=include_submodules,
         include_nested_repos=include_nested_repos,
         log=console.print,
-        rescore_due=rescore_due,
     )
 
 
@@ -101,7 +99,7 @@ def _rebuild_graph_and_git(
     force_full_git: bool = False,
     git_summary_sink: list[Any] | None = None,
     timings: PhaseTimings | None = None,
-    rescore_due: bool = True,
+    fresh_communities: bool = False,
 ) -> tuple[list, dict[str, bytes], Any, Any, int, dict[str, dict]]:
     """Re-traverse + parse the repo, rebuild the graph (+ framework edges), and
     re-index git metadata for the changed files.
@@ -146,7 +144,7 @@ def _rebuild_graph_and_git(
             # Re-resolve only the changed files when that is
             # provably equivalent to a rebuild (see pipeline.incremental.surface).
             patch_graph=incremental_graph_enabled(),
-            rescore_due=rescore_due,
+            fresh_communities=fresh_communities,
         )
     )
 
@@ -230,6 +228,7 @@ def _run_partial_analysis(
     repo_function_mod_p80: int | None = None,
     timings: PhaseTimings | None = None,
     dead_code: bool = True,
+    base_ref: str | None = None,
 ) -> tuple[Any, Any]:
     """Run partial code-health + repo-wide dead-code analysis.
 
@@ -261,6 +260,7 @@ def _run_partial_analysis(
         log=console.print,
         timings=timings,
         dead_code=dead_code,
+        base_ref=base_ref,
     )
 
 

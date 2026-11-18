@@ -82,6 +82,7 @@ UNRELATED_TABLES = frozenset(
         "refactoring_summaries",
         "repositories",
         "snapshot_runs",
+        "symbol_lineage_events",
         "webhook_events",
         "wiki_page_versions",
         "wiki_pages",

@@ -12,6 +12,7 @@ from typing import Any
 import click
 from rich.table import Table
 
+from repowise.cli.commands.config_cmd import suggested_for, suggested_line
 from repowise.cli.helpers import (
     CommandTarget,
     console,
@@ -33,15 +34,17 @@ from repowise.cli.ui.mode_names import (
     pages,
     scope_line,
 )
-from repowise.cli.ui.result_panels import keyless_upgrade_note
+from repowise.cli.ui.subscription import upgrade_route
 from repowise.core.decision_lanes import lanes_label, pending_decision_lanes
 from repowise.core.docs_mode import resolve_docs_mode
 from repowise.core.index_scope import (
+    answers_upgrade_line,
     fast_to_full_command,
     model_command,
     resolve_index_scope,
     upgrade_command,
 )
+from repowise.core.update_lock import stuck_update_line
 
 # ---------------------------------------------------------------------------
 # Workspace status
@@ -107,7 +110,12 @@ def _query_repo_counts(repo_path: Path) -> tuple[int, int]:
 
 
 def _query_git_history_file_count(repo_path: Path) -> int | None:
-    """Return the live number of indexed files with git history, if readable."""
+    """Return the live number of indexed files with git history, if readable.
+
+    Counts the population the stored denominator counts, the code files the
+    Git indexer measured. ``history_only`` rows (docs, configs) carry commit
+    counts too, but are outside it.
+    """
 
     async def _query() -> int:
         from sqlalchemy import func as sa_func
@@ -118,6 +126,7 @@ def _query_git_history_file_count(repo_path: Path) -> int | None:
             create_session_factory,
             get_session,
         )
+        from repowise.core.persistence.crud import code_file_rows
         from repowise.core.persistence.models import GitMetadata, Repository
 
         url = get_db_url_for_repo(repo_path)
@@ -135,10 +144,7 @@ def _query_git_history_file_count(repo_path: Path) -> int | None:
                 result = await session.execute(
                     sa_select(sa_func.count())
                     .select_from(GitMetadata)
-                    .where(
-                        GitMetadata.repository_id == repo_id,
-                        GitMetadata.commit_count_total > 0,
-                    )
+                    .where(code_file_rows(repo_id), GitMetadata.commit_count_total > 0)
                 )
                 return int(result.scalar_one() or 0)
         finally:
@@ -355,6 +361,16 @@ def _mapping_report(repo_path: Path) -> dict[str, Any]:
             )
 
     return report
+
+
+def _answers_line(repo_path: Path, scope: dict[str, Any]) -> str | None:
+    """The shared upgrade line for an index no model wrote prose for, else None.
+
+    Probes for a signed-in agent CLI only when there is something to upgrade.
+    """
+    if answers_upgrade_line(scope) is None:
+        return None
+    return answers_upgrade_line(scope, upgrade_route(repo_path))
 
 
 def _query_page_count(repo_path: Path) -> int:
@@ -1005,6 +1021,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
         else None,
     )
     incomplete = _incomplete_index(repo_path, state)
+    # A live update past the suspect age, worded as doctor and update word it.
+    stuck_update = stuck_update_line(repo_path)
     pending_lanes = pending_decision_lanes(state, repo_path)
     # An unfinished init has no stamps yet; the resume line covers it.
     rescore = _rescore_pending(state) if incomplete is None else []
@@ -1028,6 +1046,7 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "mapping": mapping,
                 "indexed": True,
                 "incomplete": incomplete,
+                "stuck_update_lock": stuck_update,
                 "state": {
                     "last_sync_commit": state.get("last_sync_commit"),
                     "total_pages": state.get("total_pages", 0),
@@ -1047,8 +1066,12 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "index_scope": scope,
                 "upgrade_command": upgrade_command(scope),
                 "model_command": model_command(scope),
+                # The line MCP responses carry: the signed-in CLI on a paid
+                # plan when there is one, else a key or a local model.
+                "upgrade_line": _answers_line(repo_path, scope),
                 "decision_lanes_pending": list(pending_lanes),
                 "rescore_pending": rescore,
+                "suggestions": [s.to_dict() for s in suggested_for(repo_path)],
             }
         )
         return
@@ -1085,6 +1108,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     state_table.add_column("Key", style="cyan")
     state_table.add_column("Value")
     state_table.add_row("Last sync commit", state.get("last_sync_commit", "—") or "—")
+    if stuck_update is not None:
+        state_table.add_row("Update lock", f"[yellow]{stuck_update}[/yellow]")
     state_table.add_row("Total pages", str(total_pages))
     state_table.add_row("Stale pages", str(stale_pages) if stale_pages is not None else "Unknown")
     state_table.add_row("Provider", state.get("provider", "—") or "—")
@@ -1143,14 +1168,22 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
     # name the upgrade commands here too, since "Full upgrade  pending" above
     # names no command on its own (#3105). Mirrors the init closing note.
     if scope["content_provenance"] == "template":
-        note = keyless_upgrade_note(
-            scope["search"]["semantic"] == "available", scope["search"]["next_command"]
-        )
-        console.print(f"[dim]{note}[/dim]")
+        parts = [_answers_line(repo_path, scope)]
+        if scope["search"]["semantic"] != "available":
+            reindex = scope["search"]["next_command"] or "repowise reindex"
+            parts.append(f"{reindex} adds semantic search")
+        console.print(f"[dim]{'; '.join(p for p in parts if p)}.[/dim]")
     elif upgrade_command(scope):
         console.print(
             f"[dim]Index only: no documentation yet. {upgrade_command(scope)} builds it from "
             "code and fills in the full git history (no key needed).[/dim]"
+        )
+
+    if stale_pages:
+        from repowise.cli.commands.update_cmd.catch_up import catch_up_command
+
+        console.print(
+            f"[dim]{stale_pages} stale page(s): {catch_up_command(repo_path)} refreshes them.[/dim]"
         )
 
     if not has_db:
@@ -1183,11 +1216,20 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
             console.print()
         console.print(f"[dim]{_RESCORE_LINES[tuple(rescore)]}[/dim]")
 
-    if incomplete is not None:
-        next_lines = [_incomplete_line(incomplete)]
-    else:
-        next_lines = _next_actions_lines(_load_actions(repo_path))
+    next_lines = _closing_lines(repo_path, incomplete, path)
     if next_lines:
         console.print()
         for line in next_lines:
             console.print(line)
+
+
+def _closing_lines(repo_path: Path, incomplete: dict | None, path: str | None) -> list[str]:
+    """What to do next: resume an unfinished index, or the next actions; then settings."""
+    if incomplete is not None:
+        lines = [_incomplete_line(incomplete)]
+    else:
+        lines = _next_actions_lines(_load_actions(repo_path))
+    settings_line = suggested_line(len(suggested_for(repo_path)), path)
+    if settings_line:
+        lines.append(f"[dim]{settings_line}[/dim]")
+    return lines

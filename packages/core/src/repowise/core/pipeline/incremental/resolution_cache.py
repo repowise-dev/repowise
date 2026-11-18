@@ -17,7 +17,9 @@ It also records every file each import resolved to, which a patch that adds or
 removes files compares against to find the unchanged files it re-routes, and
 the field types each file's classes declare, which another file's chained
 calls read from its source (``obj.field.method()``): an edit that changes them
-reaches every file that spells the field.
+reaches every file that spells the field. A C/C++ file's record also holds
+the other facts resolving another file reads from its source
+(:mod:`repowise.core.ingestion.cpp_cross_file_facts`).
 """
 
 from __future__ import annotations
@@ -34,12 +36,17 @@ from repowise.core.cache_seal import dump_sealed_pickle, load_sealed_pickle
 log = structlog.get_logger(__name__)
 
 _FILENAME = "resolved_imports.pkl"
-_VERSION = 3
+_VERSION = 4
 
 _Entry = tuple[str | None, tuple[str | None, ...], tuple[str, ...]]
 
 
 FieldTypes = dict[str, dict[str, str | None]]
+
+
+def _resolver_text(source: bytes) -> str:
+    """*source* decoded the way the resolver reads a file (``Path.read_text``)."""
+    return source.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def field_types(parsed: Any, source: bytes | None) -> FieldTypes | None:
@@ -48,32 +55,40 @@ def field_types(parsed: Any, source: bytes | None) -> FieldTypes | None:
 
     if source is None:
         return None
-    # Decoded the way the resolver reads a file (``Path.read_text``).
-    text = source.decode("utf-8", errors="ignore").replace("\r\n", "\n").replace("\r", "\n")
-    return class_field_types(parsed, text)
+    return class_field_types(parsed, _resolver_text(source))
+
+
+def cpp_facts(parsed: Any, source: bytes | None) -> Any:
+    """A C/C++ file's cross-file text facts; ``None`` without its source or for another language."""
+    from repowise.core.ingestion.cpp_cross_file_facts import cpp_cross_file_facts
+
+    if source is None:
+        return None
+    return cpp_cross_file_facts(parsed, _resolver_text(source))
 
 
 def _snapshot(
-    parsed: Any, targets: list[tuple[str, ...]], fields: FieldTypes | None
-) -> tuple[str, list[_Entry], FieldTypes | None]:
+    parsed: Any, targets: list[tuple[str, ...]], record: tuple[FieldTypes | None, Any]
+) -> tuple[str, list[_Entry], FieldTypes | None, Any]:
     return (
         parsed.content_hash,
         [
             (imp.resolved_file, tuple(b.source_file for b in imp.bindings), tuple(found))
             for imp, found in zip(parsed.imports, targets, strict=True)
         ],
-        fields,
+        *record,
     )
 
 
-def _fields_for(
+def _text_record_for(
     parsed: Any, source_map: dict[str, bytes], previous: dict[str, tuple] | None
-) -> FieldTypes | None:
-    """Field types for one file, reused from *previous* when its content is unchanged."""
+) -> tuple[FieldTypes | None, Any]:
+    """``(field types, C/C++ facts)`` for one file, reused while its content is unchanged."""
     entry = (previous or {}).get(parsed.file_info.path)
     if entry is not None and entry[0] == parsed.content_hash and entry[2] is not None:
-        return entry[2]
-    return field_types(parsed, source_map.get(parsed.file_info.path))
+        return entry[2], entry[3]
+    source = source_map.get(parsed.file_info.path)
+    return field_types(parsed, source), cpp_facts(parsed, source)
 
 
 def save_resolutions(
@@ -102,8 +117,8 @@ def save_resolutions(
         for pf in parsed_files:
             targets = import_targets.get(pf.file_info.path)
             if targets is not None and len(targets) == len(pf.imports):
-                fields = _fields_for(pf, source_map or {}, previous)
-                files[pf.file_info.path] = _snapshot(pf, targets, fields)
+                record = _text_record_for(pf, source_map or {}, previous)
+                files[pf.file_info.path] = _snapshot(pf, targets, record)
         payload = {
             "version": _VERSION,
             "fingerprint": parser_fingerprint(),

@@ -43,7 +43,10 @@ _STALE_INDEX_MARKERS = ("no such column", "no such table")
 
 
 def _shape_not_indexed() -> dict[str, Any]:
-    """Success-shaped response for a repo that has never been indexed."""
+    """Success-shaped response for a repo that has never been indexed, or
+    whose index store would not open."""
+    if _state._store_error is not None:
+        return _shape_store_unavailable(_state._store_error)
     return {
         "error": "This repository has no repowise index yet.",
         "remedy": (
@@ -59,6 +62,23 @@ def _shape_not_indexed() -> dict[str, Any]:
             "notice. Answer questions about this repo with your own "
             "file-reading and searching tools, whatever they are called, "
             "for the rest of the session."
+        ),
+    }
+
+
+def _shape_store_unavailable(exc: Exception) -> dict[str, Any]:
+    """Success-shaped response for an index store that would not open at start."""
+    return {
+        "error": str(exc),
+        "remedy": (
+            "Fixing it is the user's step: tell them once, then restart the "
+            "MCP server so it opens the store."
+        ),
+        "guidance": (
+            "Until then every repowise tool will return this notice. Answer "
+            "questions about this repo with your own file-reading and "
+            "searching tools, whatever they are called, for the rest of the "
+            "session."
         ),
     }
 
@@ -237,7 +257,7 @@ def _shape_exception(tool: str, exc: Exception, *, long_running: bool = True) ->
     from repowise.server.mcp_server._savings.interaction import note_error_reason
 
     reason = _exception_reason(exc)
-    note_error_reason(reason)
+    note_error_reason(reason, source="exception")
     return _SHAPES[reason](tool, exc, long_running)
 
 

@@ -269,7 +269,23 @@ def tokenize_file_rows(language: str, source: bytes, path: str | None = None) ->
     if parsed is None:
         return []
     root, source = parsed
+    return tree_token_rows(language, root, source)
+
+
+def tree_token_rows(language: str, root: Node, source: bytes) -> list[TokenRow]:
+    """:func:`tokenize_file_rows` over a tree the caller already parsed from *source*."""
     return token_rows(root, source, import_node_kinds(language), _HEADER_NODES.get(language))
+
+
+def import_kinds_signature() -> str:
+    """Every language's dropped import kinds, by value, for a cache key.
+
+    They come from ingestion's language configs, so a cache fingerprinting
+    only this module's code would miss a change to them.
+    """
+    from repowise.core.ingestion.language_configs import LANGUAGE_CONFIGS
+
+    return repr(sorted((lang, sorted(import_node_kinds(lang))) for lang in LANGUAGE_CONFIGS))
 
 
 # Leaf tokens that branch, and nodes that pass code as a value. A clone with

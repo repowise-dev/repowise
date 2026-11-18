@@ -39,14 +39,17 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from typing import Any
 
 from repowise.core.ids import file_path_of, is_external
 
+from ...code_origin import path_origin
 from ...entry_candidacy import is_reachability_root
 from ...ingestion.languages.swift_same_module import _SWIFT_COMMON_TYPES
 from ...ingestion.models import REACHABILITY_USE_EDGE_TYPES
 from .file_reachability import has_dependency_importer
+from .models import DeadCodeFindingData, DeadCodeKind
 
 SWIFT_SUFFIX = ".swift"
 
@@ -233,6 +236,34 @@ def _defined(graph: Any, path: str) -> Iterable[tuple[str, dict]]:
     for _path, symbol, edge in graph.out_edges(path, data=True):
         if edge.get("edge_type") == "defines":
             yield symbol, graph.nodes.get(symbol, {})
+
+
+def unindexed_swift_tokens(path: str, tokens: AbstractSet[str]) -> AbstractSet[str]:
+    """Keep unindexed Swift identifiers only when their path is not machine output."""
+    if path.endswith(SWIFT_SUFFIX) and path_origin(path) not in {"generated", "vendored"}:
+        return tokens
+    return frozenset()
+
+
+def unindexed_finding_name(
+    finding: DeadCodeFindingData, graph: Any, tokens: AbstractSet[str]
+) -> str | None:
+    """A finding's symbol, or a declared Swift type unindexed Swift source names.
+
+    Match declarations rather than a path stem: a file may declare several
+    types, and its filename need not name any of them.
+    """
+    if finding.kind is not DeadCodeKind.UNREACHABLE_FILE:
+        return finding.symbol_name
+    path = finding.file_path
+    if not path.endswith(SWIFT_SUFFIX) or not graph.has_node(path):
+        return None
+    names = {
+        data["name"].strip("`")
+        for data in _top_level(graph, path)
+        if data.get("kind") in _TYPE_KINDS
+    }
+    return next(iter(sorted((names & tokens) - _SWIFT_COMMON_TYPES)), None)
 
 
 def _swift_files(graph: Any) -> list[str]:

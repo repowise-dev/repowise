@@ -10,11 +10,8 @@ from repowise.core.analysis.health.biomarkers.registry import detect_all
 from repowise.core.analysis.health.complexity import walk_file
 from repowise.core.analysis.health.scoring import biomarker_dimension, dimensions_for, score_file
 
-grammar_pack = pytest.importorskip("tree_sitter_language_pack")
-try:
-    grammar_pack.get_language("cobol")
-except (grammar_pack.Error, OSError) as exc:  # pragma: no cover - first-use download
-    pytest.skip(f"COBOL grammar unavailable: {exc}", allow_module_level=True)
+# A fixture, not a module-level skip: every xdist worker collects the same tests.
+pytestmark = pytest.mark.usefixtures("cobol_grammar")
 
 _KIND = "cobol_unstructured_flow"
 

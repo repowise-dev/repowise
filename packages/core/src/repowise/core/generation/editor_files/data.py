@@ -13,16 +13,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
 
+from repowise.core.agent_steer import AGENT_STEER
+
 from .sections import DEFAULT_SECTIONS
 
 
-def _render_tool_table(*, keyless: bool = False) -> str:
+def _render_tool_table(*, keyless: bool = False, listed: frozenset[str] | None = None) -> str:
     # Local import: tool_table is a leaf module; importing lazily keeps data.py
     # free of import-order coupling for the many tests that build these
     # dataclasses directly.
     from .tool_table import render_tool_table
 
-    return render_tool_table(keyless=keyless)
+    return render_tool_table(keyless=keyless, listed=listed)
 
 
 @dataclass(frozen=True)
@@ -139,7 +141,12 @@ class EditorFileData:
     entry_points: list[str] = field(default_factory=list)
     tech_stack: list[TechStackItem] = field(default_factory=list)
     hotspots: list[HotspotFile] = field(default_factory=list)
+    #: Pinned decisions only; the rest are reached through the pointer line.
     decisions: list[DecisionSummary] = field(default_factory=list)
+    #: Whether any decision is in force, which is what earns the pointer line.
+    decisions_in_force: bool = False
+    #: Whether agents are asked to record decisions here (``decisions.mode: full``).
+    record_decisions: bool = True
     build_commands: dict[str, str] = field(default_factory=dict)
     avg_confidence: float = 0.0
     code_health: CodeHealthBlock | None = None
@@ -147,6 +154,21 @@ class EditorFileData:
     kg_tour: list[KGTourStepSummary] = field(default_factory=list)
     index_scope: dict = field(default_factory=dict)
     sections: frozenset[str] = DEFAULT_SECTIONS
+    #: The repository's ``mcp.tools`` setting as written in its config, if any.
+    mcp_tools: str | list[str] | None = None
+
+    def listed_tools(self, client: str) -> frozenset[str]:
+        """The default tools the MCP server here lists to *client* (an agent slug)."""
+        from repowise.core.registry.tool_selection import listed_default_tools
+
+        from .tool_table import TOOL_TABLE_ROWS
+
+        return listed_default_tools(TOOL_TABLE_ROWS, client=client, override=self.mcp_tools)
+
+    @property
+    def steer(self) -> str:
+        """The call-first line the block leads with, whatever sections are on."""
+        return AGENT_STEER
 
     @property
     def keyless(self) -> bool:
@@ -194,7 +216,11 @@ class EditorFileData:
     def tool_table_md(self) -> str:
         # Rendered MCP tool table (single source: tool_table.py). Exposed on the
         # data rather than as a Jinja global so any environment can render it.
-        return _render_tool_table(keyless=self.keyless)
+        return self.tool_table()
+
+    def tool_table(self, listed: frozenset[str] | None = None) -> str:
+        """The tool table, cut to *listed* when given."""
+        return _render_tool_table(keyless=self.keyless, listed=listed)
 
 
 # ---------------------------------------------------------------------------
@@ -226,3 +252,8 @@ class WorkspaceEditorFileData:
     package_deps: list[dict] = field(default_factory=list)  # package dep entries
     contract_links: list[dict] = field(default_factory=list)  # matched contract links
     contracts_by_type: dict[str, int] = field(default_factory=dict)  # {"http": 5, …}
+
+    @property
+    def steer(self) -> str:
+        """The call-first line, the same one each repo's own block leads with."""
+        return AGENT_STEER

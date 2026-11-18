@@ -37,9 +37,19 @@ vi.mock("nuqs", () => {
     parseAsString: parser(),
     parseAsStringLiteral: () => parser(),
     parseAsInteger: parser(),
+    parseAsBoolean: parser(),
     useQueryState: (name: string, value: { defaultValue?: unknown }) => [
       name in mocks.queryValues ? mocks.queryValues[name] : value?.defaultValue ?? null,
       name === "view" ? mocks.setView : vi.fn(),
+    ],
+    useQueryStates: (parsers: Record<string, { defaultValue?: unknown }>) => [
+      Object.fromEntries(
+        Object.entries(parsers).map(([name, value]) => [
+          name,
+          name in mocks.queryValues ? mocks.queryValues[name] : value?.defaultValue ?? null,
+        ]),
+      ),
+      vi.fn(),
     ],
   };
 });
@@ -128,7 +138,7 @@ describe("Architecture page view routing", () => {
 
   it("lands an absent ?view= on the canvas, not on the tree", async () => {
     await mount();
-    expect(screen.getByTestId("graph-view").textContent).toBe("canvas:communities");
+    expect(screen.getByTestId("graph-view").textContent).toBe("canvas:files");
     expect(screen.queryByTestId("tree-view")).toBeNull();
   });
 });

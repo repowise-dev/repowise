@@ -291,7 +291,14 @@ def test_keyless_weak_reply_serves_the_ranked_list_and_one_guidance_line():
     assert not any(key.endswith(("_total", "_emitted", "_reduced_reason")) for key in out)
     (reduction,) = out["_meta"]["reductions"]
     assert reduction["field"] == "evidence" and reduction["emitted"] < reduction["total"]
-    assert out["_meta"]["projection"]["recovery"]["arguments"] == {"include": ["evidence"]}
+    assert "recovery" not in out["_meta"].get("projection", {})
+
+
+def test_keyless_weak_reply_ignores_evidence():
+    out = project_answer_payload(_keyless_weak(), question="q", include=["evidence"])
+    default = project_answer_payload(_keyless_weak(), question="q")
+    assert out["_meta"].pop("ignored_arguments") == {"include": ["evidence"]}
+    assert out == default
 
 
 def test_keyless_weak_reply_fits_its_size_ceiling():
@@ -315,7 +322,7 @@ def test_keyless_weak_drops_rationale_when_every_row_restates_the_list():
         ({"retrieval_quality": "partial", "confidence": "medium"}, None),
         ({"symbol_bodies": [{"path": "src/pkg/f0.py", "name": "run_0", "lines": [10, 12],
                              "source": "def run_0(): ...", "verified": True}]}, None),
-        ({}, ["evidence"]),
+        ({"degraded": "synthesis-failed"}, ["evidence"]),
     ],
 )
 def test_other_replies_keep_their_shape(extra, include):

@@ -9,6 +9,7 @@ records the file itself as the acceptance artifact.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from dataclasses import dataclass
@@ -42,9 +43,15 @@ from .crud.authority import (
 from .crud.decisions import _rederive_headline, list_decision_evidence
 from .decision_graph import set_record_scope
 from .decision_id_migration import repair_superseded_aliases
-from .models import REKEYED_REASON, SUPERSEDED_REASON, DecisionAlias, DecisionRecord
+from .models import (
+    REKEYED_REASON,
+    SUPERSEDED_REASON,
+    DecisionAcceptance,
+    DecisionAlias,
+    DecisionRecord,
+)
 
-__all__ = ["ImportOutcome", "export_manifest", "import_manifest"]
+__all__ = ["ImportOutcome", "export_manifest", "import_manifest", "refresh_manifest"]
 
 
 def _stored_currency(value: str) -> str:
@@ -163,6 +170,7 @@ async def export_manifest(
                 evidence=_json_list(acceptance.evidence_json),
                 superseded_by=rec.superseded_by or "",
                 aliases=await _aliases_for(session, rec.id),
+                base_token=_base_token(rec, acceptance),
             )
         )
     changed = write_manifest(
@@ -174,12 +182,22 @@ async def export_manifest(
 class ImportOutcome:
     """What reconciling the store against the manifest did."""
 
-    __slots__ = ("accepted", "created", "reaffirmed", "repaired", "skipped", "unchanged")
+    __slots__ = (
+        "accepted",
+        "created",
+        "reaffirmed",
+        "repaired",
+        "skipped",
+        "unchanged",
+        "unchecked",
+    )
 
     def __init__(self) -> None:
         self.created: list[str] = []
         self.accepted: list[str] = []
         self.reaffirmed: list[str] = []
+        #: Reaffirmed entries with no ``base_token``: never checked for staleness.
+        self.unchecked: list[str] = []
         self.unchanged: list[str] = []
         self.skipped: list[tuple[str, str]] = []
         #: The stale supersede pointers the repair deleted.
@@ -190,10 +208,29 @@ class ImportOutcome:
             "created": self.created,
             "accepted": self.accepted,
             "reaffirmed": self.reaffirmed,
+            "unchecked": self.unchecked,
             "unchanged": self.unchanged,
             "skipped": [{"id": i, "reason": r} for i, r in self.skipped],
             "repaired": self.repaired,
         }
+
+
+def _base_token(record: DecisionRecord, acceptance: DecisionAcceptance) -> str:
+    """Hash the accepted content compared by ``_differs``, independent of the store.
+
+    Acceptance ids and provenance vary across clones. A canonical content hash
+    also stays stable when an unchanged decision is reaffirmed.
+    """
+    content = {
+        "title": record.title,
+        "decision": record.decision,
+        "reason": (acceptance.reason or "").strip(),
+        "scope": sorted(_json_list(acceptance.scope_json)),
+        "currency": acceptance.currency,
+        "kind": record.kind,
+    }
+    canonical = json.dumps(content, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def _differs(
@@ -482,6 +519,7 @@ async def import_manifest(
     repo_path: Path | str,
     *,
     dry_run: bool = False,
+    force: bool = False,
 ) -> ImportOutcome:
     """Reconcile the store to ``decisions.yaml``.
 
@@ -490,9 +528,11 @@ async def import_manifest(
     version controlled and reviewable, which is the only reason a non-human
     accepter is allowed at all, and an entry the file does not present as
     accepted is skipped rather than guessed at. An entry that differs from the
-    store is re-accepted from the file, because the difference is somebody's
-    commit; an entry the file no longer holds is left alone, since a missing
-    line is as likely a bad merge as a deliberate removal.
+    store is re-accepted from the file unless its base token shows the store
+    changed since export. ``force`` bypasses this token check, and entries
+    without tokens retain the previous behaviour. An entry the file no longer
+    holds is left alone, since a missing line is as likely a bad merge as a
+    deliberate removal.
     """
     outcome = ImportOutcome()
     entries, _ = load_manifest(repo_path)
@@ -513,12 +553,23 @@ async def import_manifest(
                 if not _differs(entry, record, acceptance):
                     outcome.unchanged.append(entry.id)
                     continue
+                if (
+                    not force
+                    and entry.base_token
+                    and entry.base_token != _base_token(record, acceptance)
+                ):
+                    outcome.skipped.append(
+                        (entry.id, "changed in the store since this file was exported")
+                    )
+                    continue
                 # The file changed: a colleague edited the reason, corrected
                 # the scope, or withdrew the decision. Their edit is the
                 # authority, so it is re-accepted rather than left disagreeing
                 # with the store — appended to the log, so the history of both
                 # acceptances survives.
                 outcome.reaffirmed.append(entry.id)
+                if not entry.base_token:
+                    outcome.unchecked.append(entry.id)
                 if dry_run:
                     continue
                 await _apply_entry(session, entry, record)
@@ -537,3 +588,118 @@ async def import_manifest(
 
         await _accept_from_file(session, record, entry, artifact)
     return outcome
+
+
+def _committed_ids(repo_path: Path | str) -> set[str] | None:
+    """Ids in the committed ``decisions.yaml`` at ``HEAD``, ``None`` when git has none."""
+    import subprocess
+
+    import yaml
+
+    try:
+        out = subprocess.run(
+            ["git", "show", f"HEAD:.repowise/{MANIFEST_FILENAME}"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    try:
+        data = yaml.safe_load(out.stdout)
+    except yaml.YAMLError:
+        return None
+    entries = data.get("decisions") if isinstance(data, dict) else None
+    return {
+        str(e["id"]) for e in entries or [] if isinstance(e, dict) and e.get("id")
+    }
+
+
+async def _store_moved_past(session: AsyncSession, entry: ManifestDecision) -> bool:
+    """Whether *entry* is an older acceptance of its decision, exported earlier.
+
+    Import reads any difference as somebody's edit. Here the other reading
+    matters: the store accepted the decision again (a landing, a dismissal, a
+    pull) after the file was written. The entry is then an export of an
+    acceptance row the store still holds, not the latest one, and rewriting
+    it loses nothing.
+    """
+    decision_id = await resolve_decision_id(session, entry.id)
+    record = await session.get(DecisionRecord, decision_id) if decision_id else None
+    if record is None or (entry.title, entry.decision, entry.kind) != (
+        record.title,
+        record.decision,
+        record.kind,
+    ):
+        # The wording lives on the record, with no history to match against.
+        return False
+    rows = (
+        await session.scalars(
+            select(DecisionAcceptance)
+            .where(DecisionAcceptance.decision_id == decision_id)
+            .order_by(DecisionAcceptance.seq)
+        )
+    ).all()
+    for row in rows[:-1]:
+        if (
+            row.created_at.isoformat() == entry.accepted_at
+            and (row.reason or "").strip() == entry.reason.strip()
+            and sorted(_json_list(row.scope_json)) == sorted(entry.scope)
+            and row.currency == _stored_currency(entry.currency)
+        ):
+            return True
+    return False
+
+
+async def refresh_manifest(
+    session: AsyncSession, repository_id: str, repo_path: Path | str
+) -> tuple[str, int]:
+    """Keep an existing ``decisions.yaml`` in step with the store, or leave it be.
+
+    Returns ``(outcome, count)``. ``absent``: there is no file, and none is
+    created, since only someone who exported one has opted in. ``held``: the
+    file says something the store has not read, so rewriting it would lose
+    that; ``decision import`` reconciles it. ``unchanged`` / ``written``: the
+    store's projection, as ``decision export`` writes it.
+
+    Held covers two cases. The file holds an entry the store would import
+    (a colleague's commit, or a hand edit), short of one the store has simply
+    moved past: export would overwrite it. Or the working copy dropped an
+    entry the committed file has: import ignores a missing line, so only git
+    shows that someone removed it on purpose.
+    """
+    from repowise.core.analysis.decisions.manifest import (
+        ManifestConflictError,
+        manifest_path,
+    )
+
+    if not manifest_path(repo_path).is_file():
+        return "absent", 0
+    try:
+        entries, raw = load_manifest(repo_path)
+        pending = await import_manifest(session, repository_id, repo_path, dry_run=True)
+    except ManifestConflictError:
+        return "held", 0
+    if pending.created or pending.accepted:
+        return "held", 0
+    by_id = {e.id: e for e in entries}
+    # A skip is held too, unless it is an export the store moved past: that
+    # is the one skip the rewrite resolves rather than loses.
+    for entry_id in [*pending.reaffirmed, *(i for i, _ in pending.skipped)]:
+        entry = by_id.get(entry_id)
+        if entry is None or not await _store_moved_past(session, entry):
+            return "held", 0
+    committed = _committed_ids(repo_path)
+    if committed and committed - {e.id for e in entries}:
+        return "held", 0
+    try:
+        count, changed = await export_manifest(
+            session, repository_id, repo_path, expected_raw=raw
+        )
+    except ManifestConflictError:
+        return "held", 0
+    return ("written" if changed else "unchanged"), count

@@ -237,6 +237,11 @@ _GAP_MARKERS = (
 # mid-context and agents fall back to native exploration.
 _GATED_EXCERPT_CHARS = 1500
 
+# Chars of that excerpt held for the page's agent digest, which opens with the
+# questions the page answers (median about 400 chars). Joined after a body that
+# is almost always longer than the whole excerpt, it was cut off every time.
+_DIGEST_SLOT_CHARS = 500
+
 # How many hits the low-confidence payload hands back to the agent.
 _GATED_RETURN_HITS = 3
 

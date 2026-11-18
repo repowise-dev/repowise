@@ -43,14 +43,30 @@ export interface ImpactAdapter {
    * most relevant change; without them it falls back to picking files.
    */
   listChanges?(): Promise<ChangeCandidatesResponse>;
-  /** Analyze one change from {@link listChanges} by its id. */
-  analyzeChange?(input: { changeId: string; maxDepth: number }): Promise<ChangeBlastRadiusResponse>;
+  /**
+   * Analyze one change from {@link listChanges} by its id. A server that pages
+   * the reached files takes `offset` and `limit` for the next page, and
+   * `withGraph` for the edges the map is drawn from; pass them through.
+   */
+  analyzeChange?(input: {
+    changeId: string;
+    maxDepth: number;
+    offset?: number;
+    limit?: number;
+    withGraph?: boolean;
+  }): Promise<ChangeBlastRadiusResponse>;
 
   /**
    * Run `repowise health check` on a listed change. Needs a checkout, so a
    * host without one leaves it out and the view shows no health check.
    */
   checkHealth?(changeId: string): Promise<ChangeHealthCheckResponse>;
+
+  /**
+   * Where the review of a listed change reads as Markdown for a coding agent;
+   * `healthCheck` adds the health check the reader ran. Omit to hide the link.
+   */
+  changeMarkdownHref?(input: { changeId: string; maxDepth: number; healthCheck: boolean }): string;
 
   /** Where a file on the map or in the verdict links to; omit for plain text. */
   fileHref?(path: string): string;

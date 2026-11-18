@@ -125,16 +125,42 @@ def _internal_linkage(definition: str, rel: str) -> bool:
     return Path(rel).suffix.lower() not in _HEADER_EXTS and bool(_STATIC_RE.match(definition))
 
 
-def _register_defs(
-    text: str, rel: str, func_to_files: dict[str, list[str]], local_to: dict[str, set[str]]
-) -> None:
-    """Record each function *rel* defines: in *local_to* always, and in
-    *func_to_files* when another file could name it."""
-    for match in _iter_func_defs(text):
-        name = match.group(1)
-        local_to.setdefault(name, set()).add(rel)
-        if not _internal_linkage(match.group(0), rel):
-            func_to_files.setdefault(name, []).append(rel)
+def _scan_source(text: str, rel: str) -> list:
+    """What one file contributes, as ``[defs, calls, dlopens]``.
+
+    *defs* is ``[name, external]`` per definition in order, external when
+    another file could name it. *calls* is ``[kind, name]`` per runtime
+    reference in the order the join visits them, a repeat dropped: the join
+    remembers what it emitted per target and kind, so a repeat adds nothing.
+    *dlopens* is each loaded library in order.
+    """
+    defs = [
+        [m.group(1), not _internal_linkage(m.group(0), rel)] for m in _iter_func_defs(text)
+    ]
+    calls: list[list[str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _call(kind: str, name: str) -> None:
+        if (kind, name) not in seen:
+            seen.add((kind, name))
+            calls.append([kind, name])
+
+    for m in _FN_PTR_ASSIGN_RE.finditer(text):
+        _call("fn_ptr", m.group(2))
+    for m in _DESIG_INIT_RE.finditer(text):
+        _call("desig_init", m.group(1))
+    for m in _DLSYM_RE.finditer(text):
+        _call("dlsym", m.group(1))
+    for m in _GETPROCADDR_RE.finditer(text):
+        _call("getprocaddress", m.group(1))
+    for m in _QT_CONNECT_STR_RE.finditer(text):
+        _call("qt_signal", m.group(1))
+        _call("qt_slot", m.group(2))
+    for m in _QT_CONNECT_PTR_RE.finditer(text):
+        _call("qt_signal", m.group(1))
+        _call("qt_slot", m.group(2))
+    dlopens = [m.group(1) for m in _DLOPEN_RE.finditer(text)]
+    return [defs, calls, dlopens]
 
 
 class CppDynamicHints(DynamicHintExtractor):
@@ -147,7 +173,7 @@ class CppDynamicHints(DynamicHintExtractor):
 
         func_to_files: dict[str, list[str]] = {}
         local_to: dict[str, set[str]] = {}
-        sources: list[tuple[Path, str, str]] = []
+        sources: list[tuple[str, list]] = []
         repo_root_resolved = repo_root.resolve()
         for ext in _CPP_EXTS:
             for src in self._rglob(repo_root, f"*{ext}"):
@@ -162,18 +188,21 @@ class CppDynamicHints(DynamicHintExtractor):
                 except OSError:
                     continue
                 rel = rel_path.as_posix()
-                sources.append((src, text, rel))
-                _register_defs(text, rel, func_to_files, local_to)
+                scanned = self._scan(rel, text, _scan_source)
+                sources.append((rel, scanned))
+                for name, external in scanned[0]:
+                    local_to.setdefault(name, set()).add(rel)
+                    if external:
+                        func_to_files.setdefault(name, []).append(rel)
 
-        for _src, text, rel in sources:
+        for rel, (_defs, calls, dlopens) in sources:
             seen: set[tuple[str, str]] = set()
-
-            def _emit(name: str, kind: str, *, seen: set = seen, rel: str = rel) -> None:
+            for kind, name in calls:
                 if kind in _NAME_LOOKUP_KINDS and rel in local_to.get(name, ()):
                     # The file defines the name itself: ordinary lookup binds
                     # the reference there, never to a same-named function in
                     # another translation unit.
-                    return
+                    continue
                 for target in func_to_files.get(name, ()):
                     key = (target, kind)
                     if key in seen or target == rel:
@@ -185,29 +214,10 @@ class CppDynamicHints(DynamicHintExtractor):
                         hint_source=f"{self.name}:{kind}",
                     ))
 
-            for m in _FN_PTR_ASSIGN_RE.finditer(text):
-                _emit(m.group(2), "fn_ptr")
-
-            for m in _DESIG_INIT_RE.finditer(text):
-                _emit(m.group(1), "desig_init")
-
-            for m in _DLSYM_RE.finditer(text):
-                _emit(m.group(1), "dlsym")
-
-            for m in _GETPROCADDR_RE.finditer(text):
-                _emit(m.group(1), "getprocaddress")
-
-            for m in _QT_CONNECT_STR_RE.finditer(text):
-                _emit(m.group(1), "qt_signal")
-                _emit(m.group(2), "qt_slot")
-            for m in _QT_CONNECT_PTR_RE.finditer(text):
-                _emit(m.group(1), "qt_signal")
-                _emit(m.group(2), "qt_slot")
-
-            for m in _DLOPEN_RE.finditer(text):
+            for library in dlopens:
                 edges.append(DynamicEdge(
                     source=rel,
-                    target=f"external:dlopen:{m.group(1)}",
+                    target=f"external:dlopen:{library}",
                     edge_type="dynamic_imports",
                     hint_source=f"{self.name}:dlopen",
                 ))

@@ -49,24 +49,29 @@ async def _resolve_range_read(
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
 
-    def _err(msg: str) -> dict:
-        return {
-            "symbol_id": symbol_id,
-            "error": msg,
-            "_meta": _build_meta(
-                timing_ms=(time.perf_counter() - t0) * 1000, repository=repository
-            ),
-        }
+    def _err(reason: str, msg: str) -> dict:
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            reason,
+            {
+                "symbol_id": symbol_id,
+                "error": msg,
+                "_meta": _build_meta(
+                    timing_ms=(time.perf_counter() - t0) * 1000, repository=repository
+                ),
+            },
+        )
 
     # Before the exclusion spec: it is built from the repo path.
     if not ctx.path:
-        return _err("MCP server has no repo path configured")
+        return _err("internal", "MCP server has no repo path configured")
     if _pkg.is_excluded(path, _get_exclude_spec(ctx.path)):
-        return _err(f"'{path}' is excluded from indexing.")
+        return _err("not_found", f"'{path}' is excluded from indexing.")
 
     text = _read_file_text(Path(str(ctx.path)), path)
     if text is None:
-        return _err(f"File could not be read: {path!r}")
+        return _err("not_found", f"File could not be read: {path!r}")
 
     from repowise.server.mcp_server._savings.reads import read_tokens
 

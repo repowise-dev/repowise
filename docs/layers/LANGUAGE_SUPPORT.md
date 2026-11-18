@@ -245,6 +245,10 @@ invoked by name.
 - Lightweight languages resolve imports against a declared module-name index.
 - OpenAPI, Protobuf, GraphQL, Dockerfile, Makefile, YAML, JSON, TOML, Terraform
   and Markdown appear in the file tree and the wiki.
+- A Markdown document gets a `documents` edge to each repository file it links
+  to or names in backticks, when that reference resolves to exactly one file
+  (a bare backticked name never to a root-level file).
+  See [GRAPH.md](GRAPH.md#edge-types).
 - HTML contributes `<script src>` and `<link href>` edges, so `index.html`
   reaches `src/main.ts` in a Vite or webpack app.
 - HTML and QML files are never flagged as dead code, since whether a page or a

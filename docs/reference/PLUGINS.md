@@ -385,6 +385,9 @@ cached behind the shared source reader under `.repowise/document-cache/`, so
 ingestion, historical blob parsing and appropriate MCP reads reuse conversion.
 Entries are keyed by original path, source bytes, extractor name and version.
 Cache corruption or unavailable storage causes reconversion, not lost content.
+The converted Markdown also yields `documents` edges from the original path to
+the repository files it links to or names
+([edge types](../layers/GRAPH.md#edge-types)).
 The cache has no automatic eviction; removing this directory only causes
 reconversion. Bump `version` when
 extraction behaviour changes, then run `repowise init --force` to rebuild the

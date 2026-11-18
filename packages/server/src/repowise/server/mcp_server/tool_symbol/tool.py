@@ -98,14 +98,19 @@ async def _indexed_symbol_read(
 
     # Before the exclusion spec: it is built from the repo path.
     if not ctx.path:
-        return {
-            "symbol_id": symbol_id,
-            "error": "MCP server has no repo path configured",
-            "_meta": _build_meta(
-                timing_ms=_elapsed_ms(t0),
-                repository=repository,
-            ),
-        }
+        from repowise.server.mcp_server._savings.interaction import error_reply
+
+        return error_reply(
+            "internal",
+            {
+                "symbol_id": symbol_id,
+                "error": "MCP server has no repo path configured",
+                "_meta": _build_meta(
+                    timing_ms=_elapsed_ms(t0),
+                    repository=repository,
+                ),
+            },
+        )
 
     exclude_spec = _get_exclude_spec(ctx.path)
     rows = await _rows_in_scope(ctx, repository, symbol_id, rows, exclude_spec)
@@ -153,14 +158,16 @@ async def get_symbol(
     t0 = time.perf_counter()
     symbol_id, query = _requested_id(symbol_id, id, query)
     if not symbol_id or not symbol_id.strip():
-        from repowise.server.mcp_server._savings.interaction import note_error_reason
+        from repowise.server.mcp_server._savings.interaction import error_reply
 
-        note_error_reason("invalid_args")
-        return {
-            "symbol_id": symbol_id,
-            "error": 'get_symbol requires `symbol_id`, e.g. "path/to/file.py::Name".',
-            "_meta": _build_meta(timing_ms=_elapsed_ms(t0)),
-        }
+        return error_reply(
+            "invalid_args",
+            {
+                "symbol_id": symbol_id,
+                "error": 'get_symbol requires `symbol_id`, e.g. "path/to/file.py::Name".',
+                "_meta": _build_meta(timing_ms=_elapsed_ms(t0)),
+            },
+        )
 
     omission_ref = _extract_omission_ref(symbol_id)
     if omission_ref is not None:

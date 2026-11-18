@@ -38,7 +38,8 @@ class InitOptions:
     run_mode: str
     exclude: tuple[str, ...]
     commit_limit: int | None
-    follow_renames: bool
+    #: ``None`` when neither --follow-renames nor --no-follow-renames was given.
+    follow_renames: bool | None
     no_claude_md: bool
     seed_from: str | None
     no_seed: bool
@@ -62,6 +63,8 @@ class InitOptions:
     progress: str
     # Raw ``GLOB=PCT`` rules, validated by the option callback.
     folder_coverage_rules: tuple[str, ...] = ()
+    #: Hidden ``--source``: which setup instructions started the run.
+    source: str | None = None
 
 
 @dataclass

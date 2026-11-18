@@ -32,7 +32,6 @@ ActionRule = Literal[
     "dead_code_batch",
     "coverage_missing",
     "coverage_stale",
-    "decisions_unreviewed",
 ]
 ACTION_RULES: tuple[str, ...] = get_args(ActionRule)
 

@@ -69,4 +69,14 @@ export interface DecisionDetailAdapter {
    * in place of the generic verification prompt.
    */
   reviewPrompt?(decision: DecisionRecord): string;
+  /**
+   * Pins or unpins this decision, as a person. Given, a decision in force
+   * offers Pin or Unpin.
+   */
+  setPinned?(pinned: boolean): Promise<void>;
+  /**
+   * This record's agent prompts (change it, veto it, pin or unpin it), shown
+   * in the agent actions of a decision in force.
+   */
+  renderRecordPrompts?(): ReactNode;
 }

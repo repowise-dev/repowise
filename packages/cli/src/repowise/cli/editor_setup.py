@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from repowise.cli.agent_targets.types import InstallLifecycle
+from repowise.core.settings.model import flag
 
 # When set (truthy), `repowise init` skips registering MCP servers / hooks in
 # the user's *global* editor config (~/.claude/settings.json, Claude Desktop).
@@ -224,7 +225,7 @@ def _resolve_configured_project_file_optouts(
     configured_disabled = {
         target.project_file_id
         for target in all_targets()
-        if editor_files.get(target.project_file_id) is False
+        if not flag(editor_files.get(target.project_file_id), True)
     }
     disabled_project_files = (
         options.disabled_project_files | frozenset(configured_disabled)
@@ -440,7 +441,7 @@ _EDITOR_SETUP_KEY = "editor_setup"
 def _editor_setup_declined(repo_path: Path) -> bool:
     from repowise.cli.helpers import load_config
 
-    return load_config(repo_path).get(_EDITOR_SETUP_KEY) is False
+    return not flag(load_config(repo_path).get(_EDITOR_SETUP_KEY), True)
 
 
 def _remember_editor_setup(repo_path: Path, *, enabled: bool) -> None:

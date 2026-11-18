@@ -1,4 +1,4 @@
-"""DeadCodeAnalyzer â€” pure graph + git-metadata dead-code detection.
+"""DeadCodeAnalyzer — pure graph + git-metadata dead-code detection.
 
 All analysis is graph traversal + SQL. No LLM calls. Must complete in
 < 10 seconds.
@@ -105,7 +105,11 @@ from .source_prepasses import (  # noqa: F401  (moved scans re-exported)
     _find_ts_export_aliases,
     _posix_normpath,
 )
-from .swift_reachability import build_swift_named_files
+from .swift_reachability import (
+    build_swift_named_files,
+    unindexed_finding_name,
+    unindexed_swift_tokens,
+)
 from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
     _CPP_BUILTIN_MACROS,
     _CPP_TYPE_DECLARATION_KINDS,
@@ -124,6 +128,7 @@ from .symbol_rules import (  # noqa: F401  (moved rules re-exported)
     _nested_class_used,
     _non_importable_kinds,
 )
+from .token_cache import token_cache
 
 #: The unindexed scan below and the repo-wide absence check ask the same
 #: question of different file sets, so they share one identifier shape rather
@@ -140,7 +145,7 @@ _IDENTIFIER_RE = IDENTIFIER_RE
 #: omission is the bug.
 
 #: Read budgets for the unindexed scan. These files are skipped *because* they
-#: are large â€” one corpus repo ships a 104 MB generated parser â€” so the scan is
+#: are large — one corpus repo ships a 104 MB generated parser — so the scan is
 #: bounded per file and in total. Tree-sitter costs ~95 MB of RSS per MB of
 #: source; this pass is a byte scan and costs far less, but the bound is what
 #: keeps it from ever becoming the expensive thing.
@@ -182,7 +187,7 @@ class DeadCodeAnalyzer:
         self.git_meta_map = git_meta_map or {}
         # Source files ingestion could not read (currently: dropped on size).
         # An unread importer is invisible to the graph, so "no importers" stops
-        # meaning "unused" and starts meaning "we did not look" â€” which is how
+        # meaning "unused" and starts meaning "we did not look" — which is how
         # one skipped entry point turned into 38 deletion-ready components at
         # high confidence (#1237). ``(path, reason)`` pairs; the reason rides
         # along so the evidence line can say why.
@@ -190,6 +195,7 @@ class DeadCodeAnalyzer:
         self._repo_root = repo_root
         self._source_map = source_map
         self._unindexed_tokens: frozenset[str] | None = None
+        self._unindexed_swift_tokens: set[str] = set()
         # Kept for the absence check below, which is the one pass that needs
         # the raw text of *every* indexed file rather than of a suffix-filtered
         # subset. Empty when a caller has no source access, which is what makes
@@ -227,7 +233,7 @@ class DeadCodeAnalyzer:
         self._jsx_namespace_files: set[str] = _find_jsx_namespace_files(
             parsed_files or {}, source_map
         )
-        # Files substituted in via bundler ``resolve.alias`` config â€” named
+        # Files substituted in via bundler ``resolve.alias`` config — named
         # by the config, never imported by path.
         self._bundler_alias_targets: set[str] = _find_bundler_alias_targets(
             parsed_files or {}, source_map
@@ -244,7 +250,7 @@ class DeadCodeAnalyzer:
         # because the whitelist arrives per ``analyze()`` call and the map does
         # not.
         self._package_files: PackageFileMap | None = None
-        # Cache for JSX prop-guard extraction: maps pred_file â†’ list of
+        # Cache for JSX prop-guard extraction: maps pred_file → list of
         # (parent_fn, child_component, guard_prop) triples. Populated lazily
         # by _get_unsatisfied_prop_guard so each TSX/JSX file is read from
         # disk and parsed by tree-sitter at most once per analysis run.
@@ -323,7 +329,11 @@ class DeadCodeAnalyzer:
         whitelist = set(cfg.get("whitelist", [])) | self._content_machine_output()
 
         findings = self._run_passes(cfg, dynamic_patterns, whitelist, on_step)
-        findings = self._settle(findings)
+        # The settle passes rescan every file's text; an unchanged file's
+        # tokens come from the last run's cache in the index directory.
+        cache_dir = Path(self._repo_root) / ".repowise" if self._repo_root is not None else None
+        with token_cache(cache_dir):
+            findings = self._settle(findings)
 
         min_conf = cfg.get("min_confidence", RISK_CAP_CONFIDENCE)
         hidden_below_threshold = sum(1 for f in findings if f.confidence < min_conf)
@@ -540,7 +550,11 @@ class DeadCodeAnalyzer:
             budget -= len(blob)
             # ``finditer`` rather than ``findall``: the latter materialises
             # every match at once, roughly 500k bytes objects for a 4 MB blob.
-            tokens.update(m.group().decode("ascii", "ignore") for m in _IDENTIFIER_RE.finditer(blob))
+            file_tokens = {m.group().decode("ascii", "ignore") for m in _IDENTIFIER_RE.finditer(blob)}
+            tokens.update(file_tokens)
+            # Swift's same-module type references can explain a whole-file
+            # finding, but generated/vendor sources cannot vouch for liveness.
+            self._unindexed_swift_tokens.update(unindexed_swift_tokens(rel_path, file_tokens))
         self._unindexed_tokens = frozenset(tokens)
         return self._unindexed_tokens
 
@@ -566,20 +580,18 @@ class DeadCodeAnalyzer:
             skipped_names += f" (+{len(self._unindexed_source_files) - 3} more)"
 
         for finding in findings:
-            # Symbol findings only. A whole-file finding would have to match on
-            # the path stem, and stems are exactly the broad words ("index",
-            # "main", "utils", "app") that ``risk_factors`` deliberately keeps
-            # out of its own token map because they cap ordinary modules. An
-            # unread importer imports symbols, so match on symbols.
+            # Match symbols, never broad path stems such as "index" or "app".
+            # Swift file findings can instead match their declared type names:
+            # files in the same module do not import one another.
             #
             # Exported symbols only, for the same reason stated the other way:
             # an importer can only reach what a file exports, so a match on an
             # internal one is a name collision rather than evidence. That is
-            # not hypothetical â€” a published API dump lists a public `add`, and
+            # not hypothetical — a published API dump lists a public `add`, and
             # every unrelated private `add` in the repo would clamp with it.
             if finding.kind is DeadCodeKind.UNUSED_INTERNAL:
                 continue
-            name = finding.symbol_name
+            name = unindexed_finding_name(finding, self.graph, self._unindexed_swift_tokens)
             if not name or name not in tokens:
                 continue
             finding.confidence = min(finding.confidence, RISK_CAP_CONFIDENCE)
@@ -806,9 +818,9 @@ class DeadCodeAnalyzer:
             return True
         if never_flag_path(path):
             return True
-        # Workspace-driven never-flag â€” set by language warmups that read
+        # Workspace-driven never-flag — set by language warmups that read
         # the build manifest (Gradle non-``main`` source sets, Cargo
-        # ``[[example]]`` / ``[[bench]]`` targets, â€¦). Lets each language
+        # ``[[example]]`` / ``[[bench]]`` targets, …). Lets each language
         # learn conventions from its own build files instead of us
         # extending the hardcoded glob list every time a repo defines a
         # custom source set like ``testFixtures`` / ``javaPoet`` /

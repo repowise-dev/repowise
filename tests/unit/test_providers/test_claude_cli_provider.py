@@ -305,6 +305,47 @@ async def test_error_subtype_raises(claude_on_path, monkeypatch):
         await ClaudeCliProvider().generate("sys", "user")
 
 
+async def test_missing_sign_in_names_the_headless_fix(claude_on_path, monkeypatch):
+    """The CLI's own text points at an interactive /login; a server needs the commands."""
+
+    async def fake_exec(*_args, **_kwargs):
+        # The shape `claude -p` prints with no credentials (subtype stays "success").
+        return FakeProcess(
+            returncode=1,
+            stdout=_success_json(
+                "Not logged in · Please run /login", is_error=True, api_error_status=None
+            ),
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ProviderError) as caught:
+        await ClaudeCliProvider().generate("sys", "user")
+
+    message = str(caught.value)
+    assert "not signed in" in message
+    assert "claude auth login" in message
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in message
+    assert "success" not in message
+
+
+async def test_rejected_credential_keeps_its_status(claude_on_path, monkeypatch):
+    async def fake_exec(*_args, **_kwargs):
+        return FakeProcess(
+            returncode=1,
+            stdout=_success_json(
+                "Invalid API key · Please run /login", is_error=True, api_error_status=401
+            ),
+        )
+
+    monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
+
+    with pytest.raises(ProviderError, match="401: Invalid API key") as caught:
+        await ClaudeCliProvider().generate("sys", "user")
+
+    assert caught.value.status_code == 401
+
+
 async def test_empty_result_raises(claude_on_path, monkeypatch):
     async def fake_exec(*_args, **_kwargs):
         return FakeProcess(stdout=_success_json("   "))

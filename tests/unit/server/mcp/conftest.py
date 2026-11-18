@@ -805,3 +805,23 @@ def _fresh_change_risk_cache(monkeypatch):
     from repowise.server.mcp_server.tool_change_risk import cache
 
     monkeypatch.setattr(cache, "_SCORED", OrderedDict())
+
+
+@pytest.fixture(autouse=True)
+def _fresh_keyless_replies(monkeypatch):
+    """Each test answers its question itself; a kept keyless reply would hide it."""
+    from collections import OrderedDict
+
+    from repowise.server.mcp_server.tool_answer import cache
+
+    monkeypatch.setattr(cache, "_KEYLESS_REPLIES", OrderedDict())
+
+
+@pytest.fixture(autouse=True)
+def _fresh_episode_verdicts(monkeypatch):
+    """Each test asks git itself; a remembered verdict would hide the query."""
+    from collections import OrderedDict
+
+    from repowise.server.mcp_server.tool_answer import episodes
+
+    monkeypatch.setattr(episodes, "_VERDICTS", OrderedDict())

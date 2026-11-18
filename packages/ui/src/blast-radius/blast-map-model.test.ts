@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { BlastRadiusResponse, TransitiveEntry } from "@repowise-dev/types/blast-radius";
-import { isTestFile, moduleOf, readReach, riskySpots } from "./blast-map-model";
+import type { BlastRadiusResponse, ChangeBlastRadiusResponse, TransitiveEntry } from "@repowise-dev/types/blast-radius";
+import { appendPage, hasEdges, isTestFile, moduleOf, readReach, riskySpots } from "./blast-map-model";
 import { reviewStatus, roughCount } from "./review-status";
 
 function result(
   transitive: TransitiveEntry[],
-  extra: Partial<BlastRadiusResponse> = {},
-): BlastRadiusResponse {
+  extra: Partial<Paged> = {},
+): Paged {
   return {
     direct_risks: [],
     transitive_affected: transitive,
@@ -21,6 +21,65 @@ function result(
     ...extra,
   };
 }
+
+type Paged = BlastRadiusResponse & Partial<ChangeBlastRadiusResponse>;
+
+const SUMMARY = { files: 900, tests: 40, direct: 300, modules: 12, max_depth: 3, imported: ["src/core.py"] };
+
+describe("a paged change", () => {
+  it("counts every reached file from the server, not the page", () => {
+    const page: Paged = result([{ path: "src/a.py", depth: 1, via: null }], {
+      transitive_total: 940,
+      next_offset: 1,
+      reach_summary: SUMMARY,
+    });
+    const reach = readReach(page, ["src/core.py"]);
+    expect(reach.files.map((f) => f.path)).toEqual(["src/a.py"]);
+    expect([reach.filesTotal, reach.testsTotal, reach.direct, reach.modules, reach.maxHop]).toEqual([900, 40, 300, 12, 3]);
+    expect([...reach.imported]).toEqual(["src/core.py"]);
+    // The map waits for its edges.
+    expect(hasEdges(page)).toBe(false);
+  });
+
+  it("reads a whole list itself, and takes only the importers from the server", () => {
+    const whole: Paged = result([{ path: "src/a.py", depth: 1, via: null }], {
+      transitive_total: 1,
+      next_offset: null,
+      reach_summary: { ...SUMMARY, files: 1, tests: 0, direct: 1, modules: 1, max_depth: 1 },
+    });
+    const reach = readReach(whole, ["src/core.py"]);
+    expect([reach.filesTotal, reach.direct]).toEqual([1, 1]);
+    expect([...reach.imported]).toEqual(["src/core.py"]);
+  });
+
+  it("adds the next page to what is read, each signal once", () => {
+    const first: Paged = result([{ path: "src/a.py", depth: 1 }], {
+      affected_signals: [{ path: "src/core.py", is_hotspot: null, health_score: null, module: null }],
+      test_gaps: ["src/core.py"],
+      transitive_total: 2,
+      next_offset: 1,
+    });
+    const next: Paged = result([{ path: "src/b.py", depth: 2 }], {
+      affected_signals: [
+        { path: "src/core.py", is_hotspot: null, health_score: null, module: null },
+        { path: "src/b.py", is_hotspot: true, health_score: 2, module: "src" },
+      ],
+      test_gaps: ["src/core.py"],
+      transitive_total: 2,
+      next_offset: null,
+    });
+    const both = appendPage(first, next);
+    expect(both.transitive_affected.map((t) => t.path)).toEqual(["src/a.py", "src/b.py"]);
+    expect(both.affected_signals!.map((s) => s.path)).toEqual(["src/core.py", "src/b.py"]);
+    expect(both.test_gaps).toEqual(["src/core.py"]);
+    expect(both.next_offset).toBeNull();
+  });
+
+  it("draws from the list an older server sends whole", () => {
+    expect(hasEdges(result([{ path: "src/a.py", depth: 1, via: "src/core.py" }]))).toBe(true);
+    expect(hasEdges(result([{ path: "src/a.py", depth: 1 }]))).toBe(true);
+  });
+});
 
 describe("readReach", () => {
   it("counts tests apart from the code a change reaches", () => {

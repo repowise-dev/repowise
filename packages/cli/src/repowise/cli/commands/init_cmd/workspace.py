@@ -746,6 +746,9 @@ def _save_repo_config(repo_path: Path, ctx: _WorkspaceCtx, docs: _RepoDocs) -> N
             save_config_partial(repo_path, wiki_style=ctx.wiki_style)
         if ctx.language != "en":
             save_config_partial(repo_path, language=ctx.language)
+    if ctx.follow_renames and docs.docs_mode in ("llm", "deterministic"):
+        # So update keeps following renames for this repo (#5367).
+        save_config_partial(repo_path, follow_renames=True)
     elif docs.docs_mode == "deterministic":
         from repowise.cli.providers.embedders import resolve_embedding_model
 
@@ -897,7 +900,7 @@ def _workspace_init(
     if repo_names:
         console.print(repos_primary_line(ws_config.default_repo, pick))
 
-    from repowise.core.ingestion.git_indexer._constants import _DEFAULT_COMMIT_LIMIT
+    from repowise.core.ingestion.git_indexer._constants import clamp_commit_limit
 
     ctx = _WorkspaceCtx(
         provider=provider,
@@ -923,7 +926,7 @@ def _workspace_init(
         resolved_reasoning=resolved_reasoning,
         embedder_name_resolved=answers.embedder_name_resolved,
         embedder_was_requested=embedder_was_requested,
-        resolved_commit_limit=max(1, min(answers.commit_limit or _DEFAULT_COMMIT_LIMIT, 10000)),
+        resolved_commit_limit=clamp_commit_limit(answers.commit_limit),
         run_mode=run_mode,
         first_index=first_index,
     )

@@ -95,10 +95,10 @@ def test_gate_follows_the_document_that_declares_the_anchors():
         manifest_text={},
     )
     into_site = DocReference(
-        DriftKind.ANCHOR, "website/a.md#gone", "website/a.md#gone", "docs/b.md", 1, "c"
+        DriftKind.ANCHOR, "../website/a.md#gone", "../website/a.md#gone", "docs/b.md", 1, "c"
     )
     into_docs = DocReference(
-        DriftKind.ANCHOR, "docs/b.md#gone", "docs/b.md#gone", "docs/b.md", 1, "c"
+        DriftKind.ANCHOR, "#gone", "docs/b.md#gone", "docs/b.md", 1, "c"
     )
     assert resolve(idx, into_site).verdict is DriftVerdict.UNCHECKABLE
     assert resolve(idx, into_docs).verdict is DriftVerdict.MISSING

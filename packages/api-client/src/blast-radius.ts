@@ -47,6 +47,16 @@ export async function analyzeChangeBlastRadius(
   return apiPost<ChangeBlastRadiusResponse>(`/api/repos/${repoId}/blast-radius/change`, body);
 }
 
+/** Where one listed change's review reads as Markdown for a coding agent; a link, not a fetch. */
+export function changeReviewMarkdownPath(
+  repoId: string,
+  input: { changeId: string; maxDepth: number; healthCheck: boolean },
+): string {
+  const query = new URLSearchParams({ change_id: input.changeId, max_depth: String(input.maxDepth) });
+  if (input.healthCheck) query.set("health_check", "true");
+  return `/api/repos/${encodeURIComponent(repoId)}/blast-radius/change.md?${query.toString()}`;
+}
+
 /** `repowise health check` on one listed change, run on demand (it reads both sides from git). */
 export async function checkChangeHealth(repoId: string, changeId: string): Promise<ChangeHealthCheckResponse> {
   return apiPost<ChangeHealthCheckResponse>(`/api/repos/${repoId}/blast-radius/health-check`, { change_id: changeId });

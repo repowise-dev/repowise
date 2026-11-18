@@ -24,6 +24,7 @@ __all__ = [
     "branch_with_path",
     "change_base",
     "changed_files",
+    "commit_exists",
     "commit_file_sets",
     "common_dir",
     "current_branch",
@@ -346,6 +347,25 @@ def ahead_behind(repo_path: str, base: str, head: str) -> tuple[int, int]:
     except ValueError:
         return (0, 0)
     return (ahead, behind)
+
+
+def commit_exists(repo_path: str, sha: str) -> bool | None:
+    """Whether *sha* names a commit in this history; ``None`` when git cannot answer.
+
+    ``rev-parse --verify`` exits 1 for an object git does not have and 128 for
+    no repository, which is what tells a rebased-away sync commit apart from a
+    git that could not be asked.
+    """
+    try:
+        _git(
+            ["rev-parse", "--verify", "--quiet", "--end-of-options", f"{sha}^{{commit}}"],
+            cwd=repo_path,
+        )
+    except subprocess.CalledProcessError as exc:
+        return False if exc.returncode == 1 else None
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    return True
 
 
 def is_ancestor(repo_path: str, older: str, newer: str) -> bool | None:

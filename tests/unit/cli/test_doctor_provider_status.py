@@ -46,10 +46,22 @@ def test_keyless_repo_reports_structural_fallback_without_failing_doctor(
 
     assert rows["Providers"] == (True, "Implementations loaded: gemini, openai")
     assert rows["Provider config"] == (True, "No misconfigured provider keys")
-    assert rows["LLM provider"] == (
-        True,
-        "None configured — prose degrades to a structural wiki; set a key or pass --provider",
+    ok, detail = rows["LLM provider"]
+    assert ok is True
+    assert detail.startswith("None configured: ")
+    assert "a provider key or a local model" in detail
+
+
+def test_keyless_repo_names_a_signed_in_plan(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.index_scope import FreeRoute
+
+    _patch_provider_state(monkeypatch, available=False)
+    monkeypatch.setattr(
+        "repowise.cli.ui.subscription.upgrade_route",
+        lambda _repo: FreeRoute("claude_cli", "Claude Code"),
     )
+    detail = _rows(tmp_path)["LLM provider"][1]
+    assert "uses your Claude Code sign-in and plan quota" in detail
 
 
 def test_resolvable_provider_is_reported_for_this_repository(

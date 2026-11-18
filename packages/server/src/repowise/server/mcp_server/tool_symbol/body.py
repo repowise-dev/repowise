@@ -25,6 +25,7 @@ from repowise.server.mcp_server._references import (
     source_reference,
     symbol_identity,
 )
+from repowise.server.mcp_server._symbol_facts import symbol_card_facts
 from repowise.server.mcp_server._verify import (
     check_symbol_bounds,
     heal_symbol_row,
@@ -32,28 +33,41 @@ from repowise.server.mcp_server._verify import (
 
 from .text import _MAX_SOURCE_LINES, _elapsed_ms, _number_lines, _read_file_text, _slice_text
 
-# A container whose served body would exceed this is outlined instead: its
-# header plus each member's signature, lines and id. Half the default reply
-# budget, so smaller classes keep the one-call whole body, while a class big
-# enough to crowd out the rest of the reply is usually wanted for its shape.
-_OUTLINE_MIN_CHARS = DEFAULT_RESPONSE_CHARS // 2
+# A container is served as its header plus each member's signature, lines and
+# summary: the shape of a class is what a lookup of it is for, and a member's
+# body is one get_symbol call away. Its body is served whole only when the
+# outline would be no smaller.
 _CONTAINER_KINDS = frozenset({"class", "interface", "struct", "enum", "trait", "impl", "module"})
 # Header lines (decorators, declaration, docstring head) served above members.
 _OUTLINE_HEADER_LINES = 12
 _OUTLINE_SUMMARY_CHARS = 160
-# Serialized chars of member rows listed; the rest are counted in members_total.
-_OUTLINE_MEMBER_CHARS = DEFAULT_RESPONSE_CHARS // 2
+# Serialized chars of member rows listed in full; the members past it are named
+# with their first line only, up to _OUTLINE_NAMES_CHARS, and the rest counted
+# in members_total. Sized so a large class's whole response stays under 8 KB.
+_OUTLINE_MEMBER_CHARS = DEFAULT_RESPONSE_CHARS // 5
+_OUTLINE_NAMES_CHARS = DEFAULT_RESPONSE_CHARS // 12
+# Member kinds a row leaves implicit.
+_CALLABLE_MEMBER_KINDS = frozenset({"method", "function"})
+
+
+class _Outline(NamedTuple):
+    """A container's member rows, the line its first member starts on, and the total."""
+
+    members: list[dict[str, Any]]
+    more: list[str]
+    first_line: int
+    total: int
 
 
 async def _container_outline(
     session_factory: Any, repo_id: str, row: WikiSymbol, text: str, start: int, end: int
-) -> tuple[list[dict[str, Any]], int, int] | None:
+) -> _Outline | None:
     """Direct members of the container *row* spanning ``start``-``end``, as outline rows.
 
-    Returns the listed rows (capped at ``_OUTLINE_MEMBER_CHARS``), the line the
-    first member starts on and the member total, or None when the index holds
-    no members to outline. Each member is verified against the live file,
-    parsing it at most once for the whole set.
+    Rows are listed in full up to ``_OUTLINE_MEMBER_CHARS``, then by name and
+    first line up to ``_OUTLINE_NAMES_CHARS``; None when the index holds no
+    members to outline. Each member is verified against the live file, parsing
+    it at most once for the whole set.
 
     Members are matched by parent name inside the container's own lines, so
     Rust impl blocks and Go receiver methods declared outside a struct do not
@@ -70,6 +84,7 @@ async def _container_outline(
         )
         rows = list(res.scalars().all())
     _parsed = functools.cache(lambda: _pkg.parse_live_symbols(row, text))
+    container_id = symbol_identity(row.symbol_id)
     members: list[dict[str, Any]] = []
     for member in rows:
         check = check_symbol_bounds(member, text, _parsed)
@@ -80,57 +95,82 @@ async def _container_outline(
                 continue
         elif not start <= check.start_line <= end:
             continue
-        entry: dict[str, Any] = {
-            "symbol_id": symbol_identity(member.symbol_id),
-            "kind": member.kind,
-            "signature": clean_signature(member.signature),
-            "start_line": check.start_line,
-            "end_line": check.end_line,
-        }
-        summary = (member.docstring or "").strip().splitlines()
-        if summary:
-            entry["summary"] = summary[0][:_OUTLINE_SUMMARY_CHARS]
-        if check.approximate:
-            entry["bounds"] = "approximate"
-        members.append(entry)
+        members.append(_member_row(member, check, container_id))
     if not members:
         return None
-    members.sort(key=lambda m: m["start_line"])
+    members.sort(key=lambda m: m["_start"])
     # Overloads share one id, and get_symbol on it already serves every one.
     unique: dict[str, dict[str, Any]] = {}
     for entry in members:
-        unique.setdefault(entry["symbol_id"], entry)
+        unique.setdefault(entry["_id"], entry)
     members = list(unique.values())
-    first = min((m["start_line"] for m in members if "bounds" not in m), default=end + 1)
+    first = min((m["_start"] for m in members if "bounds" not in m), default=end + 1)
     listed: list[dict[str, Any]] = []
+    more: list[str] = []
     remaining = _OUTLINE_MEMBER_CHARS
+    names_left = _OUTLINE_NAMES_CHARS
     for entry in members:
-        remaining -= len(json.dumps(entry)) + 2
-        if remaining < 0:
+        start_line = entry.pop("_start")
+        entry.pop("_id")
+        if not more:
+            remaining -= len(json.dumps(entry)) + 2
+            if remaining >= 0:
+                listed.append(entry)
+                continue
+        # A member whose id is not the container's plus its name is named by its id.
+        named = f"{entry.get('symbol_id', entry['name'])} {start_line}"
+        names_left -= len(named) + 4
+        if names_left < 0:
             break
-        listed.append(entry)
-    return listed, first, len(members)
+        more.append(named)
+    return _Outline(listed, more, first, len(members))
+
+
+def _member_row(member: WikiSymbol, check: Any, container_id: str) -> dict[str, Any]:
+    """One outline row: name, signature and lines, with only the fields that say something.
+
+    The id is left out when it is the container's id plus the name, as the
+    note says; the kind when it is a method.
+    """
+    member_id = symbol_identity(member.symbol_id)
+    entry: dict[str, Any] = {"name": member.name}
+    if member_id != f"{container_id}::{member.name}":
+        entry["symbol_id"] = member_id
+    if member.kind not in _CALLABLE_MEMBER_KINDS:
+        entry["kind"] = member.kind
+    entry["signature"] = clean_signature(member.signature)
+    entry["lines"] = f"{check.start_line}-{check.end_line}"
+    summary = (member.docstring or "").strip().splitlines()
+    if summary:
+        entry["summary"] = summary[0][:_OUTLINE_SUMMARY_CHARS]
+    if check.approximate:
+        entry["bounds"] = "approximate"
+    entry["_start"] = check.start_line
+    entry["_id"] = member_id
+    return entry
 
 
 def _unreadable_source_response(row: Any, symbol_id: str, repository: Any, t0: float) -> dict:
-    from repowise.server.mcp_server._savings.interaction import note_error_reason
+    from repowise.server.mcp_server._savings.interaction import error_reply
 
-    note_error_reason("index_behind")
-    return {
-        "symbol_id": symbol_id,
-        "file": row.file_path,
-        "name": row.name,
-        "kind": row.kind,
-        "signature": row.signature,
-        "error": (
-            "Symbol metadata exists but source file could not be read. "
-            "The file may have been moved or deleted since indexing."
-        ),
-        "_meta": _build_meta(
-            timing_ms=_elapsed_ms(t0),
-            repository=repository,
-        ),
-    }
+    return error_reply(
+        "index_behind",
+        {
+            "symbol_id": symbol_id,
+            "file": row.file_path,
+            "name": row.name,
+            "kind": row.kind,
+            "signature": row.signature,
+            "error": (
+                "Symbol metadata exists but source file could not be read. "
+                "The file may have been moved or deleted since indexing."
+            ),
+            "_meta": _build_meta(
+                timing_ms=_elapsed_ms(t0),
+                repository=repository,
+            ),
+        },
+    )
 
 
 class _ServedBody(NamedTuple):
@@ -140,42 +180,16 @@ class _ServedBody(NamedTuple):
     start: int
     end: int
     truncated: bool
-    outline: tuple[list[dict], int, int] | None
+    outline: _Outline | None
 
 
-async def _outline_if_large(
-    ctx: Any, repository: Any, row: Any, text: str, check: Any
-) -> tuple[list[dict], int, int] | None:
-    """Members outline of a verified container body too large to serve whole."""
-    if row.kind not in _CONTAINER_KINDS or not check.verified:
-        return None
-    # Sized on the body alone, so context_lines never tips a class into an outline.
-    bare, bare_start, _e, _t = _slice_text(text, check.start_line, check.end_line, 0)
-    if len(_number_lines(bare, bare_start)) <= _pkg._OUTLINE_MIN_CHARS:
-        return None
-    return await _container_outline(
-        ctx.session_factory, repository.id, row, text, check.start_line, check.end_line
-    )
+def _header_slice(text: str, check: Any, first_member: int, context_lines: int) -> tuple[str, int, int]:
+    """The container's numbered header above its first member, and its line span.
 
-
-async def _served_body(
-    ctx: Any, repository: Any, row: Any, text: str, check: Any, context_lines: int
-) -> _ServedBody:
-    """The body slice to serve: the whole body, a capped head, or a header plus outline."""
-    source, start, end, _total = _slice_text(text, check.start_line, check.end_line, context_lines)
-    numbered = _number_lines(source, start)
-
-    truncated = (end - start + 1) >= _MAX_SOURCE_LINES and (
-        check.end_line - check.start_line + 1 + 2 * context_lines
-    ) > _MAX_SOURCE_LINES
-
-    outline = await _outline_if_large(ctx, repository, row, text, check)
-    if outline is None:
-        return _ServedBody(numbered, start, end, truncated, None)
-    _members, first_member, _members_total = outline
+    ``context_lines`` widens it upward only; below it are the members.
+    """
     header_end = min(first_member - 1, check.start_line + _OUTLINE_HEADER_LINES - 1, check.end_line)
-    # context_lines widens the header upward only; below it are the members.
-    source, start, end, _total = _slice_text(
+    source, start, _end, _total = _slice_text(
         text,
         max(1, check.start_line - context_lines),
         max(check.start_line, header_end),
@@ -183,28 +197,73 @@ async def _served_body(
     )
     source = source.rstrip()
     end = start + len(source.splitlines()) - 1 if source else start
-    return _ServedBody(_number_lines(source, start), start, end, False, outline)
+    return _number_lines(source, start), start, end
 
 
-def _note_outline(
-    response: dict, outline: tuple[list[dict], int, int], row: Any, check: Any
-) -> None:
+def _outline_size(outline: _Outline, header: str) -> int:
+    return len(header) + len(json.dumps(outline.members)) + len(json.dumps(outline.more))
+
+
+async def _outline_container(
+    ctx: Any, repository: Any, row: Any, text: str, check: Any
+) -> _Outline | None:
+    """Members outline of a verified container, when it is smaller than the body."""
+    if row.kind not in _CONTAINER_KINDS or not check.verified:
+        return None
+    outline = await _container_outline(
+        ctx.session_factory, repository.id, row, text, check.start_line, check.end_line
+    )
+    if outline is None:
+        return None
+    # Both sized without context_lines, so they never tip a class either way.
+    bare, bare_start, _e, _t = _slice_text(text, check.start_line, check.end_line, 0)
+    header, _s, _e = _header_slice(text, check, outline.first_line, 0)
+    if _outline_size(outline, header) >= len(_number_lines(bare, bare_start)):
+        return None
+    return outline
+
+
+async def _served_body(
+    ctx: Any, repository: Any, row: Any, text: str, check: Any, context_lines: int
+) -> _ServedBody:
+    """The body slice to serve: the whole body, a capped head, or a header plus outline."""
+    outline = await _outline_container(ctx, repository, row, text, check)
+    if outline is not None:
+        header, start, end = _header_slice(text, check, outline.first_line, context_lines)
+        return _ServedBody(header, start, end, False, outline)
+
+    source, start, end, _total = _slice_text(text, check.start_line, check.end_line, context_lines)
+    truncated = (end - start + 1) >= _MAX_SOURCE_LINES and (
+        check.end_line - check.start_line + 1 + 2 * context_lines
+    ) > _MAX_SOURCE_LINES
+    return _ServedBody(_number_lines(source, start), start, end, truncated, None)
+
+
+def _note_outline(response: dict, outline: _Outline, row: Any, check: Any) -> None:
     """Mark an outlined body and say how to fetch its members or the whole body."""
-    members, _first_member, members_total = outline
+    members = outline.members
     # An outline is not the body, so it never claims ``_meta.complete``.
     response["outlined"] = True
     response["members"] = members
+    shown = len(members) + len(outline.more)
+    if outline.more:
+        response["more_members"] = ", ".join(outline.more)
+    container_id = symbol_identity(row.symbol_id)
     response["note"] = (
         f"Body ({check.start_line}-{check.end_line}) outlined: header plus "
-        f"{len(members)} members. Fetch one member with get_symbol on its "
-        f"symbol_id, or Read {row.file_path} lines "
+        f"{len(members)} member signatures"
+        + (f" and {len(outline.more)} more by name and first line" if outline.more else "")
+        + f". Fetch one member with get_symbol('{container_id}::<name>') (or its "
+        f"symbol_id where listed), or Read {row.file_path} lines "
         f"{check.start_line}-{check.end_line} for the whole body."
     )
-    if members_total > len(members):
-        response["members_total"] = members_total
-        last = members[-1]["end_line"] if members else check.start_line
+    if outline.total > shown:
+        response["members_total"] = outline.total
+        last = outline.more[-1].rsplit(" ", 1)[-1] if outline.more else (
+            members[-1]["lines"].split("-")[0] if members else str(check.start_line)
+        )
         response["note"] += (
-            f" {members_total - len(members)} more members are not listed;"
+            f" {outline.total - shown} more members are not listed;"
             f" they start after line {last}."
         )
 
@@ -230,9 +289,15 @@ def _note_continuation(
 
 
 def _symbol_body_response(
-    row: Any, check: Any, body: _ServedBody, repository: Any, alias: Any, t0: float
+    row: Any,
+    check: Any,
+    body: _ServedBody,
+    repository: Any,
+    alias: Any,
+    t0: float,
+    card_facts: dict[str, Any] | None = None,
 ) -> dict:
-    """The served body with its outline, continuation and bounds notes."""
+    """The served body with its fact row, test links, outline, continuation and bounds notes."""
     response = {
         "symbol_id": symbol_identity(row.symbol_id),
         "file": row.file_path,
@@ -240,6 +305,7 @@ def _symbol_body_response(
         "kind": row.kind,
         "qualified_name": row.qualified_name,
         "signature": row.signature,
+        **(card_facts or {}),
         "start_line": body.start,
         "end_line": body.end,
         "source": body.numbered,
@@ -304,7 +370,9 @@ async def _serve_symbol(
         await heal_symbol_row(ctx.session_factory, row, check.start_line, check.end_line)
 
     body = await _served_body(ctx, repository, row, text, check, context_lines)
-    response = _symbol_body_response(row, check, body, repository, ctx.alias, t0)
+    async with get_session(ctx.session_factory) as session:
+        card_facts = await symbol_card_facts(session, repository.id, row.symbol_id)
+    response = _symbol_body_response(row, check, body, repository, ctx.alias, t0, card_facts)
     # An outline answers for the shape; callee bodies would undo its size.
     if depth > 1 and body.outline is None:
         async with get_session(ctx.session_factory) as session:

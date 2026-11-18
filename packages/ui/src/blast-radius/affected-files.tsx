@@ -58,7 +58,7 @@ export function ChangedFilesList({ result, reach, fileHref }: { result: Result; 
   }, [result]);
   // Only a file something imports can be widely imported; pagerank alone
   // ranks a file nothing imports above zero.
-  const imported = useMemo(() => new Set(reach.files.filter((f) => f.depth === 1).map((f) => f.via)), [reach]);
+  const imported = reach.imported;
   const grouped = reach.changed.length >= FOLDERS_FROM;
   const row = (m: FileMarks) => {
     const d = direct.get(m.path);

@@ -132,6 +132,53 @@ async def test_the_top_findings_cap_is_recoverable(tool, make_repo):
         assert full["health_delta"]["findings_emitted"] == delta["findings_total"]
 
 
+async def test_changed_symbols_ride_the_findings_include_only(tool, make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "def calm():\n    return 0\n\n\ndef keep():\n    return 1\n"})
+    repo.commit("edit", {"app.py": "def calm():\n    return 5\n\n\ndef keep():\n    return 1\n"})
+    module = tool(repo)
+
+    default = await module.get_change_risk("HEAD", baseline=0)
+    full = await module.get_change_risk("HEAD", baseline=0, include=["findings"])
+
+    assert "changed_symbols" not in default["health_delta"]
+    delta = full["health_delta"]
+    assert delta["changed_symbols"] == [
+        {"path": "app.py", "symbol": "calm", "change": "edited", "lines": [1, 2]}
+    ]
+    assert delta["changed_symbols_total"] == 1
+
+
+def test_changed_symbol_rows_cap_the_list_and_name_a_move():
+    from repowise.core.analysis.change_health.models import ChangedSymbol, ChangeHealthDelta
+    from repowise.server.mcp_server._change_health import (
+        CHANGED_SYMBOLS_LIMIT,
+        changed_symbol_rows,
+    )
+
+    moved = ChangedSymbol("pkg/b.py", "go", "function", "moved", 1, 4, ("a.py", "go"))
+    rest = [
+        ChangedSymbol("a.py", f"f{i}", "function", "added", i, i) for i in range(1, 60)
+    ]
+    delta = ChangeHealthDelta("available", "", None, None, "", None, changed_symbols=[moved, *rest])
+
+    out = changed_symbol_rows(delta)
+
+    assert len(out["changed_symbols"]) == CHANGED_SYMBOLS_LIMIT
+    assert out["changed_symbols_total"] == 60
+    assert out["changed_symbols"][0]["moved_from"] == {"path": "a.py", "symbol": "go"}
+    assert "moved_from" not in out["changed_symbols"][1]
+
+
+def test_changed_symbol_rows_add_nothing_when_no_symbol_changed():
+    from repowise.core.analysis.change_health.models import ChangeHealthDelta
+    from repowise.server.mcp_server._change_health import changed_symbol_rows
+
+    delta = ChangeHealthDelta("available", "", None, None, "", None, changed_symbols=[])
+
+    assert changed_symbol_rows(delta) == {}
+
+
 # -- drill-down -------------------------------------------------------------
 
 

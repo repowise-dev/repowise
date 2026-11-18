@@ -85,19 +85,21 @@ def _resolve_omission_ref(
             break
 
     if record is None:
-        from repowise.server.mcp_server._savings.interaction import note_error_reason
+        from repowise.server.mcp_server._savings.interaction import error_reply
 
-        note_error_reason("not_found")
-        return {
-            "symbol_id": symbol_id,
-            "ref": canonical_ref,
-            "error": (
-                f"No stored content for omission ref {ref!r} — it may have "
-                "expired (7-day TTL), been pruned, or been produced in a "
-                "different repo. Re-run the original call for fresh content."
-            ),
-            "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
-        }
+        return error_reply(
+            "not_found",
+            {
+                "symbol_id": symbol_id,
+                "ref": canonical_ref,
+                "error": (
+                    f"No stored content for omission ref {ref!r} — it may have "
+                    "expired (7-day TTL), been pruned, or been produced in a "
+                    "different repo. Re-run the original call for fresh content."
+                ),
+                "_meta": _build_meta(timing_ms=(time.perf_counter() - t0) * 1000),
+            },
+        )
 
     created = record.get("created_at")
     response: dict[str, Any] = {

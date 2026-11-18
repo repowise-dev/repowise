@@ -1,3 +1,5 @@
 {% set client = "claude" %}
+{#- Claude Code defers tool schemas, so every default tool is listed there. -#}
+{% set listed = none %}
 {% set read_note = "Read a file before you Edit it; Claude Code requires that Read." %}
 {% include "_editor_block.j2" %}

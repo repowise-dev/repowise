@@ -36,6 +36,7 @@ from typing import Any
 import pathspec
 
 from repowise.core.fs_walk import PRUNED_DIRS, WalkSnapshot, iter_glob
+from repowise.core.settings.model import flag, parse_flag
 
 from .alignment import Alignment, drop_misaligned
 from .contexts import COVERAGE_DATA_FILE_NOTE, is_coverage_data_file, read_report_text
@@ -173,7 +174,7 @@ class CoverageConfig:
         paths, path_prefixes = _report_entries(block.get("paths"))
         gates, gate_errors = _path_gates(block.get("gates"))
         return cls(
-            auto_discover=bool(block.get("auto_discover", True)),
+            auto_discover=flag(block.get("auto_discover"), True),
             artifacts=_strs(block.get("artifacts")),
             paths=paths,
             path_prefixes=path_prefixes,
@@ -181,11 +182,7 @@ class CoverageConfig:
             format=block.get("format") or None,
             strip_prefix=block.get("strip_prefix") or None,
             path_prefix=block.get("path_prefix") or None,
-            reingest_on_update=(
-                None
-                if block.get("reingest_on_update") is None
-                else bool(block["reingest_on_update"])
-            ),
+            reingest_on_update=_optional_flag(block.get("reingest_on_update")),
             fail_under=_percent(block.get("fail_under")),
             min_coverable_lines=_line_count(block.get("min_coverable_lines")),
             gates=gates,
@@ -1485,3 +1482,11 @@ def report_origin_dir(path: Path, repo_root: Path) -> str | None:
     except (OSError, ValueError):
         return None
     return rel if rel not in ("", ".") else None
+
+
+def _optional_flag(value: object) -> bool | None:
+    """A switch whose absence means something of its own: unset or unreadable is ``None``."""
+    try:
+        return parse_flag(value)
+    except ValueError:
+        return None

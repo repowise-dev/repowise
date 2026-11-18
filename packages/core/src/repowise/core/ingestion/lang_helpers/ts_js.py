@@ -1,4 +1,4 @@
-"""TypeScript / JavaScript object-literal method helpers."""
+"""TypeScript / JavaScript helpers: object-literal methods and functions assigned to a property."""
 
 from __future__ import annotations
 
@@ -90,3 +90,59 @@ def _ts_nested_object_method_owner(
             under_callable = True
         ancestor = ancestor.parent
     return owner if under_callable else None
+
+
+# Scopes whose body runs when called. An assignment in one binds per call, not
+# once per module, so it declares nothing a caller elsewhere can reach.
+_TS_FUNCTION_SCOPES = _TS_NAMED_FUNCTIONS | _TS_FUNCTION_VALUES
+
+
+def _ts_is_iife(scope: Node) -> bool:
+    """*scope* is called where it is written: ``(function () {...})()``,
+    ``(function () {...}).call(this)``, ``!function () {...}()``. Its body runs at
+    load, so the module pattern's wrapper hides nothing."""
+    node = scope
+    while node.parent is not None and node.parent.type == "parenthesized_expression":
+        node = node.parent
+    parent = node.parent
+    if parent is not None and parent.type == "member_expression":
+        if parent.child_by_field_name("object") != node:
+            return False
+        node, parent = parent, parent.parent
+    return (
+        parent is not None
+        and parent.type == "call_expression"
+        and parent.child_by_field_name("function") == node
+    )
+
+
+def ts_assignment_runs_at_load(assignment: Node) -> bool:
+    """True when ``obj.f = function () {}`` runs once, as the module loads.
+
+    False inside a function body (a constructor's per-instance members, a
+    callback's handlers), unless that function is an IIFE wrapping the module.
+    """
+    ancestor = assignment.parent
+    while ancestor is not None:
+        if ancestor.type in _TS_FUNCTION_SCOPES and not _ts_is_iife(ancestor):
+            return False
+        ancestor = ancestor.parent
+    return True
+
+
+def ts_assignment_owner(assignment: Node, src: str) -> str | None:
+    """``Foo`` in ``Foo.prototype.m = ...`` or ``Foo.m = ...``, else None.
+
+    A candidate only: it owns the function when the file declares it at the
+    top level. ``exports.m``, ``a.b.m`` and the like have none.
+    """
+    left = assignment.child_by_field_name("left")
+    target = left.child_by_field_name("object") if left is not None else None
+    if target is not None and target.type == "member_expression":
+        prop = target.child_by_field_name("property")
+        if prop is None or node_text(prop, src) != "prototype":
+            return None
+        target = target.child_by_field_name("object")
+    if target is None or target.type != "identifier":
+        return None
+    return node_text(target, src)

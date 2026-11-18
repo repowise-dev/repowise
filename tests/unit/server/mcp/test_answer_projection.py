@@ -255,7 +255,7 @@ def test_expanded_degraded_answer_names_only_retained_blocks():
     raw = _raw("low")
     raw.update(
         {
-            "degraded": "no-llm-provider",
+            "degraded": "synthesis-failed",
             "answer": "raw summary names retrieval, fallback_targets, and candidates",
         }
     )

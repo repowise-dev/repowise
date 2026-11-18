@@ -1,5 +1,5 @@
 ---
-description: Set up Repowise for this codebase. Installs if needed, asks about your preferences, and runs the indexing.
+description: Set up Repowise for this codebase (install, options, indexing).
 ---
 
 # Repowise Init
@@ -106,7 +106,7 @@ Exclusions:
   --skip-infra           Skip infrastructure files (Dockerfile, Makefile, Terraform, shell)
 
 Git:
-  --commit-limit N       Max commits to analyze per file (default: 5000, max: 10000)
+  --commit-limit N       Newest commits to analyze (default: 5000; above the commit count reads the full history)
   --follow-renames       Track files across renames (slower but more accurate history)
 
 Editor integration:
@@ -265,3 +265,6 @@ After init exits with `0` or `2`:
    history, with a cost estimate first." For an Index only run, name
    `repowise update --full` instead.
 4. If CLAUDE.md was generated (default): "I've also generated a CLAUDE.md with codebase context that I'll read on every session."
+5. Offer the decision check in one line: "I can check the decisions mined from
+   this repository's history on its busiest files, and keep the real ones. Want
+   me to?" On yes, run `repowise decision discover` and follow what it prints.

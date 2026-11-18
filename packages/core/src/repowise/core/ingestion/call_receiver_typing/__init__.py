@@ -25,6 +25,7 @@ from ..languages.receiver_types import (
     CallAssignment,
     DartCallback,
     Declaration,
+    Destructuring,
     RangeScan,
     ScopeMarks,
     bound_types,
@@ -38,6 +39,7 @@ from ..languages.receiver_types import (
     scan_call_assignments,
     scan_call_shadows,
     scan_declarations,
+    scan_destructurings,
     scan_scope_marks,
     types_by_class,
     types_in_span,
@@ -296,6 +298,7 @@ class ReceiverTypingMixin(
         self._source_text: dict[str, str] = {}
         self._declarations: dict[str, tuple[Declaration, ...]] = {}
         self._call_assignments: dict[str, tuple[CallAssignment, ...]] = {}
+        self._destructurings: dict[str, tuple[Destructuring, ...]] = {}
         # {file: {(line, receiver, target): call site}}, for the calls above.
         self._call_sites: dict[str, dict[tuple[int, str | None, str], CallSite]] = {}
         self._symbol_spans: dict[str, dict[str, tuple[int, int]]] = {}
@@ -1499,6 +1502,7 @@ class ReceiverTypingMixin(
             # ``y.f()``, which reads this body's types back, including the
             # locals typed from earlier calls.
             self._add_call_typed_locals(file_path, language, types, *span)
+            self._add_destructured_locals(file_path, language, caller_id, types, *span)
         return types
 
     def _add_call_typed_locals(
@@ -1541,6 +1545,66 @@ class ReceiverTypingMixin(
                 record_type(types, assignment.name, type_id)
             elif language in ("python", "rust"):
                 types[assignment.name] = None
+
+    def _add_destructured_locals(
+        self,
+        file_path: str,
+        language: str,
+        caller_id: str,
+        types: dict[str, str | None],
+        start: int,
+        end: int,
+    ) -> None:
+        """Type Kotlin ``val (a, b) = p`` locals from the ``componentN()`` of ``p``'s type.
+
+        ``p`` must be a name the body types as a repository class, and that class
+        must declare ``componentN()`` with a return type a call would read. A
+        name the body binds anywhere else (a lambda parameter, a second ``val``)
+        or already types is left alone, as is ``_`` and a position the class
+        has no component for.
+        """
+        if language != "kotlin":
+            return
+        found = self._destructurings_for(file_path, language)
+        first = bisect_left(found, start, key=lambda d: d.line)
+        in_body = [d for d in found[first:] if d.line <= end]
+        if not in_body:
+            return
+        bound = {
+            name
+            for line, _, name in self._binding_positions_for(file_path, language)
+            if start <= line <= end
+        }
+        declared = frozenset(types)
+        for destructuring in in_body:
+            owner = self._destructured_type_id(file_path, caller_id, types, destructuring)
+            if owner is None:
+                continue
+            for position, name in enumerate(destructuring.names, start=1):
+                if name is None or name in declared or name in bound:
+                    continue
+                component = self._declares(owner, f"component{position}")
+                type_id = None if component is None else self._returned_type_id(component)
+                if type_id is not None:
+                    record_type(types, name, type_id)
+
+    def _destructured_type_id(
+        self,
+        file_path: str,
+        caller_id: str,
+        types: dict[str, str | None],
+        destructuring: Destructuring,
+    ) -> str | None:
+        """The repository class a destructuring's source name is typed as, as a symbol id."""
+        written = types.get(destructuring.source)
+        if written is None or external_type_name(written) is not None:
+            return None
+        if "::" in written:
+            return written
+        if not written.isidentifier():
+            return None
+        found = self._class_seen_from(file_path, caller_id, written, destructuring.line)
+        return None if found is None else found.callee_id
 
     def _rebound_names(
         self,
@@ -1812,6 +1876,13 @@ class ReceiverTypingMixin(
         if found is None:
             found = scan_call_assignments(self._text_of(file_path), language)
             _store_capped(self._call_assignments, file_path, found, _SOURCE_CACHE_FILES)
+        return found
+
+    def _destructurings_for(self, file_path: str, language: str) -> tuple[Destructuring, ...]:
+        found = self._destructurings.get(file_path)
+        if found is None:
+            found = scan_destructurings(self._text_of(file_path), language)
+            _store_capped(self._destructurings, file_path, found, _SOURCE_CACHE_FILES)
         return found
 
     def _call_sites_for(self, file_path: str) -> dict[tuple[int, str | None, str], CallSite]:

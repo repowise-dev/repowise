@@ -474,10 +474,12 @@ async def get_risk(
     if repo == "all":
         return _unsupported_repo_all("get_risk")
     if not targets and not changed_files:
-        from repowise.server.mcp_server._savings.interaction import note_error_reason
+        from repowise.server.mcp_server._savings.interaction import error_reply
 
-        note_error_reason("invalid_args")
-        return {"error": "targets or changed_files is required", "_meta": _build_meta()}
+        return error_reply(
+            "invalid_args",
+            {"error": "targets or changed_files is required", "_meta": _build_meta()},
+        )
     routes = (
         await route_targets([*(targets or []), *(changed_files or [])], paths_only=True)
         if repo is None

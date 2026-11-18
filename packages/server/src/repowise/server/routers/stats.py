@@ -189,6 +189,7 @@ async def stats_highlights(
             HealthFileMetric.module,
             HealthFileMetric.max_ccn,
             HealthFileMetric.is_test,
+            HealthFileMetric.code_origin,
         ).where(HealthFileMetric.repository_id == repo_id),
     )
     all_meta = await _rows(
