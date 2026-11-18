@@ -60,7 +60,9 @@ async def attach_measured(
     """Give each marked card its ``measured`` line, in one keyed read for the call.
 
     Best effort: a store without the table, or a failed read, leaves every
-    card as it would be with no evidence.
+    card as it would be with no evidence. No savepoint: it would cost two
+    statements on every call, so the caller runs this as the session's last
+    read, where a failed statement cannot touch another read.
     """
     wanted = {
         name: card.pop(MEASURED_TARGET) for name, card in cards.items() if MEASURED_TARGET in card
@@ -70,8 +72,7 @@ async def attach_measured(
     symbols = {key for kind, key in wanted.values() if kind == "symbol"}
     files = {key for kind, key in wanted.values() if kind == "file"}
     try:
-        async with session.begin_nested():
-            rows = await hotness_for_symbols(session, repository_id, symbols, files=files)
+        rows = await hotness_for_symbols(session, repository_id, symbols, files=files)
     except SQLAlchemyError:
         # A store older than the table reads as no evidence; so does a failed read.
         _log.debug("get_context: measured read failed", exc_info=True)

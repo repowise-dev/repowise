@@ -200,7 +200,6 @@ async def get_context(
         cards = {r["target"]: r for r in raw_results if isinstance(r, dict)}
         # One batched read on the shared session, not one per target inside the
         # gather: savepoints opened concurrently on one session close each other.
-        await attach_measured(session, repository.id, cards)
         await attach_doc_references(
             session,
             repository,
@@ -214,6 +213,8 @@ async def get_context(
             if "suspects" in include_set
             else None
         )
+        # Last read in the session: it takes no savepoint (see attach_measured).
+        await attach_measured(session, repository.id, cards)
 
     results = _per_target_results(targets, raw_results)
     # One integer per target: how many dated episodes are bound here. Absent at zero.
