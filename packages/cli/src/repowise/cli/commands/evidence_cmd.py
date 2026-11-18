@@ -134,7 +134,7 @@ def evidence_add(
     """Ingest one evidence FILE for a named workload.
 
     FILE is a repowise-evidence-v1 document, or a profile as the profiler
-    wrote it (Speedscope JSON, collapsed stacks), detected from its content.
+    wrote it (Speedscope JSON, Go pprof, collapsed stacks), detected from its content.
     A profile's frames join to the indexed functions only under the checkout
     root, each checked by a second signal; the rest are counted by reason.
     v1 entries name their function (path, qualified name, line) and match

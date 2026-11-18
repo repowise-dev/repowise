@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 from repowise.core.registry.plugins import SeamRegistry
 
-from . import collapsed, speedscope
+from . import collapsed, pprof, speedscope
 from .model import SNIFF_BYTES, ProfileRun, Stack, StackTally, frame_language
 
 
@@ -41,6 +41,7 @@ class ProfileFormat:
 #: Format name -> format, in the order formats are sniffed and listed.
 profile_formats: SeamRegistry[ProfileFormat] = SeamRegistry("profile-format")
 profile_formats.register("speedscope", ProfileFormat(speedscope.sniff, speedscope.read))
+profile_formats.register("pprof", ProfileFormat(pprof.sniff, pprof.read))
 profile_formats.register("collapsed", ProfileFormat(collapsed.sniff, collapsed.read))
 
 
