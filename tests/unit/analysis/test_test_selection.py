@@ -528,6 +528,19 @@ def test_a_setup_module_changed_after_the_index_is_traced_not_a_full_run() -> No
     assert plan_gap(["src/b.py", path], _NONE).reasons
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/fixtures/stacks/node/package.json",
+        "tests/fixtures/stacks/rust/Cargo.toml",
+        "tests/fixtures/stacks/maven/pom.xml",
+    ],
+)
+def test_a_fixture_manifest_changed_after_the_index_is_test_data(path) -> None:
+    assert plan_gap(["src/b.py", path], _NONE).reasons == ()
+    assert plan_gap(["src/b.py", "package.json"], _NONE).reasons
+
+
 def test_nothing_is_traced_when_the_change_runs_everything_anyway() -> None:
     assert plan_gap(["src/b.py"], _NONE, ["uv.lock", "src/a.py"]).candidates == ()
     assert plan_gap(["src/b.py"], _NONE, ["src/a.py"]).candidates == ("src/b.py",)

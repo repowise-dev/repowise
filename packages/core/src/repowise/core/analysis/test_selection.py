@@ -198,6 +198,10 @@ _DEFAULT_SPECS = tuple(
     (why, pathspec.PathSpec.from_lines("gitwildmatch", patterns))
     for why, patterns in _FULL_RUN_GROUPS
 )
+# A data file in a test-data tree (``tests/fixtures/app/package.json``) is read
+# by tests, never by this repo's build, so the test-data rule decides it before
+# the manifest rules. Code there keeps the first group it matches.
+_DATA_FIRST_SPECS = tuple(sorted(_DEFAULT_SPECS, key=lambda s: s[0] != SHARED_TEST_DATA_REASON))
 # The groups a Python module's name can match (``setup.py``, ``noxfile.py``):
 # those count only at a project root (:func:`is_ordinary_module`).
 _PROJECT_ROOT_GROUPS = frozenset({DEPENDENCIES_REASON, BUILD_CONFIG_REASON})
@@ -582,7 +586,7 @@ def full_run_reason(
     *project_dirs* (:func:`project_dirs`) tell a build file from a module of
     the same name (:func:`is_ordinary_module`).
     """
-    specs = list(_DEFAULT_SPECS)
+    specs = list(_DEFAULT_SPECS if is_code_file(path) else _DATA_FIRST_SPECS)
     if extra := tuple(extra):
         specs.append(("it matches tests.full_run_on", full_run_on_spec(extra)))
     module = is_ordinary_module(path, project_dirs)

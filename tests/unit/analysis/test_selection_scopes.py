@@ -13,6 +13,7 @@ from repowise.core.analysis.selection_scopes import (
     trigger_scopes,
 )
 from repowise.core.analysis.test_selection import (
+    SHARED_TEST_DATA_REASON,
     SelectionInput,
     TestSelectionConfig,
     file_namers,
@@ -105,7 +106,6 @@ def test_a_manifest_or_lockfile_scopes_to_its_ecosystem(path, root, suffix, reac
         "Dockerfile",
         ".tool-versions",
         ".github/workflows/ci.yml",
-        "tests/fixtures/package.json",
         "tests/data/pyproject.toml",
         "__init__.py",
         # Tool configuration, not an asset any code reads.
@@ -578,3 +578,27 @@ def test_plan_scopes_counts_a_manifest_the_change_adds_as_a_project_root() -> No
     added = plan("libs/new/setup.py", "libs/new/pyproject.toml")
     assert added.scopes["libs/new/setup.py"].basis == "ecosystem"
     assert "libs/new" in added.project_dirs
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/fixtures/package.json",
+        "tests/fixtures/app/Cargo.toml",
+        "tests/fixtures/stacks/maven/pom.xml",
+        "pkg/testdata/go.mod",
+    ],
+)
+def test_a_manifest_in_a_test_data_tree_runs_the_tests_reading_it(path) -> None:
+    """No build of this repo reads it: it is test data, like any file beside it."""
+    reader = "tests/test_core.py"
+    assert full_run_reason(path) == SHARED_TEST_DATA_REASON
+    assert _scopes([path], {path: [reader]})[path].basis == "fixture-readers"
+    # A manifest at the root or in a sub-project is still this repo's.
+    assert full_run_reason("package.json") != SHARED_TEST_DATA_REASON
+    assert full_run_reason("crate/Cargo.toml") == "dependencies can change any test"
+
+
+def test_build_code_in_a_test_data_tree_keeps_its_rule() -> None:
+    path = "tests/fixtures/app/build.gradle.kts"
+    assert full_run_reason(path) == "build or test configuration can change any test"
