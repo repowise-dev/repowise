@@ -202,6 +202,11 @@ class _ShedLimits:
             response, headroom=self.headroom, char_budget=self.char_budget
         )
 
+    def excess(self, response: dict[str, Any]) -> int:
+        """Characters *response* is over the fit line; zero or less means it fits."""
+        budget = effective_char_budget() if self.char_budget is None else self.char_budget
+        return response_chars(response) - (budget - self.headroom)
+
 
 def fit_to_budget(
     response: dict[str, Any],
@@ -313,13 +318,7 @@ def _shed_tail(
     if not isinstance(rows, (list, dict)):
         return
     total = len(rows)
-    dropped: list[Any] = []
-    while len(rows) > keep and limits.exceeded(response):
-        if isinstance(rows, list):
-            dropped.append(rows.pop())
-        else:
-            name = next(reversed(rows))
-            dropped.append({name: rows.pop(name)})
+    dropped = _pop_tail_until_fit(response, rows, limits, keep)
     if dropped:
         collector.add(label, list(reversed(dropped)))
         if limits.record_counts:
@@ -336,6 +335,52 @@ def _shed_tail(
             # population difference across both passes.
             container[f"{leaf}_omitted"] = collection_total - len(rows)
         response["truncated"] = True
+
+
+def _pop_tail(rows: list[Any] | dict[str, Any]) -> Any:
+    if isinstance(rows, list):
+        return rows.pop()
+    name = next(reversed(rows))
+    return {name: rows.pop(name)}
+
+
+def _pop_tail_until_fit(
+    response: dict[str, Any],
+    rows: list[Any] | dict[str, Any],
+    limits: _ShedLimits,
+    keep: int,
+) -> list[Any]:
+    """Pop rows off the tail of *rows* until *response* fits or *keep* remain.
+
+    Serialising the whole response once per popped row made a long list
+    quadratic: 4,000 rows took about 3,000 full ``json.dumps`` calls. Each pop
+    instead subtracts the row's own compact-JSON size (and its comma) from one
+    measured excess. A row object reached twice in the response would make
+    that arithmetic undercount, so the end state is measured once more and,
+    if the prediction missed, the rows go back and the per-row loop decides.
+    Either way the same rows are dropped.
+    """
+    excess = limits.excess(response)
+    dropped: list[Any] = []
+    while len(rows) > keep and excess > 0:
+        row = _pop_tail(rows)
+        dropped.append(row)
+        # ``[row]`` or ``{name: value}`` minus its brackets is the row as it sat
+        # in its parent, keys converted the way JSON converts them; a comma
+        # went with it unless it was the only one left.
+        excess -= response_chars(row if isinstance(rows, dict) else [row]) - 2
+        excess -= 1 if rows else 0
+    if not dropped or limits.excess(response) == excess:
+        return dropped
+    for row in reversed(dropped):
+        if isinstance(rows, list):
+            rows.append(row)
+        else:
+            rows.update(row)
+    dropped = []
+    while len(rows) > keep and limits.exceeded(response):
+        dropped.append(_pop_tail(rows))
+    return dropped
 
 
 def _record_reduction(

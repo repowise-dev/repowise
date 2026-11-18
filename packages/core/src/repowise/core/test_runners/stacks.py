@@ -17,7 +17,8 @@ multi-project build, a .NET solution) is run by that ancestor's stack.
 
 Commands run from the unit's directory (:attr:`Stack.root`). They need no
 elevated privileges and run in sh, bash and PowerShell; ``./mvnw`` and
-``./gradlew`` are not cmd.exe spellings (cmd runs ``mvnw.cmd``). A stack whose
+``./gradlew`` are not cmd.exe spellings (cmd runs ``mvnw.cmd``), and the ``&&``
+of a c8 or nyc report step needs PowerShell 7, not Windows PowerShell 5.1. A stack whose
 command only works inside the CI step it ships with says so in
 :attr:`Stack.shell`. Ceiling: Python commands assume pytest, and a .NET stack
 runs one solution or one test project; anything else is a note, not a guess.
@@ -39,7 +40,7 @@ from ..build_units.model import BuildUnitIndex
 from ..code_origin import path_origin
 from ..fs_walk import INDEX_BLOCKED_DIRS, walk_repo
 from ..ingestion.languages.registry import REGISTRY
-from ..pytest_roots import PYTEST_CONFIG_NAMES, PYTEST_CONFIG_SECTIONS, pytest_options
+from ..pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
 
 #: Where to look when the stack is unknown.
 GENERIC_REPORTS = (
@@ -215,15 +216,11 @@ def _python_sources(paths: list[str]) -> tuple[str, ...]:
     return tuple(tops) or (".",)
 
 
-def _testpaths(files: dict[str, str]) -> str | None:
-    """``testpaths`` of the pytest config pytest itself would pick, if one sets it."""
-    for name, _ in PYTEST_CONFIG_SECTIONS:
-        if name in files:
-            options = pytest_options(name, files[name])
-            if options is not None:
-                value = options.get("testpaths")
-                return str(value) if value else None
-    return None
+def _testpaths(files: dict[str, str]) -> tuple[str, ...]:
+    """``testpaths`` of the config governing the unit's directory, in pytest's precedence."""
+    roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
+    governing = roots.by_dir.get("")
+    return governing.testpaths if governing else ()
 
 
 def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
@@ -233,7 +230,7 @@ def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
         other = any(p.startswith(f"{base}/integration/") or p.startswith(f"{base}/e2e/") for p in paths)
         if unit and other:
             testpaths = _testpaths(files)
-            if testpaths and base not in re.findall(r"[\w./-]+", testpaths):
+            if testpaths and base not in testpaths:
                 return ""  # pytest's testpaths already decide what runs
             return f" {base}/unit"
     return ""
@@ -311,14 +308,24 @@ _BUN_FLAGS = "--coverage --coverage-reporter=lcov"
 _COVERED_REPORTS = "coverage/lcov.info coverage/clover.xml"
 
 
+_LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")
+
+
 def _node_runner(script: str) -> str | None:
-    """What a test script runs: jest | vitest | bun | c8 (wrap it) | covered (already measures) | None."""
+    """What a test script runs: jest | vitest | bun | c8 (wrap it) | covered (already measures)
+    | report:c8 or report:nyc (measures, but writes no lcov) | None."""
     if not script or re.search(r"&&|\|\||;", script) or _DELEGATES.search(script):
         return None
     words = re.sub(r"^(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", script).split()
     head = words[0] if words else ""
-    if head in ("c8", "nyc") or "--coverage" in words:
-        return "covered"
+    if head in ("c8", "nyc"):
+        # Both default to text and html reports; without lcov, their report step writes it.
+        return "covered" if _LCOV_REPORTER.search(script) else f"report:{head}"
+    return "covered" if "--coverage" in words else _runner_of(head, words)
+
+
+def _runner_of(head: str, words: list[str]) -> str | None:
+    """The runner a script's first word names: jest | vitest | bun | c8 (wrap it) | None."""
     if head == "jest" or (head in ("react-scripts", "craco") and words[1:2] == ["test"]):
         return "jest"
     if head == "vitest":
@@ -354,6 +361,10 @@ def _edit_script(line: str, m: re.Match, runner: str, *, tool: str, end: int, af
         return CommandEdit(line, _COVERED_REPORTS)
     if runner == "c8":
         return CommandEdit(_insert(line, (m.start(), _C8)), "coverage/lcov.info")
+    if runner.startswith("report:"):
+        # The tool keeps its raw data after the run, so its report command writes lcov from it.
+        report = f" && npx --yes {runner[len('report:'):]} report --reporter=lcov"
+        return CommandEdit(_insert(line, (end, report)), "coverage/lcov.info")
     # npm and pnpm hand arguments to the script only after ``--``; yarn and bun pass them as they are.
     sep = " --" if tool in ("npm", "pnpm") and not re.search(r"(?<!\S)--(?!\S)", after) else ""
     prepare = _vitest_provider(pm, deps) if runner == "vitest" else ()
@@ -620,24 +631,26 @@ def _dotnet_setup(root: set[str], projects: str) -> tuple[str, ...]:
     return ("- uses: actions/setup-dotnet@v4", "  with:", "    dotnet-version: |", *(f"      {v}" for v in versions))
 
 
+def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, found: bool) -> list[str]:
+    notes = []
+    if tests and not any("coverlet.collector" in t for p, t in files.items() if p in tests):
+        notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
+                     "test project (`dotnet add package coverlet.collector`).")
+    if target:
+        return notes
+    if found:
+        return [*notes, "Repowise found several solutions or test projects; point `dotnet test` at the one "
+                        "that runs your tests."]
+    return [*notes, "Repowise found no solution or test project to point `dotnet test` at."]
+
+
 def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
     solutions = [p for p in paths if p.endswith((".sln", ".slnx"))]
     tests = [p for p in paths if p.endswith(".csproj") and "test" in p.lower() and p.count("/") <= 3]
     target = solutions[0] if len(solutions) == 1 else tests[0] if len(tests) == 1 and not solutions else None
-    projects = "\n".join(t for p, t in files.items() if p.endswith(".csproj"))
-    setup = _dotnet_setup(root, projects)
-    notes = []
-    if tests and "coverlet.collector" not in projects:
-        notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
-                     "test project (`dotnet add package coverlet.collector`).")
-    test = ""
-    if target:
-        test = f"dotnet test {target} {_DOTNET_FLAGS}"
-    elif solutions or tests:
-        notes.append("Repowise found several solutions or test projects; point `dotnet test` at the one "
-                     "that runs your tests.")
-    else:
-        notes.append("Repowise found no solution or test project to point `dotnet test` at.")
+    setup = _dotnet_setup(root, "\n".join(t for p, t in files.items() if p.endswith(".csproj")))
+    notes = _dotnet_notes(tests, files, target, bool(solutions or tests))
+    test = f"dotnet test {target} {_DOTNET_FLAGS}" if target else ""
     return Stack(
         "dotnet", "dotnet test", "dotnet", "coverage/*/coverage.cobertura.xml", setup=tuple(setup),
         test=test, notes=tuple(notes), pattern=_DOTNET, editor=_edit_dotnet,
@@ -742,6 +755,8 @@ _BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack]] = {
 }
 _REQUIREMENTS = re.compile(r"requirements[\w.-]*\.txt")
 _SOLUTIONS = (".sln", ".slnx")
+#: How many .csproj files detection reads at a .NET root.
+_DOTNET_PROJECTS = 20
 #: Gradle's settings files: runner config read on top of the registry's manifests.
 _GRADLE_SETTINGS = ("settings.gradle", "settings.gradle.kts")
 #: A manifest of this origin is a fixture, sample or copy, not a unit to cover.
@@ -929,8 +944,12 @@ def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> 
     for root, stacks in sorted(roots.items()):
         if "dotnet" in stacks:
             rel = _listing_at(root, "dotnet", paths, roots)
-            tests = [r for r in rel if r.endswith(".csproj") and "test" in r.lower() and r.count("/") <= 3]
-            wanted += [_join(root, r) for r in tests[:5]]
+            projects = [r for r in rel if r.endswith(".csproj") and r.count("/") <= 3]
+            tests = [r for r in projects if "test" in r.lower()]
+            # Test projects first (coverlet is checked there), then the rest for the SDK versions.
+            # Ceiling: _DOTNET_PROJECTS projects; a larger solution may need its SDK named in global.json.
+            others = [r for r in projects if r not in tests]
+            wanted += [_join(root, r) for r in (tests + others)[:_DOTNET_PROJECTS]]
     return list(dict.fromkeys(wanted))
 
 

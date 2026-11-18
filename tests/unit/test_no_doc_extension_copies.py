@@ -18,12 +18,12 @@ categories, fix_shape, and knowledge_graph.
 from __future__ import annotations
 
 import ast
-import pathlib
 
 from repowise.core.analysis.knowledge_graph import _DOC_EXTENSIONS as KG_DOC_EXTENSIONS
 from repowise.core.generation.categories import _DOC_SUFFIXES
 from repowise.core.ingestion.git_indexer.fix_shape import _DOC_EXT
 from repowise.core.support_paths import DOC_EXTENSIONS
+from tests.unit._source_tree import python_sources
 
 # Constant name shapes that define documentation extension sets.
 _DOC_CONSTANTS = (
@@ -41,7 +41,6 @@ _DOC_MARKERS = frozenset({".md", ".mdx", ".rst", ".txt", ".adoc"})
 # Call sites that answer a narrower question on purpose, with reasons.
 _KNOWN: frozenset[str] = frozenset()
 
-_PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 _HOME = "packages/core/src/repowise/core/support_paths.py"
 
 
@@ -86,10 +85,8 @@ def _check_assignment(node: ast.Assign | ast.AnnAssign) -> list[str]:
     return hits
 
 
-def _analyze_file(path: pathlib.Path) -> list[str]:
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except (SyntaxError, UnicodeDecodeError):
+def _analyze_file(tree: ast.Module | None) -> list[str]:
+    if tree is None:
         return []
 
     hits: list[str] = []
@@ -102,11 +99,11 @@ def _analyze_file(path: pathlib.Path) -> list[str]:
 def _offenders() -> dict[str, list[str]]:
     """Map of repo-relative path -> the forbidden doc-extension copies it defines."""
     found: dict[str, list[str]] = {}
-    for path in _PACKAGES.rglob("*.py"):
-        rel = path.relative_to(_PACKAGES.parents[0]).as_posix()
+    for src in python_sources():
+        rel = src.rel
         if rel == _HOME:
             continue
-        hits = _analyze_file(path)
+        hits = _analyze_file(src.tree)
         if hits:
             found[rel] = hits
     return found

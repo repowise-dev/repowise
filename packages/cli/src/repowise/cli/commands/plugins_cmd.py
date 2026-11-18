@@ -15,6 +15,7 @@ BUILTIN_SEAM_MODULES = (
     "repowise.core.changes.outcomes",
     "repowise.core.changes.source",
     "repowise.core.events.sinks",
+    "repowise.core.evidence.profile_formats",
     "repowise.core.ingestion.document_extractors",
     "repowise.core.inventory.advisories",
     "repowise.core.ownership.directory",

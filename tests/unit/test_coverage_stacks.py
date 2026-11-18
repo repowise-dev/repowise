@@ -280,3 +280,46 @@ def test_a_nested_solution_does_not_hide_the_root_solution():
 def test_dotnet_without_a_solution_or_test_project_says_so():
     (stack,) = detect_stacks(["App/App.csproj", "App/Program.cs"], {})
     assert not stack.test and "no solution or test project" in stack.to_dict()["reason"]
+
+
+@pytest.mark.parametrize(
+    ("script", "test", "reports"),
+    [
+        # c8 and nyc write text and html by default: their report step writes lcov.
+        ("c8 mocha", "npm test && npx --yes c8 report --reporter=lcov", "coverage/lcov.info"),
+        ("nyc ava", "npm test && npx --yes nyc report --reporter=lcov", "coverage/lcov.info"),
+        # An explicit lcov reporter already writes it.
+        ("c8 --reporter=lcov mocha", "npm test", "coverage/lcov.info coverage/clover.xml"),
+        ("nyc -r lcov ava", "npm test", "coverage/lcov.info coverage/clover.xml"),
+        ("c8 --reporter=text-lcov mocha", "npm test && npx --yes c8 report --reporter=lcov", "coverage/lcov.info"),
+    ],
+)
+def test_c8_and_nyc_scripts_write_an_lcov_report(script, test, reports):
+    files = {"package.json": json.dumps({"scripts": {"test": script}})}
+    (stack,) = detect_stacks(["package.json", "package-lock.json"], files)
+    assert (stack.test, stack.reports) == (test, reports)
+
+
+def test_testpaths_come_from_the_config_pytest_picks():
+    # pytest.ini governs even with no options, so pyproject's testpaths are never read.
+    paths = ["pytest.ini", "pyproject.toml", "tests/unit/test_a.py", "tests/integration/test_b.py"]
+    pyproject = '[project]\nname = "x"\n[tool.pytest.ini_options]\ntestpaths = ["other"]\n'
+    (stack,) = detect_stacks(paths, {"pytest.ini": "", "pyproject.toml": pyproject})
+    assert stack.test.startswith("pytest tests/unit ")
+    (stack,) = detect_stacks(paths[1:], {"pyproject.toml": pyproject})
+    assert stack.test.startswith("pytest --cov")
+
+
+def test_the_dotnet_sdk_covers_the_app_projects_too():
+    files = {
+        "src/App/App.csproj": "<Project><PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>",
+        "tests/App.Tests/App.Tests.csproj": (
+            "<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup>"
+            '<ItemGroup><PackageReference Include="coverlet.collector" /></ItemGroup></Project>'
+        ),
+    }
+    paths = ["App.sln", *files]
+    assert set(files) <= set(files_to_read(paths))
+    (stack,) = detect_stacks(paths, files)
+    assert "      8.0.x" in stack.setup and "      9.0.x" in stack.setup
+    assert not any("coverlet" in note for note in stack.notes)
