@@ -63,7 +63,9 @@ _LAUNCHERS = (("uv", "run"), ("poetry", "run"), ("pdm", "run"), ("hatch", "run")
 # stopped by Ctrl-C or SIGTERM (a timeout) still writes what it collected.
 # ``n`` holds the failed-test count a pytest run reports; it lands in the
 # profile as ``testsFailed``. Ceiling: a program that installs its own
-# ``sys.excepthook`` hides its crashes. Double quotes outside, single inside:
+# ``sys.excepthook`` hides its crashes, one that installs its own SIGINT or
+# SIGTERM handler loses the partial profile, and Windows delivers no SIGTERM
+# on a kill. Double quotes outside, single inside:
 # one spelling for sh and PowerShell.
 _PYINSTRUMENT = (
     "import sys,os,atexit,signal;from pyinstrument import Profiler;"
@@ -74,7 +76,7 @@ _PYINSTRUMENT = (
     "s=lambda *a:(i.append(1),signal.default_int_handler(*a));"
     "signal.signal(signal.SIGINT,s);signal.signal(signal.SIGTERM,s);"
     "atexit.register(lambda:(p.stop(),(i or not f and c[0] in {ok}) and open(o,'w',encoding='utf-8').write("
-    "(lambda t:t[:-1]+(',%stestsFailed%s:%d}}'%(chr(34),chr(34),n[0]) if n else '}}'))("
+    "(lambda t:t.rstrip()[:-1]+(',%stestsFailed%s:%d}}'%(chr(34),chr(34),n[0]) if n else '}}'))("
     "p.output(SpeedscopeRenderer(processor_options={{'filter_threshold':0}}))))));"
     "p.start();exec('try:'+chr(10)+' {run}'+chr(10)+'except SystemExit as e:'+chr(10)+' c[0]=e.code;raise')"
 )

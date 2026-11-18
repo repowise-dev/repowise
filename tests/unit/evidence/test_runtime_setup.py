@@ -424,7 +424,8 @@ def _run_recipe(
     (fake / "pyinstrument" / "renderers").mkdir(parents=True, exist_ok=True)
     (fake / "pyinstrument" / "__init__.py").write_text(
         "class Profiler:\n    def start(self): pass\n    def stop(self): pass\n"
-        "    def output(self, renderer): return '{\"profiles\":[]}'\n"
+        # The real renderer ends its document with a newline.
+        "    def output(self, renderer): return '{\"profiles\":[]}\\n'\n"
     )
     (fake / "pyinstrument" / "renderers" / "__init__.py").write_text(
         "class SpeedscopeRenderer:\n    def __init__(self, **kw): pass\n"
