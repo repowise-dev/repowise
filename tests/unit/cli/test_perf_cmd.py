@@ -109,13 +109,14 @@ def test_base_dir_interleaves_and_uses_the_tight_threshold(
     repo: Path, tmp_path_factory, monkeypatch
 ) -> None:
     base_dir = tmp_path_factory.mktemp("base")
-    calls = _fake_runner(
-        monkeypatch, lambda cwd, i: (1.0 if cwd == base_dir.resolve() else 0.96) * _JITTER[i % 5]
-    )
+    # Noiseless runs, so the threshold is exactly the interleaved floor, and a
+    # 4% speedup clears it where the 5% before-and-after floor would not.
+    calls = _fake_runner(monkeypatch, lambda cwd, i: 1.0 if cwd == base_dir.resolve() else 0.96)
     result = _invoke("--base-dir", str(base_dir), "--runs", "4", "--format", "json", "--", "make")
     assert result.exit_code == 0, result.output
     doc = json.loads(result.stdout)
-    assert doc["mode"] == "interleaved" and doc["threshold"] == pytest.approx(0.02, abs=0.03)
+    assert doc["mode"] == "interleaved" and doc["threshold"] == pytest.approx(0.02)
+    assert doc["verdict"] == "improved"
     sides = ["base" if cwd == base_dir.resolve() else "head" for _cmd, cwd in calls]
     assert sides == ["base", "head"] + ["base", "head", "head", "base"] * 2
 
@@ -138,6 +139,7 @@ def test_a_failing_run_exits_two_with_its_last_output(repo: Path, monkeypatch) -
         (["--save", "a", "--against", "b", "--", "pytest"], "usage"),
         (["--against", "missing", "--", "pytest"], "baseline"),
         (["--save", "../x", "--", "pytest"], "baseline"),
+        (["--save", "base\n", "--", "pytest"], "baseline"),
     ],
 )
 def test_refusals_exit_two_with_a_json_error(repo: Path, monkeypatch, args, code) -> None:

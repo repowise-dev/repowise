@@ -134,7 +134,7 @@ def test_baseline_round_trips(tmp_path: Path) -> None:
     assert loaded == _baseline()
 
 
-@pytest.mark.parametrize("name", ["../escape", "a/b", "", ".hidden", "x" * 65])
+@pytest.mark.parametrize("name", ["../escape", "a/b", "", ".hidden", "x" * 65, "base\n"])
 def test_a_baseline_name_is_a_file_name_never_a_path(tmp_path: Path, name: str) -> None:
     with pytest.raises(BaselineError):
         baseline_path(tmp_path, name)
