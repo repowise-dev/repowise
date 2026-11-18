@@ -52,6 +52,46 @@ def test_resolution_is_exact_and_refuses_to_guess() -> None:
     assert resolve_location(_loc("src/other.py", "f"), _SYMBOLS) == (None, "unknown_file")
 
 
+def test_a_function_named_by_its_id_after_the_file_resolves_exactly() -> None:
+    # How a test runner names a test: Python qualified names are module-dotted.
+    symbols = {
+        "benchmarks/test_io.py": symbol_lookup(
+            [
+                IndexedSymbol(
+                    "benchmarks/test_io.py::TestCache::test_get", "benchmarks.test_io.TestCache.test_get",
+                    "test_get", 5,
+                ),
+                IndexedSymbol(
+                    "benchmarks/test_io.py::test_get", "benchmarks.test_io.test_get", "test_get", 20
+                ),
+            ]
+        )
+    }
+    assert resolve_location(_loc("benchmarks/test_io.py", "TestCache::test_get"), symbols)[0] == (
+        "benchmarks/test_io.py::TestCache::test_get"
+    )
+    # The id after the file wins over a method that shares the bare name.
+    assert resolve_location(_loc("benchmarks/test_io.py", "test_get"), symbols)[0] == (
+        "benchmarks/test_io.py::test_get"
+    )
+    assert resolve_location(_loc("benchmarks/test_io.py", "Other::test_get"), symbols) == (
+        None, "unknown_symbol",
+    )
+    # An exact location never falls back to a bare name: with the module
+    # function not indexed, the method that shares its name is not it.
+    method_only = {
+        "benchmarks/test_io.py": symbol_lookup(
+            [IndexedSymbol("benchmarks/test_io.py::TestCache::test_get", "x.TestCache.test_get",
+                           "test_get", 5)]
+        )
+    }
+    exact = {**_loc("benchmarks/test_io.py", "test_get"), "exact": True}
+    assert resolve_location(exact, method_only) == (None, "unknown_symbol")
+    assert resolve_location(_loc("benchmarks/test_io.py", "test_get"), method_only)[0] == (
+        "benchmarks/test_io.py::TestCache::test_get"
+    )
+
+
 def _profile(symbols: list[dict]) -> str:
     return json.dumps(
         {"format": "repowise-evidence-v1", "kind": "profile", "value_kind": "wall",
