@@ -1602,7 +1602,16 @@ async def test_another_class_member_of_the_same_name_is_not_listed(session, repo
         ("web/lib/index.ts", "import * as s from './lib'\nconst m = s\n", True),
         # A directory specifier names the directory's index.
         ("web/index.ts", "import * as s from '.'\nconst m = s\n", True),
-        ("web/index.ts", "const s = require('..')\nconst m = s\n", True),
+        ("web/index.ts", "const s = require('../web')\nconst m = s\n", True),
+        # A relative specifier resolves from the importing file: another
+        # directory's index, or a same-named file elsewhere, is not the module.
+        ("web/lib/index.ts", "import * as s from './api/index'\nconst m = s\n", False),
+        ("web/lib/index.ts", "import * as s from '..'\nconst m = s\n", False),
+        ("web/x/a.ts", "import * as s from './a'\nconst m = s\n", False),
+        # A JavaScript literal holding the namespace hands it on.
+        ("web/a.ts", "import * as s from './a'\nconst api = { s }\n", True),
+        ("web/a.ts", "import * as s from './a'\nconst api = { k: s, j: 1 }\n", True),
+        ("web/a.ts", "import * as s from './a'\nconst all = [s]\n", True),
         # A member of the required module is not the module.
         ("web/m.ts", "const s = require('./m').helper\nconst m = s\n", False),
         # A comparison reads the namespace, it does not hand it on.

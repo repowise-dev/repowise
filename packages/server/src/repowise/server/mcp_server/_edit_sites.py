@@ -15,6 +15,7 @@ import io
 import json
 import keyword
 import os
+import posixpath
 import re
 import tokenize
 from collections import Counter
@@ -1339,31 +1340,53 @@ _JS_NAMESPACE = re.compile(
 )
 
 
-def _js_namespaces(text: str, stems: set[str]) -> set[str]:
-    """Names one JavaScript or TypeScript import line binds to a whole module of *stems*."""
+def _js_import_targets(path: str) -> set[str]:
+    """Paths a relative import of the JavaScript module at *path* resolves from:
+    the file without its extension, and its directory for an ``index``."""
+    stem, _ = posixpath.splitext(path)
+    if posixpath.basename(stem) != "index":
+        return {stem}
+    return {stem, posixpath.dirname(stem) or "."}
+
+
+def _js_namespaces(text: str, rel: str, module_paths: set[str], stems: set[str]) -> set[str]:
+    """Names one JavaScript or TypeScript import line in *rel* binds to a whole
+    module of *module_paths* (spelled by one of *stems*).
+
+    A relative specifier is resolved against *rel*'s directory; a package
+    specifier is matched by its last segment.
+    """
     source = _IMPORT_SOURCE.search(text)
     spec = (source.group(1) or source.group(2)) if source is not None else None
-    base = PurePosixPath(spec).name if spec else ""
-    if spec and base in ("", ".."):
-        # ``"."`` and ``".."`` name a directory, which resolves to its index.
-        base = "index"
-    # ``./user.service`` and ``./a.js`` both name their module file.
-    if not base or not {base, PurePosixPath(base).stem} & stems:
+    if not spec:
         return set()
+    if spec.startswith("."):
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
+        # ``./user.service`` and ``./a.js`` both name their module file.
+        named = {target, posixpath.splitext(target)[0]}
+        if not any(named & _js_import_targets(p) for p in module_paths):
+            return set()
+    else:
+        base = PurePosixPath(spec).name
+        if not {base, PurePosixPath(base).stem} & stems:
+            return set()
     return {m.group(1) or m.group(2) for m in _JS_NAMESPACE.finditer(text)}
 
 
-def _module_bindings(lines: list[str], imports: set[int], stems: set[str], python: bool) -> set[str]:
-    """Local names the import lines bind to a whole module named by one of *stems*.
+def _module_bindings(
+    lines: list[str], imports: set[int], rel: str, module_paths: set[str], python: bool
+) -> set[str]:
+    """Local names the import lines of *rel* bind to a whole module of *module_paths*.
 
     Python binds a module by ``import`` (its name or an ``as`` alias);
     JavaScript and TypeScript by ``import * as ns`` or ``require``.
     """
+    stems = {s for p in module_paths for s in _module_names(p)}
     local: set[str] = set()
     for n in imports:
         text = lines[n - 1]
         if not python:
-            local |= _js_namespaces(text, stems)
+            local |= _js_namespaces(text, rel, module_paths, stems)
             continue
         for stem in stems:
             esc = re.escape(stem)
@@ -1376,7 +1399,8 @@ def _module_bindings(lines: list[str], imports: set[int], stems: set[str], pytho
 
 def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     """Whether *rel* binds one of *module_paths* as a module object and hands
-    that binding on as a whole value: ``return mod``, ``yield mod``, ``m = mod``.
+    that binding on as a whole value: ``return mod``, ``yield mod``, ``m = mod``,
+    or in a JavaScript literal (``{ ns }``).
 
     Ceiling: ``import pkg.mod`` binds ``pkg``, which is not followed; nor is
     ``f(mod)``, which tests write for every ``monkeypatch.setattr(mod, ...)``.
@@ -1385,9 +1409,8 @@ def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     if lines is None:
         return False
     imports = _import_lines(lines)
-    stems = {s for p in module_paths for s in _module_names(p)}
     python = Path(rel).suffix in _PYTHON_EXTENSIONS
-    local = _module_bindings(lines, imports, stems, python)
+    local = _module_bindings(lines, imports, rel, module_paths, python)
     if not local:
         return False
     alt = "|".join(re.escape(a) for a in sorted(local))
@@ -1395,8 +1418,12 @@ def _hands_on_module(root: Path, rel: str, module_paths: set[str]) -> bool:
     # out, as ``f(mod)`` does; JavaScript ends the value at more tokens.
     # A JavaScript ``!`` ends it as a non-null assertion, not as ``!=``.
     end = r"\s*(?:#|;|$)" if python else r"(?:\s*(?:[;}),]|!(?!=)|//|$)|\s+(?:as|satisfies)\b)"
+    # A JavaScript literal holding it hands it on too: ``{ ns }``, ``[ns]``,
+    # ``{ k: ns }``. A Python one stays out: tests patch ``{"m": mod}`` into
+    # ``sys.modules`` as they pass ``f(mod)``.
+    literal = "" if python else rf"|[{{\[:]\s*(?:{alt})\s*[,}}\]]"
     handed = re.compile(
-        rf"(?:\b(?:return|yield|export\s+default)\s+|(?<![=!<>])=>?\s*)(?:{alt}){end}"
+        rf"(?:\b(?:return|yield|export\s+default)\s+|(?<![=!<>])=>?\s*)(?:{alt}){end}{literal}"
     )
     return any(handed.search(t) for n, t in enumerate(lines, 1) if n not in imports)
 
