@@ -915,7 +915,7 @@ async def get_pagerank_percentile(
         return 0.0
     if total == 1:
         return 100.0 if row.min_pr is None or pagerank >= row.min_pr else 0.0
-    return round(100.0 * (row.below or 0) / (total - 1), 1)
+    return min(100.0, round(100.0 * (row.below or 0) / (total - 1), 1))
 
 
 async def get_cross_community_edges(
