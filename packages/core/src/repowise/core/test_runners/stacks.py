@@ -26,6 +26,7 @@ runs one solution or one test project; anything else is a note, not a guess.
 
 from __future__ import annotations
 
+import configparser
 import fnmatch
 import json
 import posixpath
@@ -40,6 +41,7 @@ from ..build_units.model import BuildUnitIndex
 from ..code_origin import path_origin
 from ..fs_walk import INDEX_BLOCKED_DIRS, walk_repo
 from ..ingestion.languages.registry import REGISTRY
+from ..ingestion.workspace_members import parse_toml_or_none
 from ..pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
 
 #: Where to look when the stack is unknown.
@@ -223,69 +225,133 @@ def _testpaths(files: dict[str, str]) -> tuple[str, ...]:
     return governing.testpaths if governing else ()
 
 
+_UNIT_DIRS = ("unit", "unit_tests")
+_SLOW_DIRS = ("integration", "integration_tests", "e2e")
+
+
 def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
-    """``tests/unit`` when unit and integration tests sit side by side, else pytest's own choice."""
+    """``tests/unit`` (or ``tests/unit_tests``) when unit and integration tests sit side by side,
+    else pytest's own choice."""
     for base in ("tests", "test"):
-        unit = any(p.startswith(f"{base}/unit/") for p in paths)
-        other = any(p.startswith(f"{base}/integration/") or p.startswith(f"{base}/e2e/") for p in paths)
+        unit = next((d for d in _UNIT_DIRS if any(p.startswith(f"{base}/{d}/") for p in paths)), None)
+        other = any(p.startswith(f"{base}/{d}/") for d in _SLOW_DIRS for p in paths)
         if unit and other:
             testpaths = _testpaths(files)
             if testpaths and base not in testpaths:
                 return ""  # pytest's testpaths already decide what runs
-            return f" {base}/unit"
+            return f" {base}/{unit}"
     return ""
 
 
-def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+#: Extra and dependency-group names that carry test dependencies, best first.
+_TEST_SETS = ("test", "tests", "testing")
+#: ``requirements.txt``, and a requirements file naming dev or test anywhere
+#: (``requirements-dev.txt``, ``test-requirements.txt``, ``requirements/test.txt``).
+_TEST_REQUIREMENTS = re.compile(r"requirements\.txt"
+                                r"|(?=[\w.-]*(?:dev|test))[\w.-]*requirements[\w.-]*\.txt"
+                                r"|requirements/[\w.-]*(?:dev|test)[\w.-]*\.txt")
+
+
+def _first(names: Iterable[str], wanted: Iterable[str]) -> str | None:
+    have = set(names)
+    return next((n for n in wanted if n in have), None)
+
+
+def _keys(table: Any) -> list[str]:
+    return [k for k in table if isinstance(k, str)] if isinstance(table, dict) else []
+
+
+def _extras(pyproject: dict, setup_cfg: str) -> list[str]:
+    """Extras the unit declares: ``[project.optional-dependencies]``, else setup.cfg's ``extras_require``.
+
+    Ceiling: extras declared only in ``setup.py`` code are not read.
+    """
+    found = _keys((pyproject.get("project") or {}).get("optional-dependencies"))
+    if found or not setup_cfg:
+        return found
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(setup_cfg)
+    except configparser.Error:
+        return []
+    return parser.options("options.extras_require") if parser.has_section("options.extras_require") else []
+
+
+def _installable(root: set[str], paths: list[str], pyproject: dict) -> bool:
+    """Whether ``pip install -e .`` builds the unit.
+
+    pip needs ``setup.py`` or ``pyproject.toml``; a setup.cfg alone is refused.
+    A pyproject that only configures tools still builds through setuptools
+    when setup.cfg holds the metadata or a ``src/`` layout makes discovery
+    unambiguous; in a flat tree setuptools may find several top-level
+    packages and refuse, so no install is planned there.
+    """
+    if "setup.py" in root:
+        return True
+    if "pyproject.toml" not in root:
+        return False
+    return bool(pyproject.keys() & {"project", "build-system"}) or "setup.cfg" in root or any(
+        p.startswith("src/") for p in paths
+    )
+
+
+def _pip_install(root: set[str], paths: list[str], files: dict[str, str], pyproject: dict) -> str:
+    """The ``pip install`` arguments a unit's tests need: the project with its test extra,
+    its requirements and test requirements files, then pytest and pytest-cov."""
+    parts = []
+    if _installable(root, paths, pyproject):
+        extra = _first(_extras(pyproject, files.get("setup.cfg", "")), (*_TEST_SETS, "dev"))
+        parts.append(f'-e ".[{extra}]"' if extra else "-e .")
+    parts += [f"-r {p}" for p in paths if _TEST_REQUIREMENTS.fullmatch(p)]
+    return " ".join([*parts, "pytest pytest-cov"])
+
+
+def _python_tool(
+    root: set[str], paths: list[str], files: dict[str, str], args: str
+) -> tuple[str, tuple[str, ...], str, tuple[str, ...]]:
+    """The unit's Python tool, its CI setup, its plain test command, and its workstation installs."""
     pyproject = files.get("pyproject.toml", "")
-    reqs = sorted(p for p in root if re.fullmatch(r"requirements[\w.-]*\.txt", p))
-    texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
-    declared = bool(re.search(r"pytest[-_]cov", texts))
-    sources = _python_sources(paths)
-    args = _pytest_args(paths, files)
+    toml = parse_toml_or_none(pyproject) or {}
     version = (
         ("  with:", "    python-version-file: .python-version")
         if ".python-version" in root else ("  with:", '    python-version: "3.12"   # adjust to your version')
     )
-    notes: list[str] = []
     if "uv.lock" in root:
-        tool, sync = "uv", "uv sync --all-packages" if "[tool.uv.workspace]" in pyproject else "uv sync"
+        sync = "uv sync --all-packages" if "[tool.uv.workspace]" in pyproject else "uv sync"
         setup = (*("- uses: astral-sh/setup-uv@v6", "  with:", "    enable-cache: true"), f"- run: {sync}")
-        base = f"uv run pytest{args}"
-    elif "poetry.lock" in root or "[tool.poetry" in pyproject:
-        tool = "poetry"
+        # ``uv run`` syncs only the ``dev`` group; a ``test`` group must be named.
+        group = _first(_keys(toml.get("dependency-groups")), _TEST_SETS)
+        return "uv", setup, f"uv run{f' --group {group}' if group else ''} pytest{args}", ()
+    if "poetry.lock" in root or "[tool.poetry" in pyproject:
         setup = ("- uses: actions/setup-python@v5", *version, "- run: pipx install poetry", "- run: poetry install")
-        base = f"poetry run pytest{args}"
-    elif "pdm.lock" in root or "[tool.pdm" in pyproject:
-        tool = "pdm"
-        setup = ("- uses: pdm-project/setup-pdm@v4", "- run: pdm install")
-        base = f"pdm run pytest{args}"
-    elif "hatch.toml" in root or "[tool.hatch.envs" in pyproject:
-        tool = "hatch"
+        return "poetry", setup, f"poetry run pytest{args}", ()
+    if "pdm.lock" in root or "[tool.pdm" in pyproject:
+        return "pdm", ("- uses: pdm-project/setup-pdm@v4", "- run: pdm install"), f"pdm run pytest{args}", ()
+    if "hatch.toml" in root or "[tool.hatch.envs" in pyproject:
         setup = ("- uses: actions/setup-python@v5", *version, "- run: pipx install hatch",
                  "- run: hatch run pip install pytest pytest-cov")
-        base = f"hatch run pytest{args}"
-    else:
-        tool = "pip"
-        parts = ["pip install"]
-        if "pyproject.toml" in root or "setup.py" in root:
-            extras = re.findall(r"^\s*(test|tests|testing|dev)\s*=\s*\[", pyproject, re.M)
-            parts.append(f'-e ".[{extras[0]}]"' if extras else "-e .")
-        parts += [f"-r {r}" for r in reqs]
-        parts.append("pytest pytest-cov")
-        setup = ("- uses: actions/setup-python@v5", *version, f"- run: {' '.join(parts)}   # adjust to your install")
-        base = f"pytest{args}"
+        # Hatch's environment installs the project; it still needs the test tools.
+        return "hatch", setup, f"hatch run pytest{args}", ("hatch run python -m pip install pytest pytest-cov",)
+    install = _pip_install(root, paths, files, toml)
+    setup = ("- uses: actions/setup-python@v5", *version, f"- run: pip install {install}   # adjust to your install")
+    # The CI install lives in ``setup``; a workstation needs the same install.
+    return "pip", setup, f"pytest{args}", (f"python -m pip install {install}",)
+
+
+def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+    reqs = sorted(p for p in root if re.fullmatch(r"requirements[\w.-]*\.txt", p))
+    texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
+    declared = bool(re.search(r"pytest[-_]cov", texts))
+    sources = _python_sources(paths)
+    tool, setup, base, installs = _python_tool(root, paths, files, _pytest_args(paths, files))
+    notes: list[str] = []
     if sources == (".",):
         notes.append("Repowise found no `src/` or package directory, so coverage measures the whole "
                      "checkout; narrow `--cov` to your source directory if you like.")
     editor = partial(_edit_pytest, sources=sources, declared=declared)
     # The standalone pip and hatch install lines already bring pytest-cov.
     test = partial(_edit_pytest, sources=sources, declared=declared or tool in ("pip", "hatch"))(base, _PYTEST.search(base))
-    requires = _run_lines(test.prepare)
-    if tool in ("pip", "hatch"):
-        # Their CI installs live in ``setup``; a workstation needs the same tools in its environment.
-        python = "hatch run python" if tool == "hatch" else "python"
-        requires += (f"{python} -m pip install pytest pytest-cov",)
+    requires = _run_lines(test.prepare) + installs
     return Stack(
         "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
         notes=tuple(notes), requires=requires, pattern=_PYTEST, skip=_PYTEST_ONE_FILE, editor=editor,
