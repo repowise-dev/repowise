@@ -4,8 +4,8 @@
     "deletable_lines": 49,
     "confidence_summary": {
       "high": 3,
-      "medium": 21,
-      "low": 1
+      "medium": 20,
+      "low": 2
     },
     "hidden_below_threshold": 0,
     "findings": [
@@ -475,14 +475,15 @@
         "file_path": "typescript_pkg/src/utils.ts",
         "symbol_name": "formatNumber",
         "symbol_kind": "function",
-        "confidence": 0.4,
+        "confidence": 0.3,
         "reason": "'formatNumber' is not imported, but is named elsewhere in the repo",
         "last_commit_at": null,
         "commit_count_90d": 0,
         "lines": 6,
         "evidence": [
           "No file imports symbol 'formatNumber' from utils.ts",
-          "'formatNumber' is written at typescript_pkg/src/utils.ts:109, so the absence of an import does not establish disuse"
+          "'formatNumber' is written at typescript_pkg/src/utils.ts:109, so the absence of an import does not establish disuse",
+          "Public API of the published package 'sample-typescript-pkg': code outside this repository can use it"
         ],
         "safe_to_delete": false,
         "primary_owner": null,
@@ -564,14 +565,14 @@
     "zombie_packages"
   ],
   "default": {
-    "total_findings": 24,
+    "total_findings": 23,
     "deletable_lines": 49,
     "confidence_summary": {
       "high": 3,
-      "medium": 21,
+      "medium": 20,
       "low": 0
     },
-    "hidden_below_threshold": 1,
+    "hidden_below_threshold": 2,
     "findings": [
       {
         "kind": "unreachable_file",
@@ -1014,28 +1015,6 @@
       },
       {
         "kind": "unused_export",
-        "file_path": "typescript_pkg/src/utils.ts",
-        "symbol_name": "formatNumber",
-        "symbol_kind": "function",
-        "confidence": 0.4,
-        "reason": "'formatNumber' is not imported, but is named elsewhere in the repo",
-        "last_commit_at": null,
-        "commit_count_90d": 0,
-        "lines": 6,
-        "evidence": [
-          "No file imports symbol 'formatNumber' from utils.ts",
-          "'formatNumber' is written at typescript_pkg/src/utils.ts:109, so the absence of an import does not establish disuse"
-        ],
-        "safe_to_delete": false,
-        "primary_owner": null,
-        "age_days": null,
-        "risk_factors": [],
-        "start_line": 113,
-        "end_line": 118,
-        "export_only": false
-      },
-      {
-        "kind": "unused_export",
         "file_path": "utils/helpers.py",
         "symbol_name": "used_by_nobody_else",
         "symbol_kind": "function",
@@ -1104,8 +1083,8 @@
     "deletable_lines": 49,
     "confidence_summary": {
       "high": 3,
-      "medium": 16,
-      "low": 1
+      "medium": 15,
+      "low": 2
     },
     "hidden_below_threshold": 0,
     "findings": [
@@ -1511,14 +1490,15 @@
         "file_path": "typescript_pkg/src/utils.ts",
         "symbol_name": "formatNumber",
         "symbol_kind": "function",
-        "confidence": 0.4,
+        "confidence": 0.3,
         "reason": "'formatNumber' is not imported, but is named elsewhere in the repo",
         "last_commit_at": null,
         "commit_count_90d": 0,
         "lines": 6,
         "evidence": [
           "No file imports symbol 'formatNumber' from utils.ts",
-          "'formatNumber' is written at typescript_pkg/src/utils.ts:109, so the absence of an import does not establish disuse"
+          "'formatNumber' is written at typescript_pkg/src/utils.ts:109, so the absence of an import does not establish disuse",
+          "Public API of the published package 'sample-typescript-pkg': code outside this repository can use it"
         ],
         "safe_to_delete": false,
         "primary_owner": null,

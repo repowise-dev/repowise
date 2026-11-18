@@ -85,6 +85,7 @@
     "./workspace/contract-ai-prompt": "./src/workspace/contract-ai-prompt.ts",
     "./workspace/contract-facts": "./src/workspace/contract-facts.ts",
     "./workspace/contract-type-label": "./src/workspace/contract-type-label.ts",
+    "./workspace/link-provenance": "./src/workspace/link-provenance.ts",
     "./workspace/system-map": "./src/workspace/system-map/index.ts",
     "./workspace/dsm": "./src/workspace/dsm/index.ts",
     "./workspace/*": "./src/workspace/*.tsx",
@@ -143,6 +144,7 @@
   "scripts": {
     "type-check": "tsc --noEmit",
     "test": "vitest run",
+    "bench": "vitest bench --run",
     "gates": "bash ./scripts/ui-gates.sh"
   },
   "dependencies": {
@@ -200,6 +202,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
+    "axe-core": "4.12.1",
     "jsdom": "^25.0.0",
     "next-themes": "^0.4.6",
     "react": "^19.0.0",

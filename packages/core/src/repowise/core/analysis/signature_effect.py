@@ -7,9 +7,9 @@ parameter lists and asks the narrower question: could a call site written
 against the old signature stop working?
 
 The reading depends on the language. Where callers can name arguments (Python,
-C#, Kotlin), a rename breaks them; where they cannot (JavaScript, Go, Java),
-it does not. Where types are checked at the call (TypeScript, Rust, Go, Java),
-a retyped parameter or return breaks callers; where they are not (Python,
+C#, Kotlin), a rename breaks them; where they cannot (JavaScript, Go, Java,
+Apex), it does not. Where types are checked at the call (TypeScript, Rust, Go, Java,
+Apex), a retyped parameter or return breaks callers; where they are not (Python,
 JavaScript), it is only an annotation.
 
 It is conservative in one direction only. A form it cannot parse is reported as
@@ -33,13 +33,13 @@ EFFECT_UNKNOWN = "unknown"  # unparseable, or a change this module cannot judge
 # Callers can pass arguments by name, so a parameter's name is contract.
 # Unlisted languages (and ``None``) are treated as named: fail closed.
 _POSITIONAL_ONLY_LANGUAGES = frozenset(
-    {"javascript", "typescript", "go", "java", "c", "cpp", "rust"}
+    {"javascript", "typescript", "go", "java", "c", "cpp", "rust", "apex"}
 )
 # Annotations are not checked at the call, so a retype is not a break.
 # Unlisted languages (and ``None``) are treated as typed: fail closed.
 _LENIENT_TYPE_LANGUAGES = frozenset({"python", "javascript", "ruby", "php"})
 # ``Type name`` rather than ``name: Type``.
-_TYPE_FIRST_LANGUAGES = frozenset({"java", "csharp", "c", "cpp", "dart", "php"})
+_TYPE_FIRST_LANGUAGES = frozenset({"java", "csharp", "c", "cpp", "dart", "php", "apex"})
 _HASH_COMMENT_LANGUAGES = frozenset({"python", "ruby", "php"})
 
 _PAIRS = {")": "(", "]": "[", "}": "{"}

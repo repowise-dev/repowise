@@ -362,3 +362,22 @@ def test_an_interaction_that_saved_nothing_is_counted_but_not_averaged_in(
     # 800/1000, not 800/2000: the second interaction is coverage, not a zero.
     assert report.input_reduction_ratio == pytest.approx(0.8)
     assert report.baseline_input_tokens == 1_000
+
+
+def test_agent_calls_give_each_agent_its_first_and_last_mcp_call(tmp_path: Path) -> None:
+    from repowise.core.savings.service import load_agent_calls
+
+    assert load_agent_calls(tmp_path) is None
+    _sidecar(tmp_path)
+    assert load_agent_calls(tmp_path) == {}
+    _record(tmp_path, baseline=10, agent="codex", occurred_at="2026-10-01T10:00:00Z")
+    _record(tmp_path, baseline=10, agent="codex", occurred_at="2026-10-03T10:00:00Z")
+    _record(tmp_path, baseline=10, agent="claude_code", occurred_at="2026-10-02T10:00:00Z")
+    # A distill event is not a call the agent made to the index.
+    _record(
+        tmp_path, baseline=10, agent="cursor", surface="distill", occurred_at="2026-10-04T10:00:00Z"
+    )
+    calls = load_agent_calls(tmp_path)
+    assert set(calls) == {"codex", "claude_code"}
+    assert calls["codex"][0].startswith("2026-10-01")
+    assert calls["codex"][1].startswith("2026-10-03")

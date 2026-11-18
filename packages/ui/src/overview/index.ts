@@ -23,18 +23,20 @@ export { RepoRows } from "./repo-rows";
 export type { RepoRow, RepoRowsProps } from "./repo-rows";
 
 export { HealthLede } from "./health-lede";
-export type { HealthLedeProps } from "./health-lede";
+export type { HealthLedeCopy, HealthLedeProps } from "./health-lede";
 
 export { ReadsColumn } from "./reads-column";
 export type { ReadItem, ReadBarSegment } from "./reads-column";
 
 export { ChangeLine } from "./change-line";
-export type { ChangeLineProps, ChangeStat } from "./change-line";
+export type { ChangeLineCopy, ChangeLineProps, ChangeStat } from "./change-line";
 
 export { CommitRows, DecisionRows } from "./activity-lists";
 export type { CommitRow, DecisionRow } from "./activity-lists";
 
 export { AttentionAreas } from "./attention-areas";
+export type { AttentionAreasCopy } from "./attention-areas";
+export type { AttentionSectionCopy } from "./attention-section";
 export { AttentionRows } from "./attention-rows";
 export { AttentionSources } from "./attention-sources";
 export type { AttentionRowItem } from "./attention-rows";
@@ -42,7 +44,7 @@ export type { AttentionRowItem } from "./attention-rows";
 export { HotspotTable } from "./hotspot-table";
 export { actionHref } from "./action-href";
 export { NextActions, renderActionTitle } from "./next-actions";
-export type { NextActionsProps } from "./next-actions";
+export type { NextActionsCopy, NextActionsProps } from "./next-actions";
 export { ExploreList } from "./explore-list";
 export { ExploreCards } from "./explore-cards";
 export type { ExploreCard, ExploreCardsProps } from "./explore-cards";
@@ -64,4 +66,10 @@ export {
   previousSnapshotAt,
   resolveOverviewRoutes,
 } from "./overview-model";
-export type { OverviewRoutes, ResolvedOverviewRoutes } from "./overview-model";
+export type {
+  ExploreEntryKey,
+  InventoryCopy,
+  OverviewModelCopy,
+  OverviewRoutes,
+  ResolvedOverviewRoutes,
+} from "./overview-model";

@@ -8,6 +8,8 @@ from typing import Any
 
 from sqlalchemy import select
 
+from repowise.core.generation.entry_points import orientation_entry_points_view
+from repowise.core.generation.nav_titles import page_nav_title
 from repowise.core.persistence.crud import (
     get_kg_project_meta as _get_kg_project_meta,
 )
@@ -15,10 +17,9 @@ from repowise.core.persistence.models import GraphNode, Page
 from repowise.server.mcp_server._budget import OmissionCollector
 from repowise.server.mcp_server._helpers import filter_graph_nodes, is_excluded
 
-# Orientation, not a directory listing — the top few modules are enough to
-# point a fresh agent at the interesting subsystems. The rest are persisted
-# to the omission store, not dropped.
-_MODULE_CAP = 8
+# One row per package or top-level directory; the rest are persisted to the
+# omission store, not dropped.
+_MODULE_CAP = 12
 
 # Split point between markdown H2 sections ("\n## ...").
 _H2_SPLIT_RE = re.compile(r"\n(?=#{1,2}\s)")
@@ -28,13 +29,37 @@ def _compact_overview_content(content: str) -> str:
     """Leading section of the overview essay — the summary paragraph, not the walkthrough.
 
     The full essay repeats what ``key_modules`` and ``architecture.layers``
-    already carry, so compact mode (the default) keeps only the first H2
-    section. Callers who want the whole thing pass ``include=["content"]``.
+    already carry, so compact mode (the default) keeps only the first section
+    that says something. Callers who want the whole thing pass
+    ``include=["content"]``.
     """
     text = (content or "").strip()
     if not text:
         return text
-    return _H2_SPLIT_RE.split(text, maxsplit=1)[0].strip()
+    sections = _H2_SPLIT_RE.split(text, maxsplit=2)
+    lead = sections[0].strip()
+    # The page built without a model opens with its title and a bold stats
+    # line, and its summary paragraph sits under the first heading after them.
+    if not _has_prose(lead) and len(sections) > 1:
+        lead = re.sub(r"\n{3,}", "\n\n", f"{lead}\n\n{sections[1].strip()}")
+    return lead
+
+
+def _has_prose(section: str) -> bool:
+    return any(_is_prose_line(line) for line in section.splitlines())
+
+
+def _is_prose_line(line: str) -> bool:
+    """Not blank, a heading, a table row, a list item, a quote, a code fence or
+    a ``**Field:** value`` line."""
+    text = line.strip()
+    if _FIELD_LINE_RE.match(text):
+        return False
+    return bool(text) and not text.startswith(("#", "|", "- ", "* ", "```", ">"))
+
+
+# "**Files:** 128 | ..." opens with a bold label ending in a colon.
+_FIELD_LINE_RE = re.compile(r"\*\*[^*]+:\*\*")
 
 
 def _overview_content(overview_page: Page | None, want_full: bool) -> tuple[str, str | None]:
@@ -88,9 +113,15 @@ def _module_order_key(page: Any) -> tuple:
 
 
 async def _load_module_pages(
-    session: Any, repository: Any, collector: OmissionCollector
-) -> list[Page]:
-    """Module pages capped to ``_MODULE_CAP``; the remainder goes to the omission store."""
+    session: Any, repository: Any, collector: OmissionCollector, package_roots: list[str]
+) -> list[dict[str, Any]]:
+    """Key-module rows: the topmost module pages, capped to ``_MODULE_CAP``.
+
+    A topmost page has no module page above it, so each package or top-level
+    directory gets one row, with ``pages`` counting what sits beneath it. Too
+    few rows to orient by opens the largest into its own topmost children.
+    Rows follow outline order; the pages no row names go to the omission store.
+    """
     result = await session.execute(
         select(Page)
         .where(
@@ -100,17 +131,77 @@ async def _load_module_pages(
         )
         .order_by(Page.title)
     )
-    # Outline order, not alphabetical: the stored tree already ranks modules by
-    # the dependency layer they sit in, so the capped-to-8 list is the top of
-    # the spine rather than whatever sorts first.
-    all_module_pages = sorted(result.scalars().all(), key=_module_order_key)
-    if len(all_module_pages) > _MODULE_CAP:
+    pages = list(result.scalars().all())
+    heads = _key_module_heads(pages)
+    rest = [p for p in pages if p not in heads]
+    if rest:
         collector.add(
-            f"module pages beyond cap={_MODULE_CAP} "
-            f"({len(all_module_pages) - _MODULE_CAP} dropped)",
-            "\n".join(f"{p.title}: {p.target_path}" for p in all_module_pages[_MODULE_CAP:]),
+            f"module pages beneath the key modules, cap={_MODULE_CAP} ({len(rest)} dropped)",
+            "\n".join(f"{p.title}: {p.target_path}" for p in rest),
         )
-    return all_module_pages[:_MODULE_CAP]
+    roots = sorted((r for r in package_roots if r), key=len, reverse=True)
+    rows = []
+    for head in heads:
+        path = head.target_path or ""
+        name = page_nav_title("module_page", head.title or "", head.metadata_json)
+        row = {"name": name, "path": head.target_path}
+        if head.section_number is not None:
+            row["section"] = head.section_number
+        package = next((r for r in roots if _under(path, r)), path)
+        if package != path:
+            row["package"] = package
+        below = sum(_under(p.target_path or "", path) for p in pages)
+        if below > 1:
+            row["pages"] = below
+        rows.append(row)
+    return rows
+
+
+#: Fewer rows than this name too little of the repository to orient by.
+_MODULE_FLOOR = 4
+
+
+def _under(path: str, root: str) -> bool:
+    return not root or path == root or path.startswith(root + "/")
+
+
+def _topmost(pages: list[Any]) -> list[Any]:
+    paths = [p.target_path or "" for p in pages]
+    return [
+        p
+        for p in pages
+        if not any(o != (p.target_path or "") and _under(p.target_path or "", o) for o in paths)
+    ]
+
+
+def _key_module_heads(pages: list[Any]) -> list[Any]:
+    heads = _one_per_path(_topmost(pages))
+    opened: set[str] = set()
+
+    def beneath(head: Any) -> list[Any]:
+        path = head.target_path or ""
+        return [
+            p for p in pages if (p.target_path or "") != path and _under(p.target_path or "", path)
+        ]
+
+    while len(heads) < _MODULE_FLOOR:
+        # Open the head with the most pages beneath it into its own top layer.
+        # The opened head stays: it is still the module its own files belong to.
+        closed = [h for h in heads if (h.target_path or "") not in opened]
+        widest = max(closed, key=lambda h: len(beneath(h)), default=None)
+        if widest is None or not beneath(widest):
+            break
+        opened.add(widest.target_path or "")
+        heads = _one_per_path(heads + _topmost(beneath(widest)))
+    return sorted(heads, key=_module_order_key)[:_MODULE_CAP]
+
+
+def _one_per_path(pages: list[Any]) -> list[Any]:
+    """*pages* with one page per target path, the first one seen."""
+    by_path: dict[str, Any] = {}
+    for page in pages:
+        by_path.setdefault(page.target_path or "", page)
+    return list(by_path.values())
 
 
 def _drop_fixtures(ids: list[str], exclude_spec: Any) -> list[str]:
@@ -141,7 +232,7 @@ async def _resolve_entry_point_ids(session: Any, repository: Any, exclude_spec: 
             curated_ids = []
 
     if curated_ids:
-        return _drop_fixtures(curated_ids, exclude_spec)
+        return orientation_entry_points_view(_drop_fixtures(curated_ids, exclude_spec))
 
     result = await session.execute(
         select(GraphNode).where(
@@ -161,7 +252,7 @@ async def _resolve_entry_point_ids(session: Any, repository: Any, exclude_spec: 
         ],
         exclude_spec,
     )
-    return [n.node_id for n in entry_nodes]
+    return orientation_entry_points_view(n.node_id for n in entry_nodes)
 
 
 def _resolve_title(overview_page: Page | None, repository: Any) -> str:
@@ -176,6 +267,15 @@ def _resolve_title(overview_page: Page | None, repository: Any) -> str:
     if persisted_title.strip() == "Repository Overview: repo":
         return f"Repository Overview: {repository.name}"
     return persisted_title
+
+
+def _grouped_by_package(paths: list[str], package_roots: list[str]) -> list[str]:
+    """*paths* with each package's entries together, packages in first-seen order."""
+    roots = sorted((r for r in package_roots if r), key=len, reverse=True)
+    order: dict[str, int] = {}
+    for path in paths:
+        order.setdefault(next((r for r in roots if _under(path, r)), ""), len(order))
+    return sorted(paths, key=lambda p: order[next((r for r in roots if _under(p, r)), "")])
 
 
 def _capped_entry_points(entry_ids: list[str], collector: OmissionCollector) -> list[str]:

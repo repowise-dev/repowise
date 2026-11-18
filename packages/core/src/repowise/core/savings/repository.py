@@ -94,6 +94,20 @@ class SavingsRepository:
             [*params, limit],
         ).fetchall()
 
+    def index_call_window(self, repository_id: str) -> list[tuple[Any, ...]]:
+        """``(agent, first, last)`` per agent for calls that read the index, latest first.
+
+        MCP tool calls and VS Code language-model tool calls; distill and hook
+        rows are output an agent ran, not questions it asked. Bounded like
+        every other grouping here.
+        """
+        return self._conn.execute(
+            "SELECT agent, MIN(occurred_at), MAX(occurred_at) FROM savings_events "
+            "WHERE repository_id = ? AND surface IN ('mcp', 'vscode_lm') "
+            "GROUP BY agent ORDER BY 3 DESC LIMIT 100",
+            [repository_id],
+        ).fetchall()
+
     def recorded_omission_refs(self, refs: Sequence[str]) -> set[str]:
         """Which of *refs* an event already claims, via ``idx_..._omissions_ref``.
 
@@ -159,6 +173,37 @@ class SavingsRepository:
             )
             self._conn.commit()
             return True
+        except BaseException:
+            self._conn.rollback()
+            raise
+
+    def adopt_rows(self, repository_id: str) -> int:
+        """File every row of this sidecar under *repository_id*; return how many moved.
+
+        A sidecar lives inside the repository it describes, so a row naming any
+        other id was written before the repository was moved or copied. A row
+        whose retry key already exists under the new id keeps its old id.
+        Takes no write lock when there is nothing to move.
+        """
+        tables = ("savings_events", "savings_opportunities")
+        if not any(
+            self._conn.execute(
+                f"SELECT 1 FROM {table} WHERE repository_id != ? LIMIT 1", (repository_id,)
+            ).fetchone()
+            for table in tables
+        ):
+            return 0
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            moved = sum(
+                self._conn.execute(
+                    f"UPDATE OR IGNORE {table} SET repository_id = ? WHERE repository_id != ?",
+                    (repository_id, repository_id),
+                ).rowcount
+                for table in tables
+            )
+            self._conn.commit()
+            return moved
         except BaseException:
             self._conn.rollback()
             raise

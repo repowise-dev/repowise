@@ -36,6 +36,38 @@ def find_repowise_repo_root(start: Path | None = None) -> Path | None:
     return None
 
 
+#: Set to ``0`` (or false/no/off) to keep a worktree from reading its main
+#: checkout's index.
+WORKTREE_FALLBACK_ENV = "REPOWISE_WORKTREE_FALLBACK"
+
+
+def borrowed_index_base(checkout: Path) -> Path | None:
+    """The main checkout whose index a linked worktree with none of its own reads.
+
+    *checkout* is the worktree's top level. ``None`` unless it is a linked
+    worktree of a main checkout that has ``.repowise/wiki.db``, or when
+    :data:`WORKTREE_FALLBACK_ENV` turns the fallback off. The caller checks
+    that *checkout* has no ``.repowise/`` of its own: a seeded worktree reads
+    its own index. Read-only use: nothing that writes the index (update,
+    init, coverage ingest) may run against the returned store.
+
+    No subprocess: hooks call this on their hot path, and the ``git_head``
+    import is paid only when *checkout* really has a ``.git`` file.
+    """
+    import os
+
+    if os.environ.get(WORKTREE_FALLBACK_ENV, "").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    if not (checkout / ".git").is_file():
+        return None
+    from repowise.core.git_head import linked_worktree_base
+
+    base = linked_worktree_base(checkout)
+    if base is None or not (base / REPOWISE_DIR / "wiki.db").is_file():
+        return None
+    return base
+
+
 def _same_path(left: Path, right: Path) -> bool:
     try:
         return left.samefile(right)

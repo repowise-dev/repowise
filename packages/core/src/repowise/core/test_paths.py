@@ -58,15 +58,19 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import PurePath, PurePosixPath
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
     from .dotnet_test_projects import DotnetTestProjects
+    from .phpunit_roots import PhpunitRoots
     from .pytest_roots import PytestRoots
+
+    # Whether a repo-relative directory holds a package manifest.
+    PackageRootProbe = Callable[[str], bool]
 
 # Directory segments that mark every file beneath them as test material,
 # whatever the filename. ``__test__`` is the Jest variant of ``__tests__``;
@@ -115,6 +119,18 @@ _JVM_SOURCE_ROOTS: frozenset[str] = frozenset({"java", "kotlin", "groovy", "scal
 # GitHub's repository-metadata directory; see ``_classify``.
 _REPO_METADATA_DIR = ".github"
 
+# Inside a JavaScript-family ``src`` tree a ``tests/`` folder is as often a
+# product feature (a Tests page, the components behind it) as a suite, and
+# Jest, Vitest and Playwright collect there by file name, never by folder. So
+# below ``src`` it makes no test tree for these files: a ``.test.``/``.spec.``
+# name, ``__tests__/`` and the scaffolding directories still do. A ``tests/``
+# outside ``src`` keeps counting, because Mocha, AVA and ``node --test`` collect
+# a whole ``test(s)/`` folder by default. Ceiling: an AVA or Mocha run pointed at
+# a ``src/**/tests/`` folder of plainly named files reads as production; reading
+# the runner config's globs would settle that case.
+_SOURCE_TREE = "src"
+_FEATURE_NAMED_TESTS_DIR = "tests"
+
 # The separators a directory segment splits into words on.
 _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 
@@ -123,8 +139,9 @@ _SEGMENT_WORD_SEPARATORS = re.compile(r"[-_.]+")
 # that shows up in real directory names. These count only when the
 # filename corroborates, or when the file's own language declares the token
 # (Ruby's spec/ needs no corroboration - a Ruby file under spec/ is RSpec
-# material whatever its name; Python's t/ likewise - a Python file under t/
-# is test material whatever its name).
+# material whatever its name; Python's and Perl's t/ likewise - a Python or
+# Perl file under t/ is test material whatever its name). A language declares
+# its tokens with ``test_dir_tokens`` on its spec.
 _AMBIGUOUS_TEST_DIR_TOKENS: frozenset[str] = frozenset({"spec", "specs", "t"})
 
 # A whole module named for testing and nothing else: Django's per-app
@@ -147,6 +164,14 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
     {"fixtures", "factories", "support", "helpers", "mocks"}
 )
 
+# Filename stems that mark scaffolding/fixtures when sitting inside a test
+# tree (e.g. ``e2e/fixtures.ts``, ``tests/setup_tests.py``). They do not mark
+# files outside a test tree because bare "fixtures" or "fixture" is an ordinary
+# word in production domains (e.g. ``src/fixtures.py``).
+_SUPPORT_STEMS_IN_TEST_TREE: frozenset[str] = frozenset(
+    {"fixture", "fixtures", "setup-tests", "setup_tests", "setuptests"}
+)
+
 # Scaffolding directories whose names mean test material *wherever* they sit,
 # because nothing else is ever called this. Bare ``fixtures`` deliberately stays
 # out of this set and above: it is an ordinary English word that names real
@@ -165,6 +190,8 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # and Vitest write the ``.snap`` output a snapshot test compares against; the
 # ``.test.`` infix used to catch those files by accident, and stopped once
 # filename rules became source rules.
+# jscodeshift keeps codemod input and expected output in ``__testfixtures__``
+# beside the transform, so those files are test support wherever they sit too.
 #
 # Support rather than test, deliberately: golden data is what a test reads, not
 # a test. So the union counts it (#1103's reporter asked for exactly that) while
@@ -172,7 +199,26 @@ _SUPPORT_DIR_TOKENS: frozenset[str] = frozenset(
 # Matched on the segment's words run together too, so ``test-data/`` and
 # ``test_data/`` are the same golden data rather than a test tree.
 _SUPPORT_DIR_TOKENS_ANYWHERE: frozenset[str] = frozenset(
-    {"__fixtures__", "__mocks__", "__snapshots__", "testdata"}
+    {"__fixtures__", "__mocks__", "__snapshots__", "__testfixtures__", "testdata"}
+)
+
+# Helper directories named for tests, matched on the segment's words run
+# together like ``testdata`` above: ``test-helpers/``, ``test_utils/``,
+# ``testutil/`` (Go), ``test-support/``. They hold the mocks, render rigs and
+# fixtures only tests import, so they count wherever they sit, where the bare
+# ``helpers``/``support`` words above need a test tree around them.
+#
+# Unlike golden data, a helper directory can ship: preact's ``test-utils/`` is a
+# package of its own published as ``preact/test-utils``. So one that is a
+# package root (holds a registry package manifest) stays production. Path-only
+# callers can see that only when the manifest is the path itself
+# (``test-utils/package.json``); ingestion passes ``package_root`` so every file
+# beneath one reads as production too. Known miss: react-dom's
+# ``src/test-utils/`` is re-exported as the public ``react-dom/test-utils`` from
+# a manifest one level up, and reads as support. ``testing`` stays out: it names
+# shipped packages (Laravel's ``Illuminate/Testing``, Go helper libraries).
+_SUPPORT_DIR_WORDS_UNLESS_PACKAGE: frozenset[str] = frozenset(
+    {"testhelpers", "testhelper", "testutils", "testutil", "testsupport"}
 )
 
 
@@ -185,6 +231,10 @@ _SUPPORT_NAME_WORDS: frozenset[str] = frozenset(
     {"harness", "support", "helper", "helpers", "mock", "mocks", "fixture", "fixtures", "setup"}
 )
 
+# ``utils`` reads as support only when a dot ties it to a module
+# (``foo.test-utils.ts``), which no published ``test-utils`` entry is named.
+_QUALIFIED_SUPPORT_NAME_WORDS: frozenset[str] = frozenset({"utils", "util"})
+
 
 @dataclass(frozen=True, slots=True)
 class _Conventions:
@@ -193,6 +243,7 @@ class _Conventions:
     stem_prefixes: tuple[str, ...]
     stem_suffixes: tuple[str, ...]
     infixes: tuple[str, ...]
+    test_exts: frozenset[str]
     source_exts: frozenset[str]
     exact_stem_exts: frozenset[str]
     camel_res: dict[str, re.Pattern[str]]
@@ -204,6 +255,10 @@ class _Conventions:
     dir_suffixes: tuple[str, ...]
     unambiguous_dir_suffixes: tuple[str, ...]
     lang_dir_tokens: dict[str, frozenset[str]]
+    #: The same tokens keyed by file extension, for a caller with no language.
+    ext_dir_tokens: dict[str, frozenset[str]]
+    manifest_names: frozenset[str]
+    js_family_exts: frozenset[str]
 
 
 @cache
@@ -218,11 +273,13 @@ def _conventions() -> _Conventions:
     no prefix, and dropping it would unclassify RSpec-style ``spec_foo.rb``.
     """
     from .ingestion.languages.registry import REGISTRY
+    from .ingestion.models import TS_JS_LANGUAGES
 
     return _Conventions(
         stem_prefixes=tuple(sorted({*REGISTRY.test_stem_prefixes(), "spec_"})),
         stem_suffixes=REGISTRY.test_stem_suffixes(),
         infixes=REGISTRY.test_infixes(),
+        test_exts=REGISTRY.test_extensions(),
         source_exts=REGISTRY.all_code_extensions(),
         exact_stem_exts=REGISTRY.extensions_for(("python", "rust")),
         camel_res=REGISTRY.camel_test_res_by_extension(),
@@ -246,6 +303,13 @@ def _conventions() -> _Conventions:
             if s.lstrip(".").lower() not in _AMBIGUOUS_TEST_DIR_TOKENS
         ),
         lang_dir_tokens=REGISTRY.test_dir_tokens_by_language(),
+        ext_dir_tokens={
+            ext: tokens
+            for lang, tokens in REGISTRY.test_dir_tokens_by_language().items()
+            for ext in REGISTRY.extensions_for((lang,))
+        },
+        manifest_names=REGISTRY.package_manifest_filenames(),
+        js_family_exts=REGISTRY.extensions_for(TS_JS_LANGUAGES),
     )
 
 
@@ -272,6 +336,33 @@ def _is_support_anywhere_dir(segment: str) -> bool:
     )
 
 
+def _in_support_anywhere_dir(
+    segments: list[str], original: list[str], filename: str, package_root: PackageRootProbe | None
+) -> bool:
+    """Whether a directory that needs no test tree around it holds this file."""
+    for i, seg in enumerate(segments):
+        if _is_support_anywhere_dir(seg):
+            return True
+        if "".join(_words(seg)) in _SUPPORT_DIR_WORDS_UNLESS_PACKAGE and not _is_package_root(
+            original[: i + 1], filename if i == len(segments) - 1 else "", package_root
+        ):
+            return True
+    return False
+
+
+def _is_package_root(
+    dir_parts: list[str], filename: str, package_root: PackageRootProbe | None
+) -> bool:
+    """Whether the directory *dir_parts* names is a package (see above).
+
+    *filename* is the file being classified when it sits directly in that
+    directory: a manifest there proves it without asking anyone.
+    """
+    if filename in _conventions().manifest_names:
+        return True
+    return package_root is not None and package_root("/".join(dir_parts))
+
+
 def _is_test_name(filename: str) -> bool:
     """Whether the filename alone marks a test (test_x.py, x_test.go, x.spec.ts)."""
     if not filename:
@@ -281,6 +372,8 @@ def _is_test_name(filename: str) -> bool:
     ext = PurePosixPath(lowered).suffix
     if ext not in rules.source_exts:
         return False
+    if ext in rules.test_exts:
+        return True
     if ext in rules.exact_stem_exts and PurePosixPath(filename).stem in _TEST_EXACT_STEMS:
         return True
     stem = PurePosixPath(lowered).stem
@@ -317,7 +410,10 @@ def _is_support_compound(filename: str) -> bool:
     return (
         len(words) >= 2
         and words[-2] == "test"
-        and words[-1] in _SUPPORT_NAME_WORDS
+        and (
+            words[-1] in _SUPPORT_NAME_WORDS
+            or (words[-1] in _QUALIFIED_SUPPORT_NAME_WORDS and "." in lowered.stem)
+        )
         and lowered.suffix in _conventions().source_exts
         and not _is_test_name(filename)
     )
@@ -332,11 +428,38 @@ def _is_test_dir(
     )
 
 
+def _tree_segments(
+    segments: list[str], original: list[str], filename: str
+) -> tuple[list[str], list[str]]:
+    """*segments* with the ``src/**/tests/`` folders a JS-family file ignores blanked.
+
+    Blanked rather than dropped, so the layout rules keep their positions.
+    """
+    if (
+        PurePosixPath(filename.lower()).suffix not in _conventions().js_family_exts
+        or _SOURCE_TREE not in segments
+    ):
+        return segments, original
+    src = segments.index(_SOURCE_TREE)
+    keep = [i < src or seg != _FEATURE_NAMED_TESTS_DIR for i, seg in enumerate(segments)]
+    return (
+        [seg if k else "" for seg, k in zip(segments, keep, strict=True)],
+        [seg if k else "" for seg, k in zip(original, keep, strict=True)],
+    )
+
+
 def _has_test_segment(
     segments: list[str], original: list[str], filename: str, language: str | None
 ) -> bool:
     """Whether one directory's own name says it holds tests."""
-    lang_tokens = _conventions().lang_dir_tokens.get((language or "").lower(), frozenset())
+    rules = _conventions()
+    # A path-only caller (``path_origin``) has no language: the extension
+    # names it, so ``t/smoke/tasks.py`` reads as tests there as at ingestion.
+    lang_tokens = (
+        rules.lang_dir_tokens.get(language.lower(), frozenset())
+        if language
+        else rules.ext_dir_tokens.get(PurePosixPath(filename.lower()).suffix, frozenset())
+    )
     # ``spec/`` needs corroboration from somewhere: the language declaring the
     # token, a test- or support-shaped filename, or a scaffolding dir beneath it
     # (``spec/support/helper.rb`` is RSpec whatever the filename says, and
@@ -423,8 +546,36 @@ def _classify(
     language: str | None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> str:
     """``"test"``, ``"support"``, or ``""`` for production code.
+
+    With no repo context the answer depends only on the path, the language and
+    the process-wide naming spec, so it is memoized: health detectors ask about
+    the same few thousand paths tens of thousands of times a pass.
+    """
+    if roots is None and dotnet_projects is None and phpunit_roots is None and package_root is None:
+        return _classify_without_context(path, language)
+    return _classify_with_context(path, language, roots, dotnet_projects, phpunit_roots, package_root)
+
+
+# Bounded so a long-lived server sees a fixed ceiling (~65k short keys); a
+# larger repo only re-classifies the overflow.
+@lru_cache(maxsize=65536)
+def _classify_without_context(path: str, language: str | None) -> str:
+    return _classify_with_context(path, language)
+
+
+def _classify_with_context(
+    path: str,
+    language: str | None,
+    roots: PytestRoots | None = None,
+    dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
+) -> str:
+    """The classification itself; see :func:`_classify`.
 
     One traversal, so the two public predicates cannot disagree with each other
     the way the copies they replace disagreed.
@@ -445,7 +596,9 @@ def _classify(
     # A scaffolding directory that needs no test tree around it settles the
     # question before the tree rules run, ``.github/`` included. A test-shaped
     # filename still wins, so ``testdata/build_test.go`` stays a test.
-    if not named_test and any(_is_support_anywhere_dir(seg) for seg in segments):
+    if not named_test and _in_support_anywhere_dir(
+        segments, original_segments, filename, package_root
+    ):
         return "support"
 
     # ``.github/`` holds CI workflows, actions, issue templates and agent
@@ -455,20 +608,44 @@ def _classify(
     if _REPO_METADATA_DIR in segments:
         return "test" if named_test else ""
 
-    # A test name outside a test directory still needs pytest to collect it.
-    needs_test_dir = not named_test or _pytest_skips(path, filename, roots)
+    # A test name outside a test directory still needs pytest to collect it,
+    # or PHPUnit config not to keep it out of collection.
+    needs_test_dir = (
+        not named_test
+        or _pytest_skips(path, filename, roots)
+        or _phpunit_skips(path, filename, phpunit_roots)
+    )
     if (
         needs_test_dir
-        and not _is_test_dir(segments, original_segments, filename, language)
+        and not _is_test_dir(
+            *_tree_segments(segments, original_segments, filename), filename, language
+        )
         and not _dotnet_project_collects(path, filename, dotnet_projects)
     ):
         return ""
 
     # Inside test material. A test-shaped filename wins; otherwise a
-    # scaffolding directory demotes it to support.
-    if not named_test and any(seg in _SUPPORT_DIR_TOKENS for seg in segments):
+    # scaffolding directory or support stem demotes it to support.
+    if not named_test and _is_support_in_test_tree(segments, filename):
         return "support"
     return "test"
+
+
+def _is_support_in_test_tree(segments: list[str], filename: str) -> bool:
+    """Whether a file already inside a test tree is scaffolding (``e2e/fixtures.ts``)."""
+    return (
+        any(seg in _SUPPORT_DIR_TOKENS for seg in segments)
+        or PurePosixPath(filename.lower()).stem in _SUPPORT_STEMS_IN_TEST_TREE
+    )
+
+
+def _phpunit_skips(path: str, filename: str, roots: PhpunitRoots | None) -> bool:
+    """Whether PHPUnit's config keeps a test-named PHP file out of collection."""
+    return (
+        roots is not None
+        and PurePosixPath(filename).suffix.lower() == ".php"
+        and roots.collects(path.replace("\\", "/")) is False
+    )
 
 
 def _dotnet_project_collects(
@@ -491,11 +668,24 @@ def _pytest_skips(path: str, filename: str, roots: PytestRoots | None) -> bool:
     )
 
 
+def is_test_support_module(path: str) -> bool:
+    """Test-tree code a runner never collects: Perl's ``t/lib/Helper.pm``.
+
+    Ingestion still marks it test material; reach walks through it to the
+    test that loads it, as through a Python helper.
+    """
+    from .ingestion.languages.registry import REGISTRY
+
+    return PurePosixPath(path).suffix.lower() in REGISTRY.test_support_extensions()
+
+
 def is_test_path(
     path: str,
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is a test.
 
@@ -504,10 +694,11 @@ def is_test_path(
     *language* when it is known: it decides the ambiguous ``spec/``/``t/``
     cases, which are RSpec for Ruby and a Perl-style test tree for Python,
     and specification or miscellaneous folders for everything else. Pass
-    *roots* to let pytest's config overrule a test-shaped Python name. Pass
-    *dotnet_projects* to recognize C# files governed by a test project.
+    *roots* to let pytest's config overrule a test-shaped Python name, pass
+    *dotnet_projects* to recognize C# files governed by a test project, and
+    pass *phpunit_roots* to let PHPUnit's config overrule a test-shaped PHP name.
     """
-    return _classify(path, language, roots, dotnet_projects) == "test"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "test"
 
 
 def is_test_support_path(
@@ -515,6 +706,8 @@ def is_test_support_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is test infrastructure rather than a test.
 
@@ -522,7 +715,7 @@ def is_test_support_path(
     scaffolding directories inside a test tree (``tests/factories/user.py``).
     Never true at the same time as :func:`is_test_path`.
     """
-    return _classify(path, language, roots, dotnet_projects) == "support"
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) == "support"
 
 
 def is_test_related_path(
@@ -530,6 +723,8 @@ def is_test_related_path(
     language: str | None = None,
     roots: PytestRoots | None = None,
     dotnet_projects: DotnetTestProjects | None = None,
+    phpunit_roots: PhpunitRoots | None = None,
+    package_root: PackageRootProbe | None = None,
 ) -> bool:
     """Whether *path* is a test **or** test support.
 
@@ -537,23 +732,25 @@ def is_test_related_path(
     should use when they mean "not production code" - a refactoring detector
     skipping files, a health biomarker exempting them. Callers that rank or
     search should prefer :func:`is_test_path`, so fixtures stay findable.
+    *package_root*, which answers whether a repo-relative directory holds a
+    package manifest, keeps a shipped ``test-utils/`` package production.
     """
-    return _classify(path, language, roots, dotnet_projects) != ""
-
+    return _classify(path, language, roots, dotnet_projects, phpunit_roots, package_root) != ""
 
 
 def in_test_tree(path: str, language: str | None = None) -> bool:
     """Whether a directory alone makes *path* test material, whatever its name.
 
     ``tests/x.py`` and ``src/__mocks__/api.ts`` are; ``core/test_selection.py``
-    is test-shaped only by name. ``.github/`` makes no test tree.
+    is test-shaped only by name. ``.github/`` makes no test tree, and neither
+    does ``src/**/tests/`` for a JavaScript-family file.
     """
     original, lowered = _parts(path)
     segments = lowered[:-1]
     if not segments or _REPO_METADATA_DIR in segments:
         return False
     return any(_is_support_anywhere_dir(seg) for seg in segments) or _is_test_dir(
-        segments, original[:-1], "", language
+        *_tree_segments(segments, original[:-1], original[-1]), "", language
     )
 
 
@@ -629,6 +826,8 @@ _CLASS_TEST_SUFFIXES: dict[str, tuple[str, ...]] = {
     ".cs": ("Test", "Tests"),
     ".kt": ("Test", "Tests", "Spec"),
     ".scala": ("Spec", "Suite", "Test"),
+    # Apex names are case-insensitive and the corpora write all of these.
+    ".cls": ("Test", "Tests", "_Test", "_Tests", "_TEST"),
 }
 
 

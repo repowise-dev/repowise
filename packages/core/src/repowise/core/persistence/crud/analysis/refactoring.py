@@ -12,7 +12,7 @@ what makes them agree.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
 from ....analysis.finding_registry import excluded_types
+from ...batches import chunked
 from ...models import RefactoringSuggestion, _new_uuid, _now_utc
 from ...sql import rule_predicate
 from .._shared import _BATCH_SIZE, _finding_file_path
@@ -127,7 +128,7 @@ def _refactoring_row_kwargs(
 def _scope_predicates(
     repository_id: str,
     *,
-    file_paths: list[str] | None,
+    file_paths: Sequence[str] | None,
     refactoring_type: str | None,
 ) -> list[Any]:
     predicates: list[Any] = [RefactoringSuggestion.repository_id == repository_id]
@@ -300,21 +301,23 @@ async def finalize_refactoring_suggestions(
     )
     public_ids = assign_public_ids(scoped)
 
-    stored_rows = list(
-        (
-            await session.execute(
-                select(RefactoringSuggestion).where(
-                    *_scope_predicates(
-                        repository_id,
-                        file_paths=file_paths,
-                        refactoring_type=refactoring_type,
+    stored_rows: list[RefactoringSuggestion] = []
+    for chunk in [None] if allowed is None else chunked(sorted(allowed)):
+        stored_rows.extend(
+            (
+                await session.execute(
+                    select(RefactoringSuggestion).where(
+                        *_scope_predicates(
+                            repository_id,
+                            file_paths=chunk,
+                            refactoring_type=refactoring_type,
+                        )
                     )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
-    )
     reusable = await _reusable_rows(
         session, repository_id, stored_rows, public_ids, REFACTORING_MODEL_VERSION
     )

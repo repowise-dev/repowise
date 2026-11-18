@@ -238,14 +238,14 @@ def test_merge_retains_spec_when_multiple_code_providers_are_ambiguous() -> None
     assert stats == {"openapi_reason_provider_ambiguous": 1}
 
 
-def test_non_candidates_and_openapi_2_are_not_extracted() -> None:
+def test_non_candidates_and_unsupported_swagger_versions_are_refused() -> None:
     stats: dict[str, int] = {}
     rows = OpenApiExtractor().extract(
         Path("."),
         "api",
         files=[
             ("schema.yaml", ".yaml", "openapi: 3.0.0\npaths: {}\n"),
-            ("swagger.json", ".json", '{"swagger": "2.0", "paths": {}}'),
+            ("swagger.json", ".json", '{"swagger": "1.2", "paths": {}}'),
         ],
         stats=stats,
     )
@@ -254,6 +254,40 @@ def test_non_candidates_and_openapi_2_are_not_extracted() -> None:
     assert stats["openapi_documents"] == 1
     assert stats["openapi_documents_unresolved"] == 1
     assert stats["openapi_reason_version_unsupported"] == 1
+
+
+def test_swagger_20_extracts_providers_with_basepath_definitions_and_body_param() -> None:
+    rows, _ = _extract("swagger-2.0.yaml")
+
+    assert len(rows) == 2
+    by_method = {row.symbol_name.split()[0].removeprefix("openapi:"): row for row in rows}
+
+    get_row = by_method["GET"]
+    assert get_row.contract_id == "http::GET::/v1/orders/{param}"
+    assert get_row.symbol_name == "openapi:GET /v1/orders/{id}"
+    assert get_row.meta["schema_operation_pointer"] == "#/paths/~1orders~1{id}/get"
+    assert get_row.schema is not None
+    assert get_row.schema.source_version == "2.0"
+    assert get_row.schema.request_state == get_row.schema.response_state == "complete"
+    assert len(get_row.schema.request_fields) == 1
+    assert get_row.schema.request_fields[0].name == "id"
+    assert get_row.schema.request_fields[0].location == "path"
+    assert get_row.schema.request_fields[0].type == "string"
+    assert get_row.schema.response_fields[0].type == "object"
+    assert _field(get_row.schema.response_fields[0].children, "id").required is True
+
+    post_row = by_method["POST"]
+    assert post_row.contract_id == "http::POST::/v1/orders"
+    assert post_row.symbol_name == "openapi:POST /v1/orders"
+    assert post_row.meta["schema_operation_pointer"] == "#/paths/~1orders/post"
+    assert post_row.schema is not None
+    assert post_row.schema.request_state == post_row.schema.response_state == "complete"
+    body = post_row.schema.request_fields[0]
+    assert body.name == "$body"
+    assert body.location == "body"
+    assert body.type == "object"
+    assert _field(body.children, "sku").required is True
+    assert _field(body.children, "priority").enum_values == ["standard", "express"]
 
 
 def test_malformed_union_and_excessive_parse_depth_become_diagnostics() -> None:

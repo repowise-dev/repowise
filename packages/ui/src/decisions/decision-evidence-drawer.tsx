@@ -5,15 +5,10 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X, FileText, GitCommit } from "lucide-react";
 import { cn } from "../lib/cn";
 import { VerificationBadge } from "./verification-badge";
-import type { DecisionEvidence } from "@repowise-dev/types/decisions";
-
-const SOURCE_LABEL: Record<string, string> = {
-  inline_marker: "Inline marker",
-  git_archaeology: "Git archaeology",
-  readme_mining: "Docs mining",
-  cli: "Manual",
-  conventions: "Convention",
-};
+import {
+  decisionSourceLabel,
+  type DecisionEvidence,
+} from "@repowise-dev/types/decisions";
 
 export interface DecisionEvidenceDrawerProps {
   /** Resolved evidence rows. Caller fetches; the drawer renders. */
@@ -110,7 +105,7 @@ function EvidenceRow({ row, isPrimary }: { row: DecisionEvidence; isPrimary?: bo
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <VerificationBadge verification={row.verification} />
         <span className="text-xs text-[var(--color-text-secondary)]">
-          {SOURCE_LABEL[row.source] ?? row.source}
+          {decisionSourceLabel(row.source)}
         </span>
         {isPrimary ? (
           <span

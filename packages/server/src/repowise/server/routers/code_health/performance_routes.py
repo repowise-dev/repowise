@@ -73,8 +73,8 @@ async def list_performance_opportunities(
     proof: str | None = Query(
         None,
         description=(
-            "proven (the default) or unproven: causes whose loop nobody measured "
-            "to grow, kept out of the default queue and counted in its summary."
+            "proven (the default) or unproven: causes whose loop size the code does "
+            "not show, kept out of the default queue and counted in its summary."
         ),
     ),
     role: str | None = Query(

@@ -196,6 +196,7 @@ async def persist_partial_health(
     the partial report — so unchanged files keep their existing findings
     and metrics across an incremental ``repowise update``.
     """
+    from repowise.core.analysis.lineage import similar_by_source
     from repowise.core.persistence.crud import (
         PayoffContext,
         finalize_performance_opportunities,
@@ -271,6 +272,7 @@ async def persist_partial_health(
         # each plan's nearest tests off these rows.
         fact_rows = getattr(report, "function_facts", None)
         if fact_rows is not None:
+            renames = getattr(report, "renamed_paths", None) or {}
             await write_function_facts(
                 session,
                 repo_id,
@@ -278,6 +280,11 @@ async def persist_partial_health(
                 file_paths={*changed_paths, *performance_paths},
                 roles=getattr(report, "execution_roles", None),
                 tests=getattr(report, "function_tests", None),
+                # Where a moved function came from: its file was deleted or renamed away.
+                departed={*renames, *(getattr(report, "deleted_paths", None) or ())},
+                renames=renames,
+                commit=analyzed_commit,
+                similar=similar_by_source(repo_path, getattr(report, "base_commit", None)),
             )
         # A partial run sees a subset of the findings, so the plans and the
         # queue it would derive are a subset too. Both are rebuilt here instead,
@@ -300,9 +307,9 @@ async def persist_partial_health(
     # current between full indexes; FULL git tier only — empty otherwise).
     fn_blame_rows = getattr(report, "function_blame_rows", None)
     if fn_blame_rows:
-        from repowise.core.persistence.crud import upsert_git_function_blame_bulk
+        from repowise.core.persistence.crud import replace_git_function_blame_for_files
 
-        await upsert_git_function_blame_bulk(session, repo_id, fn_blame_rows)
+        await replace_git_function_blame_for_files(session, repo_id, fn_blame_rows)
     # Only a full index rewrites the whole population, so rows an older version
     # scored for prose or configuration go here rather than lingering in the
     # average, and rows written before ``is_test`` existed get it from their
@@ -317,14 +324,15 @@ async def persist_partial_health(
     await prune_unscored_health_rows(session, repo_id)
     await clear_unanalysed_scores(session, repo_id)
     await backfill_is_test(session, repo_id)
-    # Then the files this run did not walk, whose git-derived markers the fresh
-    # metadata may have moved. Before the snapshot, or the trend would describe
-    # the store as it stood one update ago.
+    # Then every file's git-derived markers, against the metadata the git step
+    # just stored. The files this run walked too: the analysis scored them
+    # before the git step re-ranked the table, so a percentile-gated marker
+    # (prior defects, change entropy) could miss a file this range moved past
+    # its gate. Before the snapshot, or the trend would describe the store as it
+    # stood one update ago.
     if repo_path is not None:
         try:
-            await refresh_unchanged_history(
-                session, repo_id, repo_path, skip_paths=set(changed_paths)
-            )
+            await refresh_unchanged_history(session, repo_id, repo_path, skip_paths=set())
         except Exception as exc:
             # Never fails the run: the next update re-derives the whole thing
             # from the stored git metadata, so nothing is stranded behind.

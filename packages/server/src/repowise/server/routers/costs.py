@@ -85,7 +85,11 @@ async def list_costs(
     if by == "model":
         group_col = LlmCost.model
     elif by == "day":
-        group_col = sa.func.strftime("%Y-%m-%d", LlmCost.ts)
+        timestamp = LlmCost.ts
+        # Match the UTC day boundaries used by the SQLite cost ledger.
+        if session.get_bind().dialect.name == "postgresql":
+            timestamp = sa.func.timezone("UTC", timestamp)
+        group_col = sa.func.date(timestamp, type_=sa.Date)
     else:
         # Default: operation
         group_col = LlmCost.operation
@@ -111,7 +115,7 @@ async def list_costs(
 
     return [
         CostGroupResponse(
-            group=row.group or "(unknown)",
+            group=row.group.isoformat() if isinstance(row.group, date) else row.group or "(unknown)",
             calls=row.calls or 0,
             input_tokens=row.input_tokens or 0,
             output_tokens=row.output_tokens or 0,
@@ -148,8 +152,11 @@ async def get_savings(
     if not repo.local_path:
         return SavingsResponse(available=False)
 
+    from repowise.core.savings.pricing import warm_pricing_snapshot
     from repowise.core.savings.service import load_report
 
+    # Keeps the rate cache the MCP and hook writers read warm; never awaited.
+    warm_pricing_snapshot(repo.local_path)
     as_of = datetime.now(UTC)
     report = load_report(repo.local_path, as_of=as_of, days=days)
     if report is None:

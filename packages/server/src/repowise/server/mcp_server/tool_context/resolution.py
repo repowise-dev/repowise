@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from repowise.core.persistence.crud.tombstoned_pages import TOMBSTONE, file_backed_page
 from repowise.core.persistence.models import (
     GitMetadata,
     GraphNode,
@@ -25,10 +26,12 @@ from repowise.core.persistence.models import (
     WikiSymbol,
 )
 from repowise.server.mcp_server._budget import OmissionCollector
+from repowise.server.mcp_server._directory import _dir_prefix, _indexed_under
 from repowise.server.mcp_server._helpers import (
     LIKE_ESCAPE,
     escape_like,
     filter_path_list,
+    filter_rows_by_attr,
     is_excluded,
 )
 from repowise.server.mcp_server._references import symbol_identity
@@ -37,7 +40,7 @@ from repowise.server.mcp_server._symbol_lookup import (
     resolve_symbol_rows,
     symbol_id_variants,
 )
-from repowise.server.mcp_server.tool_context.preview import _file_preview
+from repowise.server.mcp_server.tool_context.preview import _file_preview_async
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,8 @@ class ResolvedTarget:
     graph_symbol: GraphNode | None = None
     live_file_meta: GitMetadata | None = None
     live_unindexed_file: bool = False
+    # A module's directory: its page's path, or the directory itself with no page.
+    dir_path: str | None = None
 
 
 Resolution = ResolvedTarget | dict[str, Any]
@@ -152,26 +157,37 @@ async def _excluded(q: TargetQuery) -> Resolution | None:
     aren't path-matchable here and fall through to neighbor filtering)."""
     gate_path = q.target.split("::", 1)[0] if "::" in q.target else q.target
     if is_excluded(gate_path, q.exclude_spec):
-        return {
-            "target": q.target,
-            "error": f"'{q.target}' is excluded by exclude_patterns configuration",
-        }
+        return _excluded_error(q)
     return None
 
 
-async def _file_page_by_id(q: TargetQuery) -> Resolution | None:
-    """A file page, the most common target."""
-    page = await q.session.get(Page, f"file_page:{q.target}")
-    if page and page.repository_id == q.repo_id:
+def _excluded_error(q: TargetQuery) -> Resolution:
+    return {
+        "target": q.target,
+        "error": f"'{q.target}' is excluded by exclude_patterns configuration",
+    }
+
+
+async def _file_page(q: TargetQuery) -> Resolution | None:
+    """The page documenting a file, the most common target: its live file,
+    API contract or infra page, or the tombstone saying the file is gone."""
+    page = await file_backed_page(q.session, q.repo_id, q.target)
+    if page is not None:
         return ResolvedTarget("file", page=page, file_path=q.target)
     return None
+
+
+# A module page is only ever tombstoned because the build regrouped or dropped
+# it, never because a file was deleted, so a tombstoned one is never served:
+# the directory rung below answers for a directory that still holds files.
+_LIVE_MODULE_PAGE = (Page.page_type == "module_page", Page.freshness_status != TOMBSTONE)
 
 
 async def _module_page_at(q: TargetQuery, target_path: str) -> Page | None:
     res = await q.session.execute(
         select(Page).where(
             Page.repository_id == q.repo_id,
-            Page.page_type == "module_page",
+            *_LIVE_MODULE_PAGE,
             Page.target_path == target_path,
         )
     )
@@ -195,7 +211,7 @@ async def _module_page_partial(q: TargetQuery) -> Page | None:
     res = await q.session.execute(
         select(Page).where(
             Page.repository_id == q.repo_id,
-            Page.page_type == "module_page",
+            *_LIVE_MODULE_PAGE,
             or_(
                 Page.target_path == clean_target,
                 Page.target_path.like(f"%/{esc}", escape=LIKE_ESCAPE),
@@ -204,20 +220,39 @@ async def _module_page_partial(q: TargetQuery) -> Page | None:
             ),
         )
     )
-    # Deterministic pick among several matches: shortest path, then
-    # lexicographic.
-    candidates = sorted(res.scalars().all(), key=lambda p: (len(p.target_path), p.target_path))
+    # SQLite's LIKE ignores case; the exact segment test decides, as in
+    # _directory._git_rows_under. Deterministic pick among several matches:
+    # shortest path, then lexicographic.
+    candidates = sorted(
+        (p for p in res.scalars().all() if f"/{clean_target}/" in f"/{p.target_path}/"),
+        key=lambda p: (len(p.target_path), p.target_path),
+    )
     return candidates[0] if candidates else None
 
 
+async def _directory(q: TargetQuery) -> Resolution | None:
+    """A directory with no module page, known from the indexed files under it."""
+    prefix = _dir_prefix(q.target)
+    if "::" in q.target or not prefix:
+        return None
+    if await _indexed_under(q.session, q.repo_id, q.target, q.exclude_spec):
+        return ResolvedTarget("module", dir_path=prefix.rstrip("/"))
+    return None
+
+
 async def _module_page(q: TargetQuery) -> Resolution | None:
-    """A module page: exact, then without a trailing slash, then partial."""
+    """A module page: exact, then without a trailing slash; then the directory
+    itself when files are indexed under it, so a partial match cannot hand a
+    parent directory its child's card; then partial."""
     page = await _module_page_at(q, q.target)
     if page is None and q.clean_target != q.target:
         page = await _module_page_at(q, q.clean_target)
     if page is None:
+        directory = await _directory(q)
+        if directory is not None:
+            return directory
         page = await _module_page_partial(q)
-    return ResolvedTarget("module", page=page) if page else None
+    return ResolvedTarget("module", page=page, dir_path=page.target_path) if page else None
 
 
 async def _symbol_rows(q: TargetQuery) -> Any:
@@ -243,6 +278,7 @@ async def _symbol_rows(q: TargetQuery) -> Any:
                 WikiSymbol.repository_id == q.repo_id,
                 WikiSymbol.name.ilike(f"%{escape_like(q.target)}%", escape=LIKE_ESCAPE),
             )
+            .order_by(WikiSymbol.file_path, WikiSymbol.name)
             .limit(10)
         )
         sym_matches = list(res.scalars().all())
@@ -253,27 +289,17 @@ async def _symbol(q: TargetQuery) -> Resolution | None:
     sym_matches = await _symbol_rows(q)
     if not sym_matches:
         return None
+    # A bare name isn't path-matchable in ``_excluded``, so drop the rows in
+    # excluded files here; if none is left, answer as a ``path::Name`` would.
+    sym_matches = filter_rows_by_attr(sym_matches, "file_path", q.exclude_spec)
+    if not sym_matches:
+        return _excluded_error(q)
     return ResolvedTarget(
         "symbol",
         file_path=sym_matches[0].file_path,
         sym_matches=sym_matches,
         symbol_node_id=sym_matches[0].symbol_id,
     )
-
-
-async def _file_page_by_path(q: TargetQuery) -> Resolution | None:
-    """A file page found by its target_path rather than its id."""
-    res = await q.session.execute(
-        select(Page).where(
-            Page.repository_id == q.repo_id,
-            Page.page_type == "file_page",
-            Page.target_path == q.target,
-        )
-    )
-    page = res.scalar_one_or_none()
-    if page:
-        return ResolvedTarget("file", page=page, file_path=q.target)
-    return None
 
 
 async def _graph_node(q: TargetQuery) -> Resolution | None:
@@ -330,7 +356,7 @@ async def _git_metadata(q: TargetQuery) -> Resolution | None:
 async def _live_file(q: TargetQuery) -> Resolution | None:
     """A live file never indexed into git_metadata is still a valid public
     path; resolve it from the checkout."""
-    if _file_preview(q.repo_root, q.target) is not None:
+    if await _file_preview_async(q.repo_root, q.target) is not None:
         return ResolvedTarget("file", file_path=q.target, live_unindexed_file=True)
     return None
 
@@ -445,10 +471,9 @@ async def _not_found(q: TargetQuery) -> dict[str, Any]:
 #: rest are fallbacks for targets with no page and no symbol row.
 _RESOLVERS: tuple[Resolver, ...] = (
     _excluded,
-    _file_page_by_id,
+    _file_page,
     _module_page,
     _symbol,
-    _file_page_by_path,
     _graph_node,
     _git_metadata,
     _live_file,

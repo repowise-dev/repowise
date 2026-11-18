@@ -7,15 +7,18 @@ fails when the two disagree.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
-from repowise.core.analysis.health.queue.order import priority as queue_priority
 from repowise.core.analysis.next_call import ActionCommand
 
 #: Bumped when a rule's output changes meaning or shape; stored views built
 #: under another version are rebuilt.
 ACTIONS_MODEL_VERSION = 2
+
+#: The places every surface shows first: the overview's next actions.
+NEXT_ACTIONS_HEAD = 3
 
 ActionRule = Literal[
     "live_secret",
@@ -29,7 +32,6 @@ ActionRule = Literal[
     "dead_code_batch",
     "coverage_missing",
     "coverage_stale",
-    "decisions_unreviewed",
 ]
 ACTION_RULES: tuple[str, ...] = get_args(ActionRule)
 
@@ -88,6 +90,17 @@ RULE_RANK: dict[str, int] = {rule: i for i, rule in enumerate(ACTION_RULES)}
 SEVERITY_VALUE: dict[str, int] = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 
+def evidence_severity(severities: Iterable[str | None], default: str) -> str:
+    """An action's severity from the findings it rests on: the worst of them,
+    held at high (critical is a live credential's, see :attr:`Action.severity`).
+    ``default`` when it rests on none, so a row and its evidence never disagree."""
+    known = [s for s in severities if s in SEVERITY_VALUE]
+    if not known:
+        return default
+    worst = max(known, key=SEVERITY_VALUE.__getitem__)
+    return "high" if worst == "critical" else worst
+
+
 def effective_value(value: int | None, severity: str) -> int:
     """An action's value: its own, else its severity's (also for a view
     stored before actions carried one)."""
@@ -99,6 +112,10 @@ def shared_priority(
 ) -> float:
     """The number Do next orders a tier on: the queue's ``value x confidence /
     effort`` (``queue.order.priority``)."""
+    # Imported here: the queue chain is heavy, and the overview reads this
+    # module for its vocabulary alone.
+    from repowise.core.analysis.health.queue.order import priority as queue_priority
+
     return queue_priority(effective_value(value, severity), confidence, effort)
 
 

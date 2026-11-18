@@ -9,10 +9,9 @@ state-file updates and console reporting stay here.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
-import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,21 +21,25 @@ from repowise.cli.commands._index_outcome import refresh_read_snapshots  # noqa:
 from repowise.cli.helpers import (
     as_commit_id,
     console,
+    err_console,
     head_commit_ts,
     load_config,
-    load_state,
     run_async,
     save_state,
 )
-from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
-from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
 from repowise.core.ingestion.git_indexer import GIT_HISTORY_VERSION, GIT_HISTORY_VERSION_KEY
 from repowise.core.pipeline import PhaseTimings, timed
+from repowise.core.pipeline.incremental.rescore import (  # noqa: F401 (re-export)
+    RescoreCoverage,
+    rescore_health_from_store,
+)
+from repowise.core.pipeline.incremental.rescore import (
+    coverage_for_rescore as _coverage_for_rescore,  # noqa: F401 (re-export)
+)
 
 from .incremental import _build_repo_graph
 
 log = structlog.get_logger(__name__)
-
 
 
 def backfill_docs_pointer(new_state: dict, state: dict) -> None:
@@ -112,73 +115,128 @@ def _repair_module_attribution(repo_path: Path) -> int:
     return changed
 
 
-@dataclass(frozen=True)
-class RescoreCoverage:
-    """Coverage for a health re-score, and whether it replaces what is stored."""
+def accept_landed_decisions(repo_path: Path) -> int:
+    """Put in force an agent's decisions whose commits reached the default branch.
 
-    coverage_map: dict[str, dict] = field(default_factory=dict)
-    files: list[Any] = field(default_factory=list)
-    source_format: str | None = None
-    # True for a reingestion, including an empty one that must clear stored rows.
-    authoritative: bool = False
-    # How the reingested report mapped (``CoverageProvenance``); None when reused.
-    provenance: Any = None
+    Every update, before the "already up to date" and "no changed files"
+    returns: a squash merge pulled after the branch was indexed changes no
+    file, and a fetch moves the default branch without moving HEAD, so either
+    would otherwise skip the persist step that runs this pass. One store read
+    when nothing waits; git runs only for records that do. No model.
 
-
-async def _coverage_for_rescore(
-    session: Any,
-    repo_id: str,
-    repo_path: Path,
-    parsed_files: list[Any],
-) -> RescoreCoverage:
-    """Coverage to feed a health re-score, preserved across updates.
-
-    Default: reload the rows already persisted (no re-parse). When
-    ``coverage.reingest_on_update`` is set, re-discover and re-resolve a
-    fresh report instead.
+    Failure-isolated like the attribution repair: the next update retries.
     """
-    from repowise.core.analysis.health.coverage import (
-        CoverageConfig,
-        build_coverage_map,
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.decisions.merge_accept import (
+        accept_landed_decisions as _accept,
     )
-    from repowise.core.persistence.crud import load_coverage_map
-    from repowise.core.repo_config import load_repo_config
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import has_db_store
 
-    cfg = CoverageConfig.from_repo_config(load_repo_config(repo_path))
+    if not has_db_store(Path(repo_path)):
+        return 0
 
-    # Without paths or discovery there is nothing to re-read, so the stored
-    # rows (e.g. from `coverage add`) stay authoritative.
-    if cfg.reingest_on_update and (cfg.paths or cfg.auto_discover):
-        reports = cfg.reports(repo_path)
-        if reports:
-            repo_keys = {pf.file_info.path for pf in parsed_files}
-            resolved, _errors = build_coverage_map(
-                repo_path,
-                list(reports),
-                repo_keys,
-                coverage_format=cfg.format,
-                strip_prefix=cfg.strip_prefix,
-                path_prefix=cfg.path_prefix,
-                report_prefixes=reports,
-                ignore=cfg.ignore,
-            )
-            if resolved.coverage_map:
-                return RescoreCoverage(
-                    resolved.coverage_map,
-                    resolved.files,
-                    resolved.source_format,
-                    authoritative=True,
-                    provenance=resolved.provenance,
+    async def _run() -> int:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
                 )
+                return (await _accept(session, repo.id, repo_path))["accepted"]
+        finally:
+            await engine.dispose()
 
-        # Reingestion is authoritative. Falling back to old rows when a report
-        # disappeared (or now maps to nothing) makes this config refresh differ
-        # from a clean index and then incorrectly stamps stale data current.
-        return RescoreCoverage(authoritative=True)
+    try:
+        accepted = run_async(_run())
+    except Exception as exc:
+        log.debug("decision_landing_check_failed", error=str(exc))
+        return 0
+    if accepted:
+        console.print(
+            f"[dim]Decisions: [bold]{accepted}[/bold] now govern; "
+            "their commits landed on the default branch.[/dim]"
+        )
+    return accepted
 
-    coverage_map = await load_coverage_map(session, repo_id)
-    source_format = next((e["source_format"] for e in coverage_map.values()), None)
-    return RescoreCoverage(coverage_map, source_format=source_format)
+
+def keep_decisions_current(repo_path: Path) -> None:
+    """Bring the repo's shared decision copies in step after an update.
+
+    Two copies, each only where the user asked for it: the repo's copy on
+    repowise.dev when ``decisions.sync`` is on (see ``decision_sync_cmd``), and
+    a committed ``.repowise/decisions.yaml`` when one exists. Sync runs first
+    so a decision it brings down reaches the file in the same update. Neither
+    calls a model, and neither can fail the update.
+    """
+    from repowise.cli.commands.decision_sync_cmd import sync_on_update
+
+    sync_on_update(Path(repo_path))
+    refresh_decisions_manifest(Path(repo_path))
+
+
+def refresh_decisions_manifest(repo_path: Path) -> str:
+    """Rewrite an existing ``decisions.yaml`` from the store; never create one.
+
+    The file is opt-in (``decision export`` writes the first one), so an
+    absent file stays absent. One that holds something the store has not read
+    is left alone with one line saying how to reconcile it. Returns the
+    outcome of :func:`~repowise.core.persistence.decision_manifest.refresh_manifest`,
+    or ``"absent"`` / ``"failed"``.
+    """
+    from repowise.core.analysis.decisions.manifest import manifest_path
+
+    if not manifest_path(repo_path).is_file():
+        return "absent"
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.analysis.decisions.policy_store import load_policy
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_session,
+        init_db,
+        upsert_repository,
+    )
+    from repowise.core.persistence.database import has_db_store
+    from repowise.core.persistence.decision_manifest import refresh_manifest
+
+    async def _run() -> tuple[str, int]:
+        engine = create_engine(get_db_url_for_repo(repo_path))
+        try:
+            await init_db(engine)
+            sf = create_session_factory(engine)
+            async with get_session(sf) as session:
+                repo = await upsert_repository(
+                    session, name=Path(repo_path).name, local_path=str(repo_path)
+                )
+                return await refresh_manifest(session, repo.id, repo_path)
+        finally:
+            await engine.dispose()
+
+    try:
+        policy = load_policy(repo_path).policy
+        if not has_db_store(Path(repo_path)) or not (policy.enabled and policy.delivers):
+            return "absent"
+        outcome, count = run_async(_run())
+    except Exception as exc:
+        log.debug("decisions_manifest_refresh_failed", error=str(exc))
+        return "failed"
+    if outcome == "written":
+        console.print(f"[dim]Decisions: updated .repowise/decisions.yaml ({count}).[/dim]")
+    elif outcome == "held":
+        console.print(
+            "[dim]Decisions: .repowise/decisions.yaml has changes this index has not "
+            "read; left as is. [bold]repowise decision import[/bold] reconciles it.[/dim]"
+        )
+    return outcome
 
 
 async def _persist_partial_health(
@@ -371,7 +429,12 @@ def resolve_repair_base(
         )
 
     try:
-        if _git("merge-base", "--is-ancestor", "--end-of-options", from_commit, base_ref).returncode != 0:
+        if (
+            _git(
+                "merge-base", "--is-ancestor", "--end-of-options", from_commit, base_ref
+            ).returncode
+            != 0
+        ):
             # Non-zero covers both "not an ancestor" (rebased, force-pushed,
             # branch switched) and "cannot resolve that object" (gc'd, or a
             # shallow clone that never fetched it), and git does not
@@ -380,7 +443,9 @@ def resolve_repair_base(
                 f"the recorded commit {from_commit[:8]} is not an ancestor of this "
                 "branch's history, or is not present in this clone"
             )
-        counted = _git("rev-list", "--count", "--end-of-options", f"{from_commit}..{head or 'HEAD'}")
+        counted = _git(
+            "rev-list", "--count", "--end-of-options", f"{from_commit}..{head or 'HEAD'}"
+        )
         if counted.returncode == 0 and int(counted.stdout.strip() or 0) > _REPAIR_MAX_COMMITS:
             return base_ref, (
                 f"the range has grown past {_REPAIR_MAX_COMMITS} commits, which is "
@@ -421,7 +486,11 @@ def _rescore_stale_findings(
     if force_full_rescore or full_rescore_due(state, head_ts):
         with timed(timings, "rescore"):
             rescored = run_decay_health_rescore(
-                repo_path, graph_builder, parsed_files or [], exclude_patterns or []
+                repo_path,
+                graph_builder,
+                parsed_files or [],
+                exclude_patterns or [],
+                timings=timings,
             )
     if rescored:
         # Only the time gate reads this, and it treats a non-numeric value as
@@ -429,6 +498,8 @@ def _rescore_stale_findings(
         # None over it when git gave us no timestamp.
         if head_ts is not None:
             last_full_rescore_at = head_ts
+        from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
         health_analyzer_version = HEALTH_ANALYZER_VERSION
     if force_full_rescore and not rescored:
         raise RuntimeError(
@@ -441,6 +512,8 @@ def _rescore_stale_findings(
     # persist above only rescanned the changed files.
     security_scanner_version = state.get("security_scanner_version")
     if security_scanner_changed(state):
+        from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
         with timed(timings, "security_rescan"):
             if run_full_security_rescan(repo_path, exclude_patterns or []):
                 security_scanner_version = SECURITY_SCANNER_VERSION
@@ -482,6 +555,136 @@ def _stamp_scope(repo_path: Any, new_state: dict, failed_steps: list[str]) -> No
     )
 
 
+def stamp_file_page_scope(
+    repo_path: Any,
+    state: dict,
+    parsed_files: list | None,
+    graph_builder: Any,
+    git_meta_map: dict | None,
+) -> None:
+    """Recount ``index_scope.file_pages`` from this run's parse and the stored pages.
+
+    Eligibility applies selection's gates except the cap, as init's figure does;
+    an unreadable store keeps the previous figures.
+    """
+    from repowise.core.index_scope import file_page_counts, resolve_index_scope, stamp_index_scope
+
+    counted = _eligible_and_paged(repo_path, parsed_files, graph_builder, git_meta_map)
+    if counted is None:
+        return
+    eligible, page_paths = counted
+    config = load_config(repo_path)
+    stamp_index_scope(
+        state,
+        config,
+        file_pages=file_page_counts(
+            configured_cap=resolve_index_scope(state, config)["file_pages"]["configured_cap"],
+            eligible=len(eligible),
+            generated=len(eligible & page_paths),
+        ),
+    )
+
+
+def file_paths_without_page(
+    repo_path: Any,
+    parsed_files: list | None,
+    graph_builder: Any,
+    git_meta_map: dict | None,
+) -> list[str]:
+    """Eligible files the store holds no file page for, the ones the scope counts as omitted.
+
+    The cascade budget only defers pages: one past it is marked stale and a
+    later run re-renders it. A file that never had a page has nothing to mark,
+    so without this it stayed missing for good.
+    """
+    counted = _eligible_and_paged(repo_path, parsed_files, graph_builder, git_meta_map)
+    if counted is None:
+        return []
+    eligible, page_paths = counted
+    return sorted(eligible - page_paths)
+
+
+def _eligible_and_paged(
+    repo_path: Any,
+    parsed_files: list | None,
+    graph_builder: Any,
+    git_meta_map: dict | None,
+) -> tuple[set[str], set[str]] | None:
+    """``(eligible file paths, paths with a live file page)``, or ``None`` when unknown."""
+    if not parsed_files or graph_builder is None:
+        return None
+    from repowise.core.generation import GenerationConfig
+    from repowise.core.generation.api_contract_detector import detect_code_api_contracts
+    from repowise.core.generation.selection.selector import eligible_file_page_paths
+    from repowise.core.repo_config import load_repo_config
+
+    try:
+        pagerank = graph_builder.pagerank()
+    except Exception as exc:  # a released graph cannot rank anything
+        log.debug("file_page_scope_skipped", error=str(exc))
+        return None
+    stored = run_async(_load_page_paths_and_hotspots(repo_path))
+    if stored is None:
+        return None
+    page_paths, hotspots = stored
+    for path, meta in (git_meta_map or {}).items():
+        if meta.get("is_hotspot"):
+            hotspots.add(path)
+        else:
+            hotspots.discard(path)
+    # Route files get an API-contract page, not a file page; generation flags
+    # them, and a count taken before it runs would call them missing.
+    detect_code_api_contracts(parsed_files)
+    eligible = eligible_file_page_paths(
+        parsed_files,
+        pagerank,
+        hotspots=hotspots,
+        dedupe_near_clones=GenerationConfig.from_repo_config(
+            load_repo_config(Path(repo_path))
+        ).dedupe_near_clones,
+    )
+    return eligible, page_paths
+
+
+async def _load_page_paths_and_hotspots(repo_path: Any) -> tuple[set[str], set[str]] | None:
+    """Paths with a live file page, and the stored hotspot paths."""
+    from sqlalchemy import select
+
+    from repowise.cli.helpers import get_db_url_for_repo
+    from repowise.core.persistence import (
+        create_engine,
+        create_session_factory,
+        get_repository_by_path,
+        get_session,
+    )
+    from repowise.core.persistence.models import GitMetadata, Page
+
+    engine = create_engine(get_db_url_for_repo(repo_path))
+    try:
+        async with get_session(create_session_factory(engine)) as session:
+            repo = await get_repository_by_path(session, str(repo_path))
+            if repo is None:
+                return None
+            pages = await session.execute(
+                select(Page.target_path).where(
+                    Page.repository_id == repo.id,
+                    Page.page_type == "file_page",
+                    Page.freshness_status != "tombstone",
+                )
+            )
+            hotspots = await session.execute(
+                select(GitMetadata.file_path).where(
+                    GitMetadata.repository_id == repo.id, GitMetadata.is_hotspot.is_(True)
+                )
+            )
+            return set(pages.scalars()), set(hotspots.scalars())
+    except Exception as exc:
+        log.warning("file_page_scope_read_failed", error=str(exc))
+        return None
+    finally:
+        await engine.dispose()
+
+
 def _persist_index_only_update(
     repo_path: Any,
     graph_builder: Any,
@@ -512,6 +715,9 @@ def _persist_index_only_update(
     vector_store: Any | None = None,
     require_config_rebuild_success: bool = False,
     history_window_changed: bool = False,
+    deferred_page_scope: str | None = None,
+    deferred_page_paths: list[str] | None = None,
+    stamp_config: bool = True,
     timings: PhaseTimings | None = None,
 ) -> None:
     """Persist the index-only update (graph + symbols + git + dead-code + health + KG),
@@ -540,6 +746,12 @@ def _persist_index_only_update(
     # (which also collects repo-wide and non-DB failures) because only these
     # strand data the advancing sync pointer would otherwise skip forever.
     failed_steps: list[str] = []
+    # The deleted-file prune can stop without failing: it refuses a change that
+    # looks like a broken run rather than a commit and leaves the rows alone.
+    # That is not an error and no step was skipped, so it does not belong in
+    # ``degraded`` — but it does stop the sync pointer below, because the index
+    # no longer agrees with the commit about to be recorded (#5410).
+    prune_refusals: list[str] = []
     degraded_before_persist = len(degraded)
     run_async(
         persist_incremental_index(
@@ -560,9 +772,12 @@ def _persist_index_only_update(
             reconcile_full_scope=reconcile_full_scope,
             full_generation_page_ids=full_generation_page_ids,
             vector_store=vector_store,
+            deferred_page_scope=deferred_page_scope,
+            deferred_page_paths=deferred_page_paths,
             log=console.print,
             degraded=degraded,
             failed_steps=failed_steps,
+            prune_refusals=prune_refusals,
             timings=timings,
         )
     )
@@ -594,9 +809,13 @@ def _persist_index_only_update(
         "last_full_rescore_at": last_full_rescore_at,
         "health_analyzer_version": health_analyzer_version,
         "security_scanner_version": security_scanner_version,
-        "config_fingerprint": config_fingerprint(repo_path),
+        "config_fingerprint": (
+            config_fingerprint(repo_path) if stamp_config else state.get("config_fingerprint")
+        ),
         "config_dependency_fingerprints": (
-            dependency_fingerprints
+            state.get("config_dependency_fingerprints")
+            if not stamp_config
+            else dependency_fingerprints
             if dependency_fingerprints is not None
             else config_dependency_fingerprints(repo_path)
         ),
@@ -617,6 +836,24 @@ def _persist_index_only_update(
     # pointer: this is what keeps a degraded run recoverable now that the
     # pointer below advances to head regardless.
     record_repair_marker(new_state, state, failed_steps)
+    if prune_refusals:
+        # The prune refused to apply part of this change set, so the index is
+        # behind the commit it would be recorded against. Leave the pointer
+        # where it is and record the range, exactly like a failed step: the
+        # next update re-covers it, and the repair marker is what stops it
+        # being skipped forever (#5410).
+        record_repair_marker(
+            new_state, state, [*failed_steps, "Deleted-file prune (refused)"]
+        )
+        new_state["last_sync_commit"] = state.get("last_sync_commit")
+        new_state["last_docs_commit"] = state.get("last_docs_commit")
+        console.print(
+            "[yellow]The deleted-file prune refused part of this change and left "
+            "those rows in place; the sync pointer has not advanced, so the next "
+            "update re-covers this range.[/yellow]"
+        )
+        for refusal in prune_refusals:
+            console.print(f"[yellow]{refusal}[/yellow]")
     if failed_steps:
         console.print(
             "[yellow]Some data for this commit range was not persisted; "
@@ -636,8 +873,11 @@ def _persist_index_only_update(
         timings.stop("run")
         new_state["phase_timings"] = timings.totals
     _stamp_scope(repo_path, new_state, failed_steps)
+    stamp_file_page_scope(repo_path, new_state, parsed_files, graph_builder, git_meta_map)
     save_state(repo_path, new_state)
     elapsed = time.monotonic() - start
+    from repowise.core.index_scope import upgrade_command
+
     from .reporting import show_index_only_completion
 
     show_index_only_completion(
@@ -650,6 +890,7 @@ def _persist_index_only_update(
         pages_rendered=pages_rendered,
         template_wiki=template_wiki,
         changed_paths=changed_paths,
+        upgrade_command=upgrade_command(new_state.get("index_scope")),
     )
 
 
@@ -706,9 +947,11 @@ class PageCheckpointer:
             upsert_repository,
         )
 
+        queue = self._queue
+        assert queue is not None  # start() creates the queue before scheduling this task.
         repo_id: str | None = None
         while True:
-            page = await self._queue.get()
+            page = await queue.get()
             if page is None:
                 return
             if self.failure is not None:
@@ -761,6 +1004,7 @@ def _persist_full_update(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     """Persist a full (LLM-regenerating) update in one transaction.
@@ -808,6 +1052,7 @@ def _persist_full_update(
             require_decision_persist_success=require_decision_persist_success,
             history_window_changed=history_window_changed,
             failed_steps=failed_steps,
+            prune_refusals=prune_refusals if prune_refusals is not None else [],
             timings=timings,
         )
     )
@@ -840,6 +1085,7 @@ async def _persist_full_update_async(
     require_decision_persist_success: bool = False,
     history_window_changed: bool = False,
     failed_steps: list[str] | None = None,
+    prune_refusals: list[str] | None = None,
     timings: PhaseTimings | None = None,
 ) -> int:
     from .full_persist import FullUpdatePersist, write_full_update
@@ -880,6 +1126,7 @@ async def _persist_full_update_async(
         log=console.print,
         degraded=degraded,
         failed_steps=failed_steps,
+        prune_refusals=prune_refusals if prune_refusals is not None else [],
         timings=timings,
     )
     return await write_full_update(ctx)
@@ -890,187 +1137,23 @@ async def _rescore_health_from_db(
     graph_builder: Any,
     parsed_files: list,
     exclude_patterns: list[str],
+    *,
+    timings: PhaseTimings | None = None,
 ) -> None:
     """Full-replace health re-score reading git metadata from the DB.
 
     Shared by the config-changed rebuild path and the periodic decay re-score
-    (#728): both need *every* file re-scored against the current git_metadata —
-    not just the changed files — but that metadata is already persisted, so the
-    analyzer reads it from the DB (keeping accurate churn / ownership /
-    co-change data) rather than the caller's changed-only map. Excluded rows are
-    dropped from both the DB and the analyzer input; metrics/findings are
-    full-replaced so rows for newly-excluded files disappear.
-
-    The caller supplies an already-built *graph_builder* / *parsed_files* so the
-    graph is rebuilt at most once per update.
+    (#728); the work lives in core so the workspace update can run it too.
+    Stages record ``rescore.*`` rows in *timings*.
     """
-    import pathspec
-
-    exclude_spec = (
-        pathspec.PathSpec.from_lines("gitwildmatch", exclude_patterns) if exclude_patterns else None
+    await rescore_health_from_store(
+        repo_path,
+        graph_builder,
+        parsed_files,
+        exclude_patterns,
+        log=console.print,
+        timings=timings,
     )
-
-    async def _rescore() -> None:
-        from sqlalchemy import delete, select
-
-        from repowise.cli.helpers import get_db_url_for_repo
-        from repowise.core.analysis.communities import file_community_labels
-        from repowise.core.analysis.health import HealthAnalyzer
-        from repowise.core.analysis.health.config import HealthConfig
-        from repowise.core.analysis.health.history_refresh import (
-            BLAME_MARKERS,
-            git_meta_rows_to_map,
-        )
-        from repowise.core.persistence import (
-            create_engine,
-            create_session_factory,
-            get_session,
-            init_db,
-            upsert_repository,
-        )
-        from repowise.core.persistence.crud import (
-            save_coverage_files,
-            upsert_git_function_blame_bulk,
-        )
-        from repowise.core.persistence.models import GitMetadata, HealthFinding
-        from repowise.core.pipeline.persist import (
-            persist_graph_nodes,
-            refresh_governance_findings,
-            save_full_health_report,
-        )
-        from repowise.core.pipeline.resume.rehydrate import (
-            attach_commit_set_blame,
-            attach_stored_commit_shas,
-        )
-        from repowise.core.workspace.update import get_head_commit
-
-        url = get_db_url_for_repo(repo_path)
-        engine = create_engine(url)
-        await init_db(engine)
-        sf = create_session_factory(engine)
-
-        async with get_session(sf) as session:
-            repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
-            repo_id = repo.id
-
-            gm_result = await session.execute(
-                select(GitMetadata).where(GitMetadata.repository_id == repo_id)
-            )
-            git_rows = list(gm_result.scalars().all())
-            excluded_git_paths = [
-                gm.file_path
-                for gm in git_rows
-                if exclude_spec is not None and exclude_spec.match_file(gm.file_path)
-            ]
-            if excluded_git_paths:
-                await session.execute(
-                    delete(GitMetadata).where(
-                        GitMetadata.repository_id == repo_id,
-                        GitMetadata.file_path.in_(excluded_git_paths),
-                    )
-                )
-                await session.flush()
-
-            # Every stored column, so a gate added with a new column reaches the
-            # detectors here as it does on a full index.
-            git_meta_map = git_meta_rows_to_map(
-                gm
-                for gm in git_rows
-                if exclude_spec is None or not exclude_spec.match_file(gm.file_path)
-            )
-            # No blame index here, so Split File reads the stored commit sets,
-            # and blames once the candidates stored before the sets existed.
-            await attach_stored_commit_shas(session, repo_id, git_meta_map)
-            attach_commit_set_blame(
-                repo_path,
-                git_meta_map,
-                parsed_files,
-                git_tier=load_state(Path(repo_path)).get("git_tier"),
-            )
-            stored_blame_findings: dict[str, list[HealthFinding]] = {}
-            for finding in (
-                await session.execute(
-                    select(HealthFinding).where(
-                        HealthFinding.repository_id == repo_id,
-                        HealthFinding.biomarker_type.in_(BLAME_MARKERS),
-                    )
-                )
-            ).scalars():
-                stored_blame_findings.setdefault(finding.file_path, []).append(finding)
-
-            # Preserve coverage across a re-score. The previous behaviour
-            # rebuilt the analyzer with no coverage_map, nulling every file's
-            # line/branch coverage even though the coverage_files rows still
-            # existed. Reload them (and optionally re-discover a fresh report)
-            # so coverage survives `repowise update`.
-            coverage = await _coverage_for_rescore(session, repo_id, repo_path, parsed_files)
-
-            analyzer = HealthAnalyzer(
-                graph_builder.graph(),
-                git_meta_map=git_meta_map,
-                parsed_files=parsed_files,
-                community_label_map=file_community_labels(graph_builder),
-                coverage_map=coverage.coverage_map,
-                duplication_cache_dir=Path(repo_path) / ".repowise",
-                repo_root=repo_path,
-                stored_blame_findings=stored_blame_findings,
-            )
-            hcfg = HealthConfig.load(repo_path)
-            analyzer_config = (
-                hcfg.to_analyzer_config([pf.file_info.path for pf in parsed_files])
-                if (hcfg.disabled_biomarkers or hcfg.rules)
-                else None
-            )
-            report = analyzer.analyze(analyzer_config)
-
-            console.print(
-                f"Health re-score: [cyan]{len(parsed_files)} files[/cyan], "
-                f"[yellow]{len(report.findings)} findings[/yellow]"
-            )
-
-            # Graph nodes first: the plan annotations the writer below stores
-            # read each symbol's ``public_api`` from them.
-            await persist_graph_nodes(session, repo_id, graph_builder)
-
-            # Same writer the index's analysis phase uses, so a re-score leaves
-            # the derived queues agreeing with the findings it just replaced
-            # rather than describing the set it deleted. Read HEAD off disk:
-            # this pass just scored the working tree, and the stored column is
-            # written by a different step whose ordering is not guaranteed.
-            await save_full_health_report(
-                session,
-                repo_id,
-                report,
-                analyzed_commit=get_head_commit(Path(repo_path)),
-                repo_path=repo_path,
-            )
-            # That writer replaced every open finding, the governance ones too,
-            # and only the governance pass produces those.
-            try:
-                await refresh_governance_findings(session, repo_id)
-            except Exception as exc:
-                console.print(f"[yellow]Governance findings skipped: {exc}[/yellow]")
-            # Rows for the files blamed above, so the next re-score reads them.
-            if report.function_blame_rows:
-                await upsert_git_function_blame_bulk(session, repo_id, report.function_blame_rows)
-            if coverage.authoritative:
-                # Stamp the live HEAD from disk, not the stored
-                # ``repo.head_commit`` column. The column names the last
-                # *indexed* commit; the coverage just scored describes the
-                # working tree, and the two diverge when the tree moved after
-                # the last index (issue #1747). Live HEAD is the provenance
-                # answer: it is the tree the coverage was measured against.
-                live_head = get_head_commit(Path(repo_path)) or getattr(repo, "head_commit", None)
-                await save_coverage_files(
-                    session,
-                    repo_id,
-                    coverage.files,
-                    source_format=coverage.source_format or "lcov",
-                    ingested_commit_sha=live_head,
-                    provenance=coverage.provenance,
-                )
-
-    await _rescore()
 
 
 def _run_full_health_rescore(
@@ -1117,12 +1200,16 @@ def _run_full_health_rescore(
     try:
         with timed(timings, "rescore"):
             run_async(
-                _rescore_health_from_db(repo_path, graph_builder, parsed_files, exclude_patterns)
+                _rescore_health_from_db(
+                    repo_path, graph_builder, parsed_files, exclude_patterns, timings=timings
+                )
             )
     except Exception as exc:
         # Return without advancing the fingerprint so the next update retries.
         console.print(f"[yellow]Health re-score failed: {exc}[/yellow]")
         raise
+
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
 
     # Same full-replace re-score the periodic gate runs, so it restarts the same
     # cadence. Left unstamped when git is unreadable: the gate cannot fire
@@ -1160,22 +1247,30 @@ def _run_full_health_rescore(
 # stays deterministic on historical checkouts; override for tests.
 _FULL_RESCORE_INTERVAL_DAYS = 7.0
 
+# The malformed-value warning is global, not per-repo. `_full_rescore_interval_days`
+# is consulted once per repo in a workspace fan-out, `repowise watch` and post-commit
+# hook updates, so a naive warn-in-except would spam the terminal once per repo. Hoist
+# the once-per-invocation guarantee into a module-level guard (#1371).
+_FULL_RESCORE_WARNING_SENT = False
+
 
 def _full_rescore_interval_days() -> float:
+    global _FULL_RESCORE_WARNING_SENT
     raw = os.environ.get("REPOWISE_FULL_RESCORE_INTERVAL_DAYS", "").strip()
     if raw:
         try:
-            return max(0.0, float(raw))
+            days = float(raw)
+            if math.isnan(days) or days == math.inf:
+                raise ValueError(raw)
+            return max(0.0, days)
         except ValueError:
-            # Say it where the user will actually see it: a silently-ignored
-            # value makes the rescore cadence look deliberate when it is
-            # actually the default (issue #1370). stderr matches how
-            # build_embedder reports the same class of misconfiguration.
-            print(
-                f"REPOWISE_FULL_RESCORE_INTERVAL_DAYS={raw!r} is not a number; "
-                f"using the default {_FULL_RESCORE_INTERVAL_DAYS} days.",
-                file=sys.stderr,
-            )
+            if not _FULL_RESCORE_WARNING_SENT:
+                _FULL_RESCORE_WARNING_SENT = True
+                err_console.print(
+                    "[yellow]Warning:[/yellow] "
+                    f"REPOWISE_FULL_RESCORE_INTERVAL_DAYS must be a number "
+                    f"(got '{raw}'); using {_FULL_RESCORE_INTERVAL_DAYS:.0f}-day default"
+                )
     return _FULL_RESCORE_INTERVAL_DAYS
 
 
@@ -1242,6 +1337,8 @@ def health_analyzer_changed(state: dict) -> bool:
     stated defect. They pick the stamp up on their first re-score from any
     other trigger.
     """
+    from repowise.core.analysis.health import HEALTH_ANALYZER_VERSION
+
     stored = state.get("health_analyzer_version")
     return stored is not None and stored != HEALTH_ANALYZER_VERSION
 
@@ -1255,7 +1352,26 @@ def security_scanner_changed(state: dict) -> bool:
     unstamped forever, since only the rescan this gates writes the stamp.
     ``init`` stamps every fresh index, so a new install never reads as stale.
     """
+    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
     return state.get("security_scanner_version") != SECURITY_SCANNER_VERSION
+
+
+def renderer_changed(
+    stored_fp: str | None, current_fp: str, docs_mode: str, *, index_only: bool
+) -> bool:
+    """Whether the structural pages were rendered by a different renderer.
+
+    A missing stamp counts as a change; an empty current fingerprint (computing
+    it failed) disables the gate. A wiki with no docs has nothing to re-render,
+    and a model wiki waits for a full update, the run that can re-render it.
+    """
+    return (
+        bool(current_fp)
+        and stored_fp != current_fp
+        and docs_mode != "none"
+        and not (index_only and docs_mode == "llm")
+    )
 
 
 def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: list[str]) -> bool:
@@ -1268,6 +1384,8 @@ def rescan_security_if_changed(repo_path: Any, state: dict, exclude_patterns: li
         return False
     if not run_full_security_rescan(repo_path, exclude_patterns):
         return False
+    from repowise.core.analysis.security_scan import SECURITY_SCANNER_VERSION
+
     state["security_scanner_version"] = SECURITY_SCANNER_VERSION
     return True
 
@@ -1293,7 +1411,7 @@ def full_rescore_due(state: dict, head_ts: float | None) -> bool:
     if head_ts is None:
         return False
     last = state.get("last_full_rescore_at")
-    if not isinstance(last, (int, float)):
+    if not isinstance(last, int | float):
         return True
     return (head_ts - float(last)) >= _full_rescore_interval_days() * 86400.0
 
@@ -1303,6 +1421,8 @@ def run_decay_health_rescore(
     graph_builder: Any,
     parsed_files: list,
     exclude_patterns: list[str],
+    *,
+    timings: PhaseTimings | None = None,
 ) -> bool:
     """Periodic full health re-score off the already-built graph (#728).
 
@@ -1313,7 +1433,11 @@ def run_decay_health_rescore(
     is logged and leaves the stamp so the next update retries.
     """
     try:
-        run_async(_rescore_health_from_db(repo_path, graph_builder, parsed_files, exclude_patterns))
+        run_async(
+            _rescore_health_from_db(
+                repo_path, graph_builder, parsed_files, exclude_patterns, timings=timings
+            )
+        )
         return True
     except Exception as exc:
         console.print(f"[yellow]Idle-file health re-score skipped: {exc}[/yellow]")
@@ -1370,6 +1494,8 @@ async def _security_rescan_from_full_parse(repo_path: Any, exclude_patterns: lis
         async with get_session(sf) as session:
             repo = await upsert_repository(session, name=repo_path.name, local_path=str(repo_path))
             findings_by_file, scanned_paths = scan_source_map(parsed_files, source_map)
-            await SecurityScanner(session, repo.id).replace_findings(findings_by_file, scanned_paths)
+            await SecurityScanner(session, repo.id).replace_findings(
+                findings_by_file, scanned_paths
+            )
     finally:
         await engine.dispose()

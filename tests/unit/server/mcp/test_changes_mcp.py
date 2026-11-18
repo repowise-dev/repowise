@@ -201,10 +201,31 @@ async def test_suspects_rank_recent_changes_against_the_targets(setup_mcp, sessi
     block = result["suspects"]
     assert block["window"]["since"].startswith("2026-03-02")
     assert block["candidates"] == 3  # pr-2, pr-3, pr-4; pr-1 is older than 14 days
+    assert block["candidates_capped"] is False
     top = block["suspects"][0]
     assert (top["id"], top["rank"]) == ("pr-2", 1)
     assert "text" in top["signals"] and "recency" in top["signals"]
     assert "not a cause" in block["note"]
+    for row in block["suspects"]:
+        assert not {"term py", "term src"} & set(row["signals"].get("text", {}).get("evidence", []))
+
+
+@pytest.mark.asyncio
+async def test_a_typed_symptom_is_the_suspects_text_query(setup_mcp, session):
+    import time_machine
+
+    from repowise.server.mcp_server import get_context
+
+    await _seed(session)
+    with time_machine.travel(datetime(2026, 3, 16, tzinfo=UTC), tick=False):
+        result = await get_context(
+            targets=["src/db/models.py"], include=["suspects"], symptom="token refresh fails"
+        )
+        ignored = await get_context(targets=["src/db/models.py"], symptom="token refresh fails")
+    top = result["suspects"]["suspects"][0]
+    assert top["id"] == "pr-2"
+    assert "term refresh" in top["signals"]["text"]["evidence"]
+    assert any(a["argument"] == "symptom" for a in ignored["ignored_arguments"])
 
 
 @pytest.mark.asyncio

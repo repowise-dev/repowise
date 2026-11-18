@@ -63,10 +63,13 @@ class MissingTestReport:
     #: changed lines covered and a covering test file IS in the diff (or the
     #: covering rows are pathless so staleness is unknowable) - no signal.
     covered: list[str] = field(default_factory=list)
-    #: file has ZERO coverage rows - unknown, NOT untested. Never a warning.
+    #: file has ZERO coverage rows, or the map is truncated and a covering
+    #: test may be one it left out - unknown, NOT untested. Never a warning.
     no_data: list[str] = field(default_factory=list)
     #: true when the repo has no per-test map at all (nothing to say honestly).
     map_empty: bool = False
+    #: true when the map is at its row cap with whole tests left out.
+    map_truncated: bool = False
 
     def has_signal(self) -> bool:
         return bool(self.untested_changes or self.stale_test_candidates)
@@ -85,6 +88,7 @@ async def detect_missing_tests(
     whether a covering test file was itself edited (sub-signal 2).
     """
     from repowise.core.persistence.crud import get_test_coverage_summary, tests_covering
+    from repowise.core.persistence.crud.analysis.coverage_map import map_is_truncated
 
     report = MissingTestReport()
     if not changed:
@@ -95,6 +99,9 @@ async def detect_missing_tests(
         # No map ingested: we cannot honestly say anything about coverage.
         report.map_empty = True
         return report
+    # At its row cap the map lacks whole tests, so an absent covering test
+    # proves nothing: such a file is unknown, never untested or stale.
+    report.map_truncated = truncated = map_is_truncated(summary)
 
     changed_files = set(changed.keys())
 
@@ -108,6 +115,9 @@ async def detect_missing_tests(
 
         # The file IS in the map. Do any tests cover the CHANGED lines?
         hit_rows = await tests_covering(session, repository_id, source_file, lines=lines)
+        if not hit_rows and truncated:
+            report.no_data.append(source_file)
+            continue
         if not hit_rows:
             # Covered file, uncovered change: the strong signal.
             covered_here: set[int] = set()
@@ -129,6 +139,9 @@ async def detect_missing_tests(
         touched = [tf for tf in covering_test_files if tf in changed_files]
         if touched:
             report.covered.append(source_file)
+        elif covering_test_files and truncated:
+            # The edited test may be one the cut left out.
+            report.no_data.append(source_file)
         elif covering_test_files:
             # Every covering test file we can name is absent from the diff.
             report.stale_test_candidates.append(

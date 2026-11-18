@@ -99,6 +99,16 @@ async def repo_index_session(root: Path) -> AsyncIterator[tuple[AsyncSession, st
         yield opened
 
 
+async def adopt_moved_repo_best_effort(root: Path) -> bool:
+    """Point a moved or copied checkout's only repository row at *root*.
+
+    See :func:`repowise.core.persistence.crud.adopt_moved_repository_best_effort`.
+    """
+    from repowise.core.persistence.crud import adopt_moved_repository_best_effort
+
+    return await adopt_moved_repository_best_effort(root)
+
+
 #: Busy timeout for the reconcile's own connection. The engine default is 30s,
 #: sized for bulk graph-edge writes; inheriting it here is a trap, because a
 #: read command opens several engines (``status`` four, ``doctor`` five) and a
@@ -137,16 +147,25 @@ async def reconcile_schema_best_effort(db_url: str) -> None:
     Never CREATES a store. ``init_db`` on a fresh path would materialise a
     42-table file, so a read command run in a repo that was never indexed would
     leave a database behind where the user expects "not indexed yet".
+
+    A plugin storage revision that failed or changed after it applied is a
+    defect in the plugin, not a store this command cannot write, so that error
+    still reaches the caller.
     """
     from repowise.core.persistence import create_engine, init_db
+    from repowise.core.registry.storage_migrations import StorageMigrationError
 
     if _missing_sqlite_file(db_url):
         return
 
     engine = create_engine(db_url, busy_timeout_ms=_RECONCILE_BUSY_TIMEOUT_MS)
     try:
-        with contextlib.suppress(Exception):
+        try:
             await init_db(engine)
+        except StorageMigrationError:
+            raise
+        except Exception:
+            pass
     finally:
         with contextlib.suppress(Exception):
             await engine.dispose()

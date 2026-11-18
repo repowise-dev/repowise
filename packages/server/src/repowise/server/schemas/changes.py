@@ -224,6 +224,7 @@ class Suspect(BaseModel):
 class SuspectsResponse(BaseModel):
     window: dict[str, str]
     candidates: int
+    candidates_capped: bool
     #: Changes git could not read; they are ranked on title and files alone.
     texts_missing: int = 0
     symptom_files: list[str] = []

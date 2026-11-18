@@ -26,6 +26,10 @@ it and repowise does not write it. `No` means the surface does not exist
 for that agent. `Indexing` is `Yes` when the agent's own CLI can run as the
 LLM that writes the index, selected by its provider id (`claude_cli`, for
 example). It is separate from the tier: it says nothing about the session.
+`init` offers a logged-in agent CLI but uses it only when you pick it or pass
+`--provider`. An agent CLI has no embedder, so semantic search needs an
+embedder key of its own: see
+[Embeddings](../reference/CONFIG.md#embeddings-for-semantic-search).
 
 `Attribution` is `Yes` when repowise can record the agent's edits as they
 happen, an opt-in set by `attribution.capture` and `attribution.agents`. Every
@@ -40,10 +44,11 @@ either way.
 | [Cursor](https://cursor.com/docs/context/mcp) | Good | Yes | Yes | No | No | Yes | No | No | Yes |
 | [OpenCode](https://opencode.ai/docs/mcp-servers/) | Good | Yes | No | No | No | Yes | No | Yes | No |
 | [Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp) | Good | Yes | No | No | No | Yes | No | No | No |
-| [GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | Good | Yes | No | No | No | Yes | No | No | No |
+| [GitHub Copilot CLI](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference) | Good | Yes | No | No | No | Yes | No | Yes | No |
 | [Kiro](https://kiro.dev/docs/mcp/configuration) | Good | Yes | No | No | No | Yes | No | No | No |
+| [Windsurf](https://docs.windsurf.com/windsurf/cascade/mcp) | Basic | Yes | No | No | No | No | No | No | No |
 
-Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`, `copilot`, `kiro`.
+Target ids for `--target=`: `claude-code`, `codex`, `vscode`, `cursor`, `opencode`, `hermes`, `copilot`, `kiro`, `windsurf`.
 
 ### What Good tier does not include
 
@@ -60,6 +65,12 @@ so noisy commands are rewritten there. Transcript mining is still absent.
 That is a real integration and it is most of the value. It is not the
 same product Full-tier agents get, and breadth that overclaims depth is
 worse than narrower breadth.
+
+### Basic tier
+
+Windsurf sits at Basic. repowise writes
+no instructions file or skills there, so the MCP tools are reachable but
+nothing tells the agent when to use them.
 
 ## Paste-config
 
@@ -80,18 +91,33 @@ the plain `mcpServers` JSON most hosts read and is the right default when
 yours is not listed below.
 Hosts people ask about most, none of which repowise writes config for today:
 
-Cline, Windsurf, Zed, Continue, Gemini CLI, JetBrains AI Assistant, Amp.
+Cline, Zed, Continue, Gemini CLI, JetBrains AI Assistant, Amp.
 
 `print-config` takes one of the target ids above; there is no descriptor to
 name for a host at this tier, which is the point of the tier.
 
 ## The MCP surface
 
-repowise registers **eighteen MCP tools**. A single-repo server advertises **ten**
-of them by default, and workspace mode adds one more automatically for **eleven**. A
-further **seven** are off by default, enabled through the `mcp.tools` config block
-or `--tools +name`. The `lean` profile trims the default surface to **six** tools
-(seven in workspace mode) for agents on a tight context budget.
+repowise registers **eighteen MCP tools**. What a client is listed depends on how it
+loads tool schemas. Claude Code loads a schema only when the model asks for that
+tool, so it gets the standard surface: **ten** tools in a single repo, **eleven** in
+workspace mode. Clients that send every schema with every request (Codex, Cursor, VS
+Code and Copilot, OpenCode, Windsurf, Kiro, Hermes and any client repowise does not
+recognise) get the `core` profile: **five** tools (six in workspace mode),
+`get_answer`, `get_context`, `search_codebase`, `get_symbol` and `get_why`. A
+further **seven** specialists are off for every client.
+
+One setting, `mcp.tools`, changes it for every client: `repowise config set
+mcp.tools <value>`, `repowise agents add --tools <value>`, the `mcp` block in
+`.repowise/config.yaml`, or the Agents page of a repository's dashboard settings.
+`repowise mcp --tools <value>` in one client's server entry pins that client alone
+and wins over the setting. The value is a profile (`core`, `lean`, `standard`,
+`all`), optionally followed by `+name` or `-name`; `+name` or `-name` alone adjusts
+each client's default; plain names are the exact list. The server reads it when it
+starts, so restart it (or the agent) after a change. A tool left out only by a
+client's default still answers if called, and the server's instructions name the
+command that lists it. The `lean` profile is **six** tools (seven in workspace
+mode): core plus `get_risk`.
 
 Per-tool detail: [MCP_TOOLS.md](MCP_TOOLS.md).
 

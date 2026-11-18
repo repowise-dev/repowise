@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { PageShell } from "@repowise-dev/ui/shared/page-shell";
 import { OverviewSection } from "@repowise-dev/ui/overview";
 import { PageLede } from "@repowise-dev/ui/shared/page-lede";
-import { CheckoutFacts } from "@repowise-dev/ui/decisions";
+import { CheckoutFactsDisclosure } from "@repowise-dev/ui/decisions";
 import {
   getDecisionCounts,
   getDecisionLaneCounts,
@@ -14,6 +14,7 @@ import { ApiClientError } from "@/lib/api/client";
 import { AddDecisionButton } from "@/components/decisions/add-decision-button";
 import { DecisionReviewWrapper } from "@/components/decisions/decision-review-wrapper";
 import { getTranslations } from "next-intl/server";
+import { formatNumber } from "@repowise-dev/ui/lib/format";
 
 export const revalidate = 30;
 export const metadata: Metadata = { title: "Decisions" };
@@ -136,8 +137,8 @@ export default async function DecisionsPage({ params }: Props) {
   const empty = total === 0;
   const denominator =
     total !== undefined
-      ? `of ${total.toLocaleString()} recorded`
-      : `in the first ${decisions.length.toLocaleString()}`;
+      ? `of ${formatNumber(total)} recorded`
+      : `in the first ${formatNumber(decisions.length)}`;
 
   return (
     <PageShell
@@ -165,7 +166,7 @@ export default async function DecisionsPage({ params }: Props) {
           can be superseded. */}
       <PageLede
         label={measuredByLane ? t("ledeAccepted") : t("ledeConfirmed")}
-        value={accepted.toLocaleString()}
+        value={formatNumber(accepted)}
         unit={denominator}
         layout="beside"
       >
@@ -204,17 +205,16 @@ export default async function DecisionsPage({ params }: Props) {
         <AddDecisionButton repoId={repoId} />
       </div>
 
+      {/* Closed by default, with every fact's heading on the toggle: the
+          review queue below is what this page is visited for. */}
       {facts && (
-        <OverviewSection
+        <CheckoutFactsDisclosure
           title={t("checkoutTitle")}
           description={t("checkoutDescription")}
-        >
-          <CheckoutFacts
-            facts={facts.episodes}
-            available={facts.available}
-            total={facts.total}
-          />
-        </OverviewSection>
+          facts={facts.episodes}
+          available={facts.available}
+          total={facts.total}
+        />
       )}
 
       {!empty && (

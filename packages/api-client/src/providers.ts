@@ -9,11 +9,18 @@ import type {
   ProviderValidation,
 } from "./types";
 
+/** `detect` also asks each agent CLI whether it is signed in, which fills
+ *  `detected: "signed_in"`; it runs a short process per CLI, so only the
+ *  surfaces that offer sources ask for it. */
 export async function getProviders(
   repoId?: string,
+  options: { detect?: boolean } = {},
 ): Promise<ProvidersResponse> {
-  const qs = repoId ? `?repo_id=${encodeURIComponent(repoId)}` : "";
-  return apiGet<ProvidersResponse>(`/api/providers${qs}`);
+  const params = new URLSearchParams();
+  if (repoId) params.set("repo_id", repoId);
+  if (options.detect) params.set("detect", "true");
+  const qs = params.toString();
+  return apiGet<ProvidersResponse>(`/api/providers${qs ? `?${qs}` : ""}`);
 }
 
 /** Set the provider and model (any id the provider accepts). With `repoId`

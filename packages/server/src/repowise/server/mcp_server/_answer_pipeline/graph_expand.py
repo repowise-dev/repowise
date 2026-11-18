@@ -7,12 +7,12 @@ from typing import Any
 from sqlalchemy import select
 
 from repowise.core.ingestion.models import CONTAINMENT_EDGE_TYPES
+from repowise.core.ingestion.symbol_identity import file_of_symbol
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphEdge, GraphNode, Page
 from repowise.server.mcp_server._graph_files import (
     is_symbol_node,
     keep_projected_edge,
-    node_to_file,
     per_index,
 )
 from repowise.server.mcp_server._page_paths import PAGELESS_FILE
@@ -42,7 +42,7 @@ def _projected_pair(
     tgt = tgt or ""
     if not is_symbol_node(src) and not is_symbol_node(tgt):
         return (src or None, tgt or None)
-    src_file, tgt_file = node_to_file(src), node_to_file(tgt)
+    src_file, tgt_file = file_of_symbol(src), file_of_symbol(tgt)
     if not keep_projected_edge(src_file, tgt_file, edge_type, confidence):
         return (None, None)
     return (src_file, tgt_file)

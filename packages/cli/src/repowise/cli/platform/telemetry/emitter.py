@@ -48,19 +48,18 @@ def _cli_version() -> str:
 
 
 def _under_test() -> bool:
-    """Return whether we are running inside a pytest session.
+    """Return whether a test runner is driving this process.
 
     The suite drives real CLI commands, and its fixtures relocate the home
-    directory that holds ``anon_id``, so without this every test run delivers
-    events under a freshly minted install. Only delivery is suppressed:
-    consent resolution stays real, so its own tests still exercise the actual
-    precedence rules.
-
-    Shares the env-var check with :func:`environment.under_pytest` so the two
-    cannot drift. The ``sys.modules`` fallback is kept because this guard is
-    only consulted in-process, where an import is evidence enough.
+    directory that holds ``anon_id``, so without this every test run would
+    queue events under a freshly minted install. Only delivery is suppressed:
+    consent resolution and the debug print stay real, so their tests still
+    exercise them. Shared with the core emitter, which also honours the
+    ``REPOWISE_TELEMETRY_IN_TESTS`` opt-in telemetry's own tests use.
     """
-    return environment.under_pytest() or "pytest" in sys.modules
+    from repowise.core.platform.telemetry import under_test
+
+    return under_test()
 
 
 def build_envelope(event: TelemetryEvent) -> dict[str, object]:
@@ -70,7 +69,7 @@ def build_envelope(event: TelemetryEvent) -> dict[str, object]:
         "anon_id": identity.get_anonymous_id(),
         "session_id": identity.get_session_id(),
         "cli_version": _cli_version(),
-        "properties": event.properties(),
+        "properties": {"client": environment.client(), **event.properties()},
     }
     envelope.update(environment.base_facts())
     return envelope
@@ -89,6 +88,8 @@ def record(event: TelemetryEvent) -> None:
                 "[repowise telemetry] would send:\n" + json.dumps(envelope, indent=2),
                 file=sys.stderr,
             )
+            return
+        if _under_test():
             return
 
         spool.append(envelope)

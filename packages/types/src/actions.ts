@@ -17,8 +17,7 @@ export type ActionRule =
   | "broken_doc_refs"
   | "dead_code_batch"
   | "coverage_missing"
-  | "coverage_stale"
-  | "decisions_unreviewed";
+  | "coverage_stale";
 
 export type ActionHorizonKey = "week" | "quarter";
 

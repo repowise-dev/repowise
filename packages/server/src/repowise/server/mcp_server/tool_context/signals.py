@@ -173,6 +173,8 @@ async def _resolve_health(
         file_path = None
 
     if not file_path:
+        if target_type == "module":
+            result_data["health_basis"] = f'get_health(targets=["module:{target}"])'
         result_data["health"] = None
         return
 

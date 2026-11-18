@@ -8,15 +8,23 @@ without any DB or filesystem dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from repowise.core.persistence.crud.analysis.performance import PerformanceHeadline
+
+from repowise.core.agent_steer import AGENT_STEER
+
+from .sections import DEFAULT_SECTIONS
 
 
-def _render_tool_table(*, keyless: bool = False) -> str:
+def _render_tool_table(*, keyless: bool = False, listed: frozenset[str] | None = None) -> str:
     # Local import: tool_table is a leaf module; importing lazily keeps data.py
     # free of import-order coupling for the many tests that build these
     # dataclasses directly.
     from .tool_table import render_tool_table
 
-    return render_tool_table(keyless=keyless)
+    return render_tool_table(keyless=keyless, listed=listed)
 
 
 @dataclass(frozen=True)
@@ -30,7 +38,6 @@ class TechStackItem:
 class KeyModule:
     name: str  # display name, e.g. "src/api"
     purpose: str  # short description (~80 chars)
-    file_count: int
     owner: str | None
 
 
@@ -40,14 +47,24 @@ class HotspotFile:
     churn_percentile: float
     commit_count_90d: int
     owner: str | None
-    # Bug-fix history for the same file. ``fix_count`` is the windowed
-    # production-code fix count (``GitMetadata.prior_defect_count``), and
-    # ``last_fix_age`` is pre-rendered ("2 weeks ago") because a count with no
-    # recency reads as an accusation about 2019. ``bug_magnet`` is only ever set
-    # alongside an age, per the recency contract in ``types/health.ts``.
+    # Bug-fix history for the same file. ``fix_count`` is the production-code
+    # fix count over the prior-defect window (``GitMetadata.prior_defect_count``,
+    # see ``fix_window``), and ``last_fix_date`` (``YYYY-MM-DD``) anchors it,
+    # because a count with no recency reads as an accusation about 2019; a date
+    # stays true between regenerations. ``bug_magnet`` is only ever set
+    # alongside a date, per the recency contract in ``types/health.ts``.
     fix_count: int = 0
     bug_magnet: bool = False
-    last_fix_age: str | None = None
+    last_fix_date: str | None = None
+
+    @property
+    def fix_window(self) -> str:
+        """The window ``fix_count`` covers, as the line prints it ("6 months")."""
+        # Local import: the constants module loads the language registry, which
+        # the many tests that build these dataclasses directly do not need.
+        from repowise.core.ingestion.git_indexer._constants import PRIOR_DEFECT_WINDOW_LABEL
+
+        return PRIOR_DEFECT_WINDOW_LABEL
 
 
 @dataclass(frozen=True)
@@ -85,14 +102,12 @@ class CodeHealthBlock:
     # performance scores: static performance RISK). ``None`` when unmeasured, so
     # the section omits the line rather than printing a misleading 10.0.
     performance_average: float | None = None
-    # Honest performance headline: the open finding count, its density per 10K
-    # covered LOC, and how much of the analyzed code a perf detector actually ran
-    # on. An agent reading a bare 9.9/10 should still see "N findings" and "perf
-    # ran on X% of the code" so a mostly-unsupported-language repo never reads as
-    # verified-fast. ``performance_coverage_pct`` is ``None`` when no code file
-    # carries a supported language.
-    performance_findings: int = 0
-    performance_findings_density: float | None = None
+    # Honest performance headline: the open causes (worth fixing now, in
+    # production code, overall) and how much of the analyzed code a perf
+    # detector actually ran on, so a bare 9.9/10 on a mostly-unsupported-language
+    # repo never reads as verified-fast. ``performance_coverage_pct`` is ``None``
+    # when no code file carries a supported language.
+    performance_causes: PerformanceHeadline | None = None
     performance_coverage_pct: float | None = None
     performance_skipped_files: int = 0
     performance_unsupported_languages: list[tuple[str, int]] = field(default_factory=list)
@@ -121,18 +136,39 @@ class EditorFileData:
     repo_name: str
     indexed_at: str  # date only: "2026-03-28"
     indexed_commit: str  # short SHA of HEAD at index time, e.g. "a1b2c3d"
-    architecture_summary: str  # 2-4 sentences from repo_overview page
+    architecture_summary: str  # lead sentence of the repo_overview page
     key_modules: list[KeyModule] = field(default_factory=list)
     entry_points: list[str] = field(default_factory=list)
     tech_stack: list[TechStackItem] = field(default_factory=list)
     hotspots: list[HotspotFile] = field(default_factory=list)
+    #: Pinned decisions only; the rest are reached through the pointer line.
     decisions: list[DecisionSummary] = field(default_factory=list)
+    #: Whether any decision is in force, which is what earns the pointer line.
+    decisions_in_force: bool = False
+    #: Whether agents are asked to record decisions here (``decisions.mode: full``).
+    record_decisions: bool = True
     build_commands: dict[str, str] = field(default_factory=dict)
     avg_confidence: float = 0.0
     code_health: CodeHealthBlock | None = None
     kg_layers: list[KGLayerSummary] = field(default_factory=list)
     kg_tour: list[KGTourStepSummary] = field(default_factory=list)
     index_scope: dict = field(default_factory=dict)
+    sections: frozenset[str] = DEFAULT_SECTIONS
+    #: The repository's ``mcp.tools`` setting as written in its config, if any.
+    mcp_tools: str | list[str] | None = None
+
+    def listed_tools(self, client: str) -> frozenset[str]:
+        """The default tools the MCP server here lists to *client* (an agent slug)."""
+        from repowise.core.registry.tool_selection import listed_default_tools
+
+        from .tool_table import TOOL_TABLE_ROWS
+
+        return listed_default_tools(TOOL_TABLE_ROWS, client=client, override=self.mcp_tools)
+
+    @property
+    def steer(self) -> str:
+        """The call-first line the block leads with, whatever sections are on."""
+        return AGENT_STEER
 
     @property
     def keyless(self) -> bool:
@@ -145,10 +181,46 @@ class EditorFileData:
         )
 
     @property
+    def model_command(self) -> str:
+        """The command that has a model write this index's documentation."""
+        from repowise.core.index_scope import model_command
+
+        return model_command(self.index_scope)
+
+    @property
+    def scope_gaps(self) -> list[str]:
+        """What this index lacks, for the header; empty when nothing does."""
+        scope = self.index_scope
+        upgrade = scope.get("upgrade") if isinstance(scope.get("upgrade"), dict) else {}
+        gaps = []
+        if self.keyless:
+            # The CLI's mode names (cli/ui/mode_names.py), which core cannot import.
+            if scope.get("content_provenance") == "none":
+                gaps.append("Index only (no documentation, full-text search)")
+            else:
+                gaps.append("Built from code (no model, full-text search)")
+        if scope.get("git_tier") == "essential":
+            gaps.append("essential Git history only")
+        if self.upgrade_pending:
+            gaps.append(f"model upgrade {upgrade.get('status')}")
+        return gaps
+
+    @property
+    def upgrade_pending(self) -> bool:
+        upgrade = self.index_scope.get("upgrade")
+        status = upgrade.get("status") if isinstance(upgrade, dict) else None
+        # A keyless index gets its next command from the keyless bullet instead.
+        return status in ("pending", "resumable", "failed") and not self.keyless
+
+    @property
     def tool_table_md(self) -> str:
         # Rendered MCP tool table (single source: tool_table.py). Exposed on the
         # data rather than as a Jinja global so any environment can render it.
-        return _render_tool_table(keyless=self.keyless)
+        return self.tool_table()
+
+    def tool_table(self, listed: frozenset[str] | None = None) -> str:
+        """The tool table, cut to *listed* when given."""
+        return _render_tool_table(keyless=self.keyless, listed=listed)
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +252,8 @@ class WorkspaceEditorFileData:
     package_deps: list[dict] = field(default_factory=list)  # package dep entries
     contract_links: list[dict] = field(default_factory=list)  # matched contract links
     contracts_by_type: dict[str, int] = field(default_factory=dict)  # {"http": 5, …}
-    # Rendered MCP tool table (single source: tool_table.py). Always the keyed
-    # table: member repos can differ in keyless state, and one keyed repo needs it.
-    tool_table_md: str = field(default_factory=lambda: _render_tool_table())
+
+    @property
+    def steer(self) -> str:
+        """The call-first line, the same one each repo's own block leads with."""
+        return AGENT_STEER

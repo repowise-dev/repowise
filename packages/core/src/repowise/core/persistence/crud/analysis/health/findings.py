@@ -8,7 +8,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .....analysis.finding_registry import excluded_types
@@ -21,6 +21,7 @@ from .....analysis.health.governance import GOVERNANCE_BIOMARKERS
 from .....analysis.health.rows import detail_map
 from .....analysis.health.scoring import ADVISORY_DIMENSION
 from .....analysis.health.worth import LowPriority, finding_priorities
+from ....batches import chunked
 from ....models import HealthFinding, _new_uuid, _now_utc
 from ..._shared import _BATCH_SIZE
 from ...graph import get_test_file_paths
@@ -116,6 +117,11 @@ async def _fold_into_triaged(
     kept.updated_at = now
 
 
+async def _delete_open(session: AsyncSession, scope: list[Any]) -> None:
+    """Delete the open rows in *scope* in one statement; triaged rows stay."""
+    await session.execute(delete(HealthFinding).where(*scope, HealthFinding.status == "open"))
+
+
 async def _insert_keeping_triage(
     session: AsyncSession,
     repository_id: str,
@@ -160,13 +166,7 @@ async def save_health_findings(
     dataclasses or plain dicts.
     """
     scope = [HealthFinding.repository_id == repository_id]
-    existing = await session.execute(
-        select(HealthFinding).where(*scope, HealthFinding.status == "open")
-    )
-    for row in existing.scalars().all():
-        await session.delete(row)
-    await session.flush()
-
+    await _delete_open(session, scope)
     await _insert_keeping_triage(session, repository_id, findings, scope)
 
 
@@ -202,13 +202,7 @@ async def replace_governance_findings(
         HealthFinding.repository_id == repository_id,
         HealthFinding.biomarker_type.in_(list(GOVERNANCE_BIOMARKERS)),
     ]
-    existing = await session.execute(
-        select(HealthFinding).where(*scope, HealthFinding.status == "open")
-    )
-    for row in existing.scalars().all():
-        await session.delete(row)
-    await session.flush()
-
+    await _delete_open(session, scope)
     await _insert_keeping_triage(session, repository_id, findings, scope)
 
 
@@ -225,38 +219,34 @@ async def upsert_health_findings(
     Used by the incremental ``repowise update`` path so unchanged files
     keep their findings instead of being wiped on every partial re-index.
     """
-    if not file_paths:
-        return
-    predicates = [
-        HealthFinding.repository_id == repository_id,
-        HealthFinding.file_path.in_(file_paths),
-    ]
-    if dimension is not None:
-        predicates.append(HealthFinding.dimension == dimension)
-    existing = await session.execute(
-        select(HealthFinding).where(*predicates, HealthFinding.status == "open")
-    )
-    for row in existing.scalars().all():
-        await session.delete(row)
-    await session.flush()
+    # One pass per piece of the paths. A finding's public id carries its file,
+    # so it only ever folds into a triaged row of its own piece.
+    for chunk in chunked(sorted(set(file_paths))):
+        predicates = [
+            HealthFinding.repository_id == repository_id,
+            HealthFinding.file_path.in_(chunk),
+        ]
+        if dimension is not None:
+            predicates.append(HealthFinding.dimension == dimension)
+        await _delete_open(session, predicates)
 
-    allowed = set(file_paths)
-    scoped = [
-        finding
-        for finding in findings
-        if (finding.file_path if hasattr(finding, "file_path") else finding.get("file_path"))
-        in allowed
-        and (
-            dimension is None
-            or (
-                getattr(finding, "dimension", None)
-                if hasattr(finding, "dimension")
-                else finding.get("dimension")
+        allowed = set(chunk)
+        scoped = [
+            finding
+            for finding in findings
+            if (finding.file_path if hasattr(finding, "file_path") else finding.get("file_path"))
+            in allowed
+            and (
+                dimension is None
+                or (
+                    getattr(finding, "dimension", None)
+                    if hasattr(finding, "dimension")
+                    else finding.get("dimension")
+                )
+                == dimension
             )
-            == dimension
-        )
-    ]
-    await _insert_keeping_triage(session, repository_id, scoped, predicates)
+        ]
+        await _insert_keeping_triage(session, repository_id, scoped, predicates)
 
 
 async def update_health_finding_status(

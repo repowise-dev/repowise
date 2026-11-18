@@ -39,13 +39,16 @@ from pathlib import Path
 from repowise.cli.errors import reasoned_error
 from repowise.core.agents import identity
 
+from ..formats.server_entry import RENAME_HINT, RemoteServerEntryError, ServerSpec
 from ..types import (
     Capability,
     DoctorReport,
     DoctorStatus,
     FileAction,
     FileWrite,
+    HostedSupport,
     InstallMethod,
+    InstallOptions,
     Registration,
     Scope,
     WriteResult,
@@ -83,6 +86,17 @@ METHODS = (
     ),
 )
 
+
+#: The hosted entry is a ``url`` table in the project ``.codex/config.toml``, so
+#: it serves this repo only. Codex signs in to a remote server that asks for
+#: OAuth through ``codex mcp login``.
+HOSTED = HostedSupport(
+    scope=Scope.PROJECT,
+    next_step=(
+        'Run "codex mcp login {name}" in this repo and approve Repowise in the '
+        "browser, then restart Codex."
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -264,8 +278,14 @@ def _migrate_hooks_config(hooks: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def write_server_config(repo_path: Path) -> FileWrite:
-    """Merge the repowise server table into project-local ``.codex/config.toml``."""
+def write_server(repo_path: Path, spec: ServerSpec) -> tuple[str, FileWrite]:
+    """Merge *spec* (the local server or the hosted one) into ``.codex/config.toml``.
+
+    The table is ``[mcp_servers.<name>]``, where the spec picks the name: the
+    local server is always ``repowise``, and refuses a ``repowise`` table that
+    holds a ``url`` (a remote server it would half-convert); the hosted one
+    follows ``formats.server_entry``.
+    """
 
     from ..formats.toml_merge import (
         ensure_valid_toml,
@@ -288,11 +308,10 @@ def write_server_config(repo_path: Path) -> FileWrite:
     # Both levels are checked before the regex runs: a scalar where a table
     # belongs means the merge would produce a duplicate key, and refusing is
     # the only answer that leaves the user's file intact.
-    stored: dict[str, object] = {}
-    if doc is not None:
-        servers = require_table(doc, "mcp_servers", config_path, "mcp_servers")
-        if servers is not None:
-            stored = dict(require_table(servers, "repowise", config_path, "mcp_servers.repowise") or {})
+    servers = (require_table(doc, "mcp_servers", config_path, "mcp_servers") or {}) if doc else {}
+    name = spec.name_in(servers, local_type="stdio")
+    table = f"mcp_servers.{name}"
+    stored: dict[str, object] = dict(require_table(servers, name, config_path, table) or {})
 
     # Generated keys overwrite stored ones so a moved repo repoints, but any
     # key the user added to the table survives. ``replace_table`` rewrites the
@@ -305,19 +324,24 @@ def write_server_config(repo_path: Path) -> FileWrite:
     # TypeError. This function is on init's path with no try around it, so the
     # difference is a ClickException naming the file against a traceback
     # mid-run.
-    merged = {**stored, **server_table(repo_path)}
+    merged = {**spec.merge_base(stored), **spec.entry}
     try:
-        block = table_block("mcp_servers.repowise", merged)
+        block = table_block(table, merged)
     except TypeError as exc:
         raise reasoned_error(
-            f"Cannot update {config_path}: [mcp_servers.repowise] holds a value repowise "
+            f"Cannot update {config_path}: [{table}] holds a value repowise "
             f"cannot rewrite ({exc}). Remove that key and retry; no changes were written.",
             reason="editor_config_unmergeable",
         ) from exc
-    merged_text = replace_table(existing_text, "mcp_servers.repowise", block)
+    merged_text = replace_table(existing_text, table, block)
     merged_doc = ensure_valid_toml(merged_text, config_path)
     action = write_if_changed(config_path, merged_text, merged_doc, doc)
-    return FileWrite(path=config_path, action=action)
+    return name, FileWrite(path=config_path, action=action, reason=spec.repointed_from(stored))
+
+
+def write_server_config(repo_path: Path) -> FileWrite:
+    """Merge the local repowise server table into project-local ``.codex/config.toml``."""
+    return write_server(repo_path, ServerSpec(server_table(repo_path)))[1]
 
 
 def enable_hooks_feature(repo_path: Path) -> FileWrite:
@@ -986,6 +1010,7 @@ class CodexTarget:
     capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
+    hosted = HOSTED
 
     def supports_scope(self, scope: Scope) -> bool:
         return True
@@ -1017,13 +1042,29 @@ class CodexTarget:
         from ..formats.observe import observed_action, read_bytes
 
         result = WriteResult()
+        hosted_url = options.hosted_url if isinstance(options, InstallOptions) else None
+        if scope is Scope.PROJECT and hosted_url:
+            from ..formats.server_entry import install_hosted
+
+            if repo_path is None:
+                raise ValueError("the hosted entry needs a repo_path")
+            return install_hosted(
+                project_config_path(repo_path),
+                lambda spec: write_server(repo_path, spec),
+                {"url": hosted_url},
+            )
         if scope is Scope.PROJECT:
             if repo_path is None:
                 raise ValueError("project-scope install needs a repo_path")
             # Server table first, then the hooks file (which flips the feature
             # flag in the same config.toml). The order is the one init has
             # always used and it is what the file's table order records.
-            server = write_server_config(repo_path)
+            try:
+                server = write_server_config(repo_path)
+            except RemoteServerEntryError:
+                result.record(project_config_path(repo_path), FileAction.KEPT, RENAME_HINT)
+                result.note(f".codex/config.toml left unchanged: {RENAME_HINT}.")
+                return result
             hooks, feature = write_hooks_config(repo_path)
             result.record(server.path, _combined(server.action, feature.action))
             result.record(hooks.path, hooks.action)

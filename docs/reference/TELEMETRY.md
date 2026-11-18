@@ -37,6 +37,13 @@ Every event, whatever its type, carries the same anonymous envelope:
 | `python_version` | `3.12` | **major.minor only** |
 | `is_ci` | `true` / `false` | Separate automation from humans |
 
+Every event's `properties.client` names the host that ran repowise, as one
+fixed label: `claude_code`, `codex`, `cursor`, `vscode`, `ci` or `terminal`.
+It comes from which host-specific environment variables are set (never their
+values), from a hook's `--client` flag, or for an MCP tool call from the name
+the client announces when it connects, which can also name another supported
+agent such as `opencode` (`unknown` when nothing matches).
+
 ### `command_run` — once per CLI invocation
 
 | Field | Example | Purpose |
@@ -47,6 +54,22 @@ Every event, whatever its type, carries the same anonymous envelope:
 | `properties.status` | `ok` / `error` / `usage_error` / `interrupted` | Success, failure, a mis-invocation (bad/unknown flag), or user-cancelled (Ctrl-C) |
 | `properties.error_type` | `LLMProviderError` | Exception **class name only** |
 | `properties.duration_ms` | `71840` | Performance in the wild |
+| `properties.failure_reason` | `no_sync_base` | A fixed reason code for a known failure, never the message |
+
+`failure_reason` codes include `store_open_failed`, `db_url_unreachable` and
+`workspace_default_failed` for `mcp`, and `no_index`, `no_sync_base`,
+`no_provider_configured` and `embed_failed` for `update`. An `mcp` run also
+reports `served_no_index` (`true` when it serves a directory with no index),
+and an `update` that defers to one already running reports `outcome: deferred`.
+
+`coverage add` reports how the ingest ended as `outcome`. Coverage was stored
+for `ingested` and `partial` (a fragment kept with `--allow-partial`). Nothing
+was stored for `no_report` (none found), `no_index`, `mostly_unmapped` (more
+than half of the report, or all of it, did not map to the repo tree),
+`misaligned`, `unreadable` and `unmapped` (no file mapped). `strict_unmapped`
+is a `--strict` failure, after any coverage that mapped was stored. It also
+reports `files_matched_bucket`, a range of the indexed files the reports
+mapped to, never the files themselves.
 
 For `init` and `update`, a few coarse **buckets and enums** describe the shape
 of the run so we can see the size of repos people index and whether docs
@@ -72,6 +95,7 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 |---|---|---|
 | `properties.tool` | `get_answer`, `search_codebase` | Which tool was called |
 | `properties.status` | `ok` / `error` | Tool error rate |
+| `properties.error_reason` | `not_found` / `invalid_args` / `no_index` / `index_behind` / `server_stale` / `internal` / `other` | Why an `error` call failed, a fixed code |
 | `properties.duration_ms` | `820` | Tool latency in the wild |
 | `properties.confidence` | `high` / `medium` / `low` | Answer confidence distribution |
 | `properties.retrieval_quality` | `high` / `partial` / `weak` | Retrieval quality distribution; sent only when the call asked for `include=["diagnostics"]` |
@@ -83,6 +107,7 @@ response, **never the question, query, results, paths, or repo/symbol names**:
 | `properties.semantic_search` | `true` / `false` | Whether retrieval had a vector leg |
 | `properties.response_chars` | `10979` | Serialised size of the response, a count only |
 | `properties.response_tokens` | `2744` | The same size as the budget's token estimate |
+| `properties.include` | `["callers", "skeleton"]` | Which `include` blocks the call asked for, by the tool's own block names; any other value is sent as `other` |
 
 Example `command_run` payload:
 
@@ -106,6 +131,21 @@ Example `command_run` payload:
   }
 }
 ```
+
+### `view_opened` - once per web view opened
+
+Emitted by the local server when the web UI opens one of its navigation views,
+so we can see which views people use. The browser sends only the view's fixed
+id to its own server, which refuses any id not on the list and records the
+event through the same opt-out as every other event. **Never the repo, the
+page path, or anything shown on the page**:
+
+| Field | Example | Purpose |
+|---|---|---|
+| `properties.view` | `repo.codeHealth` / `workspace.contracts` / `global.dashboard` | Which view was opened: `global.` (`dashboard`, `settings`), `workspace.` (`overview`, `systemMap`, `conformance`, `contracts`, `coChanges`, `estateReport`) or `repo.` (`overview`, `chat`, `review`, `docs`, `architecture`, `knowledgeGraph`, `files`, `codeHealth`, `refactoring`, `tests`, `security`, `contributors`, `commits`, `decisions`, `stats`, `usageAndSavings`, `settings`) |
+
+Moving between pages inside one view (two files under Files), or to the same
+view in another repo, sends nothing new.
 
 ## What is **never** collected
 
@@ -136,6 +176,9 @@ detached process that sends what is queued and removes the file. So the send
 costs you nothing in command time, and you can read the queued file to see
 exactly what is about to leave your machine.
 
+Nothing is queued or sent while a test runner is driving repowise
+(`PYTEST_CURRENT_TEST` or `PYTEST_VERSION` is set, or pytest is loaded).
+
 If the send fails the queued events are discarded, not retried. Disabling
 telemetry also discards anything still queued, so a disable is never followed
 by one last batch.
@@ -157,6 +200,7 @@ Any one of these disables all telemetry:
 repowise telemetry disable        # persisted to ~/.repowise/platform.json
 export REPOWISE_TELEMETRY_DISABLED=1
 export DO_NOT_TRACK=1             # the cross-tool standard (https://consoledonottrack.com)
+export REPOWISE_OFFLINE=1         # also skips the PyPI release check and agent-CLI login probes
 ```
 
 Check the current state anytime:

@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from .context import ResolverContext
+from .lwc import lwc_bundle_dir, resolve_lwc_module
 from .subpath_imports import resolve_subpath_import
 from .svelte_kit import resolve_lib_alias
 from .ts_workspace import resolve_via_workspaces
@@ -30,8 +31,23 @@ def detect_platform_files(paths: Iterable[str]) -> bool:
     return any(p.endswith(_PLATFORM_SUFFIXES) for p in paths)
 
 
+def _without_query(module_path: str) -> str:
+    """The specifier without a bundler query: ``./kit.js?raw`` is ``./kit.js``.
+
+    Vite takes ``?raw``, ``?url``, ``?inline`` or ``?worker`` (and webpack a
+    resource query) after a module path to load the same file another way, as
+    text, a URL or a worker; the file imported is still the one before the
+    ``?``, as the Astro and HTML resolvers already read it. A test that imports
+    the script it runs as text then pairs with that script. A ``#`` stays: it
+    starts a Node subpath import.
+    """
+    head, sep, _ = module_path.partition("?")
+    return head if sep and head else module_path
+
+
 def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverContext) -> str | None:
     """Resolve a TypeScript or JavaScript import to a repo-relative file path."""
+    module_path = _without_query(module_path)
     importer_dir = Path(importer_path).parent
 
     if module_path.startswith("."):
@@ -40,9 +56,7 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
         # ``..`` segments unless the path exists on disk; without this
         # step, every cross-directory relative import silently fails to
         # resolve and reads as an external dep.
-        base_posix = posixpath.normpath(
-            posixpath.join(importer_dir.as_posix(), module_path)
-        )
+        base_posix = posixpath.normpath(posixpath.join(importer_dir.as_posix(), module_path))
         if base_posix in ctx.path_set:
             return base_posix
         exts: tuple[str, ...] = (
@@ -93,6 +107,12 @@ def resolve_ts_js_import(module_path: str, importer_path: str, ctx: ResolverCont
                     return candidate
         return None
 
+    # LWC ``c/fooBar``, only from inside an ``lwc/<bundle>/`` folder.
+    if lwc_bundle_dir(importer_path) is not None:
+        lwc_resolved = resolve_lwc_module(module_path, importer_path, ctx)
+        if lwc_resolved is not None:
+            return lwc_resolved
+
     # Node.js subpath imports (``#lib/...`` via package.json "imports").
     subpath_resolved = resolve_subpath_import(module_path, importer_path, ctx)
     if subpath_resolved is not None:
@@ -138,6 +158,7 @@ def resolve_ts_js_import_all(
     expanded (``ctx.has_platform_files``); everything else is exactly
     :func:`resolve_ts_js_import`.
     """
+    module_path = _without_query(module_path)
     single = resolve_ts_js_import(module_path, importer_path, ctx)
     targets: list[str] = [single] if single else []
     if not ctx.has_platform_files or not module_path.startswith("."):

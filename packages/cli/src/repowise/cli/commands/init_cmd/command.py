@@ -17,20 +17,26 @@ from typing import Any
 import click
 
 from repowise.cli.errors import reasoned_error
+from repowise.cli.exit_codes import EXIT_CODES_HELP
 from repowise.cli.helpers import resolve_repo_path
 from repowise.core.analysis.health.coverage import PARSERS as COVERAGE_PARSERS
+from repowise.core.generation.folder_coverage import parse_folder_coverage
 from repowise.core.generation.languages import SUPPORTED_LANGUAGES
 from repowise.core.generation.styles import list_styles, resolve_style
 from repowise.core.reasoning import REASONING_MODES
+from repowise.core.update_lock import (
+    init_in_progress,
+    release_update_lock,
+    try_acquire_update_lock,
+)
 
+from ._agent_summary import init_output
+from ._exit import exit_interrupted
 from ._finish import (
-    catch_up_savings,
     complete_setup,
+    exit_with_gaps,
     persist_index,
-    raise_on_embed_failure,
     register_clients,
-    save_run_config,
-    write_run_state,
 )
 from ._generate import (
     _generate,
@@ -47,37 +53,27 @@ from ._prepare import (
     _editor_options,
     _interactive_gate,
     _prepare_single_repo,
-    _resolve_decision_provider,
     _resolve_provider_stage,
     _resolve_settings,
     _start_run,
 )
-from ._questions import (
-    _apply_advanced_answers,
-    _ask_mode,
-    _ask_provider,
-    _ask_questions,
-    _offer_fast_mode,
-)
+from ._questions import _apply_advanced_answers, _ask_questions
 from ._seed import delegate_to_seeded_update
-from .reporting import show_analysis_summary
+from ._sibling_hint import suggest_workspace
+from ._workspace_repos import check_repos_flag, split_repo_names
 from .workspace import _workspace_init
 
 __all__ = [
     "_apply_advanced_answers",
-    "_ask_mode",
-    "_ask_provider",
     "_ask_questions",
     "_confirm_wiki_overwrite",
     "_editor_options",
     "_generate",
     "_generate_with_model",
     "_interactive_gate",
-    "_offer_fast_mode",
     "_prepare_single_repo",
     "_print_structural_plan",
     "_render_template_wiki",
-    "_resolve_decision_provider",
     "_resolve_provider_stage",
     "_resolve_settings",
     "_run_deterministic_generation_phase",
@@ -93,9 +89,10 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     _workspace_init(
         scan=scan,
         init_all=opts.init_all,
+        repo_names=split_repo_names(opts.repos),
         exclude_patterns=list(opts.exclude),
         commit_limit=opts.commit_limit,
-        follow_renames=opts.follow_renames,
+        follow_renames=bool(opts.follow_renames),
         no_claude_md=opts.no_claude_md,
         agents_md=opts.agents_md,
         codex_setup=opts.codex_setup,
@@ -126,7 +123,18 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     )
 
 
-@click.command("init")
+def _check_folder_coverage(
+    _ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Reject a malformed ``--folder-coverage`` rule before any indexing starts."""
+    try:
+        parse_folder_coverage(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param=param) from None
+    return value
+
+
+@click.command("init", epilog=EXIT_CODES_HELP)
 @click.argument("path", required=False, default=None)
 @click.option(
     "--provider",
@@ -134,7 +142,8 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=None,
     help=(
         "LLM provider name (anthropic, openai, openrouter, gemini, "
-        "deepseek, kimi, ollama, litellm, codex_cli, claude_cli, opencode, "
+        "deepseek, kimi, ollama, litellm, codex_cli, copilot_cli, claude_cli, "
+        "opencode, "
         "edenai, mock). "
         "In a terminal, a missing key is prompted for; openai also asks for "
         "an optional OpenAI-compatible Base URL."
@@ -159,9 +168,29 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=False,
     # "No wiki", not "writes nothing": the pipeline still warms its parse and
     # duplication caches, which are derived data.
-    help="Show the generation plan and cost estimate. Writes no wiki.",
+    help="Show the generation plan and cost estimate. Writes no documentation.",
 )
-@click.option("--yes", "-y", is_flag=True, default=False, help="Skip cost confirmation prompt.")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help=(
+        "Start at once with every answer at its default. Skips the plan screen "
+        "and every question after it: documentation is written by a model only "
+        "when a provider is configured (an API key in the environment or "
+        ".repowise/.env), else built from code; a logged-in Claude Code, Codex "
+        "or OpenCode is used only with --provider; the cost confirmation is "
+        "accepted; advanced options keep their defaults (standard run mode at "
+        "any size, comprehensive style); the detected agents "
+        "are connected; Claude Code gets a user-level repowise MCP entry in "
+        "~/.claude.json that names no repo and serves the repo Claude Code "
+        "starts in, added when absent and never moved off another repo it "
+        "serves; the post-commit hook and the distill rewrite hook are "
+        "installed; and with --no-prose, documentation a model wrote is "
+        "replaced without asking."
+    ),
+)
 @click.option(
     "--resume",
     is_flag=True,
@@ -188,18 +217,23 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "--test-run",
     is_flag=True,
     default=False,
-    help="Limit generation to top 10 files by PageRank for quick validation.",
+    help=(
+        "Limit the model run to the top 10 files by PageRank for quick validation. "
+        "Needs a model, so not with --no-prose or --mode fast."
+    ),
 )
 @click.option(
     "--prose/--no-prose",
     "prose",
     default=None,
     help=(
-        "Write the subsystem (concept) pages as model prose (needs a key), or "
-        "render the whole wiki from structure with no model and no spend. Every "
-        "other page is structural either way. Default: prose when a key is "
-        "available. With --no-prose, an explicit --provider or API key still "
-        "enables model-based decision extraction. Use --mode fast for no wiki at all."
+        "Documentation written by a model (--prose, needs a key) or built from "
+        "code (--no-prose). Only the subsystem (concept) pages differ; every other "
+        "page is built from code either way. Default: written by a model when a key "
+        "is available. --no-prose makes no model calls, whatever keys are set: it "
+        "skips the written subsystem pages and model decision extraction from PRs, "
+        "commit history and code comments. Run repowise generate later to add both. "
+        "Use --mode fast for an index only, with no documentation."
     ),
 )
 @click.option(
@@ -223,9 +257,9 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     type=click.Choice(["standard", "fast"]),
     default="standard",
     help=(
-        "Pipeline depth. 'fast' indexes graph + essential git only (no per-file "
-        "blame, no co-change, no LLM docs) for a quick first pass on very large "
-        "repos; backfill the rest later. Default: standard."
+        "Pipeline depth. 'fast' is an index only: graph + essential git (no "
+        "per-file blame, no co-change, no documentation) for a quick first pass "
+        "on very large repos; backfill the rest later. Default: standard."
     ),
 )
 @click.option(
@@ -237,14 +271,13 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
 )
 @click.option(
     "--commit-limit",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
-    help="Max commits to analyze per file and for co-change detection (default: 5000, max: 10000). Saved to config.",
+    help="Newest commits to analyze for file history and co-change (default: 5000). Set it above the repo's commit count to read the full history. Saved to config.",
 )
 @click.option(
-    "--follow-renames",
-    is_flag=True,
-    default=False,
+    "--follow-renames/--no-follow-renames",
+    default=None,
     help="Use git log --follow to track files across renames (slower but more accurate history). Saved to config.",
 )
 @click.option(
@@ -278,7 +311,9 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "(`hooks.search_digest`); re-reading an unchanged, unedited file comes "
         "back as a pointer to the earlier read (`hooks.read_reread`). One "
         "consent, and this flag decides all four without a prompt. Default: "
-        "ask when interactive, skip otherwise. In workspace mode the verdict "
+        "on. Interactive runs ask; --yes and non-interactive runs install it "
+        "and print how to turn it off. A repo that opted out stays off, and "
+        "--no-editor-setup installs nothing. In workspace mode the verdict "
         "applies to every selected repo."
     ),
 )
@@ -303,7 +338,8 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "Wire repowise into your editors. Covers both halves: the machine-wide "
         "config (the Claude Code / Claude Desktop MCP entry, the Claude Code "
         "hooks, the distill rewrite-hook offer) and the project-local files "
-        "(.mcp.json, .claude/CLAUDE.md, .vscode/mcp.json, "
+        "(.claude/CLAUDE.md, .vscode/mcp.json, .mcp.json when no user-scope "
+        "entry or plugin already serves the repo, "
         ".vscode/extensions.json). Default: on. Use --no-editor-setup to index "
         "a repo without writing anything into it or outside it; only "
         ".repowise/ is touched, and 'repowise mcp .' still prints the config "
@@ -347,7 +383,22 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "init_all",
     is_flag=True,
     default=False,
-    help="In multi-repo mode, index all detected repos without prompting.",
+    help=(
+        "In a folder with several repos, index every detected repo without "
+        "prompting. --yes and a piped stdin do the same; use --repos to pick some."
+    ),
+)
+@click.option(
+    "--repos",
+    "repos",
+    default=None,
+    metavar="NAMES",
+    help=(
+        "In a folder with several repos, index only these, with no picker. "
+        "Comma-separated names (alias, directory name, or path relative to the "
+        "folder when two repos share a name). In a new workspace the first one "
+        "listed is primary; an existing workspace keeps its primary."
+    ),
 )
 @click.option(
     "--onboarding/--no-onboarding",
@@ -355,8 +406,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=True,
     help=(
         "Generate the curated Onboarding collection (Project Overview, "
-        "Architecture Guide, Getting Started, Codebase Map, Key Concepts, "
-        "How It Works, Development Guide, Active Landscape). Default: on. "
+        "Getting Started, How It Works, Active Landscape). Default: on. "
         "Slots with insufficient signal are skipped automatically."
     ),
 )
@@ -371,6 +421,19 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
         "policy decide: untouched on a normal repo, held to a ceiling on a very "
         "large one. Pass 0 for one page per eligible file however many that is. "
         "Saved to config.yaml so later runs keep it."
+    ),
+)
+@click.option(
+    "--folder-coverage",
+    "folder_coverage_rules",
+    multiple=True,
+    metavar="GLOB=PCT",
+    callback=_check_folder_coverage,
+    help=(
+        "Documentation floor for a folder: 'src/core=1.0' promises every code "
+        "file under src/core gets a file page whatever its importance score; "
+        "'src/legacy=0.5' promises half. Repeatable. Saved to config.yaml so "
+        "later update runs keep the floors."
     ),
 )
 @click.option(
@@ -405,7 +468,7 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     default=None,
     metavar="CODE",
     help=(
-        "Output language for generated wiki pages (e.g. en, zh, ru, hi). "
+        "Output language for the documentation (e.g. en, zh, ru, hi). "
         "Code, file paths, and symbol names stay untranslated. Saved to "
         "config so `update` keeps the language. Default: en."
     ),
@@ -445,19 +508,58 @@ def _run_workspace_init(opts: InitOptions, scan: Any) -> None:
     "--progress",
     type=click.Choice(["rich", "json"]),
     default="rich",
-    help="Progress output style.",
+    help=(
+        "Progress output. 'rich' (default) draws a live checklist in a terminal "
+        "and one short line per step anywhere else. 'json' writes one JSON event "
+        "per line to stdout (stages, steps, warnings) and ends with a summary "
+        "line: status, mode, restart_required, spend, warnings, files_written "
+        "and next commands. Human text goes to stderr."
+    ),
+)
+@click.option(
+    "--source",
+    default=None,
+    hidden=True,
+    help="Which setup instructions started this run, for anonymous usage stats.",
 )
 def init_command(**params: Any) -> None:
-    """Generate wiki documentation for a codebase.
+    """Index a codebase and build its documentation.
 
     PATH defaults to the current directory.
-    Use --no-prose to render the whole wiki from structure with no model and no
-    key; --prose writes the subsystem pages with a model. Every other page is
-    structural either way.
-    Use --mode fast for a quick graph + essential-git index of a very large repo.
+    --prose: documentation written by a model (needs a key).
+    --no-prose: documentation built from code, no model and no key.
+    Only the subsystem pages differ; every other page is built from code.
+    --mode fast: index only (graph + essential git), for a very large repo.
     """
-    opts = resolve_structural_flags(InitOptions(**params))
+    from repowise.core.cancellation import PipelineCancelled
+
+    with init_output(params.get("progress", "rich"), resolve_repo_path(params.get("path"))):
+        try:
+            _run_init(resolve_structural_flags(InitOptions(**params)))
+        except (PipelineCancelled, KeyboardInterrupt):
+            exit_interrupted()
+
+
+#: What ``--source`` may report. Any other value is reported as ``other``, so
+#: the raw text never leaves the machine.
+INSTRUCTION_SOURCES = frozenset({"plugin_command", "setup_doc", "hosted_setup", "mcp_notice"})
+
+
+def _record_instruction_source(source: str | None) -> None:
+    """Attach which setup instructions started this run, when the caller said."""
+    if source is None:
+        return
+    from repowise.cli.platform import telemetry
+
+    telemetry.add_command_outcome(
+        instruction_source=source if source in INSTRUCTION_SOURCES else "other"
+    )
+
+
+def _run_init(opts: InitOptions) -> None:
+    """The whole init, one repo or a workspace; exits 2 when it finishes with gaps."""
     start = time.monotonic()
+    _record_instruction_source(opts.source)
     repo_path = resolve_repo_path(opts.path)
 
     if not repo_path.is_dir():
@@ -471,9 +573,11 @@ def init_command(**params: Any) -> None:
 
     scan = scan_for_repos(repo_path, include_submodules=opts.include_submodules)
 
+    is_workspace = len(scan.repos) > 1 and not opts.no_workspace
+    check_repos_flag(opts.repos, init_all=opts.init_all, is_workspace=is_workspace)
     if delegate_to_seeded_update(opts, repo_path, scan):
         return
-    if len(scan.repos) > 1 and not opts.no_workspace:
+    if is_workspace:
         _run_workspace_init(opts, scan)
         return
 
@@ -481,21 +585,40 @@ def init_command(**params: Any) -> None:
     # redirect to it so the user doesn't have to specify the exact path.
     if len(scan.repos) == 1 and scan.repos[0].path != repo_path:
         repo_path = scan.repos[0].path
+    if not opts.no_workspace:
+        suggest_workspace(repo_path)
 
+    with init_in_progress(repo_path):
+        # HOLD BOTH LOCKS (#5512): the init marker alone is not mutual exclusion,
+        # because `update` learns of it only in `_acquire_update_lock` — a run
+        # that already holds the update lock keeps writing the same store. Taking
+        # the update lock too is what makes the marker mean something.
+        if try_acquire_update_lock(repo_path, None) is not None:
+            raise click.ClickException(
+                "Another `repowise update` is already running on this repo. "
+                "Run `repowise init` again when it finishes."
+            )
+        try:
+            _run_single_repo(opts, repo_path, start)
+        finally:
+            release_update_lock(repo_path)
+
+
+def _run_single_repo(opts: InitOptions, repo_path: Any, start: float) -> None:
     run = _prepare_single_repo(opts, repo_path, start)
-    if run is None or not index_repository(run):
+    if run is None:
         return
+    index_repository(run)
+    # Each one is an analysis step the pipeline skipped on an error.
+    if run.run_warnings:
+        run.gaps.append(f"{len(run.run_warnings):,} warning(s) while indexing (see above)")
 
-    show_analysis_summary(run.result)
     if _generate(run):
         return
 
     # A declined cost gate or a missing provider persists like index-only.
     run.effective_index_only = run.opts.index_only or run.cost_declined or run.no_provider
     persist_index(run)
-    catch_up_savings(run.repo_path)
-    save_run_config(run)
     register_clients(run)
-    write_run_state(run)
     complete_setup(run)
-    raise_on_embed_failure(run)
+    exit_with_gaps(run)

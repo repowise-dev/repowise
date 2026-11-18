@@ -18,6 +18,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal
 
 from .rows import detail_map, field
+from .scoring import ranked_severity
 
 #: Problem-size cut points. Each is a multiple of the detector's own bar: CCN
 #: 20 is twice the complex_method bar and 40, 80 and 150 double on from it;
@@ -120,7 +121,8 @@ def measure(
 ) -> dict[str, int]:
     """A function's largest measured CCN, size and nesting across its findings.
 
-    ``severe`` is set when any of them is critical or a brain method,
+    ``severe`` is set when any of them is critical as work is ranked
+    (``scoring.ranked_severity``: never a code-shape marker) or a brain method,
     ``deprecated`` when any sits in a function marked deprecated,
     ``gated_off`` when any sits in a :func:`dormant` function,
     ``dispatch_pct`` is the largest stored dispatch share in percent,
@@ -131,7 +133,8 @@ def measure(
     """
     shape: dict[str, int] = {}
     for f in findings:
-        if field(f, "severity") == "critical" or field(f, "biomarker_type") == "brain_method":
+        marker = field(f, "biomarker_type") or ""
+        if ranked_severity(marker, field(f, "severity")) == "critical" or marker == "brain_method":
             shape["severe"] = 1
         details = details_of(f)
         if details.get("deprecated"):

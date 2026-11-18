@@ -33,13 +33,5 @@
   "_meta": {
     "index_age_days": 7
   },
-  "candidates": [
-    {
-      "path": "src/auth/service.py"
-    },
-    {
-      "path": "src/db/models.py"
-    }
-  ],
   "exact_match": true
 }

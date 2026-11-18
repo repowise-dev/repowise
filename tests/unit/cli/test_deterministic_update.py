@@ -16,6 +16,9 @@ from repowise.cli.commands.update_cmd.deterministic import (
     deterministic_embedder_name,
     regenerate_deterministic_page_ids,
 )
+from repowise.cli.helpers import load_config
+from repowise.core.generation.selection import SelectionInputs, select_pages
+from tests.unit.generation.test_selection_contract import _build_synthetic_repo
 
 
 @pytest.fixture(autouse=True)
@@ -110,3 +113,58 @@ def test_exact_structural_refresh_uses_full_context_without_model(
     assert captured["parsed"] == parsed
     assert captured["source"] == source
     assert captured["only_page_ids"] == {"scc_page:scc-current"}
+
+
+@pytest.mark.parametrize("choice, expected", [(None, 4500), (0, 4501), (25, 25)])
+def test_deterministic_refresh_preserves_saved_file_page_choice(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, choice: int | None, expected: int
+) -> None:
+    parsed, pagerank, betweenness, community = _build_synthetic_repo(4501)
+    state = tmp_path / ".repowise"
+    state.mkdir()
+    config_path = state / "config.yaml"
+    config_path.write_text(
+        "embedder: mock\n" + ("" if choice is None else f"max_file_pages: {choice}\n")
+    )
+    original = config_path.read_bytes()
+
+    class SelectionGenerator:
+        def __init__(self, _provider, _assembler, config, **_kwargs):
+            self.config = config
+
+        async def generate_all(self, parsed_files, _source, *_args, **_kwargs):
+            return select_pages(
+                SelectionInputs(
+                    parsed_files=parsed_files,
+                    pagerank=pagerank,
+                    betweenness=betweenness,
+                    community=community,
+                    community_info=None,
+                    sccs=[],
+                    git_meta_map=None,
+                    config=self.config,
+                )
+            ).file_page_paths
+
+    import repowise.core.generation as generation
+
+    monkeypatch.setattr(generation, "PageGenerator", SelectionGenerator)
+    degraded: list[str] = []
+    selected = deterministic.regenerate_deterministic_pages(
+        repo_path=tmp_path,
+        parsed_files=parsed,
+        source_map={},
+        graph_builder=object(),
+        repo_structure=object(),
+        git_meta_map={},
+        regenerate_paths=[],
+        cfg=load_config(tmp_path),
+        concurrency=1,
+        degraded=degraded,
+        full_scope=True,
+        embed_during_generation=False,
+    )
+
+    assert not degraded
+    assert len(selected) == expected
+    assert config_path.read_bytes() == original

@@ -5,6 +5,8 @@ Rules that keep it from being a nag:
 * stderr only, one dim line plus its link, never in ``--format json`` runs;
 * at most one hint per command run, and each hint at most once every 7 days;
 * never from ``mcp``, ``serve``, ``watch``, hooks, or anything an agent reads;
+* never ``init_success`` on a first index, which ends on its own findings
+  (``init_cmd.reporting.completion_hint``);
 * off in CI and tests, when stderr is not a terminal, for signed-in users,
   with ``REPOWISE_NO_HINTS=1``, ``repowise config hints off`` or ``DO_NOT_TRACK``.
 

@@ -127,13 +127,15 @@ def test_codex_plugin_skills_have_metadata_and_neutral_wording() -> None:
         "codebase-exploration",
         "dead-code-cleanup",
         "pre-modification-check",
+        "settings",
     }
 
     for path in skill_paths:
         text = path.read_text(encoding="utf-8")
         assert re.search(r"^---\nname: .+\ndescription: .+\n---", text)
         assert "Claude" not in text
-        assert "/repowise:" not in text
+        # A slash command, not the PR decisions block's closing marker.
+        assert not re.search(r"(?<!<!-- )/repowise:", text)
 
 
 def test_codex_plugin_marketplace_entry() -> None:

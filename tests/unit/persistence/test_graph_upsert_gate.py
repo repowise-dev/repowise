@@ -256,6 +256,60 @@ async def test_non_float_change_is_always_written(async_session):
     assert row["community_meta_json"] == '{"label": "cli"}'
 
 
+async def test_a_loaded_row_reads_the_rewritten_values(async_session):
+    """Changed rows are written by statement, past the identity map.
+
+    A row the session already holds must not keep serving the old values.
+    """
+    repo = await insert_repo(async_session)
+    await batch_upsert_graph_nodes(async_session, repo.id, [file_node("a.py")])
+    await async_session.commit()
+    held = (
+        await async_session.execute(select(GraphNode).where(GraphNode.node_id == "a.py"))
+    ).scalar_one()
+    assert held.community_id == 1
+
+    other = await insert_repo(async_session, name="other", local_path="/tmp/other")
+    await batch_upsert_graph_nodes(async_session, other.id, [file_node("a.py")])
+    held_other = (
+        await async_session.execute(
+            select(GraphNode).where(GraphNode.repository_id == other.id)
+        )
+    ).scalar_one()
+
+    for community_id in (2, 3):  # the second call meets the row the first refreshed
+        await batch_upsert_graph_nodes(
+            async_session, repo.id, [file_node("a.py", community_id=community_id, pagerank=0.5)]
+        )
+        # Read straight off the held object: an async session cannot lazy-load.
+        assert (held.community_id, held.pagerank) == (community_id, 0.5)
+    assert held_other.community_id == 1, "the same key in another repo was not written"
+    await async_session.commit()
+    assert (await _nodes(async_session, repo.id))["a.py"]["community_id"] == 3
+
+
+async def test_a_large_mixed_change_set_lands_every_row(async_session):
+    """More rows than one statement batch, with differing changed-column sets."""
+    repo = await insert_repo(async_session)
+    files = [file_node(f"m{i}.py") for i in range(700)]
+    symbols = [symbol_node(f"m{i}.py::f") for i in range(700)]
+    await batch_upsert_graph_nodes(async_session, repo.id, files + symbols)
+    await async_session.commit()
+
+    moved = [
+        file_node(f"m{i}.py", pagerank=0.25 + i / 1e3, community_id=i % 2) for i in range(700)
+    ] + [symbol_node(f"m{i}.py::f", end_line=9 + i % 3) for i in range(700)]
+    await batch_upsert_graph_nodes(async_session, repo.id, moved)
+    await async_session.commit()
+
+    rows = await _nodes(async_session, repo.id)
+    for node in moved:
+        stored = rows[node["node_id"]]
+        assert {k: stored[k] for k in node if k != "node_id"} == {
+            k: v for k, v in node.items() if k != "node_id"
+        }
+
+
 def test_node_gate_columns_account_for_every_writable_column():
     """``_NODE_FIELDS`` is a hand-kept mirror of the model's columns.
 

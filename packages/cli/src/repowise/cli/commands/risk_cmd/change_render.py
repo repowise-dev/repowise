@@ -9,7 +9,7 @@ import click
 from rich.markup import escape
 from rich.table import Table
 
-from repowise.cli.ci import append_step_summary
+from repowise.cli.ci import append_step_summary, write_gate_summary
 from repowise.cli.helpers import console, repo_index_session, run_async
 from repowise.core.analysis.change_risk import ChangeRiskResult, change_risk_payload
 from repowise.core.analysis.change_risk.render import LIMITS, fix_history_text, size_text
@@ -47,6 +47,26 @@ def _independent_changes_for(repo_path: str, result, revspec: str | None) -> dic
                     # An index written by an older version can fail the query itself.
                     return None
         return found.to_dict() if found else None
+
+    return run_async(read())
+
+
+def _impacted_tests_for(repo_path: str, result, revspec: str | None) -> dict:
+    """The tests the change needs, as ``get_change_risk`` and the Review page name them."""
+    from repowise.core import git_refs
+    from repowise.core.persistence import create_session_factory
+    from repowise.server.mcp_server._test_selection import scored_change_tests
+
+    root = Path(git_refs.toplevel(repo_path) or repo_path).resolve()
+
+    async def read() -> dict:
+        async with repo_index_session(root) as opened:
+            if opened is not None:
+                session, repo_id = opened
+                factory = create_session_factory(session.bind)
+                return await scored_change_tests(root, factory, revspec, result, repo=repo_id)
+        # No index: the block says so, as get_change_risk's does.
+        return await scored_change_tests(root, None, revspec, result)
 
     return run_async(read())
 
@@ -122,8 +142,11 @@ def _print_change_facts(result: ChangeRiskResult) -> None:
     features, request_excludes = result.features, result.request_excludes
     if result.working_tree:
         console.print("  [dim]Scoring your uncommitted changes, not the last commit.[/dim]")
+    # A range's subject is its head commit's; its fix flag covers every commit.
+    is_range = ".." in features.ref
     if features.subject:
-        console.print(f"  [dim]{features.subject}[/dim]")
+        head = "Head commit: " if is_range else ""
+        console.print(f"  [dim]{head}{features.subject}[/dim]")
     if request_excludes:
         console.print(f"  [dim]Excluding {len(request_excludes)} pattern(s).[/dim]")
     console.print(
@@ -131,7 +154,11 @@ def _print_change_facts(result: ChangeRiskResult) -> None:
         f"{features.nd} dirs · {features.ns} subsystems · "
         f"entropy {features.entropy:.2f} · author exp "
         f"{'unknown' if features.exp is None else features.exp}"
-        + ("  [magenta](fix)[/magenta]" if features.is_fix else "")
+        + (
+            f"  [magenta]({'range contains a fix' if is_range else 'fix'})[/magenta]"
+            if features.is_fix
+            else ""
+        )
     )
 
 
@@ -185,6 +212,9 @@ def _emit_machine(subject: _Subject, result: ChangeRiskResult) -> None:
         groups = _independent_changes_for(subject.repo_path, result, subject.revspec)
         if groups:
             payload["independent_changes"] = groups
+        payload["impacted_tests"] = _impacted_tests_for(
+            subject.repo_path, result, subject.revspec
+        )
         if fail_above is not None:
             payload["gate"] = {
                 "fail_above_percentile": fail_above,
@@ -196,8 +226,10 @@ def _emit_machine(subject: _Subject, result: ChangeRiskResult) -> None:
         click.echo(json.dumps(payload, indent=2))
     elif fmt == "markdown":
         click.echo(render.render_markdown(result, fail_above), nl=False)
+        write_gate_summary(render.gate_summary(result, fail_above))
     else:
         for line in render.github_annotations(result, fail_above):
             click.echo(line)
         append_step_summary(render.render_markdown(result, fail_above))
+        write_gate_summary(render.gate_summary(result, fail_above))
         console.print(render.headline(result, fail_above, markdown=False), markup=False)

@@ -87,8 +87,10 @@ def test_list_without_an_index_uses_directories_and_the_catalog(repo):
         "criticality": "high",
         "tags": ["pci"],
     }
-    # The derived "src" keeps the file the declared component did not claim.
-    assert rows["src"]["source"] == "directory" and rows["src"]["files"] == 1
+    # Only the layout directory "src" divides the repo, so the derived component
+    # is the whole repo, keeping the files the declared component did not claim.
+    (whole,) = [r for r in data["components"] if r["source"] == "repo"]
+    assert whole["files"] == 2 and "src" not in rows
     assert data["catalog_errors"] == 0
 
 

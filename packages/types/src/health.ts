@@ -132,11 +132,14 @@ export const GOOD_MIN = 7.0;
 export const FAIR_MIN = 5.5;
 export const NEEDS_WORK_MIN = 4.0;
 
-/**
- * The canonical three-band reading beside a health mark: Healthy at 8 or
- * above, Warning from 4, Alert below 4 (`NEEDS_WORK_MIN`).
- */
-export const HEALTHY_MIN = 8.0;
+/** The lower edge of each band, for keys and grounds that draw the ranges. */
+export const HEALTH_BAND_MIN: Record<HealthBand, number> = {
+  excellent: EXCELLENT_MIN,
+  good: GOOD_MIN,
+  fair: FAIR_MIN,
+  needs_work: NEEDS_WORK_MIN,
+  at_risk: 0,
+};
 
 /** Worst-first, matching how the surfaces list files. */
 export const HEALTH_BAND_ORDER: readonly HealthBand[] = [
@@ -286,6 +289,12 @@ export interface HealthFileMetric {
   history_deduction?: number | null;
   unclamped_score?: number | null;
   /**
+   * `"short"`: too few recorded commits for most history markers to fire, so a
+   * high score is an absent history rather than a clean one. Omitted otherwise
+   * and on `fields=summary` rows.
+   */
+  history?: "short" | null;
+  /**
    * Test material, decided at ingestion. Drives the production/all scope
    * without re-deriving the answer from the path on every surface.
    */
@@ -297,10 +306,8 @@ export interface HealthFileMetric {
    */
   code_origin?: string | null;
   /**
-   * Open performance-risk findings on this file. The performance lens on the
-   * code-health map colors by this count (+ `performance_analyzed`), not by the
-   * [9,10]-compressed `performance_score`, so a file with 40 N+1s reads
-   * differently from one with 1. Absent on payloads predating the perf pass.
+   * @deprecated Open performance findings on this file, as payloads from the
+   * previous release carry them. Read `performance_opportunities` instead.
    */
   performance_findings?: number | null;
   /**
@@ -436,6 +443,13 @@ export interface PerformanceWhyRanked {
 export type PerformanceLoopMagnitude = "grows_with_data" | "bounded" | "unknown" | "n/a";
 
 /**
+ * Which member loop shows the cost grows: `loop` one outside a registry and a
+ * cold path, `registry` only loops over a registry or configuration table,
+ * `cold_path` only migration, startup or recovery loops, `none` no loop grows.
+ */
+export type PerformanceGrowthSource = "loop" | "registry" | "cold_path" | "none" | "n/a";
+
+/**
  * The facets that are not published anywhere else on the row.
  * `confidence` stays evidence confidence and `fix.safety` stays fix safety,
  * so no value appears twice.
@@ -448,6 +462,8 @@ export interface PerformanceOpportunityFacets {
   change_risk: string;
   /** Absent on rows stored before the fact existed. */
   loop_magnitude?: PerformanceLoopMagnitude;
+  /** Absent on rows stored before the fact existed. */
+  growth_source?: PerformanceGrowthSource;
   /** Absent on rows stored before the fact existed. */
   execution_role?: PerformanceExecutionRole;
 }
@@ -539,6 +555,8 @@ export interface PerformanceOpportunity {
   actionability_reason: string;
   prerequisites: string[];
   rank_score: number;
+  /** 0-based place in the ranked list that served the row; another sort or a
+   *  lookup by id gives its rank among every cause in the repository. */
   rank_position: number;
   rank_factors: Record<string, number>;
   why_ranked: PerformanceWhyRanked[];
@@ -794,6 +812,19 @@ export interface BiomarkerBreakdownRow {
  * Overview
  * ------------------------------------------------------------------ */
 
+/**
+ * The performance headline every surface prints, in the Performance view's
+ * three scopes: `now` (the default queue, worth fixing now) leads, and
+ * `production` and `all` open causes give it context.
+ */
+export interface PerformanceCauses {
+  now: number;
+  production: number;
+  all: number;
+  /** Every open cause per 10K lines a performance detector ran on. */
+  per_10k_loc: number | null;
+}
+
 export interface HealthOverviewSummary {
   file_count: number;
   /** `null` when no file is scored: every file is in a language health has no
@@ -839,9 +870,15 @@ export interface HealthOverviewSummary {
    */
   performance_average?: number | null;
   performance_hotspot?: number | null;
-  /** Open findings homing under the maintainability / performance pillars — the
-   *  per-pillar actionable counts. Absent on payloads predating the split. */
+  /** Open findings homing under the maintainability pillar. Absent on payloads
+   *  predating the split. */
   maintainability_findings?: number;
+  /** Open performance causes, as every surface counts them; `null` with no files. */
+  performance_causes?: PerformanceCauses | null;
+  /**
+   * @deprecated Every open performance finding, as payloads from the previous
+   * release carry it. The lede shows it only when `performance_causes` is absent.
+   */
   performance_findings?: number;
   /** Lowest-scoring file by performance risk, surfaced only when score < 10
    *  (a clean repo returns `null` rather than a misleading "worst" at 10.0). */
@@ -1309,19 +1346,23 @@ export type {
  * Which signal answered "is this tested". `measured` is a coverage report: it
  * records the lines a test really executed. `inferred` is the dependency graph:
  * a test whose calls reach this file, which says control *can* flow there, not
- * that a run did. `none` is the honest unknown.
+ * that a run did. `none` is the honest unknown. `unavailable` means the graph
+ * walk failed, so nothing can be said either way until it is retried.
  *
  * The two are never merged and never averaged. They are different claims, and a
  * reader who cannot tell them apart cannot tell a measured test from a guessed
  * one. `basis` says which one answered; nothing blends them.
  */
-export type CoverageBasis = "measured" | "inferred" | "none";
+export type CoverageBasis = "measured" | "inferred" | "none" | "unavailable";
 
 /**
  * Which tier of the graph found a test. `call-graph` means a test's calls reach
- * the file, the stronger claim; `import-graph` means it only imports it.
+ * the file, the stronger claim; `import-graph` means it only imports it;
+ * `indirect-import` means it imports a file that imports it: a test-only
+ * helper, a package entry file, or a longer import chain; `mocked-only` means
+ * every test that reaches it replaces it with a double.
  */
-export type ReachedVia = "call-graph" | "import-graph";
+export type ReachedVia = "call-graph" | "import-graph" | "indirect-import" | "mocked-only";
 
 /**
  * One file on the inferred basis. `reached` is the whole of what this basis
@@ -1335,6 +1376,11 @@ export type ReachedVia = "call-graph" | "import-graph";
 export interface ReachedFileRow {
   file_path: string;
   reached: boolean;
+  /**
+   * Generated, vendored, build, tooling, docs example or migration code: no
+   * test is owed, so it is never listed as unreached. Absent means owed.
+   */
+  not_applicable?: boolean;
   health_score?: number | null;
   nloc?: number;
 }
@@ -1353,6 +1399,8 @@ export interface InferredTestMap {
   files_total: number;
   files_reached: number;
   files_not_reached: number;
+  /** Files that owe no test (see `ReachedFileRow.not_applicable`); counted in neither of the two above. */
+  files_not_applicable?: number;
   test_file_count: number;
   /**
    * Present only when `basis` is `measured` (the hybrid shape): how many files
@@ -1370,8 +1418,8 @@ export interface TestsReachingFile {
   reached: boolean;
   /**
    * Empty when `reached` is false, and capped server-side. Render `total`
-   * beside it, never `tests.length` on its own: the cut is alphabetical, so a
-   * trimmed list states a cap as if it were the answer.
+   * beside it, never `tests.length` on its own, or a trimmed list states a
+   * cap as if it were the answer.
    */
   tests: string[];
   /** Null when `reached` is false. */

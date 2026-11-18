@@ -30,6 +30,7 @@ from ...test_paths import is_test_path
 from ..resolvers import ResolverContext
 from ..source_text import source_bytes
 from .base import DetectionContext, FrameworkHandler, _add_edge_if_new
+from .scan_cache import scans_of
 
 if TYPE_CHECKING:
     import networkx as nx
@@ -188,6 +189,13 @@ def _bind_function_args(scope: _Scope, args: ast.arguments) -> None:
 
 def python_ancestor_targets(test_path: str, text: bytes, path_set: set[str]) -> list[str]:
     """Indexed code files *test_path* names via Path(__file__) ancestor anchors or variables."""
+    return [
+        t for t in python_ancestor_candidates(test_path, text) if t in path_set and _is_helper(t)
+    ]
+
+
+def python_ancestor_candidates(test_path: str, text: bytes) -> list[str]:
+    """Code-file paths *test_path* names via Path(__file__) anchors, whether indexed or not."""
     try:
         tree = parse_python(text)
     except Exception:
@@ -231,13 +239,7 @@ def python_ancestor_targets(test_path: str, text: bytes, path_set: set[str]) -> 
         return None
 
     def check_candidate(candidate: str | None) -> None:
-        if (
-            candidate
-            and candidate.endswith(_CODE_EXTS)
-            and candidate in path_set
-            and _is_helper(candidate)
-            and candidate != test_path
-        ):
+        if candidate and candidate.endswith(_CODE_EXTS) and candidate != test_path:
             found[candidate] = None
 
     class Visitor(ast.NodeVisitor):
@@ -422,28 +424,46 @@ def path_string_targets(path: str, text: bytes, path_set: set[str]) -> list[str]
     """Indexed code files *text*, the source of *path*, names relative to its directory
     or through Path(__file__) ancestor anchors.
     """
+    return _indexed_helpers(path, path_string_candidates(path, text), path_set)
+
+
+def path_string_candidates(path: str, text: bytes) -> list[str]:
+    """Every path :func:`path_string_targets` may keep, before the index is consulted.
+
+    Depends on *path* and *text* alone, so it is what the scan cache stores.
+    """
     base = posixpath.dirname(path)
     found: dict[str, None] = {}
     for literal in path_literals(text):
         spec = literal.decode("ascii", errors="ignore")
-        target = posixpath.normpath(posixpath.join(base, spec))
-        if target in path_set and _is_helper(target) and target != path:
-            found[target] = None
+        found[posixpath.normpath(posixpath.join(base, spec))] = None
     if path.endswith(".py"):
-        for target in python_ancestor_targets(path, text, path_set):
+        for target in python_ancestor_candidates(path, text):
             found[target] = None
     return list(found)
+
+
+def _indexed_helpers(path: str, candidates: list[str], path_set: set[str]) -> list[str]:
+    return [t for t in candidates if t in path_set and _is_helper(t) and t != path]
 
 
 def _add_path_string_edges(
     graph: nx.DiGraph, parsed_files: dict[str, Any], ctx: ResolverContext, path_set: set[str]
 ) -> int:
+    scans = scans_of(ctx)
     count = 0
     for path in sorted(path_set):
-        if not (path.endswith(_CODE_EXTS) and parsed_files[path].file_info.is_test):
+        parsed = parsed_files[path]
+        if not (path.endswith(_CODE_EXTS) and parsed.file_info.is_test):
             continue
-        text = source_bytes(path, parsed_files[path].file_info.abs_path, ctx.source_map)
-        for target in path_string_targets(path, text, path_set):
+        candidates = scans.lookup(
+            "path_strings",
+            parsed,
+            lambda path=path, parsed=parsed: path_string_candidates(
+                path, source_bytes(path, parsed.file_info.abs_path, ctx.source_map)
+            ),
+        )
+        for target in _indexed_helpers(path, candidates, path_set):
             if _add_edge_if_new(graph, path, target):
                 graph[path][target]["hint_source"] = PATH_STRING_HINT
                 count += 1

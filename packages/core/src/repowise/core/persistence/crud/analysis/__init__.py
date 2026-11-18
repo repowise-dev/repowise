@@ -2,8 +2,8 @@
 
 Split out of the former monolithic ``crud.py`` and later from the single
 ``analysis.py`` module into per-entity submodules. ``crud/__init__.py``
-re-exports every public name via ``from .analysis import *``, so existing
-imports are unaffected.
+re-exports every name in ``__all__`` on first use, so existing imports are
+unaffected.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from . import (  # noqa: F401
     coverage_map,
     dead_code,
     doc_drift,
+    evidence,
     function_facts,
     health,
     performance,
@@ -66,6 +67,14 @@ from .doc_drift import (
     serialize_doc_drift_row,
     summarize_confidence_rows,
 )
+from .evidence import (
+    EVIDENCE_ROW_TABLES,
+    EvidenceWrite,
+    delete_evidence_runs,
+    list_evidence_runs,
+    prune_evidence_runs,
+    save_evidence_run,
+)
 from .function_facts import get_function_facts, tests_for_functions, write_function_facts
 from .health import (
     FILE_TREND_SNAPSHOT_WINDOW,
@@ -84,6 +93,7 @@ from .health import (
     get_health_snapshot_file_counts,
     get_health_snapshot_headline,
     get_health_summary,
+    get_latest_snapshot_analyzer_version,
     get_perf_coverage,
     get_scored_file_paths,
     health_finding_priorities,
@@ -112,6 +122,7 @@ from .performance import (
     performance_area_counts,
     performance_facet_counts,
     performance_file_rollups,
+    performance_headline,
 )
 from .refactoring import (
     count_refactoring_suggestions,
@@ -136,8 +147,10 @@ from .refactoring_opportunities import (
 from .refactoring_payoff import PayoffContext, plan_payoff
 
 __all__ = [
+    "EVIDENCE_ROW_TABLES",
     "FILE_TREND_SNAPSHOT_WINDOW",
     "HEALTH_SNAPSHOT_RETENTION",
+    "EvidenceWrite",
     "HealthSnapshotHeadline",
     "HealthSnapshotScalars",
     "PayoffContext",
@@ -148,6 +161,7 @@ __all__ = [
     "coverage_by_module",
     "coverage_row_dict",
     "covered_source_files",
+    "delete_evidence_runs",
     "doc_drift_findings_stored",
     "doc_drift_last_written",
     "doc_drift_pass_ran",
@@ -176,6 +190,7 @@ __all__ = [
     "get_health_snapshot_file_counts",
     "get_health_snapshot_headline",
     "get_health_summary",
+    "get_latest_snapshot_analyzer_version",
     "get_perf_coverage",
     "get_performance_opportunity",
     "get_performance_plan_rows",
@@ -191,6 +206,7 @@ __all__ = [
     "health_finding_priorities",
     "is_new_doc_drift_row",
     "list_evidence_for_opportunities",
+    "list_evidence_runs",
     "list_health_snapshots",
     "list_opportunity_evidence",
     "list_performance_opportunities",
@@ -205,7 +221,9 @@ __all__ = [
     "performance_area_counts",
     "performance_facet_counts",
     "performance_file_rollups",
+    "performance_headline",
     "plan_payoff",
+    "prune_evidence_runs",
     "prune_unscored_health_rows",
     "ranked_refactoring_suggestions",
     "refactoring_facet_counts",
@@ -216,6 +234,7 @@ __all__ = [
     "replace_governance_findings",
     "save_coverage_files",
     "save_dead_code_findings",
+    "save_evidence_run",
     "save_health_findings",
     "save_health_metrics",
     "save_health_snapshot",

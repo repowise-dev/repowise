@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from repowise.core.persistence.database import get_session
+from repowise.core.settings.model import flag
 from repowise.server.job_records import _complete_job_row, _provider_issue
 from repowise.server.job_state import _load_state, _persist_generate_job_state
 
@@ -157,7 +158,7 @@ def _build_generation_config(repo_path: Path, config: dict, wiki_style: str) -> 
         reasoning=resolve_reasoning(config=repo_cfg),
         wiki_style=effective_style,
         language=repo_cfg.get("language", "en"),
-        enable_onboarding=bool(repo_cfg.get("enable_onboarding", True)),
+        enable_onboarding=flag(repo_cfg.get("enable_onboarding"), True),
         max_concurrency=int(config.get("concurrency") or 12),
     )
 
@@ -293,13 +294,14 @@ async def _run_generate_job(
 async def _repo_page_counts(session: Any, repo_id: str) -> tuple[int, int]:
     """Return ``(total_pages, remaining_stub_pages)`` for a repo.
 
-    Stubs count only model-written page types: structural pages stay
-    ``template`` forever and would block the ``docs_mode -> llm`` flip.
+    Stubs use the CLI's predicate (:func:`unwritten_model_page_count`), so
+    structural pages, tombstones and ``model_free`` pages never block the
+    ``docs_mode -> llm`` flip.
     """
     from sqlalchemy import func as sa_func
     from sqlalchemy import select as sa_select
 
-    from repowise.core.generation.models import MODEL_WRITTEN_PAGE_TYPES
+    from repowise.core.generation.scope import unwritten_model_page_count
     from repowise.core.persistence.models import Page
 
     total = int(
@@ -309,17 +311,4 @@ async def _repo_page_counts(session: Any, repo_id: str) -> tuple[int, int]:
             )
         ).scalar_one()
     )
-    stubs = int(
-        (
-            await session.execute(
-                sa_select(sa_func.count())
-                .select_from(Page)
-                .where(
-                    Page.repository_id == repo_id,
-                    Page.page_type.in_(sorted(MODEL_WRITTEN_PAGE_TYPES)),
-                    Page.provider_name == "template",
-                )
-            )
-        ).scalar_one()
-    )
-    return total, stubs
+    return total, await unwritten_model_page_count(session, repo_id)

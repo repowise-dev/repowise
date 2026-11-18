@@ -59,7 +59,7 @@ export function AddRepoDialog({
         const res = await getProviders();
         return res.active;
       },
-      settingsHref: "/settings",
+      settingsHref: "/settings/models",
       onDone: (repoId, jobId) => {
         toast.success(
           jobId ? t("addDialog.toastStarted") : t("addDialog.toastAdded"),

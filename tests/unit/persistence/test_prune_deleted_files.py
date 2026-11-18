@@ -322,3 +322,72 @@ async def test_a_refused_prune_lands_in_degraded(async_session, repo_with_kept_f
 
     assert len(degraded) == 1
     assert "git_metadata" in degraded[0]
+
+
+async def test_function_blame_of_a_deleted_file_is_pruned(async_session, repo_with_kept_file):
+    from repowise.core.persistence.models import GitFunctionBlame
+
+    repo = await insert_repo(async_session)
+    await _seed(async_session, repo.id)
+    for path in (STALE, KEPT):
+        async_session.add(
+            GitFunctionBlame(
+                repository_id=repo.id,
+                symbol_id=f"{path}::main",
+                file_path=path,
+                function_name="main",
+            )
+        )
+    await async_session.flush()
+
+    await prune_deleted_file_rows(async_session, repo.id, repo_with_kept_file, live_hint={KEPT})
+    await async_session.commit()
+
+    assert await _paths(
+        async_session, GitFunctionBlame, GitFunctionBlame.file_path, repo.id
+    ) == {KEPT}
+
+
+async def test_synthetic_nodes_the_rebuilt_graph_dropped_are_pruned(async_session):
+    """The graph is the authority for nodes that name no file, unless an edge still needs one."""
+    from types import SimpleNamespace
+
+    import networkx as nx
+
+    from repowise.core.pipeline.persist import prune_absent_synthetic_nodes
+
+    repo = await insert_repo(async_session)
+    for node_id in ("external:gone", "external:kept", "external:targeted", "framework:anchor", KEPT):
+        async_session.add(GraphNode(repository_id=repo.id, node_id=node_id, node_type="file"))
+        async_session.add(GraphMetric(repository_id=repo.id, node_id=node_id))
+    # A file that failed to parse keeps its stored edge, and with it the target.
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="src/unparsed.js",
+            target_node_id="external:targeted",
+            edge_type="imports",
+        )
+    )
+    # Edges a framework anchor sources are never reconciled, so they keep it.
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="framework:anchor",
+            target_node_id=KEPT,
+            edge_type="framework",
+        )
+    )
+    await async_session.flush()
+    graph = nx.DiGraph()
+    graph.add_edge(KEPT, "external:kept")
+
+    pruned = await prune_absent_synthetic_nodes(
+        async_session, repo.id, SimpleNamespace(graph=lambda: graph)
+    )
+    await async_session.commit()
+
+    assert pruned == 1
+    expected = {KEPT, "external:kept", "external:targeted", "framework:anchor"}
+    assert await _paths(async_session, GraphNode, GraphNode.node_id, repo.id) == expected
+    assert await _paths(async_session, GraphMetric, GraphMetric.node_id, repo.id) == expected

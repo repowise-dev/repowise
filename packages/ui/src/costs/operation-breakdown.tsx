@@ -2,7 +2,7 @@
 
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import { operationBreakdownHeight } from "./chart-height";
-import { formatCost } from "../lib/format";
+import { formatCost, formatNumber } from "../lib/format";
 import { seriesColor } from "../shared/series";
 
 export interface OperationBreakdownProps {
@@ -73,7 +73,7 @@ export function OperationBreakdown({ groups, metric = "cost_usd" }: OperationBre
               const n = typeof value === "number" ? value : 0;
               return metric === "cost_usd"
                 ? [formatCost(n), "Cost"]
-                : [n.toLocaleString(), metric.replace("_", " ")];
+                : [formatNumber(n), metric.replace("_", " ")];
             }}
           />
           <Bar dataKey={metric} radius={[0, 4, 4, 0]}>

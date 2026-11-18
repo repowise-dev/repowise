@@ -11,6 +11,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from repowise.core.analysis.change_health.child import ChildProcessDeltaService
 from repowise.core.analysis.change_health.service import (
     ChangeHealthDeltaService,
     DeltaRequest,
@@ -20,7 +21,7 @@ from repowise.core.analysis.change_risk.features import revspec_head
 # Patchable names are read off the package at call time so patches reach them.
 from repowise.server.mcp_server import tool_change_risk as _pkg
 from repowise.server.mcp_server._failure_shield import (
-    is_stale_server_import,
+    is_stale_server_error,
     stale_server_notice,
 )
 
@@ -97,7 +98,7 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
     # Built outside the lock: the fingerprint reads config off disk.
     from repowise.core.repo_config import health_rules_fingerprint
 
-    service = ChangeHealthDeltaService(
+    service = ChildProcessDeltaService(
         repo_path=repo_path, rules_fingerprint=health_rules_fingerprint(repo_path)
     )
     with _DELTA_SERVICES_LOCK:
@@ -111,10 +112,17 @@ def _delta_service(repo_path: str) -> ChangeHealthDeltaService:
     return service
 
 
+#: The last dependents read per checkout, with the index state it was read
+#: at. Counting them reads every graph edge, so a call on an unchanged index
+#: reuses the count. Readers copy it before changing it.
+_DEPENDENTS: OrderedDict[str, tuple[str, dict[str, int]]] = OrderedDict()
+
+
 async def _index_dependents(ctx: Any) -> dict[str, int] | None:
     """The index's dependents count per file, or ``None`` with no readable index."""
     from repowise.core.analysis.change_health.index_context import index_dependents
     from repowise.core.persistence.database import get_session
+    from repowise.server.mcp_server._index_state import index_state_key
 
     session_factory = getattr(ctx, "session_factory", None)
     if session_factory is None:
@@ -122,7 +130,19 @@ async def _index_dependents(ctx: Any) -> dict[str, int] | None:
     try:
         async with get_session(session_factory) as session:
             repository = await _pkg._get_repo(session)
-            return await index_dependents(session, repository.id)
+            # The checkout too: a copied index keeps the repository id.
+            checkout = getattr(ctx, "path", "")
+            key = f"{checkout}|{repository.id}"
+            state = index_state_key(repository)
+            held = _DEPENDENTS.get(key)
+            if held is not None and held[0] == state:
+                return held[1]
+            counts = await index_dependents(session, repository.id)
+        _DEPENDENTS[key] = (state, counts)
+        _DEPENDENTS.move_to_end(key)
+        while len(_DEPENDENTS) > _DELTA_SERVICE_CAPACITY:
+            _DEPENDENTS.popitem(last=False)
+        return counts
     except Exception as exc:
         # An input that sharpens the delta, never a reason to fail the call.
         log.warning("change_health_index_dependents_failed", error=str(exc))
@@ -170,7 +190,7 @@ def _compare_health(
         log.warning("change_health_comparison_failed", revspec=revspec, error=str(exc))
         explanation = (
             stale_server_notice(exc)
-            if is_stale_server_import(exc)
+            if is_stale_server_error(exc)
             else f"Health comparison failed: {exc}"
         )
         return ChangeHealthDelta(

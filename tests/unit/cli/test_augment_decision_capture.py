@@ -1,7 +1,7 @@
 """The capture prompt: the gates, not the wording.
 
 An agent cannot decline a hook, so every gate is a cost control and each one
-is tested on its own. The contract: off unless the repository switched it on,
+is tested on its own. The contract: on unless the repository switched it off,
 at most once per session, only after a *fresh* commit in *this* repository,
 only on a message carrying two or more decision signals, and never for a
 commit a record already cites.
@@ -124,13 +124,13 @@ def test_a_second_session_gets_its_own_ask(repo: Path) -> None:
 # --- the switch -------------------------------------------------------------
 
 
-def test_off_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_on_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "repo"
     (root / ".repowise").mkdir(parents=True)
     _write_wiki(root, evidence=[])
     _fake_git(monkeypatch, root, _SHA, _MESSAGE)
 
-    assert _fire(root) is None
+    assert _fire(root) is not None
 
 
 def test_the_off_switch_turns_it_off(repo: Path) -> None:
@@ -139,17 +139,31 @@ def test_the_off_switch_turns_it_off(repo: Path) -> None:
     assert _fire(repo) is None
 
 
-def test_an_absent_key_resolves_to_off(tmp_path: Path) -> None:
+def test_an_absent_key_resolves_to_on(tmp_path: Path) -> None:
     """The parser's own default, not the dataclass field the parser overrides."""
     from repowise.core.analysis.decisions.policy_store import load_policy
 
     root = tmp_path / "unconfigured"
     (root / ".repowise").mkdir(parents=True)
 
+    assert load_policy(root).policy.capture_prompt is True
+
+
+def test_an_explicit_off_is_written_and_survives_a_reload(tmp_path: Path) -> None:
+    """The block omits a defaulted setting, so off must be written out."""
+    from repowise.core.analysis.decisions.policy import preset_policy
+    from repowise.core.analysis.decisions.policy_store import load_policy, write_policy
+    from repowise.core.repo_config import load_repo_config
+
+    root = tmp_path / "off"
+    (root / ".repowise").mkdir(parents=True)
+    write_policy(root, preset_policy("default").with_capture_prompt(False))
+
+    assert load_repo_config(root)["decisions"]["capture_prompt"] is False
     assert load_policy(root).policy.capture_prompt is False
 
 
-def test_a_non_boolean_switch_warns_and_stays_off(tmp_path: Path) -> None:
+def test_a_non_boolean_switch_warns_and_reads_as_off(tmp_path: Path) -> None:
     from repowise.core.analysis.decisions.policy_store import load_policy
 
     root = tmp_path / "typo"
@@ -227,8 +241,16 @@ def test_a_non_commit_shell_call_says_nothing(repo: Path) -> None:
     assert _fire(repo, tool_input={"command": "git status"}) is None
 
 
-def test_a_merge_is_not_a_commit_worth_asking_about(repo: Path) -> None:
-    assert _fire(repo, tool_input={"command": "git merge --no-ff feature"}) is None
+@pytest.mark.parametrize(
+    "command",
+    ["git merge --no-ff feature", "git pull", "git rebase main", "git cherry-pick abc123"],
+)
+def test_a_history_change_that_is_not_a_commit_is_not_worth_asking_about(
+    repo: Path, command: str
+) -> None:
+    """The shell gate admits these for the stale-wiki check, not for this prompt."""
+    assert _fire(repo, tool_input={"command": command}) is None
+    assert _fire(repo) is not None  # and the session's one ask is still unspent
 
 
 def test_a_commit_in_a_nested_repository_is_not_this_one(
@@ -382,6 +404,104 @@ def test_switching_on_adds_the_shell_entry(settings: Path) -> None:
     assert "Bash|PowerShell" in _post_matchers(settings)
 
 
+def _install_plugin(settings: Path, *, with_capture: bool) -> None:
+    """An enabled repowise plugin, in the layout Claude Code keeps it."""
+    from repowise.cli.editor_integrations import claude_config
+
+    install = settings.parent / "plugins" / "cache" / "repowise" / "repowise" / "9.9.9"
+    (install / "hooks").mkdir(parents=True)
+    post = [{"matcher": claude_config._AUGMENT_MATCHER, "hooks": [
+        {"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}]}]
+    if with_capture:
+        post.append(claude_config._capture_entry())
+    (install / "hooks" / "hooks.json").write_text(
+        json.dumps({"hooks": {"PostToolUse": post}}), encoding="utf-8"
+    )
+    (settings.parent / "plugins" / "installed_plugins.json").write_text(
+        json.dumps({"version": 2, "plugins": {"repowise@repowise": [
+            {"scope": "user", "installPath": str(install)}]}}),
+        encoding="utf-8",
+    )
+    payload = json.loads(settings.read_text(encoding="utf-8"))
+    payload["enabledPlugins"] = {"repowise@repowise": True}
+    settings.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_plugin_that_ships_the_entry_is_not_doubled(settings: Path) -> None:
+    """Claude Code runs a plugin hook and a settings hook separately."""
+    from repowise.cli.editor_integrations import claude_config
+
+    claude_config.set_claude_code_capture_hook(True)
+    _install_plugin(settings, with_capture=True)
+
+    assert claude_config.set_claude_code_capture_hook(True) == settings
+    assert "Bash|PowerShell" not in _post_matchers(settings)
+    assert claude_config.claude_code_capture_hook_installed() is True
+
+
+def test_an_older_plugin_without_the_entry_still_gets_ours(settings: Path) -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    _install_plugin(settings, with_capture=False)
+
+    assert claude_config.set_claude_code_capture_hook(True) == settings
+    assert "Bash|PowerShell" in _post_matchers(settings)
+
+
+def test_an_entry_from_an_older_release_is_refreshed(settings: Path) -> None:
+    """The old command started Python on every shell call; the gate is the fix."""
+    from repowise.cli.editor_integrations import claude_config
+
+    payload = json.loads(settings.read_text(encoding="utf-8"))
+    payload["hooks"]["PostToolUse"].append({"matcher": "Bash|PowerShell", "hooks": [
+        {"type": "command", "command": claude_config._AUGMENT_HOOK_COMMAND}]})
+    settings.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert claude_config.set_claude_code_capture_hook(True) == settings
+
+    entries = json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PostToolUse"]
+    assert [e for e in entries if e["matcher"] == "Bash|PowerShell"] == [
+        claude_config._capture_entry()
+    ]
+
+
+def test_init_installs_the_entry(settings: Path) -> None:
+    """The prompt ships on, so the hook that fires it is part of the install."""
+    from repowise.cli.editor_integrations import claude_config
+
+    claude_config.install_claude_code_hooks()
+
+    assert "Bash|PowerShell" in _post_matchers(settings)
+
+
+def test_init_leaves_it_to_a_plugin_that_ships_it(settings: Path) -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    _install_plugin(settings, with_capture=True)
+
+    claude_config.install_claude_code_hooks()
+
+    assert "Bash|PowerShell" not in _post_matchers(settings)
+
+
+def test_the_self_heal_adds_it_to_an_existing_install(settings: Path) -> None:
+    """Existing installs predate the default; the once-per-version heal reaches them."""
+    from repowise.cli.editor_integrations import claude_config
+
+    assert claude_config.migrate_claude_code_hooks() is True
+
+    assert "Bash|PowerShell" in _post_matchers(settings)
+    assert claude_config.migrate_claude_code_hooks() is False
+
+
+def test_a_coverage_entry_is_never_taken_for_the_capture_entry() -> None:
+    from repowise.cli.editor_integrations import claude_config
+
+    assert not claude_config._is_capture_entry(claude_config._coverage_entry())
+    assert not claude_config._is_capture_entry(claude_config._health_gate_entry())
+    assert claude_config._is_capture_entry(claude_config._capture_entry())
+
+
 def test_switching_off_removes_it(settings: Path) -> None:
     from repowise.cli.editor_integrations.claude_config import set_claude_code_capture_hook
 
@@ -469,3 +589,237 @@ def test_the_hook_entry_is_not_installed_without_a_settings_file(
 
     assert claude_config.set_claude_code_capture_hook(True) is None
     assert claude_config.claude_code_capture_hook_installed() is False
+
+
+
+# --- the upkeep prompt --------------------------------------------------------
+
+
+def _governed_store(root: Path, decisions: list[tuple[str, str, str]]) -> None:
+    """A store with in-force decisions ``(id, title, governed path)``.
+
+    Only the columns the hook reads, so the raw SQL is what is under test.
+    """
+    db = root / ".repowise" / "wiki.db"
+    db.unlink(missing_ok=True)
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE decision_records (id TEXT PRIMARY KEY, title TEXT, decision TEXT, "
+        "rationale TEXT, status TEXT, confidence REAL, staleness_score REAL, "
+        "evidence_commits_json TEXT);"
+        "CREATE TABLE decision_node_links (decision_id TEXT, node_id TEXT, link_type TEXT);"
+        "CREATE TABLE decision_acceptances (decision_id TEXT);"
+    )
+    for decision_id, title, path in decisions:
+        conn.execute(
+            "INSERT INTO decision_records VALUES (?, ?, 'd', 'r', 'active', 0.9, 0, '[]')",
+            (decision_id, title),
+        )
+        conn.execute("INSERT INTO decision_node_links VALUES (?, ?, 'file')", (decision_id, path))
+        conn.execute("INSERT INTO decision_acceptances VALUES (?)", (decision_id,))
+    conn.commit()
+    conn.close()
+
+
+def _fake_commit(monkeypatch, root: Path, sha: str, files: list[str]) -> None:
+    """``rev-parse``, ``log`` and ``diff-tree`` for a fresh commit of *files*."""
+    stamp = int(time.time() - 1)
+
+    def _run(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{root}\n", stderr="")
+        if "diff-tree" in args:
+            out = "".join(f"{f}\0" for f in files)
+            return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout=f"{sha}\n{stamp}\nfix typo", stderr="")
+
+    monkeypatch.setattr(decision_capture.subprocess, "run", _run)
+
+
+_D1 = ("1a2b3c4d" + "0" * 24, "Use JWT auth", "src/auth.py")
+_D2 = ("5e6f7a8b" + "0" * 24, "Price local models at zero", "src/cost.py")
+
+
+@pytest.fixture
+def upkeep_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    root = tmp_path / "repo"
+    (root / ".repowise").mkdir(parents=True)
+    (root / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  capture_prompt: false\n  upkeep_prompt: true\n", encoding="utf-8"
+    )
+    _governed_store(root, [_D1, _D2])
+    _fake_commit(monkeypatch, root, _SHA, ["src/auth.py", "README.md"])
+    return root
+
+
+def _ledger(root: Path) -> list[tuple]:
+    db = root / ".repowise" / "sessions" / "sessions.db"
+    if not db.exists():
+        return []
+    conn = sqlite3.connect(db)
+    try:
+        return conn.execute(
+            "SELECT session_id, surface, category, node_id, chars FROM injections"
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def test_upkeep_names_the_governing_decision_and_the_three_commands(upkeep_repo: Path) -> None:
+    notice = _fire(upkeep_repo)
+
+    assert notice is not None and "\n" not in notice
+    assert notice.startswith(f"[repowise] Commit {_SHA[:8]} changes code governed by decision: ")
+    assert '1a2b3c4d "Use JWT auth"' in notice
+    assert "Price local models" not in notice
+    for command in (
+        "repowise decision reaffirm <id>",
+        "repowise decision deprecate <id> --superseded-by <new id>",
+        "repowise decision deprecate <id> --reason '<why>'",
+    ):
+        assert command in notice
+
+
+def test_upkeep_logs_each_firing_for_the_gate(upkeep_repo: Path) -> None:
+    notice = _fire(upkeep_repo, session="sess-1")
+
+    # node_id names the records the line carried, so their delivery counts see it.
+    assert _ledger(upkeep_repo) == [("sess-1", "upkeep", "commit_notice", _D1[0], len(notice))]
+
+
+def test_upkeep_is_off_by_default(upkeep_repo: Path) -> None:
+    (upkeep_repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  capture_prompt: false\n", encoding="utf-8"
+    )
+
+    assert _fire(upkeep_repo) is None
+    assert _ledger(upkeep_repo) == []
+
+
+def test_upkeep_says_nothing_for_ungoverned_code(upkeep_repo: Path, monkeypatch) -> None:
+    _fake_commit(monkeypatch, upkeep_repo, _SHA, ["README.md"])
+
+    assert _fire(upkeep_repo) is None
+
+
+def test_upkeep_names_each_decision_once_a_session(upkeep_repo: Path, monkeypatch) -> None:
+    assert _fire(upkeep_repo) is not None
+    second = "f" * 40
+    _fake_commit(monkeypatch, upkeep_repo, second, ["src/auth.py"])
+    assert _fire(upkeep_repo) is None
+    # A commit reaching a decision not named yet is the session's second firing.
+    _fake_commit(monkeypatch, upkeep_repo, second, ["src/auth.py", "src/cost.py"])
+    notice = _fire(upkeep_repo)
+    assert notice is not None and '5e6f7a8b "Price local models at zero"' in notice
+    assert "1a2b3c4d" not in notice
+    assert len(_ledger(upkeep_repo)) == 2
+
+
+def test_upkeep_names_at_most_three(upkeep_repo: Path, monkeypatch) -> None:
+    many = [(f"{i:08x}" + "0" * 24, f"Rule {i}", f"src/m{i}.py") for i in range(5)]
+    _governed_store(upkeep_repo, many)
+    _fake_commit(monkeypatch, upkeep_repo, _SHA, [path for _, _, path in many])
+
+    notice = _fire(upkeep_repo)
+
+    assert notice is not None and "3 decisions: " in notice
+    assert notice.count(' "Rule ') == 3
+
+
+def test_upkeep_rides_beside_the_capture_prompt(upkeep_repo: Path, monkeypatch) -> None:
+    (upkeep_repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  upkeep_prompt: true\n", encoding="utf-8"
+    )
+    stamp = int(time.time() - 1)
+
+    def _run(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{upkeep_repo}\n", stderr="")
+        if "diff-tree" in args:
+            return subprocess.CompletedProcess(args, 0, stdout="src/auth.py\0", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout=f"{_SHA}\n{stamp}\n{_MESSAGE}", stderr="")
+
+    monkeypatch.setattr(decision_capture.subprocess, "run", _run)
+
+    notice = _fire(upkeep_repo)
+
+    lines = notice.splitlines()
+    assert lines[0].startswith("[repowise] Commit") and "states a choice" in lines[0]
+    assert lines[-1].startswith(f"[repowise] Commit {_SHA[:8]} changes code governed by")
+
+
+def test_the_upkeep_line_is_what_the_classifier_reads(upkeep_repo: Path) -> None:
+    """The hook's wording and the transcript judge are one contract."""
+    from repowise.core.sessions.efficacy import classify, parse_emission
+
+    notice = _fire(upkeep_repo)
+    (firing,) = parse_emission(notice)
+
+    assert (firing.surface, firing.category) == ("upkeep", "commit_notice")
+    assert firing.targets == ["1a2b3c4d"]
+    settled = classify(
+        firing, [("Bash", json.dumps({"command": "repowise decision reaffirm 1a2b3c4d --agent x"}))]
+    )
+    assert settled.acted is True and settled.evidence == "reaffirm"
+
+
+def test_the_capture_prompt_asks_for_one_short_command(repo: Path) -> None:
+    notice = _fire(repo)
+
+    command = next(ln.strip() for ln in notice.splitlines() if "decision add" in ln)
+    assert "--title" not in command and "--format" not in command
+    for flag in ("--agent", "--decision", "--rationale", "--affects", "--evidence-commit"):
+        assert flag in command
+
+
+def test_a_non_ascii_path_comes_back_as_git_stores_it(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "café.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "src" / "plain.py").write_text("y = 2\n", encoding="utf-8")
+
+    def git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q")
+    # Git's default, pinned here so a global quotepath=false cannot hide a regression.
+    git("config", "core.quotepath", "true")
+    git("config", "commit.gpgsign", "false")
+    git("add", ".")
+    git("commit", "-q", "-m", "first")
+
+    assert sorted(decision_capture._commit_files(root)) == ["src/café.py", "src/plain.py"]
+
+
+# --- decisions.mode -----------------------------------------------------------
+
+
+def test_read_only_asks_nothing_after_a_commit(repo: Path) -> None:
+    (repo / ".repowise" / "config.yaml").write_text("decisions:\n  mode: read_only\n", encoding="utf-8")
+
+    assert _fire(repo) is None
+
+
+def test_off_silences_both_commit_lines_whatever_the_switches_say(upkeep_repo: Path) -> None:
+    (upkeep_repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  mode: off\n  capture_prompt: true\n  upkeep_prompt: true\n",
+        encoding="utf-8",
+    )
+
+    assert _fire(upkeep_repo) is None
+    assert _ledger(upkeep_repo) == []
+
+
+def test_read_only_keeps_an_upkeep_prompt_turned_on(upkeep_repo: Path) -> None:
+    (upkeep_repo / ".repowise" / "config.yaml").write_text(
+        "decisions:\n  mode: read_only\n  upkeep_prompt: true\n", encoding="utf-8"
+    )
+
+    notice = _fire(upkeep_repo)
+
+    assert notice is not None and "Use JWT auth" in notice

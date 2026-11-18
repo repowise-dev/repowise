@@ -19,12 +19,19 @@ _decision_store: Any = None
 _fts: Any = None
 _repo_path: str | None = None
 # Id of the row the served checkout's own store holds for it, when that store
-# holds exactly one (set by _lifespan). Only that row's live reads follow
+# holds exactly one (set by publish_served_repo_id). Only that row's live reads follow
 # ``_repo_path`` when its stored local_path differs; see _meta.served_root.
 _served_repo_id: str | None = None
 # When set, the server skips workspace auto-detection even if the path is
 # inside a workspace root. This backs the CLI's `--no-workspace` escape hatch.
 _force_single_repo: bool = False
+# Set by _lifespan when the directory has no .repowise/, or its store cannot
+# open, and the server is serving the empty in-memory store. Read by the mcp
+# command for telemetry.
+_serving_no_index: bool = False
+# The StoreUnavailableError the server is serving in place of a store that
+# would not open, or ``None``. Every tool answers with its message.
+_store_error: Any = None
 # Set to an asyncio.Event by _lifespan; signals that vector stores are loaded.
 # tool_search awaits this before searching to avoid racing a background load.
 _vector_store_ready: asyncio.Event | None = None
@@ -76,8 +83,53 @@ _vector_store_errors: dict[str, str] = {}
 # each newer release is surfaced once per process rather than on every call.
 _release_check: Any = None
 _release_announced: str | None = None
+# Whether a search reply already said its rows are keyword matches only.
+_keyless_search_noted = False
 
-# Whether ``get_answer``'s ``no-llm-provider`` degraded path has already named
-# what a key or local model would add in this process. Same once-per-process
-# shape as ``_release_announced``: a fact the caller only needs the first time.
-_keyless_note_announced: bool = False
+
+def init_tool_state(
+    session_factory: Any,
+    fts: Any,
+    vector_store: Any,
+    decision_store: Any | None = None,
+    repo_path: str | None = None,
+) -> None:
+    """Publish the resources every tool reads; ``None`` keeps the stored value.
+
+    Lives here, not in ``chat_tools``, so a CLI command can wire a tool
+    without importing the HTTP auth stack (about 0.5 s of FastAPI imports).
+    """
+    global _session_factory, _fts, _vector_store, _decision_store, _repo_path
+    _session_factory = session_factory
+    _fts = fts
+    _vector_store = vector_store
+    if decision_store is not None:
+        _decision_store = decision_store
+    if repo_path is not None:
+        _repo_path = repo_path
+
+
+async def publish_served_repo_id(session_factory: Any) -> None:
+    """Set :data:`_served_repo_id` for the checkout at :data:`_repo_path`.
+
+    The one row a repo-local store holds, else ``None``. Same rule as the CLI's
+    moved-repo lookup: identity is inferred only from the served checkout's own
+    store, and only when it holds one repository. Every caller that serves a
+    checkout calls this, so live reads resolve its root the same way.
+    """
+    global _served_repo_id
+    from sqlalchemy import select
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from repowise.core.persistence.database import get_configured_db_url
+    from repowise.core.persistence.models import Repository
+
+    _served_repo_id = None
+    if not _repo_path or get_configured_db_url() is not None:
+        return
+    try:
+        async with session_factory() as session:
+            rows = (await session.scalars(select(Repository.id).limit(2))).all()
+    except SQLAlchemyError:  # an optional identity never fails a read
+        return
+    _served_repo_id = rows[0] if len(rows) == 1 else None

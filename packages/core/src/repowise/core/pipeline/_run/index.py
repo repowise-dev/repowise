@@ -174,7 +174,7 @@ def _emit_index_summary(run: PipelineRun) -> None:
     progress.on_message(
         "info",
         f"→ {len(run.parsed_files):,} files parsed · "
-        f"{sum(len(pf.symbols) for pf in run.parsed_files):,} symbols extracted",
+        f"{sum(pf.symbol_count for pf in run.parsed_files):,} symbols extracted",
     )
     progress.on_message(
         "info",

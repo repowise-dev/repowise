@@ -127,7 +127,7 @@ class SourceResult:
 
 @dataclass(frozen=True, slots=True)
 class DecisionAttentionInput:
-    """The two fields of a decision record the attention list shows.
+    """The fields of a decision record the attention list shows.
 
     No staleness score: :func:`decision_source` never re-sorts a lane, so a
     producer without one passes the stale lane in whatever order it trusts.
@@ -192,14 +192,16 @@ def severity_of_drift(confidence: float | None) -> str:
 
 def decision_source(
     stale: Sequence[DecisionAttentionInput],
-    proposed: Sequence[DecisionAttentionInput],
     ungoverned: Sequence[str],
 ) -> SourceResult:
     """Decision-record problems, in the order the caller already ranked them.
 
-    ``get_decision_health_summary`` sorts stale records by staleness, proposed
-    by confidence and ungoverned hotspots by hotspot score, and its docstring
-    asks callers to truncate rather than re-sort. Truncation only.
+    ``get_decision_health_summary`` sorts stale records by staleness and
+    ungoverned hotspots by hotspot score, and its docstring asks callers to
+    truncate rather than re-sort. Truncation only.
+
+    Records nobody put in force are not here: they are background an agent
+    asks about, and listing them made a to-do of the miner's output.
     """
     items: list[dict] = []
 
@@ -217,18 +219,6 @@ def decision_source(
                 "target_id": d.id,
             }
         )
-    for rank, d in enumerate(proposed[:PER_SOURCE_CAP]):
-        items.append(
-            {
-                "weight": float(PER_SOURCE_CAP - rank),
-                "id": f"proposed-{d.id}",
-                "type": "proposed_decision",
-                "title": d.title,
-                "description": "Auto-proposed decision awaiting review",
-                "severity": "medium",
-                "target_id": d.id,
-            }
-        )
     for rank, fp in enumerate(ungoverned[:PER_SOURCE_CAP]):
         items.append(
             {
@@ -241,20 +231,14 @@ def decision_source(
                 "target_id": fp,
             }
         )
-    # One count over three lanes is not a fact anyone can act on. "1,064
-    # decisions need attention" is mostly our own auto-proposals plus a
-    # governance-coverage gap, and reporting those as one number overstates
-    # the first and hides the second.
+    # One count over two lanes is not a fact anyone can act on, so the
+    # detail names each one.
     parts = []
     if stale:
         parts.append(f"{len(stale)} drifting from the code")
-    if proposed:
-        parts.append(f"{len(proposed)} awaiting review")
     if ungoverned:
         parts.append(f"{len(ungoverned)} hotspots ungoverned")
-    return SourceResult(
-        tuple(items), len(stale) + len(proposed) + len(ungoverned), " · ".join(parts)
-    )
+    return SourceResult(tuple(items), len(stale) + len(ungoverned), " · ".join(parts))
 
 
 def silo_source(knowledge_silos: Sequence[Mapping[str, Any]]) -> SourceResult:

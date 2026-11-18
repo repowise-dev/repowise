@@ -5,6 +5,7 @@ import {
   affectedSummary,
   agentHandoffCall,
   boundaryLabel,
+  causeStandingText,
   facetValueLabel,
   humanizeToken,
   moduleScopeLabel,
@@ -98,6 +99,11 @@ describe("performance presentation", () => {
     expect(facetValueLabel("boundary", "none")).toBe("In-process");
   });
 
+  it("names a static cost proof by loop size, never as measured", () => {
+    expect(facetValueLabel("proof", "proven")).toBe("Loop size known");
+    expect(facetValueLabel("proof", "unproven")).toBe("Unproven: loop size unknown");
+  });
+
   it("separates a plan that exists from one that needs a refresh and from none", () => {
     expect(planPresentation(opportunity()).actionable).toBe(true);
     const refresh = planPresentation(
@@ -165,5 +171,22 @@ describe("module scope", () => {
     expect(opportunityTitle(top)).toBe("Database call inside a loop in module scope of jobs.py");
     expect(opportunityEvidenceLine(top)).toBe("module scope of src/jobs.py");
   });
-});
 
+  it("phrases a row's secondary facts as sentences from the server's values", () => {
+    const text = causeStandingText(
+      opportunity({
+        actionability_state: "advisory",
+        actionability_reason: "strategy_requires_validation",
+        plan_status: "no_safe_plan",
+        plan_id: null,
+        plan_reason: "No stored plan addresses this cause",
+        confidence: "medium",
+      }),
+    );
+    expect(text).toBe(
+      "Advisory: Strategy requires validation. No safe plan: No stored plan addresses this cause. The call path resolved with medium confidence.",
+    );
+    // A reason that already ends a sentence is not given a second stop.
+    expect(causeStandingText(opportunity({ plan_reason: "Stored." }))).toContain("Stored plan: Stored. ");
+  });
+});

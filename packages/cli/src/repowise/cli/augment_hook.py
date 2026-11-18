@@ -43,16 +43,23 @@ def main() -> None:
     response_stream = sys.stdout
     with contextlib.redirect_stdout(sys.stderr):
         try:
-            from repowise.cli.commands.augment_cmd import _run_augment, command
+            if "--health-gate" in sys.argv[1:]:
+                # The opt-in PreToolUse gate: its own stdlib-only module, so a
+                # shell call that is not a commit or push pays no augment import.
+                from repowise.cli.health_gate_hook import run
 
-            command._response_stream = response_stream
-            try:
-                _run_augment(
-                    client=_parse_client_arg(sys.argv[1:]),
-                    coverage_only="--coverage-only" in sys.argv,
-                )
-            finally:
-                command._response_stream = None
+                run(sys.stdin, response_stream)
+            else:
+                from repowise.cli.commands.augment_cmd import _run_augment, command
+
+                command._response_stream = response_stream
+                try:
+                    _run_augment(
+                        client=_parse_client_arg(sys.argv[1:]),
+                        coverage_only="--coverage-only" in sys.argv,
+                    )
+                finally:
+                    command._response_stream = None
         except (SystemExit, KeyboardInterrupt):
             raise
         except BaseException:

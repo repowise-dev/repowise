@@ -36,6 +36,9 @@ export interface PageSummary {
    *  generation time. Promoted out of `metadata` because a list needs it: the
    *  docs tree groups modules under their layer from this stamp, and a listing
    *  drops the blob. Absent or `null` means no layer claimed the page. */
+  /** What a navigation row calls the page; absent on reference pages. The
+   *  page's heading stays `title`. */
+  nav_title?: string | null;
   layer_id?: string | null;
   layer_name?: string | null;
   human_notes: string | null;

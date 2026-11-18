@@ -1,10 +1,18 @@
-"""The unused-internal pass: private symbols no call, reference or override reaches."""
+"""The unused-internal pass: private symbols no call, reference or override reaches.
+
+COBOL paragraphs are judged from the program's source text instead, by
+``cobol_paragraphs.py``.
+"""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..constants import _is_fixture_path
+from repowise.core.ingestion.symbol_identity import make_symbol_id
+
+from ..apex_reachability import is_apex_entry_member
+from ..cobol_paragraphs import unreachable_paragraph_findings
+from ..constants import _DEAD_CODE_EXEMPT_LANGUAGES, _is_fixture_path
 from ..contract_methods import is_contract_method
 from ..decorator_rules import _declared_deliberately_unused, _is_framework_registered
 from ..finding_helpers import _symbol_span
@@ -14,6 +22,12 @@ from ..symbol_rules import _ENTRY_POINT_SYMBOL_NAMES, _UNCALLABLE_TYPE_KINDS, _n
 
 if TYPE_CHECKING:
     from ..analyzer import DeadCodeAnalyzer
+
+# Rust: the compiler's ``dead_code`` lint already reports these, with macro
+# expansion and types a static graph cannot match. The exempt languages
+# (COBOL) are entered by a runtime the graph cannot see, as in the file and
+# export passes; a COBOL paragraph is judged by ``cobol_paragraphs`` instead.
+_UNJUDGED_LANGUAGES = _DEAD_CODE_EXEMPT_LANGUAGES | {"rust"}
 
 
 class UnusedInternalPass:
@@ -46,14 +60,17 @@ class UnusedInternalPass:
             # named as a value). ``new X(..)`` lands on X's constructor
             # (``path::X::X``) when X declares one, and constructing X uses it.
             if self.ctx._has_inbound_use(node) or self.ctx._has_inbound_use(
-                f"{file_path}::{sym_name}::{sym_name}"
+                make_symbol_id(file_path, sym_name, sym_name)
             ):
                 continue
 
             # A private helper imported by name elsewhere (a dispatch table
-            # entry) is referenced even with no ``calls`` edge.
+            # entry) is referenced even with no ``calls`` edge. A Pascal
+            # ``uses`` wildcard never reaches a unit's private routines: they
+            # are not in its interface.
+            wildcard_rescues = node_data.get("language") != "pascal"
             if any(
-                sym_name in imported or "*" in imported
+                sym_name in imported or ("*" in imported and wildcard_rescues)
                 for imported in self.ctx._imported_names_by_edge(file_path)
             ):
                 continue
@@ -76,7 +93,8 @@ class UnusedInternalPass:
                 )
             )
 
-        return findings
+        # COBOL's one claim, read from source rather than call edges.
+        return findings + unreachable_paragraph_findings(self.ctx, whitelist)
 
     def _is_internal_candidate(
         self, node_data: dict, dynamic_patterns: tuple[str, ...], whitelist: set[str]
@@ -84,9 +102,7 @@ class UnusedInternalPass:
         """Whether a graph node is a private symbol the unused-internal pass may judge."""
         if node_data.get("node_type") != "symbol":
             return False
-        # Rust: the compiler's ``dead_code`` lint already reports these, with
-        # macro expansion and types a static graph cannot match.
-        if node_data.get("language") == "rust":
+        if node_data.get("language") in _UNJUDGED_LANGUAGES:
             return False
         # ``internal`` is assembly-, module- or crate-wide, so a missing call
         # edge is no evidence; no pass judges it, which drops an unmodified
@@ -131,6 +147,9 @@ class UnusedInternalPass:
         if self.ctx._name_matches_dynamic(sym_name, dynamic_patterns):
             return False
 
+        # A private ``@future`` or ``@TestVisible`` Apex member: the platform or a test calls it.
+        if is_apex_entry_member(node_data):
+            return False
         # A private ``@PostConstruct`` or ``@Scheduled`` method is called by
         # the container, as in the export pass.
         decorators = node_data.get("decorators") or []

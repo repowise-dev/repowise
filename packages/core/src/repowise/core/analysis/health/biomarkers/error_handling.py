@@ -21,6 +21,8 @@ languages and parse failures yield zero hits, never a false positive.
 
 from __future__ import annotations
 
+from ....code_origin import path_origin
+from ..complexity import ErrorHandlingHit
 from ..models import Severity
 from .base import BiomarkerResult, FileContext
 
@@ -33,26 +35,32 @@ _REASONS: dict[str, str] = {
     "go_swallow": "error value is checked then ignored, or discarded via the blank identifier",
 }
 
-# Rust invariant assertions (``complexity.rust_unwrap``): true, idiomatic, low
-# priority. They keep their kind (and so their id) but say what they are and
-# deduct nothing from the score.
+# Rust invariant assertions (``complexity.rust_unwrap``). They keep their kind
+# (and so their id), state what the call asserts and deduct nothing, like the
+# advisory markers.
 _IDIOM_REASONS: dict[str, str] = {
     "lock_poison": (
-        "unwrapping a lock panics only if another thread panicked while holding it "
-        "(idiomatic poison propagation, low priority)"
+        "unwrapping a lock panics only if another thread panicked while holding it"
     ),
-    "thread_join": (
-        "unwrapping a thread join re-raises that thread's panic (idiomatic, low priority)"
-    ),
-    "invariant_expect": (
-        "expect panics with its stated message on failure, the usual form when "
-        "failure is a bug or makes start-up impossible (often idiomatic, low priority)"
-    ),
-    "unreachable": (
-        "unreachable! asserts this branch cannot run and panics only if it does "
-        "(often idiomatic, low priority)"
-    ),
+    "thread_join": "unwrapping a thread join re-raises that thread's panic",
+    "invariant_expect": "expect panics with its stated message on a None or Err",
+    "unreachable": "unreachable! asserts this branch cannot run and panics only if it does",
 }
+
+# Rust code that does not ship (a ``build.rs``, an example, a benchmark, a test
+# file) fails by panicking: the panic ends that one run, which is the intent.
+_RUST_PANIC_KINDS = frozenset({"unsafe_unwrap", "panic_macro"})
+_RUST_UNSHIPPED_ORIGINS = frozenset({"build", "docs_example", "tooling", "test"})
+
+
+def _reportable_hits(ctx: FileContext) -> list[ErrorHandlingHit]:
+    """The file's hits, less Rust panics in code that does not ship."""
+    hits = ctx.error_handling_hits
+    if ctx.language != "rust" or not hits:
+        return hits
+    if (ctx.code_origin or path_origin(ctx.file_path)) in _RUST_UNSHIPPED_ORIGINS:
+        return [h for h in hits if h.kind not in _RUST_PANIC_KINDS]
+    return hits
 
 
 class ErrorHandlingDetector:
@@ -61,7 +69,7 @@ class ErrorHandlingDetector:
 
     def detect(self, ctx: FileContext) -> list[BiomarkerResult]:
         out: list[BiomarkerResult] = []
-        for hit in ctx.error_handling_hits:
+        for hit in _reportable_hits(ctx):
             idiom_reason = _IDIOM_REASONS.get(hit.idiom) if hit.idiom else None
             details: dict[str, str | float] = {"kind": hit.kind}
             if idiom_reason is not None:

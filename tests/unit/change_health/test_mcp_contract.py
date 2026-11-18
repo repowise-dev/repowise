@@ -53,6 +53,20 @@ async def test_the_response_leads_with_the_directive_then_the_delta(tool, make_r
     assert result["directive"]["next_actions"]
 
 
+async def test_the_headline_its_first_action_and_the_first_finding_agree(tool, make_repo):
+    module = tool(seeded(make_repo))
+
+    result = await module.get_change_risk("HEAD", baseline=0)
+    directive, delta = result["directive"], result["health_delta"]
+    lead = delta["top_findings"][0]
+
+    assert directive["status"] == "review_required"
+    assert f"in {lead['path']}." in directive["headline"]
+    assert directive["next_actions"][0].endswith(f"({lead['id']})")
+    change = delta["score_change"]
+    assert f"{change['base']:.2f} to {change['head']:.2f}" in directive["headline"]
+
+
 async def test_the_default_response_stays_small_and_omits_score_mechanics(tool, make_repo):
     module = tool(seeded(make_repo))
 
@@ -118,6 +132,53 @@ async def test_the_top_findings_cap_is_recoverable(tool, make_repo):
         assert full["health_delta"]["findings_emitted"] == delta["findings_total"]
 
 
+async def test_changed_symbols_ride_the_findings_include_only(tool, make_repo):
+    repo = make_repo()
+    repo.commit("seed", {"app.py": "def calm():\n    return 0\n\n\ndef keep():\n    return 1\n"})
+    repo.commit("edit", {"app.py": "def calm():\n    return 5\n\n\ndef keep():\n    return 1\n"})
+    module = tool(repo)
+
+    default = await module.get_change_risk("HEAD", baseline=0)
+    full = await module.get_change_risk("HEAD", baseline=0, include=["findings"])
+
+    assert "changed_symbols" not in default["health_delta"]
+    delta = full["health_delta"]
+    assert delta["changed_symbols"] == [
+        {"path": "app.py", "symbol": "calm", "change": "edited", "lines": [1, 2]}
+    ]
+    assert delta["changed_symbols_total"] == 1
+
+
+def test_changed_symbol_rows_cap_the_list_and_name_a_move():
+    from repowise.core.analysis.change_health.models import ChangedSymbol, ChangeHealthDelta
+    from repowise.server.mcp_server._change_health import (
+        CHANGED_SYMBOLS_LIMIT,
+        changed_symbol_rows,
+    )
+
+    moved = ChangedSymbol("pkg/b.py", "go", "function", "moved", 1, 4, ("a.py", "go"))
+    rest = [
+        ChangedSymbol("a.py", f"f{i}", "function", "added", i, i) for i in range(1, 60)
+    ]
+    delta = ChangeHealthDelta("available", "", None, None, "", None, changed_symbols=[moved, *rest])
+
+    out = changed_symbol_rows(delta)
+
+    assert len(out["changed_symbols"]) == CHANGED_SYMBOLS_LIMIT
+    assert out["changed_symbols_total"] == 60
+    assert out["changed_symbols"][0]["moved_from"] == {"path": "a.py", "symbol": "go"}
+    assert "moved_from" not in out["changed_symbols"][1]
+
+
+def test_changed_symbol_rows_add_nothing_when_no_symbol_changed():
+    from repowise.core.analysis.change_health.models import ChangeHealthDelta
+    from repowise.server.mcp_server._change_health import changed_symbol_rows
+
+    delta = ChangeHealthDelta("available", "", None, None, "", None, changed_symbols=[])
+
+    assert changed_symbol_rows(delta) == {}
+
+
 # -- drill-down -------------------------------------------------------------
 
 
@@ -126,7 +187,10 @@ async def test_a_surfaced_finding_can_be_expanded_by_its_id(tool, make_repo):
 
     listing = await module.get_change_risk("HEAD", baseline=0)
     row = listing["health_delta"]["top_findings"][0]
-    assert row["inspect"] == f"get_change_risk(revspec='HEAD', finding_id={row['id']!r})"
+    assert "inspect" not in row
+    full = await module.get_change_risk("HEAD", baseline=0, include=["findings"])
+    inspect = full["health_delta"]["top_findings"][0]["inspect"]
+    assert inspect == f"get_change_risk(revspec='HEAD', finding_id={row['id']!r})"
 
     detail = await module.get_change_risk("HEAD", baseline=0, finding_id=row["id"])
 
@@ -348,3 +412,19 @@ async def test_include_paths_scope_the_score_and_every_block_that_reads_the_file
     assert seen == [["vendor/lib.py"]]
     nothing = await module.get_change_risk("HEAD", baseline=0, include_paths="docs/")
     assert nothing["status"] == "nothing_to_score"
+
+
+async def test_block_timings_ride_only_the_debug_meta(tool, make_repo, monkeypatch):
+    from repowise.server.mcp_server._meta import DEBUG_META_ENV
+    from repowise.server.mcp_server.tool_change_risk import cache
+
+    module = tool(seeded(make_repo))
+    monkeypatch.delenv(DEBUG_META_ENV, raising=False)
+    plain = await module.get_change_risk("HEAD", baseline=0)
+    assert "block_timing_ms" not in plain.get("_meta", {})
+
+    monkeypatch.setattr(cache, "_SCORED", type(cache._SCORED)())
+    monkeypatch.setenv(DEBUG_META_ENV, "1")
+    timed = (await module.get_change_risk("HEAD", baseline=0))["_meta"]["block_timing_ms"]
+    assert {"score", "health_delta", "impacted_tests", "patch_coverage"} <= set(timed)
+    assert all(isinstance(ms, int) and ms >= 0 for ms in timed.values())

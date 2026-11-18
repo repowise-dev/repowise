@@ -52,6 +52,44 @@ async def test_get_context_gates_excluded_symbol_id_target(setup_mcp, monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("target", ["User", "db.models.User"])
+async def test_get_context_gates_excluded_bare_symbol_target(setup_mcp, monkeypatch, target):
+    """A bare or qualified name defined only in an excluded file is gated like ``path::Name``."""
+    import repowise.server.mcp_server.tool_context.context as context_mod
+    from repowise.server.mcp_server import get_context
+
+    monkeypatch.setattr(context_mod, "_get_exclude_spec", lambda _p: SPEC)
+
+    result = await get_context([target], include=["docs"])
+    t = result["targets"][target]
+    assert "exclude" in t["error"].lower()
+    assert "docs" not in t
+
+
+@pytest.mark.asyncio
+async def test_get_context_bare_symbol_outside_exclusion_still_resolves(setup_mcp, monkeypatch):
+    import repowise.server.mcp_server.tool_context.context as context_mod
+    from repowise.server.mcp_server import get_context
+
+    monkeypatch.setattr(context_mod, "_get_exclude_spec", lambda _p: SPEC)
+
+    result = await get_context(["AuthService"], include=["docs"])
+    t = result["targets"]["AuthService"]
+    assert t["type"] == "symbol"
+    assert t["docs"]["file_path"] == "src/auth/service.py"
+
+
+@pytest.mark.asyncio
+async def test_get_context_bare_symbol_unfiltered_without_spec(setup_mcp):
+    from repowise.server.mcp_server import get_context
+
+    result = await get_context(["User"], include=["docs"])
+    t = result["targets"]["User"]
+    assert t["type"] == "symbol"
+    assert t["docs"]["file_path"] == "src/db/models.py"
+
+
+@pytest.mark.asyncio
 async def test_get_context_filters_excluded_imported_by(setup_mcp, monkeypatch):
     """An excluded importer must not appear in a non-excluded file's imported_by."""
     import repowise.server.mcp_server.tool_context.context as context_mod

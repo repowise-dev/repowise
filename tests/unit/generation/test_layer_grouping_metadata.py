@@ -76,14 +76,14 @@ def _by_id(nodes: list[TreeNode]) -> dict[str, TreeNode]:
 class TestLayerProvenanceReachesGroupedPages:
     def test_module_carries_the_layer_it_belongs_to(self):
         nodes = _repo()
-        assign_page_tree(nodes, ["layer:ingestion", "layer:analysis"])
+        assign_page_tree(nodes)
         module = _by_id(nodes)["module_page:core/analysis"]
         assert module.metadata["layer_id"] == "layer:analysis"
         assert module.metadata["layer_name"] == "Analysis"
 
     def test_cycle_carries_the_layer_it_belongs_to(self):
         nodes = _repo()
-        assign_page_tree(nodes, ["layer:ingestion", "layer:analysis"])
+        assign_page_tree(nodes)
         cycle = _by_id(nodes)["scc_page:cycle-1"]
         assert cycle.metadata["layer_id"] == "layer:analysis"
         assert cycle.metadata["layer_name"] == "Analysis"
@@ -94,7 +94,7 @@ class TestLayerProvenanceReachesGroupedPages:
         for n in nodes:
             if n.metadata.get("layer_id") == "layer:analysis":
                 n.metadata["layer_name"] = "Analysis & Scoring"
-        assign_page_tree(nodes, ["layer:analysis"])
+        assign_page_tree(nodes)
         module = _by_id(nodes)["module_page:core/analysis"]
         assert module.metadata["layer_name"] == "Analysis & Scoring"
 
@@ -104,7 +104,7 @@ class TestLayerProvenanceReachesGroupedPages:
             _node("repo_overview:demo", "repo_overview", "demo"),
             _node("module_page:misc", "module_page", "misc", file_paths=["misc/a.py"]),
         ]
-        assign_page_tree(nodes, [])
+        assign_page_tree(nodes)
         module = _by_id(nodes)["module_page:misc"]
         assert "layer_id" not in module.metadata
 
@@ -112,7 +112,7 @@ class TestLayerProvenanceReachesGroupedPages:
         """The whole point: no layer_page in the set, grouping still resolves."""
         nodes = _repo()
         assert not any(n.page_type == "layer_page" for n in nodes)
-        assign_page_tree(nodes, ["layer:analysis"])
+        assign_page_tree(nodes)
         module = _by_id(nodes)["module_page:core/analysis"]
         assert module.metadata["layer_id"] == "layer:analysis"
         # And it parents onto the overview rather than a page that is not there.

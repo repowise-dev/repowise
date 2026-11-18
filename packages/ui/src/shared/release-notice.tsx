@@ -117,7 +117,7 @@ function renderBody(
 
   return detail ? (
     <details className="group/release">
-      <summary className="cursor-pointer list-none rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]">
+      <summary className="cursor-pointer list-none rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]">
         {lead}
         {children}{" "}
         <span className="text-[var(--color-accent-primary)] underline-offset-2 hover:underline">

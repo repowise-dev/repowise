@@ -67,6 +67,11 @@ _LEGACY_HOOK_FINGERPRINTS = (
 # only in the repo's own ``.venv``; the old ``uv run`` fallback resolved
 # whatever project ``uv`` found above the repo, on every commit, in repos
 # that were not Python projects at all.
+#
+# This is the unpinned body. :func:`_hook_script` puts the install that wrote
+# the hook in front of the PATH lookup, as the agent hooks do, so a commit
+# made where that install is not on PATH (an IDE, a venv not activated) still
+# syncs.
 _HOOK_SCRIPT = """\
 # repowise-hook-start
 # Auto-syncs repowise wiki after each commit (background, non-blocking).
@@ -98,6 +103,37 @@ _HOOK_SCRIPT = """\
 } >/dev/null 2>&1
 # repowise-hook-end
 """
+
+_PATH_LOOKUP = "    if command -v repowise >/dev/null 2>&1; then\n"
+_PINNED_RE = re.compile(r"^    if \[ -x '((?:[^']|'\"'\"')*)' \]; then$", re.MULTILINE)
+
+
+def _pinned_repowise() -> str:
+    """The running install's ``repowise`` script, or the bare name when it cannot be pinned."""
+    from repowise.cli.mcp_config import resolve_repowise_command
+
+    return resolve_repowise_command()
+
+
+def _hook_script() -> str:
+    """The post-commit block, running this install's ``repowise`` before the PATH lookup.
+
+    The pinned path is per-machine, which is fine here: git hooks are never
+    committed. A bare name (``python -m``, a uvx cache) gives the unpinned body.
+    """
+    pinned = _pinned_repowise()
+    if "/" not in pinned and "\\" not in pinned:
+        return _HOOK_SCRIPT
+    quoted = "'" + pinned.replace("'", "'\"'\"'") + "'"
+    run = f'    if [ -x {quoted} ]; then\n      {quoted} update >> "$LOG" 2>&1\n    el'
+    return _HOOK_SCRIPT.replace(_PATH_LOOKUP, run + _PATH_LOOKUP.lstrip(), 1)
+
+
+def _block_pin(block: str) -> str | None:
+    """The install path a post-commit block pins, or None when it has none."""
+    match = _PINNED_RE.search(block)
+    return match.group(1).replace("'\"'\"'", "'") if match else None
+
 
 _SECURITY_MARKER = "# repowise-security-hook-start"
 _SECURITY_MARKER_END = "# repowise-security-hook-end"
@@ -399,6 +435,7 @@ def install(repo_path: Path) -> str:
     hook_path = hooks_dir / "post-commit"
 
     pending = husky_pending_reason(hooks_dir)
+    script = _hook_script()
 
     def _annotate(state: str) -> str:
         return f"{state} ({pending})" if pending else state
@@ -414,21 +451,60 @@ def install(repo_path: Path) -> str:
 
         if _HOOK_MARKER in content:
             # Marker block present. Decide whether to leave alone or upgrade.
-            current_block = _HOOK_SCRIPT.rstrip() + "\n"
+            current_block = script.rstrip() + "\n"
             if current_block in content:
                 state = "migrated legacy hook" if migrated_legacy else "already installed"
                 return _annotate(_with_hook_execution_state(hook_path, state))
-            content, replaced = _replace_marker_block(content, _HOOK_SCRIPT)
+            content, replaced = _replace_marker_block(content, script)
             if replaced:
                 _write_hook(hook_path, content)
                 return _annotate(_with_hook_execution_state(hook_path, "upgraded"))
             return _annotate("already installed")
         # Append to existing hook
-        _write_hook(hook_path, content.rstrip() + "\n\n" + _HOOK_SCRIPT)
+        _write_hook(hook_path, content.rstrip() + "\n\n" + script)
     else:
-        _write_hook(hook_path, "#!/bin/sh\n" + _HOOK_SCRIPT)
+        _write_hook(hook_path, "#!/bin/sh\n" + script)
 
     return _annotate(_with_hook_execution_state(hook_path, "installed"))
+
+
+def heal(repo_path: Path) -> bool:
+    """Bring an installed post-commit block up to date when no live install owns it.
+
+    Rewrites a block that pins nothing (older releases), pins this install,
+    or pins an install that is gone. A block pinned to another install that
+    still exists is left, so two installs on one machine do not take turns
+    rewriting it; ``install`` repins unconditionally. Returns whether the
+    hook changed. Runs only where editor setup is on, as ``install`` does.
+    """
+    found = _installed_post_commit(repo_path)
+    if found is None:
+        return False
+    hook_path, content, block = found
+    script = _hook_script()
+    if block.rstrip() == script.rstrip():
+        return False
+    pin = _block_pin(block)
+    if pin is not None and pin != _pinned_repowise() and Path(pin).is_file():
+        return False
+    content, replaced = _replace_marker_block(content, script)
+    if replaced:
+        _write_hook(hook_path, content)
+    return replaced
+
+
+def _installed_post_commit(repo_path: Path) -> tuple[Path, str, str] | None:
+    """``(hook path, file content, repowise block)``, or None without a readable block."""
+    hooks_dir = _hooks_dir(repo_path)
+    hook_path = hooks_dir / "post-commit" if hooks_dir is not None else None
+    if hook_path is None or not hook_path.is_file():
+        return None
+    try:
+        content = hook_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    match = _marker_block_re(_HOOK_MARKER, _HOOK_MARKER_END).search(content)
+    return (hook_path, content, match.group(0)) if match else None
 
 
 def _is_executable(path: Path) -> bool:

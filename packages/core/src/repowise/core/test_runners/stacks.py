@@ -1,0 +1,992 @@
+"""Coverage stacks: what each build unit runs to write a coverage report repowise reads.
+
+The one table of coverage commands. A :class:`Stack` knows, for one unit of a
+repository (the root package, a workspace member, a Go module), its test command
+with coverage, the tools that command needs first, where it writes the report,
+and how to add coverage to a test command a CI workflow already runs
+(:meth:`Stack.edit`). Every command writes a format repowise parses: lcov,
+Cobertura, JaCoCo, Clover or a Go cover profile.
+
+:func:`detect_stacks` is pure: it takes a tree listing and the text of the
+manifests :func:`files_to_read` names, so a caller holding a remote tree and no
+checkout can call it. :func:`detect_repo_stacks` reads a checkout. Units come
+from the build-unit index when the caller has one, else from the language
+registry's package manifests in the listing. A unit whose ecosystem builds its
+members from an ancestor (a Cargo or uv workspace, a Maven reactor, a Gradle
+multi-project build, a .NET solution) is run by that ancestor's stack.
+
+Commands run from the unit's directory (:attr:`Stack.root`). They need no
+elevated privileges and run in sh, bash and PowerShell; ``./mvnw`` and
+``./gradlew`` are not cmd.exe spellings (cmd runs ``mvnw.cmd``), and the ``&&``
+of a c8 or nyc report step needs PowerShell 7, not Windows PowerShell 5.1. A stack whose
+command only works inside the CI step it ships with says so in
+:attr:`Stack.shell`. Ceiling: Python commands assume pytest, and a .NET stack
+runs one solution or one test project; anything else is a note, not a guess.
+"""
+
+from __future__ import annotations
+
+import fnmatch
+import json
+import posixpath
+import re
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field, replace
+from functools import cache, partial
+from pathlib import Path
+from typing import Any
+
+from ..build_units.model import BuildUnitIndex
+from ..code_origin import path_origin
+from ..fs_walk import INDEX_BLOCKED_DIRS, walk_repo
+from ..ingestion.languages.registry import REGISTRY
+from ..pytest_roots import PYTEST_CONFIG_NAMES, read_pytest_roots
+
+#: Where to look when the stack is unknown.
+GENERIC_REPORTS = (
+    "coverage.xml coverage/lcov.info lcov.info coverage.out **/jacoco.xml "
+    "**/cobertura*.xml **/clover.xml"
+)
+# ceiling: pinned so the generated command is reproducible; bump with JaCoCo releases.
+JACOCO = "org.jacoco:jacoco-maven-plugin:0.8.15"
+
+
+@dataclass(frozen=True)
+class CommandEdit:
+    """A test command with coverage added, and where it writes the report."""
+
+    text: str
+    reports: str
+    #: Workflow steps (dash at column 0) that must run before the command.
+    prepare: tuple[str, ...] = ()
+    #: Sent too on pushes only: coverage.py's ``.coverage`` with per-test contexts.
+    push_reports: str = ""
+
+
+@dataclass(frozen=True)
+class Stack:
+    """How one unit runs its tests with coverage.
+
+    ``language`` is ``python``, ``node``, ``go``, ``java``, ``rust``,
+    ``dotnet``, ``ruby``, ``php`` or ``unknown``. ``test`` is empty when
+    repowise cannot tell the command; ``notes`` then say why. ``reports`` are
+    space-separated globs relative to ``root``.
+    """
+
+    language: str
+    runner: str | None = None
+    package_manager: str | None = None
+    reports: str = GENERIC_REPORTS
+    #: See :attr:`CommandEdit.push_reports`.
+    push_reports: str = ""
+    #: Standalone CI toolchain and install steps (GitHub Actions, dash at column 0).
+    setup: tuple[str, ...] = ()
+    #: Standalone test command with coverage, run from ``root``; empty when unknown.
+    test: str = ""
+    #: CI steps ``test`` needs first (GitHub Actions, dash at column 0).
+    prepare: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    #: Commands to run once, from ``root``, before ``test`` works on a workstation.
+    requires: tuple[str, ...] = ()
+    #: ``""`` when ``test`` runs in any shell; ``github-actions`` when it needs its CI step.
+    shell: str = ""
+    #: The unit's directory, repo-relative POSIX; ``""`` is the repository root.
+    root: str = ""
+    #: Finds this stack's test command in a workflow ``run`` line.
+    pattern: re.Pattern | None = field(default=None, compare=False, repr=False)
+    #: A matching line that is not a full test run (``-DskipTests``, one file).
+    skip: re.Pattern | None = field(default=None, compare=False, repr=False)
+    #: The test job must match this before its command is edited (PHP's driver).
+    job_requires: re.Pattern | None = field(default=None, compare=False, repr=False)
+    editor: Callable[[str, re.Match], CommandEdit | None] | None = field(
+        default=None, compare=False, repr=False
+    )
+
+    def edit(self, line: str) -> CommandEdit | None:
+        """``line`` with coverage added to its test command, or None if it cannot be."""
+        m = self.pattern.search(line) if self.pattern else None
+        return self.editor(line, m) if m and self.editor else None
+
+    def report_paths(self) -> tuple[str, ...]:
+        """The report globs, repo-relative."""
+        return tuple(posixpath.join(self.root, r) if self.root else r for r in self.reports.split())
+
+    def to_dict(self) -> dict[str, Any]:
+        """What a person or agent needs to collect this unit's coverage, JSON-ready."""
+        known = bool(self.test) and not self.shell
+        return {
+            "root": self.root,
+            "stack": self.language,
+            "runner": self.runner,
+            "package_manager": self.package_manager,
+            # A command that needs its CI step is no command on a workstation.
+            "command": self.test if known else None,
+            "prerequisites": list(self.requires),
+            "reports": list(self.report_paths()),
+            "shell": self.shell or None,
+            "notes": list(self.notes),
+            # Each builder puts why it has no command last.
+            "reason": None if known else (self.notes[-1] if self.notes else _UNKNOWN_REASON),
+        }
+
+
+def _run_lines(prepare: Iterable[str]) -> tuple[str, ...]:
+    """The commands of ``- run:`` steps in *prepare*."""
+    return tuple(line[len("- run: ") :] for line in prepare if line.startswith("- run: "))
+
+
+# ---------------------------------------------------------------------------
+# Shell text helpers
+# ---------------------------------------------------------------------------
+
+_SEP = re.compile(r"&&|\|\||[;|]|\s#")
+
+
+def _segment(line: str, m: re.Match) -> tuple[int, int, bool]:
+    """Start and end of the simple command holding ``m``, and whether the line continues."""
+    start = 0
+    for sep in _SEP.finditer(line, 0, m.start()):
+        start = sep.end()
+    nxt = _SEP.search(line, m.end())
+    end = len(line[: nxt.start() if nxt else len(line)].rstrip())
+    continued = nxt is None and line[:end].endswith("\\")
+    if continued:
+        end = len(line[: end - 1].rstrip())
+    return start, end, continued
+
+
+def _insert(line: str, *edits: tuple[int, str]) -> str:
+    for pos, text in sorted(edits, reverse=True):
+        line = line[:pos] + text + line[pos:]
+    return line
+
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+
+_PYTEST = re.compile(r"(?<![\w./-])(?:python[\d.]*\s+-m\s+)?(?:pytest|py\.test)(?![\w.-])")
+_PYTEST_ONE_FILE = re.compile(r"(?<![\w./-])(?:python[\d.]*\s+-m\s+)?pytest\s+(?:-\S+\s+)*\S+(?:\.py|::\S+)(?:\s|$)")
+_UV_RUN = re.compile(r"\buv\s+run\b")
+_ENV_RUN = re.compile(r"\b(poetry|pdm|hatch|pipenv)\s+run\b")
+
+
+def _install_pytest_cov(tool: str | None) -> tuple[str, ...]:
+    if tool == "pdm":
+        cmd = "pdm run python -m ensurepip && pdm run python -m pip install pytest-cov"
+    elif tool:
+        cmd = f"{tool} run pip install pytest-cov"
+    else:
+        cmd = "python -m pip install pytest-cov"
+    return (f"- run: {cmd}",)
+
+
+def _edit_pytest(line: str, m: re.Match, *, sources: tuple[str, ...], declared: bool) -> CommandEdit | None:
+    start, end, continued = _segment(line, m)
+    after = line[m.end():end]
+    xml = re.search(r"--cov-report[= ]xml(?::(\S+))?", after)
+    has_cov = re.search(r"(?<![\w-])--cov(?:=|\s|$)", after)
+    contexts = re.search(r"--cov-context[= ]test(?!\S)", after)
+    if has_cov and xml:
+        return CommandEdit(line, xml.group(1) or "coverage.xml", push_reports=".coverage" if contexts else "")
+    flags = " --cov-report=xml" if has_cov else "".join(f" --cov={s}" for s in sources) + " --cov-report=xml"
+    # Per-test contexts in .coverage, sent on pushes for the per-test map.
+    flags += "" if contexts else " --cov-context=test"
+    # At the end, where people put flags; right after pytest when the line continues.
+    edits = [(m.end() if continued else end, flags)]
+    prepare: tuple[str, ...] = ()
+    if not declared and not has_cov:
+        prefix = line[start:m.start()]
+        uv = _UV_RUN.search(prefix)
+        if uv:
+            edits.append((start + uv.end(), " --with pytest-cov"))
+        else:
+            env = _ENV_RUN.search(prefix)
+            prepare = _install_pytest_cov(env.group(1) if env else None)
+    return CommandEdit(_insert(line, *edits), "coverage.xml", prepare, ".coverage")
+
+
+def _python_sources(paths: list[str]) -> tuple[str, ...]:
+    py = [p for p in paths if p.endswith(".py")]
+    for top in ("src", "packages"):
+        if any(p.startswith(top + "/") for p in py):
+            return (top,)
+    skip = {"tests", "test", "docs", "doc", "examples", "scripts", "benchmarks", "bench"}
+    tops = sorted({p.split("/")[0] for p in paths if p.count("/") == 1 and p.endswith("/__init__.py")} - skip)
+    return tuple(tops) or (".",)
+
+
+def _testpaths(files: dict[str, str]) -> tuple[str, ...]:
+    """``testpaths`` of the config governing the unit's directory, in pytest's precedence."""
+    roots = read_pytest_roots((n, t) for n, t in files.items() if n in PYTEST_CONFIG_NAMES)
+    governing = roots.by_dir.get("")
+    return governing.testpaths if governing else ()
+
+
+def _pytest_args(paths: list[str], files: dict[str, str]) -> str:
+    """``tests/unit`` when unit and integration tests sit side by side, else pytest's own choice."""
+    for base in ("tests", "test"):
+        unit = any(p.startswith(f"{base}/unit/") for p in paths)
+        other = any(p.startswith(f"{base}/integration/") or p.startswith(f"{base}/e2e/") for p in paths)
+        if unit and other:
+            testpaths = _testpaths(files)
+            if testpaths and base not in testpaths:
+                return ""  # pytest's testpaths already decide what runs
+            return f" {base}/unit"
+    return ""
+
+
+def _python(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+    pyproject = files.get("pyproject.toml", "")
+    reqs = sorted(p for p in root if re.fullmatch(r"requirements[\w.-]*\.txt", p))
+    texts = "\n".join(files.get(p, "") for p in (*sorted(_python_config_names()), *reqs))
+    declared = bool(re.search(r"pytest[-_]cov", texts))
+    sources = _python_sources(paths)
+    args = _pytest_args(paths, files)
+    version = (
+        ("  with:", "    python-version-file: .python-version")
+        if ".python-version" in root else ("  with:", '    python-version: "3.12"   # adjust to your version')
+    )
+    notes: list[str] = []
+    if "uv.lock" in root:
+        tool, sync = "uv", "uv sync --all-packages" if "[tool.uv.workspace]" in pyproject else "uv sync"
+        setup = (*("- uses: astral-sh/setup-uv@v6", "  with:", "    enable-cache: true"), f"- run: {sync}")
+        base = f"uv run pytest{args}"
+    elif "poetry.lock" in root or "[tool.poetry" in pyproject:
+        tool = "poetry"
+        setup = ("- uses: actions/setup-python@v5", *version, "- run: pipx install poetry", "- run: poetry install")
+        base = f"poetry run pytest{args}"
+    elif "pdm.lock" in root or "[tool.pdm" in pyproject:
+        tool = "pdm"
+        setup = ("- uses: pdm-project/setup-pdm@v4", "- run: pdm install")
+        base = f"pdm run pytest{args}"
+    elif "hatch.toml" in root or "[tool.hatch.envs" in pyproject:
+        tool = "hatch"
+        setup = ("- uses: actions/setup-python@v5", *version, "- run: pipx install hatch",
+                 "- run: hatch run pip install pytest pytest-cov")
+        base = f"hatch run pytest{args}"
+    else:
+        tool = "pip"
+        parts = ["pip install"]
+        if "pyproject.toml" in root or "setup.py" in root:
+            extras = re.findall(r"^\s*(test|tests|testing|dev)\s*=\s*\[", pyproject, re.M)
+            parts.append(f'-e ".[{extras[0]}]"' if extras else "-e .")
+        parts += [f"-r {r}" for r in reqs]
+        parts.append("pytest pytest-cov")
+        setup = ("- uses: actions/setup-python@v5", *version, f"- run: {' '.join(parts)}   # adjust to your install")
+        base = f"pytest{args}"
+    if sources == (".",):
+        notes.append("Repowise found no `src/` or package directory, so coverage measures the whole "
+                     "checkout; narrow `--cov` to your source directory if you like.")
+    editor = partial(_edit_pytest, sources=sources, declared=declared)
+    # The standalone pip and hatch install lines already bring pytest-cov.
+    test = partial(_edit_pytest, sources=sources, declared=declared or tool in ("pip", "hatch"))(base, _PYTEST.search(base))
+    requires = _run_lines(test.prepare)
+    if tool in ("pip", "hatch"):
+        # Their CI installs live in ``setup``; a workstation needs the same tools in its environment.
+        python = "hatch run python" if tool == "hatch" else "python"
+        requires += (f"{python} -m pip install pytest pytest-cov",)
+    return Stack(
+        "python", "pytest", tool, "coverage.xml", test.push_reports, setup=setup, test=test.text, prepare=test.prepare,
+        notes=tuple(notes), requires=requires, pattern=_PYTEST, skip=_PYTEST_ONE_FILE, editor=editor,
+    )
+
+
+# ---------------------------------------------------------------------------
+# JavaScript / TypeScript
+# ---------------------------------------------------------------------------
+
+_NODE = re.compile(
+    r"(?<![\w@/.-])(?:(npm|pnpm|yarn|bun)\s+(run\s+)?(test[\w:-]*)(?![\w:.-])"
+    r"|(?:bunx\s+|npx\s+)?(jest|vitest)(?:\s+run)?(?![\w.-]))"
+)
+#: Package-manager flags that run a script across workspaces (before any ``--``).
+_MONOREPO_ARGS = re.compile(r"(?<![\w-])(--workspaces?|-ws|-w|--filter|-F|-r|--recursive)(?![\w-])")
+_DELEGATES = re.compile(
+    r"\b(turbo|nx|lerna|wsrun|ultra)\b|\bworkspaces\s+foreach\b|--workspaces?\b"
+    r"|\bpnpm\s+(-r|--recursive|--filter)\b"
+)
+_C8 = "npx --yes c8 --reporter=lcov "
+_JEST_FLAGS = "--coverage --coverageReporters=lcov"
+_VITEST_FLAGS = "--coverage.enabled --coverage.reporter=lcov"
+_BUN_FLAGS = "--coverage --coverage-reporter=lcov"
+_COVERED_REPORTS = "coverage/lcov.info coverage/clover.xml"
+
+
+_LCOV_REPORTER = re.compile(r"(?<![\w-])(?:--reporter|-r)(?:=|\s+)lcov(?![\w-])")
+
+
+def _node_runner(script: str) -> str | None:
+    """What a test script runs: jest | vitest | bun | c8 (wrap it) | covered (already measures)
+    | report:c8 or report:nyc (measures, but writes no lcov) | None."""
+    if not script or re.search(r"&&|\|\||;", script) or _DELEGATES.search(script):
+        return None
+    words = re.sub(r"^(?:cross-env\s+)?(?:\w+=\S+\s+)*", "", script).split()
+    head = words[0] if words else ""
+    if head in ("c8", "nyc"):
+        # Both default to text and html reports; without lcov, their report step writes it.
+        return "covered" if _LCOV_REPORTER.search(script) else f"report:{head}"
+    return "covered" if "--coverage" in words else _runner_of(head, words)
+
+
+def _runner_of(head: str, words: list[str]) -> str | None:
+    """The runner a script's first word names: jest | vitest | bun | c8 (wrap it) | None."""
+    if head == "jest" or (head in ("react-scripts", "craco") and words[1:2] == ["test"]):
+        return "jest"
+    if head == "vitest":
+        return "vitest"
+    if head == "bun" and words[1:2] == ["test"]:
+        return "bun"
+    if head in ("mocha", "ava", "tap", "uvu", "tape") or (head == "node" and "--test" in words):
+        return "c8"
+    return None
+
+
+def _vitest_provider(pm: str, deps: dict) -> tuple[str, ...]:
+    if "@vitest/coverage-v8" in deps or "@vitest/coverage-istanbul" in deps:
+        return ()
+    spec = str(deps.get("vitest") or "")
+    pkg = f'"@vitest/coverage-v8@{spec}"' if re.fullmatch(r"[\^~]?\d[\w.-]*", spec) else "@vitest/coverage-v8"
+    cmd = {"npm": f"npm install --no-save {pkg}", "bun": f"bun add -d {pkg}"}.get(pm, f"{pm} add -D {pkg}")
+    return (f"- run: {cmd}",)
+
+
+_NODE_FLAGS = {"jest": _JEST_FLAGS, "vitest": _VITEST_FLAGS, "bun": _BUN_FLAGS}
+
+
+def _edit_direct_runner(line: str, m: re.Match, runner: str, pm: str, deps: dict) -> CommandEdit:
+    """Coverage flags right after a runner called directly (``npx jest``, ``bun test``)."""
+    prepare = _vitest_provider(pm, deps) if runner == "vitest" else ()
+    return CommandEdit(_insert(line, (m.end(), " " + _NODE_FLAGS[runner])), "coverage/lcov.info", prepare)
+
+
+def _edit_script(line: str, m: re.Match, runner: str, *, tool: str, end: int, after: str, pm: str, deps: dict) -> CommandEdit:
+    """Coverage for a package script whose *runner* is known."""
+    if runner == "covered":
+        return CommandEdit(line, _COVERED_REPORTS)
+    if runner == "c8":
+        return CommandEdit(_insert(line, (m.start(), _C8)), "coverage/lcov.info")
+    if runner.startswith("report:"):
+        # The tool keeps its raw data after the run, so its report command writes lcov from it.
+        report = f" && npx --yes {runner[len('report:'):]} report --reporter=lcov"
+        return CommandEdit(_insert(line, (end, report)), "coverage/lcov.info")
+    # npm and pnpm hand arguments to the script only after ``--``; yarn and bun pass them as they are.
+    sep = " --" if tool in ("npm", "pnpm") and not re.search(r"(?<!\S)--(?!\S)", after) else ""
+    prepare = _vitest_provider(pm, deps) if runner == "vitest" else ()
+    return CommandEdit(_insert(line, (end, f"{sep} {_NODE_FLAGS[runner]}")), "coverage/lcov.info", prepare)
+
+
+def _edit_node(line: str, m: re.Match, *, pm: str, scripts: dict, deps: dict) -> CommandEdit | None:
+    _, end, continued = _segment(line, m)
+    after = line[m.end():end]
+    tool, run, script, direct = m.groups()
+    if "--coverage" in after:
+        return CommandEdit(line, _COVERED_REPORTS)
+    if direct or (tool == "bun" and not run):  # the runner itself, or bun's own runner
+        return _edit_direct_runner(line, m, direct or "bun", pm, deps)
+    runner = _node_runner(str(scripts.get(script) or ""))
+    if continued or _MONOREPO_ARGS.search(after.split(" -- ")[0]) or runner is None:
+        return None
+    return _edit_script(line, m, runner, tool=tool, end=end, after=after, pm=pm, deps=deps)
+
+
+def _node_package(files: dict[str, str]) -> tuple[dict, dict, dict]:
+    """``package.json`` as a dict, its scripts, and its dependencies of both kinds."""
+    try:
+        package = json.loads(files.get("package.json") or "{}")
+    except ValueError:
+        package = {}
+    package = package if isinstance(package, dict) else {}
+    scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+    deps: dict = {}
+    for key in ("dependencies", "devDependencies"):
+        if isinstance(package.get(key), dict):
+            deps.update(package[key])
+    return package, scripts, deps
+
+
+def _node_manager(root: set[str]) -> tuple[str, str]:
+    """The package manager the lockfile names, and its install command."""
+    if "bun.lockb" in root or "bun.lock" in root:
+        return "bun", "bun install --frozen-lockfile"
+    if "pnpm-lock.yaml" in root:
+        return "pnpm", "pnpm install --frozen-lockfile"
+    if "yarn.lock" in root:
+        return "yarn", "yarn install --immutable" if ".yarnrc.yml" in root else "yarn install --frozen-lockfile"
+    return "npm", "npm ci" if "package-lock.json" in root else "npm install"
+
+
+def _node_setup(root: set[str], package: dict, pm: str, install: str) -> tuple[str, ...]:
+    setup: list[str] = []
+    if pm == "pnpm":
+        setup.append("- uses: pnpm/action-setup@v4")
+        if not package.get("packageManager"):
+            setup += ["  with:", "    version: latest"]
+    if pm == "bun":
+        setup.append("- uses: oven-sh/setup-bun@v2")
+    else:
+        version_file = next((f for f in (".nvmrc", ".node-version") if f in root), None)
+        setup += ["- uses: actions/setup-node@v4", "  with:",
+                  f"    node-version-file: {version_file}" if version_file else "    node-version: lts/*",
+                  f"    cache: {pm}"]
+    setup.append(f"- run: {install}")
+    return tuple(setup)
+
+
+def _node_base(pm: str, script: str, deps: dict) -> tuple[str, str | None]:
+    """The plain test command and its runner: the test script, else the runner the package depends on."""
+    if script:
+        return f"{pm} {'run test' if pm == 'bun' else 'test'}", _node_runner(script)
+    runner = "vitest" if "vitest" in deps else "jest" if "jest" in deps else None
+    base = {"npm": "npx", "pnpm": "pnpm exec", "yarn": "yarn", "bun": "bunx"}[pm] + f" {runner or 'jest'}"
+    return base + (" run" if runner == "vitest" else ""), runner
+
+
+def _node_notes(test: CommandEdit | None, root: set[str], package: dict, script: str, base: str) -> tuple[str, ...]:
+    if test is not None:
+        if test.prepare:
+            return ("Vitest needs a coverage provider, so the workflow installs `@vitest/coverage-v8` for "
+                    "the run. Add it to `devDependencies` to drop that install.",)
+        return ()
+    if (package.get("workspaces") or "pnpm-workspace.yaml" in root) and (not script or _DELEGATES.search(script)):
+        return ("This is a monorepo whose packages run their own tests, so Repowise could not add "
+                "one coverage flag for all of them. Run each package's tests with an lcov reporter "
+                "and list the reports in `REPORTS` (for example `packages/*/coverage/lcov.info`).",)
+    return (f"Repowise could not tell which test runner `{base}` uses. Make the test command "
+            f"write an lcov report (Jest: `{_JEST_FLAGS}`; Vitest: `{_VITEST_FLAGS}`; any "
+            "other runner on Node: prefix it with `npx c8 --reporter=lcov`).",)
+
+
+def _node(root: set[str], files: dict[str, str]) -> Stack:
+    package, scripts, deps = _node_package(files)
+    pm, install = _node_manager(root)
+    script = str(scripts.get("test") or "")
+    base, runner = _node_base(pm, script, deps)
+    editor = partial(_edit_node, pm=pm, scripts=scripts, deps=deps)
+    test = editor(base, _NODE.search(base)) if runner else None
+    return Stack(
+        "node", runner, pm, test.reports if test else "coverage/lcov.info",
+        setup=_node_setup(root, package, pm, install),
+        test=test.text if test else "", prepare=test.prepare if test else (),
+        notes=_node_notes(test, root, package, script, base),
+        requires=_run_lines(test.prepare) if test else (), pattern=_NODE, editor=editor,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Go, Rust, JVM, .NET, Ruby, PHP
+# ---------------------------------------------------------------------------
+
+_GO = re.compile(r"(?<![\w-])go\s+test(?![\w-])")
+
+
+def _edit_go(line: str, m: re.Match) -> CommandEdit:
+    _, end, _ = _segment(line, m)
+    have = re.search(r"-coverprofile[= ](\S+)", line[m.end():end])
+    if have:
+        return CommandEdit(line, have.group(1))
+    return CommandEdit(_insert(line, (m.end(), " -coverprofile=coverage.out")), "coverage.out")
+
+
+def _go() -> Stack:
+    return Stack(
+        "go", "go test", "go", "coverage.out",
+        setup=("- uses: actions/setup-go@v5", "  with:", "    go-version-file: go.mod"),
+        test="go test -coverprofile=coverage.out ./...", pattern=_GO, editor=_edit_go,
+    )
+
+
+_CARGO = re.compile(r"(?<![\w-])cargo\s+(\+\S+\s+)?(test|nextest\s+run)(?![\w-])")
+_LLVM_COV = ("- uses: taiki-e/install-action@cargo-llvm-cov",)
+
+
+def _edit_cargo(line: str, m: re.Match) -> CommandEdit:
+    _, end, _ = _segment(line, m)
+    if "llvm-cov" in line[m.start():end]:
+        return CommandEdit(line, "lcov.info")
+    sub = "nextest" if m.group(2).startswith("nextest") else ""
+    new = f"cargo {m.group(1) or ''}llvm-cov {sub + ' ' if sub else ''}--lcov --output-path lcov.info"
+    return CommandEdit(line[:m.start()] + new + line[m.end():], "lcov.info", _LLVM_COV)
+
+
+def _rust(root: set[str], files: dict[str, str]) -> Stack:
+    setup = () if root & {"rust-toolchain", "rust-toolchain.toml"} else (
+        "- uses: dtolnay/rust-toolchain@stable", "  with:", "    components: llvm-tools-preview")
+    workspace = " --workspace" if "[workspace]" in files.get("Cargo.toml", "") else ""
+    return Stack(
+        "rust", "cargo test", "cargo", "lcov.info", setup=setup,
+        test=f"cargo llvm-cov{workspace} --lcov --output-path lcov.info", prepare=_LLVM_COV,
+        requires=("cargo install cargo-llvm-cov",), pattern=_CARGO, editor=_edit_cargo,
+    )
+
+
+_JAVA_SETUP = ("- uses: actions/setup-java@v4", "  with:", "    distribution: temurin",
+                    '    java-version: "21"   # adjust to your version')
+_MVN = re.compile(r"(?<![\w/.-])(?:\./)?mvnw?(?:\.cmd)?(?![\w.-])(?=[^;&|#\n]*(?<![\w:.-])(?:test|verify|install|package)(?![\w:.-]))")
+_MVN_SKIP = re.compile(r"-DskipTests(?!=false)|-Dmaven\.test\.skip=true")
+
+
+def _edit_maven(line: str, m: re.Match, *, jacoco: bool, reports: str) -> CommandEdit | None:
+    _, end, continued = _segment(line, m)
+    if jacoco or "jacoco" in line[m.end():end]:
+        return CommandEdit(line, reports)
+    if continued:
+        return None
+    return CommandEdit(_insert(line, (m.end(), f" {JACOCO}:prepare-agent"), (end, f" {JACOCO}:report")), reports)
+
+
+def _maven(root: set[str], files: dict[str, str]) -> Stack:
+    pom = files.get("pom.xml", "")
+    jacoco = "jacoco-maven-plugin" in pom
+    reports = "**/target/site/jacoco/jacoco.xml" if "<modules>" in pom else "target/site/jacoco/jacoco.xml"
+    notes = []
+    if jacoco:
+        notes.append("Your `pom.xml` has the `jacoco-maven-plugin`; its `report` goal must run in the "
+                     "build (usually bound to `verify`) so the XML report exists after the tests.")
+    else:
+        notes.append("Your `pom.xml` has no JaCoCo plugin, so the test command runs JaCoCo's "
+                     "`prepare-agent` and `report` goals by name. Adding the `jacoco-maven-plugin` to "
+                     "the pom does the same and keeps the command short.")
+    if "<argLine>" in pom and "@{argLine}" not in pom:
+        notes.append("Surefire's `argLine` is set without `@{argLine}`, which drops the JaCoCo agent; "
+                     "prefix it with `@{argLine}`.")
+    editor = partial(_edit_maven, jacoco=jacoco, reports=reports)
+    mvn = "./mvnw" if "mvnw" in root else "mvn"
+    test = editor(f"{mvn} -B verify", _MVN.search(f"{mvn} -B verify"))
+    return Stack(
+        "java", "maven", "maven", reports, setup=(*_JAVA_SETUP, "    cache: maven"), test=test.text,
+        notes=tuple(notes), pattern=_MVN, skip=_MVN_SKIP, editor=editor,
+    )
+
+
+_GRADLE_TASK = re.compile(r"(?<![\w-])(test|check|build)(?![\w-])")
+_GRADLE = re.compile(
+    r"(?<![\w/.-])(?:\./)?gradlew?(?:\.bat)?(?![\w.-])(?=[^;&|#\n]*" + _GRADLE_TASK.pattern + ")"
+)
+_GRADLE_INIT = (
+    "- name: Enable JaCoCo XML reports",
+    "  run: |",
+    "    cat > \"$RUNNER_TEMP/repowise-jacoco.gradle\" <<'EOF'",
+    "    allprojects {",
+    "      plugins.withId('java') {",
+    "        apply plugin: 'jacoco'",
+    "        tasks.named('jacocoTestReport') { reports { xml.required = true } }",
+    "      }",
+    "    }",
+    "    EOF",
+)
+
+
+def _edit_gradle(line: str, m: re.Match, *, jacoco: bool, reports: str) -> CommandEdit | None:
+    _, end, _ = _segment(line, m)
+    after = line[m.end():end]
+    if not jacoco or re.search(r"-x\s+test\b", after):
+        return None
+    if "jacocoTestReport" in after:
+        return CommandEdit(line, reports)
+    task = _GRADLE_TASK.search(after)
+    if not task:
+        return None
+    return CommandEdit(_insert(line, (m.end() + task.end(), " jacocoTestReport")), reports)
+
+
+def _gradle(root: set[str], files: dict[str, str]) -> Stack:
+    build = files.get("build.gradle", "") + files.get("build.gradle.kts", "")
+    settings = files.get("settings.gradle", "") + files.get("settings.gradle.kts", "")
+    jacoco = "jacoco" in build
+    multi = re.search(r"^\s*include\b", settings, re.M)
+    reports = ("**/" if multi else "") + "build/reports/jacoco/test/jacocoTestReport.xml"
+    gradle = "./gradlew" if "gradlew" in root else "gradle"
+    notes = []
+    if jacoco:
+        if not re.search(r"xml\.(required|enabled|isEnabled)|xml\s*\{", build):
+            notes.append("Gradle writes JaCoCo's XML report only when asked: add "
+                         "`jacocoTestReport { reports { xml.required = true } }` to the build file.")
+        test, prepare = f"{gradle} test jacocoTestReport", ()
+    else:
+        notes.append("Your build applies no JaCoCo plugin, so the workflow adds it for the run with a "
+                     "small init script. Applying the `jacoco` plugin in the build (with "
+                     "`xml.required = true`) does the same.")
+        test, prepare = f'{gradle} test jacocoTestReport --init-script "$RUNNER_TEMP/repowise-jacoco.gradle"', _GRADLE_INIT
+    return Stack(
+        "java", "gradle", "gradle", reports, setup=(*_JAVA_SETUP, "    cache: gradle"), test=test,
+        prepare=prepare, notes=tuple(notes), shell="" if jacoco else "github-actions", pattern=_GRADLE,
+        skip=re.compile(r"-x\s+test\b"), editor=partial(_edit_gradle, jacoco=jacoco, reports=reports),
+    )
+
+
+_DOTNET = re.compile(r"(?<![\w-])dotnet\s+test(?![\w-])")
+_DOTNET_FLAGS = '--collect:"XPlat Code Coverage" --results-directory coverage'
+
+
+def _edit_dotnet(line: str, m: re.Match) -> CommandEdit:
+    _, end, _ = _segment(line, m)
+    after = line[m.end():end]
+    if "XPlat Code Coverage" in after:
+        return CommandEdit(line, "**/TestResults/*/coverage.cobertura.xml")
+    if "--results-directory" in after:
+        return CommandEdit(_insert(line, (m.end(), ' --collect:"XPlat Code Coverage"')), "**/coverage.cobertura.xml")
+    return CommandEdit(_insert(line, (m.end(), " " + _DOTNET_FLAGS)), "coverage/*/coverage.cobertura.xml")
+
+
+def _dotnet_setup(root: set[str], projects: str) -> tuple[str, ...]:
+    if "global.json" in root:
+        return ("- uses: actions/setup-dotnet@v4", "  with:", "    global-json-file: global.json")
+    versions = sorted({f"{v}.x" for v in re.findall(r"net(\d+\.\d+)", projects)}) or ["8.0.x"]
+    return ("- uses: actions/setup-dotnet@v4", "  with:", "    dotnet-version: |", *(f"      {v}" for v in versions))
+
+
+def _dotnet_notes(tests: list[str], files: dict[str, str], target: str | None, found: bool) -> list[str]:
+    notes = []
+    if tests and not any("coverlet.collector" in t for p, t in files.items() if p in tests):
+        notes.append("`--collect:\"XPlat Code Coverage\"` needs the `coverlet.collector` package in each "
+                     "test project (`dotnet add package coverlet.collector`).")
+    if target:
+        return notes
+    if found:
+        return [*notes, "Repowise found several solutions or test projects; point `dotnet test` at the one "
+                        "that runs your tests."]
+    return [*notes, "Repowise found no solution or test project to point `dotnet test` at."]
+
+
+def _dotnet(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+    solutions = [p for p in paths if p.endswith((".sln", ".slnx"))]
+    tests = [p for p in paths if p.endswith(".csproj") and "test" in p.lower() and p.count("/") <= 3]
+    target = solutions[0] if len(solutions) == 1 else tests[0] if len(tests) == 1 and not solutions else None
+    setup = _dotnet_setup(root, "\n".join(t for p, t in files.items() if p.endswith(".csproj")))
+    notes = _dotnet_notes(tests, files, target, bool(solutions or tests))
+    test = f"dotnet test {target} {_DOTNET_FLAGS}" if target else ""
+    return Stack(
+        "dotnet", "dotnet test", "dotnet", "coverage/*/coverage.cobertura.xml", setup=tuple(setup),
+        test=test, notes=tuple(notes), pattern=_DOTNET, editor=_edit_dotnet,
+    )
+
+
+_RUBY = re.compile(r"(?<![\w-])(?:rspec|rake\s+(?:test|spec)|rails\s+test)(?![\w:-])")
+
+
+def _ruby(root: set[str], paths: list[str], files: dict[str, str]) -> Stack:
+    gemfile = files.get("Gemfile", "")
+    if "simplecov-cobertura" in gemfile:
+        reports, notes = "coverage/coverage.xml", ()
+    elif "simplecov-lcov" in gemfile:
+        reports, notes = "coverage/lcov/*.lcov coverage/lcov.info", ()
+    else:
+        reports = "coverage/coverage.xml"
+        notes = ("Ruby writes coverage through SimpleCov, which has to start inside the test process. "
+                 "Add `gem \"simplecov\"` and `gem \"simplecov-cobertura\"` to the Gemfile's test group, and "
+                 "put this at the very top of `spec/spec_helper.rb` (or `test/test_helper.rb`):\n\n"
+                 "  ```ruby\n  require \"simplecov\"\n  require \"simplecov-cobertura\"\n"
+                 "  SimpleCov.formatter = SimpleCov::Formatter::CoberturaFormatter\n  SimpleCov.start\n  ```\n\n"
+                 "  Until then the upload step finds no report and says so.",)
+    if "rspec" in gemfile or any(p.startswith("spec/") for p in paths):
+        test, runner = "bundle exec rspec", "rspec"
+    elif "bin/rails" in paths:
+        test, runner = "bin/rails test", "rails test"
+    else:
+        test, runner = "bundle exec rake test", "rake test"
+    version = () if root & {".ruby-version", ".tool-versions"} else ("    ruby-version: \"3.3\"   # adjust to your version",)
+    return Stack(
+        "ruby", runner, "bundler", reports,
+        setup=("- uses: ruby/setup-ruby@v1", "  with:", *version, "    bundler-cache: true"),
+        test=test, notes=notes, pattern=_RUBY, editor=lambda line, m: CommandEdit(line, reports),
+    )
+
+
+_PHPUNIT = re.compile(r"(?<![\w-])(?:[\w./-]*/)?(?:phpunit|pest)(?![\w.-])")
+
+
+def _edit_phpunit(line: str, m: re.Match) -> CommandEdit:
+    _, end, _ = _segment(line, m)
+    have = re.search(r"--coverage-clover[= ](\S+)", line[m.end():end])
+    if have:
+        return CommandEdit(line, have.group(1))
+    return CommandEdit(_insert(line, (m.end(), " --coverage-clover clover.xml")), "clover.xml")
+
+
+def _php(files: dict[str, str]) -> Stack:
+    try:
+        composer = json.loads(files.get("composer.json") or "{}")
+    except ValueError:
+        composer = {}
+    composer = composer if isinstance(composer, dict) else {}
+    dev = composer.get("require-dev") if isinstance(composer.get("require-dev"), dict) else {}
+    php = str((composer.get("require") or {}).get("php", "")) if isinstance(composer.get("require"), dict) else ""
+    found = re.search(r"\d+\.\d+", php)
+    version = found.group(0) if found else "8.3"
+    runner = "pest" if "pestphp/pest" in dev else "phpunit"
+    return Stack(
+        "php", runner, "composer", "clover.xml",
+        setup=("- uses: shivammathur/setup-php@v2", "  with:", f'    php-version: "{version}"',
+               "    coverage: pcov", "- run: composer install --no-interaction --no-progress"),
+        test=f"vendor/bin/{runner} --coverage-clover clover.xml",
+        pattern=_PHPUNIT, job_requires=re.compile(r"coverage:\s*['\"]?(pcov|xdebug)|XDEBUG_MODE"),
+        editor=_edit_phpunit,
+    )
+
+# ---------------------------------------------------------------------------
+# Detection
+# ---------------------------------------------------------------------------
+
+_UNKNOWN_REASON = "Repowise could not tell how this repository runs its tests."
+UNKNOWN = Stack("unknown", notes=(_UNKNOWN_REASON,))
+
+#: The stack each registry language's package manifests start.
+_LANGUAGE_STACKS = {
+    "python": "python",
+    "go": "go",
+    "rust": "rust",
+    "java": "jvm",
+    "kotlin": "jvm",
+    "csharp": "dotnet",
+    "ruby": "ruby",
+    "php": "php",
+    "javascript": "node",
+    "typescript": "node",
+}
+#: Most specific first; node last, as a root ``package.json`` is often tooling.
+_ORDER = ("python", "go", "rust", "jvm", "dotnet", "ruby", "php", "node")
+_BUILDERS: dict[str, Callable[[set[str], list[str], dict[str, str]], Stack]] = {
+    "python": _python,
+    "go": lambda names, paths, files: _go(),
+    "rust": lambda names, paths, files: _rust(names, files),
+    "jvm": lambda names, paths, files: (
+        _maven(names, files) if "pom.xml" in names else _gradle(names, files)
+    ),
+    "dotnet": _dotnet,
+    "ruby": _ruby,
+    "php": lambda names, paths, files: _php(files),
+    "node": lambda names, paths, files: _node(names, files),
+}
+_REQUIREMENTS = re.compile(r"requirements[\w.-]*\.txt")
+_SOLUTIONS = (".sln", ".slnx")
+#: How many .csproj files detection reads at a .NET root.
+_DOTNET_PROJECTS = 20
+#: Gradle's settings files: runner config read on top of the registry's manifests.
+_GRADLE_SETTINGS = ("settings.gradle", "settings.gradle.kts")
+#: A manifest of this origin is a fixture, sample or copy, not a unit to cover.
+_SKIP_ORIGINS = frozenset({"test", "generated", "vendored", "docs_example"})
+
+
+@cache
+def _manifest_stacks(name: str) -> frozenset[str]:
+    """The stacks package manifest *name* starts, from the language registry."""
+    found = set()
+    for tag, stack in _LANGUAGE_STACKS.items():
+        spec = REGISTRY.get(tag)
+        if spec is None:
+            continue
+        exact = name in spec.manifest_files and name not in spec.build_config_manifests
+        if exact or any(fnmatch.fnmatch(name.lower(), g.lower()) for g in spec.manifest_globs):
+            found.add(stack)
+    return frozenset(found)
+
+
+@cache
+def _read_names() -> frozenset[str]:
+    """Every manifest and runner config detection reads at a unit root."""
+    names = set(PYTEST_CONFIG_NAMES) | set(_GRADLE_SETTINGS)
+    for tag in _LANGUAGE_STACKS:
+        spec = REGISTRY.get(tag)
+        if spec is not None:
+            names.update(n for n in spec.manifest_files if n not in spec.build_config_manifests)
+    return frozenset(names)
+
+
+@cache
+def _python_config_names() -> frozenset[str]:
+    """Python's manifests plus pytest's configs: where ``pytest-cov`` would be declared."""
+    spec = REGISTRY.get("python")
+    return frozenset(PYTEST_CONFIG_NAMES | set(spec.manifest_files if spec else ()))
+
+
+def _dir(path: str) -> str:
+    return posixpath.dirname(path)
+
+
+def _join(root: str, name: str) -> str:
+    return f"{root}/{name}" if root else name
+
+
+def _under(root: str, path: str) -> str | None:
+    """*path* relative to *root*, or None when it is not below it."""
+    if not root:
+        return path
+    return path[len(root) + 1 :] if path.startswith(root + "/") else None
+
+
+def _kept(path: str) -> bool:
+    """Whether a manifest at *path* can declare a unit: not pruned, not a fixture or sample."""
+    blocked = any(part in INDEX_BLOCKED_DIRS for part in path.split("/")[:-1])
+    return not blocked and path_origin(path) not in _SKIP_ORIGINS
+
+
+def _stacks_of(name: str) -> set[str]:
+    """The stacks a file named *name* starts at its directory (.NET runs through solutions)."""
+    found = set(_manifest_stacks(name))
+    if name in _GRADLE_SETTINGS:
+        found.add("jvm")
+    return found - {"dotnet"}
+
+
+def _roots_of(manifests: Iterable[str]) -> dict[str, set[str]]:
+    found: dict[str, set[str]] = {}
+    for manifest in manifests:
+        stacks = _stacks_of(posixpath.basename(manifest))
+        if stacks and _kept(manifest):
+            found.setdefault(_dir(manifest), set()).update(stacks)
+    return found
+
+
+def _ancestors(root: str) -> list[str]:
+    parts = root.split("/") if root else []
+    return ["/".join(parts[:i]) for i in range(len(parts))]
+
+
+@dataclass(frozen=True)
+class _Units:
+    """Unit roots and the stacks their manifests start.
+
+    ``workspaces`` are roots the build-unit index does not list (a virtual
+    Cargo workspace, a Gradle settings-only root) above roots it does: they
+    run a stack only when it builds its members from there.
+    """
+
+    roots: dict[str, set[str]]
+    workspaces: frozenset[str] = frozenset()
+
+
+def _units(paths: list[str], units: BuildUnitIndex | None) -> _Units:
+    """The units of a listing: from the index when there is one, else every kept
+    directory holding a registry package manifest."""
+    listed = _roots_of(paths)
+    workspaces: set[str] = set()
+    if units is None:
+        roots = listed
+    else:
+        roots = _roots_of(u.manifest for u in units.units.values())
+        above = {a for root in roots for a in _ancestors(root)} - roots.keys()
+        workspaces = above & listed.keys()
+        roots.update({root: set(listed[root]) for root in workspaces})
+    if any("/" not in p and _REQUIREMENTS.fullmatch(p) for p in paths):
+        roots.setdefault("", set()).add("python")
+        workspaces.discard("")
+    solutions = {_dir(p) for p in paths if p.endswith(_SOLUTIONS) and _kept(p)}
+    has_projects = any(p.endswith(".csproj") and p.count("/") <= 2 for p in paths)
+    for root in solutions or ({""} if has_projects else set()):
+        roots.setdefault(root, set()).add("dotnet")
+    return _Units(roots, frozenset(workspaces))
+
+
+def _aggregates(stack: str, root: str, files: Mapping[str, str]) -> bool:
+    """Whether the *stack* at *root* builds and tests the same stack's units below it."""
+    cargo, pyproject = files.get(_join(root, "Cargo.toml"), ""), files.get(_join(root, "pyproject.toml"), "")
+    if stack == "rust":
+        return "[workspace]" in cargo
+    if stack == "python":
+        return "[tool.uv.workspace]" in pyproject
+    if stack == "jvm":
+        settings = "".join(files.get(_join(root, name), "") for name in _GRADLE_SETTINGS)
+        pom = files.get(_join(root, "pom.xml"), "")
+        return "<modules>" in pom or bool(re.search(r"^\s*include\b", settings, re.M))
+    return stack == "dotnet"
+
+
+def _covered(stack: str, root: str, roots: Mapping[str, set[str]], files: Mapping[str, str]) -> bool:
+    """Whether an ancestor unit's *stack* already runs the unit at *root*."""
+    return any(stack in roots.get(a, ()) and _aggregates(stack, a, files) for a in _ancestors(root))
+
+
+def _runs_at(stack: str, root: str, found: _Units, files: Mapping[str, str]) -> bool:
+    if root in found.workspaces and not _aggregates(stack, root, files):
+        return False
+    return not _covered(stack, root, found.roots, files)
+
+
+def _listing_at(root: str, stack: str, paths: list[str], roots: Mapping[str, set[str]]) -> list[str]:
+    """*paths* below *root*, rebased; a .NET root leaves out nested .NET roots' files."""
+    rel = [r for p in paths if (r := _under(root, p)) is not None]
+    if stack != "dotnet":
+        return rel
+    inner = [r for other, s in roots.items() if "dotnet" in s and other != root and (r := _under(root, other))]
+    return [p for p in rel if not any(p.startswith(i + "/") for i in inner)]
+
+
+def detect_stacks(
+    paths: Iterable[str], files: Mapping[str, str], units: BuildUnitIndex | None = None
+) -> list[Stack]:
+    """Every unit's stack, the root's first, then by depth; ``[UNKNOWN]`` when none.
+
+    *paths* are the repository's files, repo-relative POSIX. *files* holds the
+    text of the paths :func:`files_to_read` names (missing ones read as empty).
+    *units* is the build-unit index, when the caller has one. A ``package.json``
+    whose runner is unclear beside another stack is tooling and starts none.
+    """
+    paths = sorted(set(paths))
+    found = _units(paths, units)
+    stacks: list[Stack] = []
+    for root in sorted(found.roots, key=lambda r: (r.count("/") + bool(r), r)):
+        texts = {r: text for p, text in files.items() if (r := _under(root, p)) is not None}
+        here: list[Stack] = []
+        for stack in _ORDER:
+            if stack in found.roots[root] and _runs_at(stack, root, found, files):
+                rel = _listing_at(root, stack, paths, found.roots)
+                names = {p for p in rel if "/" not in p}
+                here.append(replace(_BUILDERS[stack](names, rel, texts), root=root))
+        tooling = len(here) > 1 and here[-1].language == "node" and not here[-1].test
+        stacks += here[:-1] if tooling else here
+    return stacks or [UNKNOWN]
+
+
+def files_to_read(paths: Iterable[str], units: BuildUnitIndex | None = None) -> list[str]:
+    """The manifests and runner configs :func:`detect_stacks` reads, besides the listing."""
+    paths = sorted(set(paths))
+    present = set(paths)
+    roots = _units(paths, units).roots
+    names = sorted(_read_names())
+    wanted = [path for root in sorted(roots) for n in names if (path := _join(root, n)) in present]
+    wanted += [p for p in paths if "/" not in p and _REQUIREMENTS.fullmatch(p)]
+    for root, stacks in sorted(roots.items()):
+        if "dotnet" in stacks:
+            rel = _listing_at(root, "dotnet", paths, roots)
+            projects = [r for r in rel if r.endswith(".csproj") and r.count("/") <= 3]
+            tests = [r for r in projects if "test" in r.lower()]
+            # Test projects first (coverlet is checked there), then the rest for the SDK versions.
+            # Ceiling: _DOTNET_PROJECTS projects; a larger solution may need its SDK named in global.json.
+            others = [r for r in projects if r not in tests]
+            wanted += [_join(root, r) for r in (tests + others)[:_DOTNET_PROJECTS]]
+    return list(dict.fromkeys(wanted))
+
+
+def detect_repo_stacks(repo_path: str | Path, units: BuildUnitIndex | None = None) -> list[Stack]:
+    """:func:`detect_stacks` over a checkout: one pruned walk, then the manifests it names.
+
+    Pass the stored build units (``load_build_units``) when there are any; an
+    empty index counts as none. Blocking file reads.
+    """
+    root = Path(repo_path)
+    paths = [
+        (Path(dirpath) / name).relative_to(root).as_posix()
+        for dirpath, _, filenames in walk_repo(root, prune_dirs=INDEX_BLOCKED_DIRS)
+        for name in filenames
+    ]
+    index = units if units is not None and units.units else None
+    files: dict[str, str] = {}
+    for path in files_to_read(paths, index):
+        try:
+            files[path] = (root / path).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+    return detect_stacks(paths, files, index)
+
+
+__all__ = [
+    "GENERIC_REPORTS",
+    "JACOCO",
+    "UNKNOWN",
+    "CommandEdit",
+    "Stack",
+    "detect_repo_stacks",
+    "detect_stacks",
+    "files_to_read",
+]

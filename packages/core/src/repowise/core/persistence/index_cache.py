@@ -75,5 +75,9 @@ class IndexStampCache:
             self._entries.popitem(last=False)
         return value
 
+    def forget(self, key: tuple[Any, ...]) -> None:
+        """Drop one kept answer, if present."""
+        self._entries.pop(key, None)
+
     def clear(self) -> None:
         self._entries.clear()

@@ -15,8 +15,6 @@ from typing import Any
 
 from repowise.core.ingestion.models import ParsedFile, RepoStructure
 
-from ..concept_tree.vocabulary import HouseTerm
-
 
 @dataclass(frozen=True)
 class OnboardingSignals:
@@ -47,21 +45,18 @@ class OnboardingSignals:
     # Topology-driven guided-tour stops (ordered), each referencing an
     # already-generated page. Empty when no tour could be built.
     tour_stops: tuple[dict, ...] = ()
-    # Layers ordered top→bottom by dependency direction (the grouping spine).
-    layer_order: tuple[str, ...] = ()
-    # The repository's own words for its own subsystems, ranked by how many of
-    # its documents name them and gated on the code using them. Empty when the
-    # run had no repository path to read, when the repository documents
-    # nothing, or when nothing it documents was built — all three are logged
-    # where the mining happens, because an empty tuple here cannot say which.
-    house_terms: tuple[HouseTerm, ...] = ()
-    # What the structural side calls the parts of the system: one string per
-    # module group, its title followed by its summary. The corroborating
-    # artifact for a mined term — a group is cut from the dependency graph and
-    # named from the code, so a term appearing in one was arrived at twice,
-    # independently. Empty on every run that emits no page needing it, because
-    # building it costs a store read.
-    module_corroboration: tuple[str, ...] = ()
+    # The repository's documentation files (parsed Markdown plus the
+    # reStructuredText ingestion does not parse), read once per run.
+    doc_sources: dict[str, bytes] = field(default_factory=dict)
+    # The walkthrough pages written for the run's main operations, in plan
+    # order. How It Works is told from them. Empty when none are written yet.
+    journeys: tuple[Any, ...] = ()
+    # Top-level parts with their own page's description. Empty unless an
+    # emitted subkind declared it needs them (a store read on a scoped run).
+    parts: tuple[Any, ...] = ()
+    # What a user types or calls (``surface.Surfaces``), read once per run.
+    # ``None`` when the run did not build it; subkinds treat that as empty.
+    surfaces: Any = None
 
 
 def file_layer_map(signals: OnboardingSignals) -> dict[str, str]:

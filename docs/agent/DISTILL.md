@@ -48,9 +48,10 @@ rendering. These filters ship:
 | `infra_plan` | `terraform`/`tofu plan`, `helm diff`/`upgrade` | the plan summary and the resources that change. A no-op collapses to `plan: no changes` |
 | `git_status` | `git status` | porcelain-style compact status |
 | `git_log` | `git log` | recent subjects and counts |
-| `git_diff` | `git diff`/`show`, `gh pr diff` | stat plus the most relevant hunks (`--stat` output has its own `git_diff_stat` filter) |
+| `git_diff` | `git diff`/`show`, `git log -p`, `gh pr diff`, and any diff printed inside a `git log`/`git status` chain | every changed line and hunk header; unchanged context runs and lockfile or generated files fold to one line each. Over 14k characters, the files with the most change keep their hunks and the rest are listed with counts (`--stat` output has its own `git_diff_stat` filter) |
 | `search_results` | grep / rg floods | digest grouped by file, with per-file counts and anchors |
 | `file_listing` | ls / tree / find | grouped tree rendering |
+| `file_read` | `cat <file>` or `cd <dir> && cat <file>`, for an indexed source file of 300+ lines and 5 KB+ that has not changed since the last index | the file's outline (every indexed symbol with its line range) and its first lines, under 4 KB. The same `cat` again right after runs raw |
 | `logs` | anything log-shaped | template collapse with counts (timestamps and ids normalized) |
 
 Dropped content goes to the omission store and is referenced inline:
@@ -77,11 +78,14 @@ A PreToolUse hook rewrites noisy agent commands: `pytest -x` becomes
 `repowise distill pytest -x`. Rewrites run without a prompt by default
 (`permission: allow`). That is a bounded substitution, never a new command (see
 [Safety model](#safety-model-in-one-place)). Set `permission: ask` in
-`.repowise/config.yaml` to approve each rewrite. `repowise init` offers to
-install the hook (default: yes), or install it yourself:
+`.repowise/config.yaml` to approve each rewrite. `repowise init` installs the
+hook by default: an interactive run asks (default: yes), and `--yes` or a run
+with no terminal installs it and prints how to turn it off. `--no-distill-hook`
+and `--no-editor-setup` leave it off, and a repo that opted out stays off. The
+Claude Code plugin ships the same hook. To manage it yourself:
 
 ```bash
-repowise hook rewrite install      # or opt in during `repowise init`
+repowise hook rewrite install
 repowise hook rewrite status
 repowise hook rewrite uninstall    # removes only the repowise entries
 ```
@@ -179,15 +183,16 @@ match), which is where the index beats blind truncation.
 The PostToolUse hook adds passive read surfaces (details in
 [HOOKS.md](HOOKS.md#posttooluse-enrichment-on-tool-calls)):
 
-- **Skeleton replacement** (opt-in, `hooks.read_skeleton`): an unbounded `Read`
+- **Skeleton replacement** (`hooks.read_skeleton`, on with the rewrite hook): an unbounded `Read`
   of a large indexed file is served as its skeleton, once per file per session.
-- **Re-read collapse** (opt-in, `hooks.read_reread`): a `Read` of a range this
+- **Re-read collapse** (`hooks.read_reread`, on with the rewrite hook): a `Read` of a range this
   session already read, with no edit between and identical bytes, is served as
   a short notice. Never twice in a row, so one more Read always returns content.
 - **Stale-read notice**: after an `Edit`/`Write`, a later `Read` of the same file
   warns that earlier excerpts predate the edit.
-- **Search digest**: grep floods (50 or more lines) get a digest grouped by file
-  and ordered by graph centrality.
+- **Search digest**: with `hooks.search_digest: true`, grep floods (50 or more
+  lines) are served as a digest grouped by file and ordered by graph centrality.
+  With it off, the hook adds nothing to them.
 
 ### 5. MCP response budget: `_meta.omitted`
 

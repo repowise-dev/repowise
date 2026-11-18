@@ -1,6 +1,7 @@
 import type { ElementType, ReactNode } from "react";
 import type {
   DecisionEvidence,
+  DecisionRecord,
   DecisionLineageEntry,
   DecisionStatusUpdate,
 } from "@repowise-dev/types/decisions";
@@ -39,6 +40,15 @@ export interface DecisionDetailAdapter {
   listModuleSuggestions(): Promise<string[]>;
   /** Persist a status and/or linkage change. */
   patchDecision(patch: DecisionStatusUpdate): Promise<void>;
+  /**
+   * Reverses the reader's own latest accept or dismiss, returning the
+   * decision to where it was before, and resolves to the decision as it now
+   * stands (refetched when the write does not return it). Given, every Undo
+   * on the page calls it; without it, undoing an accept asks to dismiss.
+   * A refusal (say, the latest review was someone else's) rejects with the
+   * server's sentence, which the page shows as is.
+   */
+  undoReview?(): Promise<Pick<DecisionRecord, "status">>;
 
   /** href to the decisions list. */
   decisionsHref(): string;
@@ -53,4 +63,20 @@ export interface DecisionDetailAdapter {
   LinkComponent?: DecisionLinkComponent;
   /** Optional linked-issues panel (e.g. Jira). Host supplies or omits. */
   renderLinkedIssues?(): ReactNode;
+  /**
+   * The prompt that hands this one candidate to the reader's agent to check
+   * and then accept or dismiss. Given, a candidate's page offers "Copy prompt"
+   * in place of the generic verification prompt.
+   */
+  reviewPrompt?(decision: DecisionRecord): string;
+  /**
+   * Pins or unpins this decision, as a person. Given, a decision in force
+   * offers Pin or Unpin.
+   */
+  setPinned?(pinned: boolean): Promise<void>;
+  /**
+   * This record's agent prompts (change it, veto it, pin or unpin it), shown
+   * in the agent actions of a decision in force.
+   */
+  renderRecordPrompts?(): ReactNode;
 }

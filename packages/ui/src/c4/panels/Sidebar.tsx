@@ -42,8 +42,8 @@ const TAB_STYLE_BASE: React.CSSProperties = {
 
 const TAB_STYLE_ACTIVE: React.CSSProperties = {
   ...TAB_STYLE_BASE,
-  color: "var(--color-accent-primary)",
-  borderBottomColor: "var(--color-accent-primary)",
+  color: "var(--color-text-primary)",
+  borderBottomColor: "var(--color-tab-active)",
 };
 
 export function Sidebar(props: SidebarProps) {

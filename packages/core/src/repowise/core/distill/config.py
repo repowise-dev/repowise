@@ -10,16 +10,41 @@ from __future__ import annotations
 
 from typing import Any
 
-from repowise.core.distill.store import DEFAULT_MAX_MB, DEFAULT_TTL_DAYS
+#: Omission-store rows older than this are pruned. Defined here rather than in
+#: ``store`` so reading the config's defaults never imports the store.
+DEFAULT_TTL_DAYS = 7
+#: Omission-store compressed-content size cap; oldest rows pruned first.
+DEFAULT_MAX_MB = 50
 
 #: Valid values for ``distill.commands.permission``.
 VALID_PERMISSIONS = ("ask", "allow", "off")
+#: Spellings of ``distill.commands.permission`` that turn rewriting off.
+PERMISSION_OFF_ALIASES = ("off", "deny", "disable", "disabled", "none")
 #: Valid values for a per-family override (``deny`` blocks the command).
 VALID_FAMILY_PERMISSIONS = ("ask", "allow", "off", "deny")
 
 _KNOWN_TOP_KEYS = ("enabled", "commands", "omission_store")
 _KNOWN_COMMANDS_KEYS = ("enabled", "permission", "families", "disabled_filters")
 _KNOWN_STORE_KEYS = ("ttl_days", "max_mb")
+
+
+def parse_permission(raw: Any) -> Any:
+    """``distill.commands.permission`` with every off spelling (and a bare ``off``,
+    which YAML reads as false) read as ``off``; other values pass through."""
+    if raw is False or (isinstance(raw, str) and raw in PERMISSION_OFF_ALIASES):
+        return "off"
+    return raw
+
+
+def _is_flag(value: Any) -> bool:
+    """Whether the readers take *value* as on or off (see ``parse_flag``)."""
+    from repowise.core.settings.model import parse_flag
+
+    try:
+        parse_flag(value)
+    except ValueError:
+        return False
+    return True
 
 
 def validate_distill_config(distill: Any) -> list[str]:
@@ -38,7 +63,7 @@ def validate_distill_config(distill: Any) -> list[str]:
     for key in distill:
         if key not in _KNOWN_TOP_KEYS:
             problems.append(f"distill.{key}: unknown key")
-    if "enabled" in distill and not isinstance(distill["enabled"], bool):
+    if "enabled" in distill and not _is_flag(distill["enabled"]):
         problems.append("distill.enabled: must be true or false")
 
     commands = distill.get("commands")
@@ -63,10 +88,10 @@ def _validate_commands(commands: dict) -> list[str]:
     for key in commands:
         if key not in _KNOWN_COMMANDS_KEYS:
             problems.append(f"distill.commands.{key}: unknown key")
-    if "enabled" in commands and not isinstance(commands["enabled"], bool):
+    if "enabled" in commands and not _is_flag(commands["enabled"]):
         problems.append("distill.commands.enabled: must be true or false")
 
-    permission = commands.get("permission")
+    permission = parse_permission(commands.get("permission"))
     if permission is not None and permission not in VALID_PERMISSIONS:
         problems.append(
             f"distill.commands.permission: {permission!r} is not one of {VALID_PERMISSIONS}"
@@ -91,15 +116,22 @@ def _validate_commands(commands: dict) -> list[str]:
                         f"{VALID_FAMILY_PERMISSIONS}"
                     )
 
-    disabled = commands.get("disabled_filters")
-    if disabled is not None:
-        if not isinstance(disabled, list):
-            problems.append("distill.commands.disabled_filters: must be a list")
-        else:
-            for name in disabled:
-                if name not in known_filters:
-                    problems.append(f"distill.commands.disabled_filters: unknown filter {name!r}")
+    problems.extend(_validate_disabled_filters(commands.get("disabled_filters"), known_filters))
     return problems
+
+
+def _validate_disabled_filters(disabled: Any, known_filters: Any) -> list[str]:
+    if disabled is None:
+        return []
+    if isinstance(disabled, str):
+        disabled = [disabled]  # one bare name, as the readers take it
+    if not isinstance(disabled, list):
+        return ["distill.commands.disabled_filters: must be a list"]
+    return [
+        f"distill.commands.disabled_filters: unknown filter {name!r}"
+        for name in disabled
+        if name not in known_filters
+    ]
 
 
 def _validate_store(store: dict) -> list[str]:

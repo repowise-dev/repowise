@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from repowise.cli.commands.doctor_cmd import repo_checks
+from repowise.cli.commands.doctor_cmd._checks import providers
 
 
 def _rows(repo_path: Path) -> dict[str, tuple[bool, str]]:
@@ -45,10 +46,22 @@ def test_keyless_repo_reports_structural_fallback_without_failing_doctor(
 
     assert rows["Providers"] == (True, "Implementations loaded: gemini, openai")
     assert rows["Provider config"] == (True, "No misconfigured provider keys")
-    assert rows["LLM provider"] == (
-        True,
-        "None configured — prose degrades to a structural wiki; set a key or pass --provider",
+    ok, detail = rows["LLM provider"]
+    assert ok is True
+    assert detail.startswith("None configured: ")
+    assert "a provider key or a local model" in detail
+
+
+def test_keyless_repo_names_a_signed_in_plan(tmp_path: Path, monkeypatch) -> None:
+    from repowise.core.index_scope import FreeRoute
+
+    _patch_provider_state(monkeypatch, available=False)
+    monkeypatch.setattr(
+        "repowise.cli.ui.subscription.upgrade_route",
+        lambda _repo: FreeRoute("claude_cli", "Claude Code"),
     )
+    detail = _rows(tmp_path)["LLM provider"][1]
+    assert "uses your Claude Code sign-in and plan quota" in detail
 
 
 def test_resolvable_provider_is_reported_for_this_repository(
@@ -74,3 +87,15 @@ def test_misconfigured_provider_key_still_fails_its_own_check(
         False,
         "openai requires environment variables: OPENAI_API_KEY",
     )
+
+
+def test_stale_hosted_session_warns_without_failing_doctor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("repowise.cli.platform.credentials.load", lambda: {"stale": True})
+
+    check = providers._hosted_account_check()
+
+    assert check.level == "warn"
+    assert check.ok is True
+    assert check.fix == "repowise login"

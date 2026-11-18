@@ -11,6 +11,8 @@ import {
 } from "lucide-react";
 import { memo, useState } from "react";
 import { Popover, PopoverTrigger, PopoverContent } from "../ui/popover";
+import { FIELD_CLASS } from "../ui/input";
+import { cn } from "../lib/cn";
 
 /**
  * No "risk" member. There was one, and it painted `pagerank * 3` through
@@ -133,7 +135,35 @@ interface GraphToolbarProps {
   onToggleHelp?: (() => void) | undefined;
   /** @deprecated See {@link GraphToolbarProps.layoutMode}. */
   hierarchicalDisabledReason?: string | undefined;
+  copy?: Partial<GraphToolbarCopy> | undefined;
 }
+
+export interface GraphToolbarCopy {
+  trace: string;
+  traceTitle: string;
+  /** Title when the host has no path finder. */
+  traceTitleFlowsOnly: string;
+  traceAriaPathOpen: string;
+  traceAriaFlowsOpen: string;
+  findPath: string;
+  executionFlows: string;
+  searchPlaceholder: string;
+  searchLabel: string;
+  clearSearch: string;
+}
+
+export const GRAPH_TOOLBAR_COPY: GraphToolbarCopy = {
+  trace: "Trace",
+  traceTitle: "Trace a dependency path or an execution flow",
+  traceTitleFlowsOnly: "Trace an execution flow",
+  traceAriaPathOpen: "Trace: dependency path open",
+  traceAriaFlowsOpen: "Trace: execution flows open",
+  findPath: "Find dependency path",
+  executionFlows: "Execution flows",
+  searchPlaceholder: "Search nodes…",
+  searchLabel: "Search graph nodes",
+  clearSearch: "Clear search",
+};
 
 // No scope cluster here. Scope is one axis and it now has one control, in the
 // section header (`GraphScopeSwitcher`), following the Code Health precedent —
@@ -144,21 +174,35 @@ interface GraphToolbarProps {
 // files are near-disjoint sets, so the old pair of independent toggles read
 // as an AND filter and mostly produced an empty view when both were lit; a
 // single exclusive control matches how the affordance is read.
-const NODE_FILTERS: { id: Overlay | "all"; icon?: typeof Skull; label: string; hint: string }[] = [
-  { id: "all", label: "All", hint: "Show every node" },
-  { id: "hot", icon: Flame, label: "Hot", hint: "High-churn files" },
-  { id: "dead", icon: Skull, label: "Dead", hint: "Dead-code files" },
+const NODE_FILTERS: { id: Overlay | "all"; icon?: typeof Skull }[] = [
+  { id: "all" },
+  { id: "hot", icon: Flame },
+  { id: "dead", icon: Skull },
 ];
+
+export interface GraphNodeFilterCopy {
+  label: string;
+  filters: Record<Overlay | "all", { label: string; hint: string }>;
+}
+
+export const GRAPH_NODE_FILTER_COPY: GraphNodeFilterCopy = {
+  label: "Node filter",
+  filters: {
+    all: { label: "All", hint: "Show every node" },
+    hot: { label: "Hot", hint: "High-churn files" },
+    dead: { label: "Dead", hint: "Dead-code files" },
+  },
+};
 
 // Trace sits beside the scope switcher and reads as its peer: the same 12px
 // type and hairline border. It was a 10px tertiary glyph-and-word, which is
 // the size and tone the contrast audit fails.
 const itemActiveClass =
-  "border-[var(--color-accent-primary)]/40 bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]";
+  "border-[var(--color-selection-border)] bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]";
 const itemIdleClass =
   "border-[var(--color-border-default)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]";
 const itemClass =
-  "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)]";
+  "flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)]";
 
 /** Segmented control, matching `coupling-explorer`'s: counts live inside the
  *  segments rather than in a caption beside them. */
@@ -184,11 +228,14 @@ export function GraphNodeFilter({
   viewMode,
   onViewChange,
   className,
+  copy,
 }: {
   viewMode: ViewMode;
   onViewChange: (mode: ViewMode) => void;
   className?: string | undefined;
+  copy?: Partial<GraphNodeFilterCopy> | undefined;
 }) {
+  const c = { ...GRAPH_NODE_FILTER_COPY, ...copy };
   const { scope, overlays } = viewModeToScopeOverlays(viewMode);
   const active: Overlay | "all" = overlays.has("dead")
     ? "dead"
@@ -199,7 +246,7 @@ export function GraphNodeFilter({
   return (
     <div
       role="radiogroup"
-      aria-label="Node filter"
+      aria-label={c.label}
       className={`${segmentGroupClass} ${className ?? ""}`}
     >
       {NODE_FILTERS.map((f) => {
@@ -211,7 +258,7 @@ export function GraphNodeFilter({
             type="button"
             role="radio"
             aria-checked={isActive}
-            title={f.hint}
+            title={c.filters[f.id].hint}
             onClick={() =>
               onViewChange(
                 scopeOverlaysToViewMode(
@@ -222,13 +269,13 @@ export function GraphNodeFilter({
             }
             className={`${segmentClass} ${
               isActive
-                ? "bg-[var(--color-accent-primary)]/15 text-[var(--color-accent-primary)]"
+                ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                 : "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-wash-hover)] hover:text-[var(--color-text-primary)]"
             }`}
           >
             <span className="inline-flex items-center gap-1">
               {Icon && <Icon className="h-3 w-3" />}
-              {f.label}
+              {c.filters[f.id].label}
             </span>
           </button>
         );
@@ -257,7 +304,9 @@ export const GraphToolbar = memo(function GraphToolbar({
   searchMatchCount,
   searchTotalCount,
   onSearchKeyDown,
+  copy,
 }: GraphToolbarProps) {
+  const c = { ...GRAPH_TOOLBAR_COPY, ...copy };
   const [traceOpen, setTraceOpen] = useState(false);
   // Derive scope from the legacy ViewMode so this component remains the single
   // source of truth — callers can continue to round-trip the wire-format
@@ -282,25 +331,21 @@ export const GraphToolbar = memo(function GraphToolbar({
             <button
               type="button"
               className={`${itemClass} ${traceActive ? itemActiveClass : itemIdleClass}`}
-              title={
-                pathFinderAvailable
-                  ? "Trace a dependency path or an execution flow"
-                  : "Trace an execution flow"
-              }
+              title={pathFinderAvailable ? c.traceTitle : c.traceTitleFlowsOnly}
               // Not colour alone. The two buttons this replaced each carried
               // their own `aria-pressed`; without this a reader who cannot see
               // the accent has to open the menu to learn a trace panel is
               // already open.
               aria-label={
                 showPathFinder
-                  ? "Trace: dependency path open"
+                  ? c.traceAriaPathOpen
                   : showFlows
-                    ? "Trace: execution flows open"
-                    : "Trace"
+                    ? c.traceAriaFlowsOpen
+                    : c.trace
               }
             >
               <Route className="w-3 h-3" />
-              <span>Trace</span>
+              <span>{c.trace}</span>
               <ChevronDown className="w-3 h-3" />
             </button>
           </PopoverTrigger>
@@ -315,12 +360,12 @@ export const GraphToolbar = memo(function GraphToolbar({
                 aria-pressed={showPathFinder}
                 className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-wash-hover)] ${
                   showPathFinder
-                    ? "text-[var(--color-accent-primary)]"
+                    ? "bg-[var(--color-selection-wash)] font-medium text-[var(--color-text-primary)]"
                     : "text-[var(--color-text-primary)]"
                 }`}
               >
                 <Route className="h-3.5 w-3.5 shrink-0" />
-                Find dependency path
+                {c.findPath}
               </button>
             )}
             <button
@@ -332,12 +377,12 @@ export const GraphToolbar = memo(function GraphToolbar({
               aria-pressed={showFlows}
               className={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-wash-hover)] ${
                 showFlows
-                  ? "text-[var(--color-accent-primary)]"
+                  ? "bg-[var(--color-selection-wash)] font-medium text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-primary)]"
               }`}
             >
               <Workflow className="h-3.5 w-3.5 shrink-0" />
-              Execution flows
+              {c.executionFlows}
             </button>
           </PopoverContent>
         </Popover>
@@ -352,9 +397,9 @@ export const GraphToolbar = memo(function GraphToolbar({
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           onKeyDown={onSearchKeyDown}
-          placeholder="Search nodes…"
-          aria-label="Search graph nodes"
-          className="w-40 rounded-md border border-[var(--color-border-default)] bg-[var(--color-bg-surface)] py-1.5 pl-7 pr-14 text-xs text-[var(--color-text-primary)] outline-none placeholder:text-[var(--color-text-tertiary)] focus:border-[var(--color-border-hover)] sm:w-36 lg:w-48"
+          placeholder={c.searchPlaceholder}
+          aria-label={c.searchLabel}
+          className={cn(FIELD_CLASS, "w-40 py-1.5 pl-7 pr-14 text-xs sm:w-36 lg:w-48")}
         />
         <span className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
           {searchQuery && searchMatchCount != null && searchTotalCount != null && (
@@ -365,7 +410,7 @@ export const GraphToolbar = memo(function GraphToolbar({
           {searchQuery && (
             <button
               onClick={() => onSearchChange("")}
-              aria-label="Clear search"
+              aria-label={c.clearSearch}
               className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]"
             >
               <X className="h-3 w-3" />

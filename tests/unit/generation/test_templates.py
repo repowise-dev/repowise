@@ -192,71 +192,10 @@ def test_file_page_always_says_what_the_file_is(jinja_env, bare_file_page_ctx):
     assert "_No " not in result
 
 
-# ---------------------------------------------------------------------------
-# Question-shaped text
-#
-# Every query is a question and almost every page is a declarative reference,
-# so the two share close to no vocabulary. Module pages already close that gap;
-# these two page types are the bulk of the corpus and had none of it.
-# ---------------------------------------------------------------------------
-
-QUESTIONS_HEADING = "## Questions this page answers"
-
-
-def _questions_block(rendered: str) -> str:
-    """Just the questions, without the footer — which also says "import".
-
-    Asserts the heading starts a line of its own on the way past. Jinja's
-    whitespace control makes it easy to glue it onto the end of the previous
-    section, and every other assertion here still passes when that happens:
-    splitting on the heading finds it wherever it sits, and gluing produces
-    *fewer* blank lines, not more, so the no-gap check passes too. The only
-    thing that catches it is looking at the rendered markdown.
-    """
-    assert QUESTIONS_HEADING in rendered, "no questions block was rendered"
-    assert f"\n{QUESTIONS_HEADING}" in rendered, "the heading is glued to the previous line"
-    return rendered.split(QUESTIONS_HEADING, 1)[1].split("---", 1)[0]
-
-
-def test_file_page_questions_carry_the_real_identifiers(jinja_env, file_page_ctx):
-    """A templated question is only worth anything if it names this file.
-
-    Thousands of pages asking the same question differ only in the identifier
-    they carry, so the identifier is the entire signal. "What does this file
-    export?" would be one sentence repeated across the corpus.
-    """
-    block = _questions_block(render(jinja_env, "file_page.j2", file_page_ctx))
-    assert "`python_pkg/calculator.py`" in block
-    assert "`Calculator`" in block
-    assert block.count("?") >= 2
-
-
-def test_file_page_asks_at_most_three_questions(jinja_env, file_page_ctx):
-    """A fully-connected file qualifies for more than are worth carrying.
-
-    Past three the block stops being question-shaped text and becomes padding
-    on every page in the wiki.
-    """
-    block = _questions_block(render(jinja_env, "file_page.j2", file_page_ctx))
-    assert block.count("\n- ") <= 3
-
-
-def test_file_page_asks_only_what_its_structure_can_answer(jinja_env, bare_file_page_ctx):
-    """A question whose answer is not on the page is worse than no question.
-
-    It puts the words of a promise into the index and then breaks it, which is
-    the retrieval failure this block exists to close.
-    """
-    rendered = render(jinja_env, "file_page.j2", bare_file_page_ctx)
-    assert QUESTIONS_HEADING not in rendered
-
-
-def test_file_page_asks_about_importers_only_when_it_has_them(
-    jinja_env, file_page_ctx, bare_file_page_ctx
-):
-    with_edges = _questions_block(render(jinja_env, "file_page.j2", file_page_ctx))
-    assert "What imports" in with_edges
-    assert "What imports" not in render(jinja_env, "file_page.j2", bare_file_page_ctx)
+def test_file_page_renders_no_question_block(jinja_env, file_page_ctx):
+    """A templated "What does X export?" says nothing the page's own
+    identifiers do not, and repeated it across every file page."""
+    assert "## Questions this page answers" not in render(jinja_env, "file_page.j2", file_page_ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +302,7 @@ def symbol_spotlight_ctx() -> SymbolSpotlightContext:
         decorators=[],
         is_async=False,
         complexity_estimate=1,
-        callers=["main.py"],
+        call_sites=[{"caller": "run", "caller_file": "main.py"}],
     )
 
 
@@ -384,12 +323,7 @@ def test_symbol_spotlight_contains_symbol_name(jinja_env, symbol_spotlight_ctx):
 
 @pytest.fixture(scope="module")
 def unimported_spotlight_ctx() -> SymbolSpotlightContext:
-    """A symbol nothing in the repository imports, and with no docstring.
-
-    Both halves matter: the importer list is what the dropped section was
-    reporting on, and the missing docstring is what the Overview has to cover
-    for on its own.
-    """
+    """A symbol nothing resolved a call to, and with no docstring."""
     return SymbolSpotlightContext(
         symbol_name="_normalise",
         qualified_name="python_pkg.calculator._normalise",
@@ -400,82 +334,52 @@ def unimported_spotlight_ctx() -> SymbolSpotlightContext:
         decorators=[],
         is_async=False,
         complexity_estimate=1,
-        callers=[],
     )
 
 
-def test_spotlight_omits_the_importers_section_when_nothing_imports_it(
-    jinja_env, unimported_spotlight_ctx
-):
-    """No importers is not a fact worth a heading of its own."""
+def test_spotlight_says_in_one_line_when_no_call_resolved(jinja_env, unimported_spotlight_ctx):
+    """No importer dump: the file page lists the module's importers."""
     result = render(jinja_env, "symbol_spotlight.j2", unimported_spotlight_ctx)
-    assert "## Where it is used" not in result
-    assert "No importers" not in result
+    used = result.split("## Where it is used", 1)[1].strip()
+    assert used.count("\n") == 0
+    assert "No uses of it were resolved." in used
 
 
-def test_spotlight_keeps_the_importers_section_when_it_has_importers(
-    jinja_env, symbol_spotlight_ctx
-):
-    """The other half: a symbol with importers still lists them, still hedged.
-
-    The hedge is load-bearing. ``callers`` holds files importing the defining
-    module, not verified call sites, and the sentence has to keep saying so.
-    """
+def test_spotlight_lists_its_resolved_callers(jinja_env, symbol_spotlight_ctx):
     result = render(jinja_env, "symbol_spotlight.j2", symbol_spotlight_ctx)
-    assert "## Where it is used" in result
-    assert "`main.py`" in result
-    assert "not confirmed call sites" in result
-    # The count and its verb have to agree; one importer is the common case.
-    assert "1 file imports the module" in result
+    assert "Used in 1 resolved place." in result
+    assert "- `run` in `main.py`" in result
 
 
 @pytest.fixture(scope="module")
-def widely_imported_spotlight_ctx() -> SymbolSpotlightContext:
-    """A fixture-shaped symbol: imported across a whole test suite.
-
-    939 importers is what ``tests/conftest.py`` actually measured on this
-    repository, which is the case that produced a 46k-char page.
-    """
+def widely_called_spotlight_ctx() -> SymbolSpotlightContext:
+    """A helper called from 939 places, the size that once produced a 46k-char page."""
     return SymbolSpotlightContext(
         symbol_name="fixtures_dir",
-        qualified_name="tests.conftest.fixtures_dir",
+        qualified_name="pkg.paths.fixtures_dir",
         kind="function",
         signature="def fixtures_dir() -> Path:",
         docstring="Path to the fixtures directory.",
-        file_path="tests/conftest.py",
+        file_path="pkg/paths.py",
         decorators=[],
         is_async=False,
         complexity_estimate=1,
-        callers=[f"tests/unit/test_{index}.py" for index in range(939)],
+        call_sites=[{"caller": f"use_{i}", "caller_file": f"pkg/m{i}.py"} for i in range(939)],
     )
 
 
-def test_spotlight_caps_the_importer_list(jinja_env, widely_imported_spotlight_ctx):
-    """An unbounded list pushed the page past what the embedder accepts.
+def test_spotlight_caps_the_call_site_list_and_keeps_the_true_count(
+    jinja_env, widely_called_spotlight_ctx
+):
+    """The embedder drops text past 30,000 chars, so the list stops at 25 while
+    the summary line keeps the real total."""
+    result = render(jinja_env, "symbol_spotlight.j2", widely_called_spotlight_ctx)
 
-    ``EMBED_TEXT_MAX_CHARS`` is 30,000 and the tail past it is dropped from the
-    vector, so the page stayed searchable only by its first few hundred
-    importers. The bound is the one ``file_page.j2`` already applies to the
-    same data.
-    """
-    result = render(jinja_env, "symbol_spotlight.j2", widely_imported_spotlight_ctx)
-
-    listed = re.findall(r"^- `tests/unit/test_\d+\.py`$", result, re.M)
+    listed = re.findall(r"^- `use_\d+` in `pkg/m\d+\.py`$", result, re.M)
     assert len(listed) == 25
+    assert "Used in 939 resolved places." in result
     assert "and 914 more." in result
     assert len(result) < 30_000
-
-
-def test_spotlight_reports_the_true_importer_count_above_the_capped_list(
-    jinja_env, widely_imported_spotlight_ctx
-):
-    """Truncating the list must not truncate the fact.
-
-    The summary sentence is the only place the real number survives, so it
-    counts every importer even though 25 are shown.
-    """
-    result = render(jinja_env, "symbol_spotlight.j2", widely_imported_spotlight_ctx)
-    assert "939 files import the module" in result
 
 
 def test_spotlight_still_describes_a_symbol_that_has_no_docstring(
@@ -503,31 +407,11 @@ def test_spotlight_leaves_no_gap_where_a_section_was_dropped(
         assert not result.startswith("\n")
 
 
-def test_spotlight_questions_carry_the_symbol_and_its_file(jinja_env, symbol_spotlight_ctx):
-    block = _questions_block(render(jinja_env, "symbol_spotlight.j2", symbol_spotlight_ctx))
-    assert "`add`" in block
-    assert "python_pkg.calculator.add" in block
+def test_spotlight_renders_no_question_block_or_source_copy(jinja_env, symbol_spotlight_ctx):
+    result = render(jinja_env, "symbol_spotlight.j2", symbol_spotlight_ctx)
+    assert "## Questions" not in result
+    assert "## Implementation" not in result
 
-
-def test_spotlight_asks_about_importers_only_when_it_has_them(
-    jinja_env, symbol_spotlight_ctx, unimported_spotlight_ctx
-):
-    """The importer question is the only one this page type can condition on.
-
-    A spotlight's context carries no layer, no dependents and no dependencies,
-    and ``callers`` is files importing the defining module rather than verified
-    call sites — so "what calls this?" is a question the page cannot honestly
-    ask, let alone answer. Two questions plus a conditional third is the whole
-    honest set, and padding it would mean asking one it answers falsely.
-    """
-    with_callers = _questions_block(render(jinja_env, "symbol_spotlight.j2", symbol_spotlight_ctx))
-    assert "Which files import" in with_callers
-
-    without = _questions_block(render(jinja_env, "symbol_spotlight.j2", unimported_spotlight_ctx))
-    assert "Which files import" not in without
-    # The two it can always ask survive on a symbol with no edges at all.
-    assert "`_normalise`" in without
-    assert without.count("?") >= 2
 
 
 # ---------------------------------------------------------------------------

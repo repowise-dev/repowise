@@ -11,6 +11,8 @@ import math
 from datetime import UTC, datetime
 from typing import Any
 
+from repowise.core.ingestion.git_indexer._constants import PRIOR_DEFECT_WINDOW_LABEL
+
 #: A file carrying this many counted bug fixes reads as bug-prone. Same trigger
 #: the PR bot uses for prior defects, so the two surfaces agree on "a lot".
 _BUG_PRONE_FIXES = 3
@@ -111,7 +113,9 @@ def fix_annotation(meta: Any, now: datetime | None = None) -> dict | None:
     if count <= 0:
         return None
 
-    out: dict[str, Any] = {"fix_count": count}
+    # The window rides with the count: a bare total beside 90-day churn reads
+    # as a 90-day figure.
+    out: dict[str, Any] = {"fix_count": count, "window": PRIOR_DEFECT_WINDOW_LABEL}
     last_fix_at = getattr(meta, "last_fix_at", None)
     if isinstance(last_fix_at, datetime):
         # Rows are stored naive-UTC; compare on the same footing.
@@ -139,7 +143,7 @@ def _fix_clause(profile: dict | None) -> str:
     n = profile["fix_count"]
     magnet = " (bug magnet)" if profile.get("bug_magnet") else ""
     return (
-        f"{n} bug fix{'es' if n != 1 else ''} in 6mo, "
+        f"{n} bug fix{'es' if n != 1 else ''} in {profile['window']}, "
         f"last {profile['last_fix_days_ago']}d before the indexed commit{magnet}, "
     )
 
@@ -170,7 +174,6 @@ def _defect_profile(meta: Any, now: datetime | None = None) -> dict | None:
     profile = fix_annotation(meta, now=now)
     if profile is None:
         return None
-    profile["window"] = "6 months"
 
     symbols = _top_fix_symbols(getattr(meta, "fix_symbol_counts_json", None))
     if symbols:

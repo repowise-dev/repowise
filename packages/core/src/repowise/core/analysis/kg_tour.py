@@ -123,19 +123,33 @@ def _import_target_counts(graph_builder: Any, sources: set[str]) -> tuple[int, i
     return internal, external
 
 
+def _readme_rank(path: str) -> tuple[int, int, int, str]:
+    """Sort key for README candidates: lower is better.
+
+    Shallowest first (the repo-root one), then the primary README over
+    translations (``README.md`` / ``README`` / ``README.rst`` before
+    ``README.de.md``), then the shorter name, then the path for a stable order.
+    """
+    pure = PurePosixPath(path)
+    name = pure.name.lower()
+    depth = len(pure.parts) - 1
+    # "readme" or "readme.<ext>" is primary; "readme.<lang>.<ext>" is a translation.
+    primary = 0 if name.count(".") <= 1 else 1
+    return (depth, primary, len(name), path)
+
+
 def _readme_overview_node(kg: KnowledgeGraphResult) -> dict | None:
     """The best root-level README/overview file node, if one exists."""
-    best: dict | None = None
+    candidates = []
     for n in _file_nodes(kg):
         path = n["filePath"]
         name = PurePosixPath(path).name.lower()
         depth = len(PurePosixPath(path).parts) - 1
-        if not (name.startswith("readme") and depth <= 1):
-            continue
-        # Prefer the shallowest README (the repo-root one).
-        if best is None or depth < (len(PurePosixPath(best["filePath"]).parts) - 1):
-            best = n
-    return best
+        if name.startswith("readme") and depth <= 1:
+            candidates.append(n)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda n: _readme_rank(n["filePath"]))
 
 
 def _best_in_layer(paths: list[str], rank: dict[str, float], pagerank: dict[str, float]) -> str:
@@ -281,7 +295,9 @@ def _import_groups(
     return groups
 
 
-def _internal_edges(graph_builder: Any, edge_types: frozenset[str]) -> Iterator[tuple[str, str, dict]]:
+def _internal_edges(
+    graph_builder: Any, edge_types: frozenset[str]
+) -> Iterator[tuple[str, str, dict]]:
     """Repo-internal edges of *edge_types*; untyped edges count as imports."""
     for src, dst, data in graph_builder.graph().edges(data=True):
         if not (isinstance(src, str) and isinstance(dst, str)):
@@ -321,10 +337,7 @@ def _anchor_fanout_rank(graph_builder: Any) -> dict[str, int]:
     package import (15 sibling edges) out-ranks a file with a dozen real
     dependencies and the anchor lands alphabetically-by-luck.
     """
-    return {
-        src: len(target_groups)
-        for src, target_groups in _import_groups(graph_builder).items()
-    }
+    return {src: len(target_groups) for src, target_groups in _import_groups(graph_builder).items()}
 
 
 def _drop_extra_barrels(paths: list[str], barrels: set[str], keep: int = 1) -> list[str]:
@@ -532,9 +545,7 @@ def _closing_stop_paths(ctx: _TourContext, graph_builder: Any) -> list[str]:
     Tests verify the system rather than start it, so they close the tour.
     Shared harness files (imported by other test files) never face the suite.
     """
-    adjacent_paths = {
-        p for layer in ADJACENT_LAYERS for p in ctx.by_layer.get(layer, [])
-    }
+    adjacent_paths = {p for layer in ADJACENT_LAYERS for p in ctx.by_layer.get(layer, [])}
     # A package-import fan-out is not evidence that a specific file is
     # referenced, so only single-target imports count as harness evidence.
     harness_in: Counter[str] = Counter()
@@ -885,9 +896,7 @@ def _other_suite_names(ctx: _TourContext) -> list[str]:
         for p in ctx.by_layer.get(layer, [])
     }
     sizeable = [
-        tag
-        for tag, n in lang_counts.items()
-        if tag != ctx.dominant_lang and n / total_code >= 0.20
+        tag for tag, n in lang_counts.items() if tag != ctx.dominant_lang and n / total_code >= 0.20
     ]
     return sorted(
         spec.display_name

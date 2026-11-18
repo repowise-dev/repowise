@@ -2,12 +2,8 @@
 claude-code:
   dir: pre-modification
   frontmatter: |
-    name: pre-modification-check
-    description: >
-      Use before modifying, refactoring, or deleting files in a codebase that has Repowise indexed
-      (indicated by a .repowise/ directory). Activates when Claude is about to edit code, especially
-      shared utilities, core modules, or files the user didn't explicitly mention. Helps assess
-      impact and avoid breaking things.
+    name: pre-modification
+    description: Before editing or deleting shared or core files.
     user-invocable: false
 codex:
   dir: pre-modification-check
@@ -22,8 +18,13 @@ Before modifying files in a Repowise-indexed codebase, assess the impact.
 
 ## Before editing a file
 
+{{only:claude-code}}
 Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
-`hotspot_score`, `trend`, `risk_type`, `impact_surface` (top 3),
+{{end}}
+{{only:codex}}
+Run `repowise risk --target path/to/file.py --format json`. Per file it returns
+{{end}}
+`hotspot_score`, `trend`, `risk_type`,{{only:claude-code}} `impact_surface` (top 3),{{end}}
 `dependents_count`, `co_change_partners`, `primary_owner`,
 `test_gap`, and `security_signals`. Read it for:
 - **Bug-fix history** (`defect_profile`) — present only on files with counted
@@ -33,18 +34,28 @@ Call `get_risk(targets=["path/to/file.py"])`. Per file it returns
   keeps getting fixed is the strongest single signal that the next edit breaks
   something; lead with it.
 - **Hotspot status** (`hotspot_score`, `trend`) — high-churn × complex? Extra care needed.
-- **Dependents** (`dependents_count`, `impact_surface`) — how wide is the blast radius?
+- **Dependents** (`dependents_count`{{only:claude-code}}, `impact_surface`{{end}}) — how wide is the blast radius?
 - **Co-change partners** — files that change together with this one (often without an import link); you may need to update them too.
 - **Ownership / bus factor** — who owns it, and whether a single author maintains it.
 - **Test gap & security signals** — flag untested or security-sensitive files before touching them.
 
 ## When modifying multiple files
 
+{{only:claude-code}}
 Batch all targets into one call: `get_risk(targets=["file1.py", "file2.py", "module/"])`.
+{{end}}
+{{only:codex}}
+Batch all targets into one call: `repowise risk --target file1.py --target file2.py`.
+{{end}}
 
 ## When to warn the user
 
+{{only:claude-code}}
 If `get_risk` shows:
+{{end}}
+{{only:codex}}
+If the risk report shows:
+{{end}}
 - A `defect_profile` with `bug_magnet` set — say so plainly: this file has been fixed repeatedly and recently
 - Hotspot score above 90th percentile — mention this is a frequently-changed, high-risk file
 - More than 10 dependents — list the top dependents; API changes here will break consumers
@@ -55,10 +66,20 @@ If `get_risk` shows:
 
 Call `get_context(targets=["file.py"])` first to understand the full context: what uses this file, what decisions govern it, and why it's structured this way. This prevents accidentally violating architectural decisions.
 
+{{only:claude-code}}
 For a heavy refactor, also call `get_health(targets=["file.py"])` — the
+{{end}}
+{{only:codex}}
+For a heavy refactor, also run `repowise health --file file.py` — the
+{{end}}
 marker findings (complexity, deep nesting, low cohesion, duplication) tell
 you *what* to improve while you're in there, and give you a before/after score.
 
 ## Error handling
 
+{{only:claude-code}}
 If `get_risk` returns a tool error, the MCP server may not be running. Proceed with the modification but note that risk assessment was unavailable.
+{{end}}
+{{only:codex}}
+If `repowise risk --target` fails, the repo may not be indexed. Proceed with the modification but note that risk assessment was unavailable.
+{{end}}

@@ -54,6 +54,25 @@ def test_sync_times_falls_back_to_repo_updated_at_only_after_resync() -> None:
     assert sync_times([], _T0)["last_sync_at"] == _T0.isoformat()
 
 
+def test_sync_times_reports_the_later_of_the_sync_job_and_the_row_stamp() -> None:
+    # A CLI sync after the last server job: the stamp is the last sync, and the
+    # job's model does not describe it.
+    newer_cli = sync_times([_job("completed", "incremental", _T0, model_name="m1")], _T2)
+    assert newer_cli["last_sync_at"] == _T2.isoformat()
+    assert newer_cli["last_sync_model"] is None
+
+    # A server job after the stamp (a job stamps the row before it finishes).
+    newer_job = sync_times([_job("completed", "incremental", _T2, model_name="m1")], _T1)
+    assert newer_job["last_sync_at"] == _T2.isoformat()
+    assert newer_job["last_sync_model"] == "m1"
+
+
+def test_sync_times_compares_a_naive_row_stamp_as_utc() -> None:
+    naive_stamp = datetime(2026, 9, 3)
+    jobs = [_job("completed", "incremental", _T1)]
+    assert sync_times(jobs, naive_stamp)["last_sync_at"] == naive_stamp.isoformat()
+
+
 def test_defect_accuracy_survives_a_malformed_details_blob() -> None:
     metric = SimpleNamespace(file_path="a.py", score=3.0, nloc=10, has_test_file=False, module="a")
     bad = SimpleNamespace(

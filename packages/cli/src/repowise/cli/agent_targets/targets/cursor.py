@@ -49,13 +49,16 @@ from pathlib import Path
 from repowise.core.agents import identity
 from repowise.core.owned_paths import CURSOR_RULES_PREFIX
 
+from ..formats.server_entry import RENAME_HINT, RemoteServerEntryError, ServerSpec
 from ..types import (
     Capability,
     DoctorReport,
     DoctorStatus,
     FileAction,
     FileWrite,
+    HostedSupport,
     InstallMethod,
+    InstallOptions,
     Registration,
     Scope,
     WriteResult,
@@ -89,31 +92,16 @@ METHODS = (
 #: to anyone who opened it. Defined in core, which strips it from a working-tree score.
 RULES_PREFIX = CURSOR_RULES_PREFIX
 
-
-class RemoteServerEntryError(ValueError):
-    """The stored ``repowise`` entry names a transport repowise did not write.
-
-    A ``ValueError`` so it lands in the same handler as an unparseable file, and
-    a distinct type so the caller can say which of the two happened. Both mean
-    "left alone"; only one of them is a broken file.
-    """
-
-
-def _is_remote_entry(entry: dict) -> bool:
-    """Whether a stored server entry describes a transport repowise did not write.
-
-    The entry's own ``type`` decides, and a bare ``url`` only counts when there
-    is no ``command`` beside it. Reading ``"url" in entry`` on its own, ahead of
-    the declared type, calls ``{"type": "stdio", "command": ..., "url": ...}``
-    remote and contradicts what the entry says about itself. A leftover ``url``
-    on a local entry is exactly the stale state ``agents add`` exists to
-    repoint, and treating it as remote wedged it shut against every command
-    that could have fixed it.
-    """
-    declared = entry.get("type")
-    if declared is not None:
-        return declared != "stdio"
-    return "url" in entry and "command" not in entry
+#: The hosted entry lives beside the local one, in the workspace file, so it
+#: serves this repo only. Cursor lists a remote server that needs OAuth with a
+#: "Needs login" button.
+HOSTED = HostedSupport(
+    scope=Scope.PROJECT,
+    next_step=(
+        'Open Cursor Settings > MCP, click "Needs login" next to "{name}" and '
+        "approve Repowise in the browser."
+    ),
+)
 
 
 def mcp_config_path(repo_path: Path) -> Path:
@@ -138,52 +126,26 @@ def server_entry(repo_path: Path) -> dict:
     return {"type": "stdio", **entry}
 
 
-def write_mcp_config(repo_path: Path) -> FileWrite:
-    """Merge the repowise server into ``.cursor/mcp.json``.
+def write_server(repo_path: Path, spec: ServerSpec) -> tuple[str, FileWrite]:
+    """Merge *spec* (the local server or the hosted one) into ``.cursor/mcp.json``.
 
     Raises ``ValueError`` when the existing file is not strict JSON, so the
     caller can skip rather than destroy it. Cursor does not document comment
     support here, but the cost of being wrong is asymmetric: declining leaves a
     working config untouched and prints what to add, while rewriting a file we
     misparsed deletes whatever we could not read.
+
+    A local write onto a remote ``repowise`` entry raises
+    ``RemoteServerEntryError``; see ``formats.server_entry``.
     """
-    from ..formats.json_merge import (
-        load_json_object_or_value_error,
-        merge_server_entries,
-        write_json_config,
-    )
+    from ..formats.server_entry import write_json_servers
 
-    config_path = mcp_config_path(repo_path)
-    new_entry = {"repowise": server_entry(repo_path)}
+    return write_json_servers(mcp_config_path(repo_path), "mcpServers", spec, local_type="stdio")
 
-    if config_path.exists():
-        existing = load_json_object_or_value_error(config_path, "mcp.json")
-        servers = existing.get("mcpServers", {})
-        if not isinstance(servers, dict):
-            raise ValueError("mcp.json 'mcpServers' must be a JSON object")
-        servers = dict(servers)
-        stored = servers.get("repowise")
-        if isinstance(stored, dict) and _is_remote_entry(stored):
-            # ``merge_server_entries`` keeps every key the user added and lets
-            # the generated ones win, which is right for ``command`` and
-            # ``args`` and wrong for ``type``. Against a hand-wired remote
-            # server it forces ``type`` back to ``stdio`` while faithfully
-            # preserving the ``url`` beside it, producing an entry that is
-            # neither a valid local server nor a valid remote one. The
-            # preservation rule is what makes it broken rather than merely
-            # overwritten.
-            #
-            # A remote entry is a deliberate choice repowise did not make, so
-            # the honest answer is to leave it and say so.
-            raise RemoteServerEntryError("mcp.json 'repowise' is wired to a remote server")
-        merge_server_entries(servers, new_entry)
-        existing["mcpServers"] = servers
-        merged = existing
-    else:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        merged = {"mcpServers": new_entry}
 
-    return FileWrite(path=config_path, action=write_json_config(config_path, merged))
+def write_mcp_config(repo_path: Path) -> FileWrite:
+    """Merge the local repowise server into ``.cursor/mcp.json``."""
+    return write_server(repo_path, ServerSpec(server_entry(repo_path)))[1]
 
 
 def write_rules_file(repo_path: Path) -> FileWrite:
@@ -432,6 +394,7 @@ class CursorTarget:
     capture_adapter = IDENTITY.capture_adapter
     methods = METHODS
     project_file_id = PROJECT_FILE_ID
+    hosted = HOSTED
 
     def supports_scope(self, scope: Scope) -> bool:
         """Both: user scope writes only the rewrite hook. See the module docstring."""
@@ -461,6 +424,17 @@ class CursorTarget:
         *,
         repo_path: Path | None = None,
     ) -> WriteResult:
+        hosted_url = options.hosted_url if isinstance(options, InstallOptions) else None
+        if hosted_url:
+            from ..formats.server_entry import install_hosted
+
+            if repo_path is None:
+                raise ValueError("the hosted entry needs a repo_path")
+            return install_hosted(
+                mcp_config_path(repo_path),
+                lambda spec: write_server(repo_path, spec),
+                {"url": hosted_url},
+            )
         result = WriteResult()
         if scope is Scope.USER:
             return _install_capture_hook(_install_rewrite_hook(result))
@@ -471,17 +445,8 @@ class CursorTarget:
             written = write_mcp_config(repo_path)
             result.record(written.path, written.action)
         except RemoteServerEntryError:
-            result.record(
-                mcp_config_path(repo_path),
-                FileAction.KEPT,
-                'its "repowise" entry names a remote server',
-            )
-            result.note(
-                '.cursor/mcp.json left unchanged: its "repowise" entry names a remote '
-                "server, and converting it in place would leave an entry that is "
-                "neither. Run 'repowise agents remove --target=cursor' first if you "
-                "want the local server instead."
-            )
+            result.record(mcp_config_path(repo_path), FileAction.KEPT, RENAME_HINT)
+            result.note(f".cursor/mcp.json left unchanged: {RENAME_HINT}.")
         # ``OSError`` alongside ``ValueError`` because the read and the parent
         # ``mkdir`` both live in there, and neither is exotic: ``.cursor`` can be
         # a plain file, and a config in a shared checkout can be unreadable.

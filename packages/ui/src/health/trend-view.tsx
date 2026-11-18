@@ -210,7 +210,7 @@ function MoverRow({
           type="button"
           onClick={() => onSelectFile(row.file_path)}
           title={row.file_path}
-          className={`${grid} rounded transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]`}
+          className={`${grid} rounded transition-colors hover:bg-[var(--color-bg-elevated)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]`}
         >
           {body}
         </button>
@@ -254,7 +254,7 @@ function MoverGroup({
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="self-start rounded px-2 py-1 text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-accent-primary)]"
+          className="self-start rounded px-2 py-1 text-xs text-[var(--color-accent-primary)] hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--color-focus-ring)]"
         >
           {open ? "Show fewer" : `Show ${rows.length - GROUP_MAX} more`}
         </button>

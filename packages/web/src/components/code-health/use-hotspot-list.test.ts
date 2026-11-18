@@ -19,6 +19,11 @@ describe("summarizePages", () => {
     expect(s).toMatchObject({ total: 3, facets, hasMore: false, loaded: 2 });
   });
 
+  it("leaves facets unset when the server sends none", () => {
+    const { facets: _f, ...bare } = page(["a"], false);
+    expect(summarizePages([bare]).facets).toBeUndefined();
+  });
+
   it("is empty before the first page lands", () => {
     expect(summarizePages(undefined)).toEqual({
       items: [],

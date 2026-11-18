@@ -30,6 +30,7 @@ from pathlib import Path
 
 import click
 
+from repowise.cli._setup import configure_cli_logging
 from repowise.cli.agent_adapters.base import SHELL_POSIX, dialect_for_hook_source
 from repowise.cli.helpers import find_repowise_repo_root
 
@@ -263,6 +264,9 @@ def _caret_escape(rendered: str) -> str:
 
 def _distill_or_raw(output: str, command_str: str, exit_code: int, source: str = "cli") -> str:
     """Distill *output*, honoring the repo's ``distill:`` config block."""
+    # The engine logs a filter that falls back to raw at debug level. Left
+    # unconfigured, structlog prints that line into the output the agent reads.
+    configure_cli_logging(verbose=False)
     try:
         repo_root = find_repowise_repo_root()
         enabled, disabled, (ttl_days, max_mb) = _load_distill_config(repo_root)
@@ -304,9 +308,13 @@ def _load_distill_config(
     cfg = load_repo_config(repo_root).get("distill") or {}
     if not isinstance(cfg, dict):
         return True, (), omission_store_settings(None)
-    enabled = bool(cfg.get("enabled", True))
+    from repowise.core.settings.model import flag
+
+    enabled = flag(cfg.get("enabled"), True)
     commands_cfg = cfg.get("commands") or {}
     raw_disabled = commands_cfg.get("disabled_filters") if isinstance(commands_cfg, dict) else None
+    if isinstance(raw_disabled, str):
+        raw_disabled = [raw_disabled]  # one bare name is a list of one
     disabled = tuple(str(name) for name in raw_disabled) if isinstance(raw_disabled, list) else ()
     return enabled, disabled, omission_store_settings(cfg)
 

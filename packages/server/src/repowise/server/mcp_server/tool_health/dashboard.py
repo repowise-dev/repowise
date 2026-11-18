@@ -10,7 +10,7 @@ from repowise.core.analysis.health.defect_accuracy import compute_defect_accurac
 from repowise.core.analysis.health.grading import TARGET_SCORE
 from repowise.core.analysis.health.grading import distribution as health_distribution
 from repowise.server.mcp_server.tool_health.loading import HealthData, history_of
-from repowise.server.mcp_server.tool_health.paging import Pager
+from repowise.server.mcp_server.tool_health.paging import Pager, health_call
 from repowise.server.mcp_server.tool_health.request import FIX_FIRST_CAP, HealthRequest
 from repowise.server.mcp_server.tool_health.serialize import _serialize_finding, _serialize_metric
 from repowise.server.mcp_server.tool_health.summary import _compute_kpis, _gap_analysis
@@ -82,7 +82,7 @@ def _dashboard_blocks(data: HealthData, req: HealthRequest, pager: Pager) -> dic
         "kpis": lambda: _compute_kpis(
             all_metrics,
             hotspot_paths=data.hotspot_paths,
-            performance_findings=data.perf_findings_count,
+            performance_causes=data.perf_causes,
             coverage=data.perf_coverage,
             unanalysed=len(pop.unanalysed_paths),
             deductions=data.deductions,
@@ -220,7 +220,7 @@ def _defer_to_secondary_rankings(
     result["secondary_rankings"] = {
         block: {
             "total": total,
-            "call": f"get_health(repo={repo!r}, only=['{block}'], limit=50)",
+            "call": health_call(repo=repo, only=[block], limit=50),
         }
         for block, total in totals.items()
     }

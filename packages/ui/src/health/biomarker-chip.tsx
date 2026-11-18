@@ -40,7 +40,7 @@ export function BiomarkerChip({ type, showInfo = true, className = "" }: Biomark
           type="button"
           onClick={(e) => e.stopPropagation()}
           aria-label={`What is ${info.label}?`}
-          className={`inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-primary)] rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent-primary)] ${className}`}
+          className={`inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-primary)] rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-focus-ring)] ${className}`}
         >
           {info.label}
           <Info className="h-3 w-3 text-[var(--color-text-tertiary)]" aria-hidden />

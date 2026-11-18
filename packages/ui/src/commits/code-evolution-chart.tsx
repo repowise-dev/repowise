@@ -244,7 +244,7 @@ export function CodeEvolutionChart({
               className={cn(
                 "rounded-md px-2.5 py-1 font-medium capitalize transition-colors",
                 mode === m
-                  ? "bg-[var(--color-accent-muted)] text-[var(--color-accent-primary)]"
+                  ? "bg-[var(--color-selection-wash)] text-[var(--color-text-primary)]"
                   : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
               )}
             >

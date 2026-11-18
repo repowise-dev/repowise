@@ -3,6 +3,7 @@
 import * as React from "react";
 import type { Commit, ReviewPriority } from "@repowise-dev/types/git";
 import { cn } from "../lib/cn";
+import { formatNumber } from "../lib/format";
 
 /**
  * What a risky commit actually looks like in this repo: every commit is a dot
@@ -132,7 +133,7 @@ export function CommitRiskScatter({
               fontSize="10"
               fill="var(--color-text-tertiary)"
             >
-              {Math.pow(10, d).toLocaleString()}
+              {formatNumber(Math.pow(10, d))}
             </text>
           ))}
           <text
@@ -204,7 +205,7 @@ export function CommitRiskScatter({
               {hovered.commit.subject}
             </p>
             <p className="tabular-nums text-[var(--color-text-secondary)]">
-              {hovered.churn.toLocaleString()} lines ·{" "}
+              {formatNumber(hovered.churn)} lines ·{" "}
               {hovered.commit.files_changed} file
               {hovered.commit.files_changed === 1 ? "" : "s"} · diffusion{" "}
               {hovered.entropy.toFixed(2)}

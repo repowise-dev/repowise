@@ -68,7 +68,12 @@ def wired(monkeypatch, tmp_path):
             repo_path=repo_path,
         )
 
-    monkeypatch.setattr("repowise.server.chat_tools.init_tool_state", _fake_init)
+    monkeypatch.setattr("repowise.server.mcp_server._state.init_tool_state", _fake_init)
+
+    async def _no_identity(session_factory):
+        return None
+
+    monkeypatch.setattr("repowise.server.mcp_server._state.publish_served_repo_id", _no_identity)
     return engine, store, published, tmp_path
 
 
@@ -436,3 +441,167 @@ def test_a_bridged_call_is_bounded_like_an_mcp_one(wired):
     assert result["truncated"] is True
     assert len(result["results"]) < 80
     assert result["_meta"]["omitted"]["refs"]
+
+
+def test_publishing_tool_state_does_not_load_the_http_stack():
+    """A CLI tool call wires state per process; FastAPI costs about half a second."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; from repowise.server.mcp_server._state import init_tool_state; "
+        "init_tool_state(None, None, None); "
+        "assert 'fastapi' not in sys.modules, 'fastapi imported'"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+class _FakeRegistry:
+    def __init__(self, default_ctx, error: Exception | None = None) -> None:
+        self.default_ctx = default_ctx
+        self.error = error
+        self.closed = False
+
+    async def get_default(self):
+        if self.error is not None:
+            raise self.error
+        return self.default_ctx
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def workspace(wired, monkeypatch):
+    """A workspace whose member ``code`` is the wired repo, and a fake registry."""
+    from types import SimpleNamespace
+
+    from repowise.server.mcp_server import _state
+
+    _engine, _store, published, repo = wired
+    ws_root = repo / "ws"
+    (repo / "code" / ".repowise").mkdir(parents=True)
+    ws_root.mkdir()
+    (ws_root / ".repowise-workspace.yaml").write_text(
+        "version: 1\ndefault_repo: other\nrepos:\n"
+        "- path: ../other\n  alias: other\n- path: ../code\n  alias: code\n"
+    )
+    ctx = SimpleNamespace(
+        session_factory="sf", fts="fts", vector_store="vs", decision_store="vs",
+        vector_store_ready=None,
+    )
+    registry = _FakeRegistry(ctx)
+    built: list = []
+
+    def _fake_registry(root, config, alias, db_url):
+        built.append(alias)
+        return registry
+
+    monkeypatch.setattr(
+        "repowise.server.mcp_server._server.workspace_registry", _fake_registry
+    )
+    monkeypatch.setattr(_state, "_registry", None)
+    monkeypatch.setattr(_state, "_workspace_root", None)
+    monkeypatch.setattr(_state, "_repo_path", None)
+    return repo / "code", ws_root, registry, built, published
+
+
+def test_a_workspace_call_is_served_like_the_mcp_server_then_torn_down(workspace):
+    """``get_answer`` reads the other members through ``_state._registry``."""
+    from repowise.server.mcp_server import _state
+
+    code, ws_root, registry, built, published = workspace
+    seen: dict = {}
+
+    async def _tool():
+        seen.update(registry=_state._registry, sf=_state._session_factory,
+                    root=_state._workspace_root, repo_path=_state._repo_path)
+        return {"ok": True}
+
+    result = tool_bridge.call_tool(code, _tool, "get_answer", workspace_root=ws_root)
+    assert _answer_only(result) == {"ok": True}
+    # Defaults to the repo the command resolved, not the workspace's default.
+    assert built == ["code"]
+    assert seen == {"registry": registry, "sf": "sf", "root": str(ws_root),
+                    "repo_path": str(code)}
+    assert not published, "the single-repo wiring ran as well"
+    assert registry.closed and _state._registry is None and _state._workspace_root is None
+
+
+def test_a_repo_outside_the_workspaces_members_is_served_alone(workspace):
+    from repowise.server.mcp_server import _state
+
+    _code, ws_root, _registry, built, published = workspace
+    stray = ws_root.parent / "stray"
+    (stray / ".repowise").mkdir(parents=True)
+
+    async def _tool():
+        return {"registry": _state._registry}
+
+    assert tool_bridge.call_tool(stray, _tool, "get_answer", workspace_root=ws_root)[
+        "registry"
+    ] is None
+    assert built == [] and published["repo_path"] == str(stray)
+
+
+def test_a_workspace_store_that_cannot_open_falls_back_to_the_repo_alone(workspace):
+    from repowise.server.mcp_server import _state
+
+    code, ws_root, registry, _built, published = workspace
+    registry.error = LookupError("no row for this checkout")
+
+    async def _tool():
+        return {"registry": _state._registry}
+
+    assert tool_bridge.call_tool(code, _tool, "get_answer", workspace_root=ws_root)[
+        "registry"
+    ] is None
+    assert registry.closed and published["repo_path"] == str(code)
+
+
+def test_live_reads_follow_the_served_checkout_of_a_moved_index(monkeypatch, tmp_path):
+    """An index copied to another path reads its files where it is served.
+
+    The stored ``local_path`` still names where it was built, so reading lines
+    or references through it found another tree, or none. The MCP server serves
+    the checkout's own row from its own path; a CLI call must do the same.
+    """
+    import asyncio
+
+    from repowise.core.persistence import create_engine, init_db
+    from repowise.core.persistence.database import resolve_db_url
+    from repowise.core.persistence.models import Repository
+    from repowise.server.mcp_server import _state
+    from repowise.server.mcp_server._meta import served_root
+
+    built_at = tmp_path / "built"
+    served = tmp_path / "copy"
+    (served / ".repowise").mkdir(parents=True)
+    (served / ".git").mkdir()
+    monkeypatch.delenv("REPOWISE_DB_URL", raising=False)
+    monkeypatch.delenv("REPOWISE_DATABASE_URL", raising=False)
+    monkeypatch.setattr(_state, "_repo_path", _state._repo_path)
+    monkeypatch.setattr(_state, "_served_repo_id", _state._served_repo_id)
+
+    async def _build():
+        engine = create_engine(resolve_db_url(served))
+        await init_db(engine)
+        async with engine.begin() as conn:
+            await conn.execute(
+                Repository.__table__.insert().values(id="r1", name="r", local_path=str(built_at))
+            )
+        await engine.dispose()
+
+    asyncio.run(_build())
+
+    async def _fake_open(repo_path):
+        return None
+
+    monkeypatch.setattr(tool_bridge, "_open_vector_store", _fake_open)
+
+    async def _tool():
+        async with _state._session_factory() as session:
+            return {"root": served_root(await session.get(Repository, "r1"))}
+
+    assert tool_bridge.call_tool(served, _tool, "get_context")["root"] == str(served)

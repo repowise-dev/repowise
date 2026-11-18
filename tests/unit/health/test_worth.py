@@ -151,7 +151,7 @@ def test_history_orders_within_a_tier_but_never_lifts_a_small_function() -> None
     ranked = {f.factor: f.value for f in tidy.why_ranked}
     assert "value" not in ranked and "value within later" in ranked
     assert ranked["problem size"] == "0"
-    assert ("severity", "high by the detector; lower priority by shape") in [
+    assert ("severity", "high; lower priority by shape") in [
         (f.label, f.value) for f in tidy.facts
     ]
 
@@ -294,3 +294,19 @@ def test_the_default_queue_counts_an_unproven_cause_and_still_adds_up() -> None:
     assert counts["total"] == 1
     assert counts["excluded"]["unmeasured_cost"] == 1 and counts["excluded"]["test"] == 1
     assert counts["total"] + sum(counts["excluded"].values()) == len(rows)
+
+
+def test_a_critical_code_shape_marker_ranks_as_high() -> None:
+    """A detector-critical long method is not a reason to lift its value band;
+    a brain method still is a size claim, and coverage keeps its severity."""
+    from repowise.core.analysis.health.scoring import ranked_severity
+    from repowise.core.analysis.health.worth import measure
+
+    assert ranked_severity("complex_method", "critical") == "high"
+    assert ranked_severity("large_method", "high") == "high"
+    assert ranked_severity("coverage_gap", "critical") == "critical"
+    assert ranked_severity("change_entropy", "critical") == "critical"
+    assert ranked_severity("io_in_loop", "critical") == "critical"
+    row = {"biomarker_type": "complex_method", "severity": "critical", "details": {"ccn": 12}}
+    assert "severe" not in measure([row])
+    assert measure([row, {**row, "biomarker_type": "brain_method"}])["severe"] == 1

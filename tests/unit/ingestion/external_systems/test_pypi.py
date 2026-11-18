@@ -14,6 +14,12 @@ def _write(tmp_path: Path, rel: str, content: str) -> Path:
     return p
 
 
+def test_non_utf8_pyproject_yields_nothing(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_bytes(b'[project]\nname = "caf\xe9"\ndependencies = ["httpx"]\n')
+    assert pypi._parse_pyproject(pyproject, tmp_path) == []
+
+
 def test_parses_pep621_dependencies(tmp_path):
     pyproject = _write(
         tmp_path,
@@ -66,6 +72,23 @@ black = "^24"
     assert "stripe" in by_name and by_name["stripe"].category == "service"
     assert by_name["black"].is_dev_dep is True
     assert "python" not in by_name  # explicit skip
+
+
+def test_poetry_legacy_dev_dependencies_are_dev(tmp_path):
+    pyproject = _write(
+        tmp_path,
+        "pyproject.toml",
+        """
+[tool.poetry]
+name = "demo"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7"
+local = { path = "../local" }
+""",
+    )
+    records = pypi.parse(pyproject, tmp_path)
+    assert [(r.name, r.is_dev_dep) for r in records] == [("pytest", True)]
 
 
 def test_requirements_txt(tmp_path):

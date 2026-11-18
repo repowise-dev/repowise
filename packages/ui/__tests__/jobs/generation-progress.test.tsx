@@ -197,7 +197,7 @@ describe("GenerationProgress", () => {
         onCancel={vi.fn()}
         onRetry={vi.fn()}
         onDismiss={onDismiss}
-        settingsHref="/repos/r1/settings#provider"
+        settingsHref="/repos/r1/settings/models"
       />,
     );
     expect(screen.getByText("Finished with problems")).toBeTruthy();
@@ -206,7 +206,7 @@ describe("GenerationProgress", () => {
     expect(screen.getByText(/API key rejected by openai/)).toBeTruthy();
     expect(screen.getByRole("link", { name: /Provider settings/ })).toHaveAttribute(
       "href",
-      "/repos/r1/settings#provider",
+      "/repos/r1/settings/models",
     );
     fireEvent.click(screen.getByRole("button", { name: /Dismiss/ }));
     expect(onDismiss).toHaveBeenCalled();

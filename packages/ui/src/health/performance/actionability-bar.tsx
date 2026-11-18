@@ -5,7 +5,8 @@ import type { PerformanceActionabilityState } from "@repowise-dev/types/health";
 import { ProportionBar } from "../../shared/proportion-bar";
 import { Segmented, type SegmentOption } from "../../shared/segmented";
 import type { ActionabilityCounts } from "./grouping";
-import { ACTIONABILITY_HINT, ACTIONABILITY_LABEL } from "./presentation";
+import { ACTIONABILITY_HINT, ACTIONABILITY_INK, ACTIONABILITY_LABEL } from "./presentation";
+import { formatNumber } from "../../lib/format";
 
 /**
  * The scope's split by actionability, as one bar and the one control that
@@ -15,15 +16,6 @@ import { ACTIONABILITY_HINT, ACTIONABILITY_LABEL } from "./presentation";
  */
 
 const STATES: PerformanceActionabilityState[] = ["plan_ready", "advisory", "investigate", "expected"];
-
-/** One neutral family, darkest where the change is surest; the segment names
- *  carry the meaning, so no state borrows a health colour. */
-const STATE_COLOR: Record<PerformanceActionabilityState, string> = {
-  plan_ready: "var(--color-text-primary)",
-  advisory: "var(--color-text-secondary)",
-  investigate: "var(--color-text-tertiary)",
-  expected: "var(--color-border-default)",
-};
 
 type Choice = PerformanceActionabilityState | "all";
 
@@ -42,11 +34,11 @@ export function ActionabilityBar({
   // place so it can be cleared; an empty segment would name nothing to show.
   const states = STATES.filter((state) => counts[state] > 0 || value === state);
   const options: SegmentOption<Choice>[] = [
-    { value: "all", label: "All", count: total.toLocaleString() },
+    { value: "all", label: "All", count: formatNumber(total) },
     ...states.map((state) => ({
       value: state,
       label: ACTIONABILITY_LABEL[state],
-      count: counts[state].toLocaleString(),
+      count: formatNumber(counts[state]),
       hint: ACTIONABILITY_HINT[state],
     })),
   ];
@@ -65,7 +57,7 @@ export function ActionabilityBar({
             key: state,
             label: ACTIONABILITY_LABEL[state],
             value: counts[state],
-            color: STATE_COLOR[state],
+            color: ACTIONABILITY_INK[state],
           }))}
         />
       ) : null}
