@@ -203,6 +203,9 @@ async def test_store_without_the_table_answers_as_no_evidence(
 def test_low_share_interval_never_rounds_past_the_estimate():
     row = _row(samples=4, run_samples=1000, share_low=0.0016, share_high=0.0102)
     assert "(<1% of samples, 0-1%;" in symbol_line(row, NOW)
+    # A lower end that is exact in decimal but not in binary keeps its value.
+    row = _row(samples=600, share_low=0.57, share_high=0.63)
+    assert "(60% of samples, 57-63%;" in symbol_line(row, NOW)
 
 
 def test_run_without_a_class_names_only_the_workload():

@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import Table, and_, delete, insert, or_, select
+from sqlalchemy import Table, delete, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
@@ -276,25 +277,23 @@ async def hotness_for_symbols(
     *,
     files: Iterable[str] = (),
 ) -> dict[str, SymbolHotness]:
-    """The ``symbol_hotness`` row of each of *symbol_ids*, and of every symbol in *files*, that has one.
+    """The row of each of *symbol_ids*, and of every symbol in *files*, that has one.
 
     A symbol missing from the result has no runtime evidence: unknown, never
-    cold. A file is read as its key range, so a few symbols and files cost
-    one keyed statement.
+    cold. A file is read as its key range. Each statement takes one chunk of
+    ids and one chunk of ranges (``key_range_chunks``), under SQLite's bound
+    variable limit, so a few symbols and files cost one keyed statement.
     """
-    from .function_facts import key_range
+    from .function_facts import key_range_chunks
 
     wanted = sorted(set(symbol_ids))
-    ranges = sorted({key_range(path) for path in files})
     sid = SymbolHotness.symbol_id
-    chunks = [wanted[i : i + _BATCH_SIZE] for i in range(0, len(wanted), _BATCH_SIZE)] or [[]]
+    id_chunks = [wanted[i : i + _BATCH_SIZE] for i in range(0, len(wanted), _BATCH_SIZE)]
+    range_chunks = list(key_range_chunks(sid, files))
     out: dict[str, SymbolHotness] = {}
-    for n, chunk in enumerate(chunks):
-        clauses: list[Any] = [sid.in_(chunk)] if chunk else []
-        if n == 0:
-            clauses += [and_(sid >= low, sid < high) for low, high in ranges]
-        if not clauses:
-            break
+    for ids, ranges in zip_longest(id_chunks, range_chunks, fillvalue=[]):
+        clauses: list[Any] = [sid.in_(ids)] if ids else []
+        clauses += ranges
         result = await session.execute(
             select(SymbolHotness).where(
                 SymbolHotness.repository_id == repository_id, or_(*clauses)

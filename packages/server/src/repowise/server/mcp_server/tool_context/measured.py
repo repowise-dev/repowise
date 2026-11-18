@@ -195,7 +195,8 @@ def _earlier(row: Any) -> str:
 
 def _low(value: float) -> str:
     """An interval's lower end without its sign, never rounded up past the estimate."""
-    return str(int(value * 100))
+    # Rounded first: 0.57 * 100 is 56.99999999999999 in binary floating point.
+    return str(int(round(value * 100, 6)))
 
 
 def _pct(value: float) -> str:
