@@ -20,11 +20,15 @@ Adapter = Callable[[ResolverContext], list[tuple[BuildUnit, tuple[str, ...]]]]
 # that caches it on the context, with the manifest names it is the authority
 # on. ``manifest_roots`` runs after them all and fills in the package roots
 # they left: a root holding only manifests of an adapter that found units is
-# left out, since that adapter already decided it is no unit (a virtual
-# Cargo workspace, a ``package.json`` outside the declared workspace).
+# left out, since that adapter already decided it is no unit. A workspace
+# declaration rules on every ``package.json`` on purpose: a non-member one is
+# a fixture, template or separately installed tool, not a package the
+# workspace builds. Cargo gives every ``[package]`` manifest a unit itself, in
+# the workspace or not; a ``Cargo.toml`` without one (a virtual workspace) is
+# no unit, and any other root it shares is left to the fallback.
 _ADAPTERS: tuple[tuple[str, Adapter, tuple[str, ...]], ...] = (
     ("dotnet", dotnet.units, ("*.csproj", "*.vbproj")),
-    ("cargo", cargo.units, ("cargo.toml",)),
+    ("cargo", cargo.units, ()),
     (
         "gradle",
         gradle.units,
@@ -80,8 +84,15 @@ def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
             authoritative.extend(manifests)
         _add(found, units, listed, ctx.path_set)
 
-    def decided(manifest_name: str) -> bool:
+    try:
+        virtual = cargo.virtual_roots(ctx)
+    except Exception:  # the cargo adapter already logged the failure
+        virtual = set()
+
+    def decided(root: str, manifest_name: str) -> bool:
         lowered = manifest_name.lower()
+        if lowered == "cargo.toml" and root in virtual:
+            return True
         return any(fnmatch.fnmatchcase(lowered, pattern) for pattern in authoritative)
 
     claimed = {unit.root for unit in units.values()}

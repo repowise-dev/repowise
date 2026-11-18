@@ -3,7 +3,7 @@
 The roots come from :func:`scan_package_manifests`, which reads the language
 registry's manifest names; the repo root, which that scan leaves out, is
 added when it holds a manifest. A root whose every manifest *decided*
-accepts is skipped: a specific adapter already ruled on it. These units carry
+accepts (called with the root and the manifest name) is skipped: a specific adapter already ruled on it. These units carry
 no deps.
 """
 
@@ -22,7 +22,7 @@ from repowise.core.ingestion.resolvers.context import ResolverContext
 
 
 def units(
-    ctx: ResolverContext, decided: Callable[[str], bool]
+    ctx: ResolverContext, decided: Callable[[str, str], bool]
 ) -> list[tuple[BuildUnit, tuple[str, ...]]]:
     if ctx.repo_path is None:
         return []
@@ -39,7 +39,7 @@ def units(
 
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
     for root, names in roots.items():
-        if all(decided(name) for name in names):
+        if all(decided(root, name) for name in names):
             continue
         manifest = min(names)
         unit = BuildUnit(

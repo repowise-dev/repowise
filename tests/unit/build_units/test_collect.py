@@ -232,3 +232,50 @@ def test_duplicate_id_keeps_the_shallowest_root(tmp_path):
     assert list(index.units) == ["go:example.com/same"]
     assert index.unit("go:example.com/same").root == "a"
     assert _owners(index, "b/copy/b.go") == []
+
+
+def test_cargo_crates_outside_the_workspace_get_units(tmp_path):
+    index = _collect(tmp_path, {
+        "Cargo.toml": '[workspace]\nmembers = ["crates/app"]\nexclude = ["fuzz"]\n',
+        "crates/app/Cargo.toml": '[package]\nname = "app"\n',
+        "crates/app/src/main.rs": "",
+        # Excluded from the workspace, no explicit targets.
+        "fuzz/Cargo.toml": '[package]\nname = "fuzz"\n',
+        "fuzz/src/lib.rs": "",
+        # Standalone, never listed by the workspace.
+        "tools/gen/Cargo.toml": '[package]\nname = "gen"\n',
+        "tools/gen/src/main.rs": "",
+        # A nested virtual workspace is no unit either.
+        "tools/ws/Cargo.toml": '[workspace]\nmembers = []\n',
+        "tools/ws/build.rs": "",
+    })
+    # The virtual workspace root is no unit.
+    assert set(index.units) == {"cargo:app", "cargo:fuzz", "cargo:gen"}
+    assert _owners(index, "fuzz/src/lib.rs") == ["cargo:fuzz"]
+    assert _owners(index, "tools/gen/src/main.rs") == ["cargo:gen"]
+    assert _owners(index, "Cargo.toml") == []
+    assert _owners(index, "tools/ws/build.rs") == []
+
+
+def test_cargo_crate_with_no_root_manifest(tmp_path):
+    index = _collect(tmp_path, {
+        "native/Cargo.toml": '[package]\nname = "native"\n',
+        "native/src/lib.rs": "",
+        "pyproject.toml": "[project]\nname = 'host'\n",
+    })
+    assert set(index.units) == {"cargo:native", "manifest:."}
+    assert _owners(index, "native/src/lib.rs") == ["cargo:native"]
+
+
+def test_cargo_path_dep_outside_the_repo_links_no_same_named_crate(tmp_path):
+    repo = tmp_path / "repo"
+    index = _collect(repo, {
+        "Cargo.toml": '[workspace]\nmembers = ["crates/*"]\n',
+        "crates/core/Cargo.toml": '[package]\nname = "core"\n',
+        "crates/core/src/lib.rs": "",
+        "crates/app/Cargo.toml": (
+            '[package]\nname = "app"\n[dependencies]\ncore = { path = "../../../elsewhere/core" }\n'
+        ),
+        "crates/app/src/main.rs": "",
+    })
+    assert index.unit("cargo:app").deps == ()
