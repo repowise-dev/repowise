@@ -30,6 +30,7 @@ from typing import Any, NamedTuple
 import structlog
 
 from ..pytest_roots import PytestRoots
+from .function_hunks import FileFunctions
 from .test_selection import Selection, TestSelectionConfig, project_dirs
 
 log = structlog.get_logger(__name__)
@@ -325,6 +326,7 @@ async def collect(
     from ..persistence.crud import get_test_coverage_summary
     from ..persistence.crud.analysis.coverage_map import map_is_truncated
     from ..persistence.crud.analysis.health.metrics import health_file_paths
+    from .function_hunks import function_scoped_lines
 
     out = empty_result(len(change.files) + len(change.deleted))
     if not out["changed_files"]:
@@ -349,10 +351,18 @@ async def collect(
         )
     )
     routes = sorted({*routes, *scope_routes})
+    lines = query_lines(change, measured)
+    functions = (
+        await function_scoped_lines(
+            session, repo_id, repo_path, change, measured_side(change, measured), lines
+        )
+        if out["map_current"] and not (out["map_empty"] or out["map_truncated"])
+        else {}
+    )
     await resolve_impacted(
         session,
         repo_id,
-        query_lines(change, measured),
+        lines,
         repo_keys,
         out,
         roots,
@@ -361,6 +371,7 @@ async def collect(
         read_source=read_source,
         groups=scope_groups,
         cancelled=cancelled,
+        functions=functions,
     )
     await _place_tests(session, repo_id, out)
     if explain:
@@ -487,15 +498,20 @@ def query_lines(change, measured: str | None) -> dict[str, set[int] | None]:
     numbers, at its head in the new file's. Measured anywhere else, or for a
     deleted or hunkless file, only the file can be matched (``None``).
     """
-    side = None
-    if measured and measured == change.head:
-        side = "new"
-    elif measured and measured == change.base:
-        side = "old"
+    side = measured_side(change, measured)
     lines: dict[str, set[int] | None] = dict.fromkeys(change.deleted)
     for path, diff in change.files.items():
         lines[path] = _touched_lines(diff.hunks, side) if side and diff.hunks else None
     return lines
+
+
+def measured_side(change, measured: str | None) -> str | None:
+    """``"new"`` when the map was measured at the change's head, ``"old"`` at its base."""
+    if measured and measured == change.head:
+        return "new"
+    if measured and measured == change.base:
+        return "old"
+    return None
 
 
 def _touched_lines(hunks, side: str) -> set[int]:
@@ -527,6 +543,10 @@ def empty_result(changed_files: int) -> dict:
         "test_hops": {},  # test file -> fewest hops from the change, for ordering only
         "changed_files": changed_files,
         "covered": {},  # test_id -> {test_file, source_files: [...]}
+        # changed files whose covering tests answer them (``function_hunks``),
+        # and every test file the per-test map measured, read only for those
+        "function_covered": [],
+        "measured_test_files": [],
         "inferred": [],  # {source_file, test_file, via}
         "unknown": [],  # source_file (nothing knows of a test for it)
     }
@@ -545,6 +565,7 @@ async def resolve_impacted(
     read_source: Callable[[str], str | None] | None = None,
     groups: Mapping[str, Sequence[str]] | None = None,
     cancelled: Callable[[], bool] = _never,
+    functions: Mapping[str, FileFunctions] | None = None,
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -578,10 +599,25 @@ async def resolve_impacted(
         file-level and all over-claim; none may be read as coverage.
     ``unknown``
         Nothing said anything. Run the full suite.
+
+    *functions* (:func:`~.function_hunks.function_scoped_lines`) are the
+    changed files whose every hunk sits inside function bodies. Each is looked
+    up by those functions' whole bodies; one the map has tests for is listed in
+    ``function_covered``, with the test files the map measured
+    (``measured_test_files``): selection keeps of its graph tests only those
+    the map never ran, since a measured test that does not cover the change
+    only imports it. One the map has no test for is decided like any other.
     """
+    from ..persistence.crud import measured_test_files
+
+    functions = functions or {}
+    asked = {**changed, **{p: f.lines for p, f in functions.items()}}
     route_only = [r for r in routes if r not in changed]
     graph_targets = sorted({*changed, *route_only})
-    has_rows = await _record_coverage(session, repo_id, changed, route_only, out, groups)
+    has_rows = await _record_coverage(session, repo_id, asked, route_only, out, groups)
+    out["function_covered"] = answered = sorted(p for p in functions if p in has_rows)
+    if answered:
+        out["measured_test_files"] = sorted(await measured_test_files(session, repo_id))
     if not graph_targets:
         return out
     try:

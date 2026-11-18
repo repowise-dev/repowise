@@ -700,7 +700,9 @@ def select_tests(inp: SelectionInput) -> Selection:
             *((t, t) for t in always),
         ]
     )
-    notes = _notes(inp, triage.skipped, always, traced)
+    notes = _function_notes(triage.code, per_file, evidence) + _notes(
+        inp, triage.skipped, always, traced
+    )
     besides = {f for _, f in in_scope} | set(always)
     broadcast = _broadcast(evidence, test_files, besides)
     # A route through a file changed since the index was built may be shorter
@@ -787,6 +789,27 @@ _UNPLACED_REASON = "the graph has no edge from it into the repository's code"
 _EVERY_SUBSET = "runs with every subset: "
 
 
+def _function_notes(
+    code: list[str], per_file: Mapping[str, tuple[list[_TestRef], str]], ev: _Evidence
+) -> list[str]:
+    """One line per changed file the tests covering its changed functions answer."""
+    out = []
+    for path in code:
+        if path not in ev.functions:
+            continue
+        files = {f for _, f in per_file[path][0] if f}
+        covering = files & {f for _, f in ev.covered.get(path, ())}
+        line = (
+            f"{path}: {len(covering)} test file(s) cover the changed function lines; every "
+            "change in it sits inside function bodies, so measured tests that only import "
+            "it are left out"
+        )
+        if unmeasured := len(files - covering):
+            line += f"; {unmeasured} test file(s) the map never ran still run for it"
+        out.append(f"{line}.")
+    return out
+
+
 def _always_running(inp: SelectionInput) -> dict[str, str]:
     """``{test file: why it runs with every subset}``; a detected reason wins.
 
@@ -813,9 +836,10 @@ def _why(
         tests, basis = per_file[path]
         vias = {f: via for f, via in ev.inferred.get(path, ())}
         covered = {f for _, f in ev.covered.get(path, ())}
+        by_coverage = FUNCTION_COVERAGE_VIA if path in ev.functions else "coverage"
         for _, test_file in tests:
             if test_file and test_file not in out:
-                via = "coverage" if test_file in covered else vias.get(test_file, basis)
+                via = by_coverage if test_file in covered else vias.get(test_file, basis)
                 out[test_file] = f"{path} changed ({_VIA_WHY.get(via, via)})"
     return out
 
@@ -841,8 +865,13 @@ IMPORT_CLOSURE_VIA = "import-closure"
 # The vias that put a test in by imports alone (a conftest broadcast included).
 _IMPORT_ONLY = frozenset({"import-graph", PACKAGE_INIT_VIA, BROADCAST_VIA})
 
+#: How :attr:`Selection.why` names a test that covers a changed function's body,
+#: in a file whose every change sits inside function bodies (``function_hunks``).
+FUNCTION_COVERAGE_VIA = "function-coverage"
+
 # The vias a conftest route adds (``conftest_routes``), spelled out.
 _VIA_WHY = {
+    FUNCTION_COVERAGE_VIA: f"{FUNCTION_COVERAGE_VIA}: it covers the changed function lines",
     BROADCAST_VIA: (
         f"{BROADCAST_VIA}: a conftest above it is on the route and keeps every test under it"
     ),
@@ -1222,6 +1251,10 @@ class _Evidence:
     known_tests: tuple[str, ...]
     plugin_loader: str | None
     gap: frozenset[str] = frozenset()
+    # Changed files their covering tests answer (``function_covered``), and the
+    # test files the per-test map measured (``measured_test_files``).
+    functions: frozenset[str] = frozenset()
+    measured: frozenset[str] = frozenset()
     # Tests every subset runs (unplaced and detected always-run).
     every_subset: frozenset[str] = frozenset()
     # Explanations that do not force a full run, gathered while deciding.
@@ -1252,6 +1285,8 @@ class _Evidence:
             known_tests=tuple(inp.known_tests),
             plugin_loader=inp.plugin_loader,
             gap=frozenset(inp.index_gap or ()),
+            functions=frozenset(inp.tiers.get("function_covered") or ()),
+            measured=frozenset(inp.tiers.get("measured_test_files") or ()),
             every_subset=frozenset(inp.unplaced_tests) | frozenset(inp.always_run_tests),
         )
 
@@ -1300,10 +1335,20 @@ def _file_tests(
     the base), so having no test of its own is not a reason.
     """
     found = ev.found(path)
-    tests = ev.present([*ev.covered.get(path, ()), *found])
+    covered = ev.covered.get(path, ())
+    if path in ev.functions:
+        # Whole files: a fixture set up once per file runs the change for every
+        # test sharing it, while coverage credits only the first.
+        covered = [(f, f) if f else (t, f) for t, f in covered]
+    tests = ev.present([*covered, *found])
     basis = _basis(path, ev.covered, ev.inferred, ev.unknown)
     scopes, basis = _scope_files(path, found, basis)
     tests = _expand_scopes(path, tests, scopes, ev)
+    if path in ev.functions:
+        # A test the map measured that does not cover the changed functions
+        # only imports them; one it never ran keeps the graph's word.
+        mine = {f for _, f in covered}
+        tests = [(t, f) for t, f in tests if f in mine or f not in ev.measured]
     helpers = sorted(
         {f for _, f in found if not is_runnable_test(f)} - ev.deleted - scopes - {path}
     )
