@@ -1410,9 +1410,11 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
   (Go `Benchmark*`, pytest-benchmark) and the unit-test suite, in that order, each with a profiler
   command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
   `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
-  `--workload`, `--class` and `--commit` filled in. A target with no `command` or no `ingest` says
+  `--workload`, `--class` and `--commit` filled in. Workload names and profile files of a unit below
+  the root start with its root (`tools: go bench .`). A target with no `command` or no `ingest` says
   why in `reason` (`go run` takes no profiler flag; TypeScript positions are in the compiled
-  JavaScript). `next_call` lists the steps to run next, each with its `cwd`: ingest a coverage
+  JavaScript; this build does not read the format the recipe writes). Only a target with an
+  `ingest` line enters `next_call`. `next_call` lists the steps to run next, each with its `cwd`: ingest a coverage
   report on disk first, else profile the best runtime target, else run a unit's tests with
   coverage. What is already stored for the checkout's commit (coverage, a workload's run) is not
   asked for again; once nothing is left, `next_call` is `null` and `reason` says so, so an agent
