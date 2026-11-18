@@ -40,6 +40,7 @@ from ..entry_candidacy import (
     conventional_entry_stems,
     not_an_execution_start,
 )
+from ..fs_walk import INDEX_BLOCKED_DIRS
 from ..owned_paths import MANAGED_FILES, OWNED_PATTERNS, only_repowise_differs
 from ..phpunit_roots import (
     PHPUNIT_CONFIG_NAMES,
@@ -243,38 +244,13 @@ _REFERENCE_BEARING_EXTENSIONS: frozenset[str] = frozenset(
 # Blocklists
 # ---------------------------------------------------------------------------
 
-_BLOCKED_DIRS: frozenset[str] = frozenset(
-    {
-        ".git",
-        # Repowise's own state changes between init and update; indexing it
-        # makes the two graphs diverge.
-        ".repowise",
-        ".hg",
-        ".svn",
-        "node_modules",
-        ".venv",
-        "venv",
-        "__pycache__",
-        ".pytest_cache",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".tox",
-        ".next",
-        ".gradle",
-        "vendor",  # Go / PHP
-        "htmlcov",
-        ".eggs",
-        "site-packages",
-        ".cache",
-        ".idea",
-        ".vscode",
-        # Test dirs (tests/, spec/, __tests__/, e2e/) are indexed on purpose
-        # and tagged is_test via is_test_related_path(). These two hold
-        # binary fixtures and scaffolding instead:
-        "fixtures",
-        "conftest",
-    }
-)
+# The default directory policy is owned by fs_walk: never-source dirs plus
+# the dirs the index skips on purpose (vendor, fixtures, conftest). Test dirs
+# (tests/, spec/, __tests__/, e2e/) are indexed on purpose and tagged is_test
+# via is_test_related_path(). Repowise's own state (.repowise) is in the
+# never-source set: it changes between init and update, so indexing it would
+# make the two graphs diverge.
+_BLOCKED_DIRS: frozenset[str] = INDEX_BLOCKED_DIRS
 
 _BLOCKED_EXTENSIONS: frozenset[str] = frozenset(
     {

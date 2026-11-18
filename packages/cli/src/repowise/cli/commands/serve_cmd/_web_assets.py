@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from repowise.cli.helpers import console
+from repowise.core.fs_walk import PRUNED_DIRS, walk_repo
 
 _GITHUB_REPO = "repowise-dev/repowise"
 _WEB_CACHE_DIR = Path.home() / ".repowise" / "web"
@@ -92,7 +93,8 @@ def _local_build_is_stale(web_dir: Path) -> bool:
     build_mtime = standalone.stat().st_mtime
 
     repo_root = web_dir.parent.parent  # packages/web → repo root
-    skip_dirs = {"node_modules", ".next", ".turbo", "dist", ".git"}
+    # The never-source set plus web build output.
+    skip_dirs = PRUNED_DIRS | {"dist"}
 
     file_inputs: list[Path] = [
         web_dir / "package.json",
@@ -117,14 +119,13 @@ def _local_build_is_stale(web_dir: Path) -> bool:
     for root in dir_inputs:
         if not root.exists():
             continue
-        for path in root.rglob("*"):
-            if any(part in skip_dirs for part in path.relative_to(root).parts):
-                continue
-            try:
-                if path.is_file() and path.stat().st_mtime > build_mtime:
-                    return True
-            except OSError:
-                continue
+        for dirpath, _dirnames, filenames in walk_repo(root, prune_dirs=skip_dirs):
+            for name in filenames:
+                try:
+                    if os.stat(os.path.join(dirpath, name)).st_mtime > build_mtime:
+                        return True
+                except OSError:
+                    continue
     return False
 
 

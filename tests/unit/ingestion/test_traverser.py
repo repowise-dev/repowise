@@ -400,6 +400,31 @@ class TestFileTraverser:
 
         assert paths == {"app.py"}
 
+    def test_tool_state_dirs_are_not_indexed(self, tmp_path: Path) -> None:
+        """Every never-source dir the shared walk prunes is skipped by the index too."""
+        files = {
+            ".yarn/plugins/@yarnpkg/plugin-workspace-tools.cjs": "module.exports = {};\n",
+            ".yarn/releases/yarn-4.0.0.cjs": "module.exports = {};\n",
+            ".nox/tests/bin/activate_this.py": "x = 1\n",
+            ".turbo/cache/run.js": "var a = 1;\n",
+            ".nuxt/app.js": "var a = 1;\n",
+            ".pnpm-store/v3/index.js": "var a = 1;\n",
+            "packages/web/.parcel-cache/a.js": "var a = 1;\n",
+            ".eggs/pkg/setup.py": "x = 1\n",
+            "vendor/lib/dep.py": "x = 1\n",
+            "tests/fixtures/sample.py": "x = 1\n",
+        }
+        for rel, text in files.items():
+            (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+            (tmp_path / rel).write_text(text, encoding="utf-8")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+
+        paths = {f.path for f in FileTraverser(tmp_path).traverse()}
+
+        assert paths == {"app.py"}
+        for rel in files:
+            assert in_blocked_dir(rel)
+
     def test_reincluded_dir_in_root_repowise_ignore_is_indexed(self, tmp_path: Path) -> None:
         (tmp_path / "package.json").write_text('{"name":"tool","type":"module"}', encoding="utf-8")
         (tmp_path / "src" / "build").mkdir(parents=True)

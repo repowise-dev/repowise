@@ -7,7 +7,8 @@ from pathlib import Path
 
 from .base import DynamicEdge, DynamicHintExtractor
 
-_SKIP_DIRS = {"target", "node_modules", ".git"}
+# Ecosystem dirs on top of the shared prune set in _walk.PRUNED_DIRS.
+_SKIP_DIRS = {"target"}
 
 # Entry point attributes
 _ENTRY_ATTRS = (

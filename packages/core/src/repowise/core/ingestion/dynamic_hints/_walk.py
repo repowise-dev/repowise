@@ -13,7 +13,9 @@ sibling checkout are not this repo's hints.
 Dynamic hints keep the *derived-output* prune set and skip build and report
 output through the traverser's ``is_output_dir``: hint extraction reads
 source files, and derived copies of them only add noise, while a source
-package named ``build`` or ``coverage`` is indexed and must be read.
+package named ``build`` or ``coverage`` is indexed and must be read. They
+also skip the index's policy-blocked dirs (``vendor``, ``fixtures``), so a
+standalone walk reads the same trees the indexed file list feeds them.
 """
 
 from __future__ import annotations
@@ -21,9 +23,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 
-from repowise.core.fs_walk import PRUNED_DIRS_DERIVED as PRUNED_DIRS
+from repowise.core.fs_walk import POLICY_BLOCKED_DIRS, PRUNED_DIRS_DERIVED
 from repowise.core.fs_walk import iter_glob as _shared_iter_glob
 from repowise.core.ingestion.traverser import is_output_dir
+
+PRUNED_DIRS: frozenset[str] = PRUNED_DIRS_DERIVED | POLICY_BLOCKED_DIRS
 
 __all__ = ["PRUNED_DIRS", "is_output_dir", "iter_glob"]
 
