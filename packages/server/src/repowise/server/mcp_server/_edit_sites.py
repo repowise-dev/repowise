@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import keyword
 import os
 import re
 import tokenize
@@ -446,17 +447,27 @@ class _ProseLines:
         named: set[tuple[int, int, int]] = set()
         # The two tokens before the current one, past line continuations and comments.
         before: tuple[str, str] = ("", "")
-        # Open brackets, innermost last: a ``:`` in ``{}`` or ``[]`` is no annotation.
+        # Open brackets, innermost last; ``s[`` opens a subscript, ``[`` a list.
         opened: list[str] = []
+        # The bracket depth of each open ``lambda`` header.
+        lambdas: list[int] = []
+        # Whether the token before is the ``:`` that ends a ``lambda`` header.
+        lambda_colon = False
         try:
             for t in tokenize.generate_tokens(io.StringIO(text).readline):
                 if t.type in (tokenize.NL, tokenize.COMMENT):
                     continue
                 prev, before = before, (before[1], t.string)
+                after_lambda, lambda_colon = lambda_colon, False
                 if t.type == tokenize.OP and t.string in "([{":
-                    opened.append(t.string)
+                    opened.append("s[" if t.string == "[" and _subscripts(prev[1]) else t.string)
                 elif t.type == tokenize.OP and t.string in ")]}" and opened:
                     opened.pop()
+                elif t.type == tokenize.NAME and t.string == "lambda":
+                    lambdas.append(len(opened))
+                elif t.string == ":" and lambdas and lambdas[-1] == len(opened):
+                    lambdas.pop()
+                    lambda_colon = True
                 if t.type == tokenize.NAME and t.string == self._name:
                     code.add(t.start[0])
                     at.add(t.start)
@@ -473,7 +484,7 @@ class _ProseLines:
                         not fstring
                         and _NAMED_BODY.fullmatch(m.group(3))
                         and t.start[0] == t.end[0]
-                        and not _annotation_slot(prev, opened[-1] if opened else "")
+                        and not _annotation_slot(prev, opened[-1] if opened else "", after_lambda)
                     ):
                         named.add((t.start[0], t.start[1], t.end[1]))
         except (tokenize.TokenError, SyntaxError):
@@ -552,16 +563,24 @@ class _ProseLines:
         return all(_masked_string_hit(text, full, comments, m) for m in hits)
 
 
-def _annotation_slot(prev: tuple[str, str], bracket: str) -> bool:
+def _annotation_slot(prev: tuple[str, str], bracket: str, after_lambda: bool) -> bool:
     """Whether a string after tokens *prev*, inside open *bracket*, is a type
     written as a string, a forward reference (``u: "User"``, ``-> "User"``,
-    ``bound="User"``, ``cast("User", x)``), which uses the type in code.
+    ``Union["User", None]``, ``bound="User"``, ``cast("User", x)``), which uses
+    the type in code. A subscript key (``obj["name"]``) is code too.
 
-    A dict value (``{"k": "User"}``), a slice or a ``lambda:`` body is no annotation.
+    A dict value (``{"k": "User"}``), a list item or a ``lambda`` body is no annotation.
     """
+    if bracket == "s[":
+        return True
     if prev[1] == ":":
-        return bracket in ("", "(") and prev[0] != "lambda"
+        return bracket in ("", "(") and not after_lambda
     return prev[1] == "->" or prev in (("bound", "="), ("cast", "("))
+
+
+def _subscripts(token: str) -> bool:
+    """Whether a ``[`` after *token* subscripts it, rather than opening a list."""
+    return token in (")", "]") or (token.isidentifier() and not keyword.iskeyword(token))
 
 
 def _masked_string_hit(text: str, full: str, comments: str, m: re.Match[str]) -> bool:
@@ -586,8 +605,9 @@ def _subscript(text: str, start: int, end: int) -> bool:
     )
 
 
-# The end of an expression a ``[`` subscripts: a name, a call or another subscript.
-_SUBSCRIPTED = re.compile(r"[\w$)\]]$")
+# The end of an expression a ``[`` subscripts: a name, a call, another subscript
+# or an optional chain (``obj?.["name"]``).
+_SUBSCRIPTED = re.compile(r"(?:[\w$)\]]|\?\.)$")
 
 
 _TAG_BEFORE = re.compile(r"</?$")

@@ -778,6 +778,8 @@ async def test_forward_reference_annotations_stay_references(session, repo_id, t
             'getattr(catalog, "backend_of")\n'
             'z = {"target": "pkg.catalog.backend_of"}\n'
             'w = lambda: "backend_of"\n'
+            'x: Union["backend_of", None] = None\n'
+            'y = sorted(xs, key=lambda n: "backend_of")\n'
         )
 
     out = await edit_set_block(session, repo_id, tmp_path, node)
@@ -785,8 +787,8 @@ async def test_forward_reference_annotations_stay_references(session, repo_id, t
     # A type written as a string uses it in code; a getattr name, a dict value
     # or a lambda body does not.
     files = out["files"][_USER]
-    assert files["reference"] == [11, 12, 13, 14]
-    assert files["string"] == [10, 15, 16, 17]
+    assert files["reference"] == [11, 12, 13, 14, 18]
+    assert files["string"] == [10, 15, 16, 17, 19]
 
 
 @pytest.mark.asyncio
@@ -804,6 +806,7 @@ async def test_spy_targets_in_typescript_are_strings(session, repo_id, tmp_path)
                 'jest.spyOn(mod, "pick").mockReturnValue(1)\n'
                 "expect(pick).toBe(1)\n"
                 "mod['pick'](2)\n"
+                "mod?.['pick'](3)\n"
             ),
         },
     )
@@ -812,7 +815,7 @@ async def test_spy_targets_in_typescript_are_strings(session, repo_id, tmp_path)
 
     # A string subscript is a member access, not a string target.
     assert out["files"]["web/a.test.ts"] == {
-        "import": [2], "reference": [5, 6], "string": [3, 4]
+        "import": [2], "reference": [5, 6, 7], "string": [3, 4]
     }
 
 
