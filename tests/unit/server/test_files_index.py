@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from httpx import AsyncClient
 
+from repowise.core.persistence import crud
 from repowise.core.persistence.database import get_session
 from repowise.core.persistence.models import GraphNode, Repository
 from repowise.server.mcp_server.tool_context import enrichment
@@ -107,3 +108,35 @@ async def test_percentiles_rank_against_files_only(client: AsyncClient, app) -> 
         await enrichment._resolve_metrics(session, repository, "src/high.py", out_high)
     assert out_low["metrics"]["pagerank_percentile"] == by_path["src/low.py"]["pagerank_pct"]
     assert out_high["metrics"]["pagerank_percentile"] == by_path["src/high.py"]["pagerank_pct"]
+
+
+@pytest.mark.asyncio
+async def test_percentile_rank_single_file_repo(client: AsyncClient, app) -> None:
+    """With exactly one owned file, values below that file get 0.0, not 100.0 (#5745)."""
+    repo = await create_test_repo(client)
+    await _insert_nodes(
+        app.state.session_factory,
+        repo["id"],
+        [
+            {"node_id": "src/only.py", "pagerank": 0.5},
+            {"node_id": "external:react", "pagerank": 9.0},
+        ],
+    )
+
+    resp = await client.get(f"/api/repos/{repo['id']}/files")
+    by_path = {f["file_path"]: f for f in resp.json()["files"]}
+    assert by_path["src/only.py"]["pagerank_pct"] == 100.0
+
+    file_page = await client.get(f"/api/repos/{repo['id']}/files/src/only.py")
+    assert file_page.status_code == 200
+    assert file_page.json()["graph"]["pagerank_percentile"] == 100.0
+
+    async with app.state.session_factory() as session:
+        all_nodes = await crud.get_all_file_metrics(session, repo["id"])
+        # A value below the lone file gets 0.0, at or above gets 100.0
+        assert crud.percentile_rank(0.1, all_nodes) == 0.0
+        assert crud.percentile_rank(0.5, all_nodes) == 100.0
+        assert crud.percentile_rank(0.9, all_nodes) == 100.0
+        assert await crud.get_pagerank_percentile(session, repo["id"], 0.1) == 0.0
+        assert await crud.get_pagerank_percentile(session, repo["id"], 0.5) == 100.0
+        assert await crud.get_pagerank_percentile(session, repo["id"], 0.9) == 100.0

@@ -863,7 +863,9 @@ def percentile_rank(
     ordered = sorted(v for _, v in items)
     n = len(ordered)
     if n == 1:
-        return 100.0 if value is not None else {k: 100.0 for k, _ in items}
+        if value is None:
+            return {k: 100.0 for k, _ in items}
+        return 100.0 if float(value) >= ordered[0] else 0.0
 
     if value is None:
         out: dict[str, float] = {}
@@ -899,6 +901,7 @@ async def get_pagerank_percentile(
             select(
                 func.count().label("total"),
                 func.sum(case((GraphNode.pagerank < pagerank, 1), else_=0)).label("below"),
+                func.min(GraphNode.pagerank).label("min_pr"),
             ).where(
                 GraphNode.repository_id == repository_id,
                 GraphNode.node_type == "file",
@@ -911,7 +914,7 @@ async def get_pagerank_percentile(
     if not total:
         return 0.0
     if total == 1:
-        return 100.0
+        return 100.0 if row.min_pr is not None and pagerank >= row.min_pr else 0.0
     return round(100.0 * (row.below or 0) / (total - 1), 1)
 
 
