@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._shared import _checkout_root, _find_repo_root
+from ._shared import _checkout_root, _find_repo_root, listed_tools
 from .decision_inject import (
     _edit_decision_notice,
     _edit_fix_history_notice,
@@ -28,9 +28,7 @@ from .read_state import _load_session_state, _save_session_state
 
 _MCP_CONTEXT = (
     "[repowise] This repository has a local codebase wiki and graph index. "
-    "Use the repowise MCP tools for architecture overview, semantic search, "
-    "implementation context, risk/hotspot checks, decision history, and "
-    "dead-code analysis. After meaningful edits or git operations, run "
+    "Use the repowise MCP tools{uses}. After meaningful edits or git operations, run "
     "`repowise update` when refreshed context is needed."
 )
 
@@ -38,11 +36,29 @@ _MCP_CONTEXT = (
 #: because updating here would build the worktree an index of its own.
 _MCP_CONTEXT_WORKTREE = (
     "[repowise] This worktree reads its main checkout's codebase index. "
-    "Use the repowise MCP tools for architecture overview, semantic search, "
-    "implementation context, risk/hotspot checks, decision history, and "
-    "dead-code analysis. Facts about files this branch changed describe the "
+    "Use the repowise MCP tools{uses}. Facts about files this branch changed describe the "
     "main checkout's indexed version."
 )
+
+#: What each tool is used for, in the order the context names them. Only the
+#: tools Codex is listed here are named (:func:`listed_tools`).
+_TOOL_USES = {
+    "get_overview": "architecture overview",
+    "search_codebase": "semantic search",
+    "get_context": "implementation context",
+    "get_risk": "risk/hotspot checks",
+    "get_why": "decision history",
+    "get_dead_code": "dead-code analysis",
+}
+
+
+def _context(template: str, repo_path: Path) -> str:
+    """*template* naming what the tools Codex is listed here are for."""
+    listed = listed_tools(repo_path, "codex", _TOOL_USES)
+    uses = [use for name, use in _TOOL_USES.items() if name in listed]
+    if len(uses) > 2:
+        uses = [", ".join(uses[:-1]) + ",", uses[-1]]
+    return template.format(uses=f" for {' and '.join(uses)}" if uses else "")
 
 
 def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> str | None:
@@ -55,7 +71,9 @@ def _handle_codex_context_event(event: str, cwd: str, session_id: str = "") -> s
         return None
 
     checkout = _checkout_root(Path(cwd), repo_path)
-    context = _MCP_CONTEXT if checkout == repo_path else _MCP_CONTEXT_WORKTREE
+    context = _context(
+        _MCP_CONTEXT if checkout == repo_path else _MCP_CONTEXT_WORKTREE, repo_path
+    )
     if event == "UserPromptSubmit":
         return context
 

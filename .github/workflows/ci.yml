@@ -458,6 +458,9 @@ jobs:
       - name: Test ui
         run: npm run test --workspace @repowise-dev/ui
 
+      - name: Test web
+        run: npm run test --workspace packages/web
+
       # ICU compile gate: a malformed plural or stray brace in any catalog
       # fails the build here instead of throwing on the page that renders it.
       - name: Check message catalogs compile (ICU)

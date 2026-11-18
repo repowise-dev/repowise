@@ -165,10 +165,10 @@ from repowise.server.mcp_server.tool_answer.data_shape import (
 )
 from repowise.server.mcp_server.tool_answer.degraded import _degraded_payload
 from repowise.server.mcp_server.tool_answer.documents import find_documents, place_documents
+from repowise.server.mcp_server.tool_answer.episodes import CallVerdicts, prefetch_verdicts
 from repowise.server.mcp_server.tool_answer.episodes import (
     attach_episode as _attach_episode,
 )
-from repowise.server.mcp_server.tool_answer.episodes import prefetch_verdicts
 from repowise.server.mcp_server.tool_answer.evidence import (
     _first_resolvable_id,  # noqa: F401  — re-exported: imported from here by tests
     _is_readable_path,
@@ -459,14 +459,27 @@ def _kept_keyless_reply(ask: _Ask, qhash: str) -> dict | None:
     return served
 
 
-async def _prefetch_episodes(ask: _Ask, hits: list[dict], fallback_targets: list[str]) -> None:
-    """Check the episodes scoped to the ranked files, for the attach after synthesis."""
-    await prefetch_verdicts(
-        question=ask.question,
-        paths=[*fallback_targets, *(h["target_path"] for h in hits if h.get("target_path"))],
-        repo_path=getattr(ask.ctx, "path", None),
-        repo_name=getattr(ask.repository, "name", None),
+#: Prefetches still running after their answer returned (the attach waits only
+#: for the queries it needs), held so the event loop does not drop them.
+_PREFETCHES: set[asyncio.Task] = set()
+
+
+def _prefetch_episodes(ask: _Ask, hits: list[dict], fallback_targets: list[str]) -> CallVerdicts:
+    """Start checking the episodes scoped to the ranked files; the attach after
+    synthesis reads the returned memo."""
+    verdicts = CallVerdicts()
+    task = asyncio.ensure_future(
+        prefetch_verdicts(
+            question=ask.question,
+            paths=[*fallback_targets, *(h["target_path"] for h in hits if h.get("target_path"))],
+            repo_path=getattr(ask.ctx, "path", None),
+            repo_name=getattr(ask.repository, "name", None),
+            verdicts=verdicts,
+        )
     )
+    _PREFETCHES.add(task)
+    task.add_done_callback(_PREFETCHES.discard)
+    return verdicts
 
 
 def _empty_question_payload(t0: float) -> dict:
@@ -758,7 +771,7 @@ async def _cache_and_stamp(
     confidence: str,
     targets: list[str],
     cut_off: bool = False,
-    episode_prefetch: asyncio.Future[None] | None = None,
+    episode_verdicts: CallVerdicts | None = None,
 ) -> None:
     """Write the cache row, then stamp ``_meta`` and the episode on the live reply.
 
@@ -796,7 +809,7 @@ async def _cache_and_stamp(
         question=ask.question,
         repo_path=getattr(ask.ctx, "path", None),
         repo_name=getattr(ask.repository, "name", None),
-        prefetch=episode_prefetch,
+        verdicts=episode_verdicts,
     )
 
 
@@ -974,7 +987,7 @@ async def get_answer(
 
     prompt = await _user_prompt(ask, hits, graph_callers, retrieved.other_repo_lines)
     # The episode check's git queries run while the model writes.
-    episode_prefetch = asyncio.ensure_future(_prefetch_episodes(ask, hits, fallback_targets))
+    episode_verdicts = _prefetch_episodes(ask, hits, fallback_targets)
     clock.mark("prepare")
     # Budgets its own timeout per provider: a remote API needs seconds, a CLI
     # subprocess or local model needs minutes.
@@ -1010,7 +1023,7 @@ async def get_answer(
         provider=provider,
         confidence=confidence,
         targets=[*citations, *fallback_targets],
-        episode_prefetch=episode_prefetch,
+        episode_verdicts=episode_verdicts,
     )
     clock.log("synthesized", "grade")
     return payload

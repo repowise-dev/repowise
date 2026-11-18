@@ -32,7 +32,7 @@ from .analyzer import (
     language_for,
     language_of,
 )
-from .attribution import FindingAttributor, changed_symbols_for
+from .attribution import FindingAttributor, changed_symbols, changed_symbols_for
 from .file_scores import file_score_deltas
 from .identity import change_finding_id, finding_key, severity_rank
 from .matcher import FindingMatcher, MatchedFinding, MatchResult
@@ -342,6 +342,13 @@ class ChangeHealthDeltaService:
                 subject,
                 sides.rename,
                 departed={old: moves.destinations().get(old, []) for old in gone},
+            ),
+            changed_symbols=changed_symbols(
+                [c for c in eligible if c.head_path in subject]
+                + [c for c in departed if c.base_path in gone],
+                sides.head_run.symbols,
+                sides.base_run.symbols,
+                moves,
             ),
         )
         delta.timing_ms = (time.perf_counter() - started) * 1000

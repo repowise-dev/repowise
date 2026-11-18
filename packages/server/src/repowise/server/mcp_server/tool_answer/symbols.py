@@ -19,6 +19,7 @@ from sqlalchemy import select
 
 from repowise.core.persistence.models import WikiSymbol
 from repowise.core.support_paths import is_doc_or_config_path
+from repowise.core.symbol_spans import symbol_at
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._helpers import read_repo_file_text
 from repowise.server.mcp_server._line_hits import production_only, word_scan
@@ -621,11 +622,9 @@ def _innermost_holders(defs: list, rows: list[dict]) -> Counter:
     # Comment lines count on purpose: httpx writes NO_PROXY only in its holder's comments.
     held: Counter = Counter()
     for r in rows:
-        spans = [
-            d for d in defs if d.file_path == r["path"] and d.start_line <= r["line"] <= d.end_line
-        ]
-        if spans:
-            held[max(spans, key=lambda d: d.start_line)] += 1
+        holder = symbol_at((d for d in defs if d.file_path == r["path"]), r["line"])
+        if holder is not None:
+            held[holder] += 1
     return held
 
 

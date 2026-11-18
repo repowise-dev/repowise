@@ -150,9 +150,7 @@ async def test_long_area_names_keep_the_line_bounded(session, factory, repo_id):
 
 def test_instructions_with_the_longest_repo_line_fit_the_cap():
     longest = "x" * _MAX_LINE_CHARS
-    text = _instructions(
-        [*_TOOL_LINES, *_CHECK_CLAUSES, *_WORKSPACE_TOOL_LINES], longest, all_listed=False
-    )
+    text = _instructions([*_TOOL_LINES, *_CHECK_CLAUSES, *_WORKSPACE_TOOL_LINES], longest)
     assert longest in text
     assert len(text) < _MAX_INSTRUCTIONS_CHARS
 

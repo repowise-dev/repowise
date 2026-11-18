@@ -823,7 +823,7 @@ export interface ChangeRiskBlock {
  * empty ``tests_to_run`` means no test needs to run. ``status`` is
  * ``selected``, ``run_all``, ``degraded`` (the index lags the checkout and the
  * list holds most of the suite), or why no selection was made (``no_index``,
- * ``unknown``, ``timeout``, ``busy``, ``config_invalid``).
+ * ``unknown``, ``timeout``, ``busy``, ``config_invalid``, ``too_large``).
  */
 export interface ChangeTestsBlock {
   status: string;
@@ -4839,6 +4839,11 @@ export interface VersionResponse {
   reindex_command?: string | null;
   highlights?: ChangelogHighlightModel[];
   latest_highlights?: string[];
+}
+
+export interface ViewOpenedRequest {
+  /** A view id, e.g. repo.codeHealth */
+  view: string;
 }
 
 export interface WebhookResponse {

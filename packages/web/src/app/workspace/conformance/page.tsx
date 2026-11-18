@@ -245,6 +245,7 @@ export default async function ConformancePage() {
         ) : cycles.length === 0 ? (
           <EmptyState
             className="p-6"
+            {...(metrics && cycleCount === 0 ? { tone: "positive" as const } : {})}
             title={
               cycleCount > 0
                 ? cycleCountCapped
@@ -343,6 +344,7 @@ async function ViolationsEmptyState({
   if (state === "checked") {
     return (
       <EmptyState
+        tone="positive"
         className="p-6"
         title={t("emptyNoRulesBrokenTitle")}
         description={t("emptyNoRulesBrokenDescription")}

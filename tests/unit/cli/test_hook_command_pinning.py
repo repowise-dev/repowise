@@ -376,6 +376,45 @@ def test_a_cursor_reinstall_repoints_the_hook(install, tmp_path, monkeypatch) ->
     ]
 
 
+def test_cursor_capture_install_pins_and_replaces_the_legacy_entry(
+    install, tmp_path, monkeypatch
+) -> None:
+    from repowise.cli.agent_adapters import cursor
+
+    path = tmp_path / ".cursor" / "hooks.json"
+    path.parent.mkdir()
+    monkeypatch.setattr(cursor, "user_hooks_path", lambda: path)
+    pinned = f"{_script(install, 'repowise-augment')} --client cursor"
+
+    assert cursor.install_cursor_capture_hook() == path
+    entries = json.loads(path.read_text(encoding="utf-8"))["hooks"]["afterFileEdit"]
+    assert entries == [{"command": pinned, "timeout": 5}]
+    assert cursor.cursor_capture_hook_installed()
+
+    legacy = {"command": "repowise augment --client cursor", "timeout": 5}
+    foreign = {"command": "./hooks/format.sh"}
+    path.write_text(
+        json.dumps({"version": 1, "hooks": {"afterFileEdit": [foreign, legacy]}}),
+        encoding="utf-8",
+    )
+    assert cursor.cursor_capture_hook_installed()
+    assert cursor.install_cursor_capture_hook() == path
+    entries = json.loads(path.read_text(encoding="utf-8"))["hooks"]["afterFileEdit"]
+    assert entries == [foreign, {"command": pinned, "timeout": 5}]
+
+    stale = {"command": "/gone/bin/repowise-augment --client cursor", "timeout": 5}
+    path.write_text(
+        json.dumps({"version": 1, "hooks": {"afterFileEdit": [foreign, stale]}}),
+        encoding="utf-8",
+    )
+    assert cursor.install_cursor_capture_hook() == path
+    entries = json.loads(path.read_text(encoding="utf-8"))["hooks"]["afterFileEdit"]
+    assert entries == [foreign, {"command": pinned, "timeout": 5}]
+
+    assert cursor.uninstall_cursor_capture_hook() is True
+    assert json.loads(path.read_text(encoding="utf-8"))["hooks"]["afterFileEdit"] == [foreign]
+
+
 def _enable_plugin(settings_path: Path, hooks: dict) -> None:
     """An enabled repowise plugin carrying *hooks*, laid out as Claude Code keeps it."""
     install_path = settings_path.parent / "plugins" / "cache" / "repowise" / "9.9.9"

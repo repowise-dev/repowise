@@ -23,6 +23,7 @@ from repowise.core.support_paths import (
         "demos/app/main.ts",
         "benches/parser.rs",
         "benchmarks/run.py",
+        "benchmark/run.py",
         # Workspace members keep their own example trees, so the match is not
         # anchored to the repo root.
         "crates/render/examples/window.rs",
@@ -42,6 +43,8 @@ def test_example_dirs_are_examples(path: str):
         # Basename only: a module *about* examples is production code.
         "src/examples.py",
         "src/benchmark_runner.go",
+        "benchmark.py",
+        "include/benchmark/benchmark.h",
         # Not a whole segment.
         "src/examples_helper/util.py",
     ],
@@ -51,7 +54,10 @@ def test_production_paths_are_not_examples(path: str):
     assert not is_support_path(path)
 
 
-@pytest.mark.parametrize("path", ["docs/guide/main.c", "doc/build.py", "website/theme/index.ts"])
+@pytest.mark.parametrize(
+    "path",
+    ["docs/guide/main.c", "doc/build.py", "website/theme/index.ts", "docs_src/tutorial001/main.py"],
+)
 def test_doc_dirs_are_support_but_not_examples(path: str):
     """The distinction the two predicates exist for.
 
@@ -73,6 +79,7 @@ def test_classification_token_prefers_suffix_and_falls_back_to_dotfile_name():
     assert classification_token("config.yaml") == ".yaml"
     assert classification_token(".env") == ".env"
     assert classification_token("proj/.ENV") == ".env"
+
 
 class TestClassificationToken:
     """classification_token picks the right token for suffix vs dotfile."""
@@ -108,9 +115,7 @@ def test_config_and_doc_paths(path: str):
     assert is_doc_or_config_path(path)
 
 
-@pytest.mark.parametrize(
-    "path", ["src/parser.rs", "src/env.py", ".gitignore", "Makefile"]
-)
+@pytest.mark.parametrize("path", ["src/parser.rs", "src/env.py", ".gitignore", "Makefile"])
 def test_production_paths_are_not_doc_or_config(path: str):
     assert not is_doc_or_config_path(path)
 

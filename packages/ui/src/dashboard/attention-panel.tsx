@@ -3,7 +3,6 @@
 import { useState } from "react";
 import {
   AlertTriangle,
-  CheckCircle2,
   Trash2,
   Users,
   FileWarning,
@@ -130,7 +129,7 @@ export function AttentionPanel({
       <Card>
         <CardContent className="p-2">
           <EmptyState
-            icon={<CheckCircle2 className="h-8 w-8 text-[var(--color-success)]" />}
+            tone="positive"
             title="Nothing needs attention"
             description="No hotspots, risky files, or stale docs right now."
           />

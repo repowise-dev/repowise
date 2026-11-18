@@ -30,7 +30,7 @@ export interface PerformanceFilterState {
   confidence: PerformanceOpportunityConfidence | null;
   /** The actionability bar's selection. */
   actionability: PerformanceActionabilityState | null;
-  /** Outside "now", whose causes are all measured and served. */
+  /** Outside "now", whose causes are all proven and served. */
   proof: PerformanceCostProof | null;
   role: PerformanceExecutionRole | null;
   sort: PerformanceSort;

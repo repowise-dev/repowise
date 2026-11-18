@@ -81,9 +81,8 @@ def test_a_rewritten_part_changes_the_map_pages_subject():
 
 
 def test_an_empty_module_gets_no_page():
-    empty = SimpleNamespace(symbols=[], dependencies=[])
-    code = SimpleNamespace(symbols=[{"name": "f"}], dependencies=[])
-    barrel = SimpleNamespace(symbols=[], dependencies=["pkg/a.py"])
+    # Per file: does it define or import anything.
+    empty, code, barrel = False, True, True
     assert _is_empty_module([empty], has_parts=False)
     assert not _is_empty_module([empty, code], has_parts=False)
     assert not _is_empty_module([barrel], has_parts=False)

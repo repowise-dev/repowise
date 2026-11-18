@@ -139,6 +139,18 @@ def test_partial_runs_are_not_full(command) -> None:
 
 
 @pytest.mark.parametrize(
+    ("client", "tools", "named"),
+    [(None, "", True), ("codex", "", False), ("codex", "mcp:\n  tools: standard\n", True)],
+)
+def test_the_notice_names_get_change_risk_only_when_listed(repo, spawned, client, tools, named) -> None:
+    _config(repo, tools)
+    _report(repo)
+    note = hook.coverage_reingest_notice({"command": "pytest"}, str(repo), client)
+    assert note is not None and note.endswith(".")
+    assert ("get_change_risk" in note) is named
+
+
+@pytest.mark.parametrize(
     "command",
     ["pytestify", "git commit -m pytest", "npm install", "echo pytest", "go build", None, 3],
 )

@@ -321,6 +321,7 @@ def test_unresolvable_handlers_add_nothing(tmp_path: Path) -> None:
         "node-svc/src/handlers/users.mjs",
         "node-svc/src/handlers/users.mjs::create",
         "node-svc/src/handlers/legacy.js",
+        "node-svc/src/handlers/legacy.js::run",
     }
     # Invalid YAML and a top-level list are skipped without raising.
     assert _lambda_targets(graph, "broken/serverless.yml") == set()

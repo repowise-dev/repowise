@@ -16,8 +16,8 @@ through its body, accumulating:
 Anonymous functions (lambdas, arrow functions, closures) recurse for
 their containing function's metrics when they are nested in a named
 function. Module-level lambdas, such as route callbacks, produce their
-own ``FunctionComplexity`` row, and so does a JS/TS arrow function with a
-block body bound to a name wherever it sits. A function's NLOC leaves out
+own ``FunctionComplexity`` row, and so does a JS/TS arrow function bound
+to a name wherever it sits, whatever its body. A function's NLOC leaves out
 the rows only the units nested in it cover.
 
 This module is the orchestrator: ``walk_file`` parses the source once and
@@ -48,7 +48,9 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from ...symbol_body import body_digest, body_parts, rows_between
 from ..asserts.lexicon import assert_dialect as _assert_dialect
+from ..duplication.tokenizer import tree_token_rows
 from ..mocks.lexicon import mock_dialect as _mock_dialect
 from .assertions import _collect_assertion_facts
 from .ast_utils import (
@@ -177,7 +179,8 @@ def walk_file(
         # byte-identical offsets, so every offset below (including the NLOC
         # slices, which read the ORIGINAL bytes) stays valid. Pascal gets its
         # project-file sanitizer the same way. No-op elsewhere.
-        tree = parser.parse(prepare_source(language, source, path=abs_path))
+        prepared = prepare_source(language, source, path=abs_path)
+        tree = parser.parse(prepared)
     except Exception as exc:
         log.debug("complexity_walker_parse_failed", path=abs_path, error=str(exc))
         return FileComplexity(functions=[], classes=[], file_nloc=_count_file_nloc(source))
@@ -275,6 +278,7 @@ def walk_file(
         )
         functions.append(fc)
         fc_by_node_id[fn_node.id] = fc
+    _stamp_bodies(functions, language, tree.root_node, prepared, source)
 
     classes = _collect_classes(
         scan.class_nodes,
@@ -304,6 +308,25 @@ def walk_file(
         has_inline_tests=_detect_inline_tests(source, language),
         rust_test_line_ranges=scan.rust_test_line_ranges,
     )
+
+
+def _stamp_bodies(
+    functions: list[FunctionComplexity], language: str, root: Node, prepared: bytes, source: bytes
+) -> None:
+    """Give each function its normalized body digest and token count (``analysis.symbol_body``).
+
+    One token pass over the tree already parsed, sliced per function by lines.
+    """
+    if not functions:
+        return
+    rows = tree_token_rows(language, root, prepared)
+    starts = [row[1] for row in rows]
+    for fc in functions:
+        span = rows_between(rows, starts, fc.start_line, fc.end_line)
+        if span:
+            parts = body_parts(span, source, fc.name)
+            fc.body_digest = body_digest(parts)
+            fc.body_tokens = len(parts)
 
 
 def _direct_units(measured: list[Node], units: list[Node]) -> dict[int, list[Node]]:

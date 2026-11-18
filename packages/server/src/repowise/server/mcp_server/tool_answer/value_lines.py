@@ -24,6 +24,7 @@ from sqlalchemy import select
 
 from repowise.core.analysis.decisions.rationale_comments import CODE_EXTENSIONS
 from repowise.core.persistence.models import WikiSymbol
+from repowise.core.symbol_spans import symbol_at
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._code_rationale import _salient_numbers
 from repowise.server.mcp_server._flow_path import file_adjacency
@@ -127,9 +128,9 @@ async def _holders(session, repo_id: str, lines: list[_Line]) -> dict[_Line, Any
     defs = [d for d in res.scalars().all() if d.start_line and d.end_line]
     out: dict[_Line, Any] = {}
     for ln in lines:
-        spans = [d for d in defs if d.file_path == ln.path and d.start_line <= ln.line <= d.end_line]
-        if spans:
-            out[ln] = max(spans, key=lambda d: d.start_line)
+        holder = symbol_at((d for d in defs if d.file_path == ln.path), ln.line)
+        if holder is not None:
+            out[ln] = holder
     return out
 
 

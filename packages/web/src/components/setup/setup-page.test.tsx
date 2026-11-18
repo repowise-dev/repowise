@@ -5,7 +5,7 @@ import { SWRConfig } from "swr";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SetupResponse } from "@/lib/api/setup";
-import { doneFixture, setupFixture } from "./setup-fixture";
+import { doneFixture, NOW, setupFixture } from "./setup-fixture";
 
 const mocks = vi.hoisted(() => ({
   getRepoSetup: vi.fn(),
@@ -44,11 +44,16 @@ function renderPage(setup: SetupResponse) {
 
 beforeEach(() => {
   window.localStorage.clear();
+  // Rows are derived against the wall clock; pin it to the fixture's moment.
+  // Only Date is faked, so SWR and findBy* timers still run.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
 });
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.useRealTimers();
 });
 
 describe("SetupPage", () => {

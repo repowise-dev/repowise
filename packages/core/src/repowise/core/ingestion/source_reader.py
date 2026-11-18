@@ -17,6 +17,8 @@ from .traverser import _DEFAULT_MAX_FILE_SIZE_BYTES, _SOURCE_MAX_FILE_SIZE_BYTES
 
 _log = logging.getLogger(__name__)
 
+DOCUMENT_CACHE_DIRNAME = "document-cache"
+
 
 class OverCeiling(NamedTuple):
     """Extracted Markdown too large to index, by its size in bytes."""
@@ -52,7 +54,7 @@ def read_document_sources(
             relative = path.relative_to(repo_path.resolve()).as_posix()
         identity = f"{relative}\0{document_fingerprint(name, version, source)}"
         key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
-        cache_path = repo_path.resolve() / ".repowise" / "document-cache" / key
+        cache_path = repo_path.resolve() / ".repowise" / DOCUMENT_CACHE_DIRNAME / key
         domain = str(cache_path.absolute())
         try:
             cached = load_sealed_pickle(cache_path, domain=domain)

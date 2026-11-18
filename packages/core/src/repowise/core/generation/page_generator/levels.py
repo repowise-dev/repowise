@@ -316,13 +316,40 @@ def _part_rows(run: _GenerationRun, rollup: Any, heads: set[str]) -> list[dict]:
     return rows
 
 
-def _is_empty_module(file_contexts: list[Any], has_parts: bool) -> bool:
+def _is_empty_module(file_has_material: list[bool], has_parts: bool) -> bool:
     """Nothing to write about: no parts, and no file defines or imports anything.
 
     A 0-byte ``__init__.py`` grouped on its own got a page of sentences saying
     there was nothing to say. Any symbol or import keeps the page.
     """
-    return not has_parts and all(not fc.symbols and not fc.dependencies for fc in file_contexts)
+    return not has_parts and not any(file_has_material)
+
+
+def _group_material(group: Any) -> Any:
+    # A chapter's prose is about its whole subsystem, while ``file_paths`` is
+    # the narrower, disjoint claim on who documents what. They are the same
+    # list for every leaf.
+    return getattr(group, "context_paths", ()) or group.file_paths
+
+
+def _has_parts(group: Any, groups: list[Any], heads: set[str]) -> bool:
+    return bool(getattr(group, "is_rollup", False)) or bool(_part_pages(group, groups, heads))
+
+
+def written_module_groups(groups: list[Any], file_has_material: dict[str, bool]) -> list[Any]:
+    """The groups level 4 writes a page for, by the rules :func:`build_level4_coros` applies.
+
+    *file_has_material* maps every file that gets a code context to whether it
+    defines or imports anything. The generation plan counts module pages with
+    this, so the plan and the run skip the same groups.
+    """
+    heads = _heads(groups)
+    written = []
+    for mg in groups:
+        flags = [file_has_material[fp] for fp in _group_material(mg) if fp in file_has_material]
+        if flags and not _is_empty_module(flags, _has_parts(mg, groups, heads)):
+            written.append(mg)
+    return written
 
 
 def module_waves(groups: list[Any]) -> list[list[Any]]:
@@ -359,10 +386,7 @@ def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> 
     flows = _execution_flows(run.graph_builder)
     heads = _heads(run.sel_module_groups)
     for mg in run.sel_module_groups if groups is None else groups:
-        # Read from the wider set: a chapter's prose is about its whole
-        # subsystem, while ``file_paths`` is the narrower, disjoint claim on who
-        # documents what. They are the same list for every leaf.
-        material = getattr(mg, "context_paths", ()) or mg.file_paths
+        material = _group_material(mg)
         fcs = [run.file_page_contexts[fp] for fp in material if fp in run.file_page_contexts]
         if not fcs:
             # A concept group whose files all failed to build a context. The
@@ -380,7 +404,7 @@ def build_level4_coros(run: _GenerationRun, groups: list[Any] | None = None) -> 
             continue
         is_rollup = bool(getattr(mg, "is_rollup", False))
         parts = _part_rows(run, mg, heads)
-        if _is_empty_module(fcs, is_rollup or bool(parts)):
+        if _is_empty_module([bool(fc.symbols or fc.dependencies) for fc in fcs], is_rollup or bool(parts)):
             log.info("module_page.skipped_empty", target_path=mg.key, members=len(material))
             continue
         coros.append(

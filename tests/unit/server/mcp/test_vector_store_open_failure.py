@@ -9,6 +9,8 @@ index at all is a keyless repo, not a failure.
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -165,6 +167,22 @@ def test_a_keyless_server_never_imports_or_opens_lancedb(tmp_path, no_lancedb_op
     assert build_meta(timing_ms=1.0)["embedder_degraded"] is False
 
 
+def test_stdio_loads_numpy_before_the_transport_reads_stdin(monkeypatch):
+    """On Windows numpy's first load never returns while a stdin read is
+    pending, and the transport keeps one pending all session, so a tool that
+    first imported numpy mid-call hung. It is loaded before the transport runs.
+    """
+    from repowise.server.mcp_server import _stdio_logging, _watchdog
+
+    order = []
+    monkeypatch.setattr(_stdio_logging, "route_logging_to_stderr", lambda: None)
+    monkeypatch.setattr(_watchdog, "start_parent_watchdog", lambda: None)
+    monkeypatch.setattr(_server, "_load_native_libraries", lambda: order.append("numpy"))
+    monkeypatch.setattr(_server.mcp, "run", lambda transport: order.append(transport))
+    _server._run_stdio_transport()
+    assert order == ["numpy", "stdio"]
+
+
 def test_the_workspace_registry_skips_a_keyless_store(tmp_path, no_lancedb_open):
     from repowise.core.providers.embedding.base import KeylessEmbedder
     from repowise.core.workspace.registry import RepoRegistry
@@ -275,3 +293,14 @@ def test_the_cli_bridge_skips_the_store_when_told_the_call_reads_no_vectors(
     assert connected == []
     tool_bridge.call_tool(bridge_repo, _tool, "search_codebase")
     assert connected == [True]
+
+
+def test_the_native_preload_imports_numpy():
+    """The server does not import numpy before the transport by itself."""
+    code = (
+        "import sys; from repowise.server.mcp_server import _server; "
+        "before = 'numpy' in sys.modules; _server._load_native_libraries(); "
+        "print(before, 'numpy' in sys.modules)"
+    )
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert out.stdout.split() == ["False", "True"]

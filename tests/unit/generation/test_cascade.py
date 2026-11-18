@@ -100,3 +100,25 @@ def test_non_file_seed_has_no_file_cascade() -> None:
         "architecture_diagram:demo",
         "onboarding:guided-tour",
     }
+
+
+def test_regenerating_repo_wide_pages_does_not_restale_each_other() -> None:
+    # Regression: overview and onboarding re-staled each other forever. With
+    # only repo-wide pages seeded nothing they summarize changed, so neither
+    # run may leave another repo-wide page stale, under any mode.
+    deps = _deps()
+    overview = {"repo_overview:demo"}
+    onboarding = {"onboarding:guided-tour"}
+    for mode in ("none", "dependents", "full"):
+        for seeds in (overview, onboarding, overview | onboarding):
+            result = expand_cascade(seeds, mode, deps)
+            assert result.generate_ids == seeds, (mode, seeds)
+            assert result.stale_ids == set(), (mode, seeds)
+
+
+def test_file_seed_with_repo_wide_seed_still_stales_other_repo_wide_pages() -> None:
+    # A real content change keeps the old behaviour even when a repo-wide page
+    # is also seeded: the remaining repo-wide pages summarize the changed file.
+    deps = _deps()
+    result = expand_cascade({"file_page:src/a.py", "repo_overview:demo"}, "dependents", deps)
+    assert result.stale_ids == {"architecture_diagram:demo", "onboarding:guided-tour"}

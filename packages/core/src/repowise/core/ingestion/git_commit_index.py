@@ -150,6 +150,8 @@ _WINDOW_CACHE_NAME = "commit_window_cache.json"
 #: Each deep region's records, cached the same way: the first region in
 #: ``commit_deep_cache.json``, region ``n`` (from 2) in ``commit_deep_cache_<n>.json``.
 _DEEP_CACHE_NAME = "commit_deep_cache.json"
+#: Matches every deep region's file (:func:`_deep_cache_name`).
+_DEEP_CACHE_GLOB = "commit_deep_cache*.json"
 _WINDOW_CACHE_VERSION = 3  # v3: records are reused by sha, slices carry their skip
 #: Past this many commits the cache lacks, one full walk beats patching it.
 _MAX_PATCHED_COMMITS = 2_000

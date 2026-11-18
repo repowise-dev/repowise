@@ -46,15 +46,21 @@ export function FixFirstSection({ repoId }: { repoId: string }) {
   const onTriage = useCallback(
     async (item: FixItem, status: "acknowledged" | "resolved" | "false_positive") => {
       // A handful of ids per item; each is the existing per-finding PATCH.
-      await Promise.all(
+      const writes = await Promise.allSettled(
         item.source.finding_ids.map((id) => updateFindingStatus(repoId, id, status)),
       );
-      // The queue and every health view that counts findings re-read.
-      await mutateAll(
-        (k) => typeof k === "string" && k.startsWith("code-health") && k.includes(repoId),
-        undefined,
-        { revalidate: true },
-      );
+      // The queue and every health view that counts findings re-read. No data
+      // argument: passing one, `undefined` included, would blank each key
+      // while it refetches. Whatever landed is re-read even if a write failed;
+      // only a triage where every write failed skips it. An item with no
+      // finding ids writes nothing and still re-reads.
+      const failure = writes.find((w) => w.status === "rejected");
+      if (!failure || writes.some((w) => w.status === "fulfilled")) {
+        await mutateAll(
+          (k) => typeof k === "string" && k.startsWith("code-health") && k.includes(repoId),
+        );
+      }
+      if (failure) throw failure.reason;
     },
     [repoId, mutateAll],
   );

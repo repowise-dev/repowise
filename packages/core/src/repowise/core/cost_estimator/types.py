@@ -14,6 +14,16 @@ class PageTypePlan:
     level: int
     # file_page only: ``(glob, documented, eligible)`` per folder-coverage rule.
     folder_coverage: list[tuple[str, int, int]] = field(default_factory=list)
+    # Of ``count``, the pages rendered from facts with no model call (an
+    # onboarding slot marked deterministic). Structural types are free whole.
+    free: int = 0
+
+    @property
+    def model_count(self) -> int:
+        """Pages of this type a model writes."""
+        from .estimator import STRUCTURAL_PAGE_TYPES
+
+        return 0 if self.page_type in STRUCTURAL_PAGE_TYPES else self.count - self.free
 
 
 @dataclass

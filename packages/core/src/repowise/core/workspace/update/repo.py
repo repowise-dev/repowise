@@ -507,6 +507,7 @@ async def _partial_analysis(
         log=_log.info,
         health=health,
         timings=timings,
+        base_ref=base_ref,
     )
     doc_drift_report = run_doc_drift_partial(
         graph_builder,

@@ -70,7 +70,7 @@ from .incremental import (
     _run_partial_analysis,
 )
 from .mode import _resolve_index_only_mode
-from .options import DocsPass, UpdateOptions, UpdateRun
+from .options import DocsPass, UpdateOptions, UpdateRun, rework_pending
 from .page_generation import _generation_warning_handler as _generation_warning_handler
 from .page_generation import generate_pages, render_stale_structure
 from .persistence import (
@@ -107,6 +107,8 @@ log = structlog.get_logger(__name__)
 
 #: ``state.json`` key: the commit whose run last looked for files with no page.
 FILE_PAGE_FILL_KEY = "file_page_fill_commit"
+#: ``state.json`` key: the commit whose run last planned pages with the full graph.
+STALE_PAGES_PLANNED_KEY = "stale_pages_planned_commit"
 
 
 def _fail_on_embed_failure(
@@ -1021,10 +1023,11 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     # Git rows written under older history rules force one full walk.
     run.history_stale = git_history_stale(state)
     run.refresh_git = opts.refresh_git
-    run.git_is_current = bool(
+    # Current but for a config edit: the run that would otherwise take the
+    # config-only path, which a parser change must also keep off.
+    current_but_config = bool(
         run.head
         and run.head == run.base_ref
-        and not run.config.changed
         and (not run.renderer_changed or opts.defer_docs)
         and not run.wiki_rebuild
         and not run.working_tree_diffs
@@ -1032,8 +1035,10 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
         and not run.history_stale
         and not run.refresh_git
     )
-    # A store read, so only asked when the run would otherwise exit.
-    run.extraction_changed = run.git_is_current and parser_changed(run.repo_path)
+    run.git_is_current = current_but_config and not run.config.changed
+    # A store read, so only asked when the run would otherwise exit or take the
+    # config-only path.
+    run.extraction_changed = current_but_config and parser_changed(run.repo_path)
     if run.extraction_changed:
         run.git_is_current = False
     _announce_rework(run)
@@ -1047,7 +1052,27 @@ def _assess_staleness(opts: UpdateOptions, run: UpdateRun) -> None:
     # Pages stale for reasons no commit explains; read only when git is current.
     if run.git_is_current:
         run.stale_pages_deferred = load_actionable_stale_targets(run, opts)
+        _keep_planned_pages_stale(opts, run)
         run.fill_file_pages = _file_pages_to_fill(run, opts)
+
+
+def _keep_planned_pages_stale(opts: UpdateOptions, run: UpdateRun) -> None:
+    """Stale pages a run at this commit left stale wait for the next commit.
+
+    That run held the full graph and left them stale on purpose (the cascade
+    budget). Healing them here would rebuild the whole index for a commit it
+    already indexed, so an update with nothing new stays a no-op; the next
+    update that brings a commit renders them. An uncapped run
+    (``update --full``'s catch-up) renders them now.
+    """
+    from .catch_up import UNCAPPED_CASCADE
+
+    if opts.cascade_budget == UNCAPPED_CASCADE:
+        return
+    if run.state.get(STALE_PAGES_PLANNED_KEY) != run.head:
+        return
+    run.stale_pages_planned = len(run.stale_db_paths) + len(run.stale_deterministic_ids)
+    run.stale_db_paths, run.stale_deterministic_ids = [], set()
 
 
 def _file_pages_to_fill(run: UpdateRun, opts: UpdateOptions) -> bool:
@@ -1128,6 +1153,14 @@ def _already_up_to_date(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
                 f"[dim]{run.stale_pages_deferred} stale page(s) wait for a model run: "
                 f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
             )
+    if run.stale_pages_planned:
+        from .catch_up import catch_up_command
+
+        console.print(
+            f"[dim]{run.stale_pages_planned} stale page(s) the last update at this commit "
+            "left stale refresh with the next commit, or now with "
+            f"[bold]{catch_up_command(run.repo_path)}[/bold].[/dim]"
+        )
     if not opts.dry_run:
         _heal_up_to_date_store(opts, run)
     repo_path = run.repo_path
@@ -1379,12 +1412,7 @@ def _nothing_to_do(run: UpdateRun) -> bool:
     return not (
         run.file_diffs
         or run.config.changed
-        or run.renderer_changed
-        or run.wiki_rebuild
-        or run.analyzer_changed
-        or run.extraction_changed
-        or run.history_stale
-        or run.refresh_git
+        or rework_pending(run)
         or run.stale_db_paths
         or run.stale_deterministic_ids
         or run.fill_file_pages
@@ -1427,14 +1455,19 @@ def _no_changed_files(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
 
 
 def _config_change_only(run: UpdateRun) -> bool:
-    """A config edit with no commits to index; those fall through to the full path."""
+    """A config edit with nothing else to do; anything more falls through to the full path.
+
+    A moved version stamp (analyzer, parser, renderer, history) needs the full
+    path, which also records the new config; this one would only record it.
+    ``--defer-docs`` leaves a renderer change to the "up to date" path, as the
+    staleness gate does.
+    """
     config = run.config
     return config.changed and not (
         run.file_diffs
         or config.git_changed
         or run.full_generation
-        or run.history_stale
-        or run.refresh_git
+        or rework_pending(run, defer_renderer=run.defer_docs)
     )
 
 
@@ -1445,6 +1478,11 @@ def _config_only_update(opts: UpdateOptions, run: UpdateRun) -> UpdateOutcome:
         action = "health would be re-scored" if config.health_changed else "state would be updated"
         console.print(f"[yellow]Dry run: {action}. No changes made.[/yellow]")
         return _emit_done(run, UpdateOutcome.DRY_RUN)
+    # Stamps ``run.state``, which both branches below save.
+    if run.scanner_changed:
+        rescan_security_if_changed(
+            repo_path, run.state, list(run.cfg.get("exclude_patterns") or [])
+        )
     if config.health_changed:
         cfg = load_config(repo_path)
         exclude_patterns = list(cfg.get("exclude_patterns") or [])
@@ -1552,11 +1590,7 @@ def _working_tree_only(run: UpdateRun) -> bool:
         and not (
             run.config.health_changed
             or run.full_generation
-            or run.renderer_changed
-            or run.analyzer_changed
-            or run.extraction_changed
-            or run.history_stale
-            or run.refresh_git
+            or rework_pending(run)
         )
     )
 
@@ -1574,6 +1608,11 @@ def _plan_pages(opts: UpdateOptions, run: UpdateRun) -> None:
         if opts.verbose:
             console.print(f"Adaptive cascade budget: [cyan]{cascade_budget}[/cyan]")
     run.cascade_budget = cascade_budget
+    # What this plan leaves stale waits for the next commit, not the next idle run.
+    # Only when it could render stale pages: one without a model leaves them for
+    # an update at this commit that has one.
+    if can_regenerate_pages(run, opts):
+        run.state[STALE_PAGES_PLANNED_KEY] = run.head
     # The builder's cached pagerank spares a full-graph pass.
     from .deterministic import load_stale_file_page_ages
 
@@ -1761,6 +1800,7 @@ def _run_partial_analyses(run: UpdateRun) -> None:
         repo_function_mod_p80=repo_function_mod_p80,
         timings=run.timings,
         dead_code=not _dead_code_unchanged(run),
+        base_ref=run.base_ref,
     )
     run.doc_drift_report = _run_doc_drift_partial(
         run.graph_builder,
@@ -1788,15 +1828,7 @@ def _dead_code_unchanged(run: UpdateRun) -> bool:
     consumes the report. (The knowledge graph takes the report but does not read it.)
     """
     config = run.config
-    if (
-        run.analyzer_changed
-        or run.extraction_changed
-        or run.renderer_changed
-        or run.wiki_rebuild
-        or run.history_stale
-        or run.refresh_git
-        or config.changed
-    ):
+    if rework_pending(run) or config.changed:
         return False
     changed = [path for fd in run.file_diffs for path in (fd.path, fd.old_path) if path]
     if not all(map(_is_prose, changed)):
@@ -2345,6 +2377,8 @@ def _save_docs_state(run: UpdateRun, docs: DocsPass) -> None:
         from .persistence import record_repair_marker
 
         record_repair_marker(state, dict(state), docs.failed_steps)
+        # A failed render retries at this commit.
+        state.pop(STALE_PAGES_PLANNED_KEY, None)
         console.print(
             "[yellow]Some data for this commit range was not persisted; "
             "the next update will re-cover it.[/yellow]"

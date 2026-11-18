@@ -177,6 +177,10 @@ __all__ = [
 
 DB_FILENAME = "wiki.db"
 REPOWISE_DIRNAME = ".repowise"
+#: Index summary beside the DB: last synced commit, config fingerprint, versions.
+STATE_FILENAME = "state.json"
+#: Repo-local vector store directory.
+LANCEDB_DIRNAME = "lancedb"
 DB_ENV_VARS = ("REPOWISE_DB_URL", "REPOWISE_DATABASE_URL")
 
 

@@ -149,10 +149,11 @@ The plugin version tracks the repowise release it ships alongside (e.g. `0.16.0`
 4. **Only `plugin.json` goes in `plugins/claude-code/.claude-plugin/`.** Everything
    else (`commands/`, `skills/`, `hooks/`) sits at the plugin root. The
    **marketplace** manifest lives at the **repo** root, not the plugin's.
-5. **Default single-repo surface is 11 tools** (the ten flagship tools plus
-   `list_repos`). Workspace mode adds `get_architecture` and
-   `get_blast_radius` automatically (13). Opt-in tools such as
-   `get_conformance` stay off unless configured — see
+5. **Claude Code's default single-repo surface is 10 tools** (the ten
+   flagship tools); a workspace adds `list_repos` (11). Other clients get the
+   five core tools (plus `list_repos` in a workspace). The workspace tools
+   `get_architecture`, `get_blast_radius` and `get_conformance` and the other
+   opt-in tools stay off unless configured; see
    `docs/agent/MCP_TOOLS.md`. Never reference unexposed tools in
    commands/skills.
 6. **Verify CLI flags against the source.** Easy ones to get wrong:

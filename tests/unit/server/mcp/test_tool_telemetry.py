@@ -473,3 +473,98 @@ def test_the_event_dump_shows_the_new_fields(
     assert props["empty_result"] is True
     assert props["retrieve_ms"] == 3
     assert "secret" not in dumped
+
+
+class TestIncludeFacets:
+    """``include`` reports which facets a call asked for, as known names only."""
+
+    @pytest.fixture(autouse=True)
+    def _pin_install_state(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(wrapper, "_semantic_search_state", lambda: None)
+        monkeypatch.setattr(wrapper, "_client_label", lambda: "claude_code")
+        monkeypatch.setattr(wrapper, "_index_mode", lambda: None)
+
+    def test_known_facets_are_named_and_anything_else_is_other(self):
+        props = wrapper._telemetry_properties(
+            "get_context",
+            {},
+            1,
+            include=["skeleton", "callers", "callers", "C:/secret/path.py", {"x": 1}],
+        )
+        assert props["include"] == ["callers", "other", "skeleton"]
+        assert "secret" not in json.dumps(props)
+
+    def test_a_facet_is_known_only_to_the_tool_that_accepts_it(self):
+        # ``history`` is a get_why facet, not a get_context one.
+        props = wrapper._telemetry_properties("get_context", {}, 1, include=["history"])
+        assert props["include"] == ["other"]
+        assert wrapper._telemetry_properties("get_why", {}, 1, include=["history"])[
+            "include"
+        ] == ["history"]
+
+    @pytest.mark.parametrize(
+        ("include", "expected"),
+        [("skeleton", ["skeleton"]), (5, None), ({"skeleton": 1}, None), ([["x"]], ["other"])],
+    )
+    def test_any_argument_shape_reports_only_known_names(self, include, expected):
+        props = wrapper._telemetry_properties("get_context", {}, 1, include=include)
+        assert props.get("include") == expected
+
+    def test_the_vocabulary_string_is_sent_not_the_callers(self):
+        class Sneaky(str):
+            def __str__(self) -> str:
+                return "secret"
+
+        props = wrapper._telemetry_properties("get_context", {}, 1, include=[Sneaky("callers")])
+        assert type(props["include"][0]) is str
+        assert "secret" not in json.dumps(props)
+
+    def test_no_include_reports_nothing(self):
+        assert "include" not in wrapper._telemetry_properties("get_context", {}, 1)
+        assert "include" not in wrapper._telemetry_properties("get_context", {}, 1, include=[])
+
+    def test_a_tool_without_a_vocabulary_reports_only_other(self):
+        props = wrapper._telemetry_properties("get_symbol", {}, 1, include=["anything"])
+        assert props["include"] == ["other"]
+
+    def test_every_tool_with_an_include_argument_has_a_vocabulary(self):
+        import inspect
+
+        from repowise.core.registry import mcp_tool_registry
+        from repowise.server.mcp_server import ensure_full_surface
+
+        ensure_full_surface()
+        takes_include = {
+            entry.name
+            for entry in mcp_tool_registry.entries()
+            if "include" in inspect.signature(entry.fn).parameters
+        }
+        assert takes_include
+        assert takes_include == set(wrapper._INCLUDE_VOCABULARIES)
+        for tool in takes_include:
+            vocabulary = wrapper._include_vocabulary(tool)
+            assert vocabulary and all(isinstance(v, str) for v in vocabulary), tool
+            assert "other" not in vocabulary, tool
+
+    @pytest.mark.asyncio
+    async def test_instrument_reads_include_from_the_call(self, monkeypatch: pytest.MonkeyPatch):
+        from repowise.core.platform import telemetry
+
+        calls: list[dict] = []
+        monkeypatch.setattr(telemetry, "record_event", lambda event, props: calls.append(props))
+
+        async def get_overview(repo: str | None = None, include: list[str] | None = None) -> dict:
+            return {"ok": True, "_meta": {}}
+
+        tool = wrapper.instrument(get_overview)
+        await tool("my-repo", ["tour", "made-up"])
+        await tool(include=["outline"])
+        await tool()
+        assert [c.get("include") for c in calls] == [["other", "tour"], ["outline"], None]
+
+
+def test_the_include_field_is_documented():
+    from pathlib import Path
+
+    doc = Path(__file__).resolve().parents[4] / "docs" / "reference" / "TELEMETRY.md"
+    assert "`properties.include`" in doc.read_text(encoding="utf-8")

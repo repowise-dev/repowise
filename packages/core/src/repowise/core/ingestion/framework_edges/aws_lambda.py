@@ -139,8 +139,9 @@ def _link(
         )
         if symbol is not None:
             count += add_symbol_edge(graph, f"{config}::__module__", symbol)
-        # ``exports.create = ...`` declares no symbol, so the name in the
-        # text is the evidence that the handler exists.
+        # ``exports.create = handler`` (a name, not a function written
+        # there) declares no symbol, so the name in the text is the evidence
+        # that the handler exists.
         elif not re.search(
             rf"(?<![\w$]){re.escape(export)}(?![\w$])",
             source_text(target, parsed, source_map),

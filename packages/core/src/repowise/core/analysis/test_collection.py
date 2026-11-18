@@ -302,6 +302,7 @@ async def collect(
     indexed_commit: str | None = None,
     read_source: Callable[[str], str | None] | None = None,
     scope_groups: Mapping[str, Sequence[str]] | None = None,
+    cancelled: Callable[[], bool] = _never,
 ) -> dict:
     """Resolve the change's files to impacted tests + labelled fallbacks.
 
@@ -352,6 +353,7 @@ async def collect(
         pytest_texts,
         read_source=read_source,
         groups=scope_groups,
+        cancelled=cancelled,
     )
     await _place_tests(session, repo_id, out)
     if explain:
@@ -528,6 +530,7 @@ async def resolve_impacted(
     *,
     read_source: Callable[[str], str | None] | None = None,
     groups: Mapping[str, Sequence[str]] | None = None,
+    cancelled: Callable[[], bool] = _never,
 ) -> dict:
     """Classify each changed file: covered tests, inferred tests, or unknown.
 
@@ -577,7 +580,10 @@ async def resolve_impacted(
             changed=changed,
             read_source=read_source,
             groups=groups,
+            cancelled=cancelled,
         )
+    except SelectionCancelledError:
+        raise
     except Exception as exc:
         # Nothing the graph said can be trusted; selection runs everything.
         out["graph_error"] = f"{type(exc).__name__}: {exc}"
@@ -687,6 +693,7 @@ async def _graph_candidates(
     changed: Collection[str] | None = None,
     read_source: Callable[[str], str | None] | None = None,
     groups: Mapping[str, Sequence[str]] | None = None,
+    cancelled: Callable[[], bool] = _never,
 ) -> GraphCandidates:
     """``{target: [(test file, via), ...]}`` from the graph, each test file's importers, notes.
 
@@ -716,10 +723,13 @@ async def _graph_candidates(
     test_files = {f for f in await cached_test_files(session, repo_id) if is_code_file(f)}
     graph, wide = await cached_import_graphs(session, repo_id)
     found, entries, calls = await _tier_picks(
-        session, repo_id, targets, test_files, roots, graph, wide, groups
+        session, repo_id, targets, test_files, roots, graph, wide, groups, cancelled
     )
     seeds = {t for picks in found.values() for t in picks}
-    parents, parent_entries = await _test_importers(session, repo_id, seeds, test_files, graph)
+    parents, parent_entries = await _test_importers(
+        session, repo_id, seeds, test_files, graph, cancelled
+    )
+    _stop(cancelled)
     out, notes = await scoped_candidates(
         session,
         repo_id,
@@ -781,6 +791,7 @@ async def _tier_picks(
     graph=None,
     wide=None,
     groups: Mapping[str, Sequence[str]] | None = None,
+    cancelled: Callable[[], bool] = _never,
 ) -> tuple[dict[str, dict[str, str]], dict[str, dict], dict[str, Mapping[str, Any]]]:
     """``{target: {test file: via}}``: a changed test itself, then the call and import walks.
 
@@ -799,6 +810,9 @@ async def _tier_picks(
     walks = [(reaching, None)]
     imports = [(graph, "import-graph")] + ([(wide, PACKAGE_INIT_VIA)] if wide is not None else [])
     for g, via in imports:
+        # Each walk can run for seconds on a wide change; an abandoned
+        # selection stops between them instead of finishing every tier.
+        _stop(cancelled)
         walked = await tests_reaching_by_tier(
             session,
             repo_id,
@@ -827,7 +841,12 @@ async def _tier_picks(
 
 
 async def _test_importers(
-    session, repo_id: str, seeds: set[str], test_files: set[str], graph=None
+    session,
+    repo_id: str,
+    seeds: set[str],
+    test_files: set[str],
+    graph=None,
+    cancelled: Callable[[], bool] = _never,
 ) -> tuple[dict[str, set[str]], dict[str, dict]]:
     """``{test file: test files importing it}``, walked until nothing new appears.
 
@@ -839,6 +858,7 @@ async def _test_importers(
     routes: dict[str, dict] = {}
     frontier, seen = set(seeds), set(seeds)
     while frontier:
+        _stop(cancelled)
         walked = await tests_reaching_by_tier(
             session,
             repo_id,
@@ -935,6 +955,7 @@ async def select_for_change(
         indexed_commit=indexed_commit,
         read_source=checkout.read,
         scope_groups=plan.groups,
+        cancelled=cancelled,
     )
     result["diff"] = change.label
     _stop(cancelled)

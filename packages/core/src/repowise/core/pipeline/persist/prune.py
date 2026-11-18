@@ -8,6 +8,8 @@ from typing import Any
 
 import structlog
 
+from repowise.core.persistence.crud import delete_graph_nodes
+
 # Patchable steps are looked up on the package at call time, so a patch on
 # ``repowise.core.pipeline.persist`` reaches this module too.
 from repowise.core.pipeline import persist as _persist
@@ -135,12 +137,7 @@ async def _prune_stale_file_rows(
                     ),
                 )
             )
-            await session.execute(
-                delete(GraphNode).where(
-                    GraphNode.repository_id == repo_id,
-                    GraphNode.node_id.in_(batch),
-                )
-            )
+        await delete_graph_nodes(session, repo_id, stale_node_ids)
 
     # GraphMetric is file-level only (node_id == path).
     await _delete_stale_by_paths(GraphMetric, GraphMetric.node_id, current_graph_file_paths)
@@ -435,12 +432,7 @@ async def prune_deleted_file_rows(
                     ),
                 )
             )
-            await session.execute(
-                delete(GraphNode).where(
-                    GraphNode.repository_id == repo_id,
-                    GraphNode.node_id.in_(batch),
-                )
-            )
+        await delete_graph_nodes(session, repo_id, stale_node_ids)
 
     await _prune_table(GraphMetric, GraphMetric.node_id, "graph_metrics")
     await _prune_table(WikiSymbol, WikiSymbol.file_path, "wiki_symbols")

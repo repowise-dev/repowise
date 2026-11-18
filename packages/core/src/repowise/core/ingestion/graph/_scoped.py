@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from typing import Any, Protocol
 
-from ..models import REGISTRATION_HINT, is_dynamic_edge
+from ..models import CONTAINMENT_EDGE_TYPES, REGISTRATION_HINT, is_dynamic_edge
 
 # Stamped on nodes by passes every build runs over every file (warmups,
 # always-run detection, C/C++ declaration pairing), so a seeded value could
@@ -75,6 +75,20 @@ def is_import_target_edge(data: dict[str, Any]) -> bool:
     return edge_type == "type_use" and not data.get("no_scope_widening")
 
 
+def _parse_owns_edge(graph: Any, source: str, attrs: dict[str, Any], rescoped: set[str]) -> bool:
+    """Whether *source* is in a re-parsed file and the edge is a containment edge.
+
+    ``add_file`` has already drawn these edges from the current parse, and the
+    seed can hold ones the parse no longer draws: ``has_method`` needs the class
+    node to exist when the method is added, so a Go method moved above its type
+    loses the edge.
+    """
+    if attrs.get("edge_type") not in CONTAINMENT_EDGE_TYPES:
+        return False
+    owner = graph.nodes[source].get("file_path", source) if source in graph else source
+    return owner in rescoped
+
+
 class _ScopedGraphHost(Protocol):
     _graph: Any
     _parsed_files: dict[str, Any]
@@ -106,13 +120,17 @@ class ScopedBuildMixin:
         not stamp again, while all edge attributes (including non-column
         resolver facts) are restored exactly. Nodes of the deleted files in
         *drop_paths*, symbols the files in *scope* no longer declare, and the
-        edges of both are skipped.
+        edges of both are skipped, as are the containment edges of files in
+        *scope*, which their current parse drew.
         """
         graph = self._graph
-        dropped = _seed_nodes(graph, snapshot.get("nodes", ()), set(drop_paths), set(scope))
+        rescoped = set(scope)
+        dropped = _seed_nodes(graph, snapshot.get("nodes", ()), set(drop_paths), rescoped)
         added = 0
         for source, target, attrs in snapshot.get("edges", ()):
             if source in dropped or target in dropped:
+                continue
+            if _parse_owns_edge(graph, source, attrs, rescoped):
                 continue
             if source not in graph:
                 graph.add_node(source, language="external", symbol_count=0, has_error=False)
@@ -134,12 +152,6 @@ class ScopedBuildMixin:
             owned.update(sym.id for sym in parsed.symbols)
         return owned
 
-    @staticmethod
-    def _clear_call_resolution(data: dict[str, Any]) -> None:
-        """Remove resolver attributes merged onto a structural ``has_method`` edge."""
-        data.clear()
-        data["edge_type"] = "has_method"
-
     @classmethod
     def _should_remove_scoped_edge(
         cls,
@@ -153,13 +165,9 @@ class ScopedBuildMixin:
             return False
         if data.get("hint_source") == REGISTRATION_HINT or source not in owned:
             return False
-        if edge_type == "defines":
-            return False
-        if edge_type == "has_method":
-            if data.get("resolution_origin") or data.get("call_lines"):
-                cls._clear_call_resolution(data)
-            return False
-        return True
+        # A scope file's containment edges come from its parse, never the seed,
+        # so a ``has_method`` edge here carries no call resolution yet.
+        return edge_type not in CONTAINMENT_EDGE_TYPES
 
     def _clear_scope_edges(self: _ScopedGraphHost, scope: frozenset[str]) -> None:
         """Drop changed-file edges, preserving only their bare structural links."""

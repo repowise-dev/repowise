@@ -29,6 +29,7 @@ from tests.unit._persist_step_recorders import (
 HAPPY_ORDER = [
     "reconcile_full_index_scope",
     "tombstone_pages_outside_generation",
+    "restore_stored_complexity",
     "sweep_store_hygiene",
     "sweep_absent_cycle_pages",
     "sweep_absent_symbol_spotlights",
@@ -183,6 +184,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
     assert rec.order == [
         "reconcile_full_index_scope",
         "tombstone_pages_outside_generation",
+        "restore_stored_complexity",
         "sweep_store_hygiene",
         "tombstone_candidates",
         "mark_tombstone_pages",
@@ -216,6 +218,7 @@ async def test_every_failing_step_degrades_and_only_range_scoped_ones_are_marked
             for step in (
                 "Config scope reconciliation",
                 "Generation scope reconciliation",
+                "Stored complexity restore",
                 "Retired page sweep",
                 "Tombstone marking",
                 "Page tree rebuild",
@@ -277,3 +280,26 @@ def test_deleted_paths_are_keyed_from_the_git_root(tmp_path: Path) -> None:
     )
 
     assert _deleted_paths(ctx) == {"pkg/gone.py", "pkg/old.py"}
+
+
+async def test_complexity_is_restored_outside_the_diffed_files(repo, monkeypatch):
+    # A traversal change persists every file, but partial health measured only the diff.
+    rec = StepRecorder(monkeypatch)
+    install_shared_steps(rec)
+
+    await persist_incremental_index(
+        repo,
+        graph_builder(),
+        dict(GIT_META),
+        dead_code_report(),
+        object(),
+        ["src/a.py", "src/b.py"],
+        file_diffs=file_diffs(),
+        parsed_files=parsed_files(),
+        log=lambda _msg: None,
+        degraded=[],
+        failed_steps=[],
+    )
+
+    [(args, _kwargs)] = rec.args_of("restore_stored_complexity")
+    assert args[-1] == ["src/a.py"]

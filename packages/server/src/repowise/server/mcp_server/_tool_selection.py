@@ -22,10 +22,8 @@ import inspect
 import json
 import logging
 from collections.abc import Iterable, Sequence
-from pathlib import Path
 from typing import Any
 
-from repowise.core.agents.identity import UNKNOWN_AGENT
 from repowise.core.registry import ToolEntry, mcp_tool_registry
 from repowise.core.registry.tool_selection import (
     ALL,
@@ -128,12 +126,22 @@ def _read_always_load(repo_path: str | None) -> bool:
 
 
 def _is_workspace(repo_path: str | None) -> bool:
+    """Whether the server serves *repo_path* in workspace mode.
+
+    The rule the lifespan serves by (``_detect_workspace``, plus
+    ``--no-workspace``), so the listed surface never offers workspace-only
+    tools to a server that answers as a single repo.
+    """
     if not repo_path:
         return False
-    try:
-        from repowise.core.workspace.config import find_workspace_root
+    from repowise.server.mcp_server import _state
 
-        return find_workspace_root(Path(repo_path)) is not None
+    if _state._force_single_repo:
+        return False
+    try:
+        from repowise.server.mcp_server._server import _detect_workspace
+
+        return _detect_workspace(repo_path)[0] is not None
     except Exception:
         _log.debug("Workspace detection failed during tool selection", exc_info=True)
         return False
@@ -241,20 +249,6 @@ def mark_always_loaded(tools: list[Any]) -> list[Any]:
         else t
         for t in tools
     ]
-
-
-def every_client_lists(names: Iterable[str]) -> bool:
-    """Whether no client's default profile leaves out any of *names*.
-
-    Only a tool boot registered but a client's default narrows away counts: a
-    tool the configuration itself removed (a profile, a list, ``-name``) was
-    chosen, so there is nothing to tell an agent. Judged for a client with the
-    smallest default (any name other than a schema-deferring host's).
-    """
-    listed = session_tool_names(UNKNOWN_AGENT)
-    if listed is None or _selected_surface is None:
-        return True
-    return not (set(names) & _selected_surface[1]) - listed
 
 
 def selected_tool_names(*, is_workspace: bool) -> set[str]:
