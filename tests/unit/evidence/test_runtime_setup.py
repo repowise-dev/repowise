@@ -116,6 +116,22 @@ def test_a_console_script_is_profiled_in_process_before_the_test_suite(tmp_path:
     assert tests["prerequisites"] == install
 
 
+def test_a_src_layout_is_installed_before_it_is_profiled(tmp_path: Path) -> None:
+    # A pyproject that only configures tools: the package imports only once installed.
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 100\n")
+    (tmp_path / "src" / "lib").mkdir(parents=True)
+    (tmp_path / "src" / "lib" / "__init__.py").write_text("")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_lib.py").write_text("def test_x():\n    pass\n")
+
+    (tests,) = _targets(tmp_path)
+
+    assert tests["prerequisites"] == [
+        "python -m pip install -e . pytest pytest-cov",
+        "python -m pip install pyinstrument",
+    ]
+
+
 def test_an_entry_point_waits_for_its_arguments(tmp_path: Path) -> None:
     _python(tmp_path)
 
