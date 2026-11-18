@@ -131,3 +131,53 @@ def test_coverage_measured_at_head_ends_the_loop(tmp_path: Path) -> None:
     assert plan["next_call"] is None
     assert plan["reason"].startswith("Coverage at this commit is ingested")
     assert evidence_setup(tmp_path, indexed=True, head="a" * 40, coverage_commit="b" * 40)["next_call"]
+
+
+def _commit(root: Path, message: str, when: str) -> str:
+    import git as gitpython
+
+    repo = gitpython.Repo.init(root)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    repo.git.add("--all")
+    repo.index.commit(message, author_date=when, commit_date=when)
+    head = repo.head.commit.hexsha
+    repo.close()
+    return head
+
+
+def test_a_report_from_an_older_commit_is_regenerated_not_reingested(tmp_path: Path) -> None:
+    import os
+
+    _python(tmp_path)
+    (tmp_path / "coverage.xml").write_text("<coverage/>")
+    report_time = 1_700_000_000
+    os.utime(tmp_path / "coverage.xml", (report_time, report_time))
+    (tmp_path / ".gitignore").write_text("coverage.xml\n")
+    old = _commit(tmp_path, "one", "2023-11-13T12:00:00")
+    (tmp_path / "app" / "more.py").write_text("x = 1\n")
+    head = _commit(tmp_path, "two", "2023-11-17T12:00:00")
+
+    plan = evidence_setup(tmp_path, indexed=True, head=head)
+    # The agent already ingested the stale report: coverage sits at the old commit.
+    again = evidence_setup(tmp_path, indexed=True, head=head, coverage_commit=old)
+
+    cov = plan["units"][0]["coverage"]
+    assert cov["found"] == ["coverage.xml"] and cov["found_current"] is False
+    assert cov["ingest"] == "repowise coverage add coverage.xml .coverage"
+    for call in (plan["next_call"], again["next_call"]):
+        assert call["purpose"].startswith("Run the python tests")
+
+
+def test_reports_of_every_unit_are_ingested_in_one_call(tmp_path: Path) -> None:
+    (tmp_path / "go.work").write_text("go 1.22\nuse ./a\nuse ./b\n")
+    for unit in ("a", "b"):
+        (tmp_path / unit).mkdir()
+        (tmp_path / unit / "go.mod").write_text(f"module example.com/{unit}\n\ngo 1.22\n")
+        (tmp_path / unit / "x_test.go").write_text(f"package {unit}\n")
+        (tmp_path / unit / "coverage.out").write_text("mode: set\n")
+
+    plan = evidence_setup(tmp_path, indexed=True, head="a" * 40)
+
+    assert plan["next_call"]["steps"][0]["run"] == "repowise coverage add a/coverage.out b/coverage.out"

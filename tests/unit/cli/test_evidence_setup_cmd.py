@@ -109,3 +109,26 @@ def test_a_store_without_this_repository_is_told_to_index(repo: Path) -> None:
     assert payload["indexed"] is False
     assert payload["next_call"]["steps"][0]["run"] == "repowise init --yes --no-prose"
     assert payload["reason"] is None
+
+
+def test_an_index_from_an_older_repowise_is_told_to_update(repo: Path, monkeypatch) -> None:
+    import contextlib
+
+    from repowise.cli import helpers
+
+    (repo / ".repowise").mkdir()
+    (repo / ".repowise" / "wiki.db").write_bytes(b"")
+
+    @contextlib.asynccontextmanager
+    async def stale(_root):
+        raise helpers.StaleIndexError()
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(helpers, "repo_index_session", stale)
+
+    result = _setup("--format", "json")
+
+    assert result.exit_code == 0, (result.output, result.exception)
+    payload = json.loads(result.stdout)
+    assert payload["next_call"]["steps"] == [{"cwd": str(repo), "run": "repowise update"}]
+    assert "run `repowise update`" in payload["reason"]

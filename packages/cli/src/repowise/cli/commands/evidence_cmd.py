@@ -617,7 +617,7 @@ def _print_setup(repo: str | None, fmt: str) -> None:
 
     notices = notice_console(fmt)
     repo_path = _resolve_repo(repo, notices)
-    indexed, units, coverage_commit, index_error = run_async(_stored_units(repo_path))
+    indexed, units, coverage_commit, index_error, index_fix = run_async(_stored_units(repo_path))
     plan = evidence_setup(
         repo_path,
         indexed=indexed,
@@ -625,6 +625,7 @@ def _print_setup(repo: str | None, fmt: str) -> None:
         head=get_head_commit(repo_path),
         coverage_commit=coverage_commit,
         index_error=index_error,
+        index_fix=index_fix,
     )
     if fmt == "json":
         emit_json(plan)
@@ -660,30 +661,36 @@ def _setup_lines(unit: dict[str, Any]) -> list[str]:
     return lines
 
 
-async def _stored_units(repo_path: Path) -> tuple[bool, Any, str | None, str | None]:
+async def _stored_units(repo_path: Path) -> tuple[bool, Any, str | None, str | None, str]:
     """Whether *repo_path* has an index, its stored build units (None without),
-    the commit its newest coverage measured, and why an existing index could
-    not be read (None when it could, or when there is none).
+    the commit its newest coverage measured, why an existing index could not
+    be read (None when it could, or when there is none), and the command that
+    fixes it.
 
     Opens the store only when one exists, so a repository never indexed gets
     its plan and no empty store is left behind.
     """
-    from repowise.cli.helpers import repo_index_session
+    from repowise.cli.helpers import StaleIndexError, repo_index_session
+    from repowise.core.evidence.setup import DOCTOR_COMMAND, UPDATE_COMMAND
     from repowise.core.persistence.crud.analysis.coverage import load_newest_ingest
     from repowise.core.persistence.crud.build_units import load_build_units
     from repowise.core.persistence.database import has_db_store
 
     if not has_db_store(repo_path):
-        return False, None, None, None
-    async with repo_index_session(repo_path) as opened:
-        if opened is not None:
-            session, repo_id = opened
-            ingest = await load_newest_ingest(session, repo_id)
-            commit = ingest.ingested_commit_sha if ingest is not None else None
-            return True, await load_build_units(session, repo_id), commit, None
+        return False, None, None, None, DOCTOR_COMMAND
+    try:
+        async with repo_index_session(repo_path) as opened:
+            if opened is not None:
+                session, repo_id = opened
+                ingest = await load_newest_ingest(session, repo_id)
+                commit = ingest.ingested_commit_sha if ingest is not None else None
+                return True, await load_build_units(session, repo_id), commit, None, DOCTOR_COMMAND
+    except StaleIndexError as exc:
+        # Written by an older repowise and not repairable in place; its message says to update.
+        return False, None, None, exc.message, UPDATE_COMMAND
     # The session swallows read errors; ask once more to tell a store that
     # does not hold this repository from one that cannot be read.
-    return False, None, None, await _index_read_error(repo_path)
+    return False, None, None, await _index_read_error(repo_path), DOCTOR_COMMAND
 
 
 async def _index_read_error(repo_path: Path) -> str | None:
