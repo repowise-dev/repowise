@@ -281,7 +281,7 @@ _CHAIN_OPS = frozenset({"&&", "||", ";"})
 #     the lexer would split the command in a place PowerShell would not.
 #   - Defense in depth on the renderer. A PowerShell-dialect command is still
 #     handed to the system shell by ``distill``, and
-#     ``distill_cmd._render_command`` caret-escapes what it gives cmd.exe but
+#     ``command_runner.render_command`` caret-escapes what it gives cmd.exe but
 #     still has to refuse a couple of shapes outright (a ``%NAME%`` cmd would
 #     expand, an embedded newline). A rewrite is auto-allowed, so this side
 #     stays conservative rather than depending on the far side getting every

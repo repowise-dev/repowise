@@ -56,12 +56,9 @@ def tokenizer_fingerprint() -> str:
     The import kinds the tokenizer drops come from ingestion's language
     configs, so their values join the code.
     """
-    from repowise.core.ingestion.language_configs import LANGUAGE_CONFIGS
+    from .tokenizer import import_kinds_signature
 
-    from .tokenizer import import_node_kinds
-
-    kinds = sorted((lang, sorted(import_node_kinds(lang))) for lang in LANGUAGE_CONFIGS)
-    return source_fingerprint(TOKEN_INPUTS, f"{grammar_choices()}{kinds!r}")
+    return source_fingerprint(TOKEN_INPUTS, f"{grammar_choices()}{import_kinds_signature()}")
 
 
 # (kinds, identifier names, nloc, window tuples)

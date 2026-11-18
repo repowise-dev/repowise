@@ -28,7 +28,8 @@ load/save error degrades to a fresh computation.
 PageRank rides in the same file, reused only on an exact signature match (and
 only for unweighted graphs, see ``cached_pagerank``). A reused value is the one
 the previous run computed and persisted; a fresh one would normally differ only
-in the last bits, because summation follows insertion order.
+in the last bits, because summation follows insertion order. So does the last
+default execution-flow report, keyed by ``execution_flow_signature``.
 
 Note for the >30k-node sampled path (``nx.betweenness_centrality(k=...)``):
 sampling is seedless, so recomputing the same graph yields slightly
@@ -168,6 +169,8 @@ class CentralityCache:
         self._pagerank: dict[str, tuple[str, float, dict[str, float]]] = {}
         # kind -> last full community detection; reused like betweenness.
         self._communities: dict[str, CommunityEntry] = {}
+        # (signature, report) of the last default-config flow trace; exact reuse only.
+        self._flows: tuple[str, Any] | None = None
         self._lock = threading.Lock()
         self._loaded = False
         self._signatures: dict[str, tuple[weakref.ref, str]] = {}
@@ -192,6 +195,7 @@ class CentralityCache:
         self.__dict__.setdefault("_signatures", {})
         self.__dict__.setdefault("_pagerank", {})
         self.__dict__.setdefault("_communities", {})
+        self.__dict__.setdefault("_flows", None)
 
     def signature(self, kind: str, graph) -> str:
         """:func:`subgraph_signature` of *graph*, hashed once per subgraph object.
@@ -220,6 +224,8 @@ class CentralityCache:
             # Optional key: files written before PageRank was cached lack it.
             self._pagerank = payload.get("pagerank", {})
             self._communities = payload.get("communities", {})
+            # Optional key: files written before flows were cached read as a miss.
+            self._flows = payload.get("flows")
         except FileNotFoundError:
             return
         except Exception as exc:  # corrupt / unsigned / unreadable -> recompute
@@ -233,6 +239,7 @@ class CentralityCache:
                 "entries": self._entries,
                 "pagerank": self._pagerank,
                 "communities": self._communities,
+                "flows": self._flows,
             }
             dump_sealed_pickle(self._path, payload, domain=_CACHE_FILENAME)
         except Exception as exc:
@@ -256,6 +263,22 @@ class CentralityCache:
         with self._lock:
             self._ensure_loaded()
             self._pagerank[kind] = (signature, alpha, dict(values))
+            self._save_locked()
+
+    def lookup_flows(self, *, signature: str) -> Any | None:
+        """The stored flow report if it was traced on this exact signature, else ``None``."""
+        with self._lock:
+            self._ensure_loaded()
+            entry = self._flows
+        if not isinstance(entry, tuple) or len(entry) != 2 or entry[0] != signature:
+            return None
+        return entry[1]
+
+    def put_flows(self, *, signature: str, report: Any) -> None:
+        """Record the flow report traced on *signature* and persist atomically."""
+        with self._lock:
+            self._ensure_loaded()
+            self._flows = (signature, report)
             self._save_locked()
 
     def lookup(

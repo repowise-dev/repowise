@@ -20,6 +20,7 @@ from repowise.core.analysis.health.refactoring.recipe import (
 )
 from repowise.core.ci.markdown import longest_backtick_run
 
+from .fix_and_verify import measure_lines
 from .preamble import preamble
 from .sections import bullet_list, closing_sections, join_sections, repo_suffix
 
@@ -117,7 +118,14 @@ def _step_entry(step: Mapping[str, Any], marker: str, pad: str) -> str:
 
 def _verify_lines(check: Mapping[str, Any], *, runnable: bool = True) -> list[str]:
     """The guarding tests, most direct first; with *runnable*, an instruction to
-    run them and the command (a reader that cannot run anything gets neither)."""
+    run them and the command, and the timing a performance plan carries (a
+    reader that cannot run anything gets none of those)."""
+    lines = _test_lines(check, runnable=runnable)
+    measure = check.get("measure") if runnable else None
+    return [*lines, "", *measure_lines(measure)] if measure else lines
+
+
+def _test_lines(check: Mapping[str, Any], *, runnable: bool) -> list[str]:
     tests = check.get("tests") or []
     if not tests:
         return [check["text"]]

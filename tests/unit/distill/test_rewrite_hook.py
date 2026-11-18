@@ -269,7 +269,7 @@ class TestSafeTails:
         PowerShell has no backslash escape, so the POSIX quoting rules the
         lexer applies do not describe it. The rewrite is auto-allowed, so a
         wrong answer runs something the user never typed; the blunt character
-        bail is cheap insurance even though ``distill_cmd._render_command``
+        bail is cheap insurance even though ``command_runner.render_command``
         escapes what it passes to cmd.exe.
         """
         assert classify(command, SHELL_POWERSHELL) is None

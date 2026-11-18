@@ -10,16 +10,19 @@ SAME functions so both serving paths emit byte-identical shapes
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import Counter
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import Row, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.ids import is_external
 from repowise.core.ingestion.models import DOCUMENTATION_EDGE_TYPES, NON_CODE_EDGE_TYPES
 from repowise.core.persistence import crud
+from repowise.core.persistence.index_cache import IndexStampCache
 from repowise.core.persistence.models import GraphEdge, GraphNode
 from repowise.core.support_paths import FilePopulation, file_population
 from repowise.server.mcp_server._graph_utils import (
@@ -50,9 +53,7 @@ SLICE_MEMBER_CAP = 300
 # Boundary stubs per slice: only the most-connected outside neighbors survive,
 # so a blossom shows its strongest cross-cluster ties instead of a dust cloud.
 SLICE_BOUNDARY_CAP = 40
-# Chunk size for member-id IN lists. The slice edge filter ORs two IN clauses
-# (source + target) in one statement, so we cap each chunk well under SQLite's
-# 999-parameter limit to leave room for both lists plus the repo_id bind.
+# Chunk size for member-id IN lists, well under SQLite's 999-parameter limit.
 _SLICE_IN_CHUNK = 400
 # Members read before the population filter and any display cap apply.
 # Ceiling: a larger community still reports this number. The largest indexed so
@@ -64,6 +65,16 @@ MEMBER_READ_CAP = 2000
 _SLICE_BOUNDARY_CANDIDATES = SLICE_BOUNDARY_CAP * 3
 # Head of the unclustered list carried on the architecture payload.
 UNCLUSTERED_SAMPLE_CAP = 200
+# The edge columns the views read. Selected as plain rows: hydrating ORM
+# objects for every edge cost several times the query on a large graph.
+_EDGE_COLUMNS = (
+    GraphEdge.id,
+    GraphEdge.source_node_id,
+    GraphEdge.target_node_id,
+    GraphEdge.imported_names_json,
+    GraphEdge.edge_type,
+    GraphEdge.confidence,
+)
 
 
 @dataclass(frozen=True)
@@ -158,8 +169,8 @@ def _parse_imported_names(raw: str | None) -> list[str]:
         return []
 
 
-def edge_response(e: GraphEdge) -> GraphEdgeResponse:
-    """Build a GraphEdgeResponse from a GraphEdge ORM row."""
+def edge_response(e: GraphEdge | Row) -> GraphEdgeResponse:
+    """Build a GraphEdgeResponse from a GraphEdge ORM row or a :data:`_EDGE_COLUMNS` row."""
     return GraphEdgeResponse(
         source=e.source_node_id,
         target=e.target_node_id,
@@ -167,6 +178,107 @@ def edge_response(e: GraphEdge) -> GraphEdgeResponse:
         edge_type=e.edge_type,
         confidence=e.confidence,
     )
+
+
+# The node columns the code graph readers use: the exclude rule reads node_type
+# and file_path, the no-path diagnostics read community_id and pagerank, the
+# entry-point view reads is_entry_point.
+_CODE_NODE_COLUMNS = (
+    GraphNode.node_id,
+    GraphNode.node_type,
+    GraphNode.file_path,
+    GraphNode.community_id,
+    GraphNode.pagerank,
+    GraphNode.is_entry_point,
+)
+# Entries, one per (repository, exclude rules) at the current index state;
+# older states are dropped on rebuild. Each holds a whole graph in memory.
+_code_graphs = IndexStampCache(4)
+# One build per repository at a time, so a cold burst of requests loads once.
+_code_graph_locks: dict[str, asyncio.Lock] = {}
+
+
+@dataclass(frozen=True)
+class CodeGraph:
+    """The repository's code graph after the exclude rules: read-only, shared.
+
+    ``graph`` holds every surviving node and one arc per surviving code edge
+    pair (``edge_type`` is the last row's). ``edges`` keeps every row, parallel
+    edge types included, as :data:`_EDGE_COLUMNS` rows.
+    """
+
+    graph: Any
+    nodes: dict[str, Row]
+    edges: list[Row]
+
+
+def clear_code_graph_cache() -> None:
+    _code_graphs.clear()
+    # A lock is bound to the loop that first waited on it.
+    _code_graph_locks.clear()
+
+
+def _spec_key(exclude_spec: Any) -> tuple[str, ...] | None:
+    """The rules a spec was compiled from: equal rules share one cached graph."""
+    if exclude_spec is None:
+        return None
+    return tuple(str(p.pattern) for p in exclude_spec.patterns)
+
+
+async def load_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any) -> CodeGraph:
+    """Every code node and edge of *repo_id*, minus excluded files, as a DiGraph.
+
+    Non-code relations (history, prose) are left out: a ``co_changes`` edge
+    records that two files move together, so it would be a free hop no code
+    creates. Containment stays, since ``defines`` is the only bridge from the
+    file layer to the symbol layer. Kept per index state and exclude rules;
+    callers must not mutate the result.
+    """
+    key = await _code_graphs.key(session, repo_id, _spec_key(exclude_spec))
+    if key in _code_graphs:
+        return _code_graphs.get(key)
+    async with _code_graph_locks.setdefault(repo_id, asyncio.Lock()):
+        if key in _code_graphs:
+            return _code_graphs.get(key)
+        loaded = await _build_code_graph(session, repo_id, exclude_spec)
+        # Older index states are never asked for again; other exclude rules
+        # at this state stay.
+        _code_graphs.drop_repo_except(repo_id, key[:3])
+        return _code_graphs.remember(key, loaded)
+
+
+async def _build_code_graph(session: AsyncSession, repo_id: str, exclude_spec: Any) -> CodeGraph:
+    import networkx as nx
+
+    from repowise.server.mcp_server._helpers import filter_graph_nodes
+
+    node_rows = (
+        await session.execute(select(*_CODE_NODE_COLUMNS).where(GraphNode.repository_id == repo_id))
+    ).all()
+    nodes = {n.node_id: n for n in filter_graph_nodes(node_rows, exclude_spec)}
+    excluded = {n.node_id for n in node_rows} - nodes.keys()
+    edge_rows = (
+        await session.execute(
+            select(*_EDGE_COLUMNS).where(
+                GraphEdge.repository_id == repo_id,
+                GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
+            )
+        )
+    ).all()
+    if excluded:
+        edge_rows = [
+            e
+            for e in edge_rows
+            if e.source_node_id not in excluded and e.target_node_id not in excluded
+        ]
+
+    graph = nx.DiGraph()
+    # Every indexed node, not just edge endpoints: a file whose only edges were
+    # temporal is still indexed and must not read as "not found".
+    graph.add_nodes_from(nodes)
+    for e in edge_rows:
+        graph.add_edge(e.source_node_id, e.target_node_id, edge_type=e.edge_type)
+    return CodeGraph(graph, nodes, edge_rows)
 
 
 async def build_architecture_graph(
@@ -249,15 +361,15 @@ async def build_architecture_graph(
 
     # Collapse cross-community edges; a doc link or co-change across is not coupling.
     edge_result = await session.execute(
-        select(GraphEdge).where(
+        select(GraphEdge.source_node_id, GraphEdge.target_node_id).where(
             GraphEdge.repository_id == repo_id,
             GraphEdge.edge_type.notin_(NON_CODE_EDGE_TYPES),
         )
     )
     edge_counts: dict[tuple[int, int], int] = {}
-    for e in edge_result.scalars():
-        src_c = node_to_community.get(e.source_node_id)
-        tgt_c = node_to_community.get(e.target_node_id)
+    for source, target in edge_result.all():
+        src_c = node_to_community.get(source)
+        tgt_c = node_to_community.get(target)
         if src_c is None or tgt_c is None or src_c == tgt_c:
             continue
         if src_c not in kept_communities or tgt_c not in kept_communities:
@@ -265,9 +377,10 @@ async def build_architecture_graph(
         key = (src_c, tgt_c)
         edge_counts[key] = edge_counts.get(key, 0) + 1
 
+    # Sorted, so the payload does not depend on the order the rows were read in.
     arch_edges = [
         ArchitectureEdgeResponse(source=s, target=t, edge_count=c)
-        for (s, t), c in edge_counts.items()
+        for (s, t), c in sorted(edge_counts.items())
     ]
 
     unclustered.sort(key=lambda n: (-(n.pagerank or 0.0), n.node_id))
@@ -358,32 +471,32 @@ async def build_community_slice(
 
     # Edges touching any member: among-members stay; member<->outside become
     # cross-cluster links that pull in a boundary stub for the outside endpoint.
-    # The membership filter is pushed into SQL (source OR target in members) so
-    # we never load the whole repo's edge table into Python; the IN lists are
-    # chunked under SQLite's parameter limit. The Python filter below is kept
-    # as-is for correctness — the SQL only bounds the rows fetched (a
-    # superset-or-equal of what the Python filter keeps).
+    # The membership filter is pushed into SQL so we never load the whole
+    # repo's edge table into Python; the IN lists are chunked under SQLite's
+    # parameter limit. The Python filter below is kept as-is for correctness —
+    # the SQL only bounds the rows fetched (a superset-or-equal of what the
+    # Python filter keeps). Source and target are read in two queries so each
+    # uses its own index: SQLite planned ``source IN .. OR target IN ..`` as a
+    # scan of every edge in the repo.
     member_id_list = list(member_ids)
-    edge_rows: dict[str, GraphEdge] = {}
+    edge_rows: dict[str, Row] = {}
     for start in range(0, len(member_id_list), _SLICE_IN_CHUNK):
         chunk = member_id_list[start : start + _SLICE_IN_CHUNK]
-        chunk_result = await session.execute(
-            select(GraphEdge).where(
-                GraphEdge.repository_id == repo_id,
-                or_(
-                    GraphEdge.source_node_id.in_(chunk),
-                    GraphEdge.target_node_id.in_(chunk),
-                ),
-                # The UI has no legend for doc links yet.
-                GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
+        for endpoint in (GraphEdge.source_node_id, GraphEdge.target_node_id):
+            chunk_result = await session.execute(
+                select(*_EDGE_COLUMNS).where(
+                    GraphEdge.repository_id == repo_id,
+                    endpoint.in_(chunk),
+                    # The UI has no legend for doc links yet.
+                    GraphEdge.edge_type.notin_(DOCUMENTATION_EDGE_TYPES),
+                )
             )
-        )
-        # Dedup across chunks: an edge whose endpoints fall in different chunks
-        # matches twice. The PK keeps each edge once.
-        for e in chunk_result.scalars():
-            edge_rows[e.id] = e
+            # Dedup: an edge with both endpoints in the members matches twice.
+            # The PK keeps each edge once.
+            for e in chunk_result.all():
+                edge_rows[e.id] = e
 
-    kept_edges: list[GraphEdge] = []
+    kept_edges: list[Row] = []
     boundary_degree: dict[str, int] = {}
     for e in edge_rows.values():
         src_in = e.source_node_id in member_ids
@@ -423,9 +536,12 @@ async def build_community_slice(
 
     # Drop edges whose outside endpoint has no resolvable node (orphan ref).
     visible_ids = member_ids | resolved_boundary
+    # Sorted, so the payload does not depend on the order the rows were read in.
     links = [
         edge_response(e)
-        for e in kept_edges
+        for e in sorted(
+            kept_edges, key=lambda e: (e.source_node_id, e.target_node_id, e.edge_type)
+        )
         if e.source_node_id in visible_ids and e.target_node_id in visible_ids
     ]
 

@@ -298,7 +298,7 @@ def _rewrite_degraded_answer(payload: dict[str, Any]) -> None:
     if payload.get("call_path"):
         payload["answer"] = (
             f"Synthesis is unavailable ({reason}). call_path: the calls "
-            f"{payload.get('call_path_from')} in source order, one per row as caller "
+            f"{payload.get('call_path_from')} in call order, one per row as caller "
             "file:call line -> callee file:definition line, shipped code only; a call "
             "may sit on a branch that does not always run."
         )

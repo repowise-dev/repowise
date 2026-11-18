@@ -2455,6 +2455,7 @@ export interface FixVerify {
   command: string | null;
   basis: "measured" | "inferred" | "unknown";
   prerequisite?: string | null;
+  measure?: Record<string, unknown> | null;
 }
 
 /** Optional per-call provider/model overrides, as chat accepts. */
@@ -4839,6 +4840,11 @@ export interface VersionResponse {
   reindex_command?: string | null;
   highlights?: ChangelogHighlightModel[];
   latest_highlights?: string[];
+}
+
+export interface ViewOpenedRequest {
+  /** A view id, e.g. repo.codeHealth */
+  view: string;
 }
 
 export interface WebhookResponse {

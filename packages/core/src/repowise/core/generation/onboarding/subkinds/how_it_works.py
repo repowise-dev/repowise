@@ -22,6 +22,8 @@ from typing import Any, Literal
 
 import structlog
 
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ....analysis.execution_flows import rank_by_importance
 from ....support_paths import is_example_path
 from ...entry_points import orientation_entry_points
@@ -202,7 +204,7 @@ def _ranked_candidate(
     top-level directories, trace length and score; the entry id breaks ties.
     """
     entry_point = str(getattr(flow, "entry_point_id", ""))
-    paths = [str(hop).split("::", 1)[0].removeprefix("file:") for hop in trace]
+    paths = [file_of_symbol(str(hop)).removeprefix("file:") for hop in trace]
     lifecycle_regions = {
         layers.get(path) or (path.split("/", 1)[0] if "/" in path else "<root>")
         for path in paths
@@ -216,7 +218,7 @@ def _ranked_candidate(
     )
     return (
         int(getattr(flow, "reach", 0) or 0),
-        1 if entry_point.split("::", 1)[0] in declared_entry_points else 0,
+        1 if file_of_symbol(entry_point) in declared_entry_points else 0,
         candidate.lifecycle_breadth,
         len(trace),
         candidate.score,

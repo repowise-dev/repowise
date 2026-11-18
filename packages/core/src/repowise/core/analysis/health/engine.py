@@ -42,6 +42,7 @@ from ...ingestion.package_roots import package_roots_from_paths as _package_root
 from ...ingestion.package_roots import scan_package_roots as _scan_package_roots
 from ...installed_components import is_installed_component
 from ...pipeline.parse_pool import PENDING, run_with_deadline
+from ...stats import percentile
 from ..dead_code.file_reachability import file_dependency_neighbors
 from ..execution_roles import ExecutionRoles
 from ..graph_view import ImportEdgeView
@@ -174,18 +175,6 @@ def _pct_of_kept(
 _PARTNER_LINES_CACHE = 256
 
 
-def _percentile_p80(counts: list[int]) -> int | None:
-    """80th percentile of *counts* using the inclusive-lower convention
-    already used by ``churn_percentile`` in ``enrich.compute_percentiles``.
-    Returns ``None`` for an empty list.
-    """
-    if not counts:
-        return None
-    counts = sorted(counts)
-    idx_p80 = min(len(counts) - 1, max(0, int(0.8 * len(counts))))
-    return counts[idx_p80]
-
-
 def _full_repo_p80(
     value: int | None, changed_files: object, override: int | None
 ) -> int | None:
@@ -221,7 +210,7 @@ def _compute_repo_function_mod_p80(
             mod_count = len(distinct_commits_in_range(idx, fc.start_line, fc.end_line))
             if mod_count > 0:
                 counts.append(mod_count)
-    return _percentile_p80(counts)
+    return percentile(counts, 0.8)
 
 
 def _dependents_count(graph: Any, path: str) -> int:
@@ -242,7 +231,7 @@ def _compute_repo_dependents_p80(dependents: dict[str, int]) -> int | None:
     sparse-graph languages (TS/Rust) instead of assuming Python's denser
     import graph.
     """
-    return _percentile_p80([deg for deg in dependents.values() if deg > 0])
+    return percentile([deg for deg in dependents.values() if deg > 0], 0.8)
 
 
 def _compute_repo_active_contributors(git_meta_map: dict[str, dict]) -> int | None:
@@ -1121,6 +1110,8 @@ class HealthAnalyzer:
                         ),
                         "early_exits": facts.early_exits if facts else None,
                         **fc.stored_metrics(),
+                        "body_digest": fc.body_digest,
+                        "body_tokens": fc.body_tokens,
                     }
                 )
         return rows

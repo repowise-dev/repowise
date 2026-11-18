@@ -5,6 +5,10 @@ walked and leaves the rest. A role is not: a seed or a call in another file
 moves it, so every run restamps every row's role from its own role map. The
 nearest tests move the same way (a test or a caller elsewhere changes), so they
 are restamped with it, and only the rows whose answer changed are written.
+
+Every rewrite also carries each function's lineage from the rows it replaces
+(``analysis.lineage``) and logs the moves it decided in
+``symbol_lineage_events``, newest :data:`LINEAGE_EVENT_CAP` kept.
 """
 
 from __future__ import annotations
@@ -16,22 +20,26 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ....analysis.execution_graph import file_of_symbol
+from repowise.core.ingestion.symbol_identity import file_of_symbol
+
 from ....analysis.function_test_map import (
     FunctionTests,
     MappedTest,
     decode_tests,
     encoded_map,
 )
-from ...models import FunctionFact, GraphNode
+from ...models import FunctionFact, GraphNode, SymbolLineageEvent
 
 if TYPE_CHECKING:
     from ....analysis.execution_roles import ExecutionRoles
+    from ....analysis.lineage import FunctionBody, LineageEvent, SimilarFn
 
 _CHUNK = 500
-# Key ranges OR-ed into one DELETE: two bound values each, far under SQLite's
+# Key ranges OR-ed into one statement: two bound values each, far under SQLite's
 # variable limit, and SQLAlchemy keeps the OR flat, so no expression depth.
-_RANGES_PER_DELETE = 200
+RANGES_PER_STATEMENT = 200
+#: Lineage events kept per repository; older ones are pruned in one statement.
+LINEAGE_EVENT_CAP = 5_000
 
 
 def _row(repository_id: str, row: Mapping[str, Any], tests: Mapping[str, str]) -> dict[str, Any]:
@@ -49,6 +57,9 @@ def _row(repository_id: str, row: Mapping[str, Any], tests: Mapping[str, str]) -
         "nloc": row.get("nloc"),
         "params": row.get("params"),
         "max_nesting": row.get("max_nesting"),
+        "body_digest": row.get("body_digest"),
+        "body_tokens": row.get("body_tokens"),
+        "lineage_id": row.get("lineage_id"),
         "tests_json": tests.get(row["symbol_id"]),
     }
 
@@ -64,20 +75,19 @@ def key_range(path: str) -> tuple[str, str]:
     return f"{path}::", f"{path}:;"
 
 
+def key_range_chunks(column: Any, paths: Iterable[str]) -> Iterator[list[Any]]:
+    """*paths* as key-range conditions on the symbol-id *column*, to OR together:
+    at most :data:`RANGES_PER_STATEMENT` per chunk, one chunk per statement."""
+    ranges = sorted({key_range(path) for path in paths})
+    for i in range(0, len(ranges), RANGES_PER_STATEMENT):
+        chunk = ranges[i : i + RANGES_PER_STATEMENT]
+        yield [and_(column >= low, column < high) for low, high in chunk]
+
+
 def _file_range_chunks(repository_id: str, paths: Iterable[str]) -> Iterator[Any]:
     """The rows of *paths* as WHERE clauses, a chunk of key ranges each."""
-    ranges = sorted({key_range(path) for path in paths})
-    for i in range(0, len(ranges), _RANGES_PER_DELETE):
-        chunk = ranges[i : i + _RANGES_PER_DELETE]
-        yield and_(
-            FunctionFact.repository_id == repository_id,
-            or_(
-                *(
-                    and_(FunctionFact.symbol_id >= low, FunctionFact.symbol_id < high)
-                    for low, high in chunk
-                )
-            ),
-        )
+    for conditions in key_range_chunks(FunctionFact.symbol_id, paths):
+        yield and_(FunctionFact.repository_id == repository_id, or_(*conditions))
 
 
 async def delete_file_rows(session: AsyncSession, repository_id: str, paths: Iterable[str]) -> None:
@@ -104,10 +114,27 @@ async def write_function_facts(
     file_paths: Iterable[str] | None = None,
     roles: ExecutionRoles | None = None,
     tests: FunctionTests | None = None,
+    departed: Iterable[str] = (),
+    renames: Mapping[str, str] | None = None,
+    commit: str | None = None,
+    similar: SimilarFn | None = None,
 ) -> int:
     """Replace the rows of *file_paths* (every row when ``None``) with *rows*,
     then restamp every row's role from *roles* and its tests from *tests*
-    (``analysis.function_test_map``). Returns the rows written."""
+    (``analysis.function_test_map``). Returns the rows written.
+
+    Each new row inherits the lineage of the replaced row it continues
+    (``analysis.lineage.pair_lineage``). *departed* names deleted or renamed-away
+    files whose stored rows may be where a function came from; they are read,
+    not deleted. *renames* maps old paths to new, *commit* is the commit
+    analysed, and *similar* compares a moved function's old and new bodies.
+    """
+    # Here, not at module level: the move passes import the health analyzer,
+    # which imports this package.
+    from ....analysis.lineage import FunctionBody, pair_lineage
+
+    paths = None if file_paths is None else [*file_paths, *departed]
+    old = await stored_bodies(session, repository_id, paths)
     if file_paths is None:
         await session.execute(delete(FunctionFact).where(FunctionFact.repository_id == repository_id))
     else:
@@ -116,14 +143,83 @@ async def write_function_facts(
     # order fills the clustered pages instead of splitting them half empty.
     encoded = encoded_map(tests) if tests is not None else {}
     by_symbol = {row["symbol_id"]: _row(repository_id, row, encoded) for row in reversed(list(rows))}
+    plan = pair_lineage(
+        old,
+        [FunctionBody(s, r["body_digest"], r["body_tokens"]) for s, r in by_symbol.items()],
+        renames=renames,
+        commit=commit,
+        similar=similar,
+    )
+    for symbol, row in by_symbol.items():
+        row["lineage_id"] = plan.lineage[symbol]
     fresh = [by_symbol[symbol] for symbol in sorted(by_symbol)]
     # On the table, not the mapper: the ORM bulk path splits a batch wherever a
     # column flips between NULL and a value, which doubled this write.
     for i in range(0, len(fresh), _CHUNK):
         await session.execute(insert(FunctionFact.__table__), fresh[i : i + _CHUNK])
+    await _record_lineage_events(session, repository_id, plan.events, commit)
     if roles is not None or tests is not None:
         await _restamp(session, repository_id, roles, None if tests is None else encoded)
     return len(fresh)
+
+
+async def stored_bodies(
+    session: AsyncSession, repository_id: str, paths: Iterable[str] | None
+) -> list[FunctionBody]:
+    """The stored body and lineage of each function in *paths* (every one when ``None``)."""
+    from ....analysis.lineage import FunctionBody
+
+    columns = (
+        FunctionFact.symbol_id,
+        FunctionFact.body_digest,
+        FunctionFact.body_tokens,
+        FunctionFact.lineage_id,
+    )
+    clauses = (
+        [FunctionFact.repository_id == repository_id]
+        if paths is None
+        else list(_file_range_chunks(repository_id, paths))
+    )
+    out: list[FunctionBody] = []
+    for clause in clauses:
+        out.extend(FunctionBody(*row) for row in await session.execute(select(*columns).where(clause)))
+    return out
+
+
+async def _record_lineage_events(
+    session: AsyncSession, repository_id: str, events: list[LineageEvent], commit: str | None
+) -> None:
+    """Append *events* in bulk, then drop all but the newest :data:`LINEAGE_EVENT_CAP`."""
+    if not events:
+        return
+    rows = [
+        {
+            "repository_id": repository_id,
+            "lineage_id": event.lineage_id,
+            "from_symbol_id": event.from_symbol_id,
+            "to_symbol_id": event.to_symbol_id,
+            "commit_sha": commit,
+            "method": event.method,
+            "reason": event.reason,
+        }
+        for event in events
+    ]
+    for i in range(0, len(rows), _CHUNK):
+        await session.execute(insert(SymbolLineageEvent), rows[i : i + _CHUNK])
+    oldest_kept = (
+        select(SymbolLineageEvent.id)
+        .where(SymbolLineageEvent.repository_id == repository_id)
+        .order_by(SymbolLineageEvent.id.desc())
+        .offset(LINEAGE_EVENT_CAP - 1)
+        .limit(1)
+        .scalar_subquery()
+    )
+    await session.execute(
+        delete(SymbolLineageEvent).where(
+            SymbolLineageEvent.repository_id == repository_id,
+            SymbolLineageEvent.id < oldest_kept,
+        )
+    )
 
 
 async def _restamp(
@@ -254,10 +350,12 @@ def _decoded(
 
 
 __all__ = [
+    "LINEAGE_EVENT_CAP",
     "delete_file_rows",
     "get_file_facts",
     "get_function_facts",
     "key_range",
+    "stored_bodies",
     "tests_for_functions",
     "tests_in_files",
     "write_function_facts",

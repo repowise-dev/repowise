@@ -164,7 +164,7 @@ In workspace mode, `get_context`, `get_symbol`, `get_risk` and `get_health` serv
 | `grounding` | No-synthesis answers: `exact_symbol` or `extracted` |
 | `note`, `next_action_hint` | How the answer was built; on weak retrieval, which `best_guesses` row to start from |
 | `next_actions` | Up to 3 `get_symbol('<id>')` calls for functions the answer names whose bodies it does not serve; with a `flow_path`, the first is `get_symbol('<id>', depth=2)`, which also returns the bodies it calls |
-| `call_path`, `call_path_from` | Keyless, when the question asks how a call travels (reach, dispatch, end up, what happens when) and names a symbol: up to 12 hops out of that symbol, or into it when the question names it as the destination, one row each as `caller file:call line -> callee file:definition line`, shipped code only. Served in place of that symbol's body and `code_rationale` |
+| `call_path`, `call_path_from` | Keyless, when the question asks how a call travels (reach, dispatch, end up, what happens when) and names a symbol: up to 12 hops out of that symbol, or into it when the question names it as the destination, one row each as `caller file:call line -> callee file:definition line`, shipped code only. When it names both ends ("how does X reach Y", "how does X call Y"), the shortest route from X to Y instead, with `call_path_from` naming both; with no such route, the hops around the named symbol, and `call_path_from` says no route was found. Served in place of that symbol's body and `code_rationale` |
 
 Notes:
 
@@ -195,6 +195,7 @@ Per target, under `targets`:
 | `hotspot_files` | Directory card: hotspot files under it, absent at zero |
 | `fix_history` | Files with counted bug fixes: `fix_count` over `window` (6 months), age, `bug_magnet`. A cue to call `get_risk` |
 | `episodes` | Count of dated records; `get_why` serves them |
+| `measured` | Symbol or file a stored profile run measured: one line with rank among repo code, workload class and name (`in tests` for a unit-test run), share of samples with its interval (`ordering only` for a tracer), how much of the run repo code explains, and age. A file names up to 3 functions from one run and counts the rest, with other runs and stale ones counted apart. `stale:` when the body changed since the run. Rows are per function, so a class card has none. Absent with no runtime evidence |
 | decisions | Titles; with `include=["decisions"]` the lanes `decisions`, `candidates` (max 3), `history` (max 2) |
 | `file_preview` | File with no symbols: `lines`, `chars`, and `heading_count` + 3 `headings` (markdown, reST) or 3 lines as `head` |
 | `resolved_to`, `note` | A `path::Name` miss answered with the file's card |
@@ -207,6 +208,7 @@ Top level: `targets`, `_meta`, `ignored_arguments`, `suspects` when asked, and `
 - **symbols:** compact cards list the top 15: types (classes, interfaces, structs, traits, enums, type aliases, impls, modules), then functions and methods, then the rest, each by centrality. A budget trim below 15 keeps symbols by kind and name match. `include=["symbols"]` lists all.
 - **`symbol_id`:** absent means `path::name`; methods and overloads carry theirs.
 - **`fix_history`:** age is measured to the indexed commit.
+- **`measured`:** absence means unknown, never fast. Rank orders functions within one run; it is not a claim that the function is slow.
 - **`*_basis`:** an empty list means no resolved edge, not proof of none.
 
 ### Context opt-in blocks
@@ -277,7 +279,7 @@ On a directory or module card: every indexed file under it (git rows and graph f
 One top-level block: `window` (`since`, `until`), `candidates` (changes merged in the last 14 days), `texts_missing` (unreadable changes, ranked on title and files), `symptom_files` (targets mapped to files at HEAD), `note`, and `suspects`.
 
 - `suspects`: at most 5 rows of `{id, ref, title, merged_at, category, head_sha, files_changed, rank, signals}`, ranked against the targets' files and path words, or the `symptom` text.
-- `signals` maps each fired signal (`text`, `graph`, `co-change`, `recency`, `trace`) to its `rank` and `evidence`.
+- `signals` maps each fired signal (`text`, `graph`, `co-change`, `recency`, `trace`) to its `rank` and `evidence`. A `trace` row reads `frame <symbol id>` when a Python frame resolved to the indexed function it ran in (its file sits under the checkout and matches the indexed commit) and the change edited that function; other frames give `frame file <path>` and `frame function <name>`.
 - A reading order, never a cause: no score or probability.
 
 ### Component targets
@@ -479,7 +481,7 @@ In workspace mode the directive adds `will_break_consumers` (structural reach on
 - **Directive order:** gating findings (high or critical, not performance) lead the reasons, inspect actions and `top_findings`; the count reads "N of M" when others are lower. The headline ends with the code's health on both sides.
 - **`include=["scales"]`** adds each field's unit and calibration, and the `review_priority` tercile with `classification` (`Below-typical`, `Typical`, `Above-typical diff size`).
 - **`include=["diagnostics"]`** adds `score` (raw 0 to 10), `fallback_band`, `risk_authority`, `score_measures`, `score_unit`, `baseline_sample_size`, `features`, `drivers`, `fix_history` `density` and `percentile`, and `health_delta.analyzer` (rules fingerprint; `context` is `index_dependents` when centrality gates read the index's dependents counts on both sides, `changed_files` with no index), `.base`, `.head` (resolved revisions), `.limits`.
-- **`include=["findings"]`** lists every finding with its expand call as `inspect`. `evidence` adds the evidence checklist; `tests` adds `impacted_tests.why` and `basis_by_file`.
+- **`include=["findings"]`** lists every finding with its expand call as `inspect`, and `health_delta.changed_symbols`: each symbol the diff touched, finding or not, with `path`, `symbol` (`Class::method`), `change` (`added`, `edited`, `deleted`, `moved`), `lines` as `[start, end]` (base side for `deleted`) and `moved_from` (`path` and the bare `symbol` name), up to 50, with `changed_symbols_total`; both are absent when nothing was touched. An edit names the innermost symbol only. `evidence` adds the evidence checklist; `tests` adds `impacted_tests.why` and `basis_by_file`.
 - **`per_commit=true`** (a range only) replaces the review with `commits`: one row per non-merge commit, oldest first, up to 30, each with `sha`, `subject`, `files`, `lines`, `risk_percentile` (or `fallback_band`), up to two `drivers` that raised it, `fix_prone` files and `is_fix`. Every row ranks against the same history (`ranked_against`, read at the range's merge-base), so a row can differ slightly from that commit scored alone. `review` names the full-review calls, `merges_skipped` counts merge commits, and `more` carries the call for the commits past the cap (on a range with merged branches it can repeat a few rows, and it ranks against its own start). `include=["diagnostics"]` adds each row's `score`.
 
 ### health_delta
@@ -727,8 +729,10 @@ Findings carry `health_impact: 0` and never blend into the score. `perf_rank` is
 
 - Bare `get_health()` ranks them in `fix_first` as `perf_fix`. `opportunity_id="perf..."` adds `plan_steps`, `validation`, `siblings`; `only=["performance_evidence"]` + `cursor` pages evidence; rows carry a public `finding_id`.
 - Ids are stable per model version; older ones resolve to `model_state.state: "stale_model"` with `refresh_required`. `lifecycle_status` is `open` or `resolved`.
-- `performance_opportunities` holds `cost_proof` `proven` causes. `unproven` (loop size unmeasured) never sets `may_lead` and no list shows it; counted in `performance_summary.default_queue.excluded.unmeasured_cost`, `performance_summary.proof` and the `proof` facet. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
+- `performance_opportunities` holds `cost_proof` `proven` causes. `unproven` (loop size unknown) never sets `may_lead` and no list shows it; counted in `performance_summary.default_queue.excluded.unmeasured_cost`, `performance_summary.proof` and the `proof` facet. REST lists them with `proof=unproven` on `/api/repos/{id}/health/performance-opportunities`.
 - The `growth_source` facet (`loop`, `registry`, `cold_path`, `none`, `n/a`) names the loop showing growth. `fix_first`, Do next and `performance_summary.lead` take only `plan_ready` causes with `loop` (or per-call causes an entry point reaches); `fix_first.totals.excluded.unconfirmed_cost` counts the rest.
+- `performance_measured` (dashboard only) lists what stored profile runs measured, beside the static causes. `basis: "measured"`: `rows` (workload classes that may lead) and `in_tests` (`unit_test` runs, never leading) give each function's `rank`, `share` with its interval (`share_low`, `share_high`), `self_share`, `samples`, `lines` (`"start-end"`), `freshness` and `callers_total`; `runs` gives each row's basis: `workload_class`, `workload_name`, `commit`, `age_days`, `samples`, `explained_share` (how much of the run production code explains), `outside_production` (functions counted, not listed) and `ordering_only` (a tracer: order, no share). Three rows per group, `limit` up to 10. `on_static_findings` names measured functions a static cause already holds, by `opportunity_ids`. Without ranked evidence: `basis: "unknown"` and `status` `no_runtime_data` or `stale` (both with `command`, the setup call), or `not_ranked` (too few samples in production code).
+- With the queue in the same response, `performance_summary` drops its `next_call` (it would return that queue).
 
 ### Coverage
 
