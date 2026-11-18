@@ -78,7 +78,12 @@ _ANSI_CODE_PAGES = ("cp1251", "cp1252", "cp1250", "cp932", "cp936")
 _SOURCE_EXTENSIONS = (*_UNIT_EXTENSIONS, *PROJECT_EXTENSIONS)
 _STRING_OR_COMMENT_RE = re.compile(r"'[^'\r\n]*'|\{[^}]*\}|\(\*.*?\*\)|//[^\r\n]*", re.DOTALL)
 _IN_PATH_RE = re.compile(r"\s+in\s+(?:'')+", re.IGNORECASE)
-_UNIT_CLAUSE_RE = re.compile(r"\b(?:uses|contains)\b([^;'=:()]*);", re.IGNORECASE)
+_UNIT_CLAUSE_RE = re.compile(r"\b(?:uses|contains)\b([^;'=:()+\-*/<>\[\]@^]*);", re.IGNORECASE)
+# Words that show a ``uses``-like run is an expression on an identifier of that name.
+_EXPRESSION_WORDS = frozenset(
+    {"and", "as", "div", "do", "else", "in", "is", "mod", "not", "of", "or"}
+    | {"shl", "shr", "then", "to", "xor"}
+)
 
 
 @dataclass(frozen=True)
@@ -408,9 +413,10 @@ def _used_units(path: str, ctx: ResolverContext) -> tuple[str, ...]:
     code = _STRING_OR_COMMENT_RE.sub(lambda m: "''" if m[0][0] == "'" else " ", text)
     names: list[str] = []
     for clause in _UNIT_CLAUSE_RE.findall(_IN_PATH_RE.sub("", code)):
-        items = [item.strip().lower() for item in clause.split(",") if item.strip()]
-        if not any(char.isspace() for item in items for char in item):
-            names.extend(items)
+        # Removed {$IFDEF} branches can leave two names with no comma between them.
+        tokens = clause.replace(",", " ").lower().split()
+        if _EXPRESSION_WORDS.isdisjoint(tokens):
+            names.extend(tokens)
     return tuple(dict.fromkeys(names))
 
 

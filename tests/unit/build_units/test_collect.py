@@ -963,6 +963,41 @@ def test_pascal_uses_walk_survives_cycles_and_ignores_text_that_only_looks_like_
         assert _owners(index, f"other/{name}.pas") == []
 
 
+def test_pascal_uses_keeps_every_unit_of_a_clause_with_conditional_branches(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "app/App.dpr": _program("{$IFDEF WIN} WinSide {$ELSE} PosixSide {$ENDIF}, Common"),
+        "lib/WinSide.pas": _unit(),
+        "lib/PosixSide.pas": _unit(),
+        "lib/Common.pas": _unit(),
+    })
+    for name in ("WinSide", "PosixSide", "Common"):
+        assert _owners(index, f"lib/{name}.pas") == ["pascal:App"]
+
+
+def test_pascal_uses_keeps_the_clause_around_an_in_path_with_an_apostrophe(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "app/App.dpr": _program("Quoted in 'O''Brien.pas', Plain"),
+        "app/O'Brien.pas": _unit(),
+        "lib/Plain.pas": _unit(),
+    })
+    assert _owners(index, "app/O'Brien.pas") == ["pascal:App"]
+    assert _owners(index, "lib/Plain.pas") == ["pascal:App"]
+
+
+def test_pascal_expressions_on_identifiers_named_uses_link_nothing(tmp_path):
+    index = _collect_pascal(tmp_path, {
+        "app/App.dpr": (
+            "program P;\nvar Uses, Contains: Integer;\nbegin\n"
+            "  if Contains then InThen;\n  Run(Uses - InMinus);\n  Uses := Contains + InPlus;\nend.\n"
+        ),
+        "lib/InThen.pas": _unit(),
+        "lib/InMinus.pas": _unit(),
+        "lib/InPlus.pas": _unit(),
+    })
+    for name in ("InThen", "InMinus", "InPlus"):
+        assert _owners(index, f"lib/{name}.pas") == []
+
+
 def test_pascal_package_walks_its_contains_and_lazarus_its_file_list(tmp_path):
     index = _collect_pascal(tmp_path, {
         "pkg/Lib.dpk": _dpk(contains="Api"),
