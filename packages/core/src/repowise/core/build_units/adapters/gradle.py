@@ -15,6 +15,7 @@ import posixpath
 import re
 from pathlib import Path
 
+from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.jvm_gradle import (
@@ -70,14 +71,14 @@ def _unit(project: JvmGradleProject, repo: Path) -> BuildUnit:
     )
 
 
-def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
+def units(ctx: ResolverContext) -> Found:
     if ctx.repo_path is None:
-        return []
+        return Found([])
     index = get_or_build_jvm_gradle_index(ctx)
     # A projectDir override can point outside the repo; such a project is no unit here.
     projects = [p for p in index.projects.values() if not p.root_dir.startswith("../")]
     if not projects:
-        return []
+        return Found([])
 
     by_src_dir: dict[str, list[int]] = {}
     for i, project in enumerate(projects):
@@ -91,7 +92,12 @@ def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
         dirs = ("/".join(parts[:depth]) for depth in range(1, len(parts)))
         for i in {i for d in dirs for i in by_src_dir.get(d, ())}:
             listed[i].append(path)
-    return [
+    claims = [
         (_unit(project, ctx.repo_path), tuple(files))
         for project, files in zip(projects, listed, strict=True)
     ]
+    # The settings script, and a root build script beside it that configures
+    # the listed projects, were read and are no unit of their own.
+    root_scripts = (*_SETTINGS, *_BUILD_SCRIPTS)
+    ruled_out = frozenset(name for name in root_scripts if (ctx.repo_path / name).is_file())
+    return Found(claims, ruled_out)

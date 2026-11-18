@@ -6,6 +6,7 @@ entries naming another module of the repo.
 
 from __future__ import annotations
 
+from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.external_systems.go import scan_go_mod
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -13,9 +14,9 @@ from repowise.core.ingestion.resolvers.go import _read_module_directive
 from repowise.core.ingestion.resolvers.go_workspace import get_or_build_go_index
 
 
-def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
+def units(ctx: ResolverContext) -> Found:
     if ctx.repo_path is None or not any(path.endswith(".go") for path in ctx.path_set):
-        return []
+        return Found([])
     index = get_or_build_go_index(ctx)
 
     # ``index.modules`` also carries local ``replace`` targets, keyed by the
@@ -47,4 +48,4 @@ def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
             deps=tuple(f"go:{name}" for name in requires if name in paths),
         )
         out.append((unit, ()))
-    return out
+    return Found(out)

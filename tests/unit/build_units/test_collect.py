@@ -200,6 +200,48 @@ def test_failing_index_is_skipped_and_its_roots_fall_back(tmp_path, monkeypatch)
     })
     assert set(index.units) == {"go:example.com/m", "manifest:crates/app"}
     assert _owners(index, "crates/app/src/main.rs") == ["manifest:crates/app"]
+    assert index.failed_ecosystems == frozenset({"cargo"})
+    # A run that failed compares equal to the same units read back without the flag.
+    assert index == type(index)(units=index.units, file_owners=index.file_owners)
+
+
+def test_clean_run_reports_no_failed_ecosystem(tmp_path):
+    index = _collect(tmp_path, {"go.mod": "module example.com/m\n", "m.go": "package m\n"})
+    assert index.failed_ecosystems == frozenset()
+
+
+def test_unparseable_cargo_manifest_keeps_its_files(tmp_path):
+    index = _collect(tmp_path, {
+        "Cargo.toml": '[workspace]\nmembers = ["crates/app"]\n',
+        "crates/app/Cargo.toml": '[package]\nname = "app"\n',
+        "crates/app/src/main.rs": "",
+        "broken/Cargo.toml": "[package\nname = ",
+        "broken/src/lib.rs": "",
+    })
+    assert set(index.units) == {"cargo:app", "manifest:broken"}
+    assert _owners(index, "broken/src/lib.rs") == ["manifest:broken"]
+
+
+def test_malformed_csproj_keeps_its_files_beside_a_good_one(tmp_path):
+    index = _collect(tmp_path, {
+        "src/Good/Good.csproj": _CSPROJ.format(refs=""),
+        "src/Good/A.cs": "class A {}",
+        "src/Bad/Bad.csproj": "<Project><ItemGroup>",
+        "src/Bad/B.cs": "class B {}",
+    })
+    assert set(index.units) == {"dotnet:src/Good/Good.csproj", "manifest:src/Bad"}
+    assert _owners(index, "src/Bad/B.cs") == ["manifest:src/Bad"]
+
+
+def test_unreadable_package_json_keeps_its_root(tmp_path):
+    index = _collect(tmp_path, {
+        "package.json": json.dumps({"name": "root", "workspaces": ["packages/*"]}),
+        "packages/a/package.json": json.dumps({"name": "a"}),
+        "tools/broken/package.json": "{ not json",
+        "tools/broken/x.js": "",
+    })
+    assert set(index.units) == {"npm:a", "manifest:tools/broken"}
+    assert _owners(index, "tools/broken/x.js") == ["manifest:tools/broken"]
 
 
 def test_two_runs_give_the_same_index(tmp_path):

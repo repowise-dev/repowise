@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.ts_workspace import (
@@ -12,10 +13,10 @@ from repowise.core.ingestion.resolvers.ts_workspace import (
 _DEP_FIELDS = ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies")
 
 
-def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
+def units(ctx: ResolverContext) -> Found:
     members = get_or_build_workspace_info(ctx)
     if not members:
-        return []
+        return Found([])
     manifests = dict(_parsed_package_jsons(ctx))
 
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
@@ -40,4 +41,12 @@ def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
             deps=tuple(deps),
         )
         out.append((unit, ()))
-    return out
+    # The workspace declaration rules on every package.json it could read: a
+    # non-member is a fixture, template or separately installed tool.
+    member_dirs = {info["dir"] for info in members.values()}
+    ruled_out = frozenset(
+        "package.json" if d == "." else f"{d}/package.json"
+        for d in manifests
+        if d not in member_dirs
+    )
+    return Found(out, ruled_out)

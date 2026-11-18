@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.resolvers.context import ResolverContext
 from repowise.core.ingestion.resolvers.dotnet import get_or_build_index
@@ -34,12 +35,12 @@ def _listed_files(
     return listed
 
 
-def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
+def units(ctx: ResolverContext) -> Found:
     if not any(path.endswith(_SOURCE_SUFFIXES) for path in ctx.path_set):
-        return []
+        return Found([])
     index = get_or_build_index(ctx)
     if index is None:
-        return []
+        return Found([])
     repo = index.repo_path  # resolved, like every path the index holds
     listed = _listed_files(index.file_to_project, repo, ctx.path_set)
     out: list[tuple[BuildUnit, tuple[str, ...]]] = []
@@ -59,4 +60,4 @@ def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
             deps=tuple(f"dotnet:{ref}" for ref in refs if ref is not None),
         )
         out.append((unit, tuple(sorted(listed.get(path, ())))))
-    return out
+    return Found(out)

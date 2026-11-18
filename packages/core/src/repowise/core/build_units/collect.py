@@ -2,61 +2,47 @@
 
 from __future__ import annotations
 
-import fnmatch
 from collections.abc import Callable
 from dataclasses import replace
 
 import structlog
 
-from repowise.core.build_units.adapters import cargo, dotnet, go, gradle, manifest_roots, npm
+from repowise.core.build_units.adapters import (
+    Found,
+    cargo,
+    dotnet,
+    go,
+    gradle,
+    manifest_roots,
+    npm,
+)
 from repowise.core.build_units.model import BuildUnit, BuildUnitIndex
 from repowise.core.ingestion.resolvers.context import ResolverContext
 
 log = structlog.get_logger(__name__)
 
-Adapter = Callable[[ResolverContext], list[tuple[BuildUnit, tuple[str, ...]]]]
-
 # Ecosystem adapters, each reading its resolver index through the accessor
-# that caches it on the context, with the manifest names it is the authority
-# on. ``manifest_roots`` runs after them all and fills in the package roots
-# they left: a root holding only manifests of an adapter that found units is
-# left out, since that adapter already decided it is no unit. A workspace
-# declaration rules on every ``package.json`` on purpose: a non-member one is
-# a fixture, template or separately installed tool, not a package the
-# workspace builds. Cargo gives every ``[package]`` manifest a unit itself, in
-# the workspace or not; a ``Cargo.toml`` without one (a virtual workspace) is
-# no unit, and any other root it shares is left to the fallback.
-_ADAPTERS: tuple[tuple[str, Adapter, tuple[str, ...]], ...] = (
-    ("dotnet", dotnet.units, ("*.csproj", "*.vbproj")),
-    ("cargo", cargo.units, ()),
-    (
-        "gradle",
-        gradle.units,
-        ("build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"),
-    ),
-    ("npm", npm.units, ("package.json",)),
-    ("go", go.units, ("go.mod",)),
+# that caches it on the context. ``manifest_roots`` runs after them all and
+# fills in the package roots they left: a root is skipped only when every
+# manifest in it is one an adapter actually read and ruled on, so a manifest
+# that failed to parse still gets its root a unit.
+_ADAPTERS: tuple[tuple[str, Callable[[ResolverContext], Found]], ...] = (
+    ("dotnet", dotnet.units),
+    ("cargo", cargo.units),
+    ("gradle", gradle.units),
+    ("npm", npm.units),
+    ("go", go.units),
 )
 
 
-def _run(name: str, adapter: Adapter, ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
-    """*adapter*'s units, sorted by root then id; none when its index fails to build."""
-    try:
-        found = adapter(ctx)
-    except Exception as exc:  # one broken manifest must not cost every other unit
-        log.warning("build_units_adapter_failed", adapter=name, error=str(exc))
-        return []
-    return sorted(found, key=lambda claim: (claim[0].root, claim[0].id))
-
-
 def _add(
-    found: list[tuple[BuildUnit, tuple[str, ...]]],
+    found: Found,
     units: dict[str, BuildUnit],
     listed: dict[str, list[str]],
     path_set: set[str],
 ) -> None:
-    """Add *found* to *units*, keeping an id already present, and its indexed files to *listed*."""
-    for unit, files in found:
+    """Add *found*'s units to *units*, keeping an id already present, and their indexed files to *listed*."""
+    for unit, files in sorted(found.claims, key=lambda claim: (claim[0].root, claim[0].id)):
         if unit.id in units:
             log.warning("build_units_duplicate_id", unit_id=unit.id, root=unit.root)
             continue
@@ -69,34 +55,35 @@ def _add(
 def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
     """Every build unit of the repo *ctx* resolves, and the units owning each indexed file.
 
-    An ecosystem the repo does not use costs a cheap check, and one whose
-    index fails to build is skipped, its roots left to the manifest fallback.
+    An ecosystem the repo does not use costs a cheap check. One whose index
+    fails to build is skipped with one warning and named in
+    ``failed_ecosystems``, and its roots are left to the manifest fallback.
     A unit id produced twice keeps the first by root. A specific adapter's
     unit wins over the fallback's at the same root. Only files in
     ``ctx.path_set`` get an owner.
     """
     units: dict[str, BuildUnit] = {}
     listed: dict[str, list[str]] = {}
-    authoritative: list[str] = []
-    for name, adapter, manifests in _ADAPTERS:
-        found = _run(name, adapter, ctx)
-        if found:
-            authoritative.extend(manifests)
+    decided: set[str] = set()
+    failed: set[str] = set()
+    for name, adapter in _ADAPTERS:
+        try:
+            found = adapter(ctx)
+        except Exception as exc:  # one broken index must not cost every other unit
+            log.warning("build_units_adapter_failed", ecosystem=name, error=str(exc))
+            failed.add(name)
+            continue
+        decided.update(unit.manifest for unit, _files in found.claims)
+        decided.update(found.ruled_out)
         _add(found, units, listed, ctx.path_set)
 
     try:
-        virtual = cargo.virtual_roots(ctx)
-    except Exception:  # the cargo adapter already logged the failure
-        virtual = set()
-
-    def decided(root: str, manifest_name: str) -> bool:
-        lowered = manifest_name.lower()
-        if lowered == "cargo.toml" and root in virtual:
-            return True
-        return any(fnmatch.fnmatchcase(lowered, pattern) for pattern in authoritative)
-
+        fallback = manifest_roots.units(ctx, decided.__contains__)
+    except Exception as exc:
+        log.warning("build_units_adapter_failed", ecosystem="manifest", error=str(exc))
+        failed.add("manifest")
+        fallback = []
     claimed = {unit.root for unit in units.values()}
-    fallback = _run("manifest_roots", lambda c: manifest_roots.units(c, decided), ctx)
     for unit, _files in fallback:
         if unit.root not in claimed:
             units[unit.id] = unit
@@ -105,4 +92,6 @@ def collect_build_units(ctx: ResolverContext) -> BuildUnitIndex:
         replace(unit, deps=tuple(sorted({d for d in unit.deps if d in units and d != unit.id})))
         for unit in units.values()
     ]
-    return BuildUnitIndex.from_units(resolved, ctx.sorted_paths, listed)
+    return BuildUnitIndex.from_units(
+        resolved, ctx.sorted_paths, listed, failed_ecosystems=frozenset(failed)
+    )

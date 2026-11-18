@@ -38,10 +38,17 @@ class BuildUnitIndex:
     is the deepest one containing it. A file may belong to several units.
     Both maps are kept sorted, ids and paths alike, so two runs over the same
     tree compare equal and store the same rows.
+
+    ``failed_ecosystems`` names the ecosystems whose reader failed during
+    collection, so their units here are incomplete and a store should keep
+    what it already holds for them. It describes one collection run, not the
+    repo, so it is left out of equality: an index read back from storage
+    compares equal to the one written.
     """
 
     units: Mapping[str, BuildUnit] = field(default_factory=dict)
     file_owners: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    failed_ecosystems: frozenset[str] = field(default=frozenset(), compare=False)
     _by_root: dict[str, tuple[str, ...]] = field(init=False, repr=False, compare=False)
     _dependents: dict[str, tuple[str, ...]] = field(init=False, repr=False, compare=False)
 
@@ -67,6 +74,7 @@ class BuildUnitIndex:
         units: Iterable[BuildUnit],
         paths: Iterable[str],
         explicit: Mapping[str, Iterable[str]] | None = None,
+        failed_ecosystems: frozenset[str] = frozenset(),
     ) -> BuildUnitIndex:
         """Index *units*, owning each of *paths* by *explicit* listing, else by deepest root."""
         index = cls(units={unit.id: unit for unit in units})
@@ -77,7 +85,7 @@ class BuildUnitIndex:
             ids = listed or index._root_owners(path)
             if ids:
                 owners[path] = ids
-        return cls(units=index.units, file_owners=owners)
+        return cls(units=index.units, file_owners=owners, failed_ecosystems=failed_ecosystems)
 
     def unit(self, unit_id: str) -> BuildUnit | None:
         """The unit with *unit_id*, or None."""

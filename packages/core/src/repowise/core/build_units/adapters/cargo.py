@@ -10,6 +10,9 @@ resolver's ``_parse_deps`` is the upgrade path.
 
 from __future__ import annotations
 
+import tomllib
+
+from repowise.core.build_units.adapters import Found
 from repowise.core.build_units.model import BuildUnit
 from repowise.core.ingestion.package_roots import scan_package_manifests
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -17,9 +20,6 @@ from repowise.core.ingestion.resolvers.rust_workspace import (
     CargoCrate,
     get_or_build_cargo_workspace_index,
 )
-from repowise.core.ingestion.workspace_members import manifest_package_name
-
-_ROOTS_KEY = "_build_units_cargo_roots"
 
 
 def _root(crate: CargoCrate) -> str:
@@ -52,27 +52,31 @@ def _dep_ids(crate: CargoCrate, by_root: dict[str, str], ws_paths: dict[str, str
     return ids
 
 
-def _manifest_roots(ctx: ResolverContext) -> dict[str, str | None]:
-    """Each directory holding a ``Cargo.toml``, mapped to its ``[package]`` name or None."""
-    cached = getattr(ctx, _ROOTS_KEY, None)
-    if cached is not None:
-        return cached
+def _package_names(ctx: ResolverContext) -> dict[str, str | None]:
+    """Each readable ``Cargo.toml``'s directory, mapped to its ``[package]`` name or None.
+
+    None means the manifest parsed and declares no package (a virtual
+    workspace). A manifest that does not parse is left out, so nothing here
+    rules on it.
+    """
     repo = ctx.repo_path
-    roots: dict[str, str | None] = {}
     # Without Rust sources there is no crate to own, and no reason to walk.
-    if repo is not None and any(path.endswith(".rs") for path in ctx.path_set):
-        scanned = scan_package_manifests(repo, prune_nested_git=ctx.prune_nested_git)
-        dirs = [root for root, names in scanned.items() if "Cargo.toml" in names]
-        if (repo / "Cargo.toml").is_file():
-            dirs.append("")  # the scan leaves the repo root out
-        roots = {d: manifest_package_name(repo / d / "Cargo.toml") for d in sorted(dirs)}
-    setattr(ctx, _ROOTS_KEY, roots)
-    return roots
-
-
-def virtual_roots(ctx: ResolverContext) -> set[str]:
-    """Directories whose ``Cargo.toml`` declares no ``[package]``: a virtual workspace, no unit."""
-    return {root for root, name in _manifest_roots(ctx).items() if name is None}
+    if repo is None or not any(path.endswith(".rs") for path in ctx.path_set):
+        return {}
+    scanned = scan_package_manifests(repo, prune_nested_git=ctx.prune_nested_git)
+    dirs = [root for root, names in scanned.items() if "Cargo.toml" in names]
+    if (repo / "Cargo.toml").is_file():
+        dirs.append("")  # the scan leaves the repo root out
+    names: dict[str, str | None] = {}
+    for root in sorted(dirs):
+        try:
+            with open(repo / root / "Cargo.toml", "rb") as f:
+                package = tomllib.load(f).get("package")
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        name = package.get("name") if isinstance(package, dict) else None
+        names[root] = name if isinstance(name, str) and name else None
+    return names
 
 
 def _unit(name: str, root: str, deps: set[str]) -> BuildUnit:
@@ -81,7 +85,7 @@ def _unit(name: str, root: str, deps: set[str]) -> BuildUnit:
         ecosystem="cargo",
         name=name,
         root=root,
-        manifest=f"{root}/Cargo.toml" if root else "Cargo.toml",
+        manifest=_manifest(root),
         source="cargo",
         deps=tuple(deps),
     )
@@ -103,12 +107,18 @@ def _indexed(ctx: ResolverContext) -> list[BuildUnit]:
     ]
 
 
-def units(ctx: ResolverContext) -> list[tuple[BuildUnit, tuple[str, ...]]]:
+def _manifest(root: str) -> str:
+    return f"{root}/Cargo.toml" if root else "Cargo.toml"
+
+
+def units(ctx: ResolverContext) -> Found:
     found = _indexed(ctx)
     covered = {unit.root for unit in found}
+    package_names = _package_names(ctx)
     found += [
         _unit(name, root, set())
-        for root, name in _manifest_roots(ctx).items()
+        for root, name in package_names.items()
         if name is not None and root not in covered
     ]
-    return [(unit, ()) for unit in found]
+    virtual = frozenset(_manifest(root) for root, name in package_names.items() if name is None)
+    return Found([(unit, ()) for unit in found], virtual)
