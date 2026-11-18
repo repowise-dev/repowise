@@ -355,7 +355,8 @@ and commit the budget diff.
 - Ensure CI passes before requesting review
 - The Repowise bot reviews every PR; its verdict is the `Repowise review` check. If
   one of its inline points is fixed or wrong, reply in that thread (for example
-  "Fixed in <sha>") and it rechecks and resolves it.
+  "Fixed in <sha>") and it rechecks and resolves it. A 👍 or 👎 on a point tells it
+  whether the point was useful.
 - Once you have a merged PR here, comment `/rerun` on any open PR to re-run its
   failed checks, for example a flaky test.
 - All PRs require at least one code owner approval
