@@ -20,8 +20,9 @@ into this; ``repowise evidence add`` reads it. One JSON object per run::
 
 The entry list is named by the kind: ``symbols`` (profile), ``benchmarks``,
 ``tests`` (test_timing) or ``queries`` (query_count). A code location is
-``path`` (repo-relative POSIX), ``function`` (the qualified name) and
-``line`` (where the function starts). Paths are repo-relative, and the
+``path`` (repo-relative POSIX), ``function`` (the qualified name, or the
+symbol's id after its file as a test runner names it: ``TestCache::test_get``)
+and ``line`` (where the function starts). Paths are repo-relative, and the
 document carries no labels, environment variables or command lines: only
 the fields named here are read, and nothing else is ever stored.
 

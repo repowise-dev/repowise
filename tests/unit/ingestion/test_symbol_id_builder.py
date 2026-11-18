@@ -8,6 +8,7 @@ from repowise.core.ingestion.graph import GraphBuilder
 from repowise.core.ingestion.parser import ASTParser
 from repowise.core.ingestion.symbol_identity import (
     file_of_symbol,
+    local_symbol_id,
     make_symbol_id,
     module_symbol_id,
 )
@@ -84,3 +85,5 @@ def test_helpers() -> None:
     assert module_symbol_id("a.py") == "a.py::__module__"
     assert file_of_symbol("a.py::C::m") == "a.py"
     assert file_of_symbol("a.py") == "a.py"
+    assert local_symbol_id("a.py::C::m#1") == "C::m#1"
+    assert local_symbol_id("a.py") == ""

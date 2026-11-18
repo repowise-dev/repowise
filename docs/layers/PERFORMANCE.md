@@ -206,7 +206,8 @@ file holds one run of one kind:
 | `query_count` | `queries` | `scope` (`{"kind": "test" or "request", "id"}`); `site` location; `statement_fp` (a lowercase hex digest of the normalized statement, 8 to 32 characters); `count`; optional `identical_max`, `total_ms` |
 
 - A location is `path` (repo-relative, forward slashes), `function` (the
-  qualified name) and `line` (where the function starts).
+  qualified name, or the symbol's id after its file as a test runner names
+  it, `TestCache::test_get`) and `line` (where the function starts).
 - `value_kind` (`cpu` or `wall`) and `unit` are required for a profile.
   `total` and `explained` (the value with a repo frame on the stack) say how
   much of the run repo code explains.
@@ -258,6 +259,32 @@ it to this shape first. The format is detected from the content;
   its positions are in the compiled JavaScript.
 - New formats register on the `profile-format` [seam](../reference/PLUGINS.md#seams),
   so a plugin can add one.
+
+### Benchmark results as the runner wrote them
+
+Benchmark runner output is read the same way: detected from the content, or
+named with `--input-format`. It becomes a `benchmark` document, one series
+value per benchmark, never a profile.
+
+| Format | Written by | What a benchmark carries |
+|---|---|---|
+| `pytest-benchmark` | `pytest --benchmark-only --benchmark-json=PATH` | `fullname` (the pytest node id, parameters included) names the series; `min`, `max`, `mean`, `median`, `stddev` in seconds, `rounds`, `iterations` |
+
+```bash
+pytest --benchmark-only --benchmark-json=.repowise/bench.json
+repowise evidence add .repowise/bench.json --workload "pytest bench" --class benchmark --commit $(git rev-parse HEAD)
+```
+
+- The node id without its parameters is the benchmark function's symbol id,
+  so `benchmarks/test_io.py::TestCache::test_get[small]` links to
+  `TestCache::test_get` in `benchmarks/test_io.py`. A benchmark whose function
+  is not indexed keeps its series, counted under `unlinked`.
+- The row names the benchmark, not the cost of the production functions it
+  calls; benchmark files are test or tooling code.
+- `--commit` is required. The commit pytest-benchmark recorded is only a
+  cross-check: a file that recorded another commit is refused. Its `dirty`
+  flag is kept unless `--dirty` or `--clean` says otherwise.
+- Machine details, parameters and `extra_info` are not read.
 
 ## Limits
 
