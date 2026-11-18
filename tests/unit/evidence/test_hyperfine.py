@@ -44,10 +44,21 @@ def test_a_file_cut_off_before_its_timings_end_is_still_sniffed() -> None:
     assert detect_profile_format(head) == "hyperfine"
 
 
+def test_a_very_long_first_command_does_not_hide_the_format() -> None:
+    data = json.loads(FIXTURE.read_text())
+    data["results"][0]["command"] = "./build/app " + "--flag " * 1000
+    head = json.dumps(data, indent=2).encode()[:4096]
+    assert b'"mean"' not in head
+    assert detect_profile_format(head) == "hyperfine"
+
+
 def test_other_json_is_not_claimed() -> None:
     assert detect_profile_format(b'{"results": []}') is None
     assert detect_profile_format(b'{"results": [{"name": "a", "mean": 1}]}') is None
     assert detect_profile_format(b'{"benchmarks": [{"command": "a", "mean": 1}]}') is None
+    assert detect_profile_format(b'{"results": [{"cmd": "a", "mean": 1}]}') is None
+    assert detect_profile_format(b'{"results": [["command", "mean"]]}') is None
+    assert detect_profile_format(b'{"data": {"results": [{"command": "a"}]}}') is None
 
 
 def test_each_result_is_one_series_value_in_seconds() -> None:
@@ -69,7 +80,20 @@ def test_a_name_the_file_carries_names_the_series() -> None:
     data = json.loads(FIXTURE.read_text())
     data["results"][1]["command_name"] = "slow path"
     data["results"][0]["command_name"] = "  "
-    assert [e["name"] for e in _read(data).entries] == ["command 1", "slow path"]
+    assert [e["name"] for e in _read(data).entries] == ["command 1", "slow path (2)"]
+
+
+def test_a_name_never_collides_with_a_position_or_another_name() -> None:
+    data = json.loads(FIXTURE.read_text())
+    data["results"][0]["command_name"] = "command 2"
+    data["results"].append({**data["results"][1], "command_name": "command 2"})
+    data["results"].append({**data["results"][1], "command_name": "command 2"})
+    doc = _read(data)
+    assert doc.skipped == {}
+    names = [e["name"] for e in doc.entries]
+    assert len(names) == len(set(names)) == 4
+    assert names[0] == "command 2 (1)"
+    assert names[1] == "command 2"
 
 
 def test_no_command_line_or_parameter_reaches_the_document() -> None:

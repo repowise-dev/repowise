@@ -4,7 +4,9 @@ Each entry of ``results`` becomes one series value in seconds. The v1 document
 carries no command lines (see ``format_v1.py``), and hyperfine writes the
 command it ran under ``command``, so the series are named by their position
 (``command 1``, ``command 2``) unless the file holds a ``command_name``, which
-only a name the user chose can be. ``user``, ``system``, ``parameters``,
+only a name the user chose can be; that one is followed by its position
+(``slow path (2)``), so no two results share a name and a named result can never
+equal a positional one. ``user``, ``system``, ``parameters``,
 ``exit_codes`` and the ``times`` values are not read: ``times`` only tells how
 many rounds ran.
 
@@ -19,11 +21,9 @@ from typing import Any
 
 from ..format_v1 import EVIDENCE_FORMAT, EvidenceFormatError
 
-# hyperfine writes ``results`` first and, in each result, ``command`` then ``mean``; a
-# result's ``times`` can run past the sniffed bytes, so only that prefix is read.
-_FIRST_RESULT = re.compile(
-    rb'\{\s*"results"\s*:\s*\[\s*\{\s*"command"\s*:\s*"(?:[^"\\]|\\.)*"\s*,\s*"mean"\s*:'
-)
+# hyperfine writes ``results`` first and, in each result, ``command`` first. Only that opening
+# is read: a command can be long, and the sniffed bytes end wherever they end.
+_FIRST_RESULT = re.compile(rb'\{\s*"results"\s*:\s*\[\s*\{\s*"command"\s*:')
 _STATS = ("min", "max", "mean", "median", "stddev")
 
 
@@ -58,7 +58,9 @@ def _entry(raw: dict[str, Any], position: int) -> dict[str, Any]:
     name = raw.get("command_name")
     times = raw.get("times")
     return {
-        "name": name if isinstance(name, str) and name.strip() else f"command {position}",
+        "name": f"{name.strip()} ({position})"
+        if isinstance(name, str) and name.strip()
+        else f"command {position}",
         "unit": "s",
         "lower_is_better": True,
         **{stat: raw.get(stat) for stat in _STATS},
