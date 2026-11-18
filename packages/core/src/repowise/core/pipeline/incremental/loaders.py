@@ -290,7 +290,11 @@ async def _refresh_from_newer_reports(factory: Any, repo_path: Path, log: LogFn)
     and the stored rows still load. Nothing is written before anything is
     indexed: with no indexed files every report would read as unmapped.
     """
-    from repowise.core.analysis.health.coverage import CoverageConfig, build_coverage_map
+    from repowise.core.analysis.health.coverage import (
+        CoverageConfig,
+        build_coverage_map,
+        measurement_commit,
+    )
     from repowise.core.persistence import get_session
     from repowise.core.persistence.crud import (
         get_health_metrics,
@@ -322,13 +326,18 @@ async def _refresh_from_newer_reports(factory: Any, repo_path: Path, log: LogFn)
                 report_prefixes=reports,
                 ignore=cfg.ignore,
             )
-            # Live HEAD, as every other writer stamps (issue #1747).
+            # Live HEAD only when the report was written since the last commit;
+            # otherwise the commit that was HEAD when the report ran (#3901, #5744).
             await save_coverage_files(
                 session,
                 repo.id,
                 resolved.files,
                 source_format=resolved.source_format or "lcov",
-                ingested_commit_sha=get_head_commit(repo_path),
+                ingested_commit_sha=measurement_commit(
+                    repo_path,
+                    resolved.measured_at,
+                    get_head_commit(repo_path),
+                ),
                 provenance=resolved.provenance,
             )
         log(f"Re-read coverage from {len(reports)} report(s): {len(resolved.files)} file(s) stored")
