@@ -40,6 +40,7 @@ they start with `server/`, which means `packages/server/src/repowise/server/`.
 | Content hash | `ingestion/models.py`: `compute_content_hash(source)` | The sha256 a file's bytes are keyed by, computed once at ingestion | Hash the same bytes again with another algorithm for a cache key |
 | Edge-type sets | `ingestion/models.py`: `EdgeType`, `FILE_DEPENDENCY_EDGE_TYPES`, `SYMBOL_USE_EDGE_TYPES`, `EXECUTION_EDGE_TYPES`, `NON_CODE_EDGE_TYPES` | Which edge types count as a file dependency, a symbol use, an execution step, or non-code | Re-type the full sets. Named subsets that are still local are listed under [planned consolidations](#planned-consolidations) |
 | Health bands | `analysis/health/grading.py`: `band_for(score)`, `BAND_LABEL`, `BAND_ORDER` | The score cut-offs and labels for health bands. The TypeScript mirror in `packages/types/src/health.ts` is parity-tested | Compare a score against literal cut-offs |
+| Percentiles and intervals | `stats.py`: `percentile(values, q, method=...)`, `wilson_interval(k, n)`, `bootstrap_median_ratio(head, base, seed=...)`; `Interval`, `RatioInterval` | The q-th percentile value of a sample (`inclusive_lower` or `nearest_rank`, never interpolated), the Wilson score interval on a share of samples, and a seeded percentile-bootstrap interval on a ratio of medians of two run sets | Write a private `_percentile`, or show a share or a ratio without its interval. A percentile *rank* (where one value sits among others) is a separate concept |
 
 ## Adding to an owner
 
