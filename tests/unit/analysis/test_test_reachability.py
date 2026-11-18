@@ -282,6 +282,61 @@ def test_name_matching_generates_convention_names_linearly(monkeypatch, size, la
     assert calls <= len(all_files) + 2 * len(targets)
 
 
+def _name_match_work(monkeypatch, size: int, layout: str) -> int:
+    """Count the name-rule evaluations ``name_match`` makes over *size* sources and tests.
+
+    Counted, not timed: a timing assertion is flaky, and a count says exactly
+    which loop grew.
+    """
+    from repowise.core import test_paths
+
+    work = 0
+
+    def counting(function):
+        def wrapper(*args, **kwargs):
+            nonlocal work
+            work += 1
+            return function(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(model, "PurePath", counting(model.PurePath))
+    monkeypatch.setattr(model, "paired_test_names", counting(model.paired_test_names))
+    monkeypatch.setattr(model, "names_test_for", counting(model.names_test_for))
+    monkeypatch.setattr(test_paths, "paired_test_names", counting(test_paths.paired_test_names))
+    monkeypatch.setattr(test_paths, "_qualified_name", counting(test_paths._qualified_name))
+
+    # Every third source has a conventional test, a qualified test (so each
+    # asks its directory's siblings) and a same-stem test in another directory.
+    targets, tests = [], []
+    for i in range(size):
+        directory = "src" if layout == "flat" else f"src/pkg_{i // 8}"
+        mirror = "tests" if layout == "flat" else f"tests/pkg_{i // 8}"
+        targets.append(f"{directory}/mod_{i}.py")
+        tests.append(
+            [
+                f"{mirror}/test_mod_{i}.py",
+                f"{mirror}/test_mod_{i}_golden.py",
+                f"other/{i % 4}/test_mod_{i}.py",
+            ][i % 3]
+        )
+    found = name_match(targets, tests, targets)
+
+    assert len(found) == size
+    return work
+
+
+@pytest.mark.parametrize("layout", ["flat", "separate"])
+def test_name_matching_work_grows_linearly_with_the_file_count(monkeypatch, layout) -> None:
+    small = _name_match_work(monkeypatch, 1500, layout)
+    large = _name_match_work(monkeypatch, 3000, layout)
+
+    # Doubling the files may double the work; a scan of every test (or every
+    # sibling) per target would quadruple it.
+    assert large <= 2.2 * small
+    assert large <= 25 * 3000
+
+
 def test_a_sibling_owner_only_in_the_index_prevents_an_unrelated_name_match() -> None:
     assert name_match(["elsewhere/x.py"], {"test_x.py"}, {"x.py"}) == {}
 
