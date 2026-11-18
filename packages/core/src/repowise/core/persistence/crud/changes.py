@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, delete, exists, func, insert, or_, select
+from sqlalchemy import Connection, and_, delete, exists, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...analysis.history.delta import DeltaStamp
@@ -70,6 +70,21 @@ def _loads_list(raw: str | None) -> list:
     return value if isinstance(value, list) else []
 
 
+def _link_rows(rows: Iterable[Sequence[Any]]) -> tuple[list[dict], list[dict]]:
+    """The ``change_commits`` and ``change_files`` rows of
+    ``(repository_id, change_id, commit_shas_json, files_json)`` rows."""
+    commits: list[dict] = []
+    files: list[dict] = []
+    for repository_id, change_id, commit_shas_json, files_json in rows:
+        base = {"repository_id": repository_id, "change_id": change_id}
+        for sha in dict.fromkeys(str(s) for s in _loads_list(commit_shas_json)):
+            commits.append({"id": _new_uuid(), **base, "sha": sha})
+        paths = (f.get("path") for f in _loads_list(files_json) if isinstance(f, dict))
+        for path in dict.fromkeys(p for p in paths if p):
+            files.append({"id": _new_uuid(), **base, "file_path": path})
+    return commits, files
+
+
 async def _link_changes(
     session: AsyncSession, repository_id: str, rows: Sequence[tuple[str, str, str]]
 ) -> None:
@@ -81,22 +96,7 @@ async def _link_changes(
             await session.execute(
                 delete(model).where(model.repository_id == repository_id, model.change_id.in_(ids))
             )
-        commits, files = [], []
-        for change_id, commit_shas_json, files_json in chunk:
-            for sha in dict.fromkeys(str(s) for s in _loads_list(commit_shas_json)):
-                commits.append(
-                    {"id": _new_uuid(), "repository_id": repository_id, "change_id": change_id, "sha": sha}
-                )
-            paths = (f.get("path") for f in _loads_list(files_json) if isinstance(f, dict))
-            for path in dict.fromkeys(p for p in paths if p):
-                files.append(
-                    {
-                        "id": _new_uuid(),
-                        "repository_id": repository_id,
-                        "change_id": change_id,
-                        "file_path": path,
-                    }
-                )
+        commits, files = _link_rows((repository_id, *row) for row in chunk)
         if commits:
             await session.execute(insert(ChangeCommit), commits)
         if files:
@@ -104,21 +104,51 @@ async def _link_changes(
     await session.flush()
 
 
-async def link_unlinked_changes(session: AsyncSession, repository_id: str) -> int:
-    """Link changes stored before the link tables existed; how many were linked."""
-    rows = (
-        await session.execute(
-            select(Change.change_id, Change.commit_shas_json, Change.files_json).where(
-                Change.repository_id == repository_id,
-                ~exists().where(
-                    ChangeCommit.repository_id == Change.repository_id,
-                    ChangeCommit.change_id == Change.change_id,
+def link_unlinked_changes(connection: Connection, repository_id: str | None = None) -> int:
+    """Link stored changes that have no commit or path rows; how many got commits.
+
+    For changes stored before the link tables existed: Alembic runs it in the
+    tables' migration, the SQLite reconciler when it creates them, and a
+    refresh for *repository_id* as a repair. Reads keyset pages of
+    :data:`_BATCH_SIZE` on ``changes.id``, so memory stays flat on a large
+    store. Sync, so all three can run it.
+    """
+    linked = 0
+    last_id = ""
+    while True:
+        query = (
+            select(
+                Change.id,
+                Change.repository_id,
+                Change.change_id,
+                Change.commit_shas_json,
+                Change.files_json,
+            )
+            .where(
+                Change.id > last_id,
+                *(
+                    ~exists().where(
+                        model.repository_id == Change.repository_id,
+                        model.change_id == Change.change_id,
+                    )
+                    for model in (ChangeCommit, ChangeFile)
                 ),
             )
+            .order_by(Change.id)
+            .limit(_BATCH_SIZE)
         )
-    ).tuples().all()
-    await _link_changes(session, repository_id, rows)
-    return len(rows)
+        if repository_id is not None:
+            query = query.where(Change.repository_id == repository_id)
+        page = connection.execute(query).all()
+        if not page:
+            return linked
+        last_id = page[-1].id
+        commits, files = _link_rows(row[1:] for row in page)
+        if commits:
+            connection.execute(insert(ChangeCommit), commits)
+        if files:
+            connection.execute(insert(ChangeFile), files)
+        linked += len({(c["repository_id"], c["change_id"]) for c in commits})
 
 
 async def delete_changes(session: AsyncSession, repository_id: str) -> None:

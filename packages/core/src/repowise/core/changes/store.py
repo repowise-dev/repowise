@@ -172,7 +172,7 @@ async def refresh_changes(
             await delete_changes(session, repo_id)
         if rows:
             await upsert_changes(session, repo_id, rows)
-        await link_unlinked_changes(session, repo_id)
+        await session.run_sync(lambda s: link_unlinked_changes(s.connection(), repo_id))
         return len(rows)
     except Exception as exc:
         logger.warning("changes_refresh_failed", repo_id=repo_id, error=str(exc))
