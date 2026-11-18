@@ -295,6 +295,16 @@ runs and what a failure does. Start from the
   `caplog.set_level(logging.INFO, logger="<full logger name>")`. Setting the root
   level is not enough, because ancestors such as `repowise.core` set their own.
 
+### How CI runs
+
+[docs/architecture/ci.md](../docs/architecture/ci.md) lists every CI job, what
+it checks, when it runs and the command that reproduces it locally. A pull
+request runs the Python 3.12 tests in two shards, plus only the suites its
+changed paths need; `Python tests` is the one Python check that must pass.
+Run one shard locally with `uv run pytest tests/unit/ --shard 1/2`. The
+"Test selection compared" job summary shows which tests `repowise impacted-tests`
+would have picked for your change; it is recorded only and never blocks.
+
 ### Retrieval guard
 
 `tests/unit/server/mcp/test_retrieval_guard.py` indexes `tests/fixtures/sample_repo`

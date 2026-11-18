@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import ast
-import pathlib
 
 import pytest
 
 from repowise.core.analysis.health.refactoring.split_file import _is_generated_path
+from tests.unit._source_tree import python_sources
 
 _KNOWN: frozenset[str] = frozenset(
     {
@@ -15,7 +15,6 @@ _KNOWN: frozenset[str] = frozenset(
     }
 )
 
-_PACKAGES = pathlib.Path(__file__).resolve().parents[2] / "packages"
 _HOME = "packages/core/src/repowise/core/ingestion/barrels.py"
 _BARREL_MARKERS = {
     "index.ts",
@@ -60,10 +59,8 @@ def _check_literals(node: ast.AST) -> list[str]:
     return []
 
 
-def _analyze_file(path: pathlib.Path) -> list[str]:
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-    except (SyntaxError, UnicodeDecodeError):
+def _analyze_file(tree: ast.Module | None) -> list[str]:
+    if tree is None:
         return []
 
     hits: list[str] = []
@@ -75,11 +72,11 @@ def _analyze_file(path: pathlib.Path) -> list[str]:
 
 def _offenders() -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
-    for path in _PACKAGES.rglob("*.py"):
-        rel = path.relative_to(_PACKAGES.parents[0]).as_posix()
+    for src in python_sources():
+        rel = src.rel
         if rel == _HOME:
             continue
-        hits = _analyze_file(path)
+        hits = _analyze_file(src.tree)
         if hits:
             found[rel] = hits
     return found
