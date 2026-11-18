@@ -129,7 +129,7 @@ def test_coverage_measured_at_head_ends_the_loop(tmp_path: Path) -> None:
     plan = evidence_setup(tmp_path, indexed=True, head="a" * 40, coverage_commit="a" * 40)
 
     assert plan["next_call"] is None
-    assert plan["reason"].startswith("Coverage at this commit is ingested")
+    assert plan["reason"].startswith("Evidence at this commit is ingested")
     assert evidence_setup(tmp_path, indexed=True, head="a" * 40, coverage_commit="b" * 40)["next_call"]
 
 

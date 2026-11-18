@@ -1409,12 +1409,22 @@ repowise evidence setup --format json    # what to run here, per unit, and how t
 - `setup` runs nothing and writes nothing. Per build unit it prints the stack (`unknown` when
   repowise is not sure, with the reason), the test command with coverage (run from the unit's
   `root`), its `prerequisites`, the report paths, reports already `found` on disk, and the exact
-  `ingest` line (run from the repository root). `next_call` lists the steps to run next, each with
-  its `cwd`: ingest a report on disk first, else run a unit's command and ingest what it wrote.
-  Once the newest coverage measured the checkout's commit, `next_call` is `null` and `reason`
-  says so, so an agent that reruns `setup` after each step stops.
-  Before the repository is indexed, the steps are `repowise init --yes --no-prose` and `setup`
-  again; no store is created. `coverage setup` prints the same plan. Takes `--path` and `--format`.
+  `ingest` line (run from the repository root). Then its `runtime` targets: entry points
+  (console scripts, `python -m` packages, Go `package main`, `package.json` `bin`), benchmarks
+  (Go `Benchmark*`, pytest-benchmark) and the unit-test suite, in that order, each with a profiler
+  command that needs no privileges (pyinstrument in process, `go test -cpuprofile`,
+  `node --cpu-prof`), the profile path under `.repowise/`, and the exact `evidence add` line with
+  `--workload`, `--class` and `--commit` filled in. Workload names and profile files of a unit below
+  the root start with its root (`tools: go bench .`). A target with no `command` or no `ingest` says
+  why in `reason` (`go run` takes no profiler flag; TypeScript positions are in the compiled
+  JavaScript; this build does not read the format the recipe writes). Only a target with an
+  `ingest` line enters `next_call`. `next_call` lists the steps to run next, each with its `cwd`: ingest a coverage
+  report on disk first, else profile the best runtime target, else run a unit's tests with
+  coverage. What is already stored for the checkout's commit (coverage, a workload's run) is not
+  asked for again; once nothing is left, `next_call` is `null` and `reason` says so, so an agent
+  that reruns `setup` after each step stops. Before the repository is indexed, the steps are `repowise init --yes --no-prose` and
+  `setup` again; no store is created. `coverage setup` prints the coverage part only. Takes
+  `--path` and `--format`.
 
 ---
 

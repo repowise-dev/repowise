@@ -28,6 +28,16 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _index(root: Path) -> None:
+    import git as gitpython
+
+    repo = gitpython.Repo.init(root)
+    with repo.config_writer() as cw:
+        cw.set_value("user", "name", "Alice")
+        cw.set_value("user", "email", "alice@example.com")
+    repo.index.add(["pyproject.toml", "app/__init__.py"])
+    repo.index.commit("init")
+    repo.close()
+
     async def build() -> None:
         (root / ".repowise").mkdir()
         engine = create_engine(f"sqlite+aiosqlite:///{root / '.repowise' / 'wiki.db'}")
@@ -62,8 +72,9 @@ def test_an_indexed_repository_is_told_to_run_and_ingest(repo: Path) -> None:
     payload = json.loads(_setup("--format", "json").stdout)
 
     assert payload["indexed"] is True
-    runs = [s["run"] for s in payload["next_call"]["steps"]]
-    assert runs[-2:] == ["repowise coverage add coverage.xml .coverage", "repowise coverage status"]
+    assert payload["units"][0]["coverage"]["ingest"] == "repowise coverage add coverage.xml .coverage"
+    # No console script: the unit-test suite is the one runtime target.
+    assert payload["next_call"]["purpose"].startswith("Profile python tests (unit_test)")
 
 
 def test_the_table_names_the_command_the_ingest_line_and_the_next_steps(repo: Path) -> None:
@@ -75,11 +86,30 @@ def test_the_table_names_the_command_the_ingest_line_and_the_next_steps(repo: Pa
     assert "repowise init --yes --no-prose" in result.stdout
 
 
-def test_coverage_setup_prints_the_same_plan(repo: Path) -> None:
+def test_coverage_setup_prints_the_coverage_part_of_the_plan(repo: Path) -> None:
     alias = CliRunner(mix_stderr=False).invoke(coverage_group, ["setup", "--format", "json"])
 
     assert alias.exit_code == 0, (alias.output, alias.exception)
-    assert json.loads(alias.stdout) == json.loads(_setup("--format", "json").stdout)
+    full = json.loads(_setup("--format", "json").stdout)
+    for unit in full["units"]:
+        assert unit.pop("runtime") == []
+    assert json.loads(alias.stdout) == full
+
+
+def test_an_indexed_repository_lists_runtime_targets_and_profiles_first(repo: Path) -> None:
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "app"\n[project.scripts]\napp = "app.cli:main"\n'
+    )
+    _index(repo)
+
+    payload = json.loads(_setup("--format", "json").stdout)
+
+    (unit,) = payload["units"]
+    assert [t["class"] for t in unit["runtime"]] == ["entry_point", "unit_test"]
+    assert payload["next_call"]["purpose"].startswith("Profile app (entry_point)")
+    assert payload["next_call"]["steps"][-1]["run"] == "repowise evidence status"
+    table = _setup()
+    assert "entry_point app: python -c" in table.stdout
 
 
 def test_an_index_that_cannot_be_read_is_not_mistaken_for_none(repo: Path) -> None:
