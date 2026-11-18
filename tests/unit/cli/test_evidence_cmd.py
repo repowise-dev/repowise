@@ -193,6 +193,40 @@ def test_a_profile_stamps_lineage_and_body_and_rebuilds_hotness(indexed) -> None
     assert (hot.samples, hot.run_samples, hot.explained_share) == (60, 100, 0.6)
 
 
+def test_code_outside_production_is_counted_before_the_cap(indexed) -> None:
+    root, head = indexed
+    (root / ".repowise" / "config.yaml").write_text("evidence:\n  max_symbols_per_run: 1\n")
+
+    async def a_test(session) -> None:
+        (await session.get(Repository, "r1")).head_commit = head
+        session.add(WikiSymbol(
+            repository_id="r1", file_path="tests/test_app.py",
+            symbol_id="tests/test_app.py::test_build", name="test_build",
+            qualified_name="test_build", kind="function", start_line=1, end_line=2,
+        ))
+
+    _db(root, a_test)
+    path = _write(root, symbols=[
+        {"path": "src/app.py", "function": "build", "line": 1, "self": 10, "total": 60},
+        {"path": "tests/test_app.py", "function": "test_build", "line": 1, "self": 1,
+         "total": 20},
+    ])
+    result = _add(str(path), "--workload", "w", "--class", "unit_test", "--commit", head,
+                  "--format", "json")
+    assert result.exit_code == 0, result.output
+    assert _json(result)["truncated"] == 1
+
+    async def read(session):
+        run = (await session.execute(select(EvidenceRun))).scalar_one()
+        hot = (await session.execute(select(SymbolHotness))).scalar_one()
+        return run, hot
+
+    run, hot = _db(root, read)
+    # The test function was cut by the cap and is still counted.
+    assert run.unlisted_symbols == 1
+    assert (hot.symbol_id, hot.run_unlisted) == ("src/app.py::build", 1)
+
+
 def test_an_uppercase_commit_is_stored_lowercase(indexed) -> None:
     root, head = indexed
     result = _add(str(_write(root)), "--workload", "w", "--class", "entry_point",

@@ -198,3 +198,9 @@ def test_an_unknown_indexed_commit_lets_only_the_stored_body_decide() -> None:
     rows = _derive([_run()], costs, head=None)
     assert rows["src/m.py::same"]["freshness"] == "body_unchanged"
     assert rows["src/m.py::unknown"]["freshness"] == "stale"
+
+
+def test_the_unlisted_count_from_ingest_wins_over_the_rows_kept() -> None:
+    run = RunFacts(**{**_run().__dict__, "unlisted_symbols": 7})
+    row = _derive([run], {"r1": [_cost("f", 300)]})["src/m.py::f"]
+    assert row["run_unlisted"] == 7

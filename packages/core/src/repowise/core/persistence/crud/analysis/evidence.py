@@ -220,6 +220,7 @@ async def hotness_inputs(
             total_value=run.total_value,
             explained_value=run.explained_value,
             total_samples=run.total_samples,
+            unlisted_symbols=run.unlisted_symbols,
         )
         for run in (
             await session.execute(

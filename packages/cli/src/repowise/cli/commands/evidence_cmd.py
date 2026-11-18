@@ -390,6 +390,7 @@ async def _store(
         run_fields,
         run_key,
         stamp_bodies,
+        unlisted_count,
     )
     from repowise.core.persistence.crud import save_evidence_run
 
@@ -408,10 +409,11 @@ async def _store(
         _report_conversion(notices, read.format, conversion)
 
     paths = entry_paths(doc)
+    origins = await load_origins(session, target.repo.id, paths)
     joined = join_entries(
         doc,
         await load_symbols(session, target.repo.id, paths),
-        await load_origins(session, target.repo.id, paths),
+        origins,
         changed or frozenset(),
     )
     # A benchmark or test keeps its row without its function, so only the
@@ -453,6 +455,7 @@ async def _store(
             key=run_key(text, provenance, doc.kind, index_commit),
             truncated=truncated,
             mapping_partial=partial,
+            unlisted=unlisted_count(joined.rows, origins) if doc.kind == "profile" else None,
         ),
         rows,
         history_runs=caps.history_runs,
