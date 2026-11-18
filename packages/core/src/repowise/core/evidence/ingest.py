@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from repowise.core.ingestion.symbol_identity import local_symbol_id
+
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
 
 #: Every workload class a run may carry, in the order of how far a claim may go.
@@ -78,13 +80,22 @@ class Joined:
 def symbol_lookup(
     symbols: Iterable[IndexedSymbol],
 ) -> dict[str, list[IndexedSymbol]]:
-    """Indexed symbols of one file by qualified name and by bare name."""
+    """Indexed symbols of one file by qualified name, by id after the file and by bare name.
+
+    The id after the file (``TestCache::test_get``) is how a test runner
+    names a test, so a benchmark result names its function that way.
+    """
     out: dict[str, list[IndexedSymbol]] = {}
     for sym in symbols:
-        out.setdefault(sym.qualified_name, []).append(sym)
-        if sym.name != sym.qualified_name:
-            out.setdefault(sym.name, []).append(sym)
+        for key in dict.fromkeys((sym.qualified_name, local_symbol_id(sym.symbol_id), sym.name)):
+            if key:
+                out.setdefault(key, []).append(sym)
     return out
+
+
+def _exact(sym: IndexedSymbol, function: str) -> bool:
+    """*function* names *sym* by its qualified name or its id after the file."""
+    return function in (sym.qualified_name, local_symbol_id(sym.symbol_id))
 
 
 def resolve_location(
@@ -93,15 +104,18 @@ def resolve_location(
 ) -> tuple[str | None, str | None]:
     """The symbol id a ``{path, function, line}`` names, or ``(None, reason)``.
 
-    Exact: the qualified name first, the bare name when that is all the file
-    declares under it. More than one match is narrowed by the start line and
-    refused when it stays ambiguous.
+    Exact: the qualified name or the id after the file first, the bare name
+    when that is all the file declares under it, unless the location says
+    ``exact``. More than one match is narrowed by the start line and refused
+    when it stays ambiguous.
     """
     names = by_file.get(location["path"])
     if names is None:
         return None, "unknown_file"
     found = names.get(location["function"], [])
-    by_qualified = [s for s in found if s.qualified_name == location["function"]]
+    by_qualified = [s for s in found if _exact(s, location["function"])]
+    if location.get("exact"):
+        found = by_qualified
     line = location.get("line")
     # A bare name must also agree on the line when one is given: a method
     # reported as ``read`` is not the module's own ``read``.
