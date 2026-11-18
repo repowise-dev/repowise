@@ -148,6 +148,36 @@ from repowise.core.test_runners.packages import _declares_tests
             "</Project>\n",
             True,
         ),
+        # Conditioned test package reference does not make it a test project
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            '  <ItemGroup Condition="\'$(Configuration)\' == \'Debug\'">\n'
+            '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+            False,
+        ),
+        # Conditioned IsTestProject=false does not override unconditional test package
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            '  <PropertyGroup Condition="\'$(Configuration)\' == \'Release\'">\n'
+            "    <IsTestProject>false</IsTestProject>\n"
+            "  </PropertyGroup>\n"
+            "  <ItemGroup>\n"
+            '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+            "  </ItemGroup>\n"
+            "</Project>\n",
+            True,
+        ),
+        # Conditioned IsTestProject=true does not make it a test project
+        (
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            '  <PropertyGroup Condition="\'$(Configuration)\' == \'Debug\'">\n'
+            "    <IsTestProject>true</IsTestProject>\n"
+            "  </PropertyGroup>\n"
+            "</Project>\n",
+            False,
+        ),
         # Classic MSBuild XML with xmlns
         (
             '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">\n'
@@ -340,3 +370,36 @@ def test_test_packages_is_exported() -> None:
     assert "xunit.v3" in TEST_PACKAGES
     assert "microsoft.net.test.sdk" in TEST_PACKAGES
     assert "nunit3testadapter" in TEST_PACKAGES
+
+
+def test_conditioned_opt_out_is_ignored_by_both() -> None:
+    """A conditioned IsTestProject=false does not override an unconditional test package."""
+    xml = (
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        '  <PropertyGroup Condition="\'$(Configuration)\' == \'Release\'">\n'
+        "    <IsTestProject>false</IsTestProject>\n"
+        "  </PropertyGroup>\n"
+        "  <ItemGroup>\n"
+        '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n"
+    )
+    assert is_test_project_csproj(xml) is True
+    assert _declares_tests(None, ["xunit.v3"]) is True
+    projects = read_dotnet_test_projects([("tests/Shop.Tests/Shop.Tests.csproj", xml)])
+    assert projects.collects("tests/Shop.Tests/CartTests.cs") is True
+
+
+def test_conditioned_test_package_is_ignored_by_both() -> None:
+    """A conditioned PackageReference does not classify a project as a test project."""
+    xml = (
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        '  <ItemGroup Condition="\'$(Configuration)\' == \'Debug\'">\n'
+        '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n"
+    )
+    assert is_test_project_csproj(xml) is False
+    assert _declares_tests(None, []) is False
+    projects = read_dotnet_test_projects([("src/Shop/Shop.csproj", xml)])
+    assert projects.collects("src/Shop/Cart.cs") is False

@@ -55,13 +55,24 @@ class DotnetTestProjects:
         return None
 
 
+def _conditioned(root: ET.Element) -> set[int]:
+    """Ids of the elements a ``Condition`` applies to, itself or an ancestor's."""
+    return {
+        id(element)
+        for scope in root.iter()
+        if scope.get("Condition") is not None
+        for element in scope.iter()
+    }
+
+
 def is_test_project_csproj(text: str) -> bool | None:
     """Whether a .csproj XML string describes a test project.
 
     A project is a test project when ``<IsTestProject>true</IsTestProject>`` is
     set, or when it references any package in :data:`TEST_PACKAGES`.  An
     explicit ``<IsTestProject>false</IsTestProject>`` wins regardless of which
-    packages are present.
+    packages are present.  Elements under a ``Condition`` are ignored because
+    an unevaluated condition cannot be judged.
 
     Returns:
         True: is a test project.
@@ -77,8 +88,11 @@ def is_test_project_csproj(text: str) -> bool | None:
         True if "mstest.sdk" in (root.get("Sdk") or "").lower() else None
     )
     has_test_package = False
+    conditioned = _conditioned(root)
 
     for elem in root.iter():
+        if id(elem) in conditioned:
+            continue
         local_tag = elem.tag.split("}")[-1].lower()
         if local_tag == "istestproject":
             val = (elem.text or "").strip().lower()

@@ -278,3 +278,40 @@ def test_explicit_is_test_project_false_wins_over_test_package_for_runner(tmp_pa
         encoding="utf-8",
     )
     assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {"src/Sample/SampleTests.cs": None}
+
+
+def test_conditioned_opt_out_does_not_override_test_package_for_runner(tmp_path: Path) -> None:
+    """A conditioned IsTestProject=false is ignored by the runner planner."""
+    project = tmp_path / "src/Sample/Sample.csproj"
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        '  <PropertyGroup Condition="\'$(Configuration)\' == \'Release\'">\n'
+        "    <IsTestProject>false</IsTestProject>\n"
+        "  </PropertyGroup>\n"
+        "  <ItemGroup>\n"
+        '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {
+        "src/Sample/SampleTests.cs": "src/Sample/Sample.csproj"
+    }
+
+
+def test_conditioned_test_package_does_not_make_project_a_test_project_for_runner(
+    tmp_path: Path,
+) -> None:
+    """A conditioned PackageReference does not make a project a test project for the runner."""
+    project = tmp_path / "src/Sample/Sample.csproj"
+    project.parent.mkdir(parents=True, exist_ok=True)
+    project.write_text(
+        '<Project Sdk="Microsoft.NET.Sdk">\n'
+        '  <ItemGroup Condition="\'$(Configuration)\' == \'Debug\'">\n'
+        '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+        "  </ItemGroup>\n"
+        "</Project>\n",
+        encoding="utf-8",
+    )
+    assert _targets(tmp_path, ["src/Sample/SampleTests.cs"]) == {"src/Sample/SampleTests.cs": None}
