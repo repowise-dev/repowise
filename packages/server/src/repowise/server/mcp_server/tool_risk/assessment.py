@@ -45,6 +45,9 @@ from repowise.server.repo_paths import missing_path_hint, normalize_target_path
 # Relationship rows are deliberately bounded independently.  Their totals are
 # computed after repository exclusions and before this presentation cap.
 _RELATIONSHIP_LIMIT = 5
+# Partner rows were the largest part of a card. The total stays on the card and
+# the tail stays recoverable, so three is enough to act on.
+_CO_CHANGE_LIMIT = 3
 
 
 async def _get_active_contributor_count(session: AsyncSession, repo_id: str) -> int | None:
@@ -196,9 +199,6 @@ def _build_co_changes(
     meta: Any, structural_related: Any, exclude_spec: Any
 ) -> tuple[list[dict], int]:
     """Historical co-change partners and their exact post-filter population.
-
-    Larger lists make MCP responses verbose without adding signal: top-5 captures
-    the bulk of the temporal-coupling mass and keeps tool output tight for agents.
 
     Row order stays by recency-decayed ``weight``. Each row carries ``file_path``,
     ``support`` (shared commit count, when known), ``conf_ab`` (share of target's
@@ -418,7 +418,7 @@ def _apply_co_changes(
 ) -> int:
     """Add the hotspot flags and co-change partners; return the partner total."""
     population, total = _build_co_changes(meta, structural_related, exclude_spec)
-    co_changes = population[:_RELATIONSHIP_LIMIT]
+    co_changes = population[:_CO_CHANGE_LIMIT]
     card["hotspot_score"] = meta.churn_percentile or 0.0
     # The stored flag already applies the absolute activity floors, which a
     # client thresholding the score alone cannot reproduce.
@@ -431,9 +431,9 @@ def _apply_co_changes(
         card,
         "co_change_partners",
         population,
-        _RELATIONSHIP_LIMIT,
+        _CO_CHANGE_LIMIT,
         collector,
-        label=f"{target} :: co_change_partners beyond cap={_RELATIONSHIP_LIMIT}",
+        label=f"{target} :: co_change_partners beyond cap={_CO_CHANGE_LIMIT}",
         preserve_counts=True,
     )
     card["relationship_analysis"]["co_change"] = {

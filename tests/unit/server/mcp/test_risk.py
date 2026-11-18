@@ -57,7 +57,6 @@ async def test_get_risk_multiple_targets(setup_mcp):
     result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["churn"])
     targets = result["targets"]
     assert len(targets) == 2
-    assert "global_hotspots" in result
     # Both targets should have trend and risk_type
     for t in targets.values():
         assert "trend" in t
@@ -68,7 +67,7 @@ async def test_get_risk_multiple_targets(setup_mcp):
 async def test_get_risk_global_hotspots_exclude_targets(setup_mcp):
     from repowise.server.mcp_server import get_risk
 
-    result = await get_risk(["src/auth/service.py", "src/db/models.py"])
+    result = await get_risk(["src/auth/service.py", "src/db/models.py"], include=["hotspots"])
     # service.py is a hotspot but should NOT appear in global_hotspots
     for h in result["global_hotspots"]:
         assert h["file_path"] != "src/auth/service.py"
@@ -826,12 +825,43 @@ async def test_test_gap_uses_health_filename_heuristic(session, repo_id):
 
 
 @pytest.mark.asyncio
-async def test_get_risk_omits_global_hotspots_for_a_single_target(setup_mcp):
-    """Ambient orientation earns its place across targets, not on one named file."""
+async def test_get_risk_lists_global_hotspots_only_when_asked(setup_mcp):
+    """Files nobody named cost every caller tokens, so they are opt-in."""
     from repowise.server.mcp_server import get_risk
 
+    many = ["src/auth/service.py", "src/db/models.py"]
     assert "global_hotspots" not in await get_risk(["src/auth/service.py"])
-    assert "global_hotspots" in await get_risk(["src/auth/service.py", "src/db/models.py"])
+    assert "global_hotspots" not in await get_risk(many)
+    assert "global_hotspots" in await get_risk(many, include=["hotspots"])
+    assert "global_hotspots" in await get_risk(["src/auth/service.py"], include=["hotspots"])
+
+
+@pytest.mark.asyncio
+async def test_a_card_shows_three_co_change_partners_and_counts_the_rest(setup_mcp, session):
+    import json
+
+    from sqlalchemy import update
+
+    from repowise.core.persistence.models import GitMetadata
+    from repowise.server.mcp_server import get_risk
+
+    partners = [{"file_path": f"src/p{i}.py", "count": 9 - i} for i in range(6)]
+    await session.execute(
+        update(GitMetadata)
+        .where(GitMetadata.file_path == "src/auth/service.py")
+        .values(co_change_partners_json=json.dumps(partners))
+    )
+    await session.flush()
+
+    card = (await get_risk(["src/auth/service.py"]))["targets"]["src/auth/service.py"]
+
+    assert [p["file_path"] for p in card["co_change_partners"]] == [
+        "src/p0.py",
+        "src/p1.py",
+        "src/p2.py",
+    ]
+    assert card["co_change_partners_total"] == 6
+    assert card["co_change_partners_truncated"] is True
 
 
 @pytest.mark.asyncio
@@ -875,7 +905,7 @@ async def test_get_risk_names_an_unknown_include_rather_than_applying_it(setup_m
         {
             "argument": "include",
             "values": ["nonsense"],
-            "valid": ["blast", "changes", "churn", "graph", "owners", "scales", "tests"],
+            "valid": ["blast", "changes", "churn", "graph", "hotspots", "owners", "scales", "tests"],
         }
     ]
 

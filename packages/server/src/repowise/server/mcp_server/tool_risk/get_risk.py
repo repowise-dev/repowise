@@ -110,8 +110,14 @@ _BLAST_INCLUDES: dict[str, tuple[str, ...]] = {"graph": ("direct_risks",)}
 #: Per-field units and calibration. Identical on every call, so it is opt-in.
 #: ``tests`` adds the PR directive's typed ``test_recommendations`` rows and
 #: ``blast`` the ``pr_blast_radius`` dossier, ``changes`` each file's recent
-#: Change Records.
-_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | {"blast", "scales", "tests", "changes"}
+#: Change Records, ``hotspots`` the repository's hotspots outside the targets.
+_INCLUDE_BLOCKS = frozenset(_TARGET_CARD_INCLUDES) | {
+    "blast",
+    "scales",
+    "tests",
+    "changes",
+    "hotspots",
+}
 #: Blocks only the PR directive builds: without ``changed_files`` they hold nothing.
 _PR_ONLY_INCLUDES = ("tests", "blast")
 
@@ -288,6 +294,7 @@ async def _gather_evidence(
     exclude_spec: Any,
     collector: OmissionCollector,
     include_graph: bool,
+    include_hotspots: bool,
 ) -> _RiskEvidence:
     async with get_session(ctx.session_factory) as session:
         repository = await _get_repo(session)
@@ -329,7 +336,7 @@ async def _gather_evidence(
             ]
         )
         global_hotspots = []
-        if len(targets) > 1 and not changed_files:
+        if include_hotspots:
             global_hotspots = await _global_hotspots(
                 session, repo_id, targets, exclude_spec, as_of_ts=as_of_ts
             )
@@ -468,7 +475,8 @@ async def get_risk(
         targets: file paths; defaults to changed_files.
         changed_files: PR-changed files for PR mode.
         include: "graph", "churn", "owners", "scales" (units, calibration),
-            "changes"; with changed_files only: "tests" (typed test rows), "blast".
+            "changes", "hotspots" (riskiest other files); with changed_files
+            only: "tests" (typed test rows), "blast".
         repo: usually omitted.
     """
     if repo == "all":
@@ -517,7 +525,13 @@ async def get_risk(
     changed_files = filter_path_list(changed_files, exclude_spec)
     include_graph = "graph" in include_set
     evidence = await _gather_evidence(
-        ctx, targets, changed_files, exclude_spec, collector, include_graph
+        ctx,
+        targets,
+        changed_files,
+        exclude_spec,
+        collector,
+        include_graph,
+        include_hotspots="hotspots" in include_set,
     )
     await _enrich_cards(evidence.results, ctx, evidence.repository.id, collector, include_graph)
     if "changes" in include_set:
@@ -544,8 +558,7 @@ async def get_risk(
             include_blast="blast" in include_set,
             touched=touched,
         )
-    elif len(targets) > 1:
-        # Ambient hotspots orient a multi-file request; beside one named file they are noise.
+    if "hotspots" in include_set:
         cap_collection(
             response,
             "global_hotspots",

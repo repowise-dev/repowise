@@ -177,7 +177,7 @@ async def test_co_change_is_historical_only_and_mixed_evidence_stays_separate(
     mixed = partners["src/direct_0.py"]
     assert mixed["has_import_link"] is True
     assert card["co_change_partners_total"] == 6
-    assert card["co_change_partners_emitted"] == len(card["co_change_partners"]) == 5
+    assert card["co_change_partners_emitted"] == len(card["co_change_partners"]) == 3
     assert card["co_change_partners_truncated"] is True
     assert "src/excluded.py" not in partners
 
