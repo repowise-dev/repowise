@@ -104,7 +104,8 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
     unknown, never zero.
     """
     cap = min(req.limit, _MEASURED_PAGE_CAP) if req.limit_explicit else _MEASURED_CAP
-    view = await measured_costs(session, repository_id, limit=_MEASURED_PAGE_CAP)
+    # At least one row, so a group still reports its total with ``limit=0``.
+    view = await measured_costs(session, repository_id, limit=max(cap, 1))
     # ``None`` means nothing ranked: every ranked row is in a leading class
     # or ``unit_test``, so no ranked row is left unshown.
     if view is None:
@@ -121,7 +122,8 @@ async def _measured_block(session: Any, repository_id: str, req: HealthRequest) 
             continue
         rows = found["rows"][:cap]
         block[key] = [_measured_row(row) for row in rows]
-        block[f"{key}_total"] = len(found["rows"])
+        # The nested stamping in ``paging`` adds ``_emitted`` and ``_reduced_reason``.
+        block[f"{key}_total"] = found["total"]
         shown = {row["run_id"] for row in rows}
         for run in found["runs"]:
             if run["run_id"] in shown:

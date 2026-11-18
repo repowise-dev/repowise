@@ -142,6 +142,21 @@ async def test_rows_carry_their_basis_and_cap(setup_mcp, session, materialized):
 
 
 @pytest.mark.asyncio
+async def test_totals_count_past_the_page_cap(setup_mcp, session, materialized):
+    """Twelve ranked functions: the page holds ten, the total says twelve."""
+    await _seed(session, materialized, [_hot(f"src/app.py::f{i}", rank=i + 1) for i in range(12)])
+
+    block = await _measured(limit=10)
+    assert (block["rows_total"], block["rows_emitted"], block["rows_reduced_reason"]) == (
+        12,
+        10,
+        "limit",
+    )
+    empty = await _measured(limit=0)
+    assert (empty["rows"], empty["rows_total"]) == ([], 12)
+
+
+@pytest.mark.asyncio
 async def test_no_surface_word_hot_or_cold(setup_mcp, session, materialized):
     await _seed(session, materialized, [_hot(LOGIN), _hot("src/app.py::t", cls="unit_test")])
     text = json.dumps(await _measured(limit=10))
