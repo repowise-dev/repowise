@@ -1,0 +1,168 @@
+"""Speedscope JSON (``speedscope.app/file-format-schema.json``): sampled and evented profiles.
+
+pyinstrument (``-r speedscope``) writes one evented profile whose frames
+carry the function's first line; py-spy (``--format speedscope``) writes
+one sampled profile per thread whose frames carry the executing line. Every
+profile in the file is merged into one run. Frame names are what the tool
+wrote (a Python ``co_qualname`` or ``co_name``), and ``col``, when present,
+is the 1-based column of a JavaScript function's start.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+from typing import Any
+
+from repowise.core.frame_resolver import ProfileFrame
+
+from ..format_v1 import EvidenceFormatError
+from .model import ProfileRun, StackTally, frame_language
+
+#: Speedscope ``unit`` -> the evidence unit. ``none`` means weights count samples.
+_UNITS = {
+    "none": "samples",
+    "nanoseconds": "ns",
+    "microseconds": "us",
+    "milliseconds": "ms",
+    "seconds": "s",
+}
+#: Exporters known to time wall-clock: pyinstrument samples the wall clock.
+_WALL_CLOCK_TOOLS = frozenset({"pyinstrument"})
+
+
+def sniff(head: bytes) -> bool:
+    text = head.lstrip(b"\xef\xbb\xbf").lstrip()
+    return text.startswith(b"{") and b"speedscope" in text
+
+
+def read(data: bytes) -> ProfileRun:
+    doc = _document(data)
+    frames = tuple(_frame(raw) for raw in doc["shared"]["frames"])
+    profiles = [p for p in doc["profiles"] if isinstance(p, dict)]
+    units = {p.get("unit") for p in profiles}
+    if len(units) != 1 or next(iter(units)) not in _UNITS:
+        raise EvidenceFormatError(
+            f"profiles measure {sorted(map(str, units))}, not one time or sample unit",
+            "export a CPU or wall-clock profile; memory profiles (bytes) are not read",
+        )
+    tally = StackTally()
+    skipped: dict[str, int] = {}
+    counted = True
+    for profile in profiles:
+        if profile.get("type") == "sampled":
+            _sampled(profile, len(frames), tally, skipped)
+        elif profile.get("type") == "evented":
+            counted = False
+            _evented(profile, len(frames), tally, skipped)
+        else:
+            skipped["unknown_profile_type"] = skipped.get("unknown_profile_type", 0) + 1
+    tool, version = _exporter(doc.get("exporter"))
+    return ProfileRun(
+        frames=frames,
+        stacks=tally.stacks(counted=counted),
+        unit=_UNITS[next(iter(units))],
+        value_kind="wall" if tool in _WALL_CLOCK_TOOLS else None,
+        tool_name=tool,
+        tool_version=version,
+        skipped=skipped,
+    )
+
+
+def _document(data: bytes) -> dict[str, Any]:
+    try:
+        doc = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        doc = None
+    shared = doc.get("shared") if isinstance(doc, dict) else None
+    if (
+        not isinstance(shared, dict)
+        or not isinstance(shared.get("frames"), list)
+        or not isinstance(doc.get("profiles"), list)
+    ):
+        raise EvidenceFormatError(
+            "not a speedscope file: no shared.frames and profiles",
+            "write the profile with the tool's speedscope output, unedited",
+        )
+    return doc
+
+
+def _frame(raw: Any) -> ProfileFrame:
+    raw = raw if isinstance(raw, dict) else {}
+    path = raw.get("file") if isinstance(raw.get("file"), str) else ""
+    line, col = raw.get("line"), raw.get("col")
+    return ProfileFrame(
+        path=path,
+        line=line if _whole(line) else 0,
+        language=frame_language(path),  # type: ignore[arg-type]
+        function=raw.get("name") if isinstance(raw.get("name"), str) else "",
+        column=col if _whole(col) else None,
+    )
+
+
+def _whole(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _weight(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) and value >= 0 else None
+
+
+def _stack(raw: Any, n_frames: int) -> tuple[int, ...] | None:
+    if not isinstance(raw, list) or not all(_whole(i) and 0 <= i < n_frames for i in raw):
+        return None
+    return tuple(raw)
+
+
+def _sampled(
+    profile: dict[str, Any], n_frames: int, tally: StackTally, skipped: dict[str, int]
+) -> None:
+    samples = profile.get("samples") if isinstance(profile.get("samples"), list) else []
+    weights = profile.get("weights")
+    if not isinstance(weights, list) or len(weights) != len(samples):
+        weights = [1] * len(samples)
+    for raw, raw_weight in zip(samples, weights, strict=True):
+        stack, weight = _stack(raw, n_frames), _weight(raw_weight)
+        if stack is None or weight is None:
+            skipped["bad_sample"] = skipped.get("bad_sample", 0) + 1
+            continue
+        # An empty stack is a sample all the same: it counts in the run's total.
+        tally.add(stack, weight)
+
+
+def _evented(
+    profile: dict[str, Any], n_frames: int, tally: StackTally, skipped: dict[str, int]
+) -> None:
+    """Each interval between two events is time spent on the stack open during it."""
+    events = profile.get("events") if isinstance(profile.get("events"), list) else []
+    open_frames: list[int] = []
+    last: float | None = None
+    for event in events:
+        at = _weight(event.get("at")) if isinstance(event, dict) else None
+        frame = event.get("frame") if isinstance(event, dict) else None
+        if at is None or not (_whole(frame) and 0 <= frame < n_frames):
+            skipped["bad_event"] = skipped.get("bad_event", 0) + 1
+            continue
+        if last is not None and at > last and open_frames:
+            tally.add(tuple(open_frames), at - last, samples=None)
+        last = at if last is None else max(last, at)
+        if event.get("type") == "O":
+            open_frames.append(frame)
+        elif event.get("type") == "C" and frame in open_frames:
+            # Close the frame and anything left open above it.
+            del open_frames[len(open_frames) - 1 - open_frames[::-1].index(frame) :]
+        else:
+            skipped["bad_event"] = skipped.get("bad_event", 0) + 1
+
+
+def _exporter(raw: Any) -> tuple[str | None, str | None]:
+    """``py-spy@0.4.3`` -> ``("py-spy", "0.4.3")``; a bare name has no version."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None, None
+    name, _, version = raw.strip().partition("@")
+    return name or None, version or None
+
+
+__all__ = ["read", "sniff"]
