@@ -101,7 +101,7 @@ class PythonReturnTypes:
         every import of it in the file must bind the same module.
         """
         parsed = self._parsed_files.get(path)
-        if parsed is None or self._bound_outside_imports(path, body, name.split(".", 1)[0]):
+        if parsed is None:
             return None
         if "." in name:
             files = {
@@ -118,7 +118,11 @@ class PythonReturnTypes:
                 for binding in imp.bindings
                 if binding.local_name == name
             }
-        return next(iter(files)) if len(files) == 1 else None
+        found = next(iter(files)) if len(files) == 1 else None
+        # Read the bindings only for a name an import binds to a module.
+        if found is None or self._bound_outside_imports(path, body, name.split(".", 1)[0]):
+            return None
+        return found
 
     def _module_bound(self, binding: NamedBinding) -> str | None:
         """The repository module file *binding* binds, or None for a value or an unresolved one."""
