@@ -21,6 +21,8 @@ from repowise.core.analysis.health.refactoring.llm.enrich import (
     _build_user_prompt,
     _extract_diff,
     _gather_spans,
+    _language_for,
+    _validate_extract_class,
     _validate_extract_method,
 )
 from repowise.core.analysis.health.refactoring.models import RefactoringSuggestion
@@ -468,3 +470,45 @@ def test_validate_extract_method_detects_ccn_drop():
     assert result["function_count"] >= 2
     assert result["residual_ccn"] < result["original_ccn"]
     assert result["improved"] is True
+
+
+def test_language_for_registry_extensions_and_csharp():
+    """Each of .pyi, .mjs, .cjs, .mts, .cts, .kts returns its language, .cs -> c_sharp (issue #5781)."""
+    assert _language_for("foo.pyi") == "python"
+    assert _language_for("foo.mjs") == "javascript"
+    assert _language_for("foo.cjs") == "javascript"
+    assert _language_for("foo.mts") == "typescript"
+    assert _language_for("foo.cts") == "typescript"
+    assert _language_for("foo.kts") == "kotlin"
+    assert _language_for("foo.cs") == "c_sharp"
+
+    # Standard extensions unchanged
+    assert _language_for("foo.py") == "python"
+    assert _language_for("foo.ts") == "typescript"
+    assert _language_for("foo.tsx") == "typescript"
+    assert _language_for("foo.js") == "javascript"
+    assert _language_for("foo.jsx") == "javascript"
+    assert _language_for("foo.java") == "java"
+    assert _language_for("foo.go") == "go"
+    assert _language_for("foo.rb") == "ruby"
+    assert _language_for("foo.php") == "php"
+    assert _language_for("foo.kt") == "kotlin"
+    assert _language_for("foo.rs") == "rust"
+    assert _language_for("foo.scala") == "scala"
+    assert _language_for("foo.swift") == "swift"
+
+    # Extensions with no walker return None (skipping validation)
+    assert _language_for("foo.txt") is None
+    assert _language_for("foo.md") is None
+    assert _language_for("foo.json") is None
+    assert _language_for("foo.yaml") is None
+    assert _language_for("foo.unknown") is None
+    assert _language_for("foo") is None
+
+
+def test_validate_extract_class_on_mjs():
+    content = "```javascript\nclass A { m() {} }\nclass B { n() {} }\n```"
+    res = _validate_extract_class(content, "example.mjs", {"lcom4": 2})
+    assert res["status"] == "checked"
+    assert res["class_count"] == 2
+    assert res["improved"] is True

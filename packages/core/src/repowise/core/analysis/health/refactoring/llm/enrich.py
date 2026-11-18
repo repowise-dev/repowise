@@ -37,6 +37,7 @@ from typing import Any
 import structlog
 
 from repowise.core.agent_prompts.refactoring import render_plan_spec
+from repowise.core.ingestion.languages.registry import REGISTRY
 from repowise.core.providers.llm.base import BaseProvider, CacheHint
 
 log = structlog.get_logger(__name__)
@@ -53,25 +54,25 @@ _MAX_IMPORT_HEAD_LINES = 60
 # Cache lives next to the other repo-local refactoring artifacts.
 _CACHE_SUBDIR = ("refactoring", "enrich")
 
-# Extension -> tree-sitter language name (the names ``walk_file`` understands).
-# Only the languages whose LCOM4 self-check is meaningful need to be here; an
-# unknown extension simply skips validation.
-_EXT_LANGUAGE: dict[str, str] = {
-    ".py": "python",
-    ".ts": "typescript",
-    ".tsx": "typescript",
-    ".js": "javascript",
-    ".jsx": "javascript",
-    ".java": "java",
-    ".go": "go",
-    ".cs": "c_sharp",
-    ".rb": "ruby",
-    ".php": "php",
-    ".kt": "kotlin",
-    ".rs": "rust",
-    ".scala": "scala",
-    ".swift": "swift",
-}
+# Tree-sitter language names the walker understands whose self-checks are supported.
+# Only languages whose LCOM4 / split / CCN self-checks are meaningful belong here;
+# extensions whose language has no walker simply skip validation.
+_WALKER_LANGUAGES: frozenset[str] = frozenset(
+    {
+        "python",
+        "typescript",
+        "javascript",
+        "java",
+        "go",
+        "c_sharp",
+        "ruby",
+        "php",
+        "kotlin",
+        "rust",
+        "scala",
+        "swift",
+    }
+)
 
 
 @dataclass
@@ -335,7 +336,14 @@ def _extract_code_blocks(content: str, language: str | None) -> str:
 
 
 def _language_for(file_path: str) -> str | None:
-    return _EXT_LANGUAGE.get(Path(file_path).suffix.lower())
+    suffix = Path(file_path).suffix.lower()
+    tag = REGISTRY.from_extension(suffix)
+    if tag == "unknown":
+        return None
+    # C# grammar is tree_sitter_c_sharp, whereas registry tag is csharp.
+    if tag == "csharp":
+        tag = "c_sharp"
+    return tag if tag in _WALKER_LANGUAGES else None
 
 
 def _cache_key(suggestion: Any, spans: list[SourceSpan], model: str, prompt: str) -> str:
