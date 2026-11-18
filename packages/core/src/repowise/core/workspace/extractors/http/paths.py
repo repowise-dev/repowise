@@ -129,6 +129,9 @@ def absolute_host(url: str) -> str | None:
     authority = after.split("/", 1)[0]
     if "$" in authority or "{" in authority:
         return None  # the host is itself an unresolved expression, not a literal
+    if authority.startswith("["):
+        host, closing, _ = authority[1:].partition("]")
+        return host.lower() if closing and host else None
     return authority.split(":", 1)[0].lower() or None
 
 
