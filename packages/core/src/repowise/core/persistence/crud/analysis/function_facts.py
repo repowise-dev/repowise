@@ -35,9 +35,9 @@ if TYPE_CHECKING:
     from ....analysis.lineage import FunctionBody, LineageEvent, SimilarFn
 
 _CHUNK = 500
-# Key ranges OR-ed into one DELETE: two bound values each, far under SQLite's
+# Key ranges OR-ed into one statement: two bound values each, far under SQLite's
 # variable limit, and SQLAlchemy keeps the OR flat, so no expression depth.
-_RANGES_PER_DELETE = 200
+RANGES_PER_STATEMENT = 200
 #: Lineage events kept per repository; older ones are pruned in one statement.
 LINEAGE_EVENT_CAP = 5_000
 
@@ -75,20 +75,19 @@ def key_range(path: str) -> tuple[str, str]:
     return f"{path}::", f"{path}:;"
 
 
+def key_range_chunks(column: Any, paths: Iterable[str]) -> Iterator[list[Any]]:
+    """*paths* as key-range conditions on the symbol-id *column*, to OR together:
+    at most :data:`RANGES_PER_STATEMENT` per chunk, one chunk per statement."""
+    ranges = sorted({key_range(path) for path in paths})
+    for i in range(0, len(ranges), RANGES_PER_STATEMENT):
+        chunk = ranges[i : i + RANGES_PER_STATEMENT]
+        yield [and_(column >= low, column < high) for low, high in chunk]
+
+
 def _file_range_chunks(repository_id: str, paths: Iterable[str]) -> Iterator[Any]:
     """The rows of *paths* as WHERE clauses, a chunk of key ranges each."""
-    ranges = sorted({key_range(path) for path in paths})
-    for i in range(0, len(ranges), _RANGES_PER_DELETE):
-        chunk = ranges[i : i + _RANGES_PER_DELETE]
-        yield and_(
-            FunctionFact.repository_id == repository_id,
-            or_(
-                *(
-                    and_(FunctionFact.symbol_id >= low, FunctionFact.symbol_id < high)
-                    for low, high in chunk
-                )
-            ),
-        )
+    for conditions in key_range_chunks(FunctionFact.symbol_id, paths):
+        yield and_(FunctionFact.repository_id == repository_id, or_(*conditions))
 
 
 async def delete_file_rows(session: AsyncSession, repository_id: str, paths: Iterable[str]) -> None:

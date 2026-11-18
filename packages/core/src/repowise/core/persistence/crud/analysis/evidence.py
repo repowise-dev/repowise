@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import Table, delete, insert, select
+from sqlalchemy import Table, delete, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
@@ -270,19 +271,32 @@ async def replace_symbol_hotness(
 
 
 async def hotness_for_symbols(
-    session: AsyncSession, repository_id: str, symbol_ids: Iterable[str]
+    session: AsyncSession,
+    repository_id: str,
+    symbol_ids: Iterable[str],
+    *,
+    files: Iterable[str] = (),
 ) -> dict[str, SymbolHotness]:
-    """The ``symbol_hotness`` row of each of *symbol_ids* that has one.
+    """The row of each of *symbol_ids*, and of every symbol in *files*, that has one.
 
-    A symbol missing from the result has no runtime evidence: unknown, never cold.
+    A symbol missing from the result has no runtime evidence: unknown, never
+    cold. A file is read as its key range. Each statement takes one chunk of
+    ids and one chunk of ranges (``key_range_chunks``), under SQLite's bound
+    variable limit, so a few symbols and files cost one keyed statement.
     """
+    from .function_facts import key_range_chunks
+
     wanted = sorted(set(symbol_ids))
+    sid = SymbolHotness.symbol_id
+    id_chunks = [wanted[i : i + _BATCH_SIZE] for i in range(0, len(wanted), _BATCH_SIZE)]
+    range_chunks = list(key_range_chunks(sid, files))
     out: dict[str, SymbolHotness] = {}
-    for i in range(0, len(wanted), _BATCH_SIZE):
+    for ids, ranges in zip_longest(id_chunks, range_chunks, fillvalue=[]):
+        clauses: list[Any] = [sid.in_(ids)] if ids else []
+        clauses += ranges
         result = await session.execute(
             select(SymbolHotness).where(
-                SymbolHotness.repository_id == repository_id,
-                SymbolHotness.symbol_id.in_(wanted[i : i + _BATCH_SIZE]),
+                SymbolHotness.repository_id == repository_id, or_(*clauses)
             )
         )
         out.update({row.symbol_id: row for row in result.scalars()})
