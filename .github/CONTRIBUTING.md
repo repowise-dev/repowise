@@ -298,7 +298,10 @@ runs and what a failure does. Start from the
 ### How CI runs
 
 [docs/architecture/ci.md](../docs/architecture/ci.md) lists every CI job, what
-it checks, when it runs and the command that reproduces it locally.
+it checks, when it runs and the command that reproduces it locally. A pull
+request runs the Python 3.12 tests in two shards, plus only the suites its
+changed paths need; `Python tests` is the one Python check that must pass.
+Run one shard locally with `uv run pytest tests/unit/ --shard 1/2`.
 
 ### Retrieval guard
 

@@ -5,6 +5,10 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  # Nightly full matrix on main, so a 3.11 or 3.13 break shows within a day
+  # even when nothing merges.
+  schedule:
+    - cron: "0 4 * * *"
 
 concurrency:
   # A new push to a pull request replaces its run. Pushes get one group per
@@ -24,21 +28,83 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Python tests — matrix across Python 3.11, 3.12, 3.13
+  # Which suites a pull request needs. Every other event runs everything.
+  # Python tests read far more than Python files (docs, the web and ui
+  # TypeScript contracts, plugins, .github), so the Python suites skip only a
+  # change confined to the VS Code extension or the api-client package.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      python: ${{ github.event_name != 'pull_request' || steps.python.outputs.python == 'true' }}
+      web: ${{ github.event_name != 'pull_request' || steps.node.outputs.web == 'true' }}
+      vscode: ${{ github.event_name != 'pull_request' || steps.node.outputs.vscode == 'true' }}
+
+    steps:
+      # Every listed pattern must match, so a file counts unless it sits in
+      # one of the excluded packages.
+      - name: Python-relevant files
+        id: python
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            python:
+              - '**'
+              - '!packages/vscode/**'
+              - '!packages/api-client/**'
+
+      - name: Node-relevant files
+        id: node
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            shared: &shared
+              - '.github/workflows/ci.yml'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'uv.lock'
+            web:
+              - *shared
+              - 'packages/web/**'
+              - 'packages/ui/**'
+              - 'packages/types/**'
+              - 'packages/api-client/**'
+              - 'packages/claude-mod/**'
+              - 'plugins/claude-code/**'
+              - 'scripts/check-shared-imports.mjs'
+            vscode:
+              - *shared
+              - 'packages/vscode/**'
+              - 'packages/ui/**'
+              - 'packages/types/**'
+              - 'packages/api-client/**'
+
+  # ---------------------------------------------------------------------------
+  # Python tests. Pull requests run Python 3.12 in two shards; pushes and the
+  # nightly run add 3.11 and 3.13 unsharded. The 3.12 shards measure coverage,
+  # and the "Python tests" job below combines it.
   # ---------------------------------------------------------------------------
   test-python:
-    name: Python ${{ matrix.python-version }} tests
+    name: Python ${{ matrix.python }} tests${{ matrix.shard && format(' (shard {0})', matrix.shard) || '' }}
     runs-on: ubuntu-latest
-    # A normal run takes 30-40 minutes. The per-test timeout in pyproject.toml
-    # catches a hung test; this catches a hang outside any test.
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    # The per-test timeout in pyproject.toml catches a hung test; this catches
+    # a hang outside any test.
     timeout-minutes: 60
     permissions:
       contents: read
-      id-token: write   # proves the coverage upload comes from this repository
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"python":"3.12","shard":"1/2"},{"python":"3.12","shard":"2/2"}]' || '[{"python":"3.11","shard":""},{"python":"3.12","shard":"1/2"},{"python":"3.12","shard":"2/2"},{"python":"3.13","shard":""}]') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -49,13 +115,13 @@ jobs:
           version: "0.13.9"
           enable-cache: true
           cache-dependency-glob: uv.lock
-          cache-suffix: py${{ matrix.python-version }}
+          cache-suffix: py${{ matrix.python }}
 
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install ${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
 
       - name: Install dependencies
-        run: uv sync --all-packages --python ${{ matrix.python-version }}
+        run: uv sync --all-packages --python ${{ matrix.python }}
 
       # Apex and COBOL grammars download from GitHub releases on first use, and
       # a failed load is not retried within a process. Left to the tests, one
@@ -80,7 +146,9 @@ jobs:
           done
           exit 1
 
+      # Seconds long, so the first shard takes it whole.
       - name: Run provider tests (no API keys required)
+        if: matrix.shard != '2/2'
         run: uv run pytest tests/providers/ -v --tb=short
 
       # One worker per core. loadfile keeps each module on one worker, so a
@@ -90,30 +158,88 @@ jobs:
       # run with that test named. With restarts, loadfile hands the unfinished
       # tests of that file back, and the run can wait with every worker idle.
       - name: Run unit tests
-        if: matrix.python-version != '3.12'
+        if: matrix.shard == ''
         run: uv run pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25
 
-      # One leg measures coverage for the pull request bot's checks comment.
-      # sysmon (Python 3.12+) measures lines with far less overhead than the
-      # tracer; it cannot record per-test contexts, which this report omits.
+      # --shard (tests/conftest.py) keeps whole test files together, so
+      # loadfile still holds. sysmon (Python 3.12+) measures lines with far
+      # less overhead than the tracer; it cannot record per-test contexts,
+      # which this report omits. Each shard keeps its raw data for the
+      # combine in "Python tests".
       - name: Run unit tests with coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.shard != ''
         env:
           COVERAGE_CORE: sysmon
-        run: uv run --with pytest-cov pytest tests/unit/ -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages --cov-report=xml
+        run: uv run --with pytest-cov pytest tests/unit/ --shard ${{ matrix.shard }} -n auto --dist loadfile --max-worker-restart=0 -v --tb=short --durations=25 --cov=packages --cov-report=
+
+      - name: Keep the coverage data
+        if: always() && matrix.shard != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-data-${{ strategy.job-index }}
+          path: .coverage
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: ignore
+          overwrite: true   # a re-run of the job uploads again
+
+  # ---------------------------------------------------------------------------
+  # The one Python check to require. It passes when every Python test job
+  # passed or the path filter skipped them, combines the shards' coverage
+  # into coverage.xml for the coverage gate, and uploads it to Repowise.
+  # ---------------------------------------------------------------------------
+  python-tests:
+    name: Python tests
+    runs-on: ubuntu-latest
+    needs: [changes, test-python]
+    if: ${{ !cancelled() }}
+    permissions:
+      contents: read
+      id-token: write   # proves the coverage upload comes from this repository
+
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.test-python.result != 'skipped'
+
+      - uses: actions/download-artifact@v4
+        id: coverage-data
+        if: needs.test-python.result != 'skipped'
+        continue-on-error: true
+        with:
+          pattern: coverage-data-*
+          path: coverage-data
+
+      - name: Install uv
+        if: steps.coverage-data.outcome == 'success'
+        uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: false
+
+      # source = packages matches the shards' --cov=packages, so coverage.xml
+      # names files exactly as a single run did.
+      - name: Combine coverage
+        id: combine
+        if: steps.coverage-data.outcome == 'success'
+        continue-on-error: true
+        run: |
+          printf '[run]\nsource = packages\n' > "$RUNNER_TEMP/coveragerc"
+          uvx coverage combine --rcfile="$RUNNER_TEMP/coveragerc" coverage-data/*/.coverage
+          uvx coverage xml --rcfile="$RUNNER_TEMP/coveragerc" -o coverage.xml
 
       # The Repowise coverage job below gates the pull request on this report.
       - name: Keep coverage.xml for the coverage gate
-        if: github.event_name == 'pull_request' && matrix.python-version == '3.12'
+        if: steps.combine.outcome == 'success' && github.event_name == 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
           path: coverage.xml
           retention-days: 1
           if-no-files-found: ignore
+          overwrite: true   # a re-run of the job uploads again
 
       - name: Upload coverage to Repowise
-        if: always() && matrix.python-version == '3.12'
+        if: steps.combine.outcome == 'success' && github.event_name != 'schedule'
         continue-on-error: true
         env:
           REPORTS: "coverage.xml"
@@ -136,6 +262,19 @@ jobs:
             https://api.repowise.dev/ci/coverage \
             || echo "::warning::Repowise: coverage upload failed; see the message above."
 
+      - name: Fail when a Python test job failed
+        if: always()
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TESTS: ${{ needs.test-python.result }}
+        run: |
+          echo "Changed paths: $CHANGES; Python test jobs: $TESTS"
+          [ "$CHANGES" = success ] || { echo "::error::The path filter did not finish ($CHANGES)."; exit 1; }
+          case "$TESTS" in
+            success|skipped) ;;
+            *) echo "::error::A Python test job did not pass ($TESTS)."; exit 1 ;;
+          esac
+
   # ---------------------------------------------------------------------------
   # tree-sitter floor — installs the declared minimum tree-sitter version and
   # compiles every language's query against it. `uv sync` alone always
@@ -149,6 +288,8 @@ jobs:
   test-tree-sitter-floor:
     name: tree-sitter floor (query compilation)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -204,6 +345,8 @@ jobs:
   windows-smoke:
     name: Windows smoke test (cp1252 console)
     runs-on: windows-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -284,6 +427,8 @@ jobs:
   lint-python:
     name: Python lint (ruff)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -300,6 +445,8 @@ jobs:
   doc-drift:
     name: Documentation drift
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -344,14 +491,14 @@ jobs:
           security-fail-on: high
 
   # ---------------------------------------------------------------------------
-  # Patch coverage on the Python 3.12 leg's report. Its own job so the gates
-  # above do not wait for the test matrix.
+  # Patch coverage on the combined Python 3.12 report. Its own job so the
+  # gates above do not wait for the tests.
   # ---------------------------------------------------------------------------
   repowise-coverage:
     name: Repowise coverage
     runs-on: ubuntu-latest
-    needs: test-python
-    if: github.event_name == 'pull_request'
+    needs: [changes, python-tests]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.python == 'true'
     permissions:
       contents: read
 
@@ -420,12 +567,12 @@ jobs:
         run: uv run pytest tests/integration/mcp/test_response_gate.py -v --tb=short --durations=5
 
   # ---------------------------------------------------------------------------
-  # Integration tests (run on push to main only, slower)
+  # Integration tests (push and nightly only, slower)
   # ---------------------------------------------------------------------------
   test-integration:
     name: Integration tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
 
     steps:
       - uses: actions/checkout@v4
@@ -450,6 +597,8 @@ jobs:
   test-web:
     name: Web UI lint + type check
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
 
     steps:
       - uses: actions/checkout@v4
@@ -526,6 +675,8 @@ jobs:
   test-vscode:
     name: VS Code extension test
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.vscode == 'true'
 
     steps:
       - uses: actions/checkout@v4
