@@ -64,9 +64,13 @@ _LAUNCHERS = (("uv", "run"), ("poetry", "run"), ("pdm", "run"), ("hatch", "run")
 # an outermost exit code in ``{ok}``. Only the program's own exit is judged
 # (``try``/``except SystemExit`` around the run, through ``exec`` since ``-c``
 # is one line), so a ``sys.exit`` a test catches does not fail the run. A run
-# stopped by Ctrl-C or SIGTERM (a timeout) still writes what it collected.
-# ``n`` holds the failed-test count a pytest run reports; it lands in the
-# profile as ``testsFailed``. Ceiling: a program that installs its own
+# stopped by Ctrl-C still writes what it collected: the interrupt unwinds the
+# program, which exits as usual. SIGTERM (what a timeout sends) writes the
+# profile in the handler, then ends the process with ``os._exit(143)``, so a
+# non-daemon thread or a program that swallows the interrupt cannot keep a
+# timed-out run alive. ``W`` writes once and is named so the run's own
+# ``except ... as e`` cannot unbind it. ``n`` holds the failed-test count a
+# pytest run reports; it lands in the profile as ``testsFailed``. Ceiling: a program that installs its own
 # ``sys.excepthook`` hides its crashes, one that installs its own SIGINT or
 # SIGTERM handler loses the partial profile, and Windows delivers no SIGTERM
 # on a kill. Double quotes outside, single inside: one spelling for sh and
@@ -77,8 +81,6 @@ _PYINSTRUMENT = (
     "o=os.path.abspath('{out}');os.makedirs(os.path.dirname(o),exist_ok=True);"
     "os.path.exists(o) and os.remove(o);f=[];c=[0];i=[];n=[];F={{}};"
     "sys.excepthook=(lambda h:lambda *a:(f.append(1),h(*a)))(sys.excepthook);"
-    "s=lambda *a:(i.append(1),signal.default_int_handler(*a));"
-    "signal.signal(signal.SIGINT,s);signal.signal(signal.SIGTERM,s);"
     # chr(36) is ``$``, which sh and PowerShell expand inside double quotes.
     "w=lambda r:json.dump({{chr(36)+'schema':'https://www.speedscope.app/file-format-schema.json',"
     "'exporter':'pyinstrument@'+V,'profiles':[{{'type':'sampled','name':'python','unit':'seconds',"
@@ -87,7 +89,10 @@ _PYINSTRUMENT = (
     "'weights':[round(t,6) for _,t in r]}}],"
     "'shared':{{'frames':[(lambda a:{{'name':a[0],'file':a[1],'line':int(a[2])}})((x.split(chr(0))+['','0'])[:3]) for x in F]}},"
     "**({{'testsFailed':n[0]}} if n else {{}})}},open(o,'w',encoding='utf-8'),separators=(',',':'));"
-    "atexit.register(lambda:(lambda r:(i or not f and c[0] in {ok}) and w(r))(p.stop().frame_records));"
+    "W=lambda:(lambda r:(i or not f and c[0] in {ok}) and w(r))(p.stop().frame_records);"
+    "signal.signal(signal.SIGINT,lambda *a:(i.append(1),signal.default_int_handler(*a)));"
+    "signal.signal(signal.SIGTERM,lambda *a:(i.append(1),W(),os._exit(143)));"
+    "atexit.register(W);"
     "p.start();exec('try:'+chr(10)+' {run}'+chr(10)+'except SystemExit as e:'+chr(10)+' c[0]=e.code;raise')"
 )
 #: Exit codes a profiled run may end with and still be stored. pytest's 1 means
@@ -97,6 +102,12 @@ _PYINSTRUMENT = (
 #: Ctrl-C or SIGTERM handler saw the run stopped.
 _CLEAN_EXITS = "(None,0)"
 _TEST_EXITS = "(None,0,1)"
+#: How the Python suite recipe may be cut short. A Windows kill delivers no
+#: SIGTERM, so only Ctrl-C is promised everywhere.
+SUBSET_NOTE = (
+    "A subset of the tests is enough: failing tests are fine, and a run stopped with Ctrl-C "
+    "(or SIGTERM, which a timeout sends outside Windows) still writes its profile."
+)
 #: Stands for an entry point's arguments; a shell refuses to run it as printed.
 ARGS_PLACEHOLDER = "<args>"
 _ARGS_REASON = (
@@ -250,6 +261,7 @@ def _target(
     prerequisites: Sequence[str] = (),
     reason: str | None = None,
     timed: str | None = None,
+    note: str | None = None,
 ) -> dict[str, Any]:
     """One runtime target, JSON-ready.
 
@@ -280,6 +292,7 @@ def _target(
         "ingest": ingest,
         "reason": reason,
         **({"timed": timed} if command and timed else {}),
+        **({"note": note} if command and note else {}),
     }
 
 
@@ -336,10 +349,11 @@ def _python_targets(
 
     def profiled(cls: str, name: str, run: str, extra: Sequence[str] = ()) -> dict[str, Any]:
         workload, profile = _named(root, name, ".speedscope.json")
-        command = _pyinstrument(launcher, _from(root, profile), run,
-                                _TEST_EXITS if cls == "unit_test" else _CLEAN_EXITS)
+        suite = cls == "unit_test"
+        command = _pyinstrument(launcher, _from(root, profile), run, _TEST_EXITS if suite else _CLEAN_EXITS)
         return _target(cls, workload, cwd=cwd, command=command, profile=profile, commit=commit,
-                       input_format="speedscope", prerequisites=[*needs, *extra])
+                       input_format="speedscope", prerequisites=[*needs, *extra],
+                       note=SUBSET_NOTE if suite else None)
 
     for name, (module, function) in sorted(console_scripts(repo_root / root).items()):
         argv = f"sys.argv=['{name}']+sys.argv[1:];"

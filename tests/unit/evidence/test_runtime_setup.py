@@ -148,6 +148,7 @@ def test_an_entry_point_waits_for_its_arguments(tmp_path: Path) -> None:
     assert plan["next_call"]["purpose"].startswith(
         "Profile python tests (unit_test), then ingest the profile. A subset of the tests is enough"
     )
+    assert "outside Windows" in plan["next_call"]["purpose"]
     assert all(ARGS_PLACEHOLDER not in s["run"] for s in plan["next_call"]["steps"])
 
 
@@ -318,6 +319,8 @@ def test_go_tests_profile_the_package_with_the_most_tests(tmp_path: Path, regist
     tests = _targets_go(tmp_path, inputs, [])[-1]
 
     assert tests["workload"] == "go test ./work/engine"
+    # go test -cpuprofile writes nothing when killed: no promise of a partial profile.
+    assert "note" not in tests
 
 
 def test_go_profiles_wait_for_a_pprof_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -435,7 +438,8 @@ def _run_recipe(
     code = target["command"].split('-c "', 1)[1].rsplit('"', 1)[0]
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(fake), str(root)])}
     done = subprocess.run(
-        [sys.executable, "-c", code, *args], cwd=target["cwd"], env=env, capture_output=True
+        [sys.executable, "-c", code, *args], cwd=target["cwd"], env=env, capture_output=True,
+        timeout=120,
     )
     return done.returncode, root / target["profile"]
 
@@ -532,16 +536,31 @@ def test_a_suite_that_could_not_run_leaves_no_profile(tmp_path: Path) -> None:
     assert code == 4 and not profile.exists()  # pytest's usage error
 
 
-def test_a_suite_stopped_by_a_timeout_keeps_what_it_collected(tmp_path: Path) -> None:
-    # SIGTERM (what ``timeout`` sends) stops the suite like Ctrl-C; the profile is still written.
+def test_a_suite_stopped_by_a_timeout_writes_its_profile_and_exits(tmp_path: Path) -> None:
+    # SIGTERM (what ``timeout`` sends) writes the profile and ends the process,
+    # even with a non-daemon thread that would keep it alive.
     _suite(
         tmp_path,
-        "import signal\n\ndef test_a():\n    signal.raise_signal(signal.SIGTERM)\n\n"
+        "import signal, threading\n\ndef test_a():\n"
+        "    threading.Thread(target=threading.Event().wait).start()\n"
+        "    signal.raise_signal(signal.SIGTERM)\n\ndef test_b():\n    pass\n",
+    )
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
+
+    assert code == 143 and json.loads(profile.read_text())["profiles"] == _SAMPLED["profiles"]
+
+
+def test_a_suite_stopped_with_ctrl_c_keeps_what_it_collected(tmp_path: Path) -> None:
+    _suite(
+        tmp_path,
+        "import signal\n\ndef test_a():\n    signal.raise_signal(signal.SIGINT)\n\n"
         "def test_b():\n    pass\n",
     )
 
     code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
 
+    # pytest reports an interrupted session (2); the recipe still wrote the profile.
     assert code == 2 and json.loads(profile.read_text())["profiles"] == _SAMPLED["profiles"]
 
 
