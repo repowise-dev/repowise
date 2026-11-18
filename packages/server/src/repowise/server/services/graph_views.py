@@ -191,8 +191,8 @@ _CODE_NODE_COLUMNS = (
     GraphNode.pagerank,
     GraphNode.is_entry_point,
 )
-# One index state per repository is kept (older ones are dropped on rebuild),
-# so this bounds how many repositories hold a graph in memory at once.
+# Entries, one per (repository, exclude rules) at the current index state;
+# older states are dropped on rebuild. Each holds a whole graph in memory.
 _code_graphs = IndexStampCache(4)
 # One build per repository at a time, so a cold burst of requests loads once.
 _code_graph_locks: dict[str, asyncio.Lock] = {}
@@ -256,6 +256,7 @@ async def _build_code_graph(session: AsyncSession, repo_id: str, exclude_spec: A
         await session.execute(select(*_CODE_NODE_COLUMNS).where(GraphNode.repository_id == repo_id))
     ).all()
     nodes = {n.node_id: n for n in filter_graph_nodes(node_rows, exclude_spec)}
+    excluded = {n.node_id for n in node_rows} - nodes.keys()
     edge_rows = (
         await session.execute(
             select(*_EDGE_COLUMNS).where(
@@ -264,9 +265,11 @@ async def _build_code_graph(session: AsyncSession, repo_id: str, exclude_spec: A
             )
         )
     ).all()
-    if exclude_spec is not None:
+    if excluded:
         edge_rows = [
-            e for e in edge_rows if e.source_node_id in nodes and e.target_node_id in nodes
+            e
+            for e in edge_rows
+            if e.source_node_id not in excluded and e.target_node_id not in excluded
         ]
 
     graph = nx.DiGraph()

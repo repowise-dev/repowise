@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection
 from typing import Any
 
 from sqlalchemy import select
@@ -136,7 +136,7 @@ def _build_visual_context(
     graph: Any,
     source: str,
     target: str,
-    nodes: Iterable[Any],
+    nodes: Collection[Any],
     nx: Any,
 ) -> dict:
     """Build diagnostic context when no directed path exists."""

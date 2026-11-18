@@ -26,7 +26,7 @@ _E = "src/e.py"
 
 
 async def _seed(session_factory, repo_id: str) -> None:
-    """a -> b -> c (short) and a -> d -> e -> c (long)."""
+    """a -> b -> c (short) and a -> d -> e -> c (long); a is the entry point."""
     async with get_session(session_factory) as session:
         for node_id in (_A, _B, _C, _D, _E):
             session.add(
@@ -36,6 +36,7 @@ async def _seed(session_factory, repo_id: str) -> None:
                     node_type="file",
                     language="python",
                     pagerank=0.1,
+                    is_entry_point=node_id == _A,
                 )
             )
         for src, tgt in ((_A, _B), (_B, _C), (_A, _D), (_D, _E), (_E, _C)):
@@ -108,6 +109,30 @@ async def test_an_excluded_file_is_not_an_ego_neighbour(
     assert {n["node_id"] for n in body["nodes"]} == {_A, _D}
     assert body["outbound_count"] == 1
 
+
+@pytest.mark.asyncio
+async def test_an_excluded_ego_centre_is_not_found(
+    client: AsyncClient, app, tmp_path: Path
+) -> None:
+    repo = await _repo(client, app, tmp_path, exclude=_B)
+
+    resp = await client.get(f"/api/graph/{repo['id']}/ego", params={"node_id": _B})
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_entry_point_reach_skips_an_excluded_file(
+    client: AsyncClient, app, tmp_path: Path
+) -> None:
+    repo = await _repo(client, app, tmp_path, exclude=_B)
+
+    resp = await client.get(f"/api/graph/{repo['id']}/entry-points")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert {n["node_id"] for n in body["nodes"]} == {_A, _C, _D, _E}
+    assert all(_B not in (link["source"], link["target"]) for link in body["links"])
 
 @pytest.mark.asyncio
 async def test_repeat_requests_at_one_index_state_load_the_graph_once(
