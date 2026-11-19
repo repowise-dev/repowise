@@ -1013,8 +1013,9 @@ def _workspace_setup(primary_path: Path, ctx: _WorkspaceCtx, *, repointed: bool)
 def cross_repo_finding(root: Path) -> str | None:
     """The workspace's one cross-repo finding, worded; None when none was measured.
 
-    The repo pair that changed together most, else the count of contracts
-    matched across repos. Reads what cross-repo analysis just wrote.
+    The repo pair whose files changed together in the most work sessions, else
+    the count of contracts matched across repos. Reads what cross-repo
+    analysis just wrote.
     """
     try:
         pair = _busiest_repo_pair(root)
@@ -1024,10 +1025,9 @@ def cross_repo_finding(root: Path) -> str | None:
         # a line, never the run.
         return None
     if pair:
-        (first, second), times = pair
-        noun = "time" if times == 1 else "times"
-        # Edges are capped per repo pair, so the sum is a floor.
-        return f"{first} and {second} changed together {times:,} {noun}"
+        (first, second), sessions = pair
+        noun = "work session" if sessions == 1 else "work sessions"
+        return f"{first} and {second} changed together in {sessions:,} {noun}"
     if links:
         noun = "contract link" if links == 1 else "contract links"
         return f"{links:,} {noun} between repos"
@@ -1035,16 +1035,21 @@ def cross_repo_finding(root: Path) -> str | None:
 
 
 def _busiest_repo_pair(root: Path) -> tuple[tuple[str, str], int] | None:
-    """The repo pair with the most co-change sessions, both directions summed."""
-    from collections import Counter
+    """The repo pair of the file pair that changed together in the most work sessions.
 
+    An edge's ``frequency`` counts the sessions one file pair shared. Summing
+    edges would count a session once per file pair it touched, so the largest
+    single edge is the honest count: both repos changed in at least that many
+    sessions. The dashboard's workspace welcome reads the same edge.
+    """
     from repowise.core.workspace.cross_repo import load_overlay
 
     overlay = load_overlay(root)
-    pairs: Counter[tuple[str, str]] = Counter()
-    for edge in overlay.co_changes if overlay is not None else ():
-        pairs[tuple(sorted((edge.source_repo, edge.target_repo)))] += edge.frequency
-    return pairs.most_common(1)[0] if pairs else None
+    edges = overlay.co_changes if overlay is not None else []
+    if not edges:
+        return None
+    top = max(edges, key=lambda e: e.frequency)
+    return tuple(sorted((top.source_repo, top.target_repo))), top.frequency
 
 
 def _contract_links(root: Path) -> int:

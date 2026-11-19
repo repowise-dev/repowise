@@ -94,11 +94,11 @@ def test_mixed_modes_count_each_and_label_each_repo():
 def test_the_cross_repo_finding_stands_out():
     facts = _facts(
         [RepoOutcome("api", _FROM_CODE, pages=12), RepoOutcome("web", _FROM_CODE, pages=8)],
-        cross_repo="api and web changed together 41 times",
+        cross_repo="api and web changed together in 30 work sessions",
     )
     text = _render(facts)
     assert "What stood out" in text
-    assert "Across repos    api and web changed together 41 times" in text
+    assert "Across repos    api and web changed together in 30 work sessions" in text
     assert "What stood out" not in _render(_facts([RepoOutcome("api", _FROM_CODE, pages=1)]))
 
 
@@ -162,5 +162,6 @@ def test_the_cross_repo_finding_reads_what_analysis_wrote(tmp_path):
         co_changes=[edge("web", "api", 30), edge("api", "web", 11), edge("api", "worker", 20)]
     )
     save_overlay(overlay, tmp_path)
-    # Both directions of a pair count toward it; the busiest pair wins.
-    assert cross_repo_finding(tmp_path) == "api and web changed together 41 times"
+    # The file pair with the most shared sessions names the repo pair; sessions
+    # are not summed across file pairs, which would count one session twice.
+    assert cross_repo_finding(tmp_path) == "api and web changed together in 30 work sessions"
