@@ -729,6 +729,16 @@ def _next_actions_lines(view: dict | None) -> list[str]:
     return lines
 
 
+def _evidence_freshness(repo_path: Path) -> dict | None:
+    """The block ``doctor``'s evidence rows read; ``None`` when the store cannot answer."""
+    from repowise.cli.commands._evidence_freshness import stored_freshness
+
+    try:
+        return stored_freshness(repo_path)
+    except Exception:
+        return None
+
+
 def _format_relative_time(iso_timestamp: str | None) -> str:
     """Format an ISO 8601 timestamp as a relative time string."""
     if not iso_timestamp:
@@ -1063,6 +1073,8 @@ def status_command(path: str | None, workspace: bool, no_workspace: bool, fmt: s
                 "stale_pages": stale_pages,
                 "health": _query_health(repo_path),
                 "next_actions": _next_actions_summary(_load_actions(repo_path) if has_db else None),
+                # Coverage and runtime evidence: present, commit, age, fresh or stale.
+                "evidence_freshness": _evidence_freshness(repo_path) if has_db else None,
                 "index_scope": scope,
                 "upgrade_command": upgrade_command(scope),
                 "model_command": model_command(scope),

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from itertools import zip_longest
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import Table, delete, insert, or_, select
+from sqlalchemy import Table, delete, func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
@@ -139,6 +139,27 @@ async def list_evidence_runs(session: AsyncSession, repository_id: str) -> list[
         .order_by(EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc())
     )
     return list(result.scalars())
+
+
+async def newest_evidence_run(session: AsyncSession, repository_id: str) -> tuple[int, Any]:
+    """How many runs are stored, and the newest one's ``commit_sha`` and
+    ``ingested_at`` (``None`` with no run). Two keyed reads, no row bodies."""
+    count = (
+        await session.execute(
+            select(func.count(EvidenceRun.id)).where(EvidenceRun.repository_id == repository_id)
+        )
+    ).scalar_one()
+    if not count:
+        return 0, None
+    newest = (
+        await session.execute(
+            select(EvidenceRun.commit_sha, EvidenceRun.ingested_at)
+            .where(EvidenceRun.repository_id == repository_id)
+            .order_by(EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc())
+            .limit(1)
+        )
+    ).one()
+    return count, newest
 
 
 async def prune_evidence_runs(

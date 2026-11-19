@@ -105,3 +105,20 @@ def test_json_adds_the_view_only_with_evidence(monkeypatch) -> None:
     # Repository-wide, so a run narrowed to a file leaves it out.
     stdout, _ = _run(monkeypatch, "--format", "json", "--file", "src/a.py")
     assert "measured_costs" not in json.loads(stdout[stdout.index("{") :])
+
+
+def test_the_connect_line_shows_only_without_runtime_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(health_module, "_load_measured_costs", lambda _path: None)
+    absent = {"runtime": {"present": False}}
+    monkeypatch.setattr(health_module, "_load_evidence_freshness", lambda _path: absent)
+    stdout, _ = _run(monkeypatch)
+    assert "No runtime evidence stored, so performance here is code shape only." in stdout
+    assert "repowise evidence setup" in stdout
+    assert not re.search(r"\b(hot|cold)\b", stdout, re.IGNORECASE)
+
+    stored = {"runtime": {"present": True}}
+    monkeypatch.setattr(health_module, "_load_evidence_freshness", lambda _path: stored)
+    assert "No runtime evidence" not in _run(monkeypatch)[0]
+    # A store that cannot say stays silent.
+    monkeypatch.setattr(health_module, "_load_evidence_freshness", lambda _path: None)
+    assert "No runtime evidence" not in _run(monkeypatch)[0]

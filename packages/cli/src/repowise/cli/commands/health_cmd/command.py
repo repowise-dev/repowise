@@ -50,6 +50,7 @@ from repowise.core.persistence.crud.analysis.health import open_finding_count
 
 from .codegen import _generate_refactoring_code
 from .persist import (
+    _load_evidence_freshness,
     _load_fix_first,
     _load_measured_costs,
     _load_perf_causes,
@@ -68,6 +69,7 @@ from .refactoring_targets import (
 )
 from .summary import (
     _render_badge,
+    _render_connect_line,
     _render_defect_accuracy_line,
     _render_distribution_line,
     _render_fix_first,
@@ -612,7 +614,11 @@ def _render_table(
     causes = None if narrowed else _load_perf_causes(repo_path, coverage.covered_nloc)
     _render_performance_section(report, coverage, causes)
     if not narrowed:
-        _render_measured_costs(_load_measured_costs(repo_path))
+        measured = _load_measured_costs(repo_path)
+        _render_measured_costs(measured)
+        # A ranked view means runs are stored; only without one is the store asked.
+        if measured is None:
+            _render_connect_line(_load_evidence_freshness(repo_path))
     _render_files_table(metrics_sorted, _load_short_history(repo_path))
     _render_findings_table(findings)
 

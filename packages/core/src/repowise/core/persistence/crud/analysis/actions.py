@@ -70,7 +70,6 @@ from ...models import (
     CoverageIngest,
     DeadCodeFinding,
     DocDriftFinding,
-    EvidenceRun,
     FixEvent,
     GitCommit,
     GitCommitFile,
@@ -499,28 +498,18 @@ async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -
 
 
 async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) -> dict:
-    count = (
-        await session.execute(
-            select(func.count(EvidenceRun.id)).where(EvidenceRun.repository_id == repo_id)
-        )
-    ).scalar_one()
-    if not count:
+    from .evidence import newest_evidence_run
+
+    runs, newest = await newest_evidence_run(session, repo_id)
+    if newest is None:
         from repowise.core.evidence.runtime_setup import stored_target_classes
 
         # Only a repository with nothing stored is asked what it could run.
         return build_runtime(
             {"runs": 0, "targets": await stored_target_classes(session, repo_id)}, head_sha
         )
-    newest = (
-        await session.execute(
-            select(EvidenceRun.commit_sha, EvidenceRun.ingested_at)
-            .where(EvidenceRun.repository_id == repo_id)
-            .order_by(EvidenceRun.ingested_at.desc(), EvidenceRun.id.desc())
-            .limit(1)
-        )
-    ).one()
     return build_runtime(
-        {"runs": count, "commit_sha": newest.commit_sha, "ingested_at": newest.ingested_at},
+        {"runs": runs, "commit_sha": newest.commit_sha, "ingested_at": newest.ingested_at},
         head_sha,
     )
 
