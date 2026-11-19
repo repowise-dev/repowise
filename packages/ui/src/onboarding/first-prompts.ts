@@ -47,3 +47,17 @@ export function firstPrompts(repo: string, facts: FirstPromptFacts = {}): string
     : fill(FIRST_PROMPTS.unused, { repo });
   return [fill(FIRST_PROMPTS.tour, { repo }), risk, why];
 }
+
+/** A workspace prompt names its repos up to this many; past it, it counts them. */
+const NAMED_REPOS = 3;
+
+/** The cross-repo question for a workspace of `repos`; one repo gets its tour.
+ *  Mirrors core's `workspace_prompt`. */
+export function workspacePrompt(repos: string[]): string {
+  if (repos.length === 1) return fill(FIRST_PROMPTS.tour, { repo: repos[0]! });
+  const names =
+    repos.length > NAMED_REPOS
+      ? `the ${repos.length} repos in this workspace`
+      : `${repos.slice(0, -1).join(", ")} and ${repos[repos.length - 1]}`;
+  return fill(FIRST_PROMPTS.workspace, { repos: names });
+}
