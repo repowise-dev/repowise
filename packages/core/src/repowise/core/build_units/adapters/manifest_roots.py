@@ -1,4 +1,4 @@
-"""Every package root on disk, for ecosystems no specific adapter reads (Ruby, Swift ...).
+"""Every package root on disk, for ecosystems no specific adapter reads (Ruby, Dart ...).
 
 The roots come from :func:`package_manifests`, which reads the language
 registry's manifest names. A root whose every manifest *decided* accepts

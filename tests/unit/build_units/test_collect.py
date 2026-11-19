@@ -15,6 +15,7 @@ from repowise.core.build_units.adapters import maven as maven_adapter
 from repowise.core.build_units.adapters import pascal as pascal_adapter
 from repowise.core.build_units.adapters import php as php_adapter
 from repowise.core.build_units.adapters import python as python_adapter
+from repowise.core.build_units.adapters import swift as swift_adapter
 from repowise.core.build_units.collect import collect_build_units
 from repowise.core.ingestion.graph import build_stem_map
 from repowise.core.ingestion.resolvers.context import ResolverContext
@@ -250,6 +251,7 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
     monkeypatch.setattr(go_adapter, "get_or_build_go_index", boom)
     monkeypatch.setattr(python_adapter, "package_manifests", boom)
     monkeypatch.setattr(maven_adapter, "load_maven_reactor", boom)
+    monkeypatch.setattr(swift_adapter, "package_manifests", boom)
     monkeypatch.setattr(php_adapter, "repo_composer_manifests", boom)
     index = _collect(tmp_path, {
         "pkg/Gemfile": "",
@@ -257,10 +259,12 @@ def test_absent_ecosystems_never_build_their_index(tmp_path, monkeypatch):
         # Manifests alone do not wake an adapter: there is no source for it to own.
         "pyproject.toml": "[project]\nname = 'root'\n",
         "pom.xml": "<project><groupId>g</groupId><artifactId>a</artifactId></project>",
+        "spm/Package.swift": _PACKAGE_SWIFT_LIB,
         "composer.json": '{"name": "acme/test"}',
     })
-    assert list(index.units) == ["manifest:.", "manifest:pkg"]
+    assert list(index.units) == ["manifest:.", "manifest:pkg", "manifest:spm"]
     assert _owners(index, "pkg/m.rb") == ["manifest:pkg"]
+    assert index.failed_ecosystems == frozenset()
 
 
 def test_failing_index_is_skipped_and_its_roots_fall_back(tmp_path, monkeypatch):
@@ -709,6 +713,199 @@ def test_maven_unparsed_or_unresolved_module_falls_back(tmp_path):
     index = collect_build_units(_ctx(tmp_path))
     assert set(index.units) == {"manifest:bad", "manifest:prop", "maven:g:a", "maven:g:root"}
     assert _owners(index, "prop/src/main/java/P.java") == ["manifest:prop"]
+
+
+_PACKAGE_SWIFT_APP = (
+    '// swift-tools-version:5.9\n'
+    'import PackageDescription\n\n'
+    'let package = Package(\n'
+    '    name: "App",\n'
+    '    dependencies: [\n'
+    '        .package(path: "../Lib"),\n'
+    '        .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),\n'
+    '    ],\n'
+    '    targets: [\n'
+    '        .executableTarget(name: "App", dependencies: [.product(name: "Lib", package: "Lib")]),\n'
+    '    ]\n'
+    ')'
+)
+
+_PACKAGE_SWIFT_LIB = (
+    '// swift-tools-version:5.9\n'
+    'import PackageDescription\n\n'
+    'let package = Package(\n'
+    '    name: "Lib",\n'
+    '    targets: [\n'
+    '        .target(name: "Lib"),\n'
+    '    ]\n'
+    ')'
+)
+
+_PACKAGE_SWIFT_OTHER = (
+    '// swift-tools-version:5.9\n'
+    'import PackageDescription\n\n'
+    'let package = Package(\n'
+    '    name: "Other",\n'
+    '    targets: [\n'
+    '        .target(name: "Other"),\n'
+    '    ]\n'
+    ')'
+)
+
+
+def test_swift_packages_and_path_deps(tmp_path):
+    index = _collect(tmp_path, {
+        "App/Package.swift": _PACKAGE_SWIFT_APP,
+        "App/Sources/App/main.swift": "",
+        "Lib/Package.swift": _PACKAGE_SWIFT_LIB,
+        "Lib/Sources/Lib/Lib.swift": "",
+    })
+    assert _deps(index) == {"swift:App": ("swift:Lib",), "swift:Lib": ()}
+    app = index.unit("swift:App")
+    assert (app.root, app.manifest, app.name, app.source) == ("App", "App/Package.swift", "App", "swiftpm")
+    assert _owners(index, "App/Sources/App/main.swift") == ["swift:App"]
+    # No manifest:App fallback at the same root.
+    assert "manifest:App" not in index.units
+
+
+def test_swift_path_dep_outside_repo_links_nothing(tmp_path):
+    repo = tmp_path / "repo"
+    index = _collect(repo, {
+        "App/Package.swift": (
+            'let package = Package(name: "App", dependencies: ['
+            '.package(path: "../../../elsewhere/Lib")], targets: [])'
+        ),
+        "App/Sources/App/main.swift": "",
+        "Lib/Package.swift": _PACKAGE_SWIFT_LIB,
+        "Lib/Sources/Lib/Lib.swift": "",
+    })
+    assert index.unit("swift:App").deps == ()
+
+
+def test_swift_absolute_path_dep_outside_repo_links_nothing(tmp_path):
+    index = _collect(tmp_path, {
+        "App/Package.swift": (
+            'let package = Package(name: "App", dependencies: [\n'
+            '    .package(path: "/opt/Lib"),\n'
+            '    .package(path: "C:/Lib"),\n'
+            '], targets: [])'
+        ),
+        "App/Sources/App/main.swift": "",
+        "Lib/Package.swift": _PACKAGE_SWIFT_LIB,
+        "Lib/Sources/Lib/Lib.swift": "",
+    })
+    assert index.unit("swift:App").deps == ()
+
+
+def test_swift_older_name_path_form_and_commented_out(tmp_path):
+    index = _collect(tmp_path, {
+        "App/Package.swift": (
+            'let package = Package(name: "App", dependencies: [\n'
+            '    .package(name: "Lib", path: "../Lib"),\n'
+            '    // .package(path: "../Other"),\n'
+            '], targets: [])'
+        ),
+        "App/Sources/App/main.swift": "",
+        "Lib/Package.swift": _PACKAGE_SWIFT_LIB,
+        "Lib/Sources/Lib/Lib.swift": "",
+        "Other/Package.swift": _PACKAGE_SWIFT_OTHER,
+        "Other/Sources/Other/Other.swift": "",
+    })
+    assert _deps(index) == {"swift:App": ("swift:Lib",), "swift:Lib": (), "swift:Other": ()}
+    assert index.unit("swift:Other").root == "Other"
+
+
+def test_swift_trailing_and_block_comments_hide_deps(tmp_path):
+    index = _collect(tmp_path, {
+        "App/Package.swift": (
+            'let package = Package(name: "App", dependencies: [\n'
+            '    .package(path: "../Lib"), // .package(path: "../Legacy")\n'
+            '    /* .package(path: "../Old") */\n'
+            '], targets: [])'
+        ),
+        "App/Sources/App/main.swift": "",
+        "Lib/Package.swift": _PACKAGE_SWIFT_LIB,
+        "Lib/Sources/Lib/Lib.swift": "",
+        "Legacy/Package.swift": 'let package = Package(name: "Legacy", targets: [])',
+        "Legacy/Sources/Legacy/Legacy.swift": "",
+        "Old/Package.swift": _PACKAGE_SWIFT_OTHER,
+        "Old/Sources/Other/Other.swift": "",
+    })
+    assert index.unit("swift:App").deps == ("swift:Lib",)
+
+
+def test_swift_url_slashes_in_a_string_are_not_a_comment(tmp_path):
+    index = _collect(tmp_path, {
+        "App/Package.swift": (
+            'let package = Package(name: "App", dependencies: [\n'
+            '    .package(url: "https://example.com/x.git", from: "1.0.0"), .package(path: "../Lib"),\n'
+            '], targets: [])'
+        ),
+        "App/Sources/App/main.swift": "",
+        "Lib/Package.swift": _PACKAGE_SWIFT_LIB,
+        "Lib/Sources/Lib/Lib.swift": "",
+    })
+    assert index.unit("swift:App").deps == ("swift:Lib",)
+
+
+def test_swift_unreadable_package_swift_falls_back(tmp_path):
+    _write(tmp_path, {
+        "Good/Package.swift": _PACKAGE_SWIFT_LIB,
+        "Good/Sources/Good/Good.swift": "",
+    })
+    (tmp_path / "Bad").mkdir()
+    (tmp_path / "Bad" / "Package.swift").write_bytes(b'let package = Package(name: "caf\xe9")\n')
+    (tmp_path / "Bad" / "Sources" / "Bad").mkdir(parents=True)
+    (tmp_path / "Bad" / "Sources" / "Bad" / "Bad.swift").write_text("")
+    (tmp_path / "NoName").mkdir()
+    (tmp_path / "NoName" / "Package.swift").write_text('// No Package() call\n')
+    (tmp_path / "NoName" / "Sources" / "NoName").mkdir(parents=True)
+    (tmp_path / "NoName" / "Sources" / "NoName" / "NoName.swift").write_text("")
+    index = collect_build_units(_ctx(tmp_path))
+    assert set(index.units) == {"manifest:Bad", "manifest:NoName", "swift:Lib"}
+    assert _owners(index, "Bad/Sources/Bad/Bad.swift") == ["manifest:Bad"]
+    assert _owners(index, "NoName/Sources/NoName/NoName.swift") == ["manifest:NoName"]
+
+
+def test_swift_root_package_with_subpackage_dep(tmp_path):
+    index = _collect(tmp_path, {
+        "Package.swift": (
+            'let package = Package(name: "Root", dependencies: ['
+            '.package(path: "Packages/Core")], targets: [])'
+        ),
+        "Sources/Root/main.swift": "",
+        "Packages/Core/Package.swift": (
+            'let package = Package(name: "Core", targets: ['
+            '.target(name: "Core")])'
+        ),
+        "Packages/Core/Sources/Core/Core.swift": "",
+    })
+    assert _deps(index) == {"swift:Core": (), "swift:Root": ("swift:Core",)}
+    root = index.unit("swift:Root")
+    assert (root.root, root.manifest) == ("", "Package.swift")
+
+
+def test_swift_duplicate_name_keeps_first_root(tmp_path):
+    index = _collect(tmp_path, {
+        "a/Dup/Package.swift": (
+            'let package = Package(name: "Dup", targets: ['
+            '.target(name: "Dup")])'
+        ),
+        "a/Dup/Sources/Dup/Dup.swift": "",
+        "b/Dup/Package.swift": (
+            'let package = Package(name: "Dup", targets: ['
+            '.target(name: "Dup")])'
+        ),
+        "b/Dup/Sources/Dup/Dup.swift": "",
+        "App/Package.swift": (
+            'let package = Package(name: "App", dependencies: ['
+            '.package(path: "../b/Dup")], targets: [.target(name: "App")])'
+        ),
+        "App/Sources/App/main.swift": "",
+    })
+    assert index.unit("swift:Dup").root == "a/Dup"
+    assert index.unit("swift:App").deps == ()
+    assert _owners(index, "b/Dup/Sources/Dup/Dup.swift") == ["manifest:b/Dup"]
 
 
 def test_php_composer_path_repository_deps(tmp_path):
