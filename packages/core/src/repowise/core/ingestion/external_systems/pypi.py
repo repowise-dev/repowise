@@ -50,7 +50,7 @@ def parse(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
 def _parse_pyproject(manifest_path: Path, repo_root: Path) -> list[ExternalSystemRecord]:
     try:
         data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return []
     if not isinstance(data, dict):
         return []
@@ -79,16 +79,20 @@ def _parse_pyproject(manifest_path: Path, repo_root: Path) -> list[ExternalSyste
                 continue
             _add_simple(records, seen, str(raw_name), _spec_version(spec), declared_in, is_dev=False)
         groups = poetry.get("group")
-        if isinstance(groups, dict):
-            for group_name, group_data in groups.items():
-                is_dev = group_name in {"dev", "test", "tests", "lint", "docs"}
-                deps = group_data.get("dependencies") if isinstance(group_data, dict) else None
-                if not isinstance(deps, dict):
+        tables = [
+            (group_data.get("dependencies"), group_name in {"dev", "test", "tests", "lint", "docs"})
+            for group_name, group_data in (groups.items() if isinstance(groups, dict) else ())
+            if isinstance(group_data, dict)
+        ]
+        # ``dev-dependencies`` is the pre-1.2 spelling of the dev group.
+        tables.append((poetry.get("dev-dependencies"), True))
+        for deps, is_dev in tables:
+            if not isinstance(deps, dict):
+                continue
+            for raw_name, spec in deps.items():
+                if _is_path_dep(spec):
                     continue
-                for raw_name, spec in deps.items():
-                    if _is_path_dep(spec):
-                        continue
-                    _add_simple(records, seen, str(raw_name), _spec_version(spec), declared_in, is_dev=is_dev)
+                _add_simple(records, seen, str(raw_name), _spec_version(spec), declared_in, is_dev=is_dev)
 
     return records
 

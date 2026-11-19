@@ -165,9 +165,11 @@ background until someone confirms it (`repowise decision confirm ID`).
 | Manual entry | `cli` | `repowise decision add`, the dashboard form | No | Always |
 | Agent entry | `agent` | `repowise decision add --agent <slug>` | No | Always |
 
-`repowise init` mines the history window once. `repowise update` reads inline
-markers on changed files and makes no model call for decisions unless
-`decision config update-mining --on`. A committed ADR whose status says
+`repowise init` mines the history window once. `repowise update` re-reads ADRs
+that were added or modified and reads inline markers on changed files; unchanged
+ADRs are not re-read, and deleting an ADR does not delete its decision record.
+It makes no model call for decisions unless `decision config update-mining --on`.
+A committed ADR whose status says
 `accepted` or `approved` and that names what it governs is in force on its
 own, with the file recorded as the signer. The same decision found by two
 sources becomes one record with two evidence rows.

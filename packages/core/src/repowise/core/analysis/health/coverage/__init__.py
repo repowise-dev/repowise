@@ -39,7 +39,12 @@ from .discovery import (
     resolve_test_reports,
     suggest_prefixes,
 )
-from .freshness import FreshnessStatus, coverage_freshness, measurement_commit
+from .freshness import (
+    FreshnessStatus,
+    coverage_freshness,
+    live_head_commit,
+    measurement_commit,
+)
 from .goprofile import parse_go_coverprofile
 from .jacoco import parse_jacoco
 from .lcov import parse_lcov
@@ -79,6 +84,7 @@ __all__ = [
     "expand_report_patterns",
     "file_coverage",
     "is_test_file",
+    "live_head_commit",
     "measurement_commit",
     "measurement_ref",
     "normalize_report_path",

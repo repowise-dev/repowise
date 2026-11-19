@@ -141,3 +141,19 @@ export function isNavItemActive(item: NavItem, pathname: string): boolean {
   if (item.exact) return pathname === item.href;
   return pathname === item.href || pathname.startsWith(`${item.href}/`);
 }
+
+/**
+ * The anonymous view id for *pathname*: the nav entry it sits under, scoped by
+ * the list it belongs to (`global.settings`, `workspace.contracts`,
+ * `repo.codeHealth`). `null` off the nav. Never carries the repo id or a path.
+ */
+export function viewIdFor(pathname: string): string | null {
+  const repo = /^\/repos\/([^/]+)/.exec(pathname);
+  const [scope, items] = repo
+    ? ["repo", repoNavItems(repo[1]!)]
+    : pathname === "/workspace" || pathname.startsWith("/workspace/")
+      ? ["workspace", WORKSPACE_NAV]
+      : ["global", GLOBAL_NAV];
+  const item = items.find((i) => isNavItemActive(i, pathname));
+  return item ? `${scope}.${item.labelKey}` : null;
+}

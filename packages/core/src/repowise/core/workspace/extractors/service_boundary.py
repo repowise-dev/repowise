@@ -28,24 +28,10 @@ from repowise.core.workspace.manifests import SERVICE_MARKERS
 # Constants
 # ---------------------------------------------------------------------------
 
-_BLOCKED_DIRS = frozenset(
-    {
-        ".git",
-        "node_modules",
-        "__pycache__",
-        ".venv",
-        "venv",
-        "vendor",
-        ".next",
-        ".nuxt",
-        ".tox",
-        ".mypy_cache",
-        ".gradle",
-        ".mvn",
-        "out",
-        "bin",
-    }
-)
+# Never service roots, on top of the never-source set ``walk_repo`` prunes
+# and the dotfile dirs the walk loop skips: vendored code and the derived
+# names ``is_output_dir`` leaves ambiguous.
+_BLOCKED_DIRS = frozenset({"vendor", "out", "bin"})
 
 _SOURCE_EXTENSIONS = _LANG_REGISTRY.extensions_for(
     [

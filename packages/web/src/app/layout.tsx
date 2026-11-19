@@ -18,6 +18,7 @@ import { SWRProvider } from "@/components/layout/swr-provider";
 import { PreviewBadgeStrings } from "@/components/layout/preview-badge-strings";
 import { UpgradeBanner } from "@/components/layout/upgrade-banner";
 import { ReleaseMoment } from "@/components/layout/release-moment";
+import { ViewTelemetry } from "@/components/layout/view-telemetry";
 import { listRepos } from "@/lib/api/repos";
 import { getWorkspace } from "@/lib/api/workspace";
 import type { WorkspaceResponse } from "@/lib/api/types";
@@ -132,6 +133,7 @@ export default async function RootLayout({
                 </div>
               </div>
               <CommandPalette repos={repos} workspace={workspace} />
+              <ViewTelemetry />
             </ContextDrawerShell>
           </Suspense>
         </PreviewBadgeStrings>

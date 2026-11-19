@@ -126,6 +126,10 @@ async def _settle() -> None:
 
     while setup_status._running:
         await asyncio.gather(*setup_status._running, return_exceptions=True)
+        # gather on tasks that are already done returns without yielding, so
+        # their queued done callbacks, which drop them from _running, would
+        # never run and this loop would spin forever.
+        await asyncio.sleep(0)
 
 
 @pytest.fixture

@@ -487,6 +487,39 @@ _DATA_STEPS_ON_ADD: dict[str, Callable[[object], object]] = {
 }
 
 
+def _link_unlinked_changes(connection: Any) -> int:
+    from repowise.core.persistence.crud.changes import link_unlinked_changes
+
+    return link_unlinked_changes(connection)
+
+
+#: One-time data fills that must run when ``create_all`` creates a table on a
+#: store that already existed, for rows written before the table did. Alembic
+#: runs the same step in the table's migration. Keyed by table name.
+_DATA_STEPS_ON_CREATE: dict[str, Callable[[object], object]] = {
+    "change_commits": _link_unlinked_changes,
+}
+
+
+def _table_names(connection: object) -> set[str]:
+    return set(inspect(connection).get_table_names())
+
+
+def _fill_created_tables(connection: object, before: set[str]) -> None:
+    """Run the :data:`_DATA_STEPS_ON_CREATE` of each table missing from *before*.
+
+    A brand-new store (*before* empty) has nothing to fill. On SQLite the
+    table's DDL has already autocommitted, so a step that fails here is not
+    retried on the next open; each step's own caller has to repair that (a
+    change refresh links any change still unlinked).
+    """
+    if not before:
+        return
+    for table, step in _DATA_STEPS_ON_CREATE.items():
+        if table not in before:
+            _run_data_step(step, connection)
+
+
 def _run_data_step(step: Callable[[object], object], connection: object) -> None:
     """Run a data step for its effect. Its return value (a row count, often 0)
     is not a statement, so it must never reach ``connection.execute``."""
@@ -829,9 +862,11 @@ async def init_db(engine: AsyncEngine) -> None:
                 storage_migrations.settled(conn)
                 return
         await hold_schema_lock(conn)
+        before = await conn.run_sync(_table_names)
         await conn.run_sync(Base.metadata.create_all)
         # Raises when the walk is incomplete, so a partial reconcile is never stamped.
         await conn.run_sync(_reconcile_schema)
+        await conn.run_sync(_fill_created_tables, before)
 
         # SQLite-only: create FTS5 virtual table for full-text search.
         # PostgreSQL uses a GIN index added by the Alembic migration.

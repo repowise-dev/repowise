@@ -152,6 +152,7 @@ async def test_preflight_reports_provider_and_estimate(
     data = resp.json()
     assert data["provider"] == {
         "ok": True,
+        "configured": True,
         "name": "mock",
         "model": "claude-sonnet-4-6",
         "error": None,

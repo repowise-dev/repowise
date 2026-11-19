@@ -41,6 +41,7 @@ from repowise.server.mcp_server.tool_answer.confidence import (
     file_hybrid_rank,
     lead_leaves_retrieval,
 )
+from repowise.server.mcp_server.tool_answer.config import _BODY_NOTE, _RATIONALE_NOTE
 from repowise.server.mcp_server.tool_answer.evidence import (
     _drop_already_surfaced,
     _first_resolvable_id,
@@ -56,16 +57,6 @@ from repowise.server.mcp_server.tool_answer.retrieval import (
 )
 
 _log = logging.getLogger("repowise.mcp.answer")
-
-_RATIONALE_NOTE = (
-    " code_rationale carries rationale comments mined from the candidate "
-    "source — they may already answer the question."
-)
-_BODY_NOTE = (
-    " symbol_bodies carries the live body of the symbol(s) you named, so "
-    "answer from that rather than re-reading the file."
-)
-
 
 def _degraded_summary(reason: str, symbol_bodies: list[dict], served: int) -> str:
     """The ``answer`` sentence a synthesis-less payload states about itself.

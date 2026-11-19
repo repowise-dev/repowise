@@ -80,6 +80,29 @@ SkipReason = Literal[
 ]
 
 
+#: How a symbol changed: written by the change, edited in place, removed, or
+#: carried from another file (``moved_from`` names where).
+SymbolChange = Literal["added", "edited", "deleted", "moved"]
+
+
+@dataclass(frozen=True, slots=True)
+class ChangedSymbol:
+    """One symbol the diff touches, whether or not any finding sits in it.
+
+    *path* and the line span are on the head side, or on the base side for a
+    ``deleted`` symbol. *symbol* is the in-file identity (``Class::method``);
+    *moved_from* is ``(path, name)`` with the bare name the move map pairs on.
+    """
+
+    path: str
+    symbol: str
+    kind: str
+    change: SymbolChange
+    start_line: int
+    end_line: int
+    moved_from: tuple[str, str] | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class RevisionId:
     """What was actually analysed on one side of the comparison."""
@@ -210,6 +233,8 @@ class ChangeHealthDelta:
     context: str = "changed_files"
     #: Per-file scores on both sides, largest structure move first.
     files: list[FileScoreDelta] = field(default_factory=list)
+    #: Every symbol the diff touches, by path then line; not only those with findings.
+    changed_symbols: list[ChangedSymbol] = field(default_factory=list)
 
     @property
     def introduced_total(self) -> int:

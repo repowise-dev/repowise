@@ -57,7 +57,7 @@ from pathlib import Path
 
 from repowise.core.agents import identity
 
-from ..formats.server_entry import RemoteServerEntryError
+from ..formats.server_entry import RemoteServerEntryError, agents_remove_command, read_servers
 from ..types import (
     Capability,
     DoctorReport,
@@ -67,6 +67,7 @@ from ..types import (
     InstallMethod,
     Registration,
     Scope,
+    ServerMap,
     WriteResult,
 )
 
@@ -991,6 +992,18 @@ class HermesTarget:
         if scope is Scope.USER:
             return [str(config_path())]
         return [str(instructions_path(repo_path or Path.cwd()))]
+
+    def server_maps(self, repo_path: Path | None = None) -> list[ServerMap]:
+        """``mcp_servers`` in the one ``config.yaml`` Hermes reads."""
+        path = config_path()
+        return [
+            ServerMap(
+                path,
+                Scope.USER,
+                read_servers(path, MCP_KEY),
+                remove_command=agents_remove_command(ID, "user"),
+            )
+        ]
 
     def doctor(self, repo_path: Path | None = None) -> DoctorReport:
         """User-scope health. The repo's ``AGENTS.md`` block only counts with it.

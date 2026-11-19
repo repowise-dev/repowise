@@ -438,6 +438,12 @@ The traverser also detects monorepo structure by looking for multiple
 When detected, each package is documented as a semi-independent unit with
 cross-package edges tracked in the graph.
 
+Package roots come from the language registry's manifest names. The projects,
+crates, packages and modules a repo builds, their in-repo dependencies and the
+units owning each file are read once per graph build into a stored
+`BuildUnitIndex`: see [build-units.md](build-units.md). Each of these shared
+questions has one owning module, listed in [single-sources.md](single-sources.md).
+
 Each `FileInfo` is tagged with: `language`, `is_test`, `is_config`, `is_api_contract`,
 `is_entry_point`, `git_hash`. These tags influence generation priority and prompt choice.
 
@@ -1133,7 +1139,8 @@ Workspace mode adds `list_repos`. Seven specialists are registered but opt-in:
 (`~/.claude.json`), Claude Desktop (if installed), VS Code
 (`.vscode/mcp.json`), and the repo-shared `.mcp.json`. It also writes
 `.repowise/mcp.json` for clients configured by hand. The completion panel says
-which client was wired up and how Cursor or Codex connect (`repowise mcp .`).
+which clients were wired up, which to restart, and the `repowise agents add`
+command for any other agent installed on the machine.
 
 ---
 

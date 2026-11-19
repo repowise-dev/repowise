@@ -15,10 +15,10 @@ from click.testing import CliRunner
 
 from repowise.cli.commands.distill_cmd import (
     _posix_shell,
-    _render_command,
     distill_command,
 )
 from repowise.cli.commands.expand_cmd import expand_command
+from repowise.core.command_runner import render_command as _render_command
 from repowise.core.distill.markers import parse_marker_refs
 from repowise.core.distill.store import OmissionStore
 

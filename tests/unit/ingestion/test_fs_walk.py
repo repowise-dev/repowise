@@ -19,7 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from repowise.core.fs_walk import PRUNED_DIRS, PRUNED_DIRS_DERIVED, iter_glob, walk_repo
+from repowise.core.fs_walk import (
+    INDEX_BLOCKED_DIRS,
+    POLICY_BLOCKED_DIRS,
+    PRUNED_DIRS,
+    PRUNED_DIRS_DERIVED,
+    iter_glob,
+    walk_repo,
+)
 
 
 def _write(root: Path, rel: str, content: str = "x") -> None:
@@ -171,6 +178,29 @@ class TestPruning:
         for d in ("dist", "build", "coverage", "target"):
             assert d not in PRUNED_DIRS_DERIVED
         assert "out" in PRUNED_DIRS_DERIVED
+
+    def test_skip_dir_policy_has_one_owner(self) -> None:
+        """The index's blocked set is the never-source set plus the policy set."""
+        from repowise.core.ingestion import traverser
+        from repowise.core.ingestion.dynamic_hints import _walk
+
+        assert INDEX_BLOCKED_DIRS == PRUNED_DIRS | POLICY_BLOCKED_DIRS
+        assert traverser._BLOCKED_DIRS is INDEX_BLOCKED_DIRS
+        # Dynamic hints read what the index reads.
+        assert INDEX_BLOCKED_DIRS <= _walk.PRUNED_DIRS
+        # Vendored code is skipped by policy, never by the default walk:
+        # manifest discovery still has to see a vendored tree.
+        for d in ("vendor", "fixtures", "conftest"):
+            assert d in POLICY_BLOCKED_DIRS
+            assert d not in PRUNED_DIRS
+        for d in (".yarn", ".nox", ".turbo", ".eggs", "site-packages", ".idea", ".repowise"):
+            assert d in PRUNED_DIRS
+
+    def test_default_walk_keeps_vendor(self, tmp_path: Path) -> None:
+        _write(tmp_path, "vendor/github.com/x/y/go.mod")
+        _write(tmp_path, "go.mod")
+        found = sorted(p.relative_to(tmp_path).as_posix() for p in iter_glob(tmp_path, "go.mod"))
+        assert found == ["go.mod", "vendor/github.com/x/y/go.mod"]
 
 
 # ---------------------------------------------------------------------------
@@ -621,8 +651,6 @@ _WALK_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("core", "workspace/scanner.py"): frozenset({"os.walk"}),
     # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
     ("cli", "commands/status_cmd.py"): frozenset({"rglob"}),
-    # Scans repowise's own packaged web/ui source dirs, not the user repo.
-    ("cli", "commands/serve_cmd/_web_assets.py"): frozenset({"rglob"}),
     # Sizes .repowise/ only — repowise-owned, cannot contain junk trees.
     ("server", "services/index_storage.py"): frozenset({"rglob"}),
 }

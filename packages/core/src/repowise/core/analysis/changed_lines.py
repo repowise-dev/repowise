@@ -26,6 +26,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from repowise.core.git_sha import FULL_SHA_PATTERN
+
 from .git_cli import _git, checkout_relative, path_filter, split_revspec, untracked_paths
 
 # ``@@ -a,b +c,d @@`` - both sides. ``b``/``d`` default to 1 when omitted; a
@@ -190,7 +192,7 @@ def parse_unified_diff(diff: str) -> dict[str, FileDiff]:
 # line, then a full commit id (sha1 or sha256). Patch text can hold a NUL too:
 # git calls a file binary only from a NUL in its first 8000 bytes. A patch line
 # always opens with its ``+``/``-``/space prefix, so a NUL there never starts one.
-_COMMIT_START = re.compile(r"(?<![^\n])\x00(?=[0-9a-f]{40}(?:[0-9a-f]{24})?(?:\n|$))")
+_COMMIT_START = re.compile(rf"(?<![^\n])\x00(?={FULL_SHA_PATTERN}(?:\n|$))")
 
 
 def split_commit_patches(raw: str) -> list[tuple[str, str]]:

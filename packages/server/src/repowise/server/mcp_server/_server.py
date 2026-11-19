@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
+import anyio
 from mcp import types as mcp_types
 from mcp.server.fastmcp import FastMCP
 from mcp.server.lowlevel import server as _lowlevel
@@ -131,6 +132,13 @@ def _configured_embedder_name() -> str:
 def _is_keyless_name(name: str) -> bool:
     """Whether the configured embedder *name* resolves to :class:`KeylessEmbedder`."""
     return not name or name == "mock"
+
+
+def _embedder_lacks_key(name: str) -> bool:
+    """Whether *name* needs an API key and none is set: it builds as keyless."""
+    from repowise.core.providers.embedding.resolve import EMBEDDER_KEY_ENVS
+
+    return bool(EMBEDDER_KEY_ENVS.get(name)) and _persisted_embedder_key(name) is None
 
 
 def _persisted_embedder_key(name: str) -> str | None:
@@ -273,21 +281,28 @@ def _share_lifespan(server: Any) -> None:
             error = exc
             raise
         finally:
-            async with manager["lock"]:
-                manager["active"] -= 1
-                if manager["active"] == 0:
-                    context = manager["context"]
-                    manager["context"] = None
-                    manager["state"] = None
-                    if context is not None:
-                        teardown_error = (
-                            None if isinstance(error, asyncio.CancelledError) else error
-                        )
-                        await context.__aexit__(
-                            type(teardown_error) if teardown_error is not None else None,
-                            teardown_error,
-                            teardown_error.__traceback__ if teardown_error is not None else None,
-                        )
+            # A session ends by cancelling its anyio task group, and that
+            # cancellation lands on every await below: unshielded, the teardown
+            # was cut short and left the engine, the store and the background
+            # tasks open past the session.
+            with anyio.CancelScope(shield=True):
+                async with manager["lock"]:
+                    manager["active"] -= 1
+                    if manager["active"] == 0:
+                        context = manager["context"]
+                        manager["context"] = None
+                        manager["state"] = None
+                        if context is not None:
+                            teardown_error = (
+                                None if isinstance(error, asyncio.CancelledError) else error
+                            )
+                            await context.__aexit__(
+                                type(teardown_error) if teardown_error is not None else None,
+                                teardown_error,
+                                teardown_error.__traceback__
+                                if teardown_error is not None
+                                else None,
+                            )
 
     server.lifespan = shared
 
@@ -423,10 +438,12 @@ async def _warm_lancedb() -> None:
     ``_failure_shield``), so the two never overlap.
 
     A keyless embedder never runs the vector leg, so nothing reads LanceDB and
-    the import is skipped: no tool call waits on it.
+    the import is skipped: no tool call waits on it. That includes a keyed
+    embedder with no key, which :func:`_resolve_embedder` serves as keyless.
     """
     try:
-        if _is_keyless_name(_configured_embedder_name()):
+        name = _configured_embedder_name()
+        if _is_keyless_name(name) or _embedder_lacks_key(name):
             return
         await asyncio.to_thread(__import__, "lancedb")
     except ImportError:

@@ -82,6 +82,7 @@ async def test_why_reference_resolves_alias_prefix(session, setup_mcp) -> None:
             affected_files_json="[]",
         )
     )
+    await session.flush()  # the alias references the record
     session.add(
         DecisionAlias(
             alias_id=alias_id,
@@ -114,6 +115,7 @@ async def test_why_reference_ignores_superseded_alias_prefix(session, setup_mcp)
             affected_files_json="[]",
         )
     )
+    await session.flush()  # the alias references the record
     session.add(
         DecisionAlias(
             alias_id=superseded_id,
