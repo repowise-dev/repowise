@@ -746,6 +746,30 @@ def test_php_require_matches_package_name_in_any_case(tmp_path):
     assert _deps(index)["php:acme/app"] == ("php:acme/lib",)
 
 
+def test_php_glob_never_names_the_repo_root(tmp_path):
+    index = _collect(tmp_path, {
+        "composer.json": json.dumps({"name": "acme/root"}),
+        "src/Root.php": "<?php namespace Acme\Root; class Root {}",
+        "app/composer.json": json.dumps({
+            "name": "acme/app",
+            "require": {"acme/root": "*"},
+            "repositories": [{"type": "path", "url": "../*"}],
+        }),
+        "app/src/App.php": "<?php namespace Acme\App; class App {}",
+    })
+    assert _deps(index)["php:acme/app"] == ()
+
+
+def test_php_case_variant_name_is_a_duplicate(tmp_path):
+    index = _collect(tmp_path, {
+        "a/composer.json": json.dumps({"name": "acme/lib"}),
+        "a/src/A.php": "<?php namespace Acme\A; class A {}",
+        "b/composer.json": json.dumps({"name": "Acme/Lib"}),
+        "b/src/B.php": "<?php namespace Acme\B; class B {}",
+    })
+    assert [u for u in index.units if u.startswith("php:")] == ["php:acme/lib"]
+
+
 def test_php_path_repository_outside_repo_links_nothing(tmp_path):
     repo = tmp_path / "repo"
     index = _collect(repo, {

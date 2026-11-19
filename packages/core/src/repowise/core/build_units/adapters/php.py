@@ -55,10 +55,13 @@ def _resolve_url(base: str, url: str) -> str | None:
 def _matches(pattern: str, root: str) -> bool:
     """Whether in-repo *root* is what a path repository *pattern* names.
 
-    ``*`` stays within one segment, as in PHP's ``glob()``.
+    ``*`` stays within one segment, as in PHP's ``glob()``, which lists a
+    directory's children and never the repo root itself.
     """
     if not any(ch in pattern for ch in "*?["):
         return pattern == root
+    if not root:
+        return False
     parts, segments = pattern.split("/"), root.split("/")
     return len(parts) == len(segments) and all(
         fnmatch.fnmatchcase(s, p) for p, s in zip(parts, segments, strict=True)
@@ -77,12 +80,13 @@ def units(ctx: ResolverContext) -> Found:
     kept: list[tuple[str, ComposerManifest]] = []
     for manifest in sorted(manifests, key=lambda m: m.rel_dir):
         uid = _unit_id(manifest.name, manifest.rel_dir)
-        if uid in taken:
+        # Composer names are case-insensitive, so a case variant is a duplicate.
+        if uid.lower() in taken:
             # A later duplicate is no unit here, so the fallback keeps its root
             # and a path repository pointing at it links nothing.
             log.warning("build_units_duplicate_id", unit_id=uid, root=manifest.rel_dir)
             continue
-        taken.add(uid)
+        taken.add(uid.lower())
         by_root[manifest.rel_dir] = uid
         if manifest.name:
             # Composer compares package names case-insensitively.
