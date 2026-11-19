@@ -165,7 +165,8 @@ def render(view: dict[str, Any], horizon: str, limit: int) -> None:
     if h.get("hidden"):
         console.print(f"[dim]{plural(h['hidden'], 'action')} dismissed, snoozed or done.[/dim]")
     setup = view.get("setup") or {}
-    if any(a["tier"] == "improve_signal" for a in shown) and not setup.get("dismissed"):
+    quiet = setup.get("dismissed") or setup.get("completed")
+    if any(a["tier"] == "improve_signal" for a in shown) and not quiet:
         console.print(
             f"[dim]Or hand all of it to your agent: [bold]{PROMPT_LINE}[/bold] prints one prompt.[/dim]"
         )

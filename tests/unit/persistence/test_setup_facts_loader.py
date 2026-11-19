@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import shutil
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -82,3 +83,30 @@ async def test_the_view_records_the_answer_and_a_dismissal_holds(indexed) -> Non
         view = await load_actions_view(session, repo_id, setup=facts)
     assert view["setup"]["dismissed"] is True and view["setup"]["offer"] is None
     assert view["setup"]["open"] >= 1
+
+
+async def test_the_offer_is_made_at_most_once_per_repo(indexed) -> None:
+    from repowise.core.setup_state import offered_steps, read_setup_state
+
+    root, factory, repo_id = indexed
+    async with get_session(factory) as session:
+        facts = with_current_call(await load_setup_facts(session, repo_id, root))
+        offered = await load_actions_view(session, repo_id, setup=facts)
+        assert offered["setup"]["offer"] == "finish_setup"
+        assert offered_steps(root) == offered["setup"]["open"]
+
+        # Every step done: zero left, recorded as completed.
+        done = replace(facts, sync_hook=True, background_records=0)
+        view = await load_actions_view(session, repo_id, setup=done)
+        assert view["setup"]["open"] == 0 and view["setup"]["completed"] is True
+        assert read_setup_state(root)["completed"] is True
+
+        # A row unlocked later appears, but the offer and the lines stay gone.
+        facts = with_current_call(await load_setup_facts(session, repo_id, root))
+        assert facts.completed is True
+        later = replace(facts, sync_hook=True, background_records=0, claude_code_calls=25)
+        view = await load_actions_view(session, repo_id, setup=later)
+    assert view["setup"]["open"] >= 1 and view["setup"]["offer"] is None
+    assert "always_load_suggested" in {a["rule"] for a in view["horizons"]["week"]["actions"]}
+    assert offered_steps(root) == 0
+    assert read_setup_state(root)["completed"] is True

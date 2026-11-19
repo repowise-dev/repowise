@@ -9,7 +9,9 @@ same ranking.
 
 The finish-setup pass is offered from the first agent call until no
 ``improve_signal`` action is left or the person dismisses it
-(``repowise next --dismiss setup``). Surfaces that cannot afford the read
+(``repowise next --dismiss setup``), at most once per repository: once the
+steps first reach zero it never comes back, and rows unlocked later by usage
+appear quietly in the lists only. Surfaces that cannot afford the read
 (the SessionStart hook, the MCP handshake) read the last answer from
 ``.repowise/setup.json`` (:mod:`repowise.core.setup_state`), which every
 full read rewrites.
@@ -69,6 +71,9 @@ class SetupFacts:
     synced_commits: int | None = None
     always_load: bool | None = None
     rewrite_hook: bool | None = None
+    #: Setup reached zero steps once (``.repowise/setup.json``): the pass is
+    #: never offered again, and rows unlocked later appear quietly.
+    completed: bool = False
     unavailable: Mapping[str, str] = field(default_factory=dict)
 
     def unlocks(self) -> dict[str, bool]:
@@ -93,11 +98,13 @@ def setup_block(
     """
     week = horizons.get("week") or {}
     left = int((week.get("by_tier") or {}).get("improve_signal", 0))
-    offered = left > 0 and not dismissed and (setup.agent_calls or 0) > 0
+    completed = setup.completed or left == 0
+    offered = left > 0 and not dismissed and not completed and (setup.agent_calls or 0) > 0
     return {
         "open": left,
         "offer": FINISH_SETUP_OFFER if offered else None,
         "dismissed": dismissed,
+        "completed": completed,
         "agent_calls": setup.agent_calls,
         "claude_code_calls": setup.claude_code_calls,
         "first_call_at": setup.first_call_at,

@@ -201,3 +201,18 @@ def test_every_setup_rule_is_in_the_vocabulary_and_has_a_setup_prompt() -> None:
 def test_an_unread_history_reports_the_settings_step_unavailable() -> None:
     outcome = rules.settings_suggested(replace(FRESH, synced_commits=None))
     assert outcome.status == "unavailable" and not outcome.actions
+
+
+def test_once_completed_later_rows_appear_quietly_without_the_offer() -> None:
+    ruled = rule_actions(RepoFacts(anchor=None))
+    done = replace(
+        FRESH, sync_hook=True, coverage_ingested=True, runtime_stored=True, background_records=0
+    )
+    first = rank_actions(ruled, {}, now=NOW, setup=done)["setup"]
+    assert first["open"] == 0 and first["completed"] is True
+
+    later = replace(done, claude_code_calls=AGENT_CALLS_UNLOCK, completed=True)
+    view = rank_actions(ruled, {}, now=NOW, setup=later)
+    rows = {a["rule"] for a in view["horizons"]["week"]["actions"]}
+    assert {"always_load_suggested", "distill_suggested"} <= rows
+    assert view["setup"]["open"] == 2 and view["setup"]["offer"] is None

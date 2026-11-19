@@ -82,6 +82,8 @@ def record_setup(root: str | Path, block: Mapping[str, Any]) -> None:
         "open": block.get("open", 0),
         "offer": block.get("offer"),
         "dismissed": bool(block.get("dismissed")),
+        # Sticky: once setup reached zero steps, it stays completed.
+        "completed": bool(block.get("completed")) or bool(read_setup_state(root).get("completed")),
     }
     last = read_setup_state(root)
     if any(last.get(k) != v for k, v in answer.items()) or not last:
@@ -93,7 +95,7 @@ def offered_steps(root: str | Path | None) -> int:
     if not root:
         return 0
     state = read_setup_state(root)
-    if state.get("offer") != FINISH_SETUP_OFFER or state.get("dismissed"):
+    if state.get("offer") != FINISH_SETUP_OFFER or state.get("dismissed") or state.get("completed"):
         return 0
     left = state.get("open")
     return left if isinstance(left, int) and left > 0 else 0

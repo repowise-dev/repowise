@@ -107,6 +107,10 @@ class ActionsSetup(BaseModel):
         description="Set from the first agent call while steps are left and the pass is not dismissed."
     )
     dismissed: bool
+    completed: bool = Field(
+        False,
+        description="Steps reached zero once; the pass is never offered again for this repo.",
+    )
     agent_calls: int | None = Field(description="Calls to this index from every agent.")
     claude_code_calls: int = 0
     first_call_at: str | None = None

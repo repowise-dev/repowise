@@ -99,6 +99,8 @@ export interface ActionsSetup {
   /** Set from the first agent call while steps are left and the pass is not dismissed. */
   offer: "finish_setup" | null;
   dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed?: boolean;
   /** Calls to this index from every agent. */
   agent_calls: number | null;
   claude_code_calls?: number;
@@ -4822,6 +4824,8 @@ export interface SetupSteps {
   /** Set from the first agent call while steps are left and the pass is not dismissed. */
   offer: "finish_setup" | null;
   dismissed: boolean;
+  /** Steps reached zero once; the pass is never offered again for this repo. */
+  completed?: boolean;
   /** Calls to this index from every agent. */
   agent_calls: number | null;
   claude_code_calls?: number;

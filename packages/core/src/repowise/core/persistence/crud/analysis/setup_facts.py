@@ -64,9 +64,12 @@ async def load_setup_facts(
     await read("history", lambda: _synced_commits(session, repo_id))
     local, missing = await asyncio.to_thread(_local_facts, root, values)
     unavailable.update(missing)
+    from repowise.core.setup_state import read_setup_state
+
     return SetupFacts(
         root=str(root),
         rewrite_hook=rewrite_hook,
+        completed=bool(read_setup_state(root).get("completed")),
         unavailable=unavailable,
         **values,
         **local,
