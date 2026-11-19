@@ -73,10 +73,10 @@ _READ_NUDGE_MAX_RATIO = 0.5  # skeleton must be at most this fraction of full
 #: bytes, so it must not inherit the parent's "you already have this", and the
 #: parent must not inherit the subagent's.
 #:
-#: Two facts belong to the whole session and live in one file beside the
-#: partitions (:func:`_load_shared_state`): the Edits any context window made,
-#: so a write by a subagent is not reported to its parent as an outside change,
-#: and the session's one decision-capture ask.
+#: Two facts belong to the whole session and live beside the partitions: the
+#: Edits any context window made (:func:`_record_session_edit`), so a write by
+#: a subagent is not reported to its parent as an outside change, and the
+#: session's one decision-capture ask (:func:`_load_shared_state`).
 _STATE_DIR = "hook-sessions"
 
 #: The ``agent_id`` of the hook event this process is handling, "" on a main
@@ -115,8 +115,8 @@ def _shared_state_path(repo_path: Path, session_id: str) -> Path:
 
 
 def _load_shared_state(repo_path: Path, session_id: str) -> dict:
-    """``edits`` (path -> the file's mtime_ns right after an Edit) and ``capture_prompted``."""
-    fresh = {"session_id": session_id, "edits": {}, "capture_prompted": False}
+    """The session's ``capture_prompted`` flag, shared by every context window."""
+    fresh = {"session_id": session_id, "capture_prompted": False}
     try:
         state = json.loads(_shared_state_path(repo_path, session_id).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -129,22 +129,31 @@ def _load_shared_state(repo_path: Path, session_id: str) -> dict:
     return state
 
 
-def _save_shared_state(repo_path: Path, state: dict) -> bool:
-    """Persist the shared state; never raises. Returns whether the write landed."""
-    edits = state["edits"]
-    if len(edits) > 500:
-        state["edits"] = {k: edits[k] for k in sorted(edits, key=edits.get, reverse=True)[:400]}
+def _write_state(path: Path, text: str) -> bool:
+    """Write a file several windows share. Atomic, so no reader sees half of it."""
     from repowise.core.fsutils import atomic_write_text
 
-    path = _shared_state_path(repo_path, state["session_id"])
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        # Several windows write this file, so a reader must never see half of it:
-        # a torn read loads as fresh and the next save would drop the session's ask.
-        atomic_write_text(path, json.dumps(state))
+        atomic_write_text(path, text)
     except (OSError, TypeError, ValueError):
         return False
     return True
+
+
+def _save_shared_state(repo_path: Path, state: dict) -> bool:
+    """Persist the shared state; never raises. Returns whether the write landed."""
+    return _write_state(_shared_state_path(repo_path, state["session_id"]), json.dumps(state))
+
+
+def _edit_marker_path(repo_path: Path, session_id: str, rel: str) -> Path:
+    """One file per edited path, so two windows editing at once never share a write."""
+    return _state_file(repo_path, f"{session_id}/*/{rel}")
+
+
+def _record_session_edit(repo_path: Path, checkout: Path, rel: str, session_id: str) -> None:
+    """Note the mtime this session's Edit of *rel* left, for every window to see."""
+    _write_state(_edit_marker_path(repo_path, session_id, rel), str(_mtime_ns(checkout / rel)))
 
 
 def _mtime_ns(path: Path) -> int:
@@ -165,8 +174,11 @@ def _edited_by_another_window(
     """
     if not isinstance(prior_meta, dict):
         return False
-    edit_mt = _load_shared_state(repo_path, session_id)["edits"].get(rel)
-    if not isinstance(edit_mt, int) or edit_mt == -1 or edit_mt == prior_meta.get("mt"):
+    try:
+        edit_mt = int(_edit_marker_path(repo_path, session_id, rel).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if edit_mt == -1 or edit_mt == prior_meta.get("mt"):
         return False
     return _mtime_ns(checkout / rel) == edit_mt
 
@@ -319,9 +331,7 @@ def _handle_edit_post(
     state = _load_session_state(repo_path, session_id)
     state["seq"] += 1
     state["edits"][rel] = state["seq"]
-    shared = _load_shared_state(repo_path, session_id)
-    shared["edits"][rel] = _mtime_ns(checkout / rel)
-    _save_shared_state(repo_path, shared)
+    _record_session_edit(repo_path, checkout, rel, session_id)
 
     notices: list[str] = []
     skeleton_warning = _edit_from_skeleton_notice(rel, state)
