@@ -168,7 +168,9 @@ def prepare_evidence(
     *name* names the file in messages. *max_file_mb*, when given, refuses a
     larger file. Raises :class:`EvidenceRefusedError`.
     """
-    from .profile_convert import refuse_typescript
+    from repowise.core.frame_resolver import checkout_reader
+
+    from .profile_convert import refuse_compiled_positions
     from .profile_formats import profile_formats
 
     if max_file_mb is not None:
@@ -194,7 +196,7 @@ def prepare_evidence(
                 doc = parse_evidence(text)
             else:
                 run = reader.read(data)
-                refuse_typescript(run, str(checkout_root))
+                refuse_compiled_positions(run, str(checkout_root), checkout_reader(checkout_root))
     except EvidenceFormatError as exc:
         raise EvidenceRefusedError("invalid_evidence", str(exc), exc.hint) from None
     _check_value_kind(fmt, doc, run, value_kind)

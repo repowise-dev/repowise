@@ -546,7 +546,7 @@ def _node_targets(
             f"--cpu-prof-name={posixpath.basename(profile)} {rel}"
         )
         out.append(_target("entry_point", name, cwd=cwd, command=command, profile=profile, commit=commit,
-                           input_format="cpuprofile"))
+                           input_format="cpuprofile", prerequisites=[_fresh(_from(root, profile))]))
     return out
 
 

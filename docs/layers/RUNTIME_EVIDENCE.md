@@ -59,9 +59,11 @@ read, a program with no profiler flag).
   is enough. SIGTERM, which a timeout sends, writes the profile and ends the
   process with exit code 143; a Windows kill sends no SIGTERM, so there a
   killed run leaves nothing.
-- A JavaScript `bin` target prints a `node --cpu-prof` command and a reason in
-  place of its ingest line, since its `.cpuprofile` output is not among the
-  formats this build reads; a TypeScript `bin` gets a reason only.
+- A JavaScript `bin` target prints a `node --cpu-prof` command that writes a
+  `.cpuprofile` under `.repowise/`, and its ingest line; a TypeScript `bin`
+  gets a reason only. An older profile is removed first. Node writes the
+  profile even when the program throws or exits nonzero, so check the exit code
+  before ingesting.
 - `repowise coverage setup` prints the same plan with the coverage part only.
 
 ### Python example
@@ -198,14 +200,14 @@ One file holds one run of one kind.
 
 | Kind | Entries | Input formats read |
 |---|---|---|
-| `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, collapsed stacks, or a v1 document |
+| `profile` | Per function: self and inclusive value | Speedscope JSON, pprof, V8 `.cpuprofile`, collapsed stacks, or a v1 document |
 | `benchmark` | Per benchmark: one series value | pytest-benchmark JSON, or a v1 document |
 | `test_timing` | Per test: duration and outcome | A v1 document |
 | `query_count` | Per test or request and call site: statements issued | A v1 document |
 
 The format is detected from the content, never the file name;
 `--input-format` names it instead (`repowise-evidence-v1`, `speedscope`,
-`pprof`, `pytest-benchmark`, `collapsed`, or one a plugin registers).
+`pprof`, `cpuprofile`, `pytest-benchmark`, `collapsed`, or one a plugin registers).
 
 ### Profiles as the profiler wrote them
 
@@ -213,14 +215,18 @@ The format is detected from the content, never the file name;
 |---|---|---|
 | `speedscope` | pyinstrument through its API, as `setup` prints (sampled), `pyinstrument -r speedscope` (evented, no sample count), `py-spy record --format speedscope`, any Speedscope exporter | name, file, line (and column for JavaScript); sampled and evented profiles, every thread merged |
 | `pprof` | `go test -cpuprofile cpu.pprof`, `go tool pprof -proto`, any `profile.proto` CPU profile, gzipped or not | function, file, executing line and the function's start line; a call the compiler inlined is a frame of its own. The weight is the `cpu` (or `wall`) sample value, nanoseconds for Go, with the sample count beside it; memory, block and mutex profiles are refused |
+| `cpuprofile` | `node --cpu-prof`, as `setup` prints, or a CPU profile saved from a browser's developer tools (plain JavaScript) | function name, `file://` URL or path, and the function's start line and column. Frames join by file, line and column only, never by name: V8 names a function by its own name. `node:` modules and the runtime (`(program)`, `(garbage collector)`) sit outside the checkout, `node_modules` is a library, and both are charged to the calling repo function; `(idle)` is a wait. The weight is the time to the next sample, in microseconds, with one sample each; the clock is `wall` |
 | `collapsed` | `py-spy record --format raw --full-filenames`, or any folded file whose frames read `name (path:line)` | one `frame;frame;frame count` line per stack. A frame with a path but no line (`py::name:path` from the Python perf trampoline) has nothing to check its name against and is skipped as `bad_line` |
 
-- **Clock.** A profile needs `cpu` or `wall`. pyinstrument output is wall clock
-  and pprof says its own sample type; for py-spy, collapsed stacks and other
+- **Clock.** A profile needs `cpu` or `wall`. pyinstrument and `.cpuprofile`
+  output is wall clock and pprof says its own sample type; for py-spy, collapsed stacks and other
   Speedscope exporters pass `--value-kind`.
-- **TypeScript.** A profile whose frames name TypeScript files of the checkout
-  is refused: its positions are in the compiled JavaScript. Profile the compiled
-  JavaScript under its own paths.
+- **TypeScript and bundled code.** A profile whose frames name TypeScript files
+  of the checkout is refused: its positions are in the compiled JavaScript. So
+  is one that ran a JavaScript file of the checkout ending in a
+  `//# sourceMappingURL=` comment (a bundle or a compiler's output), whose
+  positions belong to other files; dependencies are not checked. Source maps are
+  not read: profile the JavaScript sources themselves.
 - **Go `-trimpath`.** A binary built with `-trimpath` names its files by import
   path, under no checkout, so its profile is refused. Profile a build without
   it. A build made in another directory (CI, a container) joins with that
