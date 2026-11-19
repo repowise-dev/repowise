@@ -54,6 +54,8 @@ class RunProvenance:
     dirty: bool | None
     environment: str = "unknown"
     source: str = "cli"
+    #: Tests that failed in the profiled suite, as the profile reports it; None when not said.
+    tests_failed: int | None = None
 
 
 @dataclass(frozen=True)
@@ -299,6 +301,8 @@ def run_key(
         provenance.checkout_root,
         str(provenance.dirty),
         provenance.source,
+        # Only when known, so a run that never reports it keeps its key.
+        *(() if provenance.tests_failed is None else (f"tests_failed={provenance.tests_failed}",)),
         text,
     ):
         digest.update(part.encode("utf-8", "replace"))
@@ -347,6 +351,7 @@ def run_fields(
         "total_samples": doc.total_samples,
         "unlisted_symbols": unlisted,
         "mapping_partial": mapping_partial,
+        "tests_failed": provenance.tests_failed,
     }
 
 

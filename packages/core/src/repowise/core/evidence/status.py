@@ -53,6 +53,7 @@ def run_status(run: Any, reference_commit: str | None) -> dict[str, Any]:
         "total_value": run.total_value,
         "explained_share": explained_share(run.total_value, run.explained_value),
         "mapping_partial": bool(run.mapping_partial),
+        "tests_failed": run.tests_failed,
     }
 
 

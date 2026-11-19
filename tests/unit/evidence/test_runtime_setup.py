@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -142,7 +143,10 @@ def test_an_entry_point_waits_for_its_arguments(tmp_path: Path) -> None:
     assert ARGS_PLACEHOLDER in entry["reason"] and entry["ingest"]
     assert tests["reason"] is None and not tests["command"].endswith(ARGS_PLACEHOLDER)
     plan = evidence_setup(tmp_path, indexed=True, head=SHA, runtime=RuntimeInputs())
-    assert plan["next_call"]["purpose"] == "Profile python tests (unit_test), then ingest the profile."
+    assert plan["next_call"]["purpose"].startswith(
+        "Profile python tests (unit_test), then ingest the profile. A subset of the tests is enough"
+    )
+    assert "outside Windows" in plan["next_call"]["purpose"]
     assert all(ARGS_PLACEHOLDER not in s["run"] for s in plan["next_call"]["steps"])
 
 
@@ -153,7 +157,8 @@ def test_a_python_main_module_the_index_flags_is_run_as_a_module(tmp_path: Path)
     entry = _targets(tmp_path, RuntimeInputs(entry_files=("app/__main__.py",)))[0]
 
     assert entry["workload"] == "python -m app"
-    assert "runpy.run_module('app',run_name='__main__',alter_sys=True)" in entry["command"]
+    # The run sits in a single-quoted literal the recipe ``exec``s.
+    assert r"runpy.run_module(\'app\',run_name=\'__main__\',alter_sys=True)" in entry["command"]
 
 
 def test_uv_runs_pyinstrument_without_an_install_step(tmp_path: Path) -> None:
@@ -312,6 +317,8 @@ def test_go_tests_profile_the_package_with_the_most_tests(tmp_path: Path, regist
     tests = _targets_go(tmp_path, inputs, [])[-1]
 
     assert tests["workload"] == "go test ./work/engine"
+    # go test -cpuprofile writes nothing when killed: no promise of a partial profile.
+    assert "note" not in tests
 
 
 def test_go_profiles_wait_for_a_pprof_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -402,27 +409,37 @@ def test_an_unknown_launcher_runs_plain_python(tmp_path: Path) -> None:
     assert poetry["prerequisites"] == ["poetry run python -m pip install pyinstrument"]
 
 
-def _run_recipe(root: Path, main: str) -> tuple[int, Path]:
-    """Run the console-script recipe with a stand-in profiler (no pyinstrument needed)."""
+def _run_recipe(
+    root: Path, main: str | None = None, cls: str = "entry_point", *args: str
+) -> tuple[int, Path]:
+    """Run a Python recipe with a stand-in profiler (no pyinstrument needed).
+
+    The stand-in's output is ``{"profiles":[]}``, so what the recipe adds to it shows.
+    """
     import os
     import subprocess
     import sys
 
-    (root / "app" / "cli.py").write_text(main)
-    entry = _targets(root)[0]
+    if main is not None:
+        (root / "app" / "cli.py").write_text(main)
+    target = next(t for t in _targets(root) if t["class"] == cls)
     fake = root / "fake"
     (fake / "pyinstrument" / "renderers").mkdir(parents=True, exist_ok=True)
     (fake / "pyinstrument" / "__init__.py").write_text(
         "class Profiler:\n    def start(self): pass\n    def stop(self): pass\n"
-        "    def output(self, renderer): return '{}'\n"
+        # The real renderer ends its document with a newline.
+        "    def output(self, renderer): return '{\"profiles\":[]}\\n'\n"
     )
     (fake / "pyinstrument" / "renderers" / "__init__.py").write_text(
         "class SpeedscopeRenderer:\n    def __init__(self, **kw): pass\n"
     )
-    code = entry["command"].split('-c "', 1)[1].rsplit('"', 1)[0]
+    code = target["command"].split('-c "', 1)[1].rsplit('"', 1)[0]
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(fake), str(root)])}
-    done = subprocess.run([sys.executable, "-c", code], cwd=entry["cwd"], env=env, capture_output=True)
-    return done.returncode, root / entry["profile"]
+    done = subprocess.run(
+        [sys.executable, "-c", code, *args], cwd=target["cwd"], env=env, capture_output=True,
+        timeout=120,
+    )
+    return done.returncode, root / target["profile"]
 
 
 def test_the_python_recipe_writes_its_profile_where_the_ingest_line_reads_it(tmp_path: Path) -> None:
@@ -430,7 +447,17 @@ def test_the_python_recipe_writes_its_profile_where_the_ingest_line_reads_it(tmp
 
     code, profile = _run_recipe(tmp_path, "import os\n\ndef main():\n    os.chdir('..')\n    return 0\n")
 
-    assert code == 0 and profile.read_text() == "{}"
+    assert code == 0 and profile.read_text() == '{"profiles":[]}'
+
+
+def test_only_the_programs_own_exit_is_judged(tmp_path: Path) -> None:
+    # A test runner catching a command's ``sys.exit(2)`` (click's CliRunner) is not the run failing.
+    _python(tmp_path)
+    main = "import sys\n\ndef main():\n    try:\n        sys.exit(2)\n    except SystemExit:\n        pass\n    return 0\n"
+
+    code, profile = _run_recipe(tmp_path, main)
+
+    assert code == 0 and profile.exists()
 
 
 @pytest.mark.parametrize(
@@ -439,6 +466,7 @@ def test_the_python_recipe_writes_its_profile_where_the_ingest_line_reads_it(tmp
         "import missing_dependency\n\ndef main():\n    return 0\n",  # crashes at import
         "def main():\n    raise RuntimeError('boom')\n",
         "def main():\n    return 2\n",  # a usage error's exit code
+        "def main():\n    return 1\n",  # an entry point's 1 is a failure
     ],
 )
 def test_a_failed_run_leaves_no_profile_to_ingest(tmp_path: Path, main: str) -> None:
@@ -451,6 +479,70 @@ def test_a_failed_run_leaves_no_profile_to_ingest(tmp_path: Path, main: str) -> 
 
     # An older run's profile is gone too, so ``evidence add`` stores nothing.
     assert code != 0 and profile == stale and not profile.exists()
+
+
+def _suite(root: Path, tests: str) -> None:
+    """A unit with unit tests beside integration tests that cannot even import."""
+    _python(root)
+    for name in ("unit", "integration"):
+        (root / "tests" / name).mkdir(parents=True)
+    (root / "tests" / "unit" / "test_a.py").write_text(tests)
+    (root / "tests" / "integration" / "test_b.py").write_text("import missing_service_client\n")
+
+
+def test_the_suite_profile_runs_the_tests_its_coverage_command_runs(tmp_path: Path) -> None:
+    _suite(tmp_path, "def test_a():\n    pass\n")
+    (stack,) = detect_repo_stacks(tmp_path)
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
+
+    assert stack.test.startswith("pytest tests/unit ") and stack.test_paths == ("tests/unit",)
+    assert code == 0
+    assert json.loads(profile.read_text()) == {"profiles": [], "testsFailed": 0}
+
+
+def test_a_red_suite_is_profiled_and_its_failures_counted(tmp_path: Path) -> None:
+    _suite(tmp_path, "def test_a():\n    pass\n\ndef test_b():\n    assert False\n")
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
+
+    assert code == 1 and json.loads(profile.read_text())["testsFailed"] == 1
+
+
+def test_a_suite_that_could_not_run_leaves_no_profile(tmp_path: Path) -> None:
+    _suite(tmp_path, "def test_a():\n    pass\n")
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "--no-such-option")
+
+    assert code == 4 and not profile.exists()  # pytest's usage error
+
+
+def test_a_suite_stopped_by_a_timeout_writes_its_profile_and_exits(tmp_path: Path) -> None:
+    # SIGTERM (what ``timeout`` sends) writes the profile and ends the process,
+    # even with a non-daemon thread that would keep it alive.
+    _suite(
+        tmp_path,
+        "import signal, threading\n\ndef test_a():\n"
+        "    threading.Thread(target=threading.Event().wait).start()\n"
+        "    signal.raise_signal(signal.SIGTERM)\n\ndef test_b():\n    pass\n",
+    )
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
+
+    assert code == 143 and json.loads(profile.read_text())["profiles"] == []
+
+
+def test_a_suite_stopped_with_ctrl_c_keeps_what_it_collected(tmp_path: Path) -> None:
+    _suite(
+        tmp_path,
+        "import signal\n\ndef test_a():\n    signal.raise_signal(signal.SIGINT)\n\n"
+        "def test_b():\n    pass\n",
+    )
+
+    code, profile = _run_recipe(tmp_path, None, "unit_test", "-p", "no:cacheprovider")
+
+    # pytest reports an interrupted session (2); the recipe still wrote the profile.
+    assert code == 2 and json.loads(profile.read_text())["profiles"] == []
 
 
 def _targets_go(root: Path, inputs: RuntimeInputs, mains: list[str]) -> list[dict]:
