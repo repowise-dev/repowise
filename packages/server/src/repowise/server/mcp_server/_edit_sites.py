@@ -14,6 +14,7 @@ import asyncio
 import io
 import json
 import keyword
+import logging
 import os
 import posixpath
 import re
@@ -25,6 +26,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
 from sqlalchemy import or_, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repowise.core.fs_walk import PRUNED_DIRS, iter_glob
@@ -34,6 +36,7 @@ from repowise.core.persistence.batches import chunked
 from repowise.core.persistence.models import GraphEdge, GraphNode, Repository, WikiSymbol
 from repowise.core.test_paths import is_test_related_path
 from repowise.server.mcp_server._budget import OmissionCollector, effective_char_budget
+from repowise.server.mcp_server._enclosing import enclosing_at, enclosing_ranges
 from repowise.server.mcp_server._helpers import read_repo_file_text
 from repowise.server.mcp_server._meta import (
     _changed_files_between,
@@ -113,6 +116,8 @@ _COMMAND_HEAD = re.compile(
     re.IGNORECASE,
 )
 _COMMAND_ARGS = re.compile(r"\s+[^\s=:;,.)\]}|&<>+*/%-]|\s*[;.]?\s*$")
+
+_log = logging.getLogger("repowise.mcp.references")
 
 
 def _bare_name(node: GraphNode) -> str:
@@ -1850,7 +1855,8 @@ async def edit_set_block(
 ) -> dict[str, Any]:
     """get_context's ``references`` block: the edit set, one entry per file.
 
-    ``files`` maps each path to its line numbers by kind: definition |
+    ``files`` maps each path to its line numbers by kind, plus ``in`` (each
+    enclosing symbol's lines, served files only): definition |
     import | call | alias (a use through an import alias) | reference | string |
     reexport | same_name (another symbol of that name) | doc, and with
     *prose* also prose (a comment, docstring or sentence naming it; counted
@@ -1862,7 +1868,7 @@ async def edit_set_block(
     sites, reasons = await _edit_set(session, repo_id, repo_root, node, wider=True)
     by_file, left_out = _file_lines(sites, prose)
     budget = int(effective_char_budget() * _BLOCK_SHARE)
-    shown: dict[str, dict[str, list[int]]] = {}
+    shown: dict[str, dict[str, Any]] = {}
     used = 0
     for path, kinds in by_file.items():
         cost = len(json.dumps({path: kinds}, separators=(",", ":")))
@@ -1890,8 +1896,32 @@ async def edit_set_block(
         # the set may have missed, which a text search lists.
         if len(reasons) > (len(shown) < len(by_file)):
             out["hint"] = incomplete_hint(_bare_name(node))
+    try:
+        _name_enclosing(shown, await enclosing_ranges(session, repo_id, shown.keys()))
+    except SQLAlchemyError:
+        _log.warning("references: enclosing symbols failed for %s", node.node_id, exc_info=True)
     out["files"] = shown
     return out
+
+
+# Kinds that are a symbol's own line (or a document's), not a use inside another.
+_NOT_ENCLOSED_KINDS = frozenset({"definition", "same_name", "doc"})
+
+
+def _name_enclosing(by_file: dict[str, dict[str, Any]], ranges: dict[str, Any]) -> None:
+    """Add ``in`` to each file's kinds: the lines inside each indexed symbol,
+    each line counted once. Definitions, same-name definitions, documents and
+    module-level lines are in no listed symbol."""
+    for path, kinds in by_file.items():
+        held: dict[str, list[int]] = {}
+        for kind, lines in kinds.items():
+            if kind in _NOT_ENCLOSED_KINDS:
+                continue
+            for n in lines:
+                if name := enclosing_at(ranges, path, n):
+                    held.setdefault(name, []).append(n)
+        if held:
+            kinds["in"] = {name: sorted(set(ns)) for name, ns in held.items()}
 
 
 def incomplete_hint(name: str) -> str:

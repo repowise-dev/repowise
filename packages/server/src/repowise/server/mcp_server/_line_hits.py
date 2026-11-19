@@ -47,6 +47,7 @@ from repowise.server.mcp_server._edit_sites import (
     incomplete_hint,
     reference_edit_set,
 )
+from repowise.server.mcp_server._enclosing import enclosing_ranges, mark_enclosing
 from repowise.server.mcp_server._federation import Federation
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -696,9 +697,30 @@ async def attach_line_hits(
     search response as it was.
     """
     try:
-        await _attach(response, query, mode, names, repo, fed)
+        ctx = await _attach(response, query, mode, names, repo, fed)
     except Exception:
         _log.warning("search_codebase: line hits failed", exc_info=True)
+        return
+    if ctx is not None:
+        await _name_enclosing(response.get("lines") or [], ctx)
+
+
+async def _name_enclosing(rows: list[dict[str, Any]], ctx: Any) -> None:
+    """Name each served line's enclosing symbol from the index of the repo it
+    is in: *ctx*'s for untagged rows, each tagged row's ``repo`` otherwise."""
+    ranges: dict[Any, dict[str, Any]] = {}
+    for alias in dict.fromkeys(r.get("repo") for r in rows):
+        paths = {r["path"] for r in rows if r.get("repo") == alias and r.get("kind") != "definition"}
+        if not paths:
+            continue
+        try:
+            repo_ctx = ctx if alias is None else await _resolve_repo_context(alias)
+            async with get_session(repo_ctx.session_factory) as session:
+                repo_id = (await _get_repo(session)).id
+                ranges[alias] = await enclosing_ranges(session, repo_id, paths)
+        except Exception:
+            _log.warning("search_codebase: enclosing symbols failed for %s", alias, exc_info=True)
+    mark_enclosing(rows, ranges)
 
 
 async def _attach(
@@ -708,17 +730,17 @@ async def _attach(
     names: Container[str] | None,
     repo: str | None,
     fed: Federation | None,
-) -> None:
+) -> Any:
+    """The context the lines were served from, or None when none were."""
     if repo == "all" and fed is None:
-        return
+        return None
     if mode != "path" and (shape := query_pattern(query)):
-        await _attach_pattern(response, query, shape, repo, fed)
-        return
+        return await _attach_pattern(response, query, shape, repo, fed)
     literal = _literal(query)
     if mode == "path" and (
         response.get("results") or literal is None or "/" not in literal[0]
     ):
-        return
+        return None
     candidates = _identifier_candidates(query, mode, names)
     if literal and not literal[1] and not _QUOTED.match(query.strip()):
         # Code punctuation names the text itself: an identifier inside it
@@ -727,10 +749,10 @@ async def _attach(
     if not candidates and literal and literal[1]:
         candidates = [literal[0]]
     if not candidates and not literal:
-        return
+        return None
     found = await _served_rows(response, repo, fed, query, candidates, literal)
     if found is None:
-        return
+        return None
     ctx, (rows, reasons, literal_scan) = found
     mixed = not literal and len(query.split()) > 1
     rows.sort(key=_row_order(mixed))
@@ -739,6 +761,7 @@ async def _attach(
     if len(kept) > cap and over not in reasons:
         reasons.append(over)
     _serve_lines(response, query, ctx, rows, kept[:cap], reasons, mixed, literal_scan)
+    return ctx
 
 
 def _row_order(mixed: bool) -> Any:
@@ -860,7 +883,7 @@ async def _attach_pattern(
     shape: tuple[str, Any],
     repo: str | None,
     fed: Federation | None,
-) -> None:
+) -> Any:
     """``lines`` for a grep-shaped query: each alternative searched as its own
     query and served as its own group in query order, or a regex's matching
     lines. ``matched_as`` says which reading was used."""
@@ -870,7 +893,7 @@ async def _attach_pattern(
     else:
         found = await _alternation_groups(response, repo, fed, value)
     if found is None:
-        return
+        return None
     ctx, rows, groups, reasons, literal_scan = found
     caps = _fair_caps([len(g) for g in groups], MAX_LINES)
     if any(len(g) > c for g, c in zip(groups, caps, strict=True)):
@@ -885,6 +908,7 @@ async def _attach_pattern(
     ]
     response["matched_as"] = kind
     _serve_lines(response, query, ctx, rows, shown, reasons, False, literal_scan)
+    return ctx
 
 
 async def _regex_groups(
