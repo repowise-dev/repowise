@@ -29,7 +29,7 @@ resolution and health markers are all static.
 [How accurate is the graph per language](#how-accurate-is-the-graph-per-language),
 [Extensions and imports](#extensions-and-imports), [Framework-aware edges](#framework-aware-edges),
 [Beyond code files](#beyond-code-files), [Code-health coverage](#code-health-coverage),
-[Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
+[Runtime evidence](#runtime-evidence), [Limits](#limits), [Roadmap](#roadmap), [Requesting or adding a language](#requesting-or-adding-a-language)
 
 ## Tiers
 
@@ -302,6 +302,34 @@ Why Go and Java are held back from the test-quality markers, and why Kotlin's
 Extract Method waits on its grammar:
 [architecture/language-support.md](../architecture/language-support.md#test-quality-markers-per-language).
 Per-marker detail: [CODE_HEALTH.md](CODE_HEALTH.md).
+
+## Runtime evidence
+
+Coverage reports and profiles add measured runtime to the static graph.
+`repowise evidence setup` prints, per build unit, the test command that writes
+coverage and the commands that profile it; `coverage add` and `evidence add`
+read what they write. A coverage report in lcov, Cobertura, JaCoCo, Clover or
+Go cover profile format is read for any language, from any tool. A profile
+joins to code only for Python, Go and JavaScript frames.
+
+| Language | Coverage command from setup | Profiles and benchmarks read |
+|----------|-----------------------------|------------------------------|
+| Python | pytest with pytest-cov | Speedscope (pyinstrument, py-spy), collapsed stacks (py-spy), pytest-benchmark JSON |
+| JavaScript | Jest, Vitest or Bun; c8 around other runners | Speedscope |
+| TypeScript | Jest, Vitest or Bun; c8 around other runners | no, positions are in the compiled JavaScript |
+| Go | `go test -coverprofile` | pprof (`go test -cpuprofile`) |
+| Java / Kotlin | Maven or Gradle with JaCoCo | no |
+| Rust | `cargo llvm-cov` | no |
+| C# | `dotnet test` with coverlet | no |
+| Ruby | RSpec, Rails or Rake tests with SimpleCov | no |
+| PHP | PHPUnit or Pest | no |
+| Apex | none; the Salesforce CLI test-run JSON is read | no |
+| Object Pascal | none | no |
+| Every other language | none | no |
+
+Formats, the join rules and the workload classes:
+[RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md) and
+[TEST_INTELLIGENCE.md](TEST_INTELLIGENCE.md#supported-formats).
 
 ## Limits
 

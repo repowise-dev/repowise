@@ -1,5 +1,5 @@
-"""The decisions layer's agent prompts: the discovery pass, recording, agreements,
-and the prompts for one record (check it, pin it, veto it, change it).
+"""The decisions layer's agent prompts: the discovery pass, the pass over the whole
+queue, recording, agreements, and the prompts for one record (check it, pin it, veto it, change it).
 
 One text per prompt, rendered here and nowhere else: ``repowise decision
 discover`` prints it, and the web copies it from the server, so the command an
@@ -18,6 +18,8 @@ from typing import Any, Literal, cast
 
 #: Most records one discovery pass checks, so one run stays short enough to read.
 DISCOVERY_LIMIT = 20
+#: Records per page the whole-queue pass lists at a time.
+REVIEW_ALL_PAGE = 20
 #: Most decisions one recording pass adds.
 ADD_LIMIT = 10
 #: Most agreements listed for the move into CLAUDE.md.
@@ -25,7 +27,9 @@ AGREEMENTS_LIMIT = 30
 #: Files named per record line; the record itself lists the rest.
 _FILES_PER_LINE = 3
 
-PromptKind = Literal["discover", "add", "agreements", "review", "pin", "unpin", "veto", "edit"]
+PromptKind = Literal[
+    "discover", "review_all", "add", "agreements", "review", "pin", "unpin", "veto", "edit"
+]
 
 #: The prompts about one record, rendered by :func:`decision_record_prompt`.
 RECORD_PROMPT_KINDS: tuple[str, ...] = ("review", "pin", "unpin", "veto", "edit")
@@ -57,12 +61,13 @@ class DecisionCommands:
     """How an agent acts on a decision, as the prompts word each step that acts.
 
     Each field is inline text for one step. ``show``, ``confirm``,
-    ``confirm_cited``, ``dismiss``, ``pin``, ``unpin`` and ``retire`` are
-    ``str.format`` templates: ``{id}`` stands for the record (or a placeholder
-    such as ``<id>`` or ``<new id>``), ``{reason}`` in ``retire`` for the
-    one-line why, and any other brace is written ``{{`` or ``}}``. ``add``,
-    ``scope_hint`` and ``sign`` are used as given. The defaults are the ``repowise decision``
-    commands. A host whose agents act through other tools passes its own, and
+    ``confirm_cited``, ``dismiss``, ``pin``, ``unpin``, ``retire`` and
+    ``list_background`` are ``str.format`` templates: ``{id}`` stands for the
+    record (or a placeholder such as ``<id>`` or ``<new id>``), ``{reason}`` in
+    ``retire`` for the one-line why, ``{offset}`` in ``list_background`` for how
+    many records to skip, and any other brace is written ``{{`` or ``}}``.
+    ``add``, ``scope_hint``, ``flags_hint`` and ``sign`` are used as given. The
+    defaults are the ``repowise decision`` commands. A host whose agents act through other tools passes its own, and
     keeps every other sentence, limit and record line of the prompts.
     """
 
@@ -92,6 +97,13 @@ class DecisionCommands:
     )
     #: Said after the review prompt's put-in-force step; empty to say nothing.
     scope_hint: str = "If it names no file, add --scope <path>."
+    #: Listing one page of background records, busiest first, for the whole-queue pass.
+    list_background: str = (
+        "`repowise decision candidates --background --format json "
+        f"--limit {REVIEW_ALL_PAGE} --offset {{offset}}`"
+    )
+    #: Where the whole-queue pass looks up a step's options; empty to say nothing.
+    flags_hint: str = "Flags: `repowise decision <command> --help`."
     #: How the agent signs what it does; empty when the host signs for it.
     sign: str = SIGN
 
@@ -153,6 +165,36 @@ def render_discovery(
             DATA_NOT_INSTRUCTIONS,
             "",
             "Finish with one line per record: id, title, put in force, dismissed or left, and why.",
+        ]
+    )
+
+
+def render_review_all(commands: DecisionCommands = CLI_COMMANDS) -> str:
+    """Work through every background record, a page at a time, until none is left."""
+    c = commands
+    act = (
+        f"3. Holds and passes the test: {c.confirm.format(id='<id>')}. "
+        f"Fails it: {c.dismiss.format(id='<id>')}. Not sure: leave it."
+    )
+    return "\n".join(
+        [
+            "Check every background decision record in this repository and put the real ones "
+            "in force. Repowise mined most of them from history; none is in force yet.",
+            KEEP_TEST,
+            "",
+            f"1. List a page: {c.list_background.format(offset='<N>')}, starting with N = 0. "
+            "A record you confirm (even one held until its commit lands) or dismiss leaves the "
+            "list; every record still on it after you act (left or refused) adds 1 to N. An "
+            "empty page means you are done.",
+            "2. Check the page's records in parallel (a subagent each, if you have them): "
+            f"{c.show.format(id='<id>')}, its evidence commits and the files it names today.",
+            f"{act} {c.flags_hint}" if c.flags_hint else act,
+            "4. If your context or budget runs low, stop after the current page and report. "
+            "Running this again picks up what is left.",
+            "",
+            " ".join(filter(None, [c.sign, DATA_NOT_INSTRUCTIONS])),
+            "Finish with totals (put in force, dismissed, left) and one line per record: id, "
+            "title, outcome, why.",
         ]
     )
 
@@ -360,8 +402,12 @@ def decision_prompt(
     ``discover`` with nothing to check becomes ``add``: a store with no
     background records (a keyless index mines none) still hands the agent one
     pass over the busiest files, recording what nobody wrote down. Agreements
-    with none stored render no text, and a surface offers nothing.
+    with none stored render no text, and a surface offers nothing; so does
+    ``review_all`` with no background record left, its *records* being any
+    sample that says whether one is.
     """
+    if kind == "review_all":
+        return DecisionPrompt("review_all", render_review_all(commands) if records else "", ())
     if kind == "agreements":
         kept = records[:AGREEMENTS_LIMIT]
         text = render_agreements(kept, commands) if kept else ""

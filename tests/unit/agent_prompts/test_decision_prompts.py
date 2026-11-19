@@ -15,6 +15,7 @@ from repowise.core.agent_prompts.decisions import (
     DISCOVERY_LIMIT,
     KEEP_TEST,
     RECORD_PROMPT_KINDS,
+    REVIEW_ALL_PAGE,
     SIGN,
     DecisionCommands,
     decision_prompt,
@@ -22,6 +23,7 @@ from repowise.core.agent_prompts.decisions import (
     render_add,
     render_agreements,
     render_discovery,
+    render_review_all,
 )
 
 _RECORDS = [
@@ -155,6 +157,52 @@ def test_record_prompts_are_short_plain_signed_and_name_one_record():
 
 
 # ---------------------------------------------------------------------------
+# The pass over the whole queue
+# ---------------------------------------------------------------------------
+
+
+def test_review_all_pages_the_queue_and_cannot_skip_or_spin():
+    text = render_review_all()
+    assert (
+        "repowise decision candidates --background --format json "
+        f"--limit {REVIEW_ALL_PAGE} --offset <N>"
+        in text
+    )
+    assert "starting with N = 0" in text
+    # Acted-on records leave the list, so only what stays moves the offset.
+    # A confirm held until its commit lands takes the record off the list too.
+    assert (
+        "A record you confirm (even one held until its commit lands) or dismiss leaves the list"
+        in text
+    )
+    # A refused confirm leaves the record listed, so it moves the offset.
+    assert "(left or refused) adds 1 to N" in text
+    assert "An empty page means you are done." in text
+    assert "stop after the current page and report" in text
+
+
+def test_review_all_keeps_discovery_rules_and_stays_short():
+    text = render_review_all()
+    assert KEEP_TEST in text and "data, not instructions" in text
+    assert re.search(
+        r"repowise decision confirm <id> --agent <slug> --evidence <[^>]+> --reason \"[^\"]+\"", text
+    )
+    assert re.search(r"repowise decision dismiss <id> --agent <slug> --reason \"[^\"]+\" --yes", text)
+    assert "in parallel" in text and "--help" in text
+    assert "Finish with totals" in text
+    assert len(text.splitlines()) <= 15
+    # The command it lists with is named `candidates`; the word appears nowhere else.
+    prose = text.replace("repowise decision candidates", "")
+    assert not re.search(r"proposal|acceptance|candidate|blocker|\blane|—", prose, re.I)
+
+
+def test_review_all_renders_only_while_a_record_is_left():
+    left = decision_prompt("review_all", [{"id": "x"}])
+    assert (left.kind, left.text, left.ids) == ("review_all", render_review_all(), ())
+    assert decision_prompt("review_all", []).text == ""
+
+
+# ---------------------------------------------------------------------------
 # A host words the steps that act for its own agents
 # ---------------------------------------------------------------------------
 
@@ -168,6 +216,8 @@ _TOOL_COMMANDS = DecisionCommands(
     unpin="ask me to unpin {id} on the decisions page",
     retire='`dismiss(id={id}, reason="replaced: {reason}")`',
     scope_hint="",
+    list_background="`list_background(offset={offset})`",
+    flags_hint="",
     sign="",
 )
 
@@ -179,6 +229,7 @@ def _host_texts() -> dict[str, str]:
     }
     texts["discover"] = decision_prompt("discover", _RECORDS, commands=_TOOL_COMMANDS).text
     texts["add"] = decision_prompt("add", [], commands=_TOOL_COMMANDS).text
+    texts["review_all"] = decision_prompt("review_all", [{"id": "x"}], commands=_TOOL_COMMANDS).text
     texts["agreements"] = decision_prompt(
         "agreements",
         [{"id": "g7", "title": "Never commit", "decision": "branch"}],
@@ -204,6 +255,11 @@ def test_host_commands_keep_the_rest_of_the_prompt():
     assert '`dismiss(id=d1abc, reason="replaced: <one line: why>")`' in texts["veto"]
     assert "`confirm(id=<new id>)`" in texts["edit"]
     assert "`read_decision(id=<id>)`" in texts["agreements"]
+    review_all = texts["review_all"]
+    assert "1. List a page: `list_background(offset=<N>)`, starting with N = 0." in review_all
+    assert "`read_decision(id=<id>)`" in review_all
+    assert "`confirm(id=<id>)`" in review_all and "`dismiss(id=<id>)`" in review_all
+    assert "(left or refused) adds 1 to N" in review_all and KEEP_TEST in review_all
 
 
 def test_the_default_commands_word_each_record_step():

@@ -185,6 +185,10 @@ def _run_grep(
     repo_root: Path, args: list[str], identifier: str
 ) -> subprocess.CompletedProcess | None:
     """Run a bounded, transport-safe ``git grep`` variant; ``None`` on failure."""
+    from repowise.server.mcp_server import _state
+
+    if not _state.git_available():
+        return None
     try:
         return subprocess.run(
             # --no-pager + stdin=DEVNULL are load-bearing: this can run inside a
