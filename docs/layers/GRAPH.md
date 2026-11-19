@@ -177,6 +177,13 @@ local-typed origins. Declaration scanning covers Java, C#, Python, Go, Kotlin, S
 TypeScript, Rust and C++. Other languages use the base origins and say so on
 every edge.
 
+A chained call nothing types on the result of a library call or a constructor
+(`Path(p).resolve()`, a library builder) never falls back to a module-level
+function of the same name: that result is a value, and a value's method is a
+method. A repo function's result may be a module (`_lazy_mod().helper()`), so
+it keeps the fallback. Ceiling: a library call that returns a module
+(`importlib.import_module(name).f()`) stays unlinked.
+
 ## Edge types
 
 The graph has 18 edge types, each one a distinct claim. These seven matter most
