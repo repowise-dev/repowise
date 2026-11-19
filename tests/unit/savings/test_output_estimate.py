@@ -1,4 +1,4 @@
-"""Output tokens saved, estimated per session from the paired benchmark."""
+"""Output tokens saved, estimated per question from the paired benchmark."""
 
 from __future__ import annotations
 
@@ -18,18 +18,20 @@ from repowise.core.savings.output_estimate import (
     ANTHROPIC_FALLBACK,
     MEASURED,
     OTHER_FALLBACK,
+    QUESTIONS_PER_SESSION_CAP,
     _Calibration,
     estimate_output,
 )
 from repowise.core.savings.reporting import build_report
 from repowise.core.savings.service import load_report
 
-#: Hand-checkable rows: reductions 50%, 10%, 20%, 5%; bare median 1,600.
+#: Hand-checkable rows: reductions 50%, 10%, 20%, 5%; bare median 1,600;
+#: calls per question 4, 2, 3, 8, so the median divisor is 3.5.
 _ROWS = {
-    "claude-sonnet-4-6": (2_000.0, 1_000.0),
-    "claude-opus-5-5": (1_000.0, 900.0),
-    "claude-opus-4-8": (1_200.0, 960.0),
-    "claude-haiku-4-5": (3_000.0, 2_850.0),
+    "claude-sonnet-4-6": (2_000.0, 1_000.0, 4.0),
+    "claude-opus-5-5": (1_000.0, 900.0, 2.0),
+    "claude-opus-4-8": (1_200.0, 960.0, 3.0),
+    "claude-haiku-4-5": (3_000.0, 2_850.0, 8.0),
 }
 
 
@@ -44,34 +46,61 @@ def _by_model(estimate) -> dict:
     return {(row.model, row.output_rate_usd_per_million): row for row in estimate.per_model}
 
 
-def test_a_measured_model_is_credited_its_own_difference_per_session(fixed_calibration) -> None:
-    estimate = estimate_output([("claude-sonnet-4-6", 15.0, 3)])
+def test_a_measured_model_is_credited_its_own_difference_per_question(
+    fixed_calibration,
+) -> None:
+    estimate = estimate_output(
+        [
+            # 12 calls at 4 per question: 3 questions in each of 3 sessions.
+            ("claude-sonnet-4-6", 15.0, 12, 3),
+            # One call still counts as one question.
+            ("claude-sonnet-4-6", 15.0, 1, 1),
+            # 400 calls would be 100 questions; the cap holds it at 20.
+            ("claude-sonnet-4-6", 15.0, 400, 1),
+        ]
+    )
     row = estimate.per_model[0]
-    assert (row.basis, row.output_tokens_per_session) == (MEASURED, 1_000)
-    assert estimate.output_tokens_saved == 3_000
-    assert estimate.output_usd_saved == pytest.approx(3_000 * 15.0 / 1_000_000)
-    assert (estimate.source, estimate.version, estimate.sessions) == ("bench", "v-test", 3)
+    assert (row.basis, row.output_tokens_per_question, row.mcp_calls_per_question) == (
+        MEASURED,
+        1_000,
+        4.0,
+    )
+    assert QUESTIONS_PER_SESSION_CAP == 20
+    assert (row.sessions, row.questions) == (5, 9 + 1 + 20)
+    assert estimate.output_tokens_saved == 30_000
+    assert estimate.output_usd_saved == pytest.approx(30_000 * 15.0 / 1_000_000)
+    assert (estimate.source, estimate.version, estimate.sessions) == ("bench", "v-test", 5)
+    block = estimate.calibration()
+    assert block["per_question"] is True
+    assert block["questions_per_session_cap"] == 20
+    assert "output_tokens_saved" not in block
 
 
 def test_fallbacks_never_use_the_best_row(fixed_calibration) -> None:
     estimate = estimate_output(
         [
             # Claude, no row, family measured: min(median 15%, opus min 10%).
-            ("claude-opus-6", 25.0, 1),
+            ("claude-opus-6", 25.0, 1, 1),
             # Claude, no row, no family row: the cross-model median, 15%.
-            ("claude-fable-5-1", 25.0, 1),
-            # Not Anthropic: the lowest measured reduction, 5%.
-            ("gpt-5.6-sol", 10.0, 1),
+            ("claude-fable-5-1", 25.0, 1, 1),
+            # Not Anthropic: the lowest measured reduction, 5%; 7 calls over
+            # the median divisor of 3.5 is 2 questions.
+            ("gpt-5.6-sol", 10.0, 7, 1),
             # No model: same conservative rate, and no dollars.
-            (None, None, 2),
+            (None, None, 1, 2),
         ]
     )
     rows = _by_model(estimate)
     assert rows[("claude-opus-6", 25.0)].basis == ANTHROPIC_FALLBACK
-    assert rows[("claude-opus-6", 25.0)].output_tokens_per_session == 160
-    assert rows[("claude-fable-5-1", 25.0)].output_tokens_per_session == 240
-    assert rows[("gpt-5.6-sol", 10.0)].basis == OTHER_FALLBACK
-    assert rows[("gpt-5.6-sol", 10.0)].output_tokens_per_session == 80
+    assert rows[("claude-opus-6", 25.0)].output_tokens_per_question == 160
+    assert rows[("claude-fable-5-1", 25.0)].output_tokens_per_question == 240
+    gpt = rows[("gpt-5.6-sol", 10.0)]
+    assert (gpt.basis, gpt.output_tokens_per_question, gpt.mcp_calls_per_question) == (
+        OTHER_FALLBACK,
+        80,
+        3.5,
+    )
+    assert gpt.output_tokens_saved == 160
     unknown = rows[(None, None)]
     assert (unknown.basis, unknown.output_tokens_saved, unknown.output_usd_saved) == (
         OTHER_FALLBACK,
@@ -79,16 +108,16 @@ def test_fallbacks_never_use_the_best_row(fixed_calibration) -> None:
         None,
     )
     assert estimate.unpriced_output_tokens_saved == 160
-    assert estimate.output_tokens_saved == 160 + 240 + 80 + 160
+    assert estimate.output_tokens_saved == 160 + 240 + 160 + 160
 
 
 def test_a_measured_increase_credits_nothing(monkeypatch) -> None:
     monkeypatch.setattr(
         output_estimate,
         "_load_calibration",
-        lambda: _Calibration("bench", "v", {"claude-haiku-4-5": (1_000.0, 1_100.0)}),
+        lambda: _Calibration("bench", "v", {"claude-haiku-4-5": (1_000.0, 1_100.0, 5.0)}),
     )
-    estimate = estimate_output([("claude-haiku-4-5", 5.0, 4), ("gpt-x", 1.0, 1)])
+    estimate = estimate_output([("claude-haiku-4-5", 5.0, 9, 4), ("gpt-x", 1.0, 3, 1)])
     assert estimate.output_tokens_saved == 0
     assert all(row.reduction == 0.0 for row in estimate.per_model)
 
@@ -96,13 +125,14 @@ def test_a_measured_increase_credits_nothing(monkeypatch) -> None:
 def test_the_shipped_calibration_loads_and_holds_its_own_rows() -> None:
     output_estimate._load_calibration.cache_clear()
     payload = json.loads(output_estimate.CALIBRATION_PATH.read_text(encoding="utf-8"))
-    estimate = estimate_output([(model, 1.0, 1) for model in payload["models"]])
+    estimate = estimate_output([(model, 1.0, 1, 1) for model in payload["models"]])
     assert estimate is not None
     assert estimate.version == payload["version"]
     for row in estimate.per_model:
         measured = payload["models"][row.model]
         assert row.basis == MEASURED
-        assert row.output_tokens_per_session == round(
+        assert row.mcp_calls_per_question == measured["repowise_mcp_calls_per_question"]
+        assert row.output_tokens_per_question == round(
             measured["bare_output_tokens"] - measured["repowise_output_tokens"]
         )
 
@@ -191,10 +221,12 @@ def test_each_session_that_used_repowise_counts_once_on_its_main_model(
     estimate = report.output_estimate
     rows = _by_model(estimate)
     assert estimate.sessions == 2
-    assert rows[("claude-sonnet-4-6", 15.0)].sessions == 1
-    assert rows[("claude-opus-5-5", 25.0)].sessions == 1
-    assert estimate.output_tokens_saved == 1_000 + 100
-    assert estimate.output_usd_saved == pytest.approx((1_000 * 15.0 + 100 * 25.0) / 1_000_000)
+    # Session a: 4 calls at 4 per question is one question on Sonnet.
+    assert rows[("claude-sonnet-4-6", 15.0)].questions == 1
+    # Session d: 3 calls at 2 per question is 1.5 questions on Opus.
+    assert rows[("claude-opus-5-5", 25.0)].questions == 1.5
+    assert estimate.output_tokens_saved == 1_000 + 150
+    assert estimate.output_usd_saved == pytest.approx((1_000 * 15.0 + 150 * 25.0) / 1_000_000)
 
 
 def test_sql_and_pure_builders_agree_on_the_estimate(tmp_path: Path, fixed_calibration) -> None:
@@ -230,6 +262,6 @@ def test_sql_and_pure_builders_agree_on_the_estimate(tmp_path: Path, fixed_calib
 
 
 def test_a_context_window_tag_still_finds_the_model_s_own_row(fixed_calibration) -> None:
-    estimate = estimate_output([("claude-sonnet-4-6[1m]", 15.0, 1)])
+    estimate = estimate_output([("claude-sonnet-4-6[1m]", 15.0, 1, 1)])
     row = estimate.per_model[0]
-    assert (row.basis, row.output_tokens_per_session) == (MEASURED, 1_000)
+    assert (row.basis, row.output_tokens_per_question) == (MEASURED, 1_000)

@@ -19,7 +19,6 @@ captures everything after it as the command to run (``ignore_unknown_options``)
 
 from __future__ import annotations
 
-from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -335,13 +334,7 @@ def _output_estimate_summary(report: SavingsReport) -> dict:
         "output_tokens_saved_estimated": estimate.output_tokens_saved,
         "output_usd_saved_estimated": estimate.output_usd_saved,
         "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
-        "calibration": {
-            "source": estimate.source,
-            "version": estimate.version,
-            "sessions": estimate.sessions,
-            "unpriced_output_tokens_saved": estimate.unpriced_output_tokens_saved,
-            "per_model": [asdict(row) for row in estimate.per_model],
-        },
+        "calibration": estimate.calibration(),
     }
 
 
@@ -350,8 +343,8 @@ def _print_output_estimate(report: SavingsReport) -> None:
 
     Kept on its own lines rather than folded into the recorded figures above:
     no session measures the output it did not write, so this is the paired
-    benchmark's per-model difference applied once per session that used
-    Repowise, and the label says so.
+    benchmark's per-model difference per question, applied to the questions
+    each session that used Repowise asked, and the label says so.
     """
     estimate = report.output_estimate
     if estimate is None or not estimate.sessions:
@@ -360,7 +353,8 @@ def _print_output_estimate(report: SavingsReport) -> None:
         f"  Output saved (estimated from benchmark): "
         f"[bold]{estimate.output_tokens_saved:,}[/bold] tokens, "
         f"[bold green]${estimate.output_usd_saved:.4f}[/bold green] "
-        f"[dim]over {estimate.sessions:,} sessions; calibration {estimate.version}[/dim]"
+        f"[dim]over {estimate.questions:,.0f} questions in {estimate.sessions:,} sessions; "
+        f"calibration {estimate.version}[/dim]"
     )
     console.print(
         f"  Estimated total: [bold green]"

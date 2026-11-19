@@ -104,7 +104,7 @@ export interface Savings {
   reread_events: number;
   reread_tokens_est: number;
   /** Output tokens agents did not write, estimated from the paired benchmark
-   *  per session with an MCP call. Null when no calibration could be loaded. */
+   *  per question asked in each session with an MCP call. Null when no calibration could be loaded. */
   output_tokens_saved_estimated?: number | null;
   output_usd_saved_estimated?: number | null;
   /** Priced input saving plus the estimated output saving. */
@@ -117,8 +117,10 @@ export interface SavingsOutputModelRow {
   /** "measured" | "anthropic_fallback" | "other_fallback" */
   basis: string;
   sessions: number;
+  questions: number;
+  mcp_calls_per_question: number;
   reduction: number;
-  output_tokens_per_session: number;
+  output_tokens_per_question: number;
   output_tokens_saved: number;
   output_rate_usd_per_million: number | null;
   output_usd_saved: number | null;
@@ -127,7 +129,12 @@ export interface SavingsOutputModelRow {
 export interface SavingsOutputCalibration {
   source: string;
   version: string;
+  /** True: credited per question asked, not once per session. */
+  per_question: boolean;
+  questions_per_session_cap: number;
+  formula: string;
   sessions: number;
+  questions: number;
   unpriced_output_tokens_saved: number;
   per_model: SavingsOutputModelRow[];
 }

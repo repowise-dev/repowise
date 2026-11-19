@@ -214,8 +214,12 @@ class SavingsOutputModelRow(BaseModel):
     #: Claude model with no row) or ``other_fallback`` (any other model).
     basis: str
     sessions: int = 0
+    #: Questions credited across these sessions: each session's MCP calls over
+    #: ``mcp_calls_per_question``, at least 1 and at most the cap.
+    questions: float = 0.0
+    mcp_calls_per_question: float = 0.0
     reduction: float = 0.0
-    output_tokens_per_session: int = 0
+    output_tokens_per_question: int = 0
     output_tokens_saved: int = 0
     output_rate_usd_per_million: float | None = None
     output_usd_saved: float | None = None
@@ -226,7 +230,12 @@ class SavingsOutputCalibration(BaseModel):
 
     source: str
     version: str
+    #: True: credited per question asked, not once per session.
+    per_question: bool = True
+    questions_per_session_cap: int = 0
+    formula: str = ""
     sessions: int = 0
+    questions: float = 0.0
     unpriced_output_tokens_saved: int = 0
     per_model: list[SavingsOutputModelRow] = []
 
@@ -304,8 +313,8 @@ class SavingsResponse(BaseModel):
     reread_tokens_est: int = 0
 
     #: Output tokens agents did not write, *estimated* from the paired
-    #: benchmark per agent session with an MCP call, priced at that session's
-    #: captured output rate. Each model is credited the benchmark's point
+    #: benchmark per question asked in each agent session with an MCP call
+    #: (``calibration.formula``), priced at that session's captured output rate. Each model is credited the benchmark's point
     #: estimate. Separate from the recorded ``saved_output_tokens``. The total
     #: adds this to the priced input saving. All null when no calibration
     #: could be loaded.

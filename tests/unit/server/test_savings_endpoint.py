@@ -307,12 +307,16 @@ async def test_output_saved_is_estimated_per_session_and_added_to_the_total(
 
     calibration = data["calibration"]
     assert calibration["version"] == output_estimate._load_calibration().version
+    assert calibration["per_question"] is True
+    assert calibration["formula"] == output_estimate.FORMULA
     assert calibration["sessions"] == 1
     row = calibration["per_model"][0]
     assert (row["model"], row["basis"], row["sessions"]) == ("claude-sonnet-4-6", "measured", 1)
-    assert data["output_tokens_saved_estimated"] == row["output_tokens_per_session"] > 0
+    # Two calls is under one bench question's worth, so the floor of one applies.
+    assert row["questions"] == 1
+    assert data["output_tokens_saved_estimated"] == row["output_tokens_per_question"] > 0
     assert data["output_usd_saved_estimated"] == pytest.approx(
-        row["output_tokens_per_session"] * 15.0 / 1_000_000
+        row["output_tokens_per_question"] * 15.0 / 1_000_000
     )
     assert data["total_usd_saved_estimated"] == pytest.approx(
         data["priced_input_savings_usd"] + data["output_usd_saved_estimated"]

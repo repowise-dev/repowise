@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +21,6 @@ from repowise.server.schemas import (
     SavingsBreakdownRow,
     SavingsOpportunityRow,
     SavingsOutputCalibration,
-    SavingsOutputModelRow,
     SavingsResponse,
 )
 
@@ -236,13 +234,7 @@ def _output_estimate_payload(report: Any, estimate: Any) -> dict[str, Any]:
         "output_tokens_saved_estimated": estimate.output_tokens_saved,
         "output_usd_saved_estimated": estimate.output_usd_saved,
         "total_usd_saved_estimated": report.priced_input_savings_usd + estimate.output_usd_saved,
-        "calibration": SavingsOutputCalibration(
-            source=estimate.source,
-            version=estimate.version,
-            sessions=estimate.sessions,
-            unpriced_output_tokens_saved=estimate.unpriced_output_tokens_saved,
-            per_model=[SavingsOutputModelRow(**asdict(row)) for row in estimate.per_model],
-        ),
+        "calibration": SavingsOutputCalibration(**estimate.calibration()),
     }
 
 

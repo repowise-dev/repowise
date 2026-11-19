@@ -275,7 +275,7 @@ def test_saved_labels_the_output_estimate_as_from_the_benchmark(repo_cwd: Path) 
     assert result.exit_code == 0
     flat = " ".join(result.output.split())
     assert "Output saved (estimated from benchmark)" in flat
-    assert "over 1 sessions" in flat
+    assert "over 1 questions in 1 sessions" in flat
     assert "Estimated total" in flat
 
     as_json = CliRunner().invoke(saved_command, ["--format", "json"])
