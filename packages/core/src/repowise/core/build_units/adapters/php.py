@@ -80,13 +80,15 @@ def units(ctx: ResolverContext) -> Found:
     kept: list[tuple[str, ComposerManifest]] = []
     for manifest in sorted(manifests, key=lambda m: m.rel_dir):
         uid = _unit_id(manifest.name, manifest.rel_dir)
-        # Composer names are case-insensitive, so a case variant is a duplicate.
-        if uid.lower() in taken:
+        # Composer names are case-insensitive, so a case variant is a duplicate;
+        # an unnamed package's id is its directory, which keeps its case.
+        key = uid.lower() if manifest.name else uid
+        if key in taken:
             # A later duplicate is no unit here, so the fallback keeps its root
             # and a path repository pointing at it links nothing.
             log.warning("build_units_duplicate_id", unit_id=uid, root=manifest.rel_dir)
             continue
-        taken.add(uid.lower())
+        taken.add(key)
         by_root[manifest.rel_dir] = uid
         if manifest.name:
             # Composer compares package names case-insensitively.

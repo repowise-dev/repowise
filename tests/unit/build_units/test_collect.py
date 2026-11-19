@@ -770,6 +770,20 @@ def test_php_case_variant_name_is_a_duplicate(tmp_path):
     assert [u for u in index.units if u.startswith("php:")] == ["php:acme/lib"]
 
 
+def test_php_unnamed_dirs_differing_in_case_stay_apart(tmp_path):
+    (tmp_path / "Probe").mkdir()
+    if (tmp_path / "probe").exists():
+        pytest.skip("case-insensitive filesystem")
+    (tmp_path / "Probe").rmdir()
+    index = _collect(tmp_path, {
+        "Lib/composer.json": json.dumps({}),
+        "Lib/src/A.php": "<?php namespace A; class A {}",
+        "lib/composer.json": json.dumps({}),
+        "lib/src/B.php": "<?php namespace B; class B {}",
+    })
+    assert sorted(u for u in index.units if u.startswith("php:")) == ["php:Lib", "php:lib"]
+
+
 def test_php_path_repository_outside_repo_links_nothing(tmp_path):
     repo = tmp_path / "repo"
     index = _collect(repo, {
