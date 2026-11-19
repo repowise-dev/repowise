@@ -278,10 +278,12 @@ def changes_list(
     from rich.markup import escape
     from rich.table import Table
 
+    from repowise.core.persistence.crud import LISTED_ID_CHARS
+
     table = Table("Change", "Merged", "Category", "Files", "+/-", "Title")
     for r in records:
         table.add_row(
-            escape(r["forge_ref"] or r["id"][:19]),
+            escape(r["forge_ref"] or r["id"][:LISTED_ID_CHARS]),
             (r["merged_at"] or "")[:10],
             r["category"],
             str(r["files_changed"]),

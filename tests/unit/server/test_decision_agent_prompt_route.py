@@ -61,3 +61,29 @@ async def test_unknown_kind_is_refused(client: AsyncClient):
         f"/api/repos/{repo['id']}/decisions/agent-prompt", params={"kind": "everything"}
     )
     assert res.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_review_all_is_served_while_a_background_record_is_left(
+    client: AsyncClient, app
+):
+    from repowise.core.agent_prompts.decisions import render_review_all
+
+    repo = await create_test_repo(client)
+    url = f"/api/repos/{repo['id']}/decisions/agent-prompt"
+    empty = (await client.get(url, params={"kind": "review_all"})).json()
+    async with get_session(app.state.session_factory) as session:
+        session.add(GitMetadata(repository_id=repo["id"], file_path="src/app.py"))
+        session.add(
+            DecisionRecord(
+                id="bg2", repository_id=repo["id"], title="Any background record",
+                decision="d", rationale="r", status="proposed", source="git_archaeology",
+                affected_files_json=json.dumps(["src/app.py"]),
+            )
+        )
+
+    res = await client.get(url, params={"kind": "review_all"})
+
+    assert empty == {"kind": "review_all", "text": "", "ids": [], "count": 0}
+    assert res.status_code == 200, res.text
+    assert res.json() == {"kind": "review_all", "text": render_review_all(), "ids": [], "count": 0}

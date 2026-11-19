@@ -1391,6 +1391,8 @@ async def list_candidates(
         func.coalesce(DecisionCandidateMeta.review_priority, 0.0).desc(),
         DecisionRecord.confidence.desc(),
         DecisionRecord.created_at.desc(),
+        # Last, so the order is total and an offset pages it without skipping a record.
+        DecisionRecord.id,
     ).limit(limit).offset(offset)
     return [(rec, meta) for rec, meta in (await session.execute(q)).all()]
 

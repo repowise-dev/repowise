@@ -46,6 +46,7 @@ from repowise.core.analysis.actions.build import (
     build_drift,
     build_files,
     build_recent,
+    build_runtime,
     build_secrets,
     lead_paths,
     reach_paths,
@@ -496,6 +497,23 @@ async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -
     )
 
 
+async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) -> dict:
+    from .evidence import newest_evidence_run
+
+    runs, newest = await newest_evidence_run(session, repo_id, prefer_commit=head_sha)
+    if newest is None:
+        from repowise.core.evidence.runtime_setup import stored_target_classes
+
+        # Only a repository with nothing stored is asked what it could run.
+        return build_runtime(
+            {"runs": 0, "targets": await stored_target_classes(session, repo_id)}, head_sha
+        )
+    return build_runtime(
+        {"runs": runs, "commit_sha": newest.commit_sha, "ingested_at": newest.ingested_at},
+        head_sha,
+    )
+
+
 _Reader = Callable[[], Awaitable[dict[str, Any]]]
 
 
@@ -535,6 +553,7 @@ async def load_repo_facts(
     await read("dead_code", lambda: _dead(session, repo_id, files, lookup, alias))
     await read("decisions", lambda: _decisions(session, repo_id))
     await read("coverage", lambda: _coverage(session, repo_id, head_sha))
+    await read("runtime", lambda: _runtime(session, repo_id, head_sha))
     values["unavailable"] = unavailable
     return RepoFacts(**values)
 

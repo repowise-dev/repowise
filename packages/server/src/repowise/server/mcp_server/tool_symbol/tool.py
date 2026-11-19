@@ -9,6 +9,7 @@ from repowise.core.persistence.database import get_session
 from repowise.core.registry import mcp_tool_registry as mcp
 
 # Patchable names are read off the package at call time so patches reach them.
+from repowise.server.mcp_server import _state
 from repowise.server.mcp_server import tool_symbol as _pkg
 from repowise.server.mcp_server._helpers import (
     _get_exclude_spec,
@@ -96,8 +97,9 @@ async def _indexed_symbol_read(
         repository = await _get_repo(session)
         rows = await _resolve_symbol(session, repository.id, symbol_id)
 
-    # Before the exclusion spec: it is built from the repo path.
-    if not ctx.path:
+    # Before the exclusion spec: it is built from the repo path. A context
+    # with no checkout has no path and still serves the stored symbol.
+    if not ctx.path and _state.request_context() is None:
         from repowise.server.mcp_server._savings.interaction import error_reply
 
         return error_reply(

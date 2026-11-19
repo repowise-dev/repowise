@@ -31,7 +31,11 @@ from .runtime_setup import (
 
 #: Builds the index evidence joins to; no model calls, no API key.
 INIT_COMMAND = "repowise init --yes --no-prose"
-SETUP_COMMAND = "repowise evidence setup --format json"
+#: What a person runs; ``SETUP_COMMAND`` is the same plan as JSON for an agent.
+EVIDENCE_SETUP = "repowise evidence setup"
+SETUP_COMMAND = f"{EVIDENCE_SETUP} --format json"
+#: The coverage part of the plan alone.
+COVERAGE_SETUP = "repowise coverage setup"
 COVERAGE_STATUS_COMMAND = "repowise coverage status"
 #: Says what is wrong with an index that exists but cannot be read.
 DOCTOR_COMMAND = "repowise doctor"
@@ -378,8 +382,10 @@ def _go_mains(root: Path, stacks: Sequence[Stack]) -> list[str]:
 
 
 __all__ = [
+    "COVERAGE_SETUP",
     "COVERAGE_STATUS_COMMAND",
     "DOCTOR_COMMAND",
+    "EVIDENCE_SETUP",
     "INIT_COMMAND",
     "SETUP_COMMAND",
     "UPDATE_COMMAND",
