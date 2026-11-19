@@ -89,14 +89,23 @@ def evidence_status(runs: Iterable[Any], reference_commit: str | None) -> dict[s
     Newest is :func:`evidence.hotness.newest_runs`, the run the measured views
     rank: by measurement time, not ingest time, so re-adding an old profile
     does not make it the workload's newest here while the ranking keeps
-    another."""
+    another. A partially mapped run is never a basis for ranking, so it is a
+    workload's newest only when the workload has no complete run; it still
+    counts as stored."""
     from .hotness import newest_runs
 
     runs = list(runs)
     by_kind: dict[str, list[Any]] = {}
     for run in runs:
         by_kind.setdefault(run.kind, []).append(run)
-    newest = {run_id for kind_runs in by_kind.values() for run_id in newest_runs(kind_runs)}
+    newest: set[str] = set()
+    for kind_runs in by_kind.values():
+        complete = [r for r in kind_runs if not r.mapping_partial]
+        newest |= newest_runs(complete)
+        covered = {(r.workload_name, r.environment) for r in complete}
+        newest |= newest_runs(
+            r for r in kind_runs if (r.workload_name, r.environment) not in covered
+        )
     return {
         "reference_commit": reference_commit,
         "runs_stored": {kind: len(kind_runs) for kind, kind_runs in sorted(by_kind.items())},

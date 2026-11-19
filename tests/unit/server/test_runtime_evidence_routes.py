@@ -265,8 +265,9 @@ async def test_status_and_measured_name_the_same_newest_run(
 
     repo_id = await _repo(ev_client, session_factory)
     await _seed(session_factory, repo_id)
-    # An older profile of r1's workload, added again after r1: newest ingest,
-    # older measurement. The ranking keeps r1, so status must too.
+    # An older profile of r1's workload, added again after r1 (newest ingest,
+    # older measurement), and a newer partial one: the ranking keeps r1, so
+    # status must too.
     async with session_factory() as session:
         session.add(
             EvidenceRun(
@@ -281,6 +282,22 @@ async def test_status_and_measured_name_the_same_newest_run(
                 commit_sha=HEAD,
                 measured_at=MEASURED_AT - timedelta(days=3),
                 ingested_at=datetime.now(UTC) + timedelta(days=1),
+            )
+        )
+        # A newer run of the same workload that mapped too little to rank.
+        session.add(
+            EvidenceRun(
+                id="rp",
+                repository_id=repo_id,
+                run_key="rp",
+                kind="profile",
+                format="repowise-evidence-v1",
+                source="cli",
+                workload_name="w-r1",
+                workload_class="entry_point",
+                commit_sha=HEAD,
+                measured_at=MEASURED_AT + timedelta(days=1),
+                mapping_partial=True,
             )
         )
         await session.commit()

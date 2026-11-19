@@ -93,3 +93,19 @@ def test_newest_is_by_measurement_time_like_the_ranking() -> None:
     )
     assert [w["run_id"] for w in status["workloads"]] == ["r1", "b1"]
     assert status["runs_stored"] == {"benchmark": 1, "profile": 2}
+
+
+def test_a_partial_run_is_newest_only_without_a_complete_one() -> None:
+    # Ranking skips partial runs, so status names the complete run it ranks.
+    status = evidence_status(
+        [
+            _run("p2", "build", None, mapping_partial=True,
+                 measured_at=datetime(2026, 3, 1, tzinfo=UTC)),
+            _run("r1", "build", None, measured_at=datetime(2026, 2, 1, tzinfo=UTC)),
+            _run("p1", "load", None, mapping_partial=True),
+        ],
+        None,
+    )
+    assert [w["run_id"] for w in status["workloads"]] == ["r1", "p1"]
+    assert status["workloads"][1]["mapping_partial"] is True
+    assert status["runs_stored"] == {"profile": 3}
