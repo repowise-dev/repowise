@@ -478,8 +478,8 @@ Plus `--repo`, `--no-workspace`, `--format` and `--full` as in the [shared optio
 - `search_codebase` retrieval: full-text and vector fused, excludes and tombstones honoured, decision / test pages demoted unless asked for.
 - `fulltext` and `semantic` both run the fused `concept` search; without an embedder the vector leg drops and `--mode
   semantic` says so. `auto` routes identifier to symbol, path to files, prose to concept, mixed to `hybrid`.
-- Hits: `score`, `title`, `page_type`, `path`, `snippet`, plus `candidates` (openable files). Symbol hits add `name`,
-  `qualified_name`, `kind`, `line`, `symbol_id`. Synthesized answers: `repowise ask`.
+- Hits: `score`, `title`, `page_type`, `path`, `snippet`, plus `candidates` (openable files). Symbol hits carry `name`,
+  `kind`, `path`, `line`, `symbol_id` and no `score` (their order is the rank). Synthesized answers: `repowise ask`.
 
 ---
 

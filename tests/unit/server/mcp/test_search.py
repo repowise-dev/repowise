@@ -793,7 +793,8 @@ class TestSymbolSearch:
         assert top["path"] == "src/auth/service.py"
         assert top["start_line"] == 10
         assert top["end_line"] == 100
-        assert top["next"] == "get_symbol"
+        # Ranking fields and the constant pointer stay internal.
+        assert not {"qualified_name", "language", "score", "next"} & set(top)
 
     @pytest.mark.asyncio
     async def test_auto_routes_bare_identifier_to_symbol(self, setup_mcp):
@@ -818,7 +819,7 @@ class TestSymbolSearch:
 
         result = await search_codebase("auth.service.AuthService.login", mode="symbol")
         assert result["results"][0]["symbol_id"] == "src/auth/service.py::login"
-        assert result["results"][0]["qualified_name"] == "auth.service.AuthService.login"
+        assert result["exact_match"] is True
 
     @pytest.mark.asyncio
     async def test_symbol_kind_filter(self, setup_mcp):
@@ -889,7 +890,7 @@ class TestPathSearch:
         assert "src/auth/service.py" in files
         top = result["results"][0]
         assert top["type"] == "file"
-        assert top["next"] == "get_context"
+        assert "next" not in top
 
     @pytest.mark.asyncio
     async def test_a_directory_name_lists_indexed_files_without_a_page(
@@ -910,7 +911,7 @@ class TestPathSearch:
         result = await search_codebase("filters_toml", mode="path")
         files = {r["path"] for r in result["results"]}
         assert files == {"src/filters_toml/infra.toml", "src/filters_toml/README.md"}
-        assert all(r["next"] == "get_context" for r in result["results"])
+        assert all(r["type"] == "file" for r in result["results"])
         globbed = await search_codebase("filters_toml *.toml", mode="path")
         assert "src/filters_toml/infra.toml" in {r["path"] for r in globbed["results"]}
 
