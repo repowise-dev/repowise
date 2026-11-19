@@ -7,6 +7,7 @@ What each statement yields is the language's ``LanguageConfig.import_extractor``
 from __future__ import annotations
 
 from ..extractors import node_text
+from ..extractors.tcl import is_tcl_switch_arm
 from ..language_configs import LanguageConfig
 from ..models import FileInfo, Import, combine_load_kinds
 from ..parser_helpers import import_load_kind, python_import_scope
@@ -34,6 +35,9 @@ def _extract_imports(
             continue
 
         stmt_node = stmt_nodes[0]
+        # A Tcl switch arm parses as a command named by its pattern.
+        if language == "tcl" and is_tcl_switch_arm(stmt_node):
+            continue
         if rules.deduped is not None:
             imports.extend(rules.deduped(stmt_node, module_nodes[0], src, seen_own))
             continue

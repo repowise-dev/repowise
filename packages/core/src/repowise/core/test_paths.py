@@ -370,10 +370,10 @@ def _is_test_name(filename: str) -> bool:
     rules = _conventions()
     lowered = filename.lower()
     ext = PurePosixPath(lowered).suffix
-    if ext not in rules.source_exts:
-        return False
     if ext in rules.test_exts:
         return True
+    if ext not in rules.source_exts:
+        return False
     if ext in rules.exact_stem_exts and PurePosixPath(filename).stem in _TEST_EXACT_STEMS:
         return True
     stem = PurePosixPath(lowered).stem

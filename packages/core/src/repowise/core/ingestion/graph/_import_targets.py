@@ -62,5 +62,11 @@ def resolve_import_targets(
         from ..resolvers.pascal import resolve_pascal_import_all
 
         return tuple(resolve_pascal_import_all(imp.module_path, path, ctx))
-    single = resolve_import(imp.module_path, path, language, ctx)
+    if language == "tcl":
+        # ``source x`` and ``package require x`` read the same word differently.
+        from ..resolvers.tcl import resolve_tcl_statement
+
+        single = resolve_tcl_statement(imp, path, ctx)
+    else:
+        single = resolve_import(imp.module_path, path, language, ctx)
     return (single,) if single else ()

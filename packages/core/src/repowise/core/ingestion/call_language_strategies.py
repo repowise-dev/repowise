@@ -7,6 +7,7 @@ targets and crate roots that no import statement names.
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from typing import Any
@@ -18,6 +19,7 @@ from .call_receiver_typing import (
     _TYPE_KINDS,
     _store_capped,
 )
+from .extractors.tcl import tcl_scope
 from .lang_helpers.kotlin_lambdas import in_lambda
 from .languages.csharp_same_namespace import _BCL_COMMON_TYPES, _USING_ALIAS_RE, _USING_NS_RE
 from .languages.perl_packages import PerlImport, PerlPackageIndex
@@ -136,6 +138,47 @@ def _perl_receiver(receiver: str) -> str:
     return receiver
 
 
+
+_TCL_CONFIDENCE = {
+    "enclosing_class": 0.95,
+    "same_file": 0.95,
+    "scoped_name": 0.93,
+    "import_merged": 0.85,
+    "global_unique": 0.75,
+}
+
+
+def _tcl_lookup_order(current: str | None, qualifier: str | None) -> tuple[str | None, ...]:
+    """The namespaces a Tcl command is looked up in, first match wins; None is global."""
+    if qualifier is not None and qualifier.startswith("::"):
+        return (qualifier.strip(":") or None,)
+    if qualifier is not None:
+        nested = f"{current}::{qualifier}" if current else qualifier
+        return tuple(dict.fromkeys((nested, qualifier)))
+    return tuple(dict.fromkeys((current, None)))
+
+
+def _tcl_origins(namespace: str | None) -> tuple[str, str, str]:
+    """The origin a proc found in this file, a sourced file, or repo-wide is reported as."""
+    if namespace is None:
+        return ("same_file", "import_merged", "global_unique")
+    return ("scoped_name", "scoped_name", "scoped_name")
+
+
+def _tcl_pick(
+    found: list[tuple[str, str]],
+    file_path: str,
+    sourced: frozenset[str],
+    origins: tuple[str, str, str],
+) -> tuple[str, str] | None:
+    """The one candidate in this file, else in a sourced file, else repo-wide."""
+    for tier, keep in enumerate((lambda p: p == file_path, lambda p: p in sourced, lambda _p: True)):
+        ids = {sym_id for path, sym_id in found if keep(path)}
+        if len(ids) == 1:
+            return next(iter(ids)), origins[tier]
+        if ids:
+            return None
+    return None
 def member_head_flags(lines: list[str], symbol: Symbol) -> tuple[bool, bool]:
     """How a C++ member function's first line reads: ``(outside its class, qualified)``.
 
@@ -277,6 +320,8 @@ _LANGUAGE_CALL_STRATEGIES: dict[str, _LanguageCallStrategies] = {
         free_exclusive=True,
     ),
     # Apex resolves type names in its project namespace; no bare-name fallback (Java's rule).
+    # A Tcl command resolves through namespaces: the caller's, then global.
+    "tcl": _LanguageCallStrategies(free=("_resolve_tcl_command",), free_exclusive=True),
     "apex": _LanguageCallStrategies(
         free=("_resolve_apex_namespace_type",),
         member=("_resolve_apex_receiver_type",),
@@ -363,6 +408,11 @@ class LanguageStrategiesMixin:
         # C/C++ same-target resolution (lazy CppWorkspaceIndex)
         self._cpp_index: Any = None
         self._cpp_index_built = False
+
+        # Tcl procs by (namespace or None for global, name), built on first use,
+        # and each Tcl file's transitively sourced files.
+        self._tcl_procs: dict[tuple[str | None, str], list[tuple[str, str]]] | None = None
+        self._tcl_sourced: dict[str, frozenset[str]] = {}
 
         # {C# file: {top-level type name: namespace}}, read off its source, and
         # {C# file: where a bare type name in it is looked up}.
@@ -673,6 +723,72 @@ class LanguageStrategiesMixin:
 
         self._cpp_index = build_cpp_workspace_index(_Ctx(self._repo_path, self._parsed_files))
         return self._cpp_index
+
+    def _resolve_tcl_command(
+        self,
+        file_path: str,
+        call: CallSite,
+        caller_id: str,
+    ) -> ResolvedCall | None:
+        """A Tcl command, looked up as Tcl does.
+
+        A call runs in its proc's namespace, moved by any ``namespace eval``
+        blocks around it (outside a proc, from the global one). Unqualified
+        ``f`` in namespace ``N``: ``N::f``, then ``::f``. Relative ``a::f``:
+        ``N::a::f``, then ``::a::f``. Absolute ``::a::f``: that proc.
+        Ceiling: ``namespace path`` / ``namespace import`` are not followed.
+        """
+        caller = self._symbols_by_id.get(caller_id)
+        current = tcl_scope(caller.parent_name if caller is not None else None, call.namespace)
+        procs = self._get_tcl_procs()
+        sourced = self._tcl_sourced_from(file_path)
+        for namespace in _tcl_lookup_order(current, call.scope_name):
+            found = procs.get((namespace, call.target_name))
+            if not found:
+                continue
+            # Tcl only looks further when the command is absent here; two
+            # candidates it cannot tell apart leave the call unresolved.
+            hit = _tcl_pick(found, file_path, sourced, _tcl_origins(namespace))
+            if hit is None or self._refuses_recursion(hit[0], caller_id, call):
+                return None
+            sym_id, origin = hit
+            own = namespace is not None and namespace == current and call.scope_name is None
+            origin = "enclosing_class" if own else origin
+            return ResolvedCall(caller_id, sym_id, _TCL_CONFIDENCE[origin], call.line, origin)
+        return None
+
+    def _tcl_sourced_from(self, file_path: str) -> frozenset[str]:
+        """Every Tcl file *file_path* sources, directly or through the files it sources."""
+        cached = self._tcl_sourced.get(file_path)
+        if cached is not None:
+            return cached
+        seen: set[str] = set()
+        pending = [file_path]
+        while pending:
+            for target in self._import_targets.get(pending.pop(), ()):
+                if target not in seen and self._language_of(target) == "tcl":
+                    seen.add(target)
+                    pending.append(target)
+        seen.discard(file_path)
+        self._tcl_sourced[file_path] = frozenset(seen)
+        return self._tcl_sourced[file_path]
+
+    def _get_tcl_procs(self) -> dict[tuple[str | None, str], list[tuple[str, str]]]:
+        """Every Tcl proc as ``(path, id)`` under its ``(namespace, name)``; global is None."""
+        if self._tcl_procs is None:
+            tcl_files = {
+                p for p, pf in self._parsed_files.items() if pf.file_info.language == "tcl"
+            }
+            procs: dict[tuple[str | None, str], list[tuple[str, str]]] = defaultdict(list)
+            for path in sorted(tcl_files):
+                for name, sym_id in self._file_top_level.get(path, {}).items():
+                    procs[(None, name)].append((path, sym_id))
+            for (namespace, name), entries in self._global_methods.items():
+                for path, sym_id in entries:
+                    if path in tcl_files:
+                        procs[(namespace, name)].append((path, sym_id))
+            self._tcl_procs = dict(procs)
+        return self._tcl_procs
 
     def _resolve_cpp_scoped_call(
         self,
