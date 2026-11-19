@@ -308,35 +308,45 @@ _UNADVERTISED_PARAMS: dict[str, frozenset[str]] = {
 }
 
 
+def _args_block(lines: list[str], start: int) -> tuple[dict[str, list[str]], int]:
+    """The ``Args:`` entries after line *start*, by parameter, and where they end.
+
+    ``a, b: text`` documents both names; a deeper-indented line continues the
+    entry above it.
+    """
+    import re
+
+    docs: dict[str, list[str]] = {}
+    text: list[str] = []
+    end = start + 1
+    while end < len(lines) and (lines[end].startswith("    ") or not lines[end].strip()):
+        entry = re.match(r"    (\w+(?:, \w+)*): (.*)", lines[end])
+        if entry:
+            text = [entry[2].strip()]
+            docs.update(dict.fromkeys(entry[1].split(", "), text))
+        elif lines[end].strip():
+            text.append(lines[end].strip())
+        end += 1
+    return docs, end
+
+
 def _lift_args(description: str, properties: dict[str, Any]) -> str:
     """*description* without its ``Args:`` block, each entry moved onto its property.
 
     The block restates the schema in prose; on the property the text sits where
     a host shows it, once. An entry for a parameter the schema does not list is
-    dropped. ``a, b: text`` documents both names.
+    dropped.
     """
     import inspect
-    import re
 
     lines = inspect.cleandoc(description).split("\n")
     if "Args:" not in lines:
         return description
     start = lines.index("Args:")
-    end = start + 1
-    docs: dict[tuple[str, ...], list[str]] = {}
-    names: tuple[str, ...] = ()
-    while end < len(lines) and (lines[end].startswith("    ") or not lines[end].strip()):
-        entry = re.match(r"    (\w+(?:, \w+)*): (.*)", lines[end])
-        if entry:
-            names = tuple(entry[1].split(", "))
-            docs[names] = [entry[2].strip()]
-        elif lines[end].strip() and names:
-            docs[names].append(lines[end].strip())
-        end += 1
-    for entry_names, text in docs.items():
-        for name in entry_names:
-            if name in properties:
-                properties[name].setdefault("description", " ".join(text))
+    docs, end = _args_block(lines, start)
+    for name, text in docs.items():
+        if name in properties:
+            properties[name].setdefault("description", " ".join(text))
     return "\n".join(lines[:start] + lines[end:]).strip()
 
 
