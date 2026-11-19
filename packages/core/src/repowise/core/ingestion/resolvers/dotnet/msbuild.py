@@ -78,10 +78,6 @@ class MSBuildProject:
     #: build file that adds test packages only ``Condition="'$(IsTestProject)'
     #: == 'true'"`` does not make every project below it a test project.
     unconditional_package_references: set[str] = field(default_factory=set)
-    #: Unconditional ``Update`` items. Kept apart from the ``Include`` set: an
-    #: ``Update`` only changes a reference that exists, so a shared build file
-    #: carrying one does not declare tests for every project below it.
-    unconditional_package_updates: set[str] = field(default_factory=set)
     #: Literal ``<PropertyGroup>`` values outside any ``Condition``, keyed
     #: lowercase as MSBuild compares them, for a shared build file's conditions.
     properties: dict[str, str] = field(default_factory=dict)
@@ -117,7 +113,7 @@ def _bool(value: str | None) -> bool:
     return (value or "").strip().lower() in ("true", "enable", "1")
 
 
-def _tristate(value: str | None) -> bool | None:
+def tristate(value: str | None) -> bool | None:
     """None for anything that is not a literal boolean.
 
     ``<IsPackable>$(PublishLibraries)</IsPackable>`` is the normal way to
@@ -136,7 +132,7 @@ def _compile_items(include: str | None) -> list[str]:
     return [item for item in items if item and "*" not in item]
 
 
-def _conditioned(root: ET.Element) -> set[int]:
+def conditioned_ids(root: ET.Element) -> set[int]:
     """Ids of the elements a ``Condition`` applies to, itself or an ancestor's."""
     return {
         id(element)
@@ -144,6 +140,68 @@ def _conditioned(root: ET.Element) -> set[int]:
         if scope.get("Condition") is not None
         for element in scope.iter()
     }
+
+
+def _add_project_reference(project: MSBuildProject, elem: ET.Element) -> None:
+    include = elem.get("Include")
+    if include:
+        # ProjectReference paths use Windows-style backslashes by convention;
+        # normalise and resolve relative to the .csproj.
+        rel = include.replace("\\", "/")
+        project.project_references.append((project.project_dir / rel).resolve())
+
+
+def _add_package_reference(project: MSBuildProject, elem: ET.Element, conditioned: bool) -> None:
+    include, update = elem.get("Include"), elem.get("Update")
+    if pkg := include or update:
+        project.package_references.add(pkg.strip())
+        # An ``Update`` only changes a reference that exists, so it never makes a
+        # shared build file declare tests.
+        if include and not conditioned:
+            project.unconditional_package_references.add(pkg.strip())
+
+
+_PROPERTY_TAGS = frozenset(
+    {
+        "RootNamespace",
+        "AssemblyName",
+        "ImplicitUsings",
+        "PackageId",
+        "IsPackable",
+        "GeneratePackageOnBuild",
+        "IsTestProject",
+    }
+)
+
+
+def _apply_property(project: MSBuildProject, tag: str, elem: ET.Element, conditioned: bool) -> None:
+    """Read one literal project property into *project*; empty ones are skipped."""
+    if not elem.text:
+        return
+    text = elem.text.strip()
+    if tag == "RootNamespace":
+        project.root_namespace = text
+    elif tag == "AssemblyName":
+        project.assembly_name = text
+    elif tag == "PackageId":
+        project.package_id = text
+    elif tag == "ImplicitUsings":
+        project.implicit_usings = _bool(elem.text)
+    elif tag == "GeneratePackageOnBuild":
+        project.generate_package_on_build = _bool(elem.text)
+    elif tag == "IsPackable":
+        # Last literal wins; a conditional PropertyGroup is not evaluated.
+        if (packable := tristate(elem.text)) is not None:
+            project.is_packable = packable
+    elif tag == "IsTestProject" and not conditioned and (flag := tristate(elem.text)) is not None:
+        project.is_test_project = flag
+
+
+def _collect_properties(project: MSBuildProject, group: ET.Element, conditioned: set[int]) -> None:
+    """Literal ``<PropertyGroup>`` values outside any ``Condition``."""
+    for prop in group:
+        if prop.text and id(prop) not in conditioned:
+            project.properties[_local(prop.tag).lower()] = prop.text.strip()
 
 
 def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
@@ -157,51 +215,19 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
     project = MSBuildProject(path=csproj_path.resolve(), project_dir=csproj_path.parent.resolve())
     root = tree.getroot()
     project.is_test_project = True if "mstest.sdk" in (root.get("Sdk") or "").lower() else None
-    conditioned = _conditioned(root)
+    conditioned = conditioned_ids(root)
 
     for elem in root.iter():
         tag = _local(elem.tag)
 
-        if tag == "RootNamespace" and elem.text:
-            project.root_namespace = elem.text.strip()
-        elif tag == "AssemblyName" and elem.text:
-            project.assembly_name = elem.text.strip()
-        elif tag == "ImplicitUsings" and elem.text:
-            project.implicit_usings = _bool(elem.text)
-        elif tag == "PackageId" and elem.text:
-            project.package_id = elem.text.strip()
-        elif tag == "IsPackable" and elem.text:
-            # Last literal wins; a conditional PropertyGroup is not evaluated.
-            packable = _tristate(elem.text)
-            if packable is not None:
-                project.is_packable = packable
-        elif tag == "GeneratePackageOnBuild" and elem.text:
-            project.generate_package_on_build = _bool(elem.text)
-        elif tag == "IsTestProject" and elem.text and id(elem) not in conditioned:
-            test_proj = _tristate(elem.text)
-            if test_proj is not None:
-                project.is_test_project = test_proj
+        if tag in _PROPERTY_TAGS:
+            _apply_property(project, tag, elem, id(elem) in conditioned)
         elif tag == "ProjectReference":
-            include = elem.get("Include")
-            if include:
-                # ProjectReference paths use Windows-style backslashes by
-                # convention; normalise and resolve relative to the .csproj.
-                rel = include.replace("\\", "/")
-                target = (project.project_dir / rel).resolve()
-                project.project_references.append(target)
+            _add_project_reference(project, elem)
         elif tag == "Compile":
             project.compile_includes.extend(_compile_items(elem.get("Include")))
         elif tag in ("PackageReference", "PackageVersion"):
-            include, update = elem.get("Include"), elem.get("Update")
-            if pkg := include or update:
-                project.package_references.add(pkg.strip())
-                if id(elem) not in conditioned:
-                    target = (
-                        project.unconditional_package_references
-                        if include
-                        else project.unconditional_package_updates
-                    )
-                    target.add(pkg.strip())
+            _add_package_reference(project, elem, id(elem) in conditioned)
         elif tag in ("Using", "Import"):
             # <Using Include="X"/> is the C# form, <Import Include="X"/> the VB
             # one; MSBuild's own <Import Project="..."/> carries no Include.
@@ -209,9 +235,7 @@ def parse_csproj(csproj_path: Path) -> MSBuildProject | None:
             if ns:
                 project.project_usings.add(ns.strip())
         elif tag == "PropertyGroup" and id(elem) not in conditioned:
-            for prop in elem:
-                if prop.text and id(prop) not in conditioned:
-                    project.properties[_local(prop.tag).lower()] = prop.text.strip()
+            _collect_properties(project, elem, conditioned)
 
     return project
 

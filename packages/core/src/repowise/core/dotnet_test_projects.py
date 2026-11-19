@@ -13,6 +13,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 
+from .ingestion.resolvers.dotnet.msbuild import conditioned_ids, tristate
+
 #: NuGet ids (lower-cased) that make a .csproj a test project.  Single source
 #: of truth — ``test_runners/packages.py`` imports this instead of keeping its
 #: own copy.  Extend here when a new test framework arrives; both the traverser
@@ -55,16 +57,6 @@ class DotnetTestProjects:
         return None
 
 
-def _conditioned(root: ET.Element) -> set[int]:
-    """Ids of the elements a ``Condition`` applies to, itself or an ancestor's."""
-    return {
-        id(element)
-        for scope in root.iter()
-        if scope.get("Condition") is not None
-        for element in scope.iter()
-    }
-
-
 def _is_test_package_elem(elem: ET.Element) -> bool:
     """Whether *elem* is an Include or Update of a test package."""
     tag = elem.tag.split("}")[-1].lower()
@@ -79,23 +71,15 @@ def _is_test_package_elem(elem: ET.Element) -> bool:
     return False
 
 
-def _parse_is_test_project(elem: ET.Element) -> bool | None:
-    val = (elem.text or "").strip().lower()
-    if val in ("true", "enable", "1"):
-        return True
-    if val in ("false", "disable", "0"):
-        return False
-    return None
-
-
 def is_test_project_csproj(text: str) -> bool | None:
     """Whether a .csproj XML string describes a test project.
 
     A project is a test project when ``<IsTestProject>true</IsTestProject>`` is
     set, or when it references any package in :data:`TEST_PACKAGES`.  An
     explicit ``<IsTestProject>false</IsTestProject>`` wins regardless of which
-    packages are present.  Elements under a ``Condition`` are ignored because
-    an unevaluated condition cannot be judged.
+    packages are present.  A conditioned ``IsTestProject`` is ignored because an
+    unevaluated condition cannot be judged; a conditioned test package still
+    counts, since the project runs tests for at least one target.
 
     Returns:
         True: is a test project.
@@ -112,16 +96,15 @@ def is_test_project_csproj(text: str) -> bool | None:
         explicit_is_test = True
 
     has_test_package = False
-    conditioned = _conditioned(root)
+    conditioned = conditioned_ids(root)
 
     for elem in root.iter():
-        if id(elem) in conditioned:
-            continue
         tag = elem.tag.split("}")[-1].lower()
         if tag == "istestproject":
-            if (flag := _parse_is_test_project(elem)) is not None:
+            if id(elem) not in conditioned and (flag := tristate(elem.text)) is not None:
                 explicit_is_test = flag
         elif _is_test_package_elem(elem):
+            # Whatever its Condition: per-TFM groups still mean tests for some target.
             has_test_package = True
 
     if explicit_is_test is not None:

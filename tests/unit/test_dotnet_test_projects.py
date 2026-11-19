@@ -148,14 +148,14 @@ from repowise.core.test_runners.packages import _declares_tests
             "</Project>\n",
             True,
         ),
-        # Conditioned test package reference does not make it a test project
+        # A project's own conditioned (per-TFM) test package still makes it a test project
         (
             '<Project Sdk="Microsoft.NET.Sdk">\n'
             '  <ItemGroup Condition="\'$(Configuration)\' == \'Debug\'">\n'
             '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
             "  </ItemGroup>\n"
             "</Project>\n",
-            False,
+            True,
         ),
         # Conditioned IsTestProject=false does not override unconditional test package
         (
@@ -390,16 +390,25 @@ def test_conditioned_opt_out_is_ignored_by_both() -> None:
     assert projects.collects("tests/Shop.Tests/CartTests.cs") is True
 
 
-def test_conditioned_test_package_is_ignored_by_both() -> None:
-    """A conditioned PackageReference does not classify a project as a test project."""
+def test_multi_target_conditioned_test_packages_still_collect_as_tests() -> None:
+    """Per-TFM test packages keep the project a test project in both callers."""
     xml = (
         '<Project Sdk="Microsoft.NET.Sdk">\n'
-        '  <ItemGroup Condition="\'$(Configuration)\' == \'Debug\'">\n'
-        '    <PackageReference Include="xunit.v3" Version="1.0.0" />\n'
+        '  <ItemGroup Condition="\'$(TargetFramework)\' == \'net8.0\'">\n'
+        '    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.0.0" />\n'
+        '    <PackageReference Include="xunit" Version="2.9.0" />\n'
         "  </ItemGroup>\n"
         "</Project>\n"
     )
-    assert is_test_project_csproj(xml) is False
-    assert _declares_tests(None, []) is False
-    projects = read_dotnet_test_projects([("src/Shop/Shop.csproj", xml)])
-    assert projects.collects("src/Shop/Cart.cs") is False
+    assert is_test_project_csproj(xml) is True
+    projects = read_dotnet_test_projects([("src/Lib.Checks/Lib.Checks.csproj", xml)])
+    assert projects.collects("src/Lib.Checks/Checks.cs") is True
+
+
+def test_traverser_and_msbuild_share_one_tristate_and_condition_rule() -> None:
+    """The traverser reuses msbuild's helpers instead of keeping its own copies."""
+    from repowise.core import dotnet_test_projects as traverser_side
+    from repowise.core.ingestion.resolvers.dotnet import msbuild
+
+    assert traverser_side.tristate is msbuild.tristate
+    assert traverser_side.conditioned_ids is msbuild.conditioned_ids

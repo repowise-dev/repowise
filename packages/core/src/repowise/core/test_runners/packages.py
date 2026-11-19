@@ -201,10 +201,9 @@ def _declared_test_project(
     shared build file on its path from the repository root."""
     if parsed.is_test_project is False:
         return False
-    if _declares_tests(
-        parsed.is_test_project,
-        parsed.unconditional_package_references | parsed.unconditional_package_updates,
-    ):
+    # A project's own conditioned test package (per-TFM groups) still means it
+    # runs tests for some target; only shared build files need the unconditional set.
+    if _declares_tests(parsed.is_test_project, parsed.package_references):
         return True
     parts = project.split("/")[:-1]
     return any(
