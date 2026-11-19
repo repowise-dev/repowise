@@ -500,7 +500,7 @@ async def _coverage(session: AsyncSession, repo_id: str, head_sha: str | None) -
 async def _runtime(session: AsyncSession, repo_id: str, head_sha: str | None) -> dict:
     from .evidence import newest_evidence_run
 
-    runs, newest = await newest_evidence_run(session, repo_id)
+    runs, newest = await newest_evidence_run(session, repo_id, prefer_commit=head_sha)
     if newest is None:
         from repowise.core.evidence.runtime_setup import stored_target_classes
 
