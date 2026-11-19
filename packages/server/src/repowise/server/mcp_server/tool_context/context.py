@@ -149,25 +149,24 @@ async def get_context(
     repo: str | None = None,
     symptom: str | None = None,
 ) -> dict:
-    """Triage card for files / modules / symbols — relationships, not source bytes.
+    """Triage card for files, modules or symbols: relationships, not source bytes.
 
     Returns summary, signatures with lines, hotspot, fix_history and
     decision titles; either risk cue means get_risk. Batch targets in one
     call. Whole file, body-elided and line-verified: include=["skeleton"]
     in ONE call, or Read it; do not call get_symbol per signature. Rename:
-    include=["references"] is the whole edit set when ``complete``. Which
+    include=["references"] is the whole edit set when `complete`. Which
     files in a directory lack tests: include=["files"] on it.
 
     Args:
-        targets: paths, "path::Symbol", "component:<name>",
-            "change:<id>" (pr-123 or a sha), "package:<name>".
-        include: callers | callees | references (+ adds comments) | skeleton | skeleton+
-            | files | symbols (all, not top 15) | decisions | full_doc
-            | ownership | last_change | metrics | community | health
-            | doc_drift | changes | provenance | suspects | facts.
+        targets: Paths, "path::Symbol", "component:<name>", "change:<pr-123 or sha>",
+            "package:<name>".
+        include: callers | callees | references | skeleton | skeleton+ | files
+            | symbols | decisions | full_doc | ownership | last_change | metrics
+            | community | health | doc_drift | changes | provenance | suspects | facts.
         compact: False adds structure, imports, docstrings.
-        symptom: issue text or stack trace to rank ``suspects`` on.
-        repo: usually omitted.
+        symptom: Issue text or stack trace to rank `suspects` on.
+        repo: Usually omitted.
     """
     if repo == "all":
         return _unsupported_repo_all("get_context")

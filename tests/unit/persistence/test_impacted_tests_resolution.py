@@ -990,3 +990,68 @@ async def test_an_abandoned_selection_stops_between_graph_walks(async_session) -
             async_session, repo.id, {"src/bar.py": {5}}, _REPO_KEYS, out, cancelled=lambda: True
         )
     assert out["graph_error"] is None
+
+
+def _functions(path: str, start: int, end: int):
+    from repowise.core.analysis.function_hunks import Body, FileFunctions
+
+    return {path: FileFunctions(path, (Body(start, end, ("f",), (True,)),))}
+
+
+async def _seed_with_importer(async_session):
+    """``src/foo.py`` covered by ``test_a``; ``tests/test_wide.py`` only imports it."""
+    from repowise.core.persistence.models import GraphEdge, GraphNode
+
+    repo = await _seed(async_session)
+    for path, is_test in (("tests/test_wide.py", True), ("src/foo.py", False)):
+        async_session.add(
+            GraphNode(repository_id=repo.id, node_id=path, node_type="file", is_test=is_test)
+        )
+    async_session.add(
+        GraphEdge(
+            repository_id=repo.id,
+            source_node_id="tests/test_wide.py",
+            target_node_id="src/foo.py",
+            edge_type="imports",
+        )
+    )
+    await async_session.commit()
+    return repo
+
+
+async def test_a_change_inside_covered_functions_is_answered_by_their_tests(async_session) -> None:
+    """The whole body is looked up; selection reads which tests the map measured."""
+    repo = await _seed_with_importer(async_session)
+    out = _empty_result(1)
+    # Line 5 is covered by no test, but the function body (1-4) is, by test_a.
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/foo.py": {5}},
+        _REPO_KEYS,
+        out,
+        functions=_functions("src/foo.py", 1, 5),
+    )
+    assert set(out["covered"]) == {"tests/test_foo.py::test_a|run"}
+    assert out["function_covered"] == ["src/foo.py"]
+    assert out["measured_test_files"] == ["tests/test_foo.py"]
+    assert out["unknown"] == []
+
+
+async def test_a_change_inside_an_uncovered_function_asks_the_graph(async_session) -> None:
+    repo = await _seed_with_importer(async_session)
+    out = _empty_result(1)
+    await _resolve_impacted(
+        async_session,
+        repo.id,
+        {"src/foo.py": {20}},
+        _REPO_KEYS,
+        out,
+        functions=_functions("src/foo.py", 20, 22),
+    )
+    assert out["covered"] == {}
+    assert out["function_covered"] == []
+    assert out["measured_test_files"] == []
+    assert out["inferred"] == [
+        {"source_file": "src/foo.py", "test_file": "tests/test_wide.py", "via": "import-graph"}
+    ]

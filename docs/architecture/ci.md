@@ -83,7 +83,15 @@ skipping any.
 
 - `Repowise index (main)` builds the Repowise index on each push to `main`
   (`repowise update --index-only` on the previous one) and caches the three
-  newest.
+  newest. It builds beside the tests, then waits for the three Python 3.12
+  shards (not 3.11 or 3.13), combines their `.coverage` data and adds the
+  per-test coverage map with `repowise coverage add` before saving. When a
+  shard did not pass it saves the index with the map it restored, since a
+  map missing a shard's tests would leave them out of every selection.
+- On pushes to `main` the shards record which test ran which lines
+  (`--cov-context=test`, on the C tracer, since sysmon drops contexts). Pull
+  requests and the nightly run keep sysmon without contexts, so their wall
+  time does not change.
 - `Test selection (recorded only)` restores that index and runs
   `repowise impacted-tests <base>...HEAD --format json --runner pytest --prioritize`.
 - `Test selection compared (recorded only)` reads the shards' JUnit reports
