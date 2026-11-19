@@ -3191,6 +3191,9 @@ class EvidenceTestTiming(Base):
     duration_s: Mapped[float | None] = mapped_column(Float, nullable=True)
     # ``passed``, ``failed``, ``skipped``, ``error``; NULL: not reported.
     outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The first test the run reports for its class: its time may include
+    # fixtures the whole class or module shares. NULL: not said.
+    first_in_class: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
     __table_args__ = ({"sqlite_with_rowid": False},)
 

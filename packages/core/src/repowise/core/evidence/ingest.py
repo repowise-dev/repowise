@@ -13,12 +13,13 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Collection, Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from repowise.core.ingestion.symbol_identity import local_symbol_id
+from repowise.core.test_paths import dotted_name_file, files_by_stem, nodeid_function
 
 from .format_v1 import EVIDENCE_FORMAT, EvidenceDocument
 
@@ -184,7 +185,9 @@ def _join(
     optional = kind in ("benchmark", "test_timing")
     location = entry.get("location") if optional else entry
     if location is None:
-        return _ROW_BUILDERS[kind](entry, None), None, None
+        # A test named by a classname no indexed file matched (place_test_entries).
+        reason = "unplaced" if entry.get("classname") else None
+        return _ROW_BUILDERS[kind](entry, None), reason, None
     path = location["path"]
     origin = origins.get(path)
     if origin in _UNMAINTAINED:
@@ -233,6 +236,7 @@ def _test_row(entry: Mapping[str, Any], symbol_id: str | None) -> dict[str, Any]
         "symbol_id": symbol_id,
         "duration_s": entry["duration_s"],
         "outcome": entry["outcome"],
+        "first_in_class": entry["first_in_class"],
     }
 
 
@@ -265,6 +269,40 @@ _ROW_KEY = {
         r["scope_kind"], r["scope_id"], r["site_symbol_id"], r["statement_fp"]
     ),
 }
+
+
+def place_test_entries(doc: EvidenceDocument, files: Collection[str]) -> EvidenceDocument:
+    """*doc* with each test named only by a dotted ``classname`` placed on its file.
+
+    A JUnit report that does not say a test's file names its class
+    (``tests.unit.test_x.TestC``, ``com.acme.CartTest``); the indexed file
+    that name leads to (:func:`~repowise.core.test_paths.dotted_name_file`,
+    one of *files* or none) gives the test its ``path::qualname`` id and its
+    function. A name that leads to no file, or to two, stays unplaced.
+    """
+    if doc.kind != "test_timing" or not any(e.get("classname") for e in doc.entries):
+        return doc
+    by_stem = files_by_stem(files)
+    entries = []
+    for entry in doc.entries:
+        classname = entry.get("classname")
+        found = dotted_name_file(classname, by_stem) if classname else None
+        if found is not None:
+            path, rest = found
+            name = entry["test_id"].removeprefix(f"{classname}::")
+            test_id = f"{path}::{'::'.join((*rest, name))}"
+            function = nodeid_function(test_id)
+            entry = {
+                **entry,
+                "test_id": test_id,
+                "test_file": path,
+                "classname": None,
+                "location": {"path": path, "function": function, "line": None, "exact": True}
+                if function
+                else None,
+            }
+        entries.append(entry)
+    return replace(doc, entries=tuple(entries))
 
 
 def cap_rows(
@@ -494,6 +532,7 @@ __all__ = [
     "join_entries",
     "load_origins",
     "load_symbols",
+    "place_test_entries",
     "resolve_location",
     "run_fields",
     "run_key",
